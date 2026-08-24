@@ -25,6 +25,15 @@ export const DEFAULT_RING_CAP_BYTES = 2 * 1024 * 1024;
  */
 const MIRROR_SCROLLBACK_LINES = 5000;
 
+/**
+ * Snapshot data is UTF-8 → base64 on the machine channel. Keeping the encoded field at most
+ * 600k leaves 100k below the protocol's 700k field limit and ample JSON framing margin below
+ * the 1 MiB machine-frame limit.
+ */
+export const MAX_SNAPSHOT_BASE64_CHARS = 600_000;
+const MAX_SNAPSHOT_UTF8_BYTES = (MAX_SNAPSHOT_BASE64_CHARS / 4) * 3;
+const TRUNCATED_SNAPSHOT_PREFIX = "\u001bc[older terminal rows omitted]\r\n";
+
 /** One emitted output chunk: its emission seq and a private copy of the bytes. */
 export interface PtyOutput {
   readonly seq: number;
@@ -115,6 +124,25 @@ export function resolveShellCommand(): readonly string[] {
   return [shell];
 }
 
+/**
+ * Builds a PTY environment without inheriting daemon credentials. Every MANIFOLD_* value in
+ * the agent process is excluded so future agent-only credentials are safe by default; the
+ * server's fixed, session-scoped MANIFOLD_URL/PAD/ELEMENT/TOKEN values are then added back.
+ */
+function buildPtyEnvironment(
+  injected: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const child = new Map<string, string>();
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && !name.startsWith("MANIFOLD_")) child.set(name, value);
+  }
+  if (injected !== undefined) {
+    for (const [name, value] of Object.entries(injected)) child.set(name, value);
+  }
+  child.set("TERM", "xterm-256color");
+  return Object.fromEntries(child);
+}
+
 /** Construction inputs for a {@link PtySession}. */
 export interface PtySessionOptions {
   readonly sessionId: string;
@@ -122,7 +150,7 @@ export interface PtySessionOptions {
   readonly rows: number;
   /** Working directory; defaults to the user's home directory. */
   readonly cwd?: string;
-  /** Extra environment for the shell; merged over `process.env` (TERM is always forced). */
+  /** Extra environment for the shell; merged over a credential-free process environment. */
   readonly env?: Record<string, string>;
   /** Invoked for every output chunk, in emission order, with its assigned seq. */
   readonly onOutput: (output: PtyOutput) => void;
@@ -179,7 +207,7 @@ export class PtySession {
 
     this.proc = Bun.spawn([...command], {
       cwd: opts.cwd ?? homedir(),
-      env: { ...process.env, ...opts.env, TERM: "xterm-256color" },
+      env: buildPtyEnvironment(opts.env),
       terminal: {
         cols: opts.cols,
         rows: opts.rows,
@@ -243,20 +271,82 @@ export class PtySession {
   }
 
   /**
+   * Serializes as much newest scrollback as fits the wire budget. SerializeAddon's
+   * `scrollback` option always includes the current screen and selects history from the
+   * bottom, so dropping older rows does not disturb live output after the captured watermark.
+   *
+   * Candidate history grows geometrically: successful serializations stay under the cap and
+   * the first rejected allocation is normally at most twice that size, avoiding the former
+   * multi-MiB serialization of all 5000 retained lines.
+   */
+  private serializeBoundedSnapshot(): string {
+    let data = this.serializer.serialize({ scrollback: 0 });
+    if (Buffer.byteLength(data, "utf8") > MAX_SNAPSHOT_UTF8_BYTES) {
+      return this.truncateSerializedSnapshot(data);
+    }
+
+    const availableScrollback = Math.max(0, this.mirror.buffer.normal.length - this.rowsValue);
+    let includedScrollback = 0;
+    let nextScrollback = 1;
+    while (includedScrollback < availableScrollback) {
+      const candidateScrollback = Math.min(availableScrollback, nextScrollback);
+      const candidate = this.serializer.serialize({ scrollback: candidateScrollback });
+      if (Buffer.byteLength(candidate, "utf8") > MAX_SNAPSHOT_UTF8_BYTES) break;
+      data = candidate;
+      includedScrollback = candidateScrollback;
+      nextScrollback *= 2;
+    }
+    return data;
+  }
+
+  /**
+   * Pathological current screens can exceed the cap even with zero scrollback. Retain the
+   * newest complete serialized rows after a terminal reset; if one wrapped row alone consumes
+   * the budget, send only the explicit omission marker rather than cutting UTF-8 or an ANSI
+   * control sequence and corrupting the viewer's subsequent live stream.
+   */
+  private truncateSerializedSnapshot(data: string): string {
+    const encoded = Buffer.from(data, "utf8");
+    const suffixBudget =
+      MAX_SNAPSHOT_UTF8_BYTES - Buffer.byteLength(TRUNCATED_SNAPSHOT_PREFIX, "utf8");
+    const firstEligibleByte = encoded.byteLength - suffixBudget;
+    const rowBoundary = encoded.indexOf(0x0a, firstEligibleByte);
+    if (rowBoundary === -1) return TRUNCATED_SNAPSHOT_PREFIX;
+    return TRUNCATED_SNAPSHOT_PREFIX + encoded.subarray(rowBoundary + 1).toString("utf8");
+  }
+
+  /**
    * Serializes the mirror at the current seq watermark. Because xterm parses writes
    * asynchronously, we FIRST capture `seq`, THEN drain the parser with a zero-length write
-   * whose callback fires only after every write for outputs ≤ `seq` is parsed. Writes for
-   * later outputs are enqueued after this marker and excluded, so the serialized data renders
-   * EXACTLY outputs `1..seq`. This preserves the contract's ordering guarantee (no output
-   * with seq > snapshot.seq leaks into the data) while also guaranteeing byte completeness (a
-   * naive synchronous serialize would omit un-parsed tail bytes yet still claim them in
-   * `seq`, which the server would then discard — a gap).
+   * whose callback fires only after every write for outputs ≤ `seq` is parsed. Serialization
+   * MUST happen synchronously inside that callback: xterm may continue parsing already-queued
+   * outputs before a promise continuation runs, which would leak seq > S bytes into
+   * snapshot(S). The bounded serializer may omit old scrollback, but it cannot observe a
+   * post-marker output.
    */
   snapshot(): Promise<PtySnapshot> {
     const seq = this.currentSeq;
-    const { promise, resolve } = Promise.withResolvers<void>();
-    this.mirror.write("", resolve);
-    return promise.then(() => ({ seq, data: this.serializer.serialize() }));
+    const { promise, resolve, reject } = Promise.withResolvers<PtySnapshot>();
+    // Avoid touching xterm at all when a request races with an already-completed exit.
+    if (this.disposed) {
+      reject(new PtyError(`snapshot abandoned for disposed session ${this.sessionId}`));
+      return promise;
+    }
+    this.mirror.write("", () => {
+      // dispose() can run while this marker waits behind xterm's asynchronous write queue.
+      // Serializing a disposed mirror both corrupts the claimed snapshot and makes xterm warn
+      // on stderr, so reject before invoking any addon API.
+      if (this.disposed) {
+        reject(new PtyError(`snapshot abandoned for disposed session ${this.sessionId}`));
+        return;
+      }
+      try {
+        resolve({ seq, data: this.serializeBoundedSnapshot() });
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return promise;
   }
 
   /** Releases PTY and mirror resources. Called by the owner after the session is dropped. */

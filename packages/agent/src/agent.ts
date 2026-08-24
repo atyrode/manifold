@@ -313,15 +313,22 @@ export class Agent {
   private async onSnapshotRequest(socket: WebSocket, sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return; // unknown/dead session: server handles the absence
-    const snapshot = await session.snapshot();
-    // Reply only if the requesting socket is still current (a snapshot for a superseded
-    // socket is moot — the server re-requests on the new connection).
-    if (this.socket === socket) {
-      // The mirror serialization is a UTF-16 string; the machine channel carries every `data`
-      // field as base64 (CONTRACTS.md), so encode its UTF-8 bytes for the wire.
-      const data = Buffer.from(snapshot.data, "utf8").toString("base64");
-      this.send(socket, { type: "snapshot", sessionId, seq: snapshot.seq, data });
-      this.log("info", "snapshot", { sessionId, seq: snapshot.seq });
+    try {
+      const snapshot = await session.snapshot();
+      // Reply only if the requesting socket is still current (a snapshot for a superseded
+      // socket is moot — the server re-requests on the new connection).
+      if (this.socket === socket) {
+        // The mirror serialization is a UTF-16 string; the machine channel carries every
+        // `data` field as base64 (CONTRACTS.md), so encode its UTF-8 bytes for the wire.
+        const data = Buffer.from(snapshot.data, "utf8").toString("base64");
+        this.send(socket, { type: "snapshot", sessionId, seq: snapshot.seq, data });
+        this.log("info", "snapshot", { sessionId, seq: snapshot.seq });
+      }
+    } catch {
+      // Exiting PTYs intentionally reject a marker still queued in xterm. This handler is
+      // void-dispatched, and Bun treats an unhandled rejection as fatal, so log the abandon
+      // and let the server's snapshot deadline + hello reconciliation resolve the dead session.
+      this.log("warn", "snapshot_abandoned", { sessionId });
     }
   }
 

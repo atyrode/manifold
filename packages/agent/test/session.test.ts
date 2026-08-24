@@ -1,5 +1,8 @@
 import { existsSync } from "node:fs";
 import { afterEach, expect, test } from "bun:test";
+import { AgentMessageSchema, MAX_SESSION_FRAME_BYTES } from "@manifold/protocol";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import {
   OutputRing,
   PtySession,
@@ -63,14 +66,38 @@ function harnessFor(opts: Omit<PtySessionOptions, "onOutput">): Harness {
 }
 
 /** Convenience: a harness whose PTY runs the pinned deterministic shell. */
-function spawn(opts: { cols?: number; rows?: number; ringCapBytes?: number }): Harness {
+function spawn(opts: {
+  cols?: number;
+  rows?: number;
+  ringCapBytes?: number;
+  env?: Record<string, string>;
+}): Harness {
   return harnessFor({
     sessionId: "test-session",
     cols: opts.cols ?? 80,
     rows: opts.rows ?? 24,
     command: SHELL_COMMAND,
     ...(opts.ringCapBytes !== undefined ? { ringCapBytes: opts.ringCapBytes } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
   });
+}
+
+/**
+ * Feeds the exact callback path Bun.Terminal uses, but synchronously. Real PTY delivery cannot
+ * deterministically queue BEFORE, the snapshot drain marker, and AFTER in one JavaScript turn;
+ * this seam makes that production ordering observable without changing PtySession's API.
+ */
+function injectPtyOutput(session: PtySession, data: string): void {
+  const target: unknown = session;
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !("ingest" in target) ||
+    typeof target.ingest !== "function"
+  ) {
+    throw new Error("PtySession ingest callback is unavailable");
+  }
+  target.ingest.call(target, new TextEncoder().encode(data));
 }
 
 afterEach(async () => {
@@ -97,6 +124,55 @@ test("echo round-trip yields strictly monotonic seq from 1", async () => {
   expect(seqs[0]).toBe(1);
 }, 12000);
 
+test("real PTY receives session env without inheriting machine credentials", async () => {
+  const machineToken = "test-machine-token-MUST-NOT-LEAK-7c70f857";
+  const machineServerUrl = "https://machine-control.invalid";
+  const machineName = "test-machine-secret-name";
+  const savedToken = process.env.MANIFOLD_MACHINE_TOKEN;
+  const savedServerUrl = process.env.MANIFOLD_SERVER_URL;
+  const savedMachineName = process.env.MANIFOLD_MACHINE_NAME;
+
+  process.env.MANIFOLD_MACHINE_TOKEN = machineToken;
+  process.env.MANIFOLD_SERVER_URL = machineServerUrl;
+  process.env.MANIFOLD_MACHINE_NAME = machineName;
+  try {
+    const h = spawn({
+      env: {
+        MANIFOLD_URL: "https://session.invalid",
+        MANIFOLD_PAD: "pad-test",
+        MANIFOLD_ELEMENT: "element-test",
+        MANIFOLD_TOKEN: "session-token-safe-for-child",
+      },
+    });
+    await h.waitUntil(() => h.outputs.length > 0);
+    // Split the completion marker in the echoed command so the wait resolves only after env
+    // has printed every child variable, not when the interactive shell echoes our input.
+    h.session.write('env; printf "\\nENV_DUMP_""DONE\\n"\n');
+    await h.waitUntil(() => h.text().includes("ENV_DUMP_DONE"));
+
+    const output = h.text();
+    // Compare booleans so a regression failure never dumps the process environment (and its
+    // unrelated ambient secrets) into test output.
+    expect(output.includes("MANIFOLD_URL=https://session.invalid")).toBe(true);
+    expect(output.includes("MANIFOLD_PAD=pad-test")).toBe(true);
+    expect(output.includes("MANIFOLD_ELEMENT=element-test")).toBe(true);
+    expect(output.includes("MANIFOLD_TOKEN=session-token-safe-for-child")).toBe(true);
+    expect(output.includes("MANIFOLD_MACHINE_TOKEN")).toBe(false);
+    expect(output.includes("MANIFOLD_SERVER_URL")).toBe(false);
+    expect(output.includes("MANIFOLD_MACHINE_NAME")).toBe(false);
+    expect(output.includes(machineToken)).toBe(false);
+    expect(output.includes(machineServerUrl)).toBe(false);
+    expect(output.includes(machineName)).toBe(false);
+  } finally {
+    if (savedToken === undefined) delete process.env.MANIFOLD_MACHINE_TOKEN;
+    else process.env.MANIFOLD_MACHINE_TOKEN = savedToken;
+    if (savedServerUrl === undefined) delete process.env.MANIFOLD_SERVER_URL;
+    else process.env.MANIFOLD_SERVER_URL = savedServerUrl;
+    if (savedMachineName === undefined) delete process.env.MANIFOLD_MACHINE_NAME;
+    else process.env.MANIFOLD_MACHINE_NAME = savedMachineName;
+  }
+}, 12000);
+
 test("snapshot seq equals the last emitted seq; later outputs exceed it", async () => {
   const h = spawn({});
   await h.waitUntil(() => h.outputs.length > 0);
@@ -118,6 +194,60 @@ test("snapshot seq equals the last emitted seq; later outputs exceed it", async 
   expect(laterOutputs.length).toBeGreaterThan(0);
   for (const output of laterOutputs) expect(output.seq).toBeGreaterThan(snapshot.seq);
 }, 12000);
+
+test("snapshot excludes output queued after its drain marker", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0);
+
+  injectPtyOutput(h.session, "\r\nSNAPSHOT_BEFORE\r\n");
+  const preAfterSeq = h.session.seq;
+  const pendingSnapshot = h.session.snapshot();
+  injectPtyOutput(h.session, "\r\nSNAPSHOT_AFTER\r\n");
+
+  const snapshot = await pendingSnapshot;
+  expect(snapshot.seq).toBe(preAfterSeq);
+  expect(snapshot.data).toContain("SNAPSHOT_BEFORE");
+  expect(snapshot.data).not.toContain("SNAPSHOT_AFTER");
+  expect(h.session.seq).toBeGreaterThan(snapshot.seq);
+}, 12000);
+
+test("huge scrollback snapshot stays within machine wire caps and restores", async () => {
+  const cols = 300;
+  const rows = 24;
+  const h = spawn({ cols, rows });
+  await h.waitUntil(() => h.outputs.length > 0);
+
+  // More than the mirror's 5000-line scrollback, with nearly every column occupied. An
+  // unbounded SerializeAddon snapshot is well above both the 700k base64 field limit and the
+  // 1 MiB machine frame cap.
+  const wideLine = `${"x".repeat(cols - 1)}\r\n`;
+  injectPtyOutput(h.session, `${wideLine.repeat(6000)}LATEST_SNAPSHOT_ROW\r\n`);
+  const snapshot = await h.session.snapshot();
+  const encoded = Buffer.from(snapshot.data, "utf8").toString("base64");
+  const message = {
+    type: "snapshot",
+    sessionId: h.session.sessionId,
+    seq: snapshot.seq,
+    data: encoded,
+  } as const;
+  const frame = JSON.stringify(message);
+
+  expect(AgentMessageSchema.safeParse(message).success).toBe(true);
+  expect(Buffer.byteLength(frame)).toBeLessThan(MAX_SESSION_FRAME_BYTES);
+  expect(Buffer.from(encoded, "base64").toString("utf8")).toBe(snapshot.data);
+  expect(snapshot.data.includes("LATEST_SNAPSHOT_ROW")).toBe(true);
+
+  // The bounded payload remains a valid xterm serialization, not a byte slice ending inside
+  // UTF-8. Restore it into a fresh mirror and prove it can be drained and serialized again.
+  const restored = new HeadlessTerminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+  const serializer = new SerializeAddon();
+  restored.loadAddon(serializer);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  restored.write(snapshot.data, resolve);
+  await promise;
+  expect(serializer.serialize({ scrollback: 1 }).length).toBeGreaterThan(0);
+  restored.dispose();
+}, 20000);
 
 test("ring buffer evicts oldest whole chunks under a tiny cap", async () => {
   const h = spawn({ ringCapBytes: 256 });
