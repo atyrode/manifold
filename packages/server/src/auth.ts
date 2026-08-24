@@ -169,14 +169,16 @@ export class AuthService {
       createdAt: this.runtime.now(),
       revokedAt: null,
     };
-    this.store.createToken(record);
-    this.store.addEvent(padId, this.runtime.now(), actorId, "token_minted", {
-      tokenId: record.id,
-      subjectPrincipalId: principalId,
-      caps: [...caps],
-      padId,
+    return this.store.transaction(() => {
+      this.store.createToken(record);
+      this.store.addEvent(padId, this.runtime.now(), actorId, "token_minted", {
+        tokenId: record.id,
+        subjectPrincipalId: principalId,
+        caps: [...caps],
+        padId,
+      });
+      return { raw, record };
     });
-    return { raw, record };
   }
 
   /** Bootstraps a principal with a root token; callers must already enforce root authority. */
@@ -254,16 +256,18 @@ export class AuthService {
   }
 
   private persistMachine(name: string, actorId: string): MachineEnrollment {
-    const machineId = this.runtime.newId();
-    const minted = this.persistToken(machineId, [], null, actorId);
-    const machine: MachineRecord = {
-      id: machineId,
-      name,
-      tokenId: minted.record.id,
-      lastSeen: this.runtime.now(),
-    };
-    this.store.createMachine(machine);
-    return { machine, machineToken: minted.raw };
+    return this.store.transaction(() => {
+      const machineId = this.runtime.newId();
+      const minted = this.persistToken(machineId, [], null, actorId);
+      const machine: MachineRecord = {
+        id: machineId,
+        name,
+        tokenId: minted.record.id,
+        lastSeen: this.runtime.now(),
+      };
+      this.store.createMachine(machine);
+      return { machine, machineToken: minted.raw };
+    });
   }
 
   /** Enrolls a machine only for an unscoped principal holding `machines:mint`. */
@@ -281,21 +285,30 @@ export class AuthService {
 
   /** Rotates an existing machine's unavailable raw secret for local-agent recovery. */
   rotateMachineToken(machine: MachineRecord): MachineEnrollment {
-    const at = this.runtime.now();
-    if (this.store.revokeToken(machine.tokenId, at)) {
-      this.store.addEvent(null, at, this.ownerPrincipal.id, "token_revoked", {
-        subjectPrincipalId: machine.id,
-        count: 1,
-      });
+    const result = this.store.transaction(() => {
+      const at = this.runtime.now();
+      const revoked = this.store.revokeToken(machine.tokenId, at);
+      if (revoked) {
+        this.store.addEvent(null, at, this.ownerPrincipal.id, "token_revoked", {
+          subjectPrincipalId: machine.id,
+          count: 1,
+        });
+      }
+      const minted = this.persistToken(machine.id, [], null, this.ownerPrincipal.id);
+      const lastSeen = this.runtime.now();
+      this.store.updateMachineToken(machine.id, minted.record.id, lastSeen);
+      return {
+        enrollment: {
+          machine: { ...machine, tokenId: minted.record.id, lastSeen },
+          machineToken: minted.raw,
+        },
+        revoked,
+      };
+    });
+    if (result.revoked) {
       for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
-    const minted = this.persistToken(machine.id, [], null, this.ownerPrincipal.id);
-    const lastSeen = this.runtime.now();
-    this.store.updateMachineToken(machine.id, minted.record.id, lastSeen);
-    return {
-      machine: { ...machine, tokenId: minted.record.id, lastSeen },
-      machineToken: minted.raw,
-    };
+    return result.enrollment;
   }
 
   /** Revokes a server-issued short-lived identity after a failed terminal create. */

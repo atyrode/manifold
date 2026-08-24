@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Pad } from "@manifold/protocol";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { sha256Hex } from "../src/stores.ts";
+import type { ServerStore } from "../src/stores.ts";
 import { FakeRuntime, testStore } from "./helpers.ts";
 
 interface TokenDumpRow {
@@ -12,6 +13,14 @@ interface TokenDumpRow {
   pad_id: string | null;
   created_at: number;
   revoked_at: number | null;
+}
+
+interface CountRow {
+  count: number;
+}
+
+function tableCount(store: ServerStore, table: "events" | "tokens"): number {
+  return store.db.query<CountRow, []>(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count;
 }
 
 function authFixture() {
@@ -106,6 +115,74 @@ describe("AuthService attenuation", () => {
     const enrolled = fixture.auth.enrollMachine("allowed", machineMinter);
     expect(enrolled.machine.name).toBe("allowed");
     expect(enrolled.machineToken).not.toBe("");
+    fixture.store.close();
+  });
+});
+
+describe("AuthService transaction boundaries", () => {
+  test("persistToken rolls back its token when audit event insertion fails", () => {
+    const fixture = authFixture();
+    const tokensBefore = tableCount(fixture.store, "tokens");
+    const eventsBefore = tableCount(fixture.store, "events");
+    fixture.store.db.exec(`
+      CREATE TEMP TRIGGER fail_token_event BEFORE INSERT ON events
+      WHEN NEW.type = 'token_minted'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected event conflict');
+      END;
+    `);
+
+    expect(() =>
+      fixture.auth.mintToken(
+        { principalId: fixture.root.principal.id, caps: ["pads:read"] },
+        fixture.root,
+      ),
+    ).toThrow("injected event conflict");
+    expect(tableCount(fixture.store, "tokens")).toBe(tokensBefore);
+    expect(tableCount(fixture.store, "events")).toBe(eventsBefore);
+    fixture.store.close();
+  });
+
+  test("persistMachine rolls back its token and event when machine insertion fails", () => {
+    const fixture = authFixture();
+    const tokensBefore = tableCount(fixture.store, "tokens");
+    const eventsBefore = tableCount(fixture.store, "events");
+    fixture.store.db.exec(`
+      CREATE TEMP TRIGGER fail_machine_insert BEFORE INSERT ON machines
+      BEGIN
+        SELECT RAISE(ABORT, 'injected machine conflict');
+      END;
+    `);
+
+    expect(() => fixture.auth.enrollLocalMachine("conflicting")).toThrow(
+      "injected machine conflict",
+    );
+    expect(tableCount(fixture.store, "tokens")).toBe(tokensBefore);
+    expect(tableCount(fixture.store, "events")).toBe(eventsBefore);
+    fixture.store.close();
+  });
+
+  test("rotateMachineToken rolls back revocation and mint when machine update fails", () => {
+    const fixture = authFixture();
+    const enrollment = fixture.auth.enrollLocalMachine("rotating");
+    const tokensBefore = tableCount(fixture.store, "tokens");
+    const eventsBefore = tableCount(fixture.store, "events");
+    fixture.store.db.exec(`
+      CREATE TEMP TRIGGER fail_machine_update BEFORE UPDATE ON machines
+      BEGIN
+        SELECT RAISE(ABORT, 'injected machine conflict');
+      END;
+    `);
+
+    expect(() => fixture.auth.rotateMachineToken(enrollment.machine)).toThrow(
+      "injected machine conflict",
+    );
+    expect(tableCount(fixture.store, "tokens")).toBe(tokensBefore);
+    expect(tableCount(fixture.store, "events")).toBe(eventsBefore);
+    expect(fixture.store.getToken(enrollment.machine.tokenId)?.revokedAt).toBeNull();
+    expect(fixture.store.getMachine(enrollment.machine.id)?.tokenId).toBe(
+      enrollment.machine.tokenId,
+    );
     fixture.store.close();
   });
 });

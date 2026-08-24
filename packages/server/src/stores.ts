@@ -11,6 +11,11 @@ import {
   type SceneElement,
 } from "@manifold/protocol";
 
+export const EVENTS_RETENTION_DAYS = 30;
+export const EVENTS_MAX_PER_PAD = 10_000;
+
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
+
 interface PadRow {
   id: string;
   name: string;
@@ -187,10 +192,19 @@ function toSession(row: SessionDbRow): StoredSession {
 
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
-  constructor(readonly db: Database) {}
+  constructor(readonly db: Database) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS events_by_timestamp ON events(ts);
+      CREATE INDEX IF NOT EXISTS events_by_pad_recency ON events(pad_id, ts DESC, id DESC);
+    `);
+  }
 
   close(): void {
     this.db.close();
+  }
+
+  transaction<T>(operation: () => T): T {
+    return this.db.transaction(operation)();
   }
 
   getMeta(key: string): string | null {
@@ -430,11 +444,31 @@ export class ServerStore {
     type: string,
     payload: Readonly<Record<string, unknown>>,
   ): void {
-    this.db
-      .query<void, [string | null, number, string | null, string, string]>(
-        "INSERT INTO events(pad_id, ts, principal_id, type, payload) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(padId, ts, principalId, type, JSON.stringify(payload));
+    this.transaction(() => {
+      this.db
+        .query<void, [string | null, number, string | null, string, string]>(
+          "INSERT INTO events(pad_id, ts, principal_id, type, payload) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(padId, ts, principalId, type, JSON.stringify(payload));
+      this.db
+        .query<void, [number]>("DELETE FROM events WHERE ts < ?")
+        .run(ts - EVENTS_RETENTION_DAYS * MILLISECONDS_PER_DAY);
+      if (padId === null) return;
+
+      const count = this.db
+        .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM events WHERE pad_id = ?")
+        .get(padId)!.count;
+      if (count <= EVENTS_MAX_PER_PAD) return;
+      this.db
+        .query<void, [string, number]>(
+          `DELETE FROM events
+           WHERE id IN (
+             SELECT id FROM events WHERE pad_id = ?
+             ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
+           )`,
+        )
+        .run(padId, EVENTS_MAX_PER_PAD);
+    });
   }
 
   createMachine(machine: MachineRecord): void {
