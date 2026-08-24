@@ -57,3 +57,31 @@ export type TokenGrant = z.infer<typeof TokenGrantSchema>;
 export const RevokeRequestSchema = z.strictObject({
   principalId: z.string().min(1),
 });
+
+// ---------------------------------------------------------------------------- responses
+
+/** Exact response envelopes; servers MUST return these shapes, clients parse with them. */
+export const HealthResponseSchema = z.strictObject({
+  ok: z.literal(true),
+  version: z.string(),
+  protocolVersion: z.number().int().positive(),
+});
+
+export const OkResponseSchema = z.strictObject({ ok: z.literal(true) });
+
+export const PadResponseSchema = z.strictObject({ pad: PadSchema });
+export const PadsResponseSchema = z.strictObject({ pads: z.array(PadSchema) });
+
+export const MachineSummarySchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  online: z.boolean(),
+});
+export const MachinesResponseSchema = z.strictObject({
+  machines: z.array(MachineSummarySchema),
+});
+export const MachineEnrollResponseSchema = z.strictObject({
+  machine: z.strictObject({ id: z.string().min(1), name: z.string().min(1) }),
+  /** Raw token — returned exactly once at enrollment; the DB keeps only its hash. */
+  machineToken: z.string().min(1),
+});

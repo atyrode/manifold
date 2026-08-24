@@ -59,3 +59,12 @@ export {
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { buildProtocolJsonSchema } from "./jsonschema.ts";
+export {
+  HealthResponseSchema,
+  MachineEnrollResponseSchema,
+  MachineSummarySchema,
+  MachinesResponseSchema,
+  OkResponseSchema,
+  PadResponseSchema,
+  PadsResponseSchema,
+} from "./http.ts";
