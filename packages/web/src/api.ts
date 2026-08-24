@@ -1,0 +1,98 @@
+import {
+  BootstrapPrincipalRequestSchema,
+  CreatePadRequestSchema,
+  HttpErrorSchema,
+  PadSchema,
+  TokenGrantSchema,
+  type Pad,
+  type Principal,
+} from "@manifold/protocol";
+
+/** The browser persists only the bearer token and stable identity it needs after bootstrap. */
+export interface StoredIdentity {
+  readonly token: string;
+  readonly principal: Principal;
+}
+
+async function readBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`Server returned a non-JSON response (${response.status})`);
+  }
+}
+
+function errorFromBody(status: number, body: unknown): Error {
+  const parsed = HttpErrorSchema.safeParse(body);
+  if (parsed.success) return new Error(parsed.data.error.message);
+  return new Error(`Request failed (${status})`);
+}
+
+async function requestJson(path: string, init: RequestInit): Promise<unknown> {
+  const response = await fetch(path, init);
+  const body = await readBody(response);
+  if (!response.ok) throw errorFromBody(response.status, body);
+  return body;
+}
+
+function fieldFromObject(body: unknown, field: string): unknown {
+  if (body === null || typeof body !== "object") {
+    throw new Error("Server returned an invalid response");
+  }
+  return Reflect.get(body, field);
+}
+
+function authHeaders(token: string, includeJson: boolean): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    ...(includeJson ? { "Content-Type": "application/json" } : {}),
+  };
+}
+
+/** Exchanges the fragment-delivered owner key for a durable human token. */
+export async function createPrincipal(
+  ownerKey: string,
+  input: { readonly name: string; readonly color: string },
+): Promise<StoredIdentity> {
+  const request = BootstrapPrincipalRequestSchema.parse({
+    name: input.name,
+    color: input.color,
+    kind: "human",
+  });
+  const body = await requestJson("/api/principals", {
+    method: "POST",
+    headers: authHeaders(ownerKey, true),
+    body: JSON.stringify(request),
+  });
+  const grant = TokenGrantSchema.parse(body);
+  return { token: grant.token, principal: grant.principal };
+}
+
+/** Loads every pad visible to the current principal. */
+export async function listPads(token: string): Promise<Pad[]> {
+  const body = await requestJson("/api/pads", {
+    headers: authHeaders(token, false),
+  });
+  const pads = fieldFromObject(body, "pads");
+  if (!Array.isArray(pads)) throw new Error("Server returned an invalid pad list");
+  return pads.map((pad) => PadSchema.parse(pad));
+}
+
+/** Loads a pad so direct `/p/:padId` navigation still has its display name. */
+export async function getPad(token: string, padId: string): Promise<Pad> {
+  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
+    headers: authHeaders(token, false),
+  });
+  return PadSchema.parse(fieldFromObject(body, "pad"));
+}
+
+/** Creates a pad through the protocol-owned request schema. */
+export async function createPad(token: string, name: string): Promise<Pad> {
+  const request = CreatePadRequestSchema.parse({ name });
+  const body = await requestJson("/api/pads", {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return PadSchema.parse(fieldFromObject(body, "pad"));
+}
