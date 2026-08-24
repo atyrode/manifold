@@ -456,6 +456,32 @@ try {
         await sleep(15);
       }
       await sleep(250);
+      // Wheel-pan leg: no pointer motion at all — pre-fix, ZERO cursor frames are
+      // emitted here (Excalidraw's wheel handler never calls savePointer), so the
+      // remote cursor froze and jumped on the next move. Post-fix the onScrollChange
+      // re-anchor emits frames that keep the cursor under the physical pointer.
+      const wheelStartRawIndex = rawCursorLog.length;
+      const vpBeforeWheel = await browserA.evaluate<{
+        scrollX: number;
+        scrollY: number;
+        zoom: number;
+      }>("window.__manifold.viewport()");
+      for (let i = 0; i < 8; i++) {
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseWheel",
+          x: 440,
+          y: 280,
+          deltaX: 0,
+          deltaY: 40,
+        });
+        await sleep(60);
+      }
+      await sleep(300);
+      const vpAfterWheel = await browserA.evaluate<{
+        scrollX: number;
+        scrollY: number;
+        zoom: number;
+      }>("window.__manifold.viewport()");
 
       const scrollAfter = await browserA.evaluate<number>("window.__manifold.viewport().scrollX");
       const failuresHere: string[] = [];
@@ -504,11 +530,37 @@ try {
             break;
           }
         }
-        const last = cursorLog[cursorLog.length - 1];
+        // Post-pan window ends where the wheel leg begins — separate windows so wheel
+        // motion is never attributed to the post-pan move.
+        const wheelStartIndex = countBefore(wheelStartRawIndex);
+        const postPanLast = cursorLog[wheelStartIndex - 1];
         const preMove = cursorLog[panEndIndex - 1] ?? grab;
-        if (last !== undefined && Math.abs(last.x - preMove.x - 100) > 30) {
+        if (postPanLast !== undefined && Math.abs(postPanLast.x - preMove.x - 100) > 30) {
           failuresHere.push(
-            `post-pan move landed ${(last.x - preMove.x).toFixed(0)}px, expected ~100px`,
+            `post-pan move landed ${(postPanLast.x - preMove.x).toFixed(0)}px, expected ~100px`,
+          );
+        }
+        // Wheel leg: camera must actually have moved, re-anchor frames must exist with
+        // no pointer motion, and the cursor must track the MEASURED camera delta
+        // (scene delta = -scroll delta at constant zoom).
+        const dScrollY = vpAfterWheel.scrollY - vpBeforeWheel.scrollY;
+        const wheelSamples = cursorLog.slice(wheelStartIndex);
+        const wheelLast = wheelSamples[wheelSamples.length - 1];
+        if (Math.abs(dScrollY) < 100 || Math.abs(vpAfterWheel.zoom - vpBeforeWheel.zoom) > 0.001) {
+          failuresHere.push(
+            `wheel leg did not scroll as expected (dScrollY=${dScrollY.toFixed(0)})`,
+          );
+        } else if (
+          wheelSamples.length < 2 ||
+          wheelLast === undefined ||
+          postPanLast === undefined
+        ) {
+          failuresHere.push(
+            `no cursor re-anchor frames during wheel pan (${String(wheelSamples.length)} samples) — frozen-cursor regression`,
+          );
+        } else if (Math.abs(wheelLast.y - postPanLast.y - -dScrollY) > 60) {
+          failuresHere.push(
+            `wheel-pan cursor did not track the camera: moved ${(wheelLast.y - postPanLast.y).toFixed(0)}px, camera implies ${(-dScrollY).toFixed(0)}px`,
           );
         }
       }
