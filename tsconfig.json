@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/protocol" },
+    { "path": "packages/sdk" },
+    { "path": "packages/server" },
+    { "path": "packages/agent" },
+    { "path": "packages/testkit" },
+    { "path": "packages/web" }
+  ]
+}

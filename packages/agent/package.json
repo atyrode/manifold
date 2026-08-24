@@ -1,0 +1,17 @@
+{
+  "name": "@manifold/agent",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@manifold/protocol": "workspace:*",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2"
+  }
+}

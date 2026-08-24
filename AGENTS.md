@@ -1,0 +1,67 @@
+# manifold — agent operating contract
+
+manifold is an agent-native shared spatial workspace: an infinite canvas (Excalidraw) with
+terminals in it, multiplayer with first-class presence, where AI agents are principals just
+like humans. This repo is built BY agents as much as FOR them — you are expected to operate
+it end to end.
+
+## Commands (the only gates that matter)
+
+```
+bun install            # workspace install (bun >= 1.3.13)
+bun run check          # tsc -b strict typecheck, all packages
+bun test packages      # unit tests (zero external services)
+bun run e2e            # spawns real server+agent processes, tests via the SDK
+bun run lint           # eslint
+bun run format         # prettier
+bun run gate           # all of the above; must be green before any push
+bun run dev:server     # server on :7777 (auto-spawns local machine agent)
+bun run dev:web        # vite on :5173, proxying to :7777
+```
+
+## Map
+
+| Package             | Role                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `packages/protocol` | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message. |
+| `packages/sdk`      | THE typed client (session + machine channels). Web, tests, tools all use it.                                             |
+| `packages/server`   | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                 |
+| `packages/agent`    | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                    |
+| `packages/web`      | Vite + React 19 + Excalidraw canvas + xterm terminals + presence UI.                                                     |
+| `packages/testkit`  | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                          |
+
+`docs/CONTRACTS.md` is the integration authority (endpoints, envs, state machines,
+persistence). `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records dated
+technology verdicts with evidence.
+
+## Invariants (violations are bugs, not style)
+
+1. **Clean room**: never copy code/schemas/CSS/config from pad.ws (the predecessor repo).
+   Concepts are documented in docs/PLAN.md; re-derive everything else.
+2. **Protocol first**: to change a message, edit `packages/protocol`, run `bun run check`,
+   and fix every consumer in the same change. No wire types outside protocol.
+3. **One WS client**: no second WebSocket state machine; extend `@manifold/sdk`.
+4. **Terminal attach no-gap invariant** (CONTRACTS.md §attach): viewer stream ≡
+   snapshot(S) + outputs(S+1…). Guarded by e2e; do not weaken the test.
+5. **Never persist**: presence, cursor traffic, terminal bytes. **Always persist**: scene
+   snapshots, principals/tokens (hashed), session lifecycle events.
+6. **Secrets discipline**: owner key and tokens never appear in logs, URLs (fragment `#key=`
+   is the one allowed carrier), errors, or committed files.
+7. **Determinism**: unit tests need no network, no real PTYs (except agent PTY tests, which
+   may spawn real shells — this machine supports them), no fixed ports.
+8. **No new runtime dependencies** without a dated entry in `docs/decisions/` justifying
+   against "boring, small, pinned".
+
+## Conventions
+
+- TypeScript strict; no `any` (use `unknown` + narrowing); exhaustive `switch` over
+  discriminated unions with `never` guards.
+- Named exports only in source packages; tool config files whose loaders require a default
+  export (`vite.config.ts`, `eslint.config.js`) are exempt. `import type` for types. No
+  cross-package deep imports.
+- React: function components + hooks; server/socket state lives in stores, not components;
+  effects are for synchronization only, never derived state.
+- Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
+  boundary. Never swallow; log with `evt` names.
+- Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
+  `sdk:`, `e2e:`, `docs:` prefixes). Push only after `bun run gate` is green.

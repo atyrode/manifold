@@ -1,0 +1,15 @@
+{
+  "name": "@manifold/server",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@manifold/protocol": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2"
+  }
+}
