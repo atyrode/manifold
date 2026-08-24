@@ -33,14 +33,23 @@ function stampOf(element: CanvasSceneStamp): SceneElement {
 /**
  * Merges the canonical scene into the LIVE canvas instead of replacing it.
  *
- * Replacing wholesale was the multiplayer-killing bug: the canvas is always ahead of the
- * canonical scene while a gesture is in flight (sends are throttled), so painting
- * `client.scene` verbatim reverted every stroke/drag to the last flushed partial — and the
- * caller's bookkeeping then discarded the newer local state so it was never sent at all.
+ * Two hazards shaped this module, both shipped as production bugs:
+ *
+ * 1. REPLACING the canvas wholesale reverted in-flight gestures: the canvas is legitimately
+ *    ahead of the canonical scene while sends are throttled, so painting `client.scene`
+ *    verbatim rolled every stroke/drag back to the last flushed partial — and the caller's
+ *    bookkeeping then discarded the newer local state so it was never sent at all.
+ *
+ * 2. ALIASING: handing Excalidraw the canonical map's OWN objects lets it mutate them in
+ *    place on the next drag (`version++`), silently advancing the SDK mirror — after which
+ *    reconcile treats the user's edit as an idempotent duplicate and never sends it (same
+ *    rev on every device, visibly different scenes). Every winner is therefore CLONED at
+ *    this boundary; no canonical object may ever reach the canvas.
  *
  * Rules (same LWW as protocol reconcile, by construction — `shouldAccept` decides):
  * - a canonical record is applied only if it beats the live element's version/nonce;
- * - live elements the canonical scene has never seen (unflushed local edits) survive;
+ * - live elements the canonical scene has never seen (unflushed local edits) survive BY
+ *   REFERENCE — identity is part of the contract (Excalidraw re-render stability);
  * - returns null when nothing canonical wins, so callers can skip painting entirely —
  *   which makes the echo of our own optimistic updates a strict no-op mid-gesture.
  */
@@ -56,8 +65,10 @@ export function mergeCanonicalScene<T extends CanvasSceneStamp>(
   for (const incoming of canonical.values()) {
     const live = liveById.get(incoming.id);
     if (shouldAccept(live === undefined ? undefined : stampOf(live), incoming)) {
-      winners.push(incoming);
-      winnerById.set(incoming.id, incoming);
+      // Clone at the trust boundary: Excalidraw mutates painted objects in place.
+      const winner: SceneElement = { ...incoming };
+      winners.push(winner);
+      winnerById.set(winner.id, winner);
     }
   }
   if (winners.length === 0) return null;

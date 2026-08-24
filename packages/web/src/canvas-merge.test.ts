@@ -60,8 +60,26 @@ describe("mergeCanonicalScene", () => {
     const mine = live("mine", 6, 42, "a1");
     const result = mergeCanonicalScene([mine], scene(remote));
     expect(result?.winners).toEqual([remote]);
-    // Local element survives with object identity intact; output is in canonical order.
     expect(result?.elements).toEqual([mine, remote]);
+    // Live keeper survives BY REFERENCE (Excalidraw re-render stability)...
+    expect(result?.elements[0]).toBe(mine);
+  });
+
+  test("never leaks canonical objects to the canvas — winners are clones", () => {
+    // Aliasing regression: Excalidraw mutates painted objects in place (version++ on
+    // drag). If a canonical map object reaches the canvas, the SDK mirror advances with
+    // it and reconcile drops the user's next edit as an idempotent duplicate — the move
+    // is never sent. Winners must be structurally equal but never reference-equal.
+    const remote = canonical("shared", 4, 7, "a0");
+    const canonicalScene = scene(remote);
+    const result = mergeCanonicalScene([live("shared", 3, 7, "a0")], canonicalScene);
+    expect(result?.elements[0]).toEqual(remote);
+    expect(result?.elements[0]).not.toBe(remote);
+    expect(result?.winners[0]).not.toBe(remote);
+    // Mutating the painted object must not touch the canonical record.
+    const painted = result?.elements[0] as { version: number };
+    painted.version = 99;
+    expect(remote.version).toBe(4);
   });
 
   test("equal version resolves by lower nonce, matching protocol reconcile", () => {

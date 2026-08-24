@@ -290,6 +290,9 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     let canvasElements: readonly OrderedExcalidrawElement[];
     if (replaceAll) {
       // Epoch adoption (init/resync): canonical is the whole truth; stale lineage must go.
+      // Clone every record at the paint boundary — Excalidraw mutates painted objects in
+      // place on later gestures, and aliasing client.scene made those edits invisible to
+      // reconcile (idempotent duplicates), silently never sent.
       const sorted = [...client.scene.values()].sort(compareElements);
       for (const element of sorted) {
         versionPairsRef.current.set(element.id, {
@@ -298,7 +301,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         });
         pendingElementsRef.current.delete(element.id);
       }
-      canvasElements = sorted as unknown as readonly OrderedExcalidrawElement[];
+      const cloned = sorted.map((element) => ({ ...element }));
+      canvasElements = cloned as unknown as readonly OrderedExcalidrawElement[];
     } else {
       // Steady state: MERGE canonical into the live canvas. The canvas is legitimately
       // ahead of client.scene while a gesture is in flight (sends are throttled), so a
