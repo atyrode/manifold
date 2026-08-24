@@ -1,4 +1,4 @@
-import { compareElements, shouldAccept, type SceneElement } from "@manifold/protocol";
+import { compareElements, reconcile, type SceneElement } from "@manifold/protocol";
 
 /**
  * The version stamp a live Excalidraw element must expose for last-writer-wins merging.
@@ -58,20 +58,20 @@ export function mergeCanonicalScene<T extends CanvasSceneStamp>(
   canonical: ReadonlyMap<string, SceneElement>,
 ): CanvasMerge<T> | null {
   const liveById = new Map<string, T>();
-  for (const element of canvas) liveById.set(element.id, element);
-
-  const winners: SceneElement[] = [];
-  const winnerById = new Map<string, SceneElement>();
-  for (const incoming of canonical.values()) {
-    const live = liveById.get(incoming.id);
-    if (shouldAccept(live === undefined ? undefined : stampOf(live), incoming)) {
-      // Clone at the trust boundary: Excalidraw mutates painted objects in place.
-      const winner: SceneElement = { ...incoming };
-      winners.push(winner);
-      winnerById.set(winner.id, winner);
-    }
+  const liveStamps = new Map<string, SceneElement>();
+  for (const element of canvas) {
+    liveById.set(element.id, element);
+    liveStamps.set(element.id, stampOf(element));
   }
-  if (winners.length === 0) return null;
+
+  // Acceptance IS protocol reconcile — one LWW code path across server, SDK, and canvas.
+  const { accepted } = reconcile(liveStamps, [...canonical.values()]);
+  if (accepted.length === 0) return null;
+
+  // Clone at the trust boundary: Excalidraw mutates painted objects in place.
+  const winners: SceneElement[] = accepted.map((winner) => ({ ...winner }));
+  const winnerById = new Map<string, SceneElement>();
+  for (const winner of winners) winnerById.set(winner.id, winner);
 
   const merged: (T | SceneElement)[] = canvas.map(
     (element) => winnerById.get(element.id) ?? element,
@@ -79,6 +79,8 @@ export function mergeCanonicalScene<T extends CanvasSceneStamp>(
   for (const winner of winners) {
     if (!liveById.has(winner.id)) merged.push(winner);
   }
-  merged.sort((a, b) => compareElements(stampOf(a), stampOf(b)));
-  return { elements: merged, winners };
+  // Decorate-sort-undecorate: one stamp per element, not two allocations per comparison.
+  const decorated = merged.map((element) => ({ element, stamp: stampOf(element) }));
+  decorated.sort((a, b) => compareElements(a.stamp, b.stamp));
+  return { elements: decorated.map((entry) => entry.element), winners };
 }
