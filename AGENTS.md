@@ -14,12 +14,17 @@ bun test packages      # unit tests (zero external services)
 bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint
 bun run format         # prettier
-bun run gate           # all of the above; must be green before any push
+bun run gate           # all of the above + verify:convergence; green before any push
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
 bun run dev:web        # vite on :5173, proxying to :7777
 
-bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (canvas +
-                       # embedded terminal), public WebSockets, two viewers on one
+bun run verify:convergence              # TWO real browsers, real pointer gestures, local
+                       # throwaway server: asserts canvasA = sdkA = canonical = sdkB =
+                       # canvasB (stamps AND geometry) with per-round effect assertions.
+                       # The Excalidraw<->SDK projection layer shipped two divergence
+                       # bugs no SDK-level test could see; this is the gate that sees.
+bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (draw + canvas
+                       # + embedded terminal), public WebSockets, two viewers on one
                        # session, session survival after all viewers leave, anonymous
                        # denial. Localhost green is NOT evidence a public deployment
                        # works — run this before claiming one does.
@@ -59,6 +64,10 @@ technology verdicts with evidence.
    may spawn real shells — this machine supports them), no fixed ports.
 8. **No new runtime dependencies** without a dated entry in `docs/decisions/` justifying
    against "boring, small, pinned".
+9. **Projection ownership**: never hand Excalidraw an object owned by `client.scene` —
+   it mutates painted elements in place and desynchronizes reconcile. Clone at the paint
+   boundary (CONTRACTS.md §Testability). User-visible interaction boundaries get tests AT
+   that boundary: wire-level green is not evidence the UI layer works.
 
 ## Conventions
 
