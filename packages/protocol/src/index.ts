@@ -36,8 +36,10 @@ export {
   type SessionInfo,
 } from "./session.ts";
 export {
+  AGENT_MESSAGE_TYPES,
   AdvertisedSessionSchema,
   AgentMessageSchema,
+  SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
   type AdvertisedSession,
   type AgentMessage,

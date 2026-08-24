@@ -81,3 +81,40 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("ping") }),
 ]);
 export type ServerToAgentMessage = z.infer<typeof ServerToAgentMessageSchema>;
+
+// ---------------------------------------------------------------------------- type inventories
+
+/**
+ * Literal inventories mirroring session.ts: frame classifiers use these so unknown types
+ * are forward-compat ignored while malformed KNOWN types are protocol errors. Compile-time
+ * exhaustive in both directions (satisfies blocks extras, Exclude blocks omissions).
+ */
+export const AGENT_MESSAGE_TYPES = [
+  "hello",
+  "created",
+  "create_error",
+  "output",
+  "snapshot",
+  "exited",
+  "pong",
+] as const satisfies readonly AgentMessage["type"][];
+
+export const SERVER_TO_AGENT_MESSAGE_TYPES = [
+  "welcome",
+  "create",
+  "input",
+  "resize",
+  "kill",
+  "snapshot_request",
+  "ping",
+] as const satisfies readonly ServerToAgentMessage["type"][];
+
+type MissingAgentType = Exclude<AgentMessage["type"], (typeof AGENT_MESSAGE_TYPES)[number]>;
+type MissingServerToAgentType = Exclude<
+  ServerToAgentMessage["type"],
+  (typeof SERVER_TO_AGENT_MESSAGE_TYPES)[number]
+>;
+const agentInventoryComplete: MissingAgentType extends never ? true : never = true;
+const serverToAgentInventoryComplete: MissingServerToAgentType extends never ? true : never = true;
+void agentInventoryComplete;
+void serverToAgentInventoryComplete;
