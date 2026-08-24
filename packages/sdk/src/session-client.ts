@@ -60,7 +60,7 @@ type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, {
 
 export interface SceneUpdateRejection {
   readonly element: SceneElement;
-  readonly reason: "element_too_large" | "element_not_serializable";
+  readonly reason: "element_too_large" | "element_not_serializable" | "server_rejected";
   readonly serializedBytes: number | null;
   readonly limitBytes: number;
 }
@@ -73,7 +73,7 @@ export interface SessionEvents {
   scene_reset: () => void;
   /** Scene changed incrementally (accepted records applied). */
   scene_changed: (elements: readonly SceneElement[], by: string) => void;
-  /** Local records refused before optimistic apply because they cannot form a safe frame. */
+  /** Local records refused before apply or rejected by the server after optimistic apply. */
   scene_rejected: (rejections: readonly SceneUpdateRejection[]) => void;
   roster_changed: () => void;
   sessions_changed: () => void;
@@ -137,6 +137,10 @@ function serializedElementByteLength(element: SceneElement): number | null {
   }
   return bytes;
 }
+interface InflightSceneElement {
+  readonly element: SceneElement;
+  readonly stamp: string;
+}
 
 export class SessionClient {
   /** Local scene truth: canonical after init, optimistic between acks. */
@@ -156,6 +160,8 @@ export class SessionClient {
   private attempts = 0;
   private closedIntentionally = false;
   private updateCounter = 0;
+  private readonly inflightUpdates = new Map<string, readonly InflightSceneElement[]>();
+  private readonly rejectedSceneStamps = new Set<string>();
   private reconnectTimer: Timer | null = null;
   private keepaliveTimer: Timer | null = null;
   private closeError: Error | null = null;
@@ -243,6 +249,8 @@ export class SessionClient {
   close(): void {
     this.closedIntentionally = true;
     this.closeError = null;
+    this.inflightUpdates.clear();
+    this.rejectedSceneStamps.clear();
     this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -260,6 +268,7 @@ export class SessionClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.inflightUpdates.clear();
 
     // Fence every callback from the prior socket before asking it to close. Native close
     // events may arrive after the replacement has already opened.
@@ -307,6 +316,7 @@ export class SessionClient {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
       this.stopKeepalive();
+      this.inflightUpdates.clear();
 
       // 44xx codes are permanent session rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
@@ -355,7 +365,16 @@ export class SessionClient {
         // First epoch adoption and same-epoch reconnects rebase optimistic edits. Only a
         // lineage change fences local records from being re-stamped into the new epoch.
         const rebaseEligible = this.epoch === "" || this.epoch === msg.epoch;
-        const localBefore = rebaseEligible ? [...this.scene.values()] : [];
+        if (this.epoch !== msg.epoch) this.inflightUpdates.clear();
+        const localBefore = rebaseEligible
+          ? [...this.scene.values()].filter(
+              (element) =>
+                !this.rejectedSceneStamps.has(
+                  JSON.stringify([element.id, element.version, element.versionNonce]),
+                ),
+            )
+          : [];
+        this.rejectedSceneStamps.clear();
         this.scene.clear();
         for (const el of msg.elements) this.scene.set(el.id, el);
         this.epoch = msg.epoch;
@@ -391,6 +410,7 @@ export class SessionClient {
         break;
       }
       case "scene_ack": {
+        this.inflightUpdates.delete(msg.updateId);
         this.rev = Math.max(this.rev, msg.rev);
         this.emit(msg.type, msg);
         break;
@@ -440,7 +460,28 @@ export class SessionClient {
         break;
       }
       case "error": {
-        if (msg.code === "epoch_mismatch") this.send({ type: "resync_request" });
+        let resyncRequested = false;
+        if (msg.ref !== undefined) {
+          const rejected = this.inflightUpdates.get(msg.ref);
+          if (rejected !== undefined) {
+            this.inflightUpdates.delete(msg.ref);
+            for (const { stamp } of rejected) this.rejectedSceneStamps.add(stamp);
+            this.send({ type: "resync_request" });
+            resyncRequested = true;
+            this.emit(
+              "scene_rejected",
+              rejected.map(({ element }) => ({
+                element,
+                reason: "server_rejected",
+                serializedBytes: null,
+                limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
+              })),
+            );
+          }
+        }
+        if (msg.code === "epoch_mismatch" && !resyncRequested) {
+          this.send({ type: "resync_request" });
+        }
         this.emit(msg.type, msg);
         break;
       }
@@ -553,6 +594,13 @@ export class SessionClient {
         baseRev: this.rev,
         elements: acceptedChunk,
       });
+      this.inflightUpdates.set(
+        updateId,
+        acceptedChunk.map((element) => ({
+          element,
+          stamp: JSON.stringify([element.id, element.version, element.versionNonce]),
+        })),
+      );
       applyAccepted(this.scene, acceptedChunk);
       this.emit("scene_changed", acceptedChunk, this.self?.id ?? "local");
       updateIds.push(updateId);

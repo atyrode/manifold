@@ -391,6 +391,55 @@ describe("scene flow", () => {
     expect(resent.every((frame) => frame.elements[0]?.id === "mine")).toBe(true);
     expect(client.scene.has("mine")).toBe(true);
   });
+  test("server rejection requests resync, reports the rejected update, and filters its exact stamp from rebase", () => {
+    const { client, socket } = connected();
+    const rejections: SceneUpdateRejection[] = [];
+    client.on("scene_rejected", (reported) => {
+      rejections.push(...reported);
+    });
+    const rejected = element("rejected", 1, 41);
+    const retained = element("retained", 1, 42);
+    const rejectedUpdateId = client.updateScene([rejected])?.[0];
+    client.updateScene([retained]);
+    if (rejectedUpdateId === undefined) throw new Error("rejected update was not sent");
+
+    socket.receive({ type: "error", code: "invalid", ref: rejectedUpdateId });
+
+    expect(sentTypes(socket).at(-1)).toBe("resync_request");
+    expect(rejections).toEqual([
+      expect.objectContaining({
+        element: rejected,
+        reason: "server_rejected",
+        serializedBytes: null,
+      }),
+    ]);
+
+    const updatesBeforeResync = sceneUpdateFrames(socket).length;
+    socket.receive({ ...INIT, type: "resync", rev: 6 });
+    const rebased = sceneUpdateFrames(socket).slice(updatesBeforeResync);
+
+    expect(rebased).toHaveLength(1);
+    expect(rebased[0]?.elements.map(({ id }) => id)).toEqual(["retained"]);
+    expect(client.scene.has("rejected")).toBe(false);
+    expect(client.scene.has("retained")).toBe(true);
+  });
+
+  test("scene_ack clears inflight tracking so a later error with its ref is ignored", () => {
+    const { client, socket } = connected();
+    const rejections: SceneUpdateRejection[] = [];
+    client.on("scene_rejected", (reported) => {
+      rejections.push(...reported);
+    });
+    const updateId = client.updateScene([element("accepted", 1)])?.[0];
+    if (updateId === undefined) throw new Error("accepted update was not sent");
+    socket.receive({ type: "scene_ack", updateId, rev: 6, acceptedIds: ["accepted"] });
+    const sentBeforeError = socket.sent.length;
+
+    socket.receive({ type: "error", code: "invalid", ref: updateId });
+
+    expect(socket.sent).toHaveLength(sentBeforeError);
+    expect(rejections).toHaveLength(0);
+  });
 });
 
 describe("frame policy", () => {
