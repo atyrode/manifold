@@ -84,7 +84,8 @@ describe("session channel schemas", () => {
     };
     expect(ServerMessageSchema.safeParse({ type: "init", ...state }).success).toBe(true);
     expect(ServerMessageSchema.safeParse({ type: "resync", ...state }).success).toBe(true);
-    const { selfConnId: _, ...missingConnId } = state;
+    const missingConnId = { ...state } as Record<string, unknown>;
+    delete missingConnId["selfConnId"];
     expect(ServerMessageSchema.safeParse({ type: "init", ...missingConnId }).success).toBe(false);
   });
 
