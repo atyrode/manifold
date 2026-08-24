@@ -37,6 +37,7 @@ import {
   advanceCanvasPaintReadiness,
   canPaintCanvas,
 } from "./canvas-readiness.ts";
+import { mergeCanonicalScene } from "./canvas-merge.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 
@@ -95,6 +96,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const readyApiGenerationRef = useRef(0);
   const applyingRemoteRef = useRef(false);
   const remoteApplyTokenRef = useRef(0);
+  /** Next canonical paint replaces the canvas wholesale (epoch adoption) instead of merging. */
+  const needsFullRepaintRef = useRef(true);
   const versionPairsRef = useRef(new Map<string, ElementVersion>());
   const pendingElementsRef = useRef(new Map<string, SceneElement>());
   const sceneTimerRef = useRef<number | null>(null);
@@ -281,17 +284,38 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const syncCanvas = useCallback((): void => {
     const api = apiRef.current;
     if (api === null) return;
-    const sorted = [...client.scene.values()].sort(compareElements);
-    for (const element of sorted) {
-      versionPairsRef.current.set(element.id, {
-        version: element.version,
-        versionNonce: element.versionNonce,
-      });
-      pendingElementsRef.current.delete(element.id);
+    const replaceAll = needsFullRepaintRef.current;
+    needsFullRepaintRef.current = false;
+    let canvasElements: readonly OrderedExcalidrawElement[];
+    if (replaceAll) {
+      // Epoch adoption (init/resync): canonical is the whole truth; stale lineage must go.
+      const sorted = [...client.scene.values()].sort(compareElements);
+      for (const element of sorted) {
+        versionPairsRef.current.set(element.id, {
+          version: element.version,
+          versionNonce: element.versionNonce,
+        });
+        pendingElementsRef.current.delete(element.id);
+      }
+      canvasElements = sorted as unknown as readonly OrderedExcalidrawElement[];
+    } else {
+      // Steady state: MERGE canonical into the live canvas. The canvas is legitimately
+      // ahead of client.scene while a gesture is in flight (sends are throttled), so a
+      // wholesale replace would revert in-progress strokes/drags to the last flushed
+      // partial — and clearing their pending entries would drop the final state forever.
+      const merge = mergeCanonicalScene(api.getSceneElementsIncludingDeleted(), client.scene);
+      if (merge === null) return; // canvas at or ahead of canonical: nothing to repaint
+      for (const element of merge.winners) {
+        versionPairsRef.current.set(element.id, {
+          version: element.version,
+          versionNonce: element.versionNonce,
+        });
+        pendingElementsRef.current.delete(element.id);
+      }
+      canvasElements = merge.elements as unknown as readonly OrderedExcalidrawElement[];
     }
     const applyToken = ++remoteApplyTokenRef.current;
     applyingRemoteRef.current = true;
-    const canvasElements = sorted as unknown as readonly OrderedExcalidrawElement[];
     api.updateScene({
       elements: canvasElements,
       captureUpdate: CaptureUpdateAction.NEVER,
@@ -342,6 +366,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
+      needsFullRepaintRef.current = true;
       flushScene();
       dispatchPaintReadiness({ type: "scene_reset" });
     });

@@ -199,6 +199,39 @@ class Browser {
     }
   }
 
+  /** Drives one continuous drag with real CDP mouse events — DOM-synthesized events cannot reproduce a gesture. */
+  async drag(points: readonly { x: number; y: number }[], stepMs: number): Promise<void> {
+    const first = points[0];
+    if (first === undefined) return;
+    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: first.x, y: first.y });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: first.x,
+      y: first.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (const point of points.slice(1)) {
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        buttons: 1,
+      });
+      await sleep(stepMs);
+    }
+    const last = points[points.length - 1] ?? first;
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: last.x,
+      y: last.y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+
   async close(): Promise<void> {
     this.socket?.close();
     this.proc?.kill();
@@ -272,6 +305,44 @@ await step("real browser renders the canvas over the public origin", async () =>
   const path = await browser.evaluate<string>("location.pathname");
   if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
   return `canvas mounted at ${path}, session open`;
+});
+
+await step("freedraw stroke survives its own sync round-trip", async () => {
+  // Regression for the multiplayer revert bug: the web layer used to repaint the canvas
+  // from the canonical scene on every flush echo, reverting an in-flight gesture to the
+  // first throttled partial ("only a dot") and dropping the final stroke entirely.
+  const toolSelected = await browser.evaluate<boolean>(
+    "(() => { const b = document.querySelector('[data-testid=toolbar-freedraw]'); if (!b) return false; b.click(); return true; })()",
+  );
+  if (!toolSelected) throw new Error("freedraw tool button not found");
+  await sleep(300);
+  // One ~600ms gesture spanning many scene-flush windows.
+  const points = Array.from({ length: 40 }, (_, i) => ({
+    x: 360 + i * 12,
+    y: 320 + Math.round(Math.sin(i / 4) * 80),
+  }));
+  await browser.drag(points, 15);
+  const observer = newViewer(padId);
+  await observer.connect();
+  try {
+    let observed = 0;
+    await until(
+      () => {
+        observed = 0;
+        for (const element of observer.scene.values()) {
+          if (element["type"] !== "freedraw" || element.isDeleted) continue;
+          const pts = element["points"];
+          if (Array.isArray(pts)) observed = Math.max(observed, pts.length);
+        }
+        return observed >= 20;
+      },
+      15_000,
+      "canonical freedraw stroke carrying the full gesture (>=20 points)",
+    );
+    return `canonical stroke carries ${String(observed)} points`;
+  } finally {
+    observer.close();
+  }
 });
 
 await step("embedded terminal opens and runs a command in the browser", async () => {
