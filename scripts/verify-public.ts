@@ -86,6 +86,9 @@ await step("real browser renders the canvas over the public origin", async () =>
   // Fresh profile per run, and a real cross-document load so the app bootstraps the
   // #key fragment (a fragment-only change would be a same-document navigation).
   await browser.goto(`${origin}/#key=${ownerKey}`);
+  // Enable the read-only debug seam so later steps can assert what the drawer's OWN
+  // canvas holds — canonical-only assertions cannot see a canvas-side revert.
+  await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "verify");
     await browser.clickText("Enter manifold");
@@ -104,9 +107,14 @@ await step("real browser renders the canvas over the public origin", async () =>
     20_000,
     "session open through public origin",
   );
+  await until(
+    () => browser.evaluate<boolean>("window.__manifold !== undefined"),
+    10_000,
+    "debug seam installed (manifold:debug flag)",
+  );
   const path = await browser.evaluate<string>("location.pathname");
   if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
-  return `canvas mounted at ${path}, session open`;
+  return `canvas mounted at ${path}, session open, seam active`;
 });
 
 await step("freedraw stroke survives its own sync round-trip", async () => {
@@ -141,7 +149,30 @@ await step("freedraw stroke survives its own sync round-trip", async () => {
       15_000,
       "canonical freedraw stroke carrying the full gesture (>=20 points)",
     );
-    return `canonical stroke carries ${String(observed)} points`;
+    // The drawer's OWN canvas must hold the stroke at the canonical stamp: canonical-only
+    // assertions cannot see a canvas-side revert (server keeps the stroke, drawer loses it).
+    await until(
+      async () => {
+        const canvasStamps = await browser.evaluate<readonly [string, number, number][]>(
+          "window.__manifold.canvas().map((e) => [e.id, e.version, e.versionNonce])",
+        );
+        for (const [id, version, versionNonce] of canvasStamps) {
+          const canonical = observer.scene.get(id);
+          if (
+            canonical !== undefined &&
+            canonical["type"] === "freedraw" &&
+            canonical.version === version &&
+            canonical.versionNonce === versionNonce
+          ) {
+            return true;
+          }
+        }
+        return false;
+      },
+      10_000,
+      "drawer canvas holding the stroke at the canonical stamp",
+    );
+    return `canonical stroke carries ${String(observed)} points; drawer canvas at canonical stamp`;
   } finally {
     observer.close();
   }
