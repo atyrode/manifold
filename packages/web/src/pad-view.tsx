@@ -38,6 +38,7 @@ import {
   canPaintCanvas,
 } from "./canvas-readiness.ts";
 import { mergeCanonicalScene } from "./canvas-merge.ts";
+import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 
@@ -451,6 +452,33 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     };
     document.addEventListener("visibilitychange", reportVisibility);
     return () => document.removeEventListener("visibilitychange", reportVisibility);
+  }, [client]);
+
+  useEffect(() => {
+    if (!debugSeamEnabled()) return;
+    window.__manifold = {
+      scene: () => [...client.scene.values()].map(toElementSnapshot),
+      canvas: () =>
+        (apiRef.current?.getSceneElementsIncludingDeleted() ?? []).map(toElementSnapshot),
+      pending: () => [...pendingElementsRef.current.keys()],
+      rev: () => client.rev,
+      epoch: () => client.epoch,
+      viewport: () => {
+        const api = apiRef.current;
+        if (api === null) return null;
+        const appState = api.getAppState();
+        return {
+          scrollX: appState.scrollX,
+          scrollY: appState.scrollY,
+          zoom: appState.zoom.value,
+          offsetLeft: appState.offsetLeft,
+          offsetTop: appState.offsetTop,
+        };
+      },
+    };
+    return () => {
+      delete window.__manifold;
+    };
   }, [client]);
 
   useEffect(

@@ -13,6 +13,7 @@
  * Exit 0 only if every check passes.
  */
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
+import { Browser, sleep, until } from "./cdp.ts";
 
 const origin = (process.argv[2] ?? "https://manifold.tyrode.dev").replace(/\/$/, "");
 const wsOrigin = origin.replace(/^http/, "ws");
@@ -24,8 +25,6 @@ if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error("owner key missing or malf
 const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 const marker = `PUBLIC_${Date.now().toString(36).toUpperCase()}`;
 const results: { name: string; ok: boolean; detail: string }[] = [];
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function step(name: string, run: () => Promise<string>): Promise<void> {
   try {
@@ -39,204 +38,7 @@ async function step(name: string, run: () => Promise<string>): Promise<void> {
   }
 }
 
-/** Polls an async predicate until it returns true, or throws after timeoutMs. */
-async function until(probe: () => Promise<boolean> | boolean, ms: number, what: string) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await probe()) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await sleep(150);
-  }
-}
-
-// ---------------------------------------------------------------- minimal CDP browser
-
-interface CdpFrame {
-  id?: number;
-  result?: Record<string, unknown>;
-}
-
-/** Just enough Chrome DevTools Protocol to navigate, evaluate, click and type. */
-class Browser {
-  private socket: WebSocket | null = null;
-  private proc: Bun.Subprocess | null = null;
-  private nextId = 1;
-  private sessionId = "";
-  private readonly pending = new Map<number, (frame: CdpFrame) => void>();
-
-  static detect(): string {
-    const explicit = process.env["MANIFOLD_CHROMIUM"];
-    if (explicit !== undefined && explicit !== "") return explicit;
-    for (const candidate of ["chromium", "chromium-browser", "google-chrome", "chrome"]) {
-      const found = Bun.which(candidate);
-      if (found !== null) return found;
-    }
-    throw new Error("no chromium binary found (set MANIFOLD_CHROMIUM)");
-  }
-
-  async launch(port = 9333): Promise<void> {
-    this.proc = Bun.spawn(
-      [
-        Browser.detect(),
-        "--headless=new",
-        `--remote-debugging-port=${String(port)}`,
-        `--user-data-dir=/tmp/manifold-verify-${String(Date.now())}`,
-        "--no-first-run",
-        "--no-sandbox",
-        "--disable-gpu",
-        "--window-size=1440,900",
-        "about:blank",
-      ],
-      { stdout: "ignore", stderr: "ignore" },
-    );
-
-    let endpoint = "";
-    await until(
-      async () => {
-        try {
-          const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`);
-          const body = (await res.json()) as { webSocketDebuggerUrl?: string };
-          endpoint = body.webSocketDebuggerUrl ?? "";
-          return endpoint !== "";
-        } catch {
-          return false;
-        }
-      },
-      20_000,
-      "chromium devtools endpoint",
-    );
-
-    const socket = new WebSocket(endpoint);
-    this.socket = socket;
-    const opened = Promise.withResolvers<void>();
-    socket.onopen = () => opened.resolve();
-    socket.onerror = () => opened.reject(new Error("cdp socket failed"));
-    await opened.promise;
-    socket.onmessage = (event: MessageEvent) => {
-      if (typeof event.data !== "string") return;
-      const frame = JSON.parse(event.data) as CdpFrame;
-      if (frame.id === undefined) return;
-      this.pending.get(frame.id)?.(frame);
-      this.pending.delete(frame.id);
-    };
-
-    const target = await this.send("Target.createTarget", { url: "about:blank" }, false);
-    const targetId = String(target.result?.["targetId"]);
-    const attached = await this.send("Target.attachToTarget", { targetId, flatten: true }, false);
-    this.sessionId = String(attached.result?.["sessionId"]);
-    await this.send("Page.enable", {});
-    await this.send("Runtime.enable", {});
-  }
-
-  async send(
-    method: string,
-    params: Record<string, unknown>,
-    withSession = true,
-  ): Promise<CdpFrame> {
-    const socket = this.socket;
-    if (socket === null) throw new Error("browser not launched");
-    const id = this.nextId++;
-    const { promise, resolve, reject } = Promise.withResolvers<CdpFrame>();
-    this.pending.set(id, resolve);
-    const frame: Record<string, unknown> = { id, method, params };
-    if (withSession && this.sessionId !== "") frame["sessionId"] = this.sessionId;
-    socket.send(JSON.stringify(frame));
-    const timer = setTimeout(() => reject(new Error(`cdp ${method} timed out`)), 30_000);
-    return await promise.finally(() => clearTimeout(timer));
-  }
-
-  async goto(url: string): Promise<void> {
-    await this.send("Page.navigate", { url });
-    await sleep(1500);
-  }
-
-  async evaluate<T>(expression: string): Promise<T> {
-    const frame = await this.send("Runtime.evaluate", {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    const value = (frame.result?.["result"] as { value?: T } | undefined)?.value;
-    return value as T;
-  }
-
-  /**
-   * Clicks via the DOM rather than synthetic mouse coordinates: Excalidraw's menus and
-   * dialogs move under headless layout, and a coordinate click that lands a pixel off
-   * silently does nothing. A DOM click is what the app's own handlers listen for.
-   */
-  async clickText(text: string): Promise<void> {
-    const clicked = await this.evaluate<boolean>(
-      `(() => { const t = ${JSON.stringify(text)};
-        const nodes = [...document.querySelectorAll('button, [role=button]')];
-        const hit = nodes.find((n) => (n.textContent ?? '').trim().includes(t));
-        if (!hit || hit.disabled) return false; hit.click(); return true; })()`,
-    );
-    if (!clicked) throw new Error(`no enabled element containing ${JSON.stringify(text)}`);
-    await sleep(600);
-  }
-
-  /**
-   * Types into a focused element with real key events. Setting `input.value` directly
-   * does NOT drive React's onChange (React reads the value through its own descriptor), so
-   * the submit button would stay disabled — that is precisely what broke this gate's
-   * first run against the public origin.
-   */
-  async typeInto(selector: string, text: string): Promise<void> {
-    const focused = await this.evaluate<boolean>(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); return true; })()`,
-    );
-    if (!focused) throw new Error(`no element to type into: ${selector}`);
-    await this.typeText(text);
-    await sleep(300);
-  }
-
-  async typeText(text: string): Promise<void> {
-    for (const char of text) {
-      const key = char === "\n" ? "\r" : char;
-      await this.send("Input.dispatchKeyEvent", { type: "keyDown", text: key });
-      await this.send("Input.dispatchKeyEvent", { type: "keyUp", text: key });
-    }
-  }
-
-  /** Drives one continuous drag with real CDP mouse events — DOM-synthesized events cannot reproduce a gesture. */
-  async drag(points: readonly { x: number; y: number }[], stepMs: number): Promise<void> {
-    const first = points[0];
-    if (first === undefined) return;
-    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: first.x, y: first.y });
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: first.x,
-      y: first.y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-    });
-    for (const point of points.slice(1)) {
-      await this.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        buttons: 1,
-      });
-      await sleep(stepMs);
-    }
-    const last = points[points.length - 1] ?? first;
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: last.x,
-      y: last.y,
-      button: "left",
-      clickCount: 1,
-    });
-  }
-
-  async close(): Promise<void> {
-    this.socket?.close();
-    this.proc?.kill();
-  }
-}
+// (sleep/until/Browser live in scripts/cdp.ts, shared with verify-convergence.ts)
 
 function newViewer(padId: string): SessionClient {
   return new SessionClient({
