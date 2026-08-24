@@ -43,8 +43,12 @@ import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-
-const SCENE_SEND_INTERVAL_MS = 80;
+/** Scene flush cadence; build-time override (VITE_SCENE_SEND_MS) exists for benchmarking only. */
+const configuredSendMs = Number(import.meta.env["VITE_SCENE_SEND_MS"]);
+const SCENE_SEND_INTERVAL_MS =
+  Number.isFinite(configuredSendMs) && configuredSendMs >= 4 && configuredSendMs <= 1000
+    ? configuredSendMs
+    : 80;
 const TERMINAL_LINK = "manifold://terminal";
 const TERMINAL_WIDTH = 720;
 const TERMINAL_HEIGHT = 480;
