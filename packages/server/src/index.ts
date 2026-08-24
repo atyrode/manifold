@@ -1,1 +1,10 @@
 export { PROTOCOL_VERSION } from "@manifold/protocol";
+export { AuthService, ServiceError, type AuthContext } from "./auth.ts";
+export { loadConfig, finalizePublicUrl, type ServerConfig } from "./config.ts";
+export { openDatabase, SCHEMA_VERSION } from "./db.ts";
+export { HttpApp, SERVER_VERSION } from "./http.ts";
+export { startServer, type RunningServer, type StartServerOptions } from "./main.ts";
+export { Room, RoomManager, defaultRoomTimers, type RoomTimers } from "./room.ts";
+export { SessionPeer, type RawSocket } from "./session-peer.ts";
+export { ServerStore, sha256Hex } from "./stores.ts";
+export { TerminalBroker, type MachineChannel } from "./terminal-broker.ts";
