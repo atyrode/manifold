@@ -160,16 +160,35 @@ class Browser {
     return value as T;
   }
 
-  /** Clicks the first button-ish element whose text contains `text`. */
+  /**
+   * Clicks via the DOM rather than synthetic mouse coordinates: Excalidraw's menus and
+   * dialogs move under headless layout, and a coordinate click that lands a pixel off
+   * silently does nothing. A DOM click is what the app's own handlers listen for.
+   */
   async clickText(text: string): Promise<void> {
     const clicked = await this.evaluate<boolean>(
       `(() => { const t = ${JSON.stringify(text)};
         const nodes = [...document.querySelectorAll('button, [role=button]')];
         const hit = nodes.find((n) => (n.textContent ?? '').trim().includes(t));
-        if (!hit) return false; hit.click(); return true; })()`,
+        if (!hit || hit.disabled) return false; hit.click(); return true; })()`,
     );
-    if (!clicked) throw new Error(`no clickable element containing ${JSON.stringify(text)}`);
+    if (!clicked) throw new Error(`no enabled element containing ${JSON.stringify(text)}`);
     await sleep(600);
+  }
+
+  /**
+   * Types into a focused element with real key events. Setting `input.value` directly
+   * does NOT drive React's onChange (React reads the value through its own descriptor), so
+   * the submit button would stay disabled — that is precisely what broke this gate's
+   * first run against the public origin.
+   */
+  async typeInto(selector: string, text: string): Promise<void> {
+    const focused = await this.evaluate<boolean>(
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); return true; })()`,
+    );
+    if (!focused) throw new Error(`no element to type into: ${selector}`);
+    await this.typeText(text);
+    await sleep(300);
   }
 
   async typeText(text: string): Promise<void> {
@@ -229,12 +248,11 @@ const browser = new Browser();
 
 await step("real browser renders the canvas over the public origin", async () => {
   await browser.launch();
+  // Fresh profile per run, and a real cross-document load so the app bootstraps the
+  // #key fragment (a fragment-only change would be a same-document navigation).
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
-    await browser.evaluate(
-      "(() => { const i = document.querySelector('input'); i.value = 'verify'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
-    );
-    await sleep(300);
+    await browser.typeInto("input", "verify");
     await browser.clickText("Enter manifold");
   }
   await browser.goto(`${origin}/p/${padId}`);
@@ -246,12 +264,14 @@ await step("real browser renders the canvas over the public origin", async () =>
   await until(
     () =>
       browser.evaluate<boolean>(
-        "(document.querySelector('[class*=status]')?.textContent ?? '').includes('open')",
+        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
       ),
     20_000,
     "session open through public origin",
   );
-  return "canvas mounted, session open";
+  const path = await browser.evaluate<string>("location.pathname");
+  if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
+  return `canvas mounted at ${path}, session open`;
 });
 
 await step("embedded terminal opens and runs a command in the browser", async () => {
@@ -265,8 +285,9 @@ await step("embedded terminal opens and runs a command in the browser", async ()
     30_000,
     "xterm mount",
   );
+  // Focus xterm's hidden textarea: that is where keystrokes actually land.
   await browser.evaluate(
-    "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); t?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); t?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); })()",
+    "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); t?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); t?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); document.querySelector('.xterm-helper-textarea')?.focus(); })()",
   );
   await sleep(400);
   await browser.typeText(`printf '${marker}_BROWSER\\n'\n`);

@@ -66,9 +66,9 @@ interface StatusBarProps {
 export function StatusBar({ status, savedAt, rev }: StatusBarProps) {
   const savedLabel = savedAt === null ? "—" : new Date(savedAt).toLocaleTimeString();
   return (
-    <div className="status-bar" role="status">
+    <div className="status-bar" role="status" data-testid="connection-status">
       <span className={`status-indicator ${status}`} />
-      <span>{status}</span>
+      <span data-testid="connection-state">{status}</span>
       <span>rev {rev}</span>
       <span>saved {savedLabel}</span>
     </div>
