@@ -147,6 +147,33 @@ describe("handshake", () => {
 });
 
 describe("connection lifecycle", () => {
+  test("sends a keepalive ping every 45 seconds while open", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected();
+
+    vi.advanceTimersByTime(45_000);
+    expect(sentTypes(socket)).toEqual(["join", "ping"]);
+
+    vi.advanceTimersByTime(90_000);
+    expect(sentTypes(socket)).toEqual(["join", "ping", "ping", "ping"]);
+    client.close();
+  });
+
+  test("stops keepalive pings after client or socket close", () => {
+    vi.useFakeTimers();
+    const first = connected();
+    vi.advanceTimersByTime(45_000);
+    first.client.close();
+    vi.advanceTimersByTime(90_000);
+    expect(sentTypes(first.socket)).toEqual(["join", "ping"]);
+
+    const second = connected();
+    vi.advanceTimersByTime(45_000);
+    second.socket.close();
+    vi.advanceTimersByTime(90_000);
+    expect(sentTypes(second.socket)).toEqual(["join", "ping"]);
+  });
+
   test("4403 is terminal, rejects connect with the reason, and does not redial", async () => {
     vi.useFakeTimers();
     const { client, socket, connection } = dialing({ reconnect: true, backoffCapMs: 0 });
@@ -405,5 +432,48 @@ describe("roster and presence", () => {
     expect(client.roster.get("p2")?.payload.status).toBe("working");
     socket.receive({ type: "roster", left: { principalId: "p2" } });
     expect(client.roster.has("p2")).toBe(false);
+  });
+});
+
+describe("listener isolation", () => {
+  test("a throwing listener does not starve later listeners or drop the event", () => {
+    const { client, socket } = connected();
+    // Never-swallow rule: the throw must stay observable even though siblings still run.
+    const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // The projection layer subscribing to scene_changed is exactly the consumer that must
+      // never lose a delta: the SDK advances scene+rev BEFORE emitting, and a duplicate echo
+      // reconciles to zero accepted, so a swallowed emission is unrecoverable without resync.
+      const seen: string[] = [];
+      client.on("scene_changed", () => {
+        throw new Error("projection exploded");
+      });
+      client.on("scene_changed", (accepted) => {
+        seen.push(...accepted.map((el) => el.id));
+      });
+      socket.receive({
+        type: "scene_applied",
+        rev: 6,
+        by: "other",
+        elements: [element("delta", 1)],
+      });
+      expect(seen).toEqual(["delta"]);
+      expect(client.rev).toBe(6);
+      expect(
+        reported.mock.calls.some((call) =>
+          call.some((arg) => arg instanceof Error && arg.message === "projection exploded"),
+        ),
+      ).toBe(true);
+      // Subsequent events keep flowing after the throw.
+      socket.receive({
+        type: "scene_applied",
+        rev: 7,
+        by: "other",
+        elements: [element("delta2", 1)],
+      });
+      expect(seen).toEqual(["delta", "delta2"]);
+    } finally {
+      reported.mockRestore();
+    }
   });
 });

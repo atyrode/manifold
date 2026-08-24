@@ -96,6 +96,7 @@ export interface SessionClientOptions {
 }
 
 const OUTBOX_LIMIT = 256;
+const KEEPALIVE_INTERVAL_MS = 45_000;
 const MALFORMED_FRAME_CLOSE_CODE = 4002;
 const TERMINAL_CLOSE_CODE_MIN = 4400;
 const TERMINAL_CLOSE_CODE_MAX = 4499;
@@ -156,6 +157,7 @@ export class SessionClient {
   private closedIntentionally = false;
   private updateCounter = 0;
   private reconnectTimer: Timer | null = null;
+  private keepaliveTimer: Timer | null = null;
   private closeError: Error | null = null;
 
   constructor(opts: SessionClientOptions) {
@@ -176,10 +178,22 @@ export class SessionClient {
     return () => set.delete(fn);
   }
 
+  /**
+   * One listener's failure must never starve its siblings: state (scene, rev) advances
+   * BEFORE emission, and a duplicate echo reconciles to zero accepted records, so a
+   * swallowed `scene_changed` would desynchronize a consumer unrecoverably. Errors are
+   * still reported (never-swallow rule) — they are just not allowed to propagate.
+   */
   private emit(type: EventKey, ...args: unknown[]): void {
     const set = this.listeners.get(type);
     if (!set) return;
-    for (const fn of [...set]) (fn as (...a: unknown[]) => void)(...args);
+    for (const fn of [...set]) {
+      try {
+        (fn as (...a: unknown[]) => void)(...args);
+      } catch (error) {
+        console.error("evt=session_listener_failed", type, error);
+      }
+    }
   }
 
   private setStatus(status: ConnectionStatus): void {
@@ -211,9 +225,25 @@ export class SessionClient {
     return promise;
   }
 
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    const timer = setInterval(() => {
+      if (this.keepaliveTimer !== timer) return;
+      this.send({ type: "ping" });
+    }, KEEPALIVE_INTERVAL_MS);
+    this.keepaliveTimer = timer;
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer === null) return;
+    clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
+  }
+
   close(): void {
     this.closedIntentionally = true;
     this.closeError = null;
+    this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -225,6 +255,7 @@ export class SessionClient {
   }
 
   private dial(): void {
+    this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -275,6 +306,7 @@ export class SessionClient {
     socket.onclose = (event: CloseEvent) => {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
+      this.stopKeepalive();
 
       // 44xx codes are permanent session rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
@@ -334,6 +366,7 @@ export class SessionClient {
         this.sessions.clear();
         for (const s of msg.sessions) this.sessions.set(s.id, s);
         this.setStatus("open");
+        this.startKeepalive();
         this.flushOutbox();
         if (epochUnchanged) {
           const rebase = reconcile(this.scene, localBefore).accepted;
