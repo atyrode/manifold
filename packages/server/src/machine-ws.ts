@@ -30,7 +30,7 @@ interface PendingMachineConnection {
   cancelHelloTimeout: (() => void) | null;
 }
 
-class LiveMachineChannel implements MachineChannel {
+export class LiveMachineChannel implements MachineChannel {
   constructor(
     readonly machineId: string,
     readonly tokenPrincipalId: string,
@@ -43,7 +43,7 @@ class LiveMachineChannel implements MachineChannel {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }
-    return this.socket.send(payload) >= 0;
+    return this.socket.send(payload) !== 0;
   }
 
   close(code: number, reason: string): void {
@@ -92,8 +92,8 @@ export class MachineGateway {
     private readonly serverEpoch: string,
     private readonly runtime: RuntimeDeps,
   ) {
-    this.removeRevocationListener = auth.onRevoked((principalId) => {
-      this.revokePrincipal(principalId);
+    this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
+      this.revokePrincipal(principalId, padId);
     });
   }
 
@@ -167,17 +167,24 @@ export class MachineGateway {
       connection.socket,
     );
     const older = this.activeByMachine.get(authenticated.id);
-    this.activeByMachine.set(authenticated.id, channel);
     connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
     this.store.touchMachine(authenticated.id, message.name, this.runtime.now());
+    if (
+      !channel.send({
+        type: "welcome",
+        machineId: authenticated.id,
+        serverEpoch: this.serverEpoch,
+      })
+    ) {
+      channel.close(1011, "welcome frame dropped");
+      return;
+    }
+    this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
     if (older !== undefined) older.close(4001, "superseded");
-    channel.send({ type: "welcome", machineId: authenticated.id, serverEpoch: this.serverEpoch });
-    for (const advertised of message.sessions) {
-      this.broker.adoptSession(authenticated.id, advertised);
-    }
+    this.broker.reconcileMachineHello(authenticated.id, message.sessions);
   }
 
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
@@ -224,7 +231,8 @@ export class MachineGateway {
   }
 
   /** Fences a machine socket whose token principal was durably revoked. */
-  revokePrincipal(principalId: string): void {
+  revokePrincipal(principalId: string, padId: string | null = null): void {
+    if (padId !== null) return;
     for (const [id, connection] of [...this.connections]) {
       const channel = connection.channel;
       if (channel?.tokenPrincipalId !== principalId) continue;

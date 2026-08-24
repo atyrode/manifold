@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS meta(
   value TEXT
 );
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '1');
+`,
+  2: `
+ALTER TABLE tokens ADD COLUMN minted_by TEXT;
+ALTER TABLE sessions ADD COLUMN agent_principal_id TEXT;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');
 `,
 };
 

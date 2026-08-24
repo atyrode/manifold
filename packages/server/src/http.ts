@@ -32,6 +32,9 @@ import type { TerminalBroker } from "./terminal-broker.ts";
 /** Build identifier exposed by `/healthz`; protocol compatibility has its own version. */
 export const SERVER_VERSION = "0.1.0";
 
+/** HTTP JSON ceiling, mirrored by Bun.serve so chunked bodies cannot reach its 128 MiB default. */
+export const MAX_HTTP_BODY_BYTES = 1_048_576;
+
 type HttpErrorCode = HttpError["error"]["code"];
 
 class RequestError extends Error {
@@ -64,13 +67,28 @@ function errorResponse(error: RequestError): Response {
   return jsonResponse(body, STATUS_BY_CODE[error.code]);
 }
 
-async function parseJsonBody(request: Request): Promise<unknown> {
+export async function parseJsonBody(request: Request): Promise<unknown> {
   const length = request.headers.get("content-length");
-  if (length !== null && Number(length) > 1_048_576) {
+  if (length !== null && Number(length) > MAX_HTTP_BODY_BYTES) {
     throw new RequestError("invalid", "request body is too large");
   }
+
+  const reader = request.body?.getReader();
+  if (reader === undefined) throw new RequestError("invalid", "request body must be valid JSON");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    bytes += chunk.value.byteLength;
+    if (bytes > MAX_HTTP_BODY_BYTES) {
+      throw new RequestError("invalid", "request body is too large");
+    }
+    chunks.push(chunk.value);
+  }
+  const text = new TextDecoder().decode(Buffer.concat(chunks, bytes));
   try {
-    return await request.json();
+    return JSON.parse(text);
   } catch {
     throw new RequestError("invalid", "request body must be valid JSON");
   }
@@ -200,6 +218,7 @@ export class HttpApp {
         if (this.store.getPad(padId) === null) {
           throw new RequestError("not_found", "pad not found");
         }
+        this.broker.dropPad(padId);
         this.rooms.drop(padId);
         this.store.deletePad(padId);
         return jsonResponse(OkResponseSchema.parse({ ok: true }));

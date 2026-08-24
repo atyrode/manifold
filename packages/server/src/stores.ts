@@ -29,6 +29,7 @@ interface TokenRow {
   id: string;
   hash: string;
   principal_id: string;
+  minted_by: string | null;
   caps: string;
   pad_id: string | null;
   created_at: number;
@@ -63,6 +64,7 @@ interface SessionDbRow {
   pad_id: string;
   element_id: string;
   created_by: string;
+  agent_principal_id: string | null;
   status: string;
   exit_code: number | null;
   created_at: number;
@@ -72,11 +74,16 @@ interface MetaRow {
   value: string;
 }
 
+interface ExistsRow {
+  found: number;
+}
+
 /** Durable token metadata. The raw bearer secret deliberately has no field here. */
 export interface TokenRecord {
   id: string;
   hash: string;
   principalId: string;
+  mintedBy: string | null;
   caps: readonly Cap[];
   padId: string | null;
   createdAt: number;
@@ -91,6 +98,12 @@ export interface SnapshotRecord {
   ts: number;
   hash: string;
   elements: readonly SceneElement[];
+}
+
+/** Safe identity logged when a corrupt snapshot is skipped during fallback loading. */
+export interface InvalidSnapshot {
+  epoch: string;
+  rev: number;
 }
 
 /** Persisted machine identity and its last contact time. */
@@ -114,6 +127,7 @@ export interface StoredSession {
   padId: string;
   elementId: string;
   createdBy: string;
+  agentPrincipalId: string | null;
   status: "running" | "exited";
   exitCode: number | null;
   createdAt: number;
@@ -126,6 +140,7 @@ export interface NewStoredSession {
   padId: string;
   elementId: string;
   createdBy: string;
+  agentPrincipalId: string;
   createdAt: number;
 }
 
@@ -141,6 +156,7 @@ function toToken(row: TokenRow): TokenRecord {
     id: row.id,
     hash: row.hash,
     principalId: row.principal_id,
+    mintedBy: row.minted_by,
     caps,
     padId: row.pad_id,
     createdAt: row.created_at,
@@ -162,6 +178,7 @@ function toSession(row: SessionDbRow): StoredSession {
     padId: row.pad_id,
     elementId: row.element_id,
     createdBy: row.created_by,
+    agentPrincipalId: row.agent_principal_id,
     status: row.status,
     exitCode: row.exit_code,
     createdAt: row.created_at,
@@ -224,25 +241,36 @@ export class ServerStore {
     return remove();
   }
 
-  latestSnapshot(padId: string): SnapshotRecord | null {
-    const row = this.db
+  latestSnapshot(
+    padId: string,
+    onInvalid?: (error: Error, snapshot: InvalidSnapshot) => void,
+  ): SnapshotRecord | null {
+    const rows = this.db
       .query<SnapshotRow, [string]>(
         `SELECT pad_id, epoch, rev, ts, hash, blob FROM snapshots
-         WHERE pad_id = ? ORDER BY ts DESC, rev DESC LIMIT 1`,
+         WHERE pad_id = ? ORDER BY ts DESC, rev DESC LIMIT 30`,
       )
-      .get(padId);
-    if (row === null) return null;
-    if (sha256Hex(row.blob) !== row.hash)
-      throw new Error(`snapshot hash mismatch for pad ${padId}`);
-    const parsed: unknown = JSON.parse(row.blob);
-    return {
-      padId: row.pad_id,
-      epoch: row.epoch,
-      rev: row.rev,
-      ts: row.ts,
-      hash: row.hash,
-      elements: SceneElementSchema.array().parse(parsed),
-    };
+      .all(padId);
+    for (const row of rows) {
+      try {
+        if (sha256Hex(row.blob) !== row.hash) {
+          throw new Error(`snapshot hash mismatch for pad ${padId}`);
+        }
+        const parsed: unknown = JSON.parse(row.blob);
+        return {
+          padId: row.pad_id,
+          epoch: row.epoch,
+          rev: row.rev,
+          ts: row.ts,
+          hash: row.hash,
+          elements: SceneElementSchema.array().parse(parsed),
+        };
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error("invalid snapshot");
+        onInvalid?.(failure, { epoch: row.epoch, rev: row.rev });
+      }
+    }
+    return null;
   }
 
   saveSnapshot(
@@ -318,14 +346,19 @@ export class ServerStore {
 
   createToken(record: TokenRecord): void {
     this.db
-      .query<void, [string, string, string, string, string | null, number, number | null]>(
-        `INSERT INTO tokens(id, hash, principal_id, caps, pad_id, created_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      .query<
+        void,
+        [string, string, string, string | null, string, string | null, number, number | null]
+      >(
+        `INSERT INTO tokens(
+           id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
         record.hash,
         record.principalId,
+        record.mintedBy,
         JSON.stringify(record.caps),
         record.padId,
         record.createdAt,
@@ -336,7 +369,7 @@ export class ServerStore {
   getTokenByHash(hash: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, caps, pad_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
          FROM tokens WHERE hash = ?`,
       )
       .get(hash);
@@ -346,14 +379,33 @@ export class ServerStore {
   getToken(id: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, caps, pad_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
          FROM tokens WHERE id = ?`,
       )
       .get(id);
     return row === null ? null : toToken(row);
   }
 
-  revokeTokensByPrincipal(principalId: string, revokedAt: number): number {
+  /** Whether this actor originally issued a token while creating the target identity. */
+  principalMintedBy(principalId: string, minterId: string): boolean {
+    const row = this.db
+      .query<ExistsRow, [string, string]>(
+        `SELECT 1 AS found FROM tokens
+         WHERE principal_id = ? AND minted_by = ? LIMIT 1`,
+      )
+      .get(principalId, minterId);
+    return row?.found === 1;
+  }
+
+  revokeTokensByPrincipal(principalId: string, revokedAt: number, padId?: string): number {
+    if (padId !== undefined) {
+      return this.db
+        .query<void, [number, string, string]>(
+          `UPDATE tokens SET revoked_at = ?
+           WHERE principal_id = ? AND pad_id = ? AND revoked_at IS NULL`,
+        )
+        .run(revokedAt, principalId, padId).changes;
+    }
     return this.db
       .query<void, [number, string]>(
         "UPDATE tokens SET revoked_at = ? WHERE principal_id = ? AND revoked_at IS NULL",
@@ -456,10 +508,11 @@ export class ServerStore {
 
   createSession(session: NewStoredSession): void {
     this.db
-      .query<void, [string, string, string, string, string, string, null, number]>(
+      .query<void, [string, string, string, string, string, string, string, null, number]>(
         `INSERT INTO sessions(
-           id, machine_id, pad_id, element_id, created_by, status, exit_code, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+           status, exit_code, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -467,6 +520,7 @@ export class ServerStore {
         session.padId,
         session.elementId,
         session.createdBy,
+        session.agentPrincipalId,
         "running",
         null,
         session.createdAt,
@@ -476,7 +530,8 @@ export class ServerStore {
   getSession(id: string): StoredSession | null {
     const row = this.db
       .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+                status, exit_code, created_at
          FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -486,11 +541,27 @@ export class ServerStore {
   listSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+                status, exit_code, created_at
          FROM sessions ORDER BY created_at, id`,
       )
       .all()
       .map(toSession);
+  }
+
+  listRunningSessionsForMachine(machineId: string): StoredSession[] {
+    return this.db
+      .query<SessionDbRow, [string]>(
+        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+                status, exit_code, created_at
+         FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
+      )
+      .all(machineId)
+      .map(toSession);
+  }
+
+  deleteSession(id: string): boolean {
+    return this.db.query<void, [string]>("DELETE FROM sessions WHERE id = ?").run(id).changes > 0;
   }
 
   markSessionExited(id: string, exitCode: number | null): boolean {

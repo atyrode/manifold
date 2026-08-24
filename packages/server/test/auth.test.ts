@@ -131,3 +131,87 @@ describe("Token secret persistence", () => {
     fixture.store.close();
   });
 });
+
+describe("AuthService principal ownership", () => {
+  test("a scoped minter cannot revoke a principal it did not create, while root can", () => {
+    const fixture = authFixture();
+    const delegatedGrant = fixture.auth.mintToken(
+      {
+        principal: { name: "scoped minter", kind: "agent" },
+        caps: ["tokens:mint", "scene:write"],
+        padId: fixture.pad.id,
+      },
+      fixture.root,
+    );
+    const delegated = fixture.auth.authenticate(delegatedGrant.token);
+    const unrelated = fixture.auth.mintToken(
+      {
+        principal: { name: "unrelated", kind: "human" },
+        caps: ["pads:read"],
+      },
+      fixture.root,
+    );
+
+    expectForbidden(() => fixture.auth.revokePrincipal(unrelated.principal.id, delegated));
+    expect(fixture.auth.authenticate(unrelated.token).principal.id).toBe(unrelated.principal.id);
+    expect(fixture.auth.revokePrincipal(unrelated.principal.id, fixture.root)).toBe(1);
+    expect(() => fixture.auth.authenticate(unrelated.token)).toThrow(ServiceError);
+    fixture.store.close();
+  });
+
+  test("a delegated minter cannot bind a token to the owner principal", () => {
+    const fixture = authFixture();
+    const delegatedGrant = fixture.auth.mintToken(
+      {
+        principal: { name: "delegate", kind: "agent" },
+        caps: ["tokens:mint", "scene:write"],
+        padId: fixture.pad.id,
+      },
+      fixture.root,
+    );
+    const delegated = fixture.auth.authenticate(delegatedGrant.token);
+
+    expectForbidden(() =>
+      fixture.auth.mintToken(
+        {
+          principalId: fixture.root.principal.id,
+          caps: ["scene:write"],
+        },
+        delegated,
+      ),
+    );
+    fixture.store.close();
+  });
+
+  test("scoped revocation affects only the actor-created principal's scoped tokens", () => {
+    const fixture = authFixture();
+    const delegatedGrant = fixture.auth.mintToken(
+      {
+        principal: { name: "delegate", kind: "agent" },
+        caps: ["tokens:mint", "scene:write"],
+        padId: fixture.pad.id,
+      },
+      fixture.root,
+    );
+    const delegated = fixture.auth.authenticate(delegatedGrant.token);
+    const child = fixture.auth.mintToken(
+      {
+        principal: { name: "child", kind: "agent" },
+        caps: ["scene:write"],
+      },
+      delegated,
+    );
+    const unscoped = fixture.auth.mintToken(
+      {
+        principalId: child.principal.id,
+        caps: ["pads:read"],
+      },
+      fixture.root,
+    );
+
+    expect(fixture.auth.revokePrincipal(child.principal.id, delegated)).toBe(1);
+    expect(() => fixture.auth.authenticate(child.token)).toThrow(ServiceError);
+    expect(fixture.auth.authenticate(unscoped.token).principal.id).toBe(child.principal.id);
+    fixture.store.close();
+  });
+});

@@ -5,11 +5,11 @@ import { spawnLocalAgent } from "./agent-spawn.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
-import { HttpApp } from "./http.ts";
+import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
-import { type RawSocket } from "./session-peer.ts";
+import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-peer.ts";
 import { SessionGateway } from "./session-ws.ts";
 import { ServerStore } from "./stores.ts";
 import { TerminalBroker } from "./terminal-broker.ts";
@@ -60,9 +60,18 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
   const auth = new AuthService(store, config.ownerKey, runtime);
   const rooms = new RoomManager(store, runtime, timers, logger);
-  const broker = new TerminalBroker(store, auth, rooms, runtime, logger, () => config.publicUrl);
+  const broker = new TerminalBroker(
+    store,
+    auth,
+    rooms,
+    runtime,
+    timers,
+    logger,
+    () => config.publicUrl,
+  );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  const sessions = new SessionGateway(auth, rooms, broker, timers, logger);
+  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  const sessions = new SessionGateway(auth, rooms, broker, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,
     store,
@@ -76,6 +85,8 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
 
   const server = Bun.serve<WebSocketData>({
     port: config.port,
+    hostname: config.hostname,
+    maxRequestBodySize: MAX_HTTP_BODY_BYTES,
     fetch(request, bunServer) {
       const pathname = new URL(request.url).pathname;
       let endpoint: WebSocketData["endpoint"] | null = null;
@@ -115,7 +126,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
           machines.close(socket.data.id);
         }
       },
-      maxPayloadLength: 1_048_576,
+      maxPayloadLength: SESSION_TRANSPORT_PAYLOAD_BYTES,
       idleTimeout: 120,
     },
   });

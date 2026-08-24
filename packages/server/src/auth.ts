@@ -69,7 +69,9 @@ function secretsEqual(left: string, right: string): boolean {
 /** Owns owner bootstrap, bearer hashing, attenuation, enrollment, and revocation fanout. */
 export class AuthService {
   readonly ownerPrincipal: Principal;
-  private readonly revokedListeners = new Set<(principalId: string) => void>();
+  private readonly revokedListeners = new Set<
+    (principalId: string, padId: string | null) => void
+  >();
 
   constructor(
     private readonly store: ServerStore,
@@ -161,6 +163,7 @@ export class AuthService {
       id: this.runtime.newId(),
       hash: sha256Hex(raw),
       principalId,
+      mintedBy: actorId,
       caps: [...caps],
       padId,
       createdAt: this.runtime.now(),
@@ -218,6 +221,13 @@ export class AuthService {
       const existing = this.store.getPrincipal(parsed.principalId);
       if (existing === null) throw new ServiceError("not_found", "principal not found");
       principal = existing;
+      if (
+        !minter.isRoot &&
+        existing.id !== minter.principal.id &&
+        !this.store.principalMintedBy(existing.id, minter.principal.id)
+      ) {
+        throw new ServiceError("forbidden", "cannot mint for another principal");
+      }
     } else if (parsed.principal !== undefined) {
       principal = this.createPrincipal(parsed.principal);
     } else {
@@ -277,7 +287,7 @@ export class AuthService {
         subjectPrincipalId: machine.id,
         count: 1,
       });
-      for (const listener of [...this.revokedListeners]) listener(machine.id);
+      for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
     const minted = this.persistToken(machine.id, [], null, this.ownerPrincipal.id);
     const lastSeen = this.runtime.now();
@@ -297,21 +307,43 @@ export class AuthService {
       count,
     });
     if (count > 0) {
-      for (const listener of [...this.revokedListeners]) listener(principalId);
+      for (const listener of [...this.revokedListeners]) listener(principalId, null);
     }
     return count;
   }
 
-  /** Revokes every token for a principal and synchronously fences its live sockets. */
+  /** Revokes only identities the actor created (or itself), without widening pad scope. */
   revokePrincipal(principalId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    return this.revokeIssuedPrincipal(principalId, actor.principal.id);
+    if (
+      !actor.isRoot &&
+      principalId !== actor.principal.id &&
+      !this.store.principalMintedBy(principalId, actor.principal.id)
+    ) {
+      throw new ServiceError("forbidden", "cannot revoke another principal");
+    }
+    if (actor.isRoot) return this.revokeIssuedPrincipal(principalId, actor.principal.id);
+
+    const padId = actor.padScope;
+    const at = this.runtime.now();
+    const count =
+      padId === null
+        ? this.store.revokeTokensByPrincipal(principalId, at)
+        : this.store.revokeTokensByPrincipal(principalId, at, padId);
+    this.store.addEvent(padId, at, actor.principal.id, "token_revoked", {
+      subjectPrincipalId: principalId,
+      count,
+    });
+    if (count > 0) {
+      for (const listener of [...this.revokedListeners]) listener(principalId, padId);
+    }
+    return count;
   }
 
   /** Registers a synchronous live-socket fence invoked after durable revocation commits. */
-  onRevoked(listener: (principalId: string) => void): () => void {
+  onRevoked(listener: (principalId: string, padId: string | null) => void): () => void {
     this.revokedListeners.add(listener);
     return () => {
       this.revokedListeners.delete(listener);

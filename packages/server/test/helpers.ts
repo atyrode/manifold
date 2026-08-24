@@ -40,6 +40,11 @@ export class FakeClock implements RoomTimers {
     };
   }
 
+  /** Number of callbacks still armed, used to prove lifecycle cancellation. */
+  get pendingJobs(): number {
+    return this.jobs.size;
+  }
+
   /** Advances fake wall clock while faithfully running all timers due before the target. */
   advance(delayMs: number): void {
     const target = this.runtime.time + delayMs;

@@ -9,7 +9,7 @@ import {
 } from "@manifold/protocol";
 import type { AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
-import type { RoomManager } from "./room.ts";
+import type { RoomManager, RoomTimers } from "./room.ts";
 import type { SessionPeer } from "./session-peer.ts";
 import type { ServerStore } from "./stores.ts";
 
@@ -25,6 +25,8 @@ type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" }>;
 
 const PENDING_OUTPUT_FRAMES = 256;
 const PENDING_OUTPUT_BYTES = 1_048_576;
+const CREATE_DEADLINE_MS = 10_000;
+const SNAPSHOT_DEADLINE_MS = 10_000;
 
 /** Online agent connection used by the broker without depending on Bun WebSocket types. */
 export interface MachineChannel {
@@ -36,11 +38,17 @@ interface Viewer {
   state: "PENDING" | "LIVE";
   queue: OutputFrame[];
   queuedBytes: number;
+  cancelSnapshotDeadline: (() => void) | null;
+  snapshotGeneration: number;
+  lastDeliveredSeq: number;
 }
 
 interface RuntimeSession {
   info: SessionInfo;
   viewers: Map<SessionPeer, Viewer>;
+  lastReceivedOutputSeq: number;
+  snapshotGeneration: number;
+  snapshotRequestOutstanding: boolean;
 }
 
 interface PendingOpen {
@@ -54,6 +62,7 @@ interface PendingOpen {
   rows: number;
   opener: SessionPeer;
   agentPrincipalId: string;
+  cancelDeadline: (() => void) | null;
 }
 
 /** Routes terminal lifecycle/control while preserving the snapshot-plus-tail attach invariant. */
@@ -67,6 +76,7 @@ export class TerminalBroker {
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly runtime: RuntimeDeps,
+    private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly publicUrl: () => string,
   ) {
@@ -83,7 +93,13 @@ export class TerminalBroker {
         controllerId: row.status === "running" ? row.createdBy : null,
         createdBy: row.createdBy,
       };
-      this.sessions.set(row.id, { info, viewers: new Map() });
+      this.sessions.set(row.id, {
+        info,
+        viewers: new Map(),
+        lastReceivedOutputSeq: 0,
+        snapshotGeneration: 0,
+        snapshotRequestOutstanding: false,
+      });
     }
   }
 
@@ -98,6 +114,7 @@ export class TerminalBroker {
     this.machines.delete(channel.machineId);
     for (const [sessionId, pending] of this.pendingOpens) {
       if (pending.machineId !== channel.machineId) continue;
+      pending.cancelDeadline?.();
       pending.opener.send({
         type: "error",
         code: "no_machine",
@@ -106,14 +123,15 @@ export class TerminalBroker {
       });
       this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
       this.pendingOpens.delete(sessionId);
+      this.rooms.evictIfIdle(pending.padId);
     }
     for (const session of this.sessions.values()) {
-      if (session.info.machineId !== channel.machineId || session.info.status !== "running")
+      if (session.info.machineId !== channel.machineId || session.info.status !== "running") {
         continue;
-      for (const viewer of session.viewers.values()) {
-        viewer.state = "PENDING";
-        viewer.queue = [];
-        viewer.queuedBytes = 0;
+      }
+      session.snapshotRequestOutstanding = false;
+      for (const [peer, viewer] of session.viewers) {
+        this.failViewer(session, peer, viewer, "no_machine", "session machine disconnected");
       }
     }
   }
@@ -121,6 +139,88 @@ export class TerminalBroker {
   /** Reports whether the persisted machine currently has an authenticated socket. */
   isMachineOnline(machineId: string): boolean {
     return this.machines.has(machineId);
+  }
+
+  /** Whether an agent create is still in flight for this pad. */
+  hasPendingOpenForPad(padId: string): boolean {
+    for (const pending of this.pendingOpens.values()) {
+      if (pending.padId === padId) return true;
+    }
+    return false;
+  }
+
+  private failViewer(
+    session: RuntimeSession,
+    peer: SessionPeer,
+    viewer: Viewer,
+    code: "conflict" | "no_machine",
+    message: string,
+  ): void {
+    viewer.cancelSnapshotDeadline?.();
+    viewer.cancelSnapshotDeadline = null;
+    if (session.viewers.get(peer) !== viewer) return;
+    session.viewers.delete(peer);
+    peer.send({ type: "error", code, message, ref: session.info.id });
+  }
+
+  private armSnapshotDeadline(session: RuntimeSession, peer: SessionPeer, viewer: Viewer): void {
+    viewer.cancelSnapshotDeadline?.();
+    viewer.cancelSnapshotDeadline = this.timers.schedule(() => {
+      viewer.cancelSnapshotDeadline = null;
+      if (session.viewers.get(peer) !== viewer || viewer.state !== "PENDING") return;
+      const requestTimedOut = session.snapshotRequestOutstanding;
+      if (requestTimedOut) session.snapshotRequestOutstanding = false;
+      session.viewers.delete(peer);
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message: "terminal snapshot timed out",
+        ref: session.info.id,
+      });
+      this.logger.warn("terminal_snapshot_timeout", {
+        sessionId: session.info.id,
+        machineId: session.info.machineId,
+      });
+      if (requestTimedOut) this.requestSnapshotForPending(session);
+    }, SNAPSHOT_DEADLINE_MS);
+  }
+
+  /** Sends at most one snapshot request and binds its generation to current PENDING viewers. */
+  private requestSnapshotForPending(session: RuntimeSession): void {
+    if (session.snapshotRequestOutstanding || session.info.status !== "running") return;
+    let hasPending = false;
+    for (const viewer of session.viewers.values()) {
+      if (viewer.state === "PENDING") {
+        hasPending = true;
+        break;
+      }
+    }
+    if (!hasPending) return;
+
+    const machine = this.machines.get(session.info.machineId);
+    if (machine === undefined) {
+      for (const [peer, viewer] of session.viewers) {
+        if (viewer.state === "PENDING") {
+          this.failViewer(session, peer, viewer, "no_machine", "session machine is offline");
+        }
+      }
+      return;
+    }
+
+    session.snapshotGeneration += 1;
+    const generation = session.snapshotGeneration;
+    for (const viewer of session.viewers.values()) {
+      if (viewer.state === "PENDING") viewer.snapshotGeneration = generation;
+    }
+    session.snapshotRequestOutstanding = true;
+    if (machine.send({ type: "snapshot_request", sessionId: session.info.id })) return;
+
+    session.snapshotRequestOutstanding = false;
+    for (const [peer, viewer] of session.viewers) {
+      if (viewer.state === "PENDING" && viewer.snapshotGeneration === generation) {
+        this.failViewer(session, peer, viewer, "no_machine", "session machine is unavailable");
+      }
+    }
   }
 
   /** Re-registers a surviving PTY only against its persisted pad/element binding. */
@@ -141,7 +241,13 @@ export class TerminalBroker {
         controllerId: stored.status === "running" ? stored.createdBy : null,
         createdBy: stored.createdBy,
       };
-      session = { info, viewers: new Map() };
+      session = {
+        info,
+        viewers: new Map(),
+        lastReceivedOutputSeq: 0,
+        snapshotGeneration: 0,
+        snapshotRequestOutstanding: false,
+      };
       this.sessions.set(stored.id, session);
     }
     if (!advertised.alive) {
@@ -156,18 +262,37 @@ export class TerminalBroker {
       cols: advertised.cols,
       rows: advertised.rows,
     };
-    const channel = this.machines.get(machineId);
-    if (channel !== undefined) {
-      for (const viewer of session.viewers.values()) {
+    session.snapshotRequestOutstanding = false;
+    if (session.viewers.size > 0) {
+      for (const [peer, viewer] of session.viewers) {
         viewer.state = "PENDING";
         viewer.queue = [];
         viewer.queuedBytes = 0;
+        viewer.lastDeliveredSeq = 0;
+        viewer.snapshotGeneration = session.snapshotGeneration + 1;
+        this.armSnapshotDeadline(session, peer, viewer);
       }
-      if (session.viewers.size > 0) {
-        channel.send({ type: "snapshot_request", sessionId: advertised.sessionId });
-      }
+      this.requestSnapshotForPending(session);
     }
     return true;
+  }
+
+  /**
+   * Reconciles the complete hello inventory: missing durable PTYs are exited, while
+   * unadoptable agent PTYs are explicitly killed instead of becoming unmanaged orphans.
+   */
+  reconcileMachineHello(machineId: string, advertised: readonly AdvertisedSession[]): void {
+    const advertisedIds = new Set<string>();
+    const channel = this.machines.get(machineId);
+    for (const candidate of advertised) {
+      advertisedIds.add(candidate.sessionId);
+      if (!this.adoptSession(machineId, candidate)) {
+        channel?.send({ type: "kill", sessionId: candidate.sessionId });
+      }
+    }
+    for (const stored of this.store.listRunningSessionsForMachine(machineId)) {
+      if (!advertisedIds.has(stored.id)) this.onExited(machineId, stored.id, null);
+    }
   }
 
   private selectMachine(requested: string | undefined): MachineChannel | null {
@@ -211,8 +336,27 @@ export class TerminalBroker {
       rows: message.rows,
       opener: peer,
       agentPrincipalId: grant.principal.id,
+      cancelDeadline: null,
     };
     this.pendingOpens.set(sessionId, pending);
+    pending.cancelDeadline = this.timers.schedule(() => {
+      pending.cancelDeadline = null;
+      if (this.pendingOpens.get(sessionId) !== pending) return;
+      this.pendingOpens.delete(sessionId);
+      this.machines.get(machine.machineId)?.send({ type: "kill", sessionId });
+      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      pending.opener.send({
+        type: "error",
+        code: "no_machine",
+        message: "terminal creation timed out",
+        ref: pending.elementId,
+      });
+      this.logger.warn("terminal_create_timeout", {
+        machineId: machine.machineId,
+        sessionId,
+      });
+      this.rooms.evictIfIdle(pending.padId);
+    }, CREATE_DEADLINE_MS);
     const sent = machine.send({
       type: "create",
       sessionId,
@@ -227,6 +371,7 @@ export class TerminalBroker {
       },
     });
     if (!sent) {
+      pending.cancelDeadline?.();
       this.pendingOpens.delete(sessionId);
       this.auth.revokeIssuedPrincipal(grant.principal.id, peer.auth.principal.id);
       peer.send({
@@ -235,6 +380,7 @@ export class TerminalBroker {
         message: "machine connection unavailable",
         ref: message.elementId,
       });
+      this.rooms.evictIfIdle(pending.padId);
     }
   }
 
@@ -243,12 +389,14 @@ export class TerminalBroker {
     const pending = this.pendingOpens.get(sessionId);
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(sessionId);
+    pending.cancelDeadline?.();
     this.store.createSession({
       id: sessionId,
       machineId,
       padId: pending.padId,
       elementId: pending.elementId,
       createdBy: pending.createdBy,
+      agentPrincipalId: pending.agentPrincipalId,
       createdAt: pending.createdAt,
     });
     const info: SessionInfo = {
@@ -263,14 +411,27 @@ export class TerminalBroker {
       controllerId: pending.createdBy,
       createdBy: pending.createdBy,
     };
-    this.sessions.set(sessionId, { info, viewers: new Map() });
+    this.sessions.set(sessionId, {
+      info,
+      viewers: new Map(),
+      lastReceivedOutputSeq: 0,
+      snapshotGeneration: 0,
+      snapshotRequestOutstanding: false,
+    });
     pending.opener.send({ type: "terminal_opened", elementId: pending.elementId, session: info });
-    this.rooms.get(pending.padId)?.broadcast({ type: "session_event", sessionId, kind: "opened" });
+    const room = this.rooms.live(pending.padId);
+    room?.broadcast(
+      { type: "terminal_opened", elementId: pending.elementId, session: info },
+      false,
+      pending.opener,
+    );
+    room?.broadcast({ type: "session_event", sessionId, kind: "opened" });
     this.store.addEvent(pending.padId, this.runtime.now(), pending.createdBy, "session_opened", {
       sessionId,
       machineId,
       elementId: pending.elementId,
     });
+    this.rooms.evictIfIdle(pending.padId);
   }
 
   /** Resolves a rejected PTY create without exposing agent diagnostics to clients. */
@@ -278,6 +439,7 @@ export class TerminalBroker {
     const pending = this.pendingOpens.get(sessionId);
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(sessionId);
+    pending.cancelDeadline?.();
     this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
     pending.opener.send({
       type: "error",
@@ -286,6 +448,7 @@ export class TerminalBroker {
       ref: pending.elementId,
     });
     this.logger.warn("terminal_create_failed", { machineId, sessionId });
+    this.rooms.evictIfIdle(pending.padId);
   }
 
   private sessionFor(peer: SessionPeer, sessionId: string): RuntimeSession | null {
@@ -320,26 +483,34 @@ export class TerminalBroker {
       });
       return;
     }
-    session.viewers.set(peer, { state: "PENDING", queue: [], queuedBytes: 0 });
-    if (!machine.send({ type: "snapshot_request", sessionId: message.sessionId })) {
-      session.viewers.delete(peer);
-      peer.send({
-        type: "error",
-        code: "no_machine",
-        message: "session machine is unavailable",
-        ref: message.sessionId,
-      });
-    }
+    const previous = session.viewers.get(peer);
+    previous?.cancelSnapshotDeadline?.();
+    const viewer: Viewer = {
+      state: "PENDING",
+      queue: [],
+      queuedBytes: 0,
+      cancelSnapshotDeadline: null,
+      snapshotGeneration: session.snapshotGeneration + 1,
+      lastDeliveredSeq: 0,
+    };
+    session.viewers.set(peer, viewer);
+    this.armSnapshotDeadline(session, peer, viewer);
+    this.requestSnapshotForPending(session);
   }
 
   /** Stops routing one session's terminal bytes to a viewer. */
   detach(peer: SessionPeer, message: TerminalDetach): void {
+    const viewer = this.sessions.get(message.sessionId)?.viewers.get(peer);
+    viewer?.cancelSnapshotDeadline?.();
     this.sessions.get(message.sessionId)?.viewers.delete(peer);
   }
 
   /** Removes a closing socket from every session viewer registry. */
   detachAll(peer: SessionPeer): void {
-    for (const session of this.sessions.values()) session.viewers.delete(peer);
+    for (const session of this.sessions.values()) {
+      session.viewers.get(peer)?.cancelSnapshotDeadline?.();
+      session.viewers.delete(peer);
+    }
   }
 
   /** Queues output for PENDING viewers and relays it directly only after handoff is LIVE. */
@@ -352,18 +523,23 @@ export class TerminalBroker {
     ) {
       return;
     }
+    if (output.seq <= session.lastReceivedOutputSeq) return;
+    session.lastReceivedOutputSeq = output.seq;
     for (const [peer, viewer] of session.viewers) {
       if (viewer.state === "LIVE") {
-        if (
-          !peer.send({
-            type: "terminal_output",
-            sessionId: output.sessionId,
-            seq: output.seq,
-            data: output.data,
-          })
-        ) {
+        if (output.seq <= viewer.lastDeliveredSeq) continue;
+        const delivered = peer.send({
+          type: "terminal_output",
+          sessionId: output.sessionId,
+          seq: output.seq,
+          data: output.data,
+        });
+        if (!delivered) {
+          viewer.cancelSnapshotDeadline?.();
           session.viewers.delete(peer);
+          continue;
         }
+        viewer.lastDeliveredSeq = output.seq;
         continue;
       }
       const bytes = Buffer.byteLength(output.data);
@@ -371,8 +547,7 @@ export class TerminalBroker {
         viewer.queue.length >= PENDING_OUTPUT_FRAMES ||
         viewer.queuedBytes + bytes > PENDING_OUTPUT_BYTES
       ) {
-        peer.close(1013, "terminal attach queue overflow");
-        session.viewers.delete(peer);
+        this.failViewer(session, peer, viewer, "conflict", "terminal attach queue overflow");
         continue;
       }
       viewer.queue.push(output);
@@ -384,8 +559,14 @@ export class TerminalBroker {
   onSnapshot(machineId: string, snapshot: SnapshotFrame): void {
     const session = this.sessions.get(snapshot.sessionId);
     if (session === undefined || session.info.machineId !== machineId) return;
+    if (session.info.status !== "running") return;
+    if (!session.snapshotRequestOutstanding) return;
+    const generation = session.snapshotGeneration;
+    session.snapshotRequestOutstanding = false;
     for (const [peer, viewer] of session.viewers) {
-      if (viewer.state !== "PENDING") continue;
+      if (viewer.state !== "PENDING" || viewer.snapshotGeneration !== generation) continue;
+      viewer.cancelSnapshotDeadline?.();
+      viewer.cancelSnapshotDeadline = null;
       if (
         !peer.send({
           type: "terminal_snapshot",
@@ -421,13 +602,24 @@ export class TerminalBroker {
       }
       viewer.queue = [];
       viewer.queuedBytes = 0;
+      viewer.lastDeliveredSeq = lastSeq;
       viewer.state = "LIVE";
     }
+    this.requestSnapshotForPending(session);
   }
 
   private controllerSession(peer: SessionPeer, sessionId: string): RuntimeSession | null {
     const session = this.sessionFor(peer, sessionId);
     if (session === null) return null;
+    if (session.info.status !== "running") {
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message: "session has exited",
+        ref: sessionId,
+      });
+      return null;
+    }
     if (session.info.controllerId !== peer.auth.principal.id) {
       peer.send({
         type: "error",
@@ -487,7 +679,7 @@ export class TerminalBroker {
       return;
     }
     session.info = { ...session.info, cols: message.cols, rows: message.rows };
-    this.rooms.get(peer.padId)?.broadcast({
+    this.rooms.live(peer.padId)?.broadcast({
       type: "session_event",
       sessionId: message.sessionId,
       kind: "resized",
@@ -500,6 +692,15 @@ export class TerminalBroker {
   take(peer: SessionPeer, message: TerminalTake): void {
     const session = this.sessionFor(peer, message.sessionId);
     if (session === null) return;
+    if (session.info.status !== "running") {
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message: "session has exited",
+        ref: message.sessionId,
+      });
+      return;
+    }
     if (!this.auth.allows(peer.auth, "terminal:write", peer.padId)) {
       peer.send({
         type: "error",
@@ -510,7 +711,7 @@ export class TerminalBroker {
       return;
     }
     session.info = { ...session.info, controllerId: peer.auth.principal.id };
-    this.rooms.get(peer.padId)?.broadcast({
+    this.rooms.live(peer.padId)?.broadcast({
       type: "session_event",
       sessionId: message.sessionId,
       kind: "controller_changed",
@@ -539,14 +740,20 @@ export class TerminalBroker {
     const session = this.sessions.get(sessionId);
     if (session === undefined || session.info.machineId !== machineId) return;
     if (session.info.status === "exited") return;
-    session.info = { ...session.info, status: "exited", exitCode };
+    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    session.viewers.clear();
+    session.info = { ...session.info, status: "exited", exitCode, controllerId: null };
     this.store.markSessionExited(sessionId, exitCode);
-    this.rooms.get(session.info.padId)?.broadcast({
+    this.rooms.live(session.info.padId)?.broadcast({
       type: "session_event",
       sessionId,
       kind: "exited",
       exitCode,
     });
+    const stored = this.store.getSession(sessionId);
+    if (stored !== null && stored.agentPrincipalId !== null) {
+      this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
+    }
     this.store.addEvent(
       session.info.padId,
       this.runtime.now(),
@@ -554,14 +761,62 @@ export class TerminalBroker {
       "session_exited",
       { sessionId, machineId, exitCode },
     );
+    this.rooms.evictIfIdle(session.info.padId);
   }
 
   /** Lists protocol session state for one room's init/resync payload. */
   listForPad(padId: string): SessionInfo[] {
+    const room = this.rooms.live(padId);
+    if (room !== null) {
+      for (const [sessionId, session] of this.sessions) {
+        if (
+          session.info.padId !== padId ||
+          session.info.status !== "exited" ||
+          room.referencesSession(sessionId)
+        ) {
+          continue;
+        }
+        for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+        session.viewers.clear();
+        this.sessions.delete(sessionId);
+        this.store.deleteSession(sessionId);
+      }
+    }
     return [...this.sessions.values()]
       .map((session) => session.info)
       .filter((session) => session.padId === padId)
       .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  /** Kills and forgets every PTY bound to a pad before its durable rows are purged. */
+  dropPad(padId: string): void {
+    for (const [sessionId, pending] of this.pendingOpens) {
+      if (pending.padId !== padId) continue;
+      pending.cancelDeadline?.();
+      this.machines.get(pending.machineId)?.send({ type: "kill", sessionId });
+      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      pending.opener.send({
+        type: "error",
+        code: "not_found",
+        message: "pad deleted while opening terminal",
+        ref: pending.elementId,
+      });
+      this.pendingOpens.delete(sessionId);
+    }
+    for (const [sessionId, session] of this.sessions) {
+      if (session.info.padId !== padId) continue;
+      if (session.info.status === "running") {
+        this.machines
+          .get(session.info.machineId)
+          ?.send({ type: "kill", sessionId: session.info.id });
+      }
+      for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+      const stored = this.store.getSession(sessionId);
+      if (stored !== null && stored.agentPrincipalId !== null) {
+        this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
+      }
+      this.sessions.delete(sessionId);
+    }
   }
 
   /** Returns all secret-free broker session state for root introspection. */

@@ -4,6 +4,7 @@ import {
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   type ClientMessage,
+  type RuntimeDeps,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
@@ -16,15 +17,25 @@ type ClassifiedFrame =
   | { kind: "unknown_type"; frameType: string }
   | { kind: "malformed"; detail: string };
 
+type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
+
 const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   CLIENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
 );
+
+const RESYNC_MIN_INTERVAL_MS = 1_000;
+const CURSOR_MIN_INTERVAL_MS = 30;
 
 interface SessionConnection {
   socket: RawSocket;
   peer: SessionPeer | null;
   room: Room | null;
   cancelJoinTimeout: (() => void) | null;
+  lastResyncAt: number | null;
+  lastCursorAt: number | null;
+  pendingCursor: CursorUpdate | null;
+  cancelCursorFlush: (() => void) | null;
+  closed: boolean;
 }
 
 function classifyClientFrame(data: unknown): ClassifiedFrame {
@@ -64,9 +75,10 @@ export class SessionGateway {
     private readonly broker: TerminalBroker,
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
+    private readonly runtime: RuntimeDeps,
   ) {
-    this.removeRevocationListener = auth.onRevoked((principalId) => {
-      this.revokePrincipal(principalId);
+    this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
+      this.revokePrincipal(principalId, padId);
     });
   }
 
@@ -77,6 +89,11 @@ export class SessionGateway {
       peer: null,
       room: null,
       cancelJoinTimeout: null,
+      lastResyncAt: null,
+      lastCursorAt: null,
+      pendingCursor: null,
+      cancelCursorFlush: null,
+      closed: false,
     };
     connection.cancelJoinTimeout = this.timers.schedule(() => {
       connection.cancelJoinTimeout = null;
@@ -103,7 +120,7 @@ export class SessionGateway {
           this.join(id, connection, classified.message);
           return;
         }
-        this.dispatch(connection.peer, connection.room, classified.message);
+        this.dispatch(connection, classified.message);
         return;
       default: {
         const exhaustive: never = classified;
@@ -151,8 +168,60 @@ export class SessionGateway {
     room.join(peer);
   }
 
-  private dispatch(peer: SessionPeer, room: Room | null, message: ClientMessage): void {
-    if (room === null) return;
+  /**
+   * Relays immediately when the cadence is open, otherwise retains exactly the newest
+   * cursor and flushes it at the boundary. This preserves latest-wins without flooding.
+   */
+  private relayCursor(
+    connection: SessionConnection,
+    peer: SessionPeer,
+    room: Room,
+    cursor: CursorUpdate,
+  ): void {
+    const now = this.runtime.now();
+    const elapsed =
+      connection.lastCursorAt === null ? CURSOR_MIN_INTERVAL_MS : now - connection.lastCursorAt;
+    if (elapsed >= CURSOR_MIN_INTERVAL_MS) {
+      connection.cancelCursorFlush?.();
+      connection.cancelCursorFlush = null;
+      connection.pendingCursor = null;
+      connection.lastCursorAt = now;
+      room.relayCursor(peer, cursor);
+      return;
+    }
+
+    connection.pendingCursor = cursor;
+    if (connection.cancelCursorFlush !== null) return;
+    connection.cancelCursorFlush = this.timers.schedule(() => {
+      connection.cancelCursorFlush = null;
+      const pending = connection.pendingCursor;
+      connection.pendingCursor = null;
+      if (connection.closed || pending === null) return;
+      const livePeer = connection.peer;
+      const liveRoom = connection.room;
+      if (livePeer === null || liveRoom === null) return;
+      connection.lastCursorAt = this.runtime.now();
+      liveRoom.relayCursor(livePeer, pending);
+    }, CURSOR_MIN_INTERVAL_MS - elapsed);
+  }
+
+  /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */
+  private sendResyncIfDue(connection: SessionConnection, peer: SessionPeer, room: Room): void {
+    const now = this.runtime.now();
+    if (
+      connection.lastResyncAt !== null &&
+      now - connection.lastResyncAt < RESYNC_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    connection.lastResyncAt = now;
+    room.sendResync(peer);
+  }
+
+  private dispatch(connection: SessionConnection, message: ClientMessage): void {
+    const peer = connection.peer;
+    const room = connection.room;
+    if (peer === null || room === null) return;
     switch (message.type) {
       case "join":
         peer.close(4002, "duplicate join");
@@ -167,16 +236,16 @@ export class SessionGateway {
           });
           return;
         }
-        room.applyUpdate(peer, message);
+        if (!room.applyUpdate(peer, message)) this.sendResyncIfDue(connection, peer, room);
         return;
       case "presence":
         room.updatePresence(peer, message.payload);
         return;
       case "cursor":
-        room.relayCursor(peer, message);
+        this.relayCursor(connection, peer, room, message);
         return;
       case "resync_request":
-        room.sendResync(peer);
+        this.sendResyncIfDue(connection, peer, room);
         return;
       case "terminal_open":
         this.broker.open(peer, message);
@@ -219,6 +288,10 @@ export class SessionGateway {
     const connection = this.connections.get(id);
     if (connection === undefined) return;
     this.connections.delete(id);
+    connection.closed = true;
+    connection.pendingCursor = null;
+    connection.cancelCursorFlush?.();
+    connection.cancelCursorFlush = null;
     connection.cancelJoinTimeout?.();
     if (connection.peer !== null) {
       connection.room?.leave(connection.peer);
@@ -227,10 +300,11 @@ export class SessionGateway {
   }
 
   /** Fences every live tab belonging to a newly revoked principal. */
-  revokePrincipal(principalId: string): void {
+  revokePrincipal(principalId: string, padId: string | null = null): void {
     for (const [id, connection] of [...this.connections]) {
       const peer = connection.peer;
       if (peer?.auth.principal.id !== principalId) continue;
+      if (padId !== null && peer.auth.padScope !== padId) continue;
       peer.close(4403, "revoked");
       this.close(id);
     }

@@ -6,6 +6,7 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 /** Fully resolved server configuration. Mutable `publicUrl` is finalized after port 0 binds. */
 export interface ServerConfig {
   port: number;
+  hostname: string;
   dataDir: string;
   ownerKey: string;
   publicUrl: string;
@@ -78,12 +79,16 @@ export function loadConfig(
   cwd: string = process.cwd(),
 ): ServerConfig {
   const port = parsePort(env.MANIFOLD_PORT);
+  const configuredBind = env.MANIFOLD_BIND;
+  const hostname = configuredBind?.trim() ?? "127.0.0.1";
+  if (hostname.length === 0) throw new Error("MANIFOLD_BIND must not be empty");
   const dataDir = resolve(cwd, env.MANIFOLD_DATA_DIR ?? "data");
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const explicit = env.MANIFOLD_PUBLIC_URL !== undefined;
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
   return {
     port,
+    hostname,
     dataDir,
     ownerKey: loadOwnerKey(dataDir, env.MANIFOLD_OWNER_KEY),
     publicUrl,
