@@ -112,6 +112,7 @@ export class Room {
       rev: this.rev,
       elements: [...this.scene.values()].sort(compareElements),
       self: peer.auth.principal,
+      selfConnId: peer.id,
       roster: this.roster(),
       sessions: [...this.sessions()],
     };
@@ -274,7 +275,7 @@ export class Room {
     const principalId = peer.auth.principal.id;
     const current = this.presences.get(principalId) ?? {};
     this.presences.set(principalId, { ...current, ...payload });
-    this.broadcast({ type: "presence", principalId, payload });
+    this.broadcast({ type: "presence", principalId, connId: peer.id, payload });
   }
 
   /** Relays high-rate cursor motion with droppable delivery under socket pressure. */
@@ -283,6 +284,7 @@ export class Room {
       {
         type: "cursor",
         principalId: peer.auth.principal.id,
+        connId: peer.id,
         x: cursor.x,
         y: cursor.y,
         ...(cursor.tool === undefined ? {} : { tool: cursor.tool }),

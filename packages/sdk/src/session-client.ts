@@ -150,6 +150,7 @@ export class SessionClient {
   epoch = "";
   rev = 0;
   self: Principal | null = null;
+  selfConnId: string | null = null;
   status: ConnectionStatus = "idle";
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
@@ -380,6 +381,7 @@ export class SessionClient {
         this.epoch = msg.epoch;
         this.rev = msg.rev;
         this.self = msg.self;
+        this.selfConnId = msg.selfConnId;
         this.roster.clear();
         for (const p of msg.roster) this.roster.set(p.principal.id, p);
         this.sessions.clear();

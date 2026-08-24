@@ -147,6 +147,65 @@ describe("SessionGateway high-rate request cadence", () => {
   });
 });
 
+describe("SessionGateway connection identity", () => {
+  test("same-principal peers receive distinct init ids and each other's stamped cursors", () => {
+    const fixture = gatewayFixture();
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+
+    fixture.gateway.open("first", first);
+    fixture.gateway.message(
+      "first",
+      JSON.stringify({
+        type: "join",
+        padId: fixture.pad.id,
+        token: fixture.ownerKey,
+        protocolVersion: PROTOCOL_VERSION,
+      }),
+    );
+    fixture.gateway.open("second", second);
+    fixture.gateway.message(
+      "second",
+      JSON.stringify({
+        type: "join",
+        padId: fixture.pad.id,
+        token: fixture.ownerKey,
+        protocolVersion: PROTOCOL_VERSION,
+      }),
+    );
+
+    const firstInit = first.messages().find((message) => message.type === "init");
+    const secondInit = second.messages().find((message) => message.type === "init");
+    expect(firstInit?.selfConnId).toBe("first");
+    expect(secondInit?.selfConnId).toBe("second");
+    expect(firstInit?.selfConnId).not.toBe(secondInit?.selfConnId);
+
+    first.clear();
+    second.clear();
+    fixture.gateway.message("first", JSON.stringify({ type: "cursor", x: 1, y: 2 }));
+    fixture.gateway.message("second", JSON.stringify({ type: "cursor", x: 3, y: 4 }));
+
+    expect(
+      first.messages().find((message) => message.type === "cursor" && message.connId === "second"),
+    ).toMatchObject({
+      type: "cursor",
+      connId: "second",
+      x: 3,
+      y: 4,
+    });
+    expect(
+      second.messages().find((message) => message.type === "cursor" && message.connId === "first"),
+    ).toMatchObject({
+      type: "cursor",
+      connId: "first",
+      x: 1,
+      y: 2,
+    });
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+});
+
 describe("SessionGateway automatic resync cadence", () => {
   test("rapid epoch-mismatched updates share the one-per-second resync gate", () => {
     const fixture = gatewayFixture();

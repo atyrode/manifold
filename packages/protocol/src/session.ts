@@ -110,6 +110,8 @@ const stateFields = {
   rev: z.number().int().nonnegative(),
   elements: z.array(SceneElementSchema),
   self: PrincipalSchema,
+  /** Server-assigned identity for this socket; changes on every connection. */
+  selfConnId: z.string().min(1),
   roster: z.array(PresenceStateSchema),
   sessions: z.array(SessionInfoSchema),
 };
@@ -138,11 +140,13 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("presence"),
     principalId: z.string().min(1),
+    connId: z.string().min(1),
     payload: PresencePayloadSchema,
   }),
   z.strictObject({
     type: z.literal("cursor"),
     principalId: z.string().min(1),
+    connId: z.string().min(1),
     x: z.number().finite(),
     y: z.number().finite(),
     tool: z.enum(["pointer", "laser"]).optional(),

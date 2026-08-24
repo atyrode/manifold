@@ -88,6 +88,7 @@ const INIT: ServerMessage = {
   rev: 5,
   elements: [element("srv", 3)],
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
+  selfConnId: "conn-me",
   roster: [],
   sessions: [],
 };
@@ -137,11 +138,12 @@ describe("handshake", () => {
     expect(first.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
-  test("init adopts epoch, rev, and scene wholesale", () => {
+  test("init adopts epoch, rev, scene, and the assigned connection id", () => {
     const { client } = connected();
     expect(client.epoch).toBe("e1");
     expect(client.rev).toBe(5);
     expect(client.scene.get("srv")?.version).toBe(3);
+    expect(client.selfConnId).toBe("conn-me");
     expect(client.status).toBe("open");
   });
 });
@@ -482,17 +484,27 @@ describe("frame policy", () => {
 });
 
 describe("roster and presence", () => {
-  test("roster join/leave and presence merge", () => {
+  test("roster join/leave and connection-stamped presence merge", () => {
     const { client, socket } = connected();
     const peer = {
       principal: { id: "p2", kind: "agent" as const, name: "pi", color: "#00ff00" },
       connections: 1,
       payload: {},
     };
+    const observedConnIds: string[] = [];
+    client.on("presence", (message) => {
+      observedConnIds.push(message.connId);
+    });
     socket.receive({ type: "roster", joined: peer });
     expect(client.roster.get("p2")?.principal.name).toBe("pi");
-    socket.receive({ type: "presence", principalId: "p2", payload: { status: "working" } });
+    socket.receive({
+      type: "presence",
+      principalId: "p2",
+      connId: "peer-connection",
+      payload: { status: "working" },
+    });
     expect(client.roster.get("p2")?.payload.status).toBe("working");
+    expect(observedConnIds).toEqual(["peer-connection"]);
     socket.receive({ type: "roster", left: { principalId: "p2" } });
     expect(client.roster.has("p2")).toBe(false);
   });

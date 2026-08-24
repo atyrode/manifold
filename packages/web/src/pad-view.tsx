@@ -38,6 +38,7 @@ import {
   canPaintCanvas,
 } from "./canvas-readiness.ts";
 import { mergeCanonicalScene } from "./canvas-merge.ts";
+import { recordRemoteCursor, remoteCursorSocketId, type RemoteCursor } from "./cursor-identity.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
@@ -114,7 +115,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const observedViewportRef = useRef<ViewportUpdate | null>(null);
   const lastViewportSentAtRef = useRef<number | null>(null);
   const lastSelectionRef = useRef<readonly string[] | null>(null);
-  const remoteCursorsRef = useRef(new Map<string, CursorUpdate>());
+  const remoteCursorsRef = useRef(new Map<string, RemoteCursor>());
   const connectStartedRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
@@ -337,10 +338,30 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const api = apiRef.current;
     if (api === null) return;
     const collaborators = new Map<SocketId, Collaborator>();
+    const principalsWithConnectionCursor = new Set<string>();
+    for (const [socketId, cursor] of remoteCursorsRef.current) {
+      const entry = client.roster.get(cursor.principalId);
+      if (entry === undefined) continue;
+      principalsWithConnectionCursor.add(cursor.principalId);
+      collaborators.set(socketId as SocketId, {
+        username: entry.principal.name,
+        color: {
+          background: entry.principal.color,
+          stroke: entry.principal.color,
+        },
+        button: "up",
+        pointer: { x: cursor.x, y: cursor.y, tool: cursor.tool },
+      });
+    }
     for (const entry of client.roster.values()) {
-      if (entry.principal.id === client.self?.id) continue;
-      const cursor = remoteCursorsRef.current.get(entry.principal.id) ?? entry.payload.cursor;
-      collaborators.set(entry.principal.id as SocketId, {
+      if (
+        entry.principal.id === client.self?.id ||
+        principalsWithConnectionCursor.has(entry.principal.id)
+      ) {
+        continue;
+      }
+      const cursor = entry.payload.cursor;
+      collaborators.set(remoteCursorSocketId(entry.principal.id, "presence") as SocketId, {
         username: entry.principal.name,
         color: {
           background: entry.principal.color,
@@ -374,6 +395,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
+      remoteCursorsRef.current.clear();
       const action = sceneResetAction(lastEpochRef.current, client.epoch);
       lastEpochRef.current = client.epoch;
       if (action.discardPending) {
@@ -406,19 +428,16 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     });
     const offRoster = client.on("roster_changed", () => {
       const connected = new Set(client.roster.keys());
-      for (const principalId of remoteCursorsRef.current.keys()) {
-        if (!connected.has(principalId)) remoteCursorsRef.current.delete(principalId);
+      for (const [socketId, cursor] of remoteCursorsRef.current) {
+        if (!connected.has(cursor.principalId)) remoteCursorsRef.current.delete(socketId);
       }
       syncCollaborators();
       setRosterVersion((version) => version + 1);
     });
     const offCursor = client.on("cursor", (message) => {
-      remoteCursorsRef.current.set(message.principalId, {
-        x: message.x,
-        y: message.y,
-        tool: message.tool ?? "pointer",
-      });
-      syncCollaborators();
+      if (recordRemoteCursor(remoteCursorsRef.current, message, client.selfConnId)) {
+        syncCollaborators();
+      }
     });
     const offStatus = client.on("status", setConnectionStatus);
     const offSaved = client.on("saved", (message) => {

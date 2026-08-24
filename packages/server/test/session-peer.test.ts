@@ -73,6 +73,7 @@ describe("SessionPeer authoritative queue collapse", () => {
           rev,
           elements: [],
           self: peer.auth.principal,
+          selfConnId: peer.id,
           roster: [],
           sessions: [],
         }),

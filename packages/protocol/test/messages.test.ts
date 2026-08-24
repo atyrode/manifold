@@ -71,18 +71,56 @@ describe("session channel schemas", () => {
     expect(ClientMessageSchema.safeParse(good).success).toBe(true);
   });
 
-  test("init/resync share the full-state shape", () => {
+  test("init/resync require the server-assigned connection id", () => {
     const state = {
       protocolVersion: PROTOCOL_VERSION,
       epoch: "e1",
       rev: 7,
       elements: [element("a")],
       self: { id: "pr1", kind: "human", name: "alex", color: "#aabb00" },
+      selfConnId: "conn-1",
       roster: [],
       sessions: [],
     };
     expect(ServerMessageSchema.safeParse({ type: "init", ...state }).success).toBe(true);
     expect(ServerMessageSchema.safeParse({ type: "resync", ...state }).success).toBe(true);
+    const { selfConnId: _, ...missingConnId } = state;
+    expect(ServerMessageSchema.safeParse({ type: "init", ...missingConnId }).success).toBe(false);
+  });
+
+  test("server cursor and presence require connId while client frames omit it", () => {
+    expect(
+      ServerMessageSchema.safeParse({
+        type: "cursor",
+        principalId: "pr1",
+        connId: "conn-1",
+        x: 12,
+        y: 34,
+      }).success,
+    ).toBe(true);
+    expect(
+      ServerMessageSchema.safeParse({
+        type: "presence",
+        principalId: "pr1",
+        connId: "conn-1",
+        payload: { status: "active" },
+      }).success,
+    ).toBe(true);
+    expect(
+      ServerMessageSchema.safeParse({ type: "cursor", principalId: "pr1", x: 12, y: 34 }).success,
+    ).toBe(false);
+    expect(
+      ServerMessageSchema.safeParse({
+        type: "presence",
+        principalId: "pr1",
+        payload: {},
+      }).success,
+    ).toBe(false);
+    expect(ClientMessageSchema.safeParse({ type: "cursor", x: 12, y: 34 }).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({ type: "presence", payload: {} }).success).toBe(true);
+    expect(
+      ClientMessageSchema.safeParse({ type: "cursor", connId: "spoof", x: 12, y: 34 }).success,
+    ).toBe(false);
   });
 });
 
