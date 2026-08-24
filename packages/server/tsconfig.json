@@ -1,9 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
     "types": ["bun"]
   },
-  "include": ["src"],
-  "references": [{ "path": "../protocol" }]
+  "include": ["src", "test"]
 }

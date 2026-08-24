@@ -1,9 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": ".",
     "types": ["bun"]
   },
-  "include": ["src", "e2e"],
-  "references": [{ "path": "../protocol" }, { "path": "../sdk" }]
+  "include": ["src", "e2e"]
 }

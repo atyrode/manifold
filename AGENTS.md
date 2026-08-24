@@ -9,7 +9,7 @@ it end to end.
 
 ```
 bun install            # workspace install (bun >= 1.3.13)
-bun run check          # tsc -b strict typecheck, all packages
+bun run check          # strict noEmit typecheck, per package
 bun test packages      # unit tests (zero external services)
 bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint

@@ -4,6 +4,8 @@
     "lib": ["ES2023"],
     "module": "Preserve",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
@@ -14,13 +16,6 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "noEmit": false,
-    "emitDeclarationOnly": true,
-    "outDir": "${configDir}/.types"
+    "skipLibCheck": true
   }
 }

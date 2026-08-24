@@ -83,15 +83,23 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
   changed records, ≤1MB frame). Applies optimistically on its own canvas first.
 - Server reconciles each element with `@manifold/protocol` `reconcileElement`:
   accept iff `version > cur.version || (version === cur.version && versionNonce < cur.versionNonce)`.
-  Deleted elements (`isDeleted: true`) are **permanent tombstones**: retained in canonical
-  state and snapshots, never resurrected by stale updates.
+  Deleted elements (`isDeleted: true`) are **retained tombstones**: kept in canonical state
+  and snapshots so any stale pre-delete copy always loses LWW (undo-of-delete with a higher
+  version legitimately resurrects — permanence is a storage rule, not an acceptance rule).
+- **Epoch fence / compaction rule**: `scene_update` carries the client's `epoch` (learned
+  from init/resync); a mismatch is rejected with `error { code:"epoch_mismatch" }` plus a
+  fresh `resync`. Compacting tombstones is legal ONLY as an epoch bump: new epoch id,
+  tombstones dropped, forced `resync` to all connected sockets — so no writer (connected or
+  returning) can submit state built on pre-compaction history. v0 never auto-compacts; the
+  fence and tests exist so it can, safely, later. Restore-from-snapshot uses the same bump.
 - Server broadcasts `scene_applied { rev, elements, by }` with ONLY the accepted records
   (including to the sender) and acks the sender `scene_ack { updateId, rev, accepted }`.
 - Clients apply `scene_applied` through the same `reconcileElement` — both sides run the
   identical module. Ordering for render: sort by (`index` ?? "", `id`); the server stores
   `index` opaquely and never rewrites it.
 - Client detects a rev gap (received rev > lastRev+1) or epoch change → sends
-  `resync_request {}` → server replies with a fresh `init`-shaped `resync`.
+  `resync_request {}` → server replies with a fresh `init`-shaped `resync`. `join` carries
+  `protocolVersion`; mismatches close 4409.
 
 ### Presence (ephemeral, never persisted)
 
@@ -129,8 +137,9 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
 - `terminal_input { sessionId, data }` (data base64) — accepted only from the current
   **controller**; others receive `error { code:"not_controller" }`.
 - Controller lease: opener starts as controller; `terminal_take { sessionId }` transfers
-  it to any principal with `terminal:write` (event `session_event { kind:"controller_changed" }`).
-  Controller-only: input, `terminal_resize { cols, rows }`, `terminal_kill`.
+  it to any principal with `terminal:write` (event `session_event { kind:"controller_changed",
+controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
+  `session_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.
@@ -187,4 +196,6 @@ owner keys, or terminal data. `/api/introspect` exposes live state for agent-ope
 3. Every message handler validates with the zod schema before acting; unknown message
    types are logged and ignored (forward compatibility), malformed ones close the socket.
 4. No package imports another package's internals — only workspace package roots.
-5. Determinism in tests: injected clocks/ids where relevant; port 0 (random) in tests.
+5. Determinism in tests: server/agent take `RuntimeDeps { newId, now }` from
+   `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake
+   implementations. Port 0 (random) in tests.
