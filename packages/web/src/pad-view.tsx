@@ -412,8 +412,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     api.updateScene({ collaborators, captureUpdate: CaptureUpdateAction.NEVER });
   }, [client]);
 
+  // Latest-callback ref: initialized at declaration (no stale first-render window) and
+  // refreshed in an effect, since refs must not be written during render.
   const emitCursorRef = useRef(emitCursorFromClient);
-  emitCursorRef.current = emitCursorFromClient;
+  useEffect(() => {
+    emitCursorRef.current = emitCursorFromClient;
+  }, [emitCursorFromClient]);
 
   const offScrollChangeRef = useRef<(() => void) | null>(null);
 
