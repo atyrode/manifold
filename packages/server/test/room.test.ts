@@ -361,13 +361,19 @@ describe("Room bounded authoritative state", () => {
     });
 
     expect(room.rev).toBe(3);
-    expect(room.scene.has("overflow")).toBe(false);
+    expect([...room.scene.values()]).toEqual([nearLimit]);
     expect(socket.messages()).toEqual([
       {
         type: "error",
         code: "invalid",
         message: "scene too large",
         ref: "too-large",
+      },
+      {
+        type: "scene_ack",
+        updateId: "too-large",
+        rev: 3,
+        acceptedIds: [],
       },
     ]);
     fixture.store.close();

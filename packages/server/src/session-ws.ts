@@ -32,6 +32,7 @@ interface SessionConnection {
   room: Room | null;
   cancelJoinTimeout: (() => void) | null;
   lastResyncAt: number | null;
+  cancelResyncFlush: (() => void) | null;
   lastCursorAt: number | null;
   pendingCursor: CursorUpdate | null;
   cancelCursorFlush: (() => void) | null;
@@ -90,6 +91,7 @@ export class SessionGateway {
       room: null,
       cancelJoinTimeout: null,
       lastResyncAt: null,
+      cancelResyncFlush: null,
       lastCursorAt: null,
       pendingCursor: null,
       cancelCursorFlush: null,
@@ -208,14 +210,26 @@ export class SessionGateway {
   /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */
   private sendResyncIfDue(connection: SessionConnection, peer: SessionPeer, room: Room): void {
     const now = this.runtime.now();
-    if (
-      connection.lastResyncAt !== null &&
-      now - connection.lastResyncAt < RESYNC_MIN_INTERVAL_MS
-    ) {
+    const elapsed =
+      connection.lastResyncAt === null ? RESYNC_MIN_INTERVAL_MS : now - connection.lastResyncAt;
+    if (elapsed >= RESYNC_MIN_INTERVAL_MS) {
+      connection.cancelResyncFlush?.();
+      connection.cancelResyncFlush = null;
+      connection.lastResyncAt = now;
+      room.sendResync(peer);
       return;
     }
-    connection.lastResyncAt = now;
-    room.sendResync(peer);
+
+    if (connection.cancelResyncFlush !== null) return;
+    connection.cancelResyncFlush = this.timers.schedule(() => {
+      connection.cancelResyncFlush = null;
+      if (connection.closed) return;
+      const livePeer = connection.peer;
+      const liveRoom = connection.room;
+      if (livePeer === null || liveRoom === null) return;
+      connection.lastResyncAt = this.runtime.now();
+      liveRoom.sendResync(livePeer);
+    }, RESYNC_MIN_INTERVAL_MS - elapsed);
   }
 
   private dispatch(connection: SessionConnection, message: ClientMessage): void {
@@ -292,6 +306,8 @@ export class SessionGateway {
     connection.pendingCursor = null;
     connection.cancelCursorFlush?.();
     connection.cancelCursorFlush = null;
+    connection.cancelResyncFlush?.();
+    connection.cancelResyncFlush = null;
     connection.cancelJoinTimeout?.();
     if (connection.peer !== null) {
       connection.room?.leave(connection.peer);

@@ -238,6 +238,12 @@ export class Room {
         message: "scene too large",
         ref: update.updateId,
       });
+      peer.send({
+        type: "scene_ack",
+        updateId: update.updateId,
+        rev: this.rev,
+        acceptedIds: [],
+      });
       return true;
     }
 

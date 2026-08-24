@@ -73,6 +73,27 @@ describe("SessionGateway high-rate request cadence", () => {
     fixture.store.close();
   });
 
+  test("a rapid second resync request is served once at the cadence boundary", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
+
+    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+
+    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
+    expect(fixture.clock.pendingJobs).toBe(1);
+    fixture.clock.advance(999);
+    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
+    fixture.clock.advance(1);
+    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(2);
+    expect(fixture.clock.pendingJobs).toBe(0);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
   test("rapid cursors coalesce to one trailing frame with the latest coordinates", () => {
     const fixture = gatewayFixture();
     const first = new FakeSocket();
