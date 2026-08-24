@@ -189,3 +189,51 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("pong") }),
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
+
+// ---------------------------------------------------------------------------- type inventories
+
+/**
+ * Public literal inventories for frame classification (unknown-type = forward-compat
+ * ignore vs malformed-known-type = protocol error). Kept as plain constants so no
+ * consumer ever reaches into zod internals; exhaustiveness is enforced at compile time
+ * in both directions.
+ */
+export const SERVER_MESSAGE_TYPES = [
+  "init",
+  "resync",
+  "scene_applied",
+  "scene_ack",
+  "roster",
+  "presence",
+  "cursor",
+  "terminal_opened",
+  "terminal_snapshot",
+  "terminal_output",
+  "session_event",
+  "saved",
+  "error",
+  "pong",
+] as const satisfies readonly ServerMessage["type"][];
+
+export const CLIENT_MESSAGE_TYPES = [
+  "join",
+  "scene_update",
+  "presence",
+  "cursor",
+  "resync_request",
+  "terminal_open",
+  "terminal_attach",
+  "terminal_detach",
+  "terminal_input",
+  "terminal_resize",
+  "terminal_take",
+  "terminal_kill",
+  "ping",
+] as const satisfies readonly ClientMessage["type"][];
+
+type MissingServerType = Exclude<ServerMessage["type"], (typeof SERVER_MESSAGE_TYPES)[number]>;
+type MissingClientType = Exclude<ClientMessage["type"], (typeof CLIENT_MESSAGE_TYPES)[number]>;
+const serverInventoryComplete: MissingServerType extends never ? true : never = true;
+const clientInventoryComplete: MissingClientType extends never ? true : never = true;
+void serverInventoryComplete;
+void clientInventoryComplete;

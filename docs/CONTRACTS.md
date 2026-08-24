@@ -34,9 +34,15 @@ padctl/tests ───┘                            ▲
 
 Server startup log MUST include a single line `manifold ready url=<pre-authed URL>` where the
 URL embeds the owner key as `#key=<hex>` (fragment, never query — fragments don't hit logs).
-Auto-spawned local agent: server mints a machine token, spawns
+Auto-spawned local agent: server mints a machine token (raw copy kept at
+`<data>/agent.token`, mode 600, for respawns — DB stores only the hash), spawns
 `bun packages/agent/src/main.ts` **detached** (survives server exit), and writes
 `<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one.
+
+Web URL scheme: the app lives at `/` (pad list) and `/p/<padId>` (pad view). The server
+SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
+fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
+storing it.
 
 ## Identity, tokens, capabilities
 
@@ -52,20 +58,28 @@ Auto-spawned local agent: server mints a machine token, spawns
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path             | Auth cap              | Req → Res                                                                                 |
-| ----------------------- | --------------------- | ----------------------------------------------------------------------------------------- |
-| GET /healthz            | none                  | → `{ ok, version, protocolVersion }`                                                      |
-| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages                                              |
-| GET /api/pads           | pads:read             | → `{ pads: Pad[] }`                                                                       |
-| POST /api/pads          | pads:write            | `{ name }` → `{ pad }`                                                                    |
-| GET /api/pads/:id       | pads:read             | → `{ pad }`                                                                               |
-| DELETE /api/pads/:id    | `*`                   | → `{ ok }`                                                                                |
-| POST /api/principals    | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)        |
-| POST /api/tokens        | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }` |
-| POST /api/tokens/revoke | tokens:mint           | `{ principalId }` → `{ ok }`                                                              |
-| GET /api/machines       | pads:read             | → `{ machines: [{id,name,online}] }`                                                      |
-| GET /api/introspect     | `*`                   | → live rooms/sessions/machines/principals snapshot                                        |
+| Method+Path             | Auth cap              | Req → Res                                                                                                                                        |
+| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET /healthz            | none                  | → `{ ok, version, protocolVersion }`                                                                                                             |
+| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
+| GET /api/pads           | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
+| POST /api/pads          | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
+| GET /api/pads/:id       | pads:read             | → `{ pad }`                                                                                                                                      |
+| DELETE /api/pads/:id    | `*`                   | → `{ ok }`                                                                                                                                       |
+| POST /api/principals    | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
+| POST /api/tokens        | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |
+| POST /api/tokens/revoke | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                     |
+| POST /api/machines      | machines:mint         | `{ name }` → `{ machine: {id, name}, machineToken }` — raw token returned exactly once; DB stores the hash. Agents authenticate `hello` with it. |
+| GET /api/machines       | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
+| GET /api/introspect     | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
 
+`*` in the auth column means the wildcard capability itself (root/owner) — scoped tokens
+can never satisfy it. The server computes an `AuthContext { principal, caps, padScope,
+isRoot }` ONCE at the auth boundary (`isRoot` ⇔ caps contain `*`); root-only routes check
+`isRoot`, scoped routes use `hasCap()` — never a wildcard sentinel comparison inline.
+Machine enrollment requires `machines:mint`; ordinary `scene:write`/`terminal:write`
+tokens must be rejected (covered by e2e: owner succeeds, `machines:mint` token succeeds,
+delegated scene/terminal token is denied).
 Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `forbidden`,
 `not_found`, `invalid`, `conflict`.
 
@@ -194,7 +208,8 @@ owner keys, or terminal data. `/api/introspect` exposes live state for agent-ope
 1. Clean room: no code, schemas, CSS, or config copied from pad.ws — concepts only.
 2. `@manifold/protocol` is the only place wire types exist. No inline message types.
 3. Every message handler validates with the zod schema before acting; unknown message
-   types are logged and ignored (forward compatibility), malformed ones close the socket.
+   types are logged and ignored (forward compatibility), malformed frames of KNOWN types
+   close the socket (server: policy close; client: 4002 + reconnect into a fresh init).
 4. No package imports another package's internals — only workspace package roots.
 5. Determinism in tests: server/agent take `RuntimeDeps { newId, now }` from
    `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake

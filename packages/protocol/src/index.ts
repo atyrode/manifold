@@ -24,7 +24,9 @@ export {
   type PresenceStatus,
 } from "./presence.ts";
 export {
+  CLIENT_MESSAGE_TYPES,
   ClientMessageSchema,
+  SERVER_MESSAGE_TYPES,
   ErrorCodeSchema,
   ServerMessageSchema,
   SessionInfoSchema,

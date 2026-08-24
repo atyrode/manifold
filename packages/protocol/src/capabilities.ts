@@ -13,6 +13,7 @@ export const CAPS = [
   "terminal:spawn",
   "terminal:write",
   "tokens:mint",
+  "machines:mint",
 ] as const;
 
 export const CapSchema = z.enum(CAPS);

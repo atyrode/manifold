@@ -40,7 +40,9 @@ technology verdicts with evidence.
    Concepts are documented in docs/PLAN.md; re-derive everything else.
 2. **Protocol first**: to change a message, edit `packages/protocol`, run `bun run check`,
    and fix every consumer in the same change. No wire types outside protocol.
-3. **One WS client**: no second WebSocket state machine; extend `@manifold/sdk`.
+3. **One WS client**: no second WebSocket state machine; extend `@manifold/sdk`. Sole
+   exemption: the testkit's clearly-marked adversarial harness, which crafts raw invalid
+   frames to prove the server's rejection paths — never usable as a production client.
 4. **Terminal attach no-gap invariant** (CONTRACTS.md §attach): viewer stream ≡
    snapshot(S) + outputs(S+1…). Guarded by e2e; do not weaken the test.
 5. **Never persist**: presence, cursor traffic, terminal bytes. **Always persist**: scene
