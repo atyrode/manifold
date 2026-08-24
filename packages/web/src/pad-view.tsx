@@ -119,6 +119,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const observedViewportRef = useRef<ViewportUpdate | null>(null);
   const lastViewportSentAtRef = useRef<number | null>(null);
   const lastSelectionRef = useRef<readonly string[] | null>(null);
+  /** Physical pointer position in client coords — OUR truth for cursor broadcasting. */
+  const lastClientRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const remoteCursorsRef = useRef(new Map<string, RemoteCursor>());
   const connectStartedRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
@@ -205,6 +207,30 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     },
     [client, flushCursor, runtime],
   );
+
+  /**
+   * Cursor truth is OUR pointermove listener + the committed camera, not Excalidraw's
+   * onPointerUpdate: during pans its emissions use stale scroll (and the pan teardown
+   * replays the pointerdown coords against the final camera), which made a panning
+   * user's cursor drift across remote canvases and teleport on release. Recomputing from
+   * the physical position also keeps the cursor glued through wheel pans and zooms,
+   * where Excalidraw emits nothing at all.
+   */
+  const emitCursorFromClient = useCallback((): void => {
+    const api = apiRef.current;
+    const clientPos = lastClientRef.current;
+    if (api === null || clientPos === null) return;
+    const appState = api.getAppState();
+    const scene = viewportCoordsToSceneCoords(
+      { clientX: clientPos.x, clientY: clientPos.y },
+      appState,
+    );
+    sendCursor({
+      x: scene.x,
+      y: scene.y,
+      tool: appState.activeTool.type === "laser" ? "laser" : "pointer",
+    });
+  }, [sendCursor]);
 
   const flushViewport = useCallback((): void => {
     viewportTimerRef.current = null;
@@ -386,9 +412,19 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     api.updateScene({ collaborators, captureUpdate: CaptureUpdateAction.NEVER });
   }, [client]);
 
+  const emitCursorRef = useRef(emitCursorFromClient);
+  emitCursorRef.current = emitCursorFromClient;
+
+  const offScrollChangeRef = useRef<(() => void) | null>(null);
+
   const receiveExcalidrawApi = useCallback((api: ExcalidrawImperativeAPI): void => {
     apiRef.current = api;
     apiGenerationRef.current += 1;
+    // Post-commit camera changes re-anchor the cursor under the physical pointer: this
+    // is the write that corrects any stale-scroll sample Excalidraw provoked mid-pan
+    // (the 30ms cursor coalescer keeps the latest value, so the fresh sample wins).
+    offScrollChangeRef.current?.();
+    offScrollChangeRef.current = api.onScrollChange(() => emitCursorRef.current());
   }, []);
 
   useEffect(() => {
@@ -553,6 +589,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       flushScene();
       if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
       if (viewportTimerRef.current !== null) window.clearTimeout(viewportTimerRef.current);
+      offScrollChangeRef.current?.();
+      offScrollChangeRef.current = null;
     };
   }, [flushScene]);
 
@@ -672,13 +710,19 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   );
 
   return (
-    <div className="pad-view" ref={rootRef}>
+    <div
+      className="pad-view"
+      ref={rootRef}
+      onPointerMoveCapture={(event) => {
+        lastClientRef.current = { x: event.clientX, y: event.clientY };
+        emitCursorFromClient();
+      }}
+    >
       <Excalidraw
         theme="dark"
         isCollaborating
         excalidrawAPI={receiveExcalidrawApi}
         onChange={handleCanvasChange}
-        onPointerUpdate={({ pointer }) => sendCursor(pointer)}
         validateEmbeddable={(link) => link === TERMINAL_LINK}
         renderEmbeddable={renderEmbeddable}
       >

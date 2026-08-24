@@ -400,6 +400,131 @@ try {
   await round("R7 aliased move (B moves A's element)", { adds: 0, changes: [rect.id] }, () =>
     moveElementByEdge(browserB, rect.id, 150, 80),
   );
+
+  // R8: pan-cursor stability — a panning user's broadcast cursor (scene coords) must
+  // stay anchored to the grabbed scene point (Excalidraw's own emissions drift on stale
+  // scroll and replay the pointerdown coords at release; manifold recomputes from the
+  // physical pointer + committed camera). Asserts: pan really scrolled the viewport,
+  // pan-window samples hold the grab point, no consecutive jump anywhere (teleport was
+  // ~an entire pan delta), and a known post-pan move lands with the expected delta.
+  {
+    const name = "R8 pan cursor stays anchored, no release teleport";
+    interface CursorSample {
+      readonly x: number;
+      readonly y: number;
+      readonly connId: string;
+    }
+    const rawCursorLog: CursorSample[] = [];
+    const offCursor = sdk.on("cursor", (msg) =>
+      rawCursorLog.push({ x: msg.x, y: msg.y, connId: msg.connId }),
+    );
+    const mouse = (
+      type: string,
+      x: number,
+      y: number,
+      button?: string,
+      buttons?: number,
+    ): Promise<unknown> =>
+      browserA.send("Input.dispatchMouseEvent", {
+        type,
+        x,
+        y,
+        ...(button === undefined ? {} : { button }),
+        ...(buttons === undefined ? {} : { buttons }),
+      });
+    try {
+      const scrollBefore = await browserA.evaluate<number>("window.__manifold.viewport().scrollX");
+      // Approach: plain move to the grab spot.
+      for (let i = 0; i <= 10; i++) {
+        await mouse("mouseMoved", 400 + i * 10, 360);
+        await sleep(15);
+      }
+      await sleep(200);
+      const grabRawIndex = rawCursorLog.length;
+      // Middle-drag pan: screen -160,-80.
+      await mouse("mousePressed", 500, 360, "middle", 4);
+      for (let i = 1; i <= 16; i++) {
+        await mouse("mouseMoved", 500 - i * 10, 360 - i * 5, "middle", 4);
+        await sleep(15);
+      }
+      await mouse("mouseReleased", 340, 280, "middle");
+      await sleep(250);
+      const panEndRawIndex = rawCursorLog.length;
+      // Post-pan plain move: +100px screen X at zoom 1 => +100 scene X.
+      for (let i = 0; i <= 10; i++) {
+        await mouse("mouseMoved", 340 + i * 10, 280);
+        await sleep(15);
+      }
+      await sleep(250);
+
+      const scrollAfter = await browserA.evaluate<number>("window.__manifold.viewport().scrollX");
+      const failuresHere: string[] = [];
+      // A's connection id: the approach phase is A's exclusive activity, so its samples
+      // identify A even though both browsers share one principal. Require stability.
+      const approach = rawCursorLog.slice(0, grabRawIndex);
+      const tally = new Map<string, number>();
+      for (const sample of approach) tally.set(sample.connId, (tally.get(sample.connId) ?? 0) + 1);
+      const [aConn = "", dominantCount = 0] =
+        [...tally.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+      if (aConn === "" || dominantCount < 5 || dominantCount < approach.length * 0.8) {
+        failuresHere.push(
+          `no stable A cursor stream before pan (${String(dominantCount)}/${String(approach.length)} samples for dominant connection)`,
+        );
+      }
+      const countBefore = (rawIndex: number): number =>
+        rawCursorLog.slice(0, rawIndex).filter((s) => s.connId === aConn).length;
+      const cursorLog = rawCursorLog.filter((s) => s.connId === aConn);
+      const grabIndex = countBefore(grabRawIndex);
+      const panEndIndex = countBefore(panEndRawIndex);
+      const grab = cursorLog[grabIndex - 1];
+      if (Math.abs(scrollAfter - scrollBefore) < 100) {
+        failuresHere.push(
+          `pan did not scroll the viewport (dScrollX=${String(scrollAfter - scrollBefore)})`,
+        );
+      }
+      if (grab === undefined || cursorLog.length - panEndIndex < 3) {
+        failuresHere.push("insufficient cursor samples around the pan");
+      } else {
+        for (const sample of cursorLog.slice(grabIndex, panEndIndex)) {
+          const deviation = Math.hypot(sample.x - grab.x, sample.y - grab.y);
+          if (deviation > 40) {
+            failuresHere.push(
+              `pan-window sample drifted ${deviation.toFixed(0)}px off the grab point`,
+            );
+            break;
+          }
+        }
+        for (let i = grabIndex; i < cursorLog.length; i++) {
+          const prev = cursorLog[i - 1];
+          const next = cursorLog[i];
+          if (prev === undefined || next === undefined) continue;
+          const jump = Math.hypot(next.x - prev.x, next.y - prev.y);
+          if (jump > 60) {
+            failuresHere.push(`cursor teleported ${jump.toFixed(0)}px between consecutive frames`);
+            break;
+          }
+        }
+        const last = cursorLog[cursorLog.length - 1];
+        const preMove = cursorLog[panEndIndex - 1] ?? grab;
+        if (last !== undefined && Math.abs(last.x - preMove.x - 100) > 30) {
+          failuresHere.push(
+            `post-pan move landed ${(last.x - preMove.x).toFixed(0)}px, expected ~100px`,
+          );
+        }
+      }
+      if (failuresHere.length > 0) {
+        failures.push(name);
+        console.log(`FAIL  ${name}`);
+        for (const line of failuresHere) console.log(`        ${line}`);
+      } else {
+        console.log(
+          `PASS  ${name} — ${String(cursorLog.length - grabIndex)} samples, anchored within 40px`,
+        );
+      }
+    } finally {
+      offCursor();
+    }
+  }
 } finally {
   // ---------------------------------------------------------------- teardown
   await browserA.close().catch(() => undefined);
