@@ -39,6 +39,7 @@ import {
 } from "./canvas-readiness.ts";
 import { mergeCanonicalScene } from "./canvas-merge.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
+import { sceneResetAction } from "./scene-reset-policy.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 
@@ -101,6 +102,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const needsFullRepaintRef = useRef(true);
   const versionPairsRef = useRef(new Map<string, ElementVersion>());
   const pendingElementsRef = useRef(new Map<string, SceneElement>());
+  /** Epoch whose lineage the current pending/bookkeeping state belongs to. */
+  const lastEpochRef = useRef("");
   const sceneTimerRef = useRef<number | null>(null);
   const lastSceneSentAtRef = useRef<number | null>(null);
   const cursorTimerRef = useRef<number | null>(null);
@@ -371,9 +374,32 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
-      needsFullRepaintRef.current = true;
-      flushScene();
+      const action = sceneResetAction(lastEpochRef.current, client.epoch);
+      lastEpochRef.current = client.epoch;
+      if (action.discardPending) {
+        // Old-lineage edits: re-stamping them into the new epoch would bypass the SDK's
+        // lineage fence and resurrect deliberately-dropped content.
+        pendingElementsRef.current.clear();
+        versionPairsRef.current.clear();
+        if (sceneTimerRef.current !== null) {
+          window.clearTimeout(sceneTimerRef.current);
+          sceneTimerRef.current = null;
+        }
+      }
+      needsFullRepaintRef.current = action.repaint === "replace";
+      if (action.flushPending) flushScene();
       dispatchPaintReadiness({ type: "scene_reset" });
+    });
+    const offSceneRejected = client.on("scene_rejected", (rejections) => {
+      // Never swallow: surface the loss and un-record the version pairs so a later edit
+      // of the same element re-enters the pending pipeline instead of being deduped.
+      for (const rejection of rejections) {
+        versionPairsRef.current.delete(rejection.element.id);
+      }
+      apiRef.current?.setToast({
+        message: `${String(rejections.length)} element(s) could not be synced`,
+        closable: true,
+      });
     });
     const offSceneChanged = client.on("scene_changed", () => {
       dispatchPaintReadiness({ type: "scene_changed" });
@@ -402,6 +428,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const offMessage = client.on("message", () => setRevision(client.rev));
     return () => {
       offSceneReset();
+      offSceneRejected();
       offSceneChanged();
       offRoster();
       offCursor();
@@ -485,14 +512,26 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     };
   }, [client]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Edits inside the last throttle window must not die with the tab: flushScene is
+    // safe here — it reads refs only, no-ops when pending is empty or no epoch exists,
+    // and the SDK outbox absorbs sends racing a closing socket.
+    const flushOnHide = (): void => {
+      if (document.visibilityState === "hidden") flushScene();
+    };
+    window.addEventListener("pagehide", flushScene);
+    document.addEventListener("visibilitychange", flushOnHide);
+    return () => {
+      window.removeEventListener("pagehide", flushScene);
+      document.removeEventListener("visibilitychange", flushOnHide);
+      // Unmount: flush BEFORE the deferred client.close() (scheduled at 0ms elsewhere)
+      // so navigation away does not drop the last window of edits.
       if (sceneTimerRef.current !== null) window.clearTimeout(sceneTimerRef.current);
+      flushScene();
       if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
       if (viewportTimerRef.current !== null) window.clearTimeout(viewportTimerRef.current);
-    },
-    [],
-  );
+    };
+  }, [flushScene]);
 
   const createTerminal = useCallback(async (): Promise<void> => {
     const api = apiRef.current;
