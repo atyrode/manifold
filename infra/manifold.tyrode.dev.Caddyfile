@@ -1,0 +1,21 @@
+# manifold public vhost — https://manifold.tyrode.dev
+#
+# Installed to /var/www/manifold/Caddyfile and pulled in by a single additive
+# `import` line at the end of the host's main Caddyfile, matching the existing
+# per-site convention there. Keeping the block in this repo means manifold's
+# public surface is versioned with the code it serves.
+#
+# The manifold server binds 127.0.0.1:7777 (MANIFOLD_BIND default), so this
+# proxy is the only public entrance. Caddy v2's reverse_proxy forwards
+# WebSocket upgrades natively, which is what /ws/session and /ws/machine need.
+
+manifold.tyrode.dev {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	reverse_proxy 127.0.0.1:7777
+}
