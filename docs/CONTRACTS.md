@@ -73,6 +73,10 @@ storing it.
 | GET /api/machines       | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
 | GET /api/introspect     | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
 
+Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
+caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
+`forbidden`. This kills privilege escalation through `tokens:mint` chains.
+
 `*` in the auth column means the wildcard capability itself (root/owner) — scoped tokens
 can never satisfy it. The server computes an `AuthContext { principal, caps, padScope,
 isRoot }` ONCE at the auth boundary (`isRoot` ⇔ caps contain `*`); root-only routes check
