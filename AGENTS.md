@@ -68,7 +68,9 @@ technology verdicts with evidence.
   export (`vite.config.ts`, `eslint.config.js`) are exempt. `import type` for types. No
   cross-package deep imports.
 - React: function components + hooks; server/socket state lives in stores, not components;
-  effects are for synchronization only, never derived state.
+  effects are for synchronization only, never derived state. Nontrivial sync policy (merge,
+  throttle, version bookkeeping) lives in pure, unit-tested modules — never inline in a
+  component callback, where it is hard to isolate and test.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
