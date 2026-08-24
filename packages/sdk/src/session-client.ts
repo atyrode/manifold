@@ -352,10 +352,10 @@ export class SessionClient {
       case "init":
       case "resync": {
         this.attempts = 0;
-        // Epoch changes are lineage fences: no optimistic record from the old lineage may
-        // be re-stamped into the new one. Same-epoch reconnects still preserve offline edits.
-        const epochUnchanged = this.epoch !== "" && this.epoch === msg.epoch;
-        const localBefore = epochUnchanged ? [...this.scene.values()] : [];
+        // First epoch adoption and same-epoch reconnects rebase optimistic edits. Only a
+        // lineage change fences local records from being re-stamped into the new epoch.
+        const rebaseEligible = this.epoch === "" || this.epoch === msg.epoch;
+        const localBefore = rebaseEligible ? [...this.scene.values()] : [];
         this.scene.clear();
         for (const el of msg.elements) this.scene.set(el.id, el);
         this.epoch = msg.epoch;
@@ -368,7 +368,7 @@ export class SessionClient {
         this.setStatus("open");
         this.startKeepalive();
         this.flushOutbox();
-        if (epochUnchanged) {
+        if (rebaseEligible) {
           const rebase = reconcile(this.scene, localBefore).accepted;
           if (rebase.length > 0) this.updateScene(rebase);
         }
@@ -463,9 +463,10 @@ export class SessionClient {
   // ------------------------------------------------------------------ outgoing
 
   private send(msg: ClientMessage): void {
-    // Development guard: never put an invalid frame on the wire.
-    ClientMessageSchema.parse(msg);
     if (this.socket !== null && this.socket.readyState === 1 && this.status === "open") {
+      // Development guard: never put an invalid frame on the wire. Before first init,
+      // optimistic scene updates carry the not-yet-adopted empty epoch only in the outbox.
+      ClientMessageSchema.parse(msg);
       this.socket.send(JSON.stringify(msg));
       return;
     }
@@ -478,8 +479,9 @@ export class SessionClient {
     const queued = this.outbox;
     this.outbox = [];
     for (const msg of queued) {
-      // An epoch change invalidates queued scene history. Same-epoch optimistic state is
-      // replayed by the normal outbox/rebase path after the canonical snapshot is adopted.
+      // First adoption rebases optimistic state into the adopted epoch, so its queued
+      // empty-epoch frames are superseded and still dropped here. Only lineage changes fence
+      // old scene history; same-epoch state is replayed by the normal outbox/rebase path.
       if (msg.type === "scene_update" && msg.epoch !== this.epoch) continue;
       this.send(msg);
     }

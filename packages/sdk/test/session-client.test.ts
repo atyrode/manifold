@@ -255,6 +255,20 @@ describe("scene flow", () => {
     expect(sent.baseRev).toBe(5);
   });
 
+  test("first init rebases an optimistic edit into the adopted epoch", () => {
+    const { client, socket } = dialing();
+    client.updateScene([element("early", 1)]);
+
+    socket.open();
+    socket.receive(INIT);
+
+    expect(client.scene.has("early")).toBe(true);
+    const updates = sceneUpdateFrames(socket);
+    expect(updates.some((frame) => frame.epoch === "e1" && frame.elements[0]?.id === "early")).toBe(
+      true,
+    );
+  });
+
   test("updateScene chunks by count and returns every frame's updateId", () => {
     const { client, socket } = connected();
     const elements = Array.from({ length: 200 }, (_, index) => element(`bulk-${index}`, 1));
