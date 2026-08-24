@@ -1,0 +1,221 @@
+import { existsSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import {
+  OutputRing,
+  PtySession,
+  resolveShellCommand,
+  type PtyOutput,
+  type PtySessionOptions,
+} from "../src/session.ts";
+
+/**
+ * Real-PTY unit tests. AGENTS.md invariant 7 permits the agent's PTY tests to spawn real
+ * shells (this machine supports Bun.Terminal). We pin `bash --norc -i` for determinism
+ * instead of inheriting the ambient login shell.
+ *
+ * No fixed delays: the harness resolves waiters from the `onOutput` callback the instant the
+ * awaited condition holds (the real signal is the byte stream itself, which exposes no
+ * event emitter to await otherwise). Each test's per-run timeout is the only backstop.
+ */
+
+const BASH = Bun.which("bash") ?? "/bin/sh";
+const SHELL_COMMAND = [BASH, "--norc", "-i"] as const;
+
+interface Harness {
+  readonly session: PtySession;
+  readonly outputs: PtyOutput[];
+  readonly text: () => string;
+  /** Resolves as soon as accumulated output satisfies `predicate` (checked per chunk). */
+  readonly waitUntil: (predicate: () => boolean) => Promise<void>;
+}
+
+const live: PtySession[] = [];
+
+function harnessFor(opts: Omit<PtySessionOptions, "onOutput">): Harness {
+  const outputs: PtyOutput[] = [];
+  const decoder = new TextDecoder();
+  const waiters = new Set<{ predicate: () => boolean; resolve: () => void }>();
+  let buffer = "";
+
+  const session = new PtySession({
+    ...opts,
+    onOutput: (output) => {
+      outputs.push(output);
+      buffer += decoder.decode(output.bytes, { stream: true });
+      for (const waiter of waiters) {
+        if (waiter.predicate()) {
+          waiters.delete(waiter);
+          waiter.resolve();
+        }
+      }
+    },
+  });
+  live.push(session);
+
+  const waitUntil = (predicate: () => boolean): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    if (predicate()) resolve();
+    else waiters.add({ predicate, resolve });
+    return promise;
+  };
+
+  return { session, outputs, text: () => buffer, waitUntil };
+}
+
+/** Convenience: a harness whose PTY runs the pinned deterministic shell. */
+function spawn(opts: { cols?: number; rows?: number; ringCapBytes?: number }): Harness {
+  return harnessFor({
+    sessionId: "test-session",
+    cols: opts.cols ?? 80,
+    rows: opts.rows ?? 24,
+    command: SHELL_COMMAND,
+    ...(opts.ringCapBytes !== undefined ? { ringCapBytes: opts.ringCapBytes } : {}),
+  });
+}
+
+afterEach(async () => {
+  for (const session of live) {
+    try {
+      await session.kill();
+    } catch {
+      // already exited
+    }
+    session.dispose();
+  }
+  live.length = 0;
+});
+
+test("echo round-trip yields strictly monotonic seq from 1", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0); // shell initialized (emitted its prompt)
+  h.session.write("echo MARK_$((2+2))\n");
+  await h.waitUntil(() => h.text().includes("MARK_4"));
+
+  const seqs = h.outputs.map((output) => output.seq);
+  // strictly monotonic AND contiguous from 1 (seq is assigned +1 per emission).
+  expect(seqs).toEqual(seqs.map((_value, index) => index + 1));
+  expect(seqs[0]).toBe(1);
+}, 12000);
+
+test("snapshot seq equals the last emitted seq; later outputs exceed it", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0);
+  h.session.write("echo AAA\n");
+  await h.waitUntil(() => h.text().includes("AAA"));
+
+  // SAME TICK: read the watermark, then snapshot. snapshot() captures currentSeq
+  // synchronously on entry, so no data callback can interleave between these two statements.
+  const lastSeq = h.session.seq;
+  const snapshot = await h.session.snapshot();
+  expect(snapshot.seq).toBe(lastSeq);
+  // snapshot() drains the mirror through `seq`, so the rendered data includes AAA exactly.
+  expect(snapshot.data).toContain("AAA");
+
+  const before = h.outputs.length;
+  h.session.write("echo BBB\n");
+  await h.waitUntil(() => h.text().includes("BBB"));
+  const laterOutputs = h.outputs.slice(before);
+  expect(laterOutputs.length).toBeGreaterThan(0);
+  for (const output of laterOutputs) expect(output.seq).toBeGreaterThan(snapshot.seq);
+}, 12000);
+
+test("ring buffer evicts oldest whole chunks under a tiny cap", async () => {
+  const h = spawn({ ringCapBytes: 256 });
+  await h.waitUntil(() => h.outputs.length > 0);
+  // Emit far more than the cap across many PTY reads. The completion marker is written split
+  // (`RE""ADY`) so the shell's command-line echo does NOT contain the literal "READY" — only
+  // the command's OUTPUT does, so the wait resolves after all `seq` output, not on the echo.
+  h.session.write('seq 1 100000; echo RE""ADY\n');
+  await h.waitUntil(() => h.text().includes("READY"));
+
+  // Eviction happened: the oldest retained chunk is past seq 1, and far fewer chunks are
+  // retained than were emitted. (Byte-exact cap behavior is covered by the OutputRing unit
+  // test below; PTY chunk sizes are not deterministic.)
+  expect(h.session.oldestRingSeq).toBeGreaterThan(1);
+  expect(h.session.ringChunkCount).toBeLessThan(h.session.seq);
+}, 15000);
+
+test("resize propagates to the PTY (stty size reflects new geometry)", async () => {
+  const h = spawn({ cols: 80, rows: 24 });
+  await h.waitUntil(() => h.outputs.length > 0);
+  h.session.resize(120, 40);
+  h.session.write("stty size\n");
+  await h.waitUntil(() => h.text().includes("40 120")); // `stty size` prints "rows cols"
+  expect(h.text()).toContain("40 120");
+}, 12000);
+
+test("propagates the shell's own exit code", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0);
+  h.session.write("exit 3\n");
+  const { exitCode } = await h.session.exited;
+  expect(exitCode).toBe(3);
+  expect(h.session.alive).toBe(false);
+}, 12000);
+
+test("kill terminates the PTY and resolves exited; dispose is idempotent", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0);
+  const exit = await h.session.kill();
+  expect(h.session.alive).toBe(false);
+  // Interactive shells ignore SIGTERM; the PTY close delivers SIGHUP → signal death → null.
+  expect(exit.exitCode).toBeNull();
+  h.session.dispose();
+  h.session.dispose(); // idempotent, no throw
+}, 12000);
+
+test("OutputRing evicts oldest whole chunks past the cap, never the newest", () => {
+  const ring = new OutputRing(10);
+  ring.push(1, new Uint8Array(4));
+  ring.push(2, new Uint8Array(4));
+  expect(ring.bytes).toBe(8);
+  expect(ring.length).toBe(2);
+  expect(ring.oldestSeq).toBe(1);
+
+  ring.push(3, new Uint8Array(4)); // 12 > 10 → evict seq 1
+  expect(ring.bytes).toBe(8);
+  expect(ring.length).toBe(2);
+  expect(ring.oldestSeq).toBe(2);
+  expect(ring.newestSeq).toBe(3);
+
+  ring.push(4, new Uint8Array(50)); // a lone over-cap chunk is retained by itself
+  expect(ring.length).toBe(1);
+  expect(ring.oldestSeq).toBe(4);
+  expect(ring.bytes).toBe(50);
+});
+
+test("resolveShellCommand prefers $SHELL, else finds a real shell on PATH (no /bin/bash)", () => {
+  const saved = process.env.SHELL;
+  try {
+    process.env.SHELL = "/custom/login/shell";
+    expect(resolveShellCommand()).toEqual(["/custom/login/shell"]);
+
+    delete process.env.SHELL;
+    const resolved = resolveShellCommand();
+    expect(resolved).toHaveLength(1);
+    const shell = resolved[0];
+    // The NixOS defect: the fallback must never be the nonexistent literal /bin/bash.
+    expect(shell).not.toBe("/bin/bash");
+    expect(shell !== undefined && existsSync(shell)).toBe(true);
+  } finally {
+    if (saved === undefined) delete process.env.SHELL;
+    else process.env.SHELL = saved;
+  }
+});
+
+test("opens a PTY via PATH discovery when SHELL is unset (no command override)", async () => {
+  const saved = process.env.SHELL;
+  delete process.env.SHELL;
+  try {
+    // No `command` override → PtySession must resolve a shell itself (bash/sh on PATH).
+    const h = harnessFor({ sessionId: "no-shell", cols: 80, rows: 24 });
+    await h.waitUntil(() => h.outputs.length > 0); // PTY opened and the shell produced output
+    expect(h.session.alive).toBe(true);
+    // Split marker so only the command OUTPUT (not the echoed input line) matches: real I/O.
+    h.session.write('echo SHELL""_OK\n');
+    await h.waitUntil(() => h.text().includes("SHELL_OK"));
+  } finally {
+    if (saved === undefined) delete process.env.SHELL;
+    else process.env.SHELL = saved;
+  }
+}, 12000);
