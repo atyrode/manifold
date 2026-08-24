@@ -3,5 +3,6 @@ export {
   SessionClient,
   type ConnectionStatus,
   type SessionClientOptions,
+  type SceneUpdateRejection,
   type SessionEvents,
 } from "./session-client.ts";

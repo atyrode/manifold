@@ -1,5 +1,7 @@
 import {
   ClientMessageSchema,
+  MAX_ELEMENTS_PER_UPDATE,
+  MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerMessageSchema,
   applyAccepted,
@@ -56,6 +58,13 @@ export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" |
 
 type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
 
+export interface SceneUpdateRejection {
+  readonly element: SceneElement;
+  readonly reason: "element_too_large" | "element_not_serializable";
+  readonly serializedBytes: number | null;
+  readonly limitBytes: number;
+}
+
 export interface SessionEvents {
   /** Server messages, by type. */
   message: (msg: ServerMessage) => void;
@@ -64,6 +73,8 @@ export interface SessionEvents {
   scene_reset: () => void;
   /** Scene changed incrementally (accepted records applied). */
   scene_changed: (elements: readonly SceneElement[], by: string) => void;
+  /** Local records refused before optimistic apply because they cannot form a safe frame. */
+  scene_rejected: (rejections: readonly SceneUpdateRejection[]) => void;
   roster_changed: () => void;
   sessions_changed: () => void;
 }
@@ -85,6 +96,46 @@ export interface SessionClientOptions {
 }
 
 const OUTBOX_LIMIT = 256;
+const MALFORMED_FRAME_CLOSE_CODE = 4002;
+const TERMINAL_CLOSE_CODE_MIN = 4400;
+const TERMINAL_CLOSE_CODE_MAX = 4499;
+// Reserve 25% of the wire limit for the scene_update envelope and future metadata.
+const SCENE_UPDATE_ELEMENTS_BYTE_BUDGET = (MAX_SESSION_FRAME_BYTES * 3) / 4;
+
+/**
+ * Counts the UTF-8 bytes of one element's JSON without allocating another full-size
+ * encoded buffer. Large freedraw records make that otherwise significant transient memory.
+ */
+function serializedElementByteLength(element: SceneElement): number | null {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(element);
+  } catch {
+    return null;
+  }
+  if (serialized === undefined) return null;
+
+  let bytes = 0;
+  for (let index = 0; index < serialized.length; index += 1) {
+    const code = serialized.charCodeAt(index);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = serialized.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
 
 export class SessionClient {
   /** Local scene truth: canonical after init, optimistic between acks. */
@@ -104,6 +155,8 @@ export class SessionClient {
   private attempts = 0;
   private closedIntentionally = false;
   private updateCounter = 0;
+  private reconnectTimer: Timer | null = null;
+  private closeError: Error | null = null;
 
   constructor(opts: SessionClientOptions) {
     this.opts = opts;
@@ -140,6 +193,7 @@ export class SessionClient {
   /** Resolves on the first successful init. Reconnects keep running afterwards. */
   connect(): Promise<void> {
     this.closedIntentionally = false;
+    this.closeError = null;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const offInit = this.on("init", () => {
       offInit();
@@ -150,7 +204,7 @@ export class SessionClient {
       if (s === "closed") {
         offStatus();
         offInit();
-        reject(new Error("session closed before init"));
+        reject(this.closeError ?? new Error("session closed before init"));
       }
     });
     this.dial();
@@ -159,18 +213,36 @@ export class SessionClient {
 
   close(): void {
     this.closedIntentionally = true;
-    this.socket?.close(1000);
+    this.closeError = null;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.socket;
     this.socket = null;
+    socket?.close(1000);
     this.setStatus("closed");
   }
 
   private dial(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Fence every callback from the prior socket before asking it to close. Native close
+    // events may arrive after the replacement has already opened.
+    const previousSocket = this.socket;
+    this.socket = null;
+    previousSocket?.close(1000);
+
     this.setStatus(this.attempts === 0 ? "connecting" : "reconnecting");
     const factory = this.opts.webSocketFactory ?? ((url: string) => new WebSocket(url));
     const socket = factory(this.opts.url);
     this.socket = socket;
 
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       const join: ClientMessage = {
         type: "join",
         padId: this.opts.padId,
@@ -182,6 +254,7 @@ export class SessionClient {
     };
 
     socket.onmessage = (ev: MessageEvent) => {
+      if (this.socket !== socket) return;
       const classified = classifyServerFrame(ev.data);
       switch (classified.kind) {
         case "message":
@@ -194,14 +267,33 @@ export class SessionClient {
           // longer provable. Close with an application protocol error and heal through
           // the normal reconnect → fresh init path (CONTRACTS.md).
           console.error("manifold-sdk: malformed server frame", classified.detail);
-          socket.close(4002, "malformed server frame");
+          socket.close(MALFORMED_FRAME_CLOSE_CODE, "malformed server frame");
           return;
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
+
+      // 44xx codes are permanent session rejections. Retrying them cannot succeed without
+      // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
+      const terminalClose =
+        event.code !== MALFORMED_FRAME_CLOSE_CODE &&
+        event.code >= TERMINAL_CLOSE_CODE_MIN &&
+        event.code <= TERMINAL_CLOSE_CODE_MAX;
+      if (terminalClose) {
+        this.closedIntentionally = true;
+        const reason = event.reason.trim();
+        this.closeError = new Error(
+          reason === ""
+            ? `session rejected with close code ${event.code}`
+            : `session rejected with close code ${event.code}: ${reason}`,
+        );
+        this.setStatus("closed");
+        return;
+      }
+
       if (this.closedIntentionally || this.opts.reconnect === false) {
         this.setStatus("closed");
         return;
@@ -209,9 +301,14 @@ export class SessionClient {
       const cap = this.opts.backoffCapMs ?? 8000;
       const delay = Math.min(cap, 250 * 2 ** this.attempts) * (0.5 + Math.random() * 0.5);
       this.attempts += 1;
-      setTimeout(() => {
-        if (!this.closedIntentionally) this.dial();
+      const timer = setTimeout(() => {
+        // clearTimeout cannot retract a callback already queued by the event loop. The
+        // identity check fences such stale callbacks after close() or a manual connect().
+        if (this.reconnectTimer !== timer) return;
+        this.reconnectTimer = null;
+        if (!this.closedIntentionally && this.socket === null) this.dial();
       }, delay);
+      this.reconnectTimer = timer;
       this.setStatus("reconnecting");
     };
   }
@@ -223,9 +320,10 @@ export class SessionClient {
       case "init":
       case "resync": {
         this.attempts = 0;
-        // Rebase: local records that beat the server state (offline/optimistic edits)
-        // are re-submitted through the normal update path after adoption.
-        const localBefore = [...this.scene.values()];
+        // Epoch changes are lineage fences: no optimistic record from the old lineage may
+        // be re-stamped into the new one. Same-epoch reconnects still preserve offline edits.
+        const epochUnchanged = this.epoch !== "" && this.epoch === msg.epoch;
+        const localBefore = epochUnchanged ? [...this.scene.values()] : [];
         this.scene.clear();
         for (const el of msg.elements) this.scene.set(el.id, el);
         this.epoch = msg.epoch;
@@ -237,8 +335,10 @@ export class SessionClient {
         for (const s of msg.sessions) this.sessions.set(s.id, s);
         this.setStatus("open");
         this.flushOutbox();
-        const rebase = reconcile(this.scene, localBefore).accepted;
-        if (rebase.length > 0) this.updateScene(rebase);
+        if (epochUnchanged) {
+          const rebase = reconcile(this.scene, localBefore).accepted;
+          if (rebase.length > 0) this.updateScene(rebase);
+        }
         this.emit(msg.type, msg);
         this.emit("scene_reset");
         this.emit("roster_changed");
@@ -345,8 +445,8 @@ export class SessionClient {
     const queued = this.outbox;
     this.outbox = [];
     for (const msg of queued) {
-      // Scene updates from a previous epoch are re-stamped by updateScene during rebase;
-      // stale ones are dropped here rather than bounced off the epoch fence.
+      // An epoch change invalidates queued scene history. Same-epoch optimistic state is
+      // replayed by the normal outbox/rebase path after the canonical snapshot is adopted.
       if (msg.type === "scene_update" && msg.epoch !== this.epoch) continue;
       this.send(msg);
     }
@@ -354,22 +454,75 @@ export class SessionClient {
 
   /**
    * Applies elements optimistically to the local scene and submits them.
-   * Returns the updateId (echoed in scene_ack), or null if nothing won locally.
+   * Oversized records are reported through scene_rejected and left unapplied.
+   * Returns every queued updateId (each echoed in scene_ack), or null if none were queued.
    */
-  updateScene(elements: readonly SceneElement[]): string | null {
+  updateScene(elements: readonly SceneElement[]): readonly string[] | null {
     const { accepted } = reconcile(this.scene, elements);
     if (accepted.length === 0) return null;
-    applyAccepted(this.scene, accepted);
-    this.emit("scene_changed", accepted, this.self?.id ?? "local");
-    const updateId = `u${++this.updateCounter}`;
-    this.send({
-      type: "scene_update",
-      updateId,
-      epoch: this.epoch,
-      baseRev: this.rev,
-      elements: [...accepted],
-    });
-    return updateId;
+
+    const chunks: SceneElement[][] = [];
+    const rejected: SceneUpdateRejection[] = [];
+    let chunk: SceneElement[] = [];
+    let chunkBytes = 0;
+
+    for (const element of accepted) {
+      const elementBytes = serializedElementByteLength(element);
+      if (elementBytes === null) {
+        rejected.push({
+          element,
+          reason: "element_not_serializable",
+          serializedBytes: null,
+          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
+        });
+        continue;
+      }
+      if (elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET) {
+        rejected.push({
+          element,
+          reason: "element_too_large",
+          serializedBytes: elementBytes,
+          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
+        });
+        continue;
+      }
+
+      const separatorBytes = chunk.length === 0 ? 0 : 1;
+      if (
+        chunk.length === MAX_ELEMENTS_PER_UPDATE ||
+        chunkBytes + separatorBytes + elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET
+      ) {
+        chunks.push(chunk);
+        chunk = [];
+        chunkBytes = 0;
+      }
+      if (chunk.length > 0) chunkBytes += 1;
+      chunk.push(element);
+      chunkBytes += elementBytes;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+
+    if (rejected.length > 0) this.emit("scene_rejected", rejected);
+    if (chunks.length === 0) return null;
+
+    const updateIds: string[] = [];
+    for (const acceptedChunk of chunks) {
+      const updateId = `u${++this.updateCounter}`;
+
+      // Validate and queue each bounded frame before exposing its optimistic state. If a
+      // later chunk fails, the scene still exactly reflects the frames already queued.
+      this.send({
+        type: "scene_update",
+        updateId,
+        epoch: this.epoch,
+        baseRev: this.rev,
+        elements: acceptedChunk,
+      });
+      applyAccepted(this.scene, acceptedChunk);
+      this.emit("scene_changed", acceptedChunk, this.self?.id ?? "local");
+      updateIds.push(updateId);
+    }
+    return updateIds;
   }
 
   sendPresence(payload: PresencePayload): void {
