@@ -118,7 +118,7 @@ function defaultResponseSchema(path: string, method: string): ResponseSchema<unk
 /** A typed HTTP failure preserves the protocol code for capability-boundary assertions. */
 export class HttpResponseError extends Error {
   readonly status: number;
-  readonly code: "unauthorized" | "forbidden" | "not_found" | "invalid" | "conflict";
+  readonly code: HttpError["error"]["code"];
 
   constructor(status: number, body: HttpError) {
     super(`${body.error.code}: ${body.error.message}`);

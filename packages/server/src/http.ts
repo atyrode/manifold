@@ -47,12 +47,24 @@ class RequestError extends Error {
   }
 }
 
+function parseRequest<T>(schema: { parse(input: unknown): T }, input: unknown): T {
+  try {
+    return schema.parse(input);
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new RequestError("invalid", "request did not match the protocol schema");
+    }
+    throw error;
+  }
+}
+
 const STATUS_BY_CODE: Readonly<Record<RequestError["code"], number>> = {
   unauthorized: 401,
   forbidden: 403,
   not_found: 404,
   invalid: 400,
   conflict: 409,
+  internal: 500,
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -141,16 +153,11 @@ export class HttpApp {
       if (error instanceof ServiceError) {
         return errorResponse(new RequestError(error.code, error.message));
       }
-      if (error instanceof ZodError) {
-        return errorResponse(
-          new RequestError("invalid", "request did not match the protocol schema"),
-        );
-      }
       this.logger.error("http_request_failed", {
         method: request.method,
         error: error instanceof Error ? error.message : "unknown failure",
       });
-      return errorResponse(new RequestError("conflict", "internal server error"));
+      return errorResponse(new RequestError("internal", "internal server error"));
     }
   }
 
@@ -186,7 +193,7 @@ export class HttpApp {
       if (context.padScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot create pads");
       }
-      const input = CreatePadRequestSchema.parse(await parseJsonBody(request));
+      const input = parseRequest(CreatePadRequestSchema, await parseJsonBody(request));
       const pad: Pad = {
         id: this.runtime.newId(),
         name: input.name,
@@ -228,19 +235,19 @@ export class HttpApp {
     if (request.method === "POST" && pathname === "/api/principals") {
       const context = this.authenticate(request);
       requireRoot(context);
-      const input = BootstrapPrincipalRequestSchema.parse(await parseJsonBody(request));
+      const input = parseRequest(BootstrapPrincipalRequestSchema, await parseJsonBody(request));
       return jsonResponse(TokenGrantSchema.parse(this.auth.bootstrapPrincipal(input, context)));
     }
 
     if (request.method === "POST" && pathname === "/api/tokens") {
       const context = this.authenticate(request);
-      const input = MintTokenRequestSchema.parse(await parseJsonBody(request));
+      const input = parseRequest(MintTokenRequestSchema, await parseJsonBody(request));
       return jsonResponse(TokenGrantSchema.parse(this.auth.mintToken(input, context)));
     }
 
     if (request.method === "POST" && pathname === "/api/tokens/revoke") {
       const context = this.authenticate(request);
-      const input = RevokeRequestSchema.parse(await parseJsonBody(request));
+      const input = parseRequest(RevokeRequestSchema, await parseJsonBody(request));
       this.auth.revokePrincipal(input.principalId, context);
       return jsonResponse(OkResponseSchema.parse({ ok: true }));
     }
@@ -251,7 +258,7 @@ export class HttpApp {
       if (context.padScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot enroll machines");
       }
-      const input = CreatePadRequestSchema.parse(await parseJsonBody(request));
+      const input = parseRequest(CreatePadRequestSchema, await parseJsonBody(request));
       const enrolled = this.auth.enrollMachine(input.name, context);
       return jsonResponse(
         MachineEnrollResponseSchema.parse({

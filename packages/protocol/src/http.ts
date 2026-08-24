@@ -13,7 +13,7 @@ export type Pad = z.infer<typeof PadSchema>;
 
 export const HttpErrorSchema = z.strictObject({
   error: z.strictObject({
-    code: z.enum(["unauthorized", "forbidden", "not_found", "invalid", "conflict"]),
+    code: z.enum(["unauthorized", "forbidden", "not_found", "invalid", "conflict", "internal"]),
     message: z.string(),
   }),
 });
