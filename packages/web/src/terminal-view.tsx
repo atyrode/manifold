@@ -165,9 +165,7 @@ export function TerminalView({ client, sessionId, elementId }: TerminalViewProps
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") {
-        if (attachmentRef.current === "queued") {
-          attachmentRef.current = "open";
-        } else if (attachmentRef.current === "none") {
+        if (attachmentRef.current !== "open") {
           client.attachTerminal(sessionId);
           attachmentRef.current = "open";
         }

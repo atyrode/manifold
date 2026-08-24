@@ -30,8 +30,13 @@ import {
   type SceneElement,
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { getPad, type StoredIdentity } from "./api.ts";
+import {
+  INITIAL_CANVAS_PAINT_READINESS,
+  advanceCanvasPaintReadiness,
+  canPaintCanvas,
+} from "./canvas-readiness.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 
@@ -69,10 +74,6 @@ function sessionUrl(): string {
   return `${scheme}//${window.location.host}/ws/session`;
 }
 
-function validateManifoldEmbed(link: string): boolean {
-  return link === TERMINAL_LINK;
-}
-
 /** Owns exactly one SDK session client and projects its scene, presence, and PTYs into Excalidraw. */
 export function PadView({ padId, identity, navigate, runtime = defaultRuntime }: PadViewProps) {
   const [client] = useState(
@@ -83,9 +84,15 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         token: identity.token,
       }),
   );
+  const [paintReadiness, dispatchPaintReadiness] = useReducer(
+    advanceCanvasPaintReadiness,
+    INITIAL_CANVAS_PAINT_READINESS,
+  );
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const apiGenerationRef = useRef(0);
+  const readyApiGenerationRef = useRef(0);
   const applyingRemoteRef = useRef(false);
   const remoteApplyTokenRef = useRef(0);
   const versionPairsRef = useRef(new Map<string, ElementVersion>());
@@ -222,6 +229,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   const handleCanvasChange = useCallback(
     (elements: readonly OrderedExcalidrawElement[], appState: AppState): void => {
+      const apiGeneration = apiGenerationRef.current;
+      if (apiGeneration > 0 && readyApiGenerationRef.current !== apiGeneration) {
+        readyApiGenerationRef.current = apiGeneration;
+        dispatchPaintReadiness({ type: "api_registered", generation: apiGeneration });
+        dispatchPaintReadiness({ type: "api_ready", generation: apiGeneration });
+      }
       rootRef.current?.classList.toggle("is-panning", appState.activeTool.type === "hand");
 
       const selection = Object.keys(appState.selectedElementIds).sort();
@@ -316,21 +329,25 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     api.updateScene({ collaborators, captureUpdate: CaptureUpdateAction.NEVER });
   }, [client]);
 
-  const receiveExcalidrawApi = useCallback(
-    (api: ExcalidrawImperativeAPI): void => {
-      apiRef.current = api;
-      syncCanvas();
-      syncCollaborators();
-    },
-    [syncCanvas, syncCollaborators],
-  );
+  const receiveExcalidrawApi = useCallback((api: ExcalidrawImperativeAPI): void => {
+    apiRef.current = api;
+    apiGenerationRef.current += 1;
+  }, []);
+
+  useEffect(() => {
+    if (!canPaintCanvas(paintReadiness)) return;
+    syncCanvas();
+    syncCollaborators();
+  }, [paintReadiness, syncCanvas, syncCollaborators]);
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
       flushScene();
-      syncCanvas();
+      dispatchPaintReadiness({ type: "scene_reset" });
     });
-    const offSceneChanged = client.on("scene_changed", syncCanvas);
+    const offSceneChanged = client.on("scene_changed", () => {
+      dispatchPaintReadiness({ type: "scene_changed" });
+    });
     const offRoster = client.on("roster_changed", () => {
       const connected = new Set(client.roster.keys());
       for (const principalId of remoteCursorsRef.current.keys()) {
@@ -362,7 +379,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       offSaved();
       offMessage();
     };
-  }, [client, flushScene, syncCanvas, syncCollaborators]);
+  }, [client, flushScene, syncCollaborators]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -438,18 +455,44 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const terminalSkeleton = {
       id: runtime.newId(),
       type: "embeddable",
+      strokeColor: "#868e96",
+      backgroundColor: "#101216",
+      fillStyle: "solid",
+      strokeWidth: 1,
+      strokeStyle: "solid",
+      roundness: null,
+      roughness: 0,
+      opacity: 100,
       link: TERMINAL_LINK,
       x: center.x - TERMINAL_WIDTH / 2,
       y: center.y - TERMINAL_HEIGHT / 2,
       width: TERMINAL_WIDTH,
       height: TERMINAL_HEIGHT,
+      angle: 0,
+      seed: 1,
+      version: 1,
+      versionNonce: 0,
+      index: null,
+      isDeleted: false,
+      groupIds: [],
+      frameId: null,
+      boundElements: null,
+      updated: runtime.now(),
+      locked: false,
     } as const;
-    const converted = convertToExcalidrawElements([
-      terminalSkeleton as unknown as ExcalidrawElementSkeleton,
-    ]);
+    const converted = convertToExcalidrawElements(
+      [terminalSkeleton as unknown as ExcalidrawElementSkeleton],
+      { regenerateIds: false },
+    );
     const terminalElement = converted[0];
     if (terminalElement === undefined) throw new Error("Could not create terminal element");
-    const parsedTerminal = SceneElementSchema.parse(terminalElement);
+    const parsed = SceneElementSchema.safeParse(terminalElement);
+    if (!parsed.success) {
+      console.error("terminal element failed protocol validation", parsed.error.issues);
+      api.setToast({ message: "Could not create terminal element (see console)", closable: true });
+      return;
+    }
+    const parsedTerminal = parsed.data;
     api.updateScene({
       elements: [...api.getSceneElementsIncludingDeleted(), terminalElement],
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
@@ -470,7 +513,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       const boundElement = newElementWith(latest, {
         customData: { kind: "terminal", sessionId: session.id },
       });
-      const parsedBoundElement = SceneElementSchema.parse(boundElement);
+      const boundParsed = SceneElementSchema.safeParse(boundElement);
+      if (!boundParsed.success) {
+        console.error("bound terminal element failed validation", boundParsed.error.issues);
+        return;
+      }
+      const parsedBoundElement = boundParsed.data;
       currentApi.updateScene({
         elements: currentElements.map((element) =>
           element.id === boundElement.id ? boundElement : element,
@@ -512,7 +560,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         excalidrawAPI={receiveExcalidrawApi}
         onChange={handleCanvasChange}
         onPointerUpdate={({ pointer }) => sendCursor(pointer)}
-        validateEmbeddable={validateManifoldEmbed}
+        validateEmbeddable={(link) => link === TERMINAL_LINK}
         renderEmbeddable={renderEmbeddable}
       >
         <MainMenu>

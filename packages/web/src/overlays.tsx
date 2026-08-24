@@ -3,7 +3,7 @@ import type { ConnectionStatus, SessionClient } from "@manifold/sdk";
 
 const KIND_MARK: Record<Principal["kind"], string> = {
   human: "⌂",
-  agent: "⚙",
+  agent: "agent",
 };
 
 interface RosterProps {
@@ -64,7 +64,7 @@ interface StatusBarProps {
 
 /** Exposes synchronization health without competing with the canvas UI. */
 export function StatusBar({ status, savedAt, rev }: StatusBarProps) {
-  const savedLabel = savedAt === null ? "not saved yet" : new Date(savedAt).toLocaleTimeString();
+  const savedLabel = savedAt === null ? "—" : new Date(savedAt).toLocaleTimeString();
   return (
     <div className="status-bar" role="status">
       <span className={`status-indicator ${status}`} />
