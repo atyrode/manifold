@@ -24,6 +24,8 @@ const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   AGENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
 );
 
+const SUPERSEDE_DAMP_MS = 5_000;
+
 interface PendingMachineConnection {
   socket: RawSocket;
   channel: LiveMachineChannel | null;
@@ -81,6 +83,7 @@ function classifyAgentFrame(data: unknown): ClassifiedFrame {
 export class MachineGateway {
   private readonly connections = new Map<string, PendingMachineConnection>();
   private readonly activeByMachine = new Map<string, LiveMachineChannel>();
+  private readonly lastSupersededAtByToken = new Map<string, number>();
   private readonly removeRevocationListener: () => void;
 
   constructor(
@@ -167,6 +170,17 @@ export class MachineGateway {
       connection.socket,
     );
     const older = this.activeByMachine.get(authenticated.id);
+    const lastSupersededAt = this.lastSupersededAtByToken.get(authenticated.tokenPrincipalId);
+    if (
+      older !== undefined &&
+      lastSupersededAt !== undefined &&
+      this.runtime.now() - lastSupersededAt < SUPERSEDE_DAMP_MS
+    ) {
+      connection.cancelHelloTimeout?.();
+      connection.cancelHelloTimeout = null;
+      connection.socket.close(4003, "supersession damped");
+      return;
+    }
     connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
@@ -183,7 +197,11 @@ export class MachineGateway {
     }
     this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
-    if (older !== undefined) older.close(4001, "superseded");
+    if (older !== undefined) {
+      this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, this.runtime.now());
+      this.logger.info("machine_superseded", { machineId: authenticated.id });
+      older.close(4001, "superseded");
+    }
     this.broker.reconcileMachineHello(authenticated.id, message.sessions);
   }
 

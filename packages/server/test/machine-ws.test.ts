@@ -6,7 +6,7 @@ import {
   type ServerToAgentMessage,
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
-import { silentLogger } from "../src/log.ts";
+import { silentLogger, type Logger } from "../src/log.ts";
 import { LiveMachineChannel, MachineGateway } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
@@ -32,6 +32,18 @@ class StatusSocket implements RawSocket {
 
 function machineMessages(socket: FakeSocket): ServerToAgentMessage[] {
   return socket.sent.map((frame) => ServerToAgentMessageSchema.parse(JSON.parse(frame)));
+}
+
+class CaptureLogger implements Logger {
+  readonly events: { evt: string; fields: Readonly<Record<string, unknown>> | undefined }[] = [];
+
+  info(evt: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.events.push({ evt, fields });
+  }
+
+  warn(): void {}
+
+  error(): void {}
 }
 
 describe("machine channel send status", () => {
@@ -155,6 +167,77 @@ describe("machine hello reconciliation", () => {
     );
 
     expect(machineMessages(socket).map((message) => message.type)).toEqual(["welcome", "kill"]);
+    gateway.shutdown();
+    store.close();
+  });
+
+  test("damps repeated machine supersession while preserving the active fence", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "e".repeat(64), runtime);
+    const root = auth.authenticate("e".repeat(64));
+    const enrollment = auth.enrollMachine("agent", root);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+    );
+    const logger = new CaptureLogger();
+    const gateway = new MachineGateway(auth, store, broker, clock, logger, "server-epoch", runtime);
+    const hello = JSON.stringify({
+      type: "hello",
+      token: enrollment.machineToken,
+      name: "agent",
+      agentVersion: "test",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const first = new FakeSocket();
+    gateway.open("first", first);
+    gateway.message("first", hello);
+    const second = new FakeSocket();
+    gateway.open("second", second);
+    gateway.message("second", hello);
+
+    expect(first.closed).toEqual({ code: 4001, reason: "superseded" });
+    expect(logger.events).toEqual([
+      {
+        evt: "machine_superseded",
+        fields: { machineId: enrollment.machine.id },
+      },
+    ]);
+
+    const immediate = new FakeSocket();
+    gateway.open("immediate", immediate);
+    gateway.message("immediate", hello);
+
+    expect(immediate.closed).toEqual({ code: 4003, reason: "supersession damped" });
+    expect(second.closed).toBeNull();
+    expect(machineMessages(immediate)).toEqual([]);
+
+    clock.advance(5_000);
+    const afterDamp = new FakeSocket();
+    gateway.open("after-damp", afterDamp);
+    gateway.message("after-damp", hello);
+
+    expect(second.closed).toEqual({ code: 4001, reason: "superseded" });
+    expect(afterDamp.closed).toBeNull();
+    expect(logger.events).toEqual([
+      {
+        evt: "machine_superseded",
+        fields: { machineId: enrollment.machine.id },
+      },
+      {
+        evt: "machine_superseded",
+        fields: { machineId: enrollment.machine.id },
+      },
+    ]);
     gateway.shutdown();
     store.close();
   });

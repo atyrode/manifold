@@ -209,6 +209,66 @@ describe("TerminalBroker controller lease", () => {
     });
     fixture.store.close();
   });
+
+  test("session re-adoption broadcasts the reset controller lease", () => {
+    const fixture = brokerFixture();
+    const room = fixture.rooms.get(fixture.pad.id);
+    if (room === null) throw new Error("missing room");
+    room.join(fixture.opener);
+    fixture.socket.clear();
+    const grant = fixture.auth.mintToken(
+      {
+        principal: { name: "pre-restart controller", kind: "human" },
+        caps: ["pads:read", "terminal:write"],
+        padId: fixture.pad.id,
+      },
+      fixture.root,
+    );
+    const controller = new SessionPeer(
+      fixture.runtime.newId(),
+      new FakeSocket(),
+      fixture.auth.authenticate(grant.token),
+      fixture.pad.id,
+    );
+    fixture.broker.take(controller, {
+      type: "terminal_take",
+      sessionId: fixture.create.sessionId,
+    });
+    expect(fixture.socket.messages().at(-1)).toMatchObject({
+      type: "session_event",
+      sessionId: fixture.create.sessionId,
+      kind: "controller_changed",
+      controllerId: controller.auth.principal.id,
+    });
+    fixture.socket.clear();
+
+    const restarted = new TerminalBroker(
+      fixture.store,
+      fixture.auth,
+      fixture.rooms,
+      fixture.runtime,
+      fixture.clock,
+      silentLogger,
+      () => "http://localhost:7777",
+    );
+    restarted.reconcileMachineHello(fixture.machine.machineId, [
+      {
+        sessionId: fixture.create.sessionId,
+        cols: 80,
+        rows: 24,
+        alive: true,
+        seq: 0,
+      },
+    ]);
+
+    expect(fixture.socket.messages()).toContainEqual({
+      type: "session_event",
+      sessionId: fixture.create.sessionId,
+      kind: "controller_changed",
+      controllerId: fixture.root.principal.id,
+    });
+    fixture.store.close();
+  });
 });
 
 describe("TerminalBroker bounded pending work", () => {

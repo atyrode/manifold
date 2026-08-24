@@ -263,6 +263,12 @@ export class TerminalBroker {
       rows: advertised.rows,
     };
     session.snapshotRequestOutstanding = false;
+    this.rooms.live(session.info.padId)?.broadcast({
+      type: "session_event",
+      sessionId: session.info.id,
+      kind: "controller_changed",
+      controllerId: session.info.controllerId,
+    });
     if (session.viewers.size > 0) {
       for (const [peer, viewer] of session.viewers) {
         viewer.state = "PENDING";
