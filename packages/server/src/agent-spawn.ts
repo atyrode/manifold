@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AuthService, MachineEnrollment } from "./auth.ts";
 import { ServiceError } from "./auth.ts";
@@ -6,7 +6,52 @@ import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { ServerStore } from "./stores.ts";
 
-function livePid(path: string): number | null {
+const AGENT_ENTRY_MARKER = "packages/agent/src/main.ts";
+const SERVER_ENTRY_MARKER = "packages/server/src/main.ts";
+
+interface SpawnedAgent {
+  readonly pid: number;
+  unref(): void;
+}
+
+interface AgentSpawnOptions {
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin: "ignore";
+  readonly stdout: "ignore";
+  readonly stderr: "ignore";
+  readonly detached: true;
+}
+
+export interface AgentSpawnDeps {
+  readonly platform: NodeJS.Platform;
+  readonly pid: number;
+  readCmdline(pid: number): string;
+  processExists(pid: number): boolean;
+  spawn(command: string[], options: AgentSpawnOptions): SpawnedAgent;
+}
+
+export interface LocalAgentLease {
+  readonly pid: number;
+  release(): void;
+}
+
+const defaultAgentSpawnDeps: AgentSpawnDeps = {
+  platform: process.platform,
+  pid: process.pid,
+  readCmdline: (pid) => readFileSync(`/proc/${pid}/cmdline`, "utf8"),
+  processExists(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  spawn: (command, options) => Bun.spawn(command, options),
+};
+
+function livePid(path: string, marker: string, deps: AgentSpawnDeps): number | null {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8").trim();
@@ -15,13 +60,52 @@ function livePid(path: string): number | null {
     throw error;
   }
   const pid = Number(raw);
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  try {
-    process.kill(pid, 0);
+  if (!Number.isInteger(pid) || pid <= 0 || !deps.processExists(pid)) return null;
+  if (deps.platform !== "linux") {
+    // Non-Linux deployments have no procfs cmdline boundary; retain the previous PID-only behavior.
     return pid;
+  }
+  try {
+    return deps.readCmdline(pid).includes(marker) ? pid : null;
   } catch {
     return null;
   }
+}
+
+function acquireBootLock(path: string, deps: AgentSpawnDeps): (() => void) | null {
+  try {
+    const fd = openSync(path, "wx", 0o600);
+    try {
+      writeFileSync(fd, `${deps.pid}\n`, { encoding: "utf8" });
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || Reflect.get(error, "code") !== "EEXIST") throw error;
+    if (livePid(path, SERVER_ENTRY_MARKER, deps) !== null) return null;
+    try {
+      unlinkSync(path);
+    } catch (unlinkError) {
+      if (!(unlinkError instanceof Error) || Reflect.get(unlinkError, "code") !== "ENOENT") {
+        throw unlinkError;
+      }
+    }
+    return acquireBootLock(path, deps);
+  }
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    let owner: string;
+    try {
+      owner = readFileSync(path, "utf8").trim();
+    } catch (error) {
+      if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return;
+      throw error;
+    }
+    if (owner === String(deps.pid)) unlinkSync(path);
+  };
 }
 
 function savedEnrollment(
@@ -56,13 +140,19 @@ export function spawnLocalAgent(
   auth: AuthService,
   store: ServerStore,
   logger: Logger,
-): number | null {
+  deps: AgentSpawnDeps = defaultAgentSpawnDeps,
+): LocalAgentLease | null {
   if (!config.spawnAgent) return null;
+  const release = acquireBootLock(resolve(config.dataDir, "agent.lock"), deps);
+  if (release === null) {
+    logger.info("local_agent_spawn_locked");
+    return null;
+  }
   const pidPath = resolve(config.dataDir, "agent.pid");
-  const existingPid = livePid(pidPath);
+  const existingPid = livePid(pidPath, AGENT_ENTRY_MARKER, deps);
   if (existingPid !== null) {
     logger.info("local_agent_reused", { pid: existingPid });
-    return existingPid;
+    return { pid: existingPid, release };
   }
 
   const tokenPath = resolve(config.dataDir, "agent.token");
@@ -88,7 +178,7 @@ export function spawnLocalAgent(
   environment.MANIFOLD_MACHINE_TOKEN = enrollment.machineToken;
   environment.MANIFOLD_MACHINE_NAME = "local";
 
-  const child = Bun.spawn(["bun", "packages/agent/src/main.ts"], {
+  const child = deps.spawn(["bun", AGENT_ENTRY_MARKER], {
     cwd: resolve(import.meta.dir, "../../.."),
     env: environment,
     stdin: "ignore",
@@ -100,5 +190,5 @@ export function spawnLocalAgent(
   writeFileSync(pidPath, `${child.pid}\n`, { encoding: "utf8", mode: 0o600 });
   chmodSync(pidPath, 0o600);
   logger.info("local_agent_spawned", { machineId: enrollment.machine.id, pid: child.pid });
-  return child.pid;
+  return { pid: child.pid, release };
 }

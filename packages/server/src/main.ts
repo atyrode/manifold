@@ -136,7 +136,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   }
 
   finalizePublicUrl(config, boundPort);
-  spawnLocalAgent(config, boundPort, auth, store, logger);
+  const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger);
   if (options.announce !== false) {
     console.log(`manifold ready url=${config.publicUrl}/#key=${config.ownerKey}`);
   }
@@ -152,6 +152,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
       sessions.shutdown();
       machines.shutdown();
       await server.stop(true);
+      localAgent?.release();
       store.close();
     },
   };
