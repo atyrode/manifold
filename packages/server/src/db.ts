@@ -1,7 +1,14 @@
 import { Database } from "bun:sqlite";
 
-/** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 2;
+/**
+ * Current durable schema revision. Migrations advance this monotonically.
+ *
+ * There is exactly ONE baseline migration on purpose: manifold has never shipped, so
+ * there is no deployed data to migrate. The runner below stays because the first schema
+ * change AFTER real pads exist will need it — but until then, new columns belong in the
+ * baseline rather than in a migration nobody will ever run.
+ */
+export const SCHEMA_VERSION = 1;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -41,7 +48,8 @@ CREATE TABLE IF NOT EXISTS tokens(
   caps TEXT,
   pad_id TEXT,
   created_at INTEGER,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  minted_by TEXT
 );
 CREATE TABLE IF NOT EXISTS machines(
   id TEXT PRIMARY KEY,
@@ -57,18 +65,14 @@ CREATE TABLE IF NOT EXISTS sessions(
   created_by TEXT,
   status TEXT,
   exit_code INTEGER,
-  created_at INTEGER
+  created_at INTEGER,
+  agent_principal_id TEXT
 );
 CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT
 );
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '1');
-`,
-  2: `
-ALTER TABLE tokens ADD COLUMN minted_by TEXT;
-ALTER TABLE sessions ADD COLUMN agent_principal_id TEXT;
-INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');
 `,
 };
 
