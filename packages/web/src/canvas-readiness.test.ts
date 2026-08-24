@@ -36,6 +36,7 @@ describe("canvas paint readiness", () => {
     state = advanceCanvasPaintReadiness(state, { type: "scene_reset" });
     state = advanceCanvasPaintReadiness(state, { type: "api_registered", generation: 1 });
     state = advanceCanvasPaintReadiness(state, { type: "api_registered", generation: 2 });
+    state = advanceCanvasPaintReadiness(state, { type: "api_ready", generation: 1 });
     expect(canPaintCanvas(state)).toBe(false);
 
     state = advanceCanvasPaintReadiness(state, { type: "api_ready", generation: 2 });

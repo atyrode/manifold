@@ -17,6 +17,12 @@ bun run format         # prettier
 bun run gate           # all of the above; must be green before any push
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
 bun run dev:web        # vite on :5173, proxying to :7777
+
+bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (canvas +
+                       # embedded terminal), public WebSockets, two viewers on one
+                       # session, session survival after all viewers leave, anonymous
+                       # denial. Localhost green is NOT evidence a public deployment
+                       # works — run this before claiming one does.
 ```
 
 ## Map
