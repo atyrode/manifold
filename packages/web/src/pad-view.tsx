@@ -43,12 +43,19 @@ import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-/** Scene flush cadence; build-time override (VITE_SCENE_SEND_MS) exists for benchmarking only. */
+/**
+ * Scene flush cadence, i.e. remote motion smoothness (up to ~60Hz configured; 53.7Hz
+ * measured under the harness's 55Hz synthetic pointer). Chosen from measured
+ * tradeoffs (scripts/bench-sync.ts, single-element localhost drag: 53.7Hz remote,
+ * ~25 KiB/s per active dragger, 8/13ms latency p50/p95); large rooms or constrained
+ * WANs are NOT covered by that benchmark — adaptive backpressure is tracked in #14.
+ * Build-time override (VITE_SCENE_SEND_MS) exists for benchmarking.
+ */
 const configuredSendMs = Number(import.meta.env["VITE_SCENE_SEND_MS"]);
 const SCENE_SEND_INTERVAL_MS =
   Number.isFinite(configuredSendMs) && configuredSendMs >= 4 && configuredSendMs <= 1000
     ? configuredSendMs
-    : 80;
+    : 16;
 const TERMINAL_LINK = "manifold://terminal";
 const TERMINAL_WIDTH = 720;
 const TERMINAL_HEIGHT = 480;
