@@ -1,20 +1,26 @@
 /**
  * manifold multi-client convergence gate.
  *
- * The bug class this guards: the Excalidraw↔SDK projection layer losing or reverting
- * edits while every wire-level test stays green. It drives TWO real browsers through
- * real pointer gestures against a throwaway local server and asserts the strongest
- * invariant the system claims: after quiescence, five views are identical —
+ * The bug class this guards: the Excalidraw↔SDK projection layer losing, reverting, or
+ * silently not-sending edits while every wire-level test stays green. It drives TWO real
+ * browsers through real pointer gestures against a throwaway local server and asserts,
+ * after quiescence, the strongest invariant the system claims:
  *
  *   A.canvas ≡ A.sdkScene ≡ server canonical ≡ B.sdkScene ≡ B.canvas
  *
+ * compared by version stamp AND geometry (stamp-only comparison cannot distinguish a
+ * converged-but-truncated scene from a correct one). Every round also asserts its own
+ * EFFECT — element-count delta and per-element stamp change — so a silently no-op
+ * gesture fails the round instead of passing it vacuously.
+ *
  * Requires the debug seam (localStorage "manifold:debug" = "1"; packages/web/src/debug-seam.ts).
- * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up.
+ * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up
+ * even on failure.
  *
  * Usage:  bun scripts/verify-convergence.ts            # or: bun run verify:convergence
  * Env:    MANIFOLD_CHROMIUM (else system chromium)
  *
- * Exit 0 only if every round converges.
+ * Exit 0 only if every round converges with its expected effect.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +32,8 @@ const repoRoot = join(import.meta.dir, "..");
 const distDir = mkdtempSync(join(tmpdir(), "manifold-conv-dist-"));
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-conv-data-"));
 const port = 39000 + Math.floor(Math.random() * 2000);
+const debugPortA = 9400 + Math.floor(Math.random() * 200);
+const debugPortB = debugPortA + 200 + Math.floor(Math.random() * 200);
 const origin = `http://127.0.0.1:${String(port)}`;
 
 console.log("building web bundle...");
@@ -52,28 +60,10 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   stderr: "inherit",
 });
 
-await until(
-  async () => {
-    try {
-      return (await fetch(`${origin}/healthz`)).ok;
-    } catch {
-      return false;
-    }
-  },
-  20_000,
-  "local server healthz",
-);
-const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
-const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
-
-const created = await fetch(`${origin}/api/pads`, {
-  method: "POST",
-  headers: httpHeaders,
-  body: JSON.stringify({ name: "convergence-gate" }),
-});
-const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
-
-// ---------------------------------------------------------------- clients
+const browserA = new Browser();
+const browserB = new Browser();
+const failures: string[] = [];
+let observer: SessionClient | null = null;
 
 interface Snapshot {
   readonly id: string;
@@ -94,293 +84,331 @@ interface Viewport {
   readonly offsetTop: number;
 }
 
-const browserA = new Browser();
-const browserB = new Browser();
-
-async function openPad(browser: Browser, port9: number, name: string): Promise<void> {
-  await browser.launch(port9);
-  await browser.goto(`${origin}/#key=${ownerKey}`);
-  await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
-  if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
-    await browser.typeInto("input", name);
-    await browser.clickText("Enter manifold");
-  }
-  await browser.goto(`${origin}/p/${padId}`);
-  await until(
-    () =>
-      browser.evaluate<boolean>(
-        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
-      ),
-    20_000,
-    `${name}: session open`,
-  );
-  await until(
-    () => browser.evaluate<boolean>("window.__manifold !== undefined"),
-    10_000,
-    `${name}: debug seam installed`,
-  );
-}
-
-await openPad(browserA, 9451, "convA");
-await openPad(browserB, 9452, "convB");
-
-const observer = new SessionClient({
-  url: `${origin.replace(/^http/, "ws")}/ws/session`,
-  padId,
-  token: ownerKey,
-  reconnect: false,
-});
-await observer.connect();
-
-// ---------------------------------------------------------------- views & invariant
-
-type VersionMap = Map<string, string>;
-
-function toVersionMap(snapshots: readonly Snapshot[]): VersionMap {
-  const map: VersionMap = new Map();
-  for (const s of snapshots) map.set(s.id, `${String(s.version)}:${String(s.versionNonce)}`);
-  return map;
-}
-
-function canonicalMap(): VersionMap {
-  const map: VersionMap = new Map();
-  for (const el of observer.scene.values()) {
-    map.set(el.id, `${String(el.version)}:${String(el.versionNonce)}`);
-  }
-  return map;
-}
-
-async function view(browser: Browser, which: "canvas" | "scene"): Promise<VersionMap> {
-  const snapshots = await browser.evaluate<readonly Snapshot[]>(`window.__manifold.${which}()`);
-  return toVersionMap(snapshots);
-}
-
-function diffMaps(label: string, expected: VersionMap, actual: VersionMap): string[] {
-  const lines: string[] = [];
-  for (const [id, stamp] of expected) {
-    const other = actual.get(id);
-    if (other === undefined) lines.push(`${label}: missing ${id} (canonical ${stamp})`);
-    else if (other !== stamp) lines.push(`${label}: ${id} at ${other}, canonical ${stamp}`);
-  }
-  for (const id of actual.keys()) {
-    if (!expected.has(id)) lines.push(`${label}: extra ${id} not in canonical`);
-  }
-  return lines;
-}
-
-function mapsEqual(a: VersionMap, b: VersionMap): boolean {
-  if (a.size !== b.size) return false;
-  for (const [id, stamp] of a) if (b.get(id) !== stamp) return false;
-  return true;
-}
-
-const failures: string[] = [];
-
-async function assertConverged(round: string): Promise<void> {
-  let lastDiff: string[] = [];
-  try {
-    await until(
-      async () => {
-        const canonical = canonicalMap();
-        const views: [string, VersionMap][] = [
-          ["A.canvas", await view(browserA, "canvas")],
-          ["A.scene", await view(browserA, "scene")],
-          ["B.scene", await view(browserB, "scene")],
-          ["B.canvas", await view(browserB, "canvas")],
-        ];
-        lastDiff = views.flatMap(([label, m]) =>
-          mapsEqual(m, canonical) ? [] : diffMaps(label, canonical, m),
-        );
-        const pendingA = await browserA.evaluate<readonly string[]>("window.__manifold.pending()");
-        const pendingB = await browserB.evaluate<readonly string[]>("window.__manifold.pending()");
-        if (pendingA.length > 0) lastDiff.push(`A.pending: ${pendingA.join(",")}`);
-        if (pendingB.length > 0) lastDiff.push(`B.pending: ${pendingB.join(",")}`);
-        return lastDiff.length === 0;
-      },
-      12_000,
-      "five-view convergence",
-    );
-    console.log(`PASS  ${round} — converged, ${String(canonicalMap().size)} elements canonical`);
-  } catch {
-    failures.push(round);
-    console.log(`FAIL  ${round} — divergence after quiescence:`);
-    for (const line of lastDiff) console.log(`        ${line}`);
-  }
-}
-
-// ---------------------------------------------------------------- gestures
-
-async function selectTool(browser: Browser, tool: string): Promise<void> {
-  const clicked = await browser.evaluate<boolean>(
-    `(() => { const b = document.querySelector('[data-testid=toolbar-${tool}]'); if (!b) return false; b.click(); return true; })()`,
-  );
-  if (!clicked) throw new Error(`toolbar-${tool} not found`);
-  await sleep(200);
-}
-
-function strokePoints(x0: number, y0: number, dx: number, dy: number, n: number) {
-  return Array.from({ length: n }, (_, i) => ({
-    x: x0 + (dx * i) / n,
-    y: y0 + (dy * i) / n + Math.round(Math.sin(i / 3) * 30),
-  }));
-}
-
-async function freedraw(browser: Browser, x0: number, y0: number): Promise<void> {
-  await selectTool(browser, "freedraw");
-  await browser.drag(strokePoints(x0, y0, 260, 120, 30), 15);
-}
-
-/** Screen-space center of an element as this browser currently projects it. */
-async function centerOf(browser: Browser, elementId: string): Promise<{ x: number; y: number }> {
-  const found = await browser.evaluate<{ snap: Snapshot; vp: Viewport } | null>(
-    `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(elementId)});
-      const vp = window.__manifold.viewport();
-      return el && vp ? { snap: el, vp } : null; })()`,
-  );
-  if (found === null) throw new Error(`element ${elementId} not on canvas`);
-  const { snap, vp } = found;
-  return {
-    x: (snap.x + snap.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
-    y: (snap.y + snap.height / 2 + vp.scrollY) * vp.zoom + vp.offsetTop,
-  };
-}
-
-/** Screen-space point on the TOP EDGE of an element — transparent-fill shapes only hit-test on their stroke. */
-async function edgeOf(browser: Browser, elementId: string): Promise<{ x: number; y: number }> {
-  const found = await browser.evaluate<{ snap: Snapshot; vp: Viewport } | null>(
-    `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(elementId)});
-      const vp = window.__manifold.viewport();
-      return el && vp ? { snap: el, vp } : null; })()`,
-  );
-  if (found === null) throw new Error(`element ${elementId} not on canvas`);
-  const { snap, vp } = found;
-  return {
-    x: (snap.x + snap.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
-    y: (snap.y + vp.scrollY) * vp.zoom + vp.offsetTop,
-  };
-}
-
-async function moveElementByEdge(
-  browser: Browser,
-  elementId: string,
-  dx: number,
-  dy: number,
-): Promise<void> {
-  await selectTool(browser, "selection");
-  const from = await edgeOf(browser, elementId);
-  const steps = 20;
-  await browser.drag(
-    Array.from({ length: steps + 1 }, (_, i) => ({
-      x: from.x + (dx * i) / steps,
-      y: from.y + (dy * i) / steps,
-    })),
-    15,
-  );
-}
-
-async function moveElement(
-  browser: Browser,
-  elementId: string,
-  dx: number,
-  dy: number,
-): Promise<void> {
-  await selectTool(browser, "selection");
-  const from = await centerOf(browser, elementId);
-  const steps = 20;
-  await browser.drag(
-    Array.from({ length: steps + 1 }, (_, i) => ({
-      x: from.x + (dx * i) / steps,
-      y: from.y + (dy * i) / steps,
-    })),
-    15,
-  );
-}
-
-// ---------------------------------------------------------------- rounds
-
-console.log(`convergence rounds against ${origin} pad ${padId}`);
-
-// R1: solo stroke.
-await freedraw(browserA, 300, 250);
-await assertConverged("R1 solo stroke");
-
-// R2: concurrent strokes from both clients in distinct regions.
-await Promise.all([freedraw(browserA, 300, 500), freedraw(browserB, 800, 250)]);
-await assertConverged("R2 concurrent strokes");
-
-// R3: A creates a rectangle, then concurrently A moves it while B draws.
-await selectTool(browserA, "rectangle");
-await browserA.drag(
-  [
-    { x: 900, y: 550 },
-    { x: 1040, y: 640 },
-  ],
-  30,
-);
-await assertConverged("R3a rectangle created");
-const rect = [...observer.scene.values()].find((el) => el["type"] === "rectangle");
-if (rect === undefined) throw new Error("rectangle not in canonical scene");
-await Promise.all([moveElement(browserA, rect.id, -180, -120), freedraw(browserB, 500, 650)]);
-await assertConverged("R3b concurrent move and stroke");
-
-// R4: B frozen (suspended tab) while A edits; B resumes and must converge.
-await browserB.setLifecycle("frozen");
-await freedraw(browserA, 1050, 300);
-await moveElement(browserA, rect.id, 60, 90);
-await sleep(1500);
-await browserB.setLifecycle("active");
-await assertConverged("R4 frozen tab resume");
-
-// R5: cross moves — A and B move DIFFERENT elements concurrently.
-const strokes = [...observer.scene.values()].filter((el) => el["type"] === "freedraw");
-const strokeForB = strokes[0];
-if (strokeForB === undefined) throw new Error("no freedraw stroke in canonical scene");
-await Promise.all([
-  moveElement(browserA, rect.id, -40, 100),
-  moveElement(browserB, strokeForB.id, 120, -60),
-]);
-await assertConverged("R5 concurrent cross moves");
-
-// R6: rapid-fire strokes back to back from A.
-await freedraw(browserA, 250, 700);
-await freedraw(browserA, 550, 720);
-await freedraw(browserA, 850, 700);
-await assertConverged("R6 rapid-fire strokes");
-
-// R7: THE aliasing regression — B moves an element it received from A (painted from the
-// canonical scene, i.e. the exact object-aliasing hazard). The move MUST take effect
-// locally (asserted as a precondition, so the round cannot no-op) and then reach every
-// other view. Pre-clone-fix this diverges: B's canvas AND B's SDK scene advance together
-// in place, reconcile sees an idempotent duplicate, and nothing is ever sent.
-{
-  /** Reads the rectangle's geometry as B's LIVE canvas currently shows it. */
-  const rectOnB = (): Promise<{ x: number; y: number } | null> =>
-    browserB.evaluate<{ x: number; y: number } | null>(
-      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)});
-        return el ? { x: el.x, y: el.y } : null; })()`,
-    );
-  const before = await rectOnB();
-  if (before === null) throw new Error("rectangle never reached B's canvas");
-  await moveElementByEdge(browserB, rect.id, 150, 80);
+try {
   await until(
     async () => {
-      const now = await rectOnB();
-      return now !== null && (now.x !== before.x || now.y !== before.y);
+      try {
+        return (await fetch(`${origin}/healthz`)).ok;
+      } catch {
+        return false;
+      }
     },
-    8_000,
-    "B's local canvas actually moved the rectangle (gesture must not no-op)",
+    20_000,
+    "local server healthz",
   );
-  await assertConverged("R7 aliased move (B moves A's element)");
+  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
+
+  const created = await fetch(`${origin}/api/pads`, {
+    method: "POST",
+    headers: httpHeaders,
+    body: JSON.stringify({ name: "convergence-gate" }),
+  });
+  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+
+  // ---------------------------------------------------------------- clients
+
+  async function openPad(browser: Browser, debugPort: number, name: string): Promise<void> {
+    await browser.launch(debugPort);
+    await browser.goto(`${origin}/#key=${ownerKey}`);
+    await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
+    if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
+      await browser.typeInto("input", name);
+      await browser.clickText("Enter manifold");
+    }
+    await browser.goto(`${origin}/p/${padId}`);
+    await until(
+      () =>
+        browser.evaluate<boolean>(
+          "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
+        ),
+      20_000,
+      `${name}: session open`,
+    );
+    await until(
+      () => browser.evaluate<boolean>("window.__manifold !== undefined"),
+      10_000,
+      `${name}: debug seam installed`,
+    );
+  }
+
+  await openPad(browserA, debugPortA, "convA");
+  await openPad(browserB, debugPortB, "convB");
+
+  const sdk = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    padId,
+    token: ownerKey,
+    reconnect: false,
+  });
+  observer = sdk;
+  await sdk.connect();
+
+  // ---------------------------------------------------------------- views & invariant
+
+  /** id → "version:nonce:x:y" — geometry included so converged-but-truncated states differ. */
+  type ViewMap = Map<string, string>;
+
+  const stampNumber = (value: unknown): string =>
+    typeof value === "number" ? value.toFixed(1) : "0";
+
+  function toViewMap(snapshots: readonly Snapshot[]): ViewMap {
+    const map: ViewMap = new Map();
+    for (const s of snapshots) {
+      map.set(
+        s.id,
+        `${String(s.version)}:${String(s.versionNonce)}:${s.x.toFixed(1)}:${s.y.toFixed(1)}`,
+      );
+    }
+    return map;
+  }
+
+  function canonicalView(): ViewMap {
+    const map: ViewMap = new Map();
+    for (const el of sdk.scene.values()) {
+      map.set(
+        el.id,
+        `${String(el.version)}:${String(el.versionNonce)}:${stampNumber(el["x"])}:${stampNumber(el["y"])}`,
+      );
+    }
+    return map;
+  }
+
+  async function view(browser: Browser, which: "canvas" | "scene"): Promise<ViewMap> {
+    const snapshots = await browser.evaluate<readonly Snapshot[]>(`window.__manifold.${which}()`);
+    return toViewMap(snapshots);
+  }
+
+  function diffMaps(label: string, expected: ViewMap, actual: ViewMap): string[] {
+    const lines: string[] = [];
+    for (const [id, stamp] of expected) {
+      const other = actual.get(id);
+      if (other === undefined) lines.push(`${label}: missing ${id} (canonical ${stamp})`);
+      else if (other !== stamp) lines.push(`${label}: ${id} at ${other}, canonical ${stamp}`);
+    }
+    for (const id of actual.keys()) {
+      if (!expected.has(id)) lines.push(`${label}: extra ${id} not in canonical`);
+    }
+    return lines;
+  }
+
+  function mapsEqual(a: ViewMap, b: ViewMap): boolean {
+    if (a.size !== b.size) return false;
+    for (const [id, stamp] of a) if (b.get(id) !== stamp) return false;
+    return true;
+  }
+
+  interface RoundEffect {
+    /** Exact number of NEW canonical elements this round must create. */
+    readonly adds: number;
+    /** Ids whose canonical stamp (version or geometry) must have advanced. */
+    readonly changes?: readonly string[];
+  }
+
+  /**
+   * Runs one round: capture canonical before-state, perform gestures, wait for five-view
+   * convergence, then assert the round's declared effect. Probe errors surface in the
+   * failure output instead of being reported as stale diffs.
+   */
+  async function round(name: string, effect: RoundEffect, act: () => Promise<void>): Promise<void> {
+    const before = canonicalView();
+    let lastDiff: string[] = [];
+    try {
+      await act();
+      await until(
+        async () => {
+          const canonical = canonicalView();
+          const views: [string, ViewMap][] = [
+            ["A.canvas", await view(browserA, "canvas")],
+            ["A.scene", await view(browserA, "scene")],
+            ["B.scene", await view(browserB, "scene")],
+            ["B.canvas", await view(browserB, "canvas")],
+          ];
+          lastDiff = views.flatMap(([label, m]) =>
+            mapsEqual(m, canonical) ? [] : diffMaps(label, canonical, m),
+          );
+          for (const [browser, label] of [
+            [browserA, "A"],
+            [browserB, "B"],
+          ] as const) {
+            const pending = await browser.evaluate<readonly string[]>(
+              "window.__manifold.pending()",
+            );
+            if (pending.length > 0) lastDiff.push(`${label}.pending: ${pending.join(",")}`);
+          }
+          // Effect assertions: a silently no-op gesture must fail, not pass vacuously.
+          const canonicalNow = canonicalView();
+          if (canonicalNow.size !== before.size + effect.adds) {
+            lastDiff.push(
+              `effect: expected ${String(before.size + effect.adds)} canonical elements, have ${String(canonicalNow.size)}`,
+            );
+          }
+          for (const id of effect.changes ?? []) {
+            if (canonicalNow.get(id) === before.get(id)) {
+              lastDiff.push(`effect: ${id} canonical stamp did not advance`);
+            }
+          }
+          return lastDiff.length === 0;
+        },
+        12_000,
+        "five-view convergence with declared effect",
+      );
+      console.log(`PASS  ${name} — converged, ${String(canonicalView().size)} elements canonical`);
+    } catch (error) {
+      failures.push(name);
+      console.log(`FAIL  ${name} — ${error instanceof Error ? error.message : String(error)}`);
+      for (const line of lastDiff) console.log(`        ${line}`);
+    }
+  }
+
+  // ---------------------------------------------------------------- gestures
+
+  async function selectTool(browser: Browser, tool: string): Promise<void> {
+    const clicked = await browser.evaluate<boolean>(
+      `(() => { const b = document.querySelector('[data-testid=toolbar-${tool}]'); if (!b) return false; b.click(); return true; })()`,
+    );
+    if (!clicked) throw new Error(`toolbar-${tool} not found`);
+    await sleep(200);
+  }
+
+  function strokePoints(x0: number, y0: number, dx: number, dy: number, n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      x: x0 + (dx * i) / n,
+      y: y0 + (dy * i) / n + Math.round(Math.sin(i / 3) * 30),
+    }));
+  }
+
+  async function freedraw(browser: Browser, x0: number, y0: number): Promise<void> {
+    await selectTool(browser, "freedraw");
+    await browser.drag(strokePoints(x0, y0, 260, 120, 30), 15);
+  }
+
+  /** Screen-space point on the TOP EDGE of an element — transparent-fill shapes only hit-test on their stroke. */
+  async function edgeOf(browser: Browser, elementId: string): Promise<{ x: number; y: number }> {
+    const found = await browser.evaluate<{ snap: Snapshot; vp: Viewport } | null>(
+      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(elementId)});
+        const vp = window.__manifold.viewport();
+        return el && vp ? { snap: el, vp } : null; })()`,
+    );
+    if (found === null) throw new Error(`element ${elementId} not on canvas`);
+    const { snap, vp } = found;
+    return {
+      x: (snap.x + snap.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
+      y: (snap.y + vp.scrollY) * vp.zoom + vp.offsetTop,
+    };
+  }
+
+  async function moveElementByEdge(
+    browser: Browser,
+    elementId: string,
+    dx: number,
+    dy: number,
+  ): Promise<void> {
+    await selectTool(browser, "selection");
+    const from = await edgeOf(browser, elementId);
+    const steps = 20;
+    await browser.drag(
+      Array.from({ length: steps + 1 }, (_, i) => ({
+        x: from.x + (dx * i) / steps,
+        y: from.y + (dy * i) / steps,
+      })),
+      15,
+    );
+  }
+
+  // ---------------------------------------------------------------- rounds
+
+  console.log(`convergence rounds against ${origin} pad ${padId}`);
+
+  await round("R1 solo stroke", { adds: 1 }, () => freedraw(browserA, 300, 250));
+
+  await round("R2 concurrent strokes", { adds: 2 }, async () => {
+    await Promise.all([freedraw(browserA, 300, 500), freedraw(browserB, 800, 250)]);
+  });
+
+  await round("R3a rectangle created", { adds: 1 }, async () => {
+    await selectTool(browserA, "rectangle");
+    await browserA.drag(
+      [
+        { x: 900, y: 550 },
+        { x: 1040, y: 640 },
+      ],
+      30,
+    );
+  });
+  const rect = [...sdk.scene.values()].find((el) => el["type"] === "rectangle");
+  if (rect === undefined) throw new Error("rectangle not in canonical scene");
+
+  await round("R3b concurrent move and stroke", { adds: 1, changes: [rect.id] }, async () => {
+    await Promise.all([
+      moveElementByEdge(browserA, rect.id, -180, -120),
+      freedraw(browserB, 500, 650),
+    ]);
+  });
+
+  await round("R4 frozen tab resume", { adds: 1, changes: [rect.id] }, async () => {
+    await browserB.setLifecycle("frozen");
+    await freedraw(browserA, 1050, 300);
+    await moveElementByEdge(browserA, rect.id, 60, 90);
+    await sleep(1500);
+    await browserB.setLifecycle("active");
+  });
+
+  // A second rectangle, created by B: rect1 is aliased on B, rect2 is aliased on A, so the
+  // cross-move exercises the aliasing hazard in BOTH directions with a reliably
+  // hit-testable gesture (edge drags; freedraw bounding-box edges miss the actual path —
+  // the hardened effect assertion caught exactly that as a silent no-op).
+  await round("R5a second rectangle by B", { adds: 1 }, async () => {
+    await selectTool(browserB, "rectangle");
+    // Clear of the left properties island (visible while a shape tool is active) and of
+    // every prior round's strokes.
+    await browserB.drag(
+      [
+        { x: 620, y: 130 },
+        { x: 760, y: 210 },
+      ],
+      30,
+    );
+  });
+  const rect2 = [...sdk.scene.values()].find(
+    (el) => el["type"] === "rectangle" && el.id !== rect.id,
+  );
+  if (rect2 === undefined) throw new Error("second rectangle not in canonical scene");
+
+  await round(
+    "R5b bidirectional aliased cross moves",
+    { adds: 0, changes: [rect.id, rect2.id] },
+    async () => {
+      await Promise.all([
+        moveElementByEdge(browserA, rect2.id, -40, 100),
+        moveElementByEdge(browserB, rect.id, 120, -60),
+      ]);
+    },
+  );
+
+  await round("R6 rapid-fire strokes", { adds: 3 }, async () => {
+    await freedraw(browserA, 250, 700);
+    await freedraw(browserA, 550, 720);
+    await freedraw(browserA, 850, 700);
+  });
+
+  // R7: THE aliasing regression — B moves an element it received from A (painted from the
+  // canonical scene, i.e. the exact object-aliasing hazard). Pre-clone-fix this diverges:
+  // B's canvas AND B's SDK scene advance together in place, reconcile sees an idempotent
+  // duplicate, and nothing is ever sent. The `changes` effect assertion doubles as the
+  // no-op guard: if the gesture misses, rect's canonical stamp cannot advance.
+  await round("R7 aliased move (B moves A's element)", { adds: 0, changes: [rect.id] }, () =>
+    moveElementByEdge(browserB, rect.id, 150, 80),
+  );
+} finally {
+  // ---------------------------------------------------------------- teardown
+  await browserA.close().catch(() => undefined);
+  await browserB.close().catch(() => undefined);
+  observer?.close();
+  server.kill();
+  rmSync(distDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 }
-
-// ---------------------------------------------------------------- teardown
-
-await browserA.close();
-await browserB.close();
-observer.close();
-server.kill();
-rmSync(distDir, { recursive: true, force: true });
-rmSync(dataDir, { recursive: true, force: true });
 
 if (failures.length > 0) {
   console.log(`\nFAILED rounds: ${failures.join(", ")}`);

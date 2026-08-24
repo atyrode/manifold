@@ -10,15 +10,17 @@
   },
   "scripts": {
     "check": "tsc -p packages/protocol && tsc -p packages/sdk && tsc -p packages/server && tsc -p packages/agent && tsc -p packages/testkit && tsc -p packages/web && tsc -p tsconfig.scripts.json",
-    "test": "bun test packages/protocol packages/sdk packages/server packages/agent",
+    "test": "bun test packages/protocol packages/sdk packages/server packages/agent packages/web",
     "e2e": "bun test packages/testkit --timeout 60000",
+    "verify:convergence": "bun scripts/verify-convergence.ts",
+    "verify:public": "bun scripts/verify-public.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev:server": "bun --watch packages/server/src/main.ts",
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
-    "gate": "bun run check && bun run lint && bun run format:check && bun run test && bun run e2e"
+    "gate": "bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
