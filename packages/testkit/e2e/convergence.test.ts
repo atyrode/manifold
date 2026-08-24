@@ -14,7 +14,7 @@ import {
   e2eFailure,
   nextMessage,
   sceneElement,
-  sceneVersionHash,
+  sceneContentHash,
   sortedScene,
   stopProcesses,
 } from "./helpers.ts";
@@ -47,6 +47,12 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
     const initial: SceneElement[] = Array.from({ length: 40 }, (_, index) => ({
       ...sceneElement(`el-${index}`),
       index: `a${index.toString().padStart(3, "0")}`,
+      x: index * 17,
+      y: index * 11,
+      width: 120 + index,
+      height: 60,
+      strokeColor: index % 2 === 0 ? "#1f2937" : "#7c3aed",
+      backgroundColor: index % 3 === 0 ? "#fef3c7" : "transparent",
     }));
     expect(clientA.updateScene(initial)).not.toBeNull();
     await waitFor(() => clientB.scene.size === 40 && clientB.rev === clientA.rev, 10_000, 20);
@@ -123,7 +129,9 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
     await waitFor(() => clientA.rev >= savedAtRev && resumedB.scene.has("el-durable"), 10_000, 20);
     await saved;
     const expectedScene = sortedScene(clientA);
-    const expectedHash = await sceneVersionHash(expectedScene);
+    const expectedHash = await sceneContentHash(expectedScene);
+    const expectedEpoch = clientA.epoch;
+    expect(expectedEpoch).not.toBe("");
 
     closeClients(clients);
     await server.stop();
@@ -140,8 +148,9 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
       reconnect: false,
     });
     clients.push(afterRestart);
+    expect(afterRestart.epoch).toBe(expectedEpoch);
     expect(sortedScene(afterRestart)).toEqual(expectedScene);
-    expect(await sceneVersionHash(afterRestart.scene.values())).toBe(expectedHash);
+    expect(await sceneContentHash(afterRestart.scene.values())).toBe(expectedHash);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {

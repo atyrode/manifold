@@ -9,6 +9,7 @@ export interface TerminalCapture {
   snapshotSeq: number | null;
   snapshotText: string;
   outputText: string;
+  pendingOutputCount: number;
   readonly outputSeqs: number[];
   stop(): void;
 }
@@ -42,6 +43,7 @@ export function captureTerminal(client: SessionClient, sessionId: string): Termi
     snapshotSeq: null,
     snapshotText: "",
     outputText: "",
+    pendingOutputCount: 0,
     outputSeqs: [],
     stop(): void {
       offSnapshot();
@@ -54,7 +56,11 @@ export function captureTerminal(client: SessionClient, sessionId: string): Termi
     capture.snapshotText = base64ToText(message.data);
   });
   const offOutput = client.on("terminal_output", (message) => {
-    if (message.sessionId !== sessionId || capture.snapshotSeq === null) return;
+    if (message.sessionId !== sessionId) return;
+    if (capture.snapshotSeq === null) {
+      capture.pendingOutputCount += 1;
+      return;
+    }
     capture.outputSeqs.push(message.seq);
     capture.outputText += base64ToText(message.data);
   });
@@ -85,15 +91,29 @@ export function sortedScene(client: SessionClient): SceneElement[] {
   return [...client.scene.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-/** Hashes only the required durability witness: sorted `(id, version)` pairs. */
-export async function sceneVersionHash(elements: Iterable<SceneElement>): Promise<string> {
-  const pairs = [...elements]
-    .map((element) => [element.id, element.version] as const)
-    .sort(([left], [right]) => left.localeCompare(right));
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(JSON.stringify(pairs)),
-  );
+function canonicalJson(value: unknown): string | undefined {
+  if (value === null) return "null";
+  if (Array.isArray(value)) {
+    const items = value.map((item) => canonicalJson(item) ?? "null");
+    return `[${items.join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const fields: string[] = [];
+    for (const key of Object.keys(value).sort()) {
+      const encoded = canonicalJson(Reflect.get(value, key));
+      if (encoded !== undefined) fields.push(`${JSON.stringify(key)}:${encoded}`);
+    }
+    return `{${fields.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Hashes canonical full element content, independent of element or object-key insertion order. */
+export async function sceneContentHash(elements: Iterable<SceneElement>): Promise<string> {
+  const sorted = [...elements].sort((left, right) => left.id.localeCompare(right.id));
+  const canonical = canonicalJson(sorted);
+  if (canonical === undefined) throw new Error("scene content is not JSON-serializable");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
   let hex = "";
   for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, "0");
   return hex;

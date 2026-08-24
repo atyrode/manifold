@@ -87,12 +87,23 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     await waitFor(() => capture.snapshotSeq, 10_000, 20);
     client.sendTerminalInput(session.id, "printf 'SURVIVE_1\\n'\n");
     await waitForTerminalText(capture, "SURVIVE_1", 10_000);
+    const emitterTrigger = `${firstServer.dataDir}/emit-during-downtime`;
+    const emitterDone = `${firstServer.dataDir}/emitter-finished`;
+    const emitterCommand =
+      "(armed=EMITTER_; printf '%s%s\\n' \"$armed\" ARMED; " +
+      `while [ ! -f ${JSON.stringify(emitterTrigger)} ]; do sleep 0.05; done; ` +
+      'i=1; while [ "$i" -le 4 ]; do printf \'DOWNTIME_%s\\n\' "$i"; ' +
+      `i=$((i + 1)); sleep 0.2; done; printf done > ${JSON.stringify(emitterDone)}) &\n`;
+    client.sendTerminalInput(session.id, emitterCommand);
+    await waitForTerminalText(capture, "EMITTER_ARMED", 10_000);
     const preRestartWatermark = capture.outputSeqs.at(-1) ?? capture.snapshotSeq;
     if (preRestartWatermark === null) throw new Error("terminal produced no pre-restart watermark");
 
     await firstServer.stop("SIGTERM");
     expect(agent.proc.exitCode).toBeNull();
     client.close();
+    await Bun.write(emitterTrigger, "emit");
+    await waitFor(() => Bun.file(emitterDone).exists(), 3_000, 20);
 
     const restarted = await startServer({
       dataDir: firstServer.dataDir,
@@ -118,6 +129,8 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     afterRestart.attachTerminal(session.id);
     await waitFor(() => afterCapture.snapshotSeq !== null, 10_000, 20);
     expect(afterCapture.snapshotSeq).toBeGreaterThanOrEqual(preRestartWatermark);
+    expect(afterCapture.snapshotText).toContain("SURVIVE_1");
+    expect(afterCapture.snapshotText).toContain("DOWNTIME_4");
     afterRestart.sendTerminalInput(session.id, "printf 'SURVIVE_2\\n'\n");
     await waitForTerminalText(afterCapture, "SURVIVE_2", 10_000);
     expect(afterCapture.snapshotText + afterCapture.outputText).toContain("SURVIVE_2");

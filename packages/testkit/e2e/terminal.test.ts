@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
+import { OkResponseSchema } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createPad,
   enrollMachine,
   mintToken,
+  ownerFetch,
   startAgent,
   startServer,
   waitFor,
@@ -23,8 +25,9 @@ import {
 } from "./helpers.ts";
 
 const COUNTER_COMMAND =
-  "for i in $(seq 1 400); do echo N$i; done | " +
-  "while IFS= read -r line; do printf '%s\\n' \"$line\"; sleep 0.005; done\n";
+  'i=1; while [ "$i" -le 400 ]; do printf \'N%s\\n\' "$i"; ' +
+  'spin=0; while [ "$spin" -lt 2000 ]; do spin=$((spin + 1)); done; ' +
+  "i=$((i + 1)); done\n";
 
 test("terminal lifecycle enforces attach contiguity, controller authority, resize, and kill", async () => {
   const servers: TestServer[] = [];
@@ -89,6 +92,8 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     clientA.attachTerminal(session.id);
     clientB.attachTerminal(session.id);
     await waitFor(() => captureA.snapshotSeq !== null && captureB.snapshotSeq !== null, 10_000, 20);
+    expect(captureA.pendingOutputCount).toBe(0);
+    expect(captureB.pendingOutputCount).toBe(0);
 
     clientA.sendTerminalInput(session.id, "printf 'RT_%s\\n' ok\n");
     await Promise.all([
@@ -124,6 +129,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     for (const capture of viewerCaptures) {
       const snapshotSeq = capture.snapshotSeq;
       if (snapshotSeq === null) throw new Error("viewer never received terminal_snapshot");
+      expect(capture.pendingOutputCount).toBe(0);
       expect(capture.outputSeqs.length).toBeGreaterThan(0);
       expect(capture.outputSeqs[0]).toBe(snapshotSeq + 1);
       for (let index = 1; index < capture.outputSeqs.length; index += 1) {
@@ -168,7 +174,9 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       () => clientA.sessions.get(session.id)?.controllerId === bob.principal.id,
       5_000,
       20,
-    );
+    ).catch((error: unknown) => {
+      throw new Error("controller state did not converge after terminal_take", { cause: error });
+    });
 
     const beforeControllerOutput = captureB.snapshotText.length + captureB.outputText.length;
     clientB.sendTerminalInput(session.id, "printf 'CTRL_B\\n'\n");
@@ -179,7 +187,9 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
           .includes("CTRL_B"),
       5_000,
       20,
-    );
+    ).catch((error: unknown) => {
+      throw new Error("new controller input produced no terminal output", { cause: error });
+    });
     const deniedA = nextMessage(
       clientA,
       "error",
@@ -201,14 +211,18 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     );
     clientB.resizeTerminal(session.id, 100, 30);
     await resized;
-    const beforeSttyOutput = captureA.snapshotText.length + captureA.outputText.length;
-    clientB.sendTerminalInput(session.id, "stty size\n");
+    const beforeResizeProbeOutput = captureA.snapshotText.length + captureA.outputText.length;
+    clientB.sendTerminalInput(session.id, 'printf \'SIZE_%s_%s\\n\' "$LINES" "$COLUMNS"\n');
     await waitFor(
       () =>
-        (captureA.snapshotText + captureA.outputText).slice(beforeSttyOutput).includes("30 100"),
+        (captureA.snapshotText + captureA.outputText)
+          .slice(beforeResizeProbeOutput)
+          .includes("SIZE_30_100"),
       5_000,
       20,
-    );
+    ).catch((error: unknown) => {
+      throw new Error("resized PTY did not report the requested geometry", { cause: error });
+    });
 
     const exited = nextMessage(
       clientA,
@@ -235,3 +249,230 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     await stopProcesses([...servers, ...agents]);
   }
 }, 90_000);
+
+test("an exited terminal rejects input, resize, take, and kill with conflict", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const pad = await createPad(server, "exited terminal gates");
+    const enrolled = await enrollMachine(server, "exited-terminal-agent");
+    const agent = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "exited-terminal-agent",
+    });
+    agents.push(agent);
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
+      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      padId: pad.id,
+    });
+    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(client);
+    const session = await client.openTerminal({
+      elementId: "el-exited-gates",
+      cols: 80,
+      rows: 24,
+    });
+    const exited = nextMessage(
+      client,
+      "session_event",
+      10_000,
+      (message) => message.sessionId === session.id && message.kind === "exited",
+    );
+    client.killTerminal(session.id);
+    expect((await exited).kind).toBe("exited");
+    await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+
+    const inputConflict = nextMessage(
+      client,
+      "error",
+      5_000,
+      (message) =>
+        message.code === "conflict" &&
+        message.ref === session.id &&
+        message.message === "session has exited",
+    );
+    client.sendTerminalInput(session.id, "printf 'AFTER_EXIT\\n'\n");
+    expect((await inputConflict).code).toBe("conflict");
+
+    const resizeConflict = nextMessage(
+      client,
+      "error",
+      5_000,
+      (message) =>
+        message.code === "conflict" &&
+        message.ref === session.id &&
+        message.message === "session has exited",
+    );
+    client.resizeTerminal(session.id, 120, 40);
+    expect((await resizeConflict).code).toBe("conflict");
+
+    const takeConflict = nextMessage(
+      client,
+      "error",
+      5_000,
+      (message) =>
+        message.code === "conflict" &&
+        message.ref === session.id &&
+        message.message === "session has exited",
+    );
+    client.takeTerminal(session.id);
+    expect((await takeConflict).code).toBe("conflict");
+
+    const killConflict = nextMessage(
+      client,
+      "error",
+      5_000,
+      (message) =>
+        message.code === "conflict" &&
+        message.ref === session.id &&
+        message.message === "session has exited",
+    );
+    client.killTerminal(session.id);
+    expect((await killConflict).code).toBe("conflict");
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 30_000);
+
+test("terminal_open rejects ambiguous machines and honors an explicit machineId", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const pad = await createPad(server, "multi-machine terminal");
+    const firstEnrollment = await enrollMachine(server, "terminal-machine-one");
+    const secondEnrollment = await enrollMachine(server, "terminal-machine-two");
+    const firstAgent = await startAgent({
+      serverUrl: server.url,
+      machineToken: firstEnrollment.machineToken,
+      name: "terminal-machine-one",
+    });
+    agents.push(firstAgent);
+    const secondAgent = await startAgent({
+      serverUrl: server.url,
+      machineToken: secondEnrollment.machineToken,
+      name: "terminal-machine-two",
+    });
+    agents.push(secondAgent);
+    expect(firstAgent.machineId).toBe(firstEnrollment.machineId);
+    expect(secondAgent.machineId).toBe(secondEnrollment.machineId);
+
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Machine Picker", color: "#287c69" },
+      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      padId: pad.id,
+    });
+    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(client);
+
+    const ambiguousError = nextMessage(
+      client,
+      "error",
+      5_000,
+      (message) =>
+        message.code === "no_machine" &&
+        message.ref === "el-ambiguous-machine" &&
+        message.message === "no unambiguous online machine",
+    );
+    const ambiguousOpen = client
+      .openTerminal({
+        elementId: "el-ambiguous-machine",
+        cols: 80,
+        rows: 24,
+        timeoutMs: 5_000,
+      })
+      .then(
+        () => "opened" as const,
+        () => "rejected" as const,
+      );
+    expect((await ambiguousError).code).toBe("no_machine");
+    expect(await ambiguousOpen).toBe("rejected");
+
+    const session = await client.openTerminal({
+      elementId: "el-explicit-machine",
+      cols: 80,
+      rows: 24,
+      machineId: secondEnrollment.machineId,
+    });
+    expect(session.machineId).toBe(secondEnrollment.machineId);
+    expect(session.status).toBe("running");
+
+    const exited = nextMessage(
+      client,
+      "session_event",
+      10_000,
+      (message) => message.sessionId === session.id && message.kind === "exited",
+    );
+    client.killTerminal(session.id);
+    expect((await exited).kind).toBe("exited");
+    await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 45_000);
+
+test("deleting a pad with a running terminal kills its agent-owned PTY", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const pad = await createPad(server, "delete running terminal");
+    const enrolled = await enrollMachine(server, "delete-terminal-agent");
+    const agent = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "delete-terminal-agent",
+    });
+    agents.push(agent);
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Pad Deleter", color: "#a04b39" },
+      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      padId: pad.id,
+    });
+    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(client);
+    const session = await client.openTerminal({
+      elementId: "el-delete-running-terminal",
+      cols: 80,
+      rows: 24,
+    });
+    expect(session.status).toBe("running");
+
+    const deleted = await ownerFetch(server, `/api/pads/${pad.id}`, {
+      method: "DELETE",
+      responseSchema: OkResponseSchema,
+    });
+    expect(deleted.ok).toBe(true);
+    await waitFor(
+      () =>
+        agent.output.stdout.some(
+          (line) =>
+            line.includes('"evt":"exited"') &&
+            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+        ),
+      10_000,
+      20,
+    );
+    expect(agent.proc.exitCode).toBeNull();
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 45_000);

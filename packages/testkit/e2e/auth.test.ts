@@ -7,15 +7,18 @@ import {
   RevokeRequestSchema,
   PROTOCOL_VERSION,
 } from "@manifold/protocol";
-import type { SessionClient } from "@manifold/sdk";
+import { textToBase64, type SessionClient } from "@manifold/sdk";
 import {
   connect,
   createPad,
+  enrollMachine,
   mintToken,
   ownerFetch,
+  rawMachineSocket,
   rawSessionSocket,
   startServer,
   waitFor,
+  type AdversarialMachineSocket,
   type AdversarialSessionSocket,
   type TestServer,
 } from "../src/index.ts";
@@ -52,7 +55,9 @@ async function fetchParsed<T>(
   return { status: response.status, body: schema.parse(decoded) };
 }
 
-async function closeRawSockets(sockets: readonly AdversarialSessionSocket[]): Promise<void> {
+async function closeRawSockets(
+  sockets: readonly (AdversarialMachineSocket | AdversarialSessionSocket)[],
+): Promise<void> {
   const outcomes = await Promise.allSettled(sockets.map((socket) => socket.close()));
   const failure = outcomes.find((outcome) => outcome.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
@@ -270,7 +275,183 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     throw e2eFailure(error, servers);
   } finally {
     closeClients(clients);
-    await closeRawSockets(rawSockets);
-    await stopProcesses(servers);
+    await Promise.all([closeRawSockets(rawSockets), stopProcesses(servers)]);
+  }
+}, 45_000);
+
+test("revoking a viewer during PENDING terminal attach closes it before terminal delivery", async () => {
+  const servers: TestServer[] = [];
+  const clients: SessionClient[] = [];
+  const rawSockets: (AdversarialMachineSocket | AdversarialSessionSocket)[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const pad = await createPad(server, "revoke during attach");
+    const enrolled = await enrollMachine(server, "revoke-attach-machine");
+    const machine = await rawMachineSocket(server);
+    rawSockets.push(machine);
+    machine.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "revoke-attach-machine",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const welcome = await waitFor(
+      () => machine.frames.find((frame) => frame.type === "welcome"),
+      5_000,
+      20,
+    );
+    if (welcome.type !== "welcome") throw new Error("machine did not receive welcome");
+    expect(welcome.machineId).toBe(enrolled.machineId);
+
+    const openerGrant = await mintToken(server, {
+      principal: { kind: "human", name: "Attach Opener", color: "#3c6db0" },
+      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      padId: pad.id,
+    });
+    const viewerGrant = await mintToken(server, {
+      principal: { kind: "human", name: "Attach Revokee", color: "#b84d68" },
+      caps: ["pads:read"],
+      padId: pad.id,
+    });
+    const opener = await connect(server, {
+      padId: pad.id,
+      token: openerGrant.token,
+      reconnect: false,
+    });
+    clients.push(opener);
+
+    const opening = opener.openTerminal({
+      elementId: "el-revoke-attach",
+      cols: 80,
+      rows: 24,
+      machineId: enrolled.machineId,
+    });
+    const create = await waitFor(
+      () => machine.frames.find((frame) => frame.type === "create"),
+      5_000,
+      20,
+    );
+    if (create.type !== "create") throw new Error("machine did not receive create");
+    machine.send({ type: "created", sessionId: create.sessionId });
+    const session = await opening;
+
+    const viewer = await rawSessionSocket(server);
+    rawSockets.push(viewer);
+    viewer.sendRaw(
+      JSON.stringify({
+        type: "join",
+        padId: pad.id,
+        token: viewerGrant.token,
+        protocolVersion: PROTOCOL_VERSION,
+      }),
+    );
+    await waitFor(() => viewer.frames.find((frame) => frame.type === "init"), 5_000, 20);
+    const firstSnapshotRequestStart = machine.frames.length;
+    viewer.sendRaw(JSON.stringify({ type: "terminal_attach", sessionId: session.id }));
+    const firstSnapshotRequest = await waitFor(
+      () =>
+        machine.frames
+          .slice(firstSnapshotRequestStart)
+          .find((frame) => frame.type === "snapshot_request" && frame.sessionId === session.id),
+      5_000,
+      20,
+    );
+    if (firstSnapshotRequest.type !== "snapshot_request") {
+      throw new Error("machine did not receive the viewer snapshot request");
+    }
+    expect(
+      viewer.frames.filter(
+        (frame) => frame.type === "terminal_snapshot" || frame.type === "terminal_output",
+      ),
+    ).toHaveLength(0);
+
+    await ownerFetch(server, "/api/tokens/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(RevokeRequestSchema.parse({ principalId: viewerGrant.principal.id })),
+      responseSchema: OkResponseSchema,
+    });
+    const revokedClose = await waitFor(() => viewer.closeInfo, 5_000, 20);
+    expect(revokedClose.code).toBe(4403);
+    expect(revokedClose.reason).toBe("revoked");
+    expect(revokedClose.initiatedBy).toBe("REMOTE");
+    const viewerFrameCountAtClose = viewer.frames.length;
+
+    machine.send({
+      type: "output",
+      sessionId: session.id,
+      seq: 1,
+      data: textToBase64("AFTER_REVOKE_1"),
+    });
+    const secondSnapshotRequestStart = machine.frames.length;
+    machine.send({
+      type: "snapshot",
+      sessionId: session.id,
+      seq: 1,
+      data: textToBase64("AFTER_REVOKE_1"),
+    });
+    opener.attachTerminal(session.id);
+    const secondSnapshotRequest = await waitFor(
+      () =>
+        machine.frames
+          .slice(secondSnapshotRequestStart)
+          .find((frame) => frame.type === "snapshot_request" && frame.sessionId === session.id),
+      5_000,
+      20,
+    );
+    if (secondSnapshotRequest.type !== "snapshot_request") {
+      throw new Error("machine did not receive the opener snapshot request");
+    }
+    expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);
+    const openerSnapshot = nextMessage(
+      opener,
+      "terminal_snapshot",
+      5_000,
+      (message) => message.sessionId === session.id && message.seq === 1,
+    );
+    machine.send({
+      type: "snapshot",
+      sessionId: session.id,
+      seq: 1,
+      data: textToBase64("AFTER_REVOKE_1"),
+    });
+    expect((await openerSnapshot).seq).toBe(1);
+
+    const openerOutput = nextMessage(
+      opener,
+      "terminal_output",
+      5_000,
+      (message) => message.sessionId === session.id && message.seq === 2,
+    );
+    machine.send({
+      type: "output",
+      sessionId: session.id,
+      seq: 2,
+      data: textToBase64("AFTER_REVOKE_2"),
+    });
+    expect((await openerOutput).seq).toBe(2);
+    expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);
+    expect(
+      viewer.frames.filter(
+        (frame) => frame.type === "terminal_snapshot" || frame.type === "terminal_output",
+      ),
+    ).toHaveLength(0);
+
+    const exited = nextMessage(
+      opener,
+      "session_event",
+      5_000,
+      (message) => message.sessionId === session.id && message.kind === "exited",
+    );
+    machine.send({ type: "exited", sessionId: session.id, exitCode: 0 });
+    expect((await exited).kind).toBe("exited");
+  } catch (error) {
+    throw e2eFailure(error, servers);
+  } finally {
+    closeClients(clients);
+    await Promise.all([closeRawSockets(rawSockets), stopProcesses(servers)]);
   }
 }, 45_000);

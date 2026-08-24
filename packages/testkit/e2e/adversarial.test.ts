@@ -1,15 +1,20 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
+import type { SessionClient } from "@manifold/sdk";
 import {
+  connect,
   createPad,
+  enrollMachine,
   mintToken,
+  rawMachineSocket,
   rawSessionSocket,
   startServer,
   waitFor,
+  type AdversarialMachineSocket,
   type AdversarialSessionSocket,
   type TestServer,
 } from "../src/index.ts";
-import { e2eFailure, sceneElement, stopProcesses } from "./helpers.ts";
+import { closeClients, e2eFailure, nextMessage, sceneElement, stopProcesses } from "./helpers.ts";
 
 type InitMessage = Extract<ServerMessage, { type: "init" }>;
 
@@ -28,7 +33,9 @@ async function joinRaw(
   return message;
 }
 
-async function closeSockets(sockets: readonly AdversarialSessionSocket[]): Promise<void> {
+async function closeSockets(
+  sockets: readonly (AdversarialMachineSocket | AdversarialSessionSocket)[],
+): Promise<void> {
   const results = await Promise.allSettled(sockets.map((socket) => socket.close()));
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
@@ -51,7 +58,9 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     sockets.push(wrongFirst);
     wrongFirst.sendRaw(JSON.stringify({ type: "ping" }));
     const wrongFirstClose = await waitFor(() => wrongFirst.closeInfo, 5_000, 20);
-    expect(wrongFirst.closeInfo).toEqual(wrongFirstClose);
+    expect(wrongFirstClose.code).toBe(4002);
+    expect(wrongFirstClose.reason).toBe("first frame must be join");
+    expect(wrongFirstClose.initiatedBy).toBe("REMOTE");
 
     const epochMismatch = await rawSessionSocket(server);
     sockets.push(epochMismatch);
@@ -94,7 +103,9 @@ test("raw adversarial frames prove join ordering and frame-classification policy
       }),
     );
     const malformedClose = await waitFor(() => malformedKnown.closeInfo, 5_000, 20);
-    expect(malformedKnown.closeInfo).toEqual(malformedClose);
+    expect(malformedClose.code).toBe(4002);
+    expect(malformedClose.reason).toBe("malformed client frame");
+    expect(malformedClose.initiatedBy).toBe("REMOTE");
 
     const unknownType = await rawSessionSocket(server);
     sockets.push(unknownType);
@@ -142,7 +153,109 @@ test("raw adversarial frames prove join ordering and frame-classification policy
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {
-    await closeSockets(sockets);
-    await stopProcesses(servers);
+    await Promise.all([closeSockets(sockets), stopProcesses(servers)]);
+  }
+}, 30_000);
+
+test("a reused machine token fences the old socket before routing later commands", async () => {
+  const servers: TestServer[] = [];
+  const clients: SessionClient[] = [];
+  const sockets: (AdversarialMachineSocket | AdversarialSessionSocket)[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const enrolled = await enrollMachine(server, "fenced-machine");
+
+    const first = await rawMachineSocket(server);
+    sockets.push(first);
+    first.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "fenced-machine-first",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const firstWelcome = await waitFor(
+      () => first.frames.find((frame) => frame.type === "welcome"),
+      5_000,
+      20,
+    );
+    if (firstWelcome.type !== "welcome") throw new Error("first machine did not receive welcome");
+    expect(firstWelcome.machineId).toBe(enrolled.machineId);
+    const firstFrameCount = first.frames.length;
+
+    const second = await rawMachineSocket(server);
+    sockets.push(second);
+    second.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "fenced-machine-second",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const secondWelcome = await waitFor(
+      () => second.frames.find((frame) => frame.type === "welcome"),
+      5_000,
+      20,
+    );
+    if (secondWelcome.type !== "welcome") throw new Error("second machine did not receive welcome");
+    expect(secondWelcome.machineId).toBe(enrolled.machineId);
+    const superseded = await waitFor(() => first.closeInfo, 5_000, 20);
+    expect(superseded.code).toBe(4001);
+    expect(superseded.reason).toBe("superseded");
+    expect(superseded.initiatedBy).toBe("REMOTE");
+
+    const pad = await createPad(server, "machine fence");
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Machine Fence User", color: "#4777b8" },
+      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      padId: pad.id,
+    });
+    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(client);
+    const opening = client.openTerminal({
+      elementId: "el-fenced-machine",
+      cols: 80,
+      rows: 24,
+      machineId: enrolled.machineId,
+    });
+    const create = await waitFor(
+      () => second.frames.find((frame) => frame.type === "create"),
+      5_000,
+      20,
+    );
+    if (create.type !== "create") throw new Error("active machine did not receive create");
+    second.send({ type: "created", sessionId: create.sessionId });
+    const session = await opening;
+    expect(session.machineId).toBe(enrolled.machineId);
+    expect(first.frames).toHaveLength(firstFrameCount);
+
+    const exited = nextMessage(
+      client,
+      "session_event",
+      5_000,
+      (message) => message.sessionId === session.id && message.kind === "exited",
+    );
+    const killStart = second.frames.length;
+    client.killTerminal(session.id);
+    const kill = await waitFor(
+      () =>
+        second.frames
+          .slice(killStart)
+          .find((frame) => frame.type === "kill" && frame.sessionId === session.id),
+      5_000,
+      20,
+    );
+    if (kill.type !== "kill") throw new Error("active machine did not receive kill");
+    second.send({ type: "exited", sessionId: session.id, exitCode: 0 });
+    expect((await exited).kind).toBe("exited");
+    expect(first.frames).toHaveLength(firstFrameCount);
+  } catch (error) {
+    throw e2eFailure(error, servers);
+  } finally {
+    closeClients(clients);
+    await Promise.all([closeSockets(sockets), stopProcesses(servers)]);
   }
 }, 30_000);
