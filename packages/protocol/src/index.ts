@@ -58,6 +58,8 @@ export {
   type MintTokenRequest,
   type Pad,
   type TokenGrant,
+  VmSessionResponseSchema,
+  type VmSessionResponse,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { buildProtocolJsonSchema } from "./jsonschema.ts";

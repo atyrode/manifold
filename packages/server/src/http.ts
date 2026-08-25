@@ -14,6 +14,7 @@ import {
   PadsResponseSchema,
   RevokeRequestSchema,
   TokenGrantSchema,
+  VmSessionResponseSchema,
   buildProtocolJsonSchema,
   type Cap,
   type HttpError,
@@ -26,7 +27,7 @@ import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { MachineGateway } from "./machine-ws.ts";
 import type { RoomManager } from "./room.ts";
-import type { ServerStore } from "./stores.ts";
+import { sha256Hex, type ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 /** Build identifier exposed by `/healthz`; protocol compatibility has its own version. */
@@ -34,6 +35,13 @@ export const SERVER_VERSION = "0.1.0";
 
 /** HTTP JSON ceiling, mirrored by Bun.serve so chunked bodies cannot reach its 128 MiB default. */
 export const MAX_HTTP_BODY_BYTES = 1_048_576;
+const VM_SESSION_COOKIE = "manifold_vm_session";
+const VM_SESSION_TTL_MS = 60 * 60 * 1_000;
+
+interface VmSession {
+  readonly expiresAt: number;
+  readonly sourceTokenId: string | null;
+}
 
 type HttpErrorCode = HttpError["error"]["code"];
 
@@ -105,6 +113,22 @@ export async function parseJsonBody(request: Request): Promise<unknown> {
     throw new RequestError("invalid", "request body must be valid JSON");
   }
 }
+function randomSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readCookie(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie");
+  if (header === null) return null;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+    return part.slice(separator + 1).trim();
+  }
+  return null;
+}
 
 function requireRoot(context: AuthContext): void {
   if (!context.isRoot) throw new RequestError("forbidden", "root capability required");
@@ -112,6 +136,8 @@ function requireRoot(context: AuthContext): void {
 
 /** Bun fetch handler implementing the complete JSON API and SPA fallback contract. */
 export class HttpApp {
+  private readonly vmSessions = new Map<string, VmSession>();
+
   constructor(
     private readonly config: ServerConfig,
     private readonly store: ServerStore,
@@ -176,8 +202,73 @@ export class HttpApp {
       throw new RequestError("forbidden", `${cap} capability required`);
     }
   }
+  private pruneVmSessions(): void {
+    const now = this.runtime.now();
+    for (const [hash, session] of this.vmSessions) {
+      if (session.expiresAt <= now) this.vmSessions.delete(hash);
+    }
+  }
+
+  private issueVmSession(context: AuthContext): Response {
+    requireRoot(context);
+    this.pruneVmSessions();
+    const raw = randomSecret();
+    const expiresAt = this.runtime.now() + VM_SESSION_TTL_MS;
+    this.vmSessions.set(sha256Hex(raw), {
+      expiresAt,
+      sourceTokenId: context.tokenId,
+    });
+
+    const publicOrigin = new URL(this.config.publicUrl);
+    const attributes = [
+      `${VM_SESSION_COOKIE}=${raw}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Strict",
+      `Max-Age=${Math.floor(VM_SESSION_TTL_MS / 1_000)}`,
+    ];
+    if (publicOrigin.protocol === "https:") attributes.push("Secure");
+    if (
+      publicOrigin.hostname !== "localhost" &&
+      publicOrigin.hostname !== "127.0.0.1" &&
+      publicOrigin.hostname !== "::1"
+    ) {
+      attributes.push(`Domain=${publicOrigin.hostname}`);
+    }
+
+    const response = jsonResponse(VmSessionResponseSchema.parse({ expiresAt }));
+    response.headers.set("set-cookie", attributes.join("; "));
+    return response;
+  }
+
+  private authorizeVm(request: Request): Response {
+    const raw = readCookie(request, VM_SESSION_COOKIE);
+    if (raw === null) throw new RequestError("unauthorized", "VM session required");
+    const hash = sha256Hex(raw);
+    const session = this.vmSessions.get(hash);
+    if (session === undefined || session.expiresAt <= this.runtime.now()) {
+      this.vmSessions.delete(hash);
+      throw new RequestError("unauthorized", "VM session required");
+    }
+    if (session.sourceTokenId !== null) {
+      const source = this.store.getToken(session.sourceTokenId);
+      if (source === null || source.revokedAt !== null) {
+        this.vmSessions.delete(hash);
+        throw new RequestError("unauthorized", "VM session required");
+      }
+    }
+    return new Response(null, { status: 204 });
+  }
 
   private async api(request: Request, pathname: string): Promise<Response> {
+    if (request.method === "POST" && pathname === "/api/vm/session") {
+      return this.issueVmSession(this.authenticate(request));
+    }
+
+    if (request.method === "GET" && pathname === "/api/vm/authorize") {
+      return this.authorizeVm(request);
+    }
+
     if (request.method === "GET" && pathname === "/api/pads") {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");

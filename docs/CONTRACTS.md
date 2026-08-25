@@ -75,6 +75,8 @@ storing it.
 | POST /api/machines      | machines:mint         | `{ name }` → `{ machine: {id, name}, machineToken }` — raw token returned exactly once; DB stores the hash. Agents authenticate `hello` with it. |
 | GET /api/machines       | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
 | GET /api/introspect     | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
+| POST /api/vm/session    | `*`                   | → `{ expiresAt }` and an HttpOnly, one-hour `manifold_vm_session` cookie for the VM proxy                                                        |
+| GET /api/vm/authorize   | VM session cookie     | → empty `204`; used only as Caddy `forward_auth`, and rejects expired cookies or revoked source tokens                                           |
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
@@ -87,6 +89,12 @@ isRoot }` ONCE at the auth boundary (`isRoot` ⇔ caps contain `*`); root-only r
 Machine enrollment requires `machines:mint`; ordinary `scene:write`/`terminal:write`
 tokens must be rejected (covered by e2e: owner succeeds, `machines:mint` token succeeds,
 delegated scene/terminal token is denied).
+
+The browser never puts the owner key, principal bearer, or VNC password in an embed URL.
+The VM renderer first calls `POST /api/vm/session`; production sets the opaque cookie
+`Secure`, `HttpOnly`, `SameSite=Strict`, and scoped to the manifold parent domain so the
+authenticated `vm.manifold.tyrode.dev` iframe receives it. VM sessions are memory-only,
+expire after one hour, and remain valid only while their source principal token is live.
 Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `forbidden`,
 `not_found`, `invalid`, `conflict`.
 

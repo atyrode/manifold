@@ -68,6 +68,10 @@ export const HealthResponseSchema = z.strictObject({
 });
 
 export const OkResponseSchema = z.strictObject({ ok: z.literal(true) });
+export const VmSessionResponseSchema = z.strictObject({
+  expiresAt: z.number().int().nonnegative(),
+});
+export type VmSessionResponse = z.infer<typeof VmSessionResponseSchema>;
 
 export const PadResponseSchema = z.strictObject({ pad: PadSchema });
 export const PadsResponseSchema = z.strictObject({ pads: z.array(PadSchema) });

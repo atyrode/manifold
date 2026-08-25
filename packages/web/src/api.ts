@@ -5,6 +5,7 @@ import {
   MachinesResponseSchema,
   PadSchema,
   TokenGrantSchema,
+  VmSessionResponseSchema,
   type MachineSummary,
   type Pad,
   type Principal,
@@ -105,6 +106,15 @@ export async function getMachines(token: string): Promise<readonly MachineSummar
     headers: authHeaders(token, false),
   });
   return MachinesResponseSchema.parse(body).machines;
+}
+
+/** Issues an HttpOnly, short-lived cookie accepted only by the protected VM proxy. */
+export async function createVmSession(token: string): Promise<number> {
+  const body = await requestJson("/api/vm/session", {
+    method: "POST",
+    headers: authHeaders(token, false),
+  });
+  return VmSessionResponseSchema.parse(body).expiresAt;
 }
 
 /** Deletes a pad (server enforces root authority); resolves when the server confirms. */
