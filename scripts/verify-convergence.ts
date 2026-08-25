@@ -434,14 +434,6 @@ try {
     ]);
   });
 
-  await round("R4 frozen tab resume", { adds: 1, changes: [rect.id] }, async () => {
-    await browserB.setLifecycle("frozen");
-    await freedraw(browserA, 1050, 300);
-    await moveElementByEdge(browserA, rect.id, 60, 90);
-    await sleep(1500);
-    await browserB.setLifecycle("active");
-  });
-
   // A second rectangle, created by B: rect1 is aliased on B, rect2 is aliased on A, so the
   // cross-move exercises the aliasing hazard in BOTH directions with a reliably
   // hit-testable gesture (edge drags; freedraw bounding-box edges miss the actual path —
@@ -488,6 +480,20 @@ try {
   await round("R7 aliased move (B moves A's element)", { adds: 0, changes: [rect.id] }, () =>
     moveElementByEdge(browserB, rect.id, 150, 80),
   );
+
+  // R4 runs LAST among rounds that touch browser B's pointer: CDP's
+  // Page.setWebLifecycleState is sticky in headless Chromium and leaves B's
+  // input pipeline waiting a ~5s ack timeout PER dispatched mouse event
+  // afterwards. With this round mid-suite, R5a/R5b/R7 (all B-input) paid
+  // ~3.5 minutes of pure timeout per gate run. Coverage is unchanged —
+  // resume-and-reconcile is asserted identically from down here.
+  await round("R4 frozen tab resume", { adds: 1, changes: [rect.id] }, async () => {
+    await browserB.setLifecycle("frozen");
+    await freedraw(browserA, 1050, 300);
+    await moveElementByEdge(browserA, rect.id, 60, 90);
+    await sleep(1500);
+    await browserB.setLifecycle("active");
+  });
 
   // R8: pan-cursor stability — a panning user's broadcast cursor (scene coords) must
   // stay anchored to the grabbed scene point (Excalidraw's own emissions drift on stale
