@@ -152,6 +152,13 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
+- **Client-side attach refcounting.** The viewer registry above is **connection-scoped**
+  (one `Viewer` per socket). A client presenting several views of one session (cloned
+  terminal elements are mirrors) MUST refcount locally and emit `terminal_attach` /
+  `terminal_detach` only on the 0→1 / 1→0 transitions — a raw detach from one view
+  starves every other view on that connection. The SDK owns this (plus re-attach after
+  reconnect, since the registry dies with the socket); components just pair
+  attach/detach per view. Guarded by SDK contract tests.
 - `terminal_input { sessionId, data }` (data base64) — accepted only from the current
   **controller**; others receive `error { code:"not_controller" }`.
 - Controller lease: opener starts as controller; `terminal_take { sessionId }` transfers
