@@ -291,6 +291,13 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       ) {
         lastSelectionRef.current = selection;
         client.sendPresence({ selection });
+        // Terminals are embeds, not shapes: suppress Excalidraw's styling panel
+        // when the selection is purely terminals (CSS keys off this root class).
+        const terminalIds = new Set(
+          elements.filter((el) => el.link === TERMINAL_LINK).map((el) => el.id),
+        );
+        const terminalsOnly = selection.length > 0 && selection.every((id) => terminalIds.has(id));
+        rootRef.current?.classList.toggle("pad-view--terminals-only", terminalsOnly);
       }
 
       sendViewportOnChange({
@@ -605,6 +612,82 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     };
   }, [flushScene]);
 
+  /**
+   * Opens a fresh PTY session for an existing terminal element and rebinds the
+   * element's customData to it — used by creation and by restarting an exited
+   * terminal in place (geometry preserved). Concurrent restarts: LWW settles
+   * one binding and each loser best-effort kills its OWN session after a
+   * settle window. This is mitigation, not a guarantee — a client that dies
+   * mid-restart can leak its PTY (same exposure as Delete-key). A guaranteed
+   * path needs a server-side conditional rebind; deliberately out of scope.
+   */
+  const openAndBindTerminal = useCallback(
+    async (elementId: string): Promise<void> => {
+      const api = apiRef.current;
+      if (api === null) return;
+      const existing = api
+        .getSceneElementsIncludingDeleted()
+        .find((element) => element.id === elementId);
+      const existingBinding = TerminalCustomDataSchema.safeParse(existing?.customData);
+      if (
+        existingBinding.success &&
+        client.sessions.get(existingBinding.data.sessionId)?.status === "running"
+      ) {
+        return; // someone already restarted this terminal
+      }
+      try {
+        const session = await client.openTerminal({ elementId, cols: 80, rows: 24 });
+        // Any failure to bind below leaves the fresh PTY orphaned — kill our
+        // own session (we are its controller) before bailing.
+        const abandon = (): void => client.killTerminal(session.id);
+        const currentApi = apiRef.current;
+        if (currentApi === null) return abandon();
+        const currentElements = currentApi.getSceneElementsIncludingDeleted();
+        const latest = currentElements.find((element) => element.id === elementId);
+        if (latest === undefined || latest.isDeleted) return abandon();
+        const boundElement = newElementWith(latest, {
+          customData: {
+            kind: "terminal",
+            sessionId: session.id,
+            showHyperlinkIcon: false,
+            fullInteractionTarget: true,
+          },
+        });
+        const boundParsed = SceneElementSchema.safeParse(boundElement);
+        if (!boundParsed.success) {
+          console.error("bound terminal element failed validation", boundParsed.error.issues);
+          return abandon();
+        }
+        currentApi.updateScene({
+          elements: currentElements.map((element) =>
+            element.id === boundElement.id ? boundElement : element,
+          ),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+        publishImmediately([boundParsed.data]);
+        // Concurrent-restart loser: if canonical customData settles on another
+        // session, ours is orphaned — kill it rather than leak the PTY.
+        window.setTimeout(() => {
+          const nowApi = apiRef.current;
+          if (nowApi === null) return;
+          const now = nowApi
+            .getSceneElementsIncludingDeleted()
+            .find((element) => element.id === elementId);
+          const bound = TerminalCustomDataSchema.safeParse(now?.customData);
+          if (bound.success && bound.data.sessionId !== session.id) {
+            client.killTerminal(session.id);
+          }
+        }, 2000);
+      } catch (reason: unknown) {
+        apiRef.current?.setToast({
+          message: reason instanceof Error ? reason.message : "Could not open terminal",
+          closable: true,
+        });
+      }
+    },
+    [client, publishImmediately],
+  );
+
   const createTerminal = useCallback(async (): Promise<void> => {
     const api = apiRef.current;
     if (api === null) return;
@@ -623,8 +706,11 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const terminalSkeleton = {
       id: runtime.newId(),
       type: "embeddable",
-      strokeColor: "#868e96",
-      backgroundColor: "#101216",
+      // Transparent on the canvas: the embed DOM owns every pixel, so the
+      // canvas-painted stroke (inverted near-white by dark theme) never rings
+      // the terminal. Existing terminals keep old colors until recreated.
+      strokeColor: "transparent",
+      backgroundColor: "transparent",
       fillStyle: "solid",
       strokeWidth: 1,
       strokeStyle: "solid",
@@ -671,45 +757,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     });
     publishImmediately([parsedTerminal]);
 
-    try {
-      const session = await client.openTerminal({
-        elementId: terminalElement.id,
-        cols: 80,
-        rows: 24,
-      });
-      const currentApi = apiRef.current;
-      if (currentApi === null) return;
-      const currentElements = currentApi.getSceneElementsIncludingDeleted();
-      const latest = currentElements.find((element) => element.id === terminalElement.id);
-      if (latest === undefined) return;
-      const boundElement = newElementWith(latest, {
-        customData: {
-          kind: "terminal",
-          sessionId: session.id,
-          showHyperlinkIcon: false,
-          fullInteractionTarget: true,
-        },
-      });
-      const boundParsed = SceneElementSchema.safeParse(boundElement);
-      if (!boundParsed.success) {
-        console.error("bound terminal element failed validation", boundParsed.error.issues);
-        return;
-      }
-      const parsedBoundElement = boundParsed.data;
-      currentApi.updateScene({
-        elements: currentElements.map((element) =>
-          element.id === boundElement.id ? boundElement : element,
-        ),
-        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-      });
-      publishImmediately([parsedBoundElement]);
-    } catch (reason: unknown) {
-      api.setToast({
-        message: reason instanceof Error ? reason.message : "Could not open terminal",
-        closable: true,
-      });
-    }
-  }, [client, publishImmediately, runtime]);
+    await openAndBindTerminal(terminalElement.id);
+  }, [client, openAndBindTerminal, publishImmediately, runtime]);
 
   const renderEmbeddable = useCallback(
     (element: NonDeleted<ExcalidrawEmbeddableElement>, appState: AppState) => {
@@ -719,24 +768,67 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         return <div className="terminal-placeholder">Opening terminal…</div>;
       }
       // Excalidraw disables pointer events on the embed until it is "active"
-      // (one click anywhere on it, via the fullInteractionTarget guard). Until
-      // then a translucent veil marks the terminal as idle-but-readable.
+      // (one click anywhere, via the fullInteractionTarget guard). TerminalView
+      // owns the idle veil, window chrome, and focus-presence from `active`.
       const active =
         appState.activeEmbeddable?.element.id === element.id &&
         appState.activeEmbeddable.state === "active";
+      const sessionId = customData.data.sessionId;
+      const countOtherBindings = (
+        elements: readonly {
+          id: string;
+          isDeleted: boolean;
+          link?: string | null;
+          customData?: unknown;
+        }[],
+      ): number =>
+        elements.filter((el) => {
+          if (el.id === element.id || el.isDeleted || el.link !== TERMINAL_LINK) return false;
+          const bound = TerminalCustomDataSchema.safeParse(el.customData);
+          return bound.success && bound.data.sessionId === sessionId;
+        }).length;
+      // Clones share a session (a second viewport onto the same shell), so a
+      // shared close is offered to everyone — it only removes the mirror.
+      const sessionShared =
+        countOtherBindings(apiRef.current?.getSceneElementsIncludingDeleted() ?? []) > 0;
+      // Close tombstones this element for everyone; the PTY is killed only when
+      // this was the LAST live element bound to the session, and only by its
+      // controller (checked live at click; ambiguous ownership never kills).
+      const onClose = (): void => {
+        const api = apiRef.current;
+        if (api === null) return;
+        const elements = api.getSceneElementsIncludingDeleted();
+        const target = elements.find((el) => el.id === element.id);
+        if (target === undefined || target.isDeleted) return;
+        const tombstoned = newElementWith(target, { isDeleted: true });
+        api.updateScene({
+          elements: elements.map((el) => (el.id === element.id ? tombstoned : el)),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+        const parsed = SceneElementSchema.safeParse(tombstoned);
+        if (parsed.success) publishImmediately([parsed.data]);
+        const session = client.sessions.get(sessionId);
+        if (
+          countOtherBindings(elements) === 0 &&
+          session?.status === "running" &&
+          session.controllerId === client.self?.id
+        ) {
+          client.killTerminal(sessionId);
+        }
+      };
       return (
-        <div className={active ? "terminal-frame" : "terminal-frame terminal-frame--idle"}>
-          <TerminalView
-            client={client}
-            sessionId={customData.data.sessionId}
-            elementId={element.id}
-            active={active}
-          />
-          <div className="terminal-idle-veil" aria-hidden="true" />
-        </div>
+        <TerminalView
+          client={client}
+          sessionId={sessionId}
+          elementId={element.id}
+          active={active}
+          sessionShared={sessionShared}
+          onClose={onClose}
+          onRestart={() => openAndBindTerminal(element.id)}
+        />
       );
     },
-    [client],
+    [client, openAndBindTerminal, publishImmediately],
   );
 
   return (

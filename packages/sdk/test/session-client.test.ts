@@ -552,3 +552,59 @@ describe("listener isolation", () => {
     }
   });
 });
+
+describe("terminal attach refcounting", () => {
+  const SESSION = {
+    id: "s1",
+    padId: "pad",
+    elementId: "el1",
+    machineId: "m1",
+    status: "running" as const,
+    exitCode: null,
+    cols: 80,
+    rows: 24,
+    controllerId: "me",
+    createdBy: "me",
+  };
+  const INIT_WITH_SESSION: ServerMessage = { ...INIT, sessions: [SESSION] };
+
+  test("several views share one wire subscription; only the last detach unsubscribes", () => {
+    const { client, socket } = connected();
+    client.attachTerminal("s1");
+    client.attachTerminal("s1"); // second view (cloned element)
+    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(1);
+    client.detachTerminal("s1"); // closing one view must NOT starve the other
+    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
+    client.detachTerminal("s1"); // last view gone -> unsubscribe on the wire
+    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
+    client.detachTerminal("s1"); // over-detach stays a no-op
+    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
+  });
+
+  test("reconnect re-subscribes running sessions views still hold, without double-counting", () => {
+    const { client } = dialing({ reconnect: true });
+    const first = FakeSocket.instances.at(-1);
+    if (first === undefined) throw new Error("no socket");
+    first.open();
+    first.receive(INIT_WITH_SESSION);
+    client.attachTerminal("s1");
+    expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(1);
+
+    vi.useFakeTimers();
+    try {
+      first.close(1006, "network");
+      vi.advanceTimersByTime(5_000);
+      const second = FakeSocket.instances.at(-1);
+      if (second === undefined || second === first) throw new Error("no reconnect socket");
+      second.open();
+      second.receive(INIT_WITH_SESSION);
+      // server viewer registry is connection-scoped: SDK must re-attach exactly once
+      expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
+      // a single detach still fully unsubscribes (refcount untouched by reconnect)
+      client.detachTerminal("s1");
+      expect(sentTypes(second).filter((t) => t === "terminal_detach")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

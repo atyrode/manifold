@@ -438,8 +438,14 @@ input:focus {
 
 .manifold-terminal {
   position: relative;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  border: 1px solid #343a40;
+  border: 1px solid #2c3239;
+  border-radius: 0.5rem;
+  background: #0b0d10;
+  /* sshx-style quiet depth: reads as a window, not a flat rectangle. */
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
 .pad-view.is-panning .manifold-terminal,
@@ -447,28 +453,56 @@ input:focus {
   pointer-events: none;
 }
 
-.terminal-frame {
-  position: relative;
-  width: 100%;
-  height: 100%;
+/* Maximized: the terminal is promoted to the browser top layer (Popover API)
+   and becomes the view; the canvas stays behind. Esc or the button restores.
+   Explicit inset/size because showPopover() alone doesn't size anything. */
+.manifold-terminal--maximized {
+  position: fixed;
+  inset: 2vh 2vw;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #343a40;
+  border-radius: 0.45rem;
+  background: #0b0d10;
+  /* Excalidraw gates pointer events on inactive embeds; the top-layer view
+     must accept input regardless of canvas activation state. */
+  pointer-events: auto;
 }
 
-/* Idle state: macOS-terminal-style unfocus — a faint white haze dims the whole
-   surface (readable underneath) and lifts on focus. It sits above the terminal
-   content AND its toolbar (uniform tint) yet never intercepts input — Excalidraw
-   already disables pointer events on the embed until it is activated. */
+/* Remote focus: the frame wears a ring in the focuser's presence color, supplied
+   inline as border-color + box-shadow so there is no layout shift. */
+.manifold-terminal--remote-focus {
+  border-color: transparent;
+}
+
+/* Window-shade minimize: only the title bar remains; the body goes transparent
+   so the collapsed terminal reads as a slim bar floating on the canvas. */
+.manifold-terminal--collapsed {
+  background: transparent;
+  border-color: transparent;
+}
+
+.manifold-terminal--collapsed .xterm-host {
+  display: none;
+}
+
+/* Idle veil — faint white haze over an unfocused terminal, readable underneath;
+   sits above the title bar too, so the whole surface reads as dimmed. Never
+   intercepts input (Excalidraw already gates the embed until activated). */
 .terminal-idle-veil {
   position: absolute;
   inset: 0;
   z-index: 4;
-  border-radius: 0.45rem;
+  border-radius: inherit;
   background: rgb(255 255 255 / 12%);
   opacity: 0;
   transition: opacity 140ms ease;
   pointer-events: none;
 }
 
-.terminal-frame--idle .terminal-idle-veil {
+.terminal-idle-veil--on {
   opacity: 1;
 }
 
@@ -478,29 +512,113 @@ input:focus {
   display: none;
 }
 
-.terminal-toolbar {
+/* A terminal is an embed, not a shape — Excalidraw's stroke/fill/style panel is
+   meaningless for it. When the selection is purely terminals, suppress just that
+   panel (the hamburger menu, tools, and resize box are untouched). */
+.pad-view--terminals-only .selected-shape-actions {
+  display: none;
+}
+
+.terminal-titlebar {
   position: absolute;
   z-index: 3;
-  top: 0;
-  right: 0;
-  left: 0;
+  inset: 0 0 auto 0;
   display: flex;
-  justify-content: flex-end;
-  min-height: 1.55rem;
-  padding: 0.25rem 0.35rem;
-  background: linear-gradient(#11151ae8, transparent);
+  align-items: center;
+  justify-content: space-between;
+  height: 1.5rem;
+  padding: 0 0.15rem 0 0.5rem;
+  background: #14181e;
+  border-bottom: 1px solid #23272e;
+  pointer-events: none;
+  user-select: none;
+}
+
+.terminal-titlebar__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #adb5bd;
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+}
+
+.terminal-titlebar__glyph {
+  color: #5c6370;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.terminal-titlebar__controls {
+  display: inline-flex;
+  gap: 0.1rem;
+}
+
+/* Controls re-enable pointer events above Excalidraw's idle embed, so you can
+   minimize/fullscreen/close without first activating the terminal. */
+.terminal-ctl {
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.terminal-ctl:hover {
+  color: #e6e9ef;
+  background: #2a2f37;
+}
+
+.terminal-ctl--close:hover {
+  color: #fff;
+  background: #e03131;
+}
+
+/* Focus-presence chips: who (other than you) is on this terminal right now. */
+.terminal-presence {
+  position: absolute;
+  z-index: 5;
+  top: 0.18rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  max-width: 70%;
+  gap: 0.25rem;
   pointer-events: none;
 }
 
-.controller-badge {
-  overflow: hidden;
-  max-width: 65%;
-  border: 1px solid #495057;
+.terminal-presence__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.45rem 0.05rem 0.05rem;
   border-radius: 999px;
-  padding: 0.1rem 0.45rem;
-  color: #adb5bd;
-  background: rgb(11 13 16 / 85%);
+  color: #fff;
   font-size: 0.62rem;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
+}
+
+.terminal-presence__initial {
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 25%);
+  font-size: 0.6rem;
+}
+
+.terminal-presence__name {
+  overflow: hidden;
+  max-width: 9rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -512,6 +630,13 @@ input:focus {
 
 .xterm-host .xterm {
   height: 100%;
+}
+
+/* Stock xterm.css paints the scroll viewport pure black; match the frame's
+   background so the row-quantization remainder below the last line (its height
+   varies with element size) reads as seamless terminal, not a stray bar. */
+.xterm-host .xterm-viewport {
+  background-color: #0b0d10;
 }
 
 .view-only-ribbon {
@@ -539,11 +664,37 @@ input:focus {
   inset: 0;
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 0.6rem;
   color: #ced4da;
   background: rgb(11 13 16 / 72%);
   font-size: 0.9rem;
   font-weight: 700;
   backdrop-filter: grayscale(1);
+  pointer-events: none;
+}
+
+/* Clickable even while the embed is idle (same mechanism as .terminal-ctl). */
+.terminal-restart {
+  border: 1px solid #495057;
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  color: #e6e9ef;
+  background: #1b1f26;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.terminal-restart:hover {
+  border-color: #74c0fc;
+  color: #d0ebff;
+}
+
+.terminal-restart:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 @media (max-width: 700px) {
