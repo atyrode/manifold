@@ -742,7 +742,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
    * path needs a server-side conditional rebind; deliberately out of scope.
    */
   const openAndBindTerminal = useCallback(
-    async (elementId: string, requested?: MachineSummary): Promise<void> => {
+    async (elementId: string, requested?: Pick<MachineSummary, "id" | "name">): Promise<void> => {
       const api = apiRef.current;
       if (api === null) return;
       const existing = api
@@ -959,10 +959,13 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       const session = client.sessions.get(sessionId);
       const boundMachine =
         session === undefined ? null : sessionMachine(machines, session.machineId);
+      // Restart must preserve machine identity — never silently substitute the
+      // default machine. Pin the session's machineId even before /api/machines
+      // resolves; the name falls back to the raw id in failure toasts only.
       const restartTarget =
         session === undefined
           ? undefined
-          : machines?.find((candidate) => candidate.id === session.machineId);
+          : { id: session.machineId, name: boundMachine?.name ?? session.machineId };
       return (
         <TerminalView
           client={client}
