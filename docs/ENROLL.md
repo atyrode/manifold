@@ -6,12 +6,14 @@ box can reach `https://manifold.tyrode.dev`, it can serve shells.
 
 ## 1. Mint a machine token (once per machine)
 
-From any box, with the owner key (on the hub: `docker compose exec manifold cat
-/data/owner.key`):
+From the hub box (bash/zsh). The owner key must never appear in a command's
+argv — expanded arguments are world-readable in `/proc/<pid>/cmdline` while
+the process runs — so the auth header goes to curl over stdin:
 
 ```sh
-curl -X POST \
-  -H "Authorization: Bearer $(cat /path/to/owner.key)" \
+docker compose exec -T manifold sh -c \
+  'printf "header = \"Authorization: Bearer %s\"\n" "$(cat /data/owner.key)"' |
+curl --config - -X POST \
   -H "content-type: application/json" \
   -d '{"name":"<machine-name>"}' \
   https://manifold.tyrode.dev/api/machines
