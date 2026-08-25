@@ -43,6 +43,7 @@ import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { Roster, StatusBar } from "./overlays.tsx";
 import { TerminalView } from "./terminal-view.tsx";
+import { loadViewport, saveViewport } from "./viewport-memory.ts";
 /**
  * Scene flush cadence, i.e. remote motion smoothness (up to ~60Hz configured; 53.7Hz
  * measured under the harness's 55Hz synthetic pointer). Chosen from measured
@@ -104,6 +105,11 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     INITIAL_CANVAS_PAINT_READINESS,
   );
 
+  // Camera memory (per pad, per device): restored once at first paint; saved on
+  // the same throttled cadence as viewport presence, plus a pagehide flush so a
+  // refresh right after a pan keeps the final camera. Never saved before the
+  // restore attempt, or the boot default would overwrite the remembered one.
+  const viewportRestoredRef = useRef(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const apiGenerationRef = useRef(0);
@@ -246,7 +252,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     if (viewport === null) return;
     client.sendPresence({ viewport });
     lastViewportSentAtRef.current = runtime.now();
-  }, [client, runtime]);
+    if (viewportRestoredRef.current) saveViewport(window.localStorage, padId, viewport);
+  }, [client, padId, runtime]);
 
   const sendViewportOnChange = useCallback(
     (viewport: ViewportUpdate): void => {
@@ -442,7 +449,35 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     if (!canPaintCanvas(paintReadiness)) return;
     syncCanvas();
     syncCollaborators();
-  }, [paintReadiness, syncCanvas, syncCollaborators]);
+    if (!viewportRestoredRef.current) {
+      viewportRestoredRef.current = true;
+      const remembered = loadViewport(window.localStorage, padId);
+      const api = apiRef.current;
+      if (remembered !== null && api !== null) {
+        api.updateScene({
+          appState: {
+            scrollX: remembered.x,
+            scrollY: remembered.y,
+            zoom: { value: remembered.zoom } as AppState["zoom"],
+          },
+        });
+      }
+    }
+  }, [padId, paintReadiness, syncCanvas, syncCollaborators]);
+
+  // A refresh right after a pan must not lose the last (still-throttled) camera.
+  useEffect(() => {
+    const persistLatest = (): void => {
+      const latest = observedViewportRef.current;
+      if (latest !== null && viewportRestoredRef.current) {
+        saveViewport(window.localStorage, padId, latest);
+      }
+    };
+    window.addEventListener("pagehide", persistLatest);
+    return () => {
+      window.removeEventListener("pagehide", persistLatest);
+    };
+  }, [padId]);
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
