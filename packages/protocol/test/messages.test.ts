@@ -80,6 +80,7 @@ describe("session channel schemas", () => {
       elements: [element("a")],
       self: { id: "pr1", kind: "human", name: "alex", color: "#aabb00" },
       selfConnId: "conn-1",
+      selfCaps: ["*"],
       roster: [],
       sessions: [],
     };
@@ -87,6 +88,9 @@ describe("session channel schemas", () => {
     expect(ServerMessageSchema.safeParse({ type: "resync", ...state }).success).toBe(true);
     const missingConnId = { ...state } as Record<string, unknown>;
     delete missingConnId["selfConnId"];
+    const missingCaps = { ...state } as Record<string, unknown>;
+    delete missingCaps["selfCaps"];
+    expect(ServerMessageSchema.safeParse({ type: "init", ...missingCaps }).success).toBe(false);
     expect(ServerMessageSchema.safeParse({ type: "init", ...missingConnId }).success).toBe(false);
   });
 

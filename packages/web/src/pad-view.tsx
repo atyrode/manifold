@@ -49,6 +49,7 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
+import { buildSessionRows, type SessionRow } from "./session-inventory.ts";
 import { PadTopRight } from "./top-right.tsx";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
@@ -162,6 +163,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const [connectError, setConnectError] = useState<string | null>(null);
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
+  const [sessionRows, setSessionRows] = useState<readonly SessionRow[]>([]);
 
   /** Refreshes the enrolled-machines list; failures keep the last known list. */
   const refreshMachines = useCallback((): void => {
@@ -558,8 +560,30 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       syncCollaborators();
       refreshRosterRows();
     });
+    const refreshSessionRows = (): void => {
+      // Live bindings only: tombstoned elements must NOT satisfy a session —
+      // that is exactly the orphan condition the janitor panel exists to show.
+      const bindings = new Map<string, string>();
+      for (const el of apiRef.current?.getSceneElementsIncludingDeleted() ?? []) {
+        if (el.isDeleted || el.link !== TERMINAL_LINK) continue;
+        const bound = TerminalCustomDataSchema.safeParse(el.customData);
+        if (bound.success) bindings.set(bound.data.sessionId, el.id);
+      }
+      setSessionRows(
+        buildSessionRows({
+          sessions: [...client.sessions.values()],
+          machines: machinesRef.current,
+          liveBindings: bindings,
+          selfId: client.self?.id ?? null,
+          selfCaps: client.selfCaps,
+        }),
+      );
+    };
+    const offSessions = client.on("sessions_changed", refreshSessionRows);
+    const offSceneApplied = client.on("scene_applied", () => refreshSessionRows());
     // Seed once at subscription time: init/resync can land before this effect mounts.
     refreshRosterRows();
+    refreshSessionRows();
     const offCursor = client.on("cursor", (message) => {
       if (recordRemoteCursor(remoteCursorsRef.current, message, client.selfConnId)) {
         syncCollaborators();
@@ -576,12 +600,14 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       offSceneRejected();
       offSceneChanged();
       offRoster();
+      offSessions();
+      offSceneApplied();
       offCursor();
       offStatus();
       offSaved();
       offMessage();
     };
-  }, [client, flushScene, syncCollaborators, identity.principal]);
+  }, [client, flushScene, syncCollaborators, identity.principal, machines]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -956,6 +982,17 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   /** null = never fetched (render the machine-agnostic item); [] = none online. */
   const onlineMachines = machines === null ? null : machines.filter((machine) => machine.online);
 
+  const focusSession = useCallback((elementId: string): void => {
+    const api = apiRef.current;
+    if (api === null) return;
+    const target = api.getSceneElementsIncludingDeleted().find((el) => el.id === elementId);
+    if (target !== undefined) api.scrollToContent(target, { fitToViewport: true });
+  }, []);
+  const killSession = useCallback(
+    (sessionId: string): void => client.killTerminal(sessionId),
+    [client],
+  );
+
   return (
     <div
       className="pad-view"
@@ -978,6 +1015,9 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
             isMobile={isMobile}
             rows={rosterRows}
             machines={machines}
+            sessionRows={sessionRows}
+            onFocusSession={focusSession}
+            onKillSession={killSession}
             status={connectionStatus}
             savedAt={savedAt}
             rev={revision}

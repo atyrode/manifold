@@ -826,3 +826,118 @@ input:focus {
     display: none;
   }
 }
+
+/* sessions janitor island — same island language as the presence popover */
+.sessions-wrapper {
+  position: relative;
+}
+
+.sessions-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  color: var(--text-primary-color);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.sessions-pill.has-orphans {
+  border-color: #f08c00;
+}
+
+.sessions-count {
+  font-weight: 700;
+}
+
+.sessions-orphan-badge {
+  min-width: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: #f08c00;
+  color: #1a1a1a;
+  font-weight: 700;
+  text-align: center;
+}
+
+.sessions-popover {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  display: grid;
+  gap: 0.25rem;
+  width: max-content;
+  min-width: 16rem;
+  max-width: min(22rem, calc(100vw - 1.5rem));
+  padding: 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  color: var(--text-primary-color);
+  font-size: 0.72rem;
+}
+
+.session-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.55rem;
+  padding: 0.2rem 0.3rem;
+}
+
+.session-row.is-exited {
+  opacity: 0.55;
+}
+
+.session-row.is-orphaned .session-label {
+  color: #f08c00;
+}
+
+.session-state {
+  text-align: center;
+}
+
+.session-row.is-running:not(.is-orphaned) .session-state {
+  color: #51cf66;
+}
+
+.session-label {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orphan-chip {
+  margin-left: 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: #f08c00;
+}
+
+.session-action {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-md);
+  background: transparent;
+  color: var(--text-primary-color);
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.session-action:hover {
+  border-color: #74c0fc;
+  color: #d0ebff;
+}
+
+.session-action.is-danger:hover {
+  border-color: #ff8787;
+  color: #ffc9c9;
+}

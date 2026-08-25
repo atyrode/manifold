@@ -93,8 +93,10 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 ## WS /ws/session — session channel (JSON text frames)
 
 Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server replies
-`init { epoch, rev, elements, roster, presences, sessions, self }` or closes:
+`init { epoch, rev, elements, roster, presences, sessions, self, selfCaps }` or closes:
 4401 bad token · 4403 revoked/forbidden · 4404 unknown pad · 4409 protocol version mismatch.
+`selfCaps` mirrors the joining principal's granted caps so clients can gate UI affordances
+(e.g. the sessions janitor's kill buttons) without a separate introspection round-trip.
 
 ### Scene sync (consistency model — NOT naive LWW)
 
@@ -174,6 +176,12 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
   it to any principal with `terminal:write` (event `session_event { kind:"controller_changed",
 controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   `session_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
+- Kill authorization: the current **controller**, OR any holder of the wildcard
+  capability (`*`), may send `terminal_kill` for a running session. The wildcard path
+  exists for owner-side pruning of orphaned sessions (element deleted while the PTY is
+  still running — such sessions are listed by the web sessions panel as "unbound");
+  other principals receive `error { code:"forbidden" }`. Exited + unreferenced sessions
+  are garbage-collected server-side on the next init/resync of their pad.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.

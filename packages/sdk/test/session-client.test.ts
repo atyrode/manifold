@@ -89,6 +89,7 @@ const INIT: ServerMessage = {
   elements: [element("srv", 3)],
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
+  selfCaps: ["*"],
   roster: [],
   sessions: [],
 };

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_ELEMENTS_PER_UPDATE, SceneElementSchema } from "./elements.ts";
+import { CapSchema } from "./capabilities.ts";
 import { PresencePayloadSchema, PresenceStateSchema } from "./presence.ts";
 import { PrincipalSchema } from "./principal.ts";
 
@@ -110,6 +111,8 @@ const stateFields = {
   rev: z.number().int().nonnegative(),
   elements: z.array(SceneElementSchema),
   self: PrincipalSchema,
+  /** The joining principal's granted capabilities; drives client-side affordances. */
+  selfCaps: z.array(CapSchema).min(1),
   /** Server-assigned identity for this socket; changes on every connection. */
   selfConnId: z.string().min(1),
   roster: z.array(PresenceStateSchema),

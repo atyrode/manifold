@@ -112,6 +112,7 @@ export class Room {
       rev: this.rev,
       elements: [...this.scene.values()].sort(compareElements),
       self: peer.auth.principal,
+      selfCaps: [...peer.auth.caps],
       selfConnId: peer.id,
       roster: this.roster(),
       sessions: [...this.sessions()],

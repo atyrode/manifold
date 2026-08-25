@@ -725,10 +725,42 @@ export class TerminalBroker {
     });
   }
 
-  /** Requests PTY termination only from the current controller principal. */
+  /**
+   * Requests PTY termination from the current controller principal, or from any
+   * holder of the wildcard capability (owner janitor: pruning an orphaned session
+   * whose canvas element is gone must not require winning the controller lease).
+   */
   kill(peer: SessionPeer, message: TerminalKill): void {
-    const session = this.controllerSession(peer, message.sessionId);
+    const session = this.sessionFor(peer, message.sessionId);
     if (session === null) return;
+    if (session.info.status !== "running") {
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message: "session has exited",
+        ref: message.sessionId,
+      });
+      return;
+    }
+    const isController = session.info.controllerId === peer.auth.principal.id;
+    if (!isController && !peer.auth.isRoot) {
+      peer.send({
+        type: "error",
+        code: "forbidden",
+        message: "controller lease or owner capability required",
+        ref: message.sessionId,
+      });
+      return;
+    }
+    if (!hasCap(peer.auth.caps, "terminal:write")) {
+      peer.send({
+        type: "error",
+        code: "forbidden",
+        message: "terminal:write capability required",
+        ref: message.sessionId,
+      });
+      return;
+    }
     const machine = this.machines.get(session.info.machineId);
     if (
       machine === undefined ||
