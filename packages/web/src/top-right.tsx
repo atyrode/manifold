@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ConnectionStatus } from "@manifold/sdk";
 import type { MachineSummary } from "@manifold/protocol";
 import type { RosterRow } from "./roster-model.ts";
+import type { SessionRow } from "./session-inventory.ts";
 import { machineColor } from "./machine-visibility.ts";
 
 const MAX_AVATARS = 4;
@@ -125,18 +126,137 @@ export function MachinesIsland({ machines }: { machines: readonly MachineSummary
   );
 }
 
+interface SessionsIslandProps {
+  readonly rows: readonly SessionRow[];
+  /** Reveals the bound element on the canvas; null for orphaned sessions. */
+  readonly onFocus: (elementId: string) => void;
+  readonly onKill: (sessionId: string) => void;
+}
+
+/** Terminal janitor: every PTY session in this pad, orphans flagged and prunable. */
+export function SessionsIsland({ rows, onFocus, onKill }: SessionsIslandProps) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const wrapper = wrapperRef.current;
+      if (wrapper !== null && event.target instanceof Node && !wrapper.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  if (rows.length === 0) return null;
+  const running = rows.filter((row) => row.status === "running").length;
+  const orphans = rows.filter((row) => row.orphaned).length;
+
+  return (
+    <div className="sessions-wrapper" ref={wrapperRef}>
+      <button
+        type="button"
+        className={`sessions-pill${orphans > 0 ? " has-orphans" : ""}`}
+        aria-expanded={open}
+        aria-label="Terminal sessions"
+        title="Terminal sessions"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="sessions-count">{running}</span>
+        <span>sessions</span>
+        {orphans > 0 ? <span className="sessions-orphan-badge">{orphans}</span> : null}
+      </button>
+      {open ? (
+        <div className="sessions-popover">
+          {rows.map((row) => (
+            <div
+              className={[
+                "session-row",
+                row.status === "running" ? "is-running" : "is-exited",
+                row.orphaned ? "is-orphaned" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              key={row.id}
+            >
+              <span className="session-state" title={row.status}>
+                {row.status === "running" ? (row.orphaned ? "⚠" : "●") : "○"}
+              </span>
+              <span className="session-label">
+                {row.machineName ?? "unknown machine"}
+                {row.machineOnline === false ? " (offline)" : ""}
+                {row.status === "exited" ? ` — exited ${row.exitCode ?? ""}` : ""}
+                {row.isController ? <span className="you-chip">yours</span> : null}
+                {row.orphaned ? <span className="orphan-chip">unbound</span> : null}
+              </span>
+              {row.boundElementId !== null ? (
+                <button
+                  type="button"
+                  className="session-action"
+                  title="Reveal terminal element"
+                  onClick={() => {
+                    onFocus(row.boundElementId ?? "");
+                    setOpen(false);
+                  }}
+                >
+                  show
+                </button>
+              ) : null}
+              {row.canKill ? (
+                <button
+                  type="button"
+                  className="session-action is-danger"
+                  title="Kill the process on its machine"
+                  onClick={() => onKill(row.id)}
+                >
+                  kill
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface PadTopRightProps extends StatusIslandProps {
   readonly isMobile: boolean;
   readonly rows: readonly RosterRow[];
   readonly machines: readonly MachineSummary[] | null;
+  readonly sessionRows: readonly SessionRow[];
+  readonly onFocusSession: (elementId: string) => void;
+  readonly onKillSession: (sessionId: string) => void;
 }
 
 /** manifold-owned top-right cluster rendered through excalidraw's renderTopRightUI slot. */
-export function PadTopRight({ isMobile, rows, machines, status, savedAt, rev }: PadTopRightProps) {
+export function PadTopRight({
+  isMobile,
+  rows,
+  machines,
+  sessionRows,
+  onFocusSession,
+  onKillSession,
+  status,
+  savedAt,
+  rev,
+}: PadTopRightProps) {
   return (
     <>
       {isMobile ? null : <StatusIsland status={status} savedAt={savedAt} rev={rev} />}
       {isMobile ? null : <MachinesIsland machines={machines} />}
+      {isMobile ? null : (
+        <SessionsIsland rows={sessionRows} onFocus={onFocusSession} onKill={onKillSession} />
+      )}
       <PresenceIsland rows={rows} />
     </>
   );

@@ -170,7 +170,7 @@ describe("TerminalBroker controller lease", () => {
         .messages()
         .filter((message) => message.type === "error")
         .map((message) => message.code),
-    ).toEqual(["not_controller", "not_controller", "not_controller"]);
+    ).toEqual(["not_controller", "not_controller", "forbidden"]);
 
     fixture.broker.take(second, {
       type: "terminal_take",
@@ -207,6 +207,28 @@ describe("TerminalBroker controller lease", () => {
       type: "error",
       code: "not_controller",
     });
+    fixture.store.close();
+  });
+
+  test("owner wildcard capability kills without the controller lease", () => {
+    const fixture = brokerFixture();
+    const grant = fixture.auth.mintToken(
+      { principal: { name: "owner janitor", kind: "human" }, caps: ["*"] },
+      fixture.root,
+    );
+    const janitorSocket = new FakeSocket();
+    const janitor = new SessionPeer(
+      fixture.runtime.newId(),
+      janitorSocket,
+      fixture.auth.authenticate(grant.token),
+      fixture.pad.id,
+    );
+    fixture.broker.kill(janitor, {
+      type: "terminal_kill",
+      sessionId: fixture.create.sessionId,
+    });
+    expect(fixture.machine.sent.map((message) => message.type)).toEqual(["kill"]);
+    expect(janitorSocket.messages().filter((message) => message.type === "error")).toEqual([]);
     fixture.store.close();
   });
 

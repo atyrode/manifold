@@ -1,6 +1,7 @@
 import {
   ClientMessageSchema,
   MAX_ELEMENTS_PER_UPDATE,
+  type Cap,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerMessageSchema,
@@ -153,6 +154,7 @@ export class SessionClient {
   rev = 0;
   self: Principal | null = null;
   selfConnId: string | null = null;
+  selfCaps: readonly Cap[] = [];
   status: ConnectionStatus = "idle";
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
@@ -384,6 +386,7 @@ export class SessionClient {
         this.rev = msg.rev;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
+        this.selfCaps = msg.selfCaps;
         this.roster.clear();
         for (const p of msg.roster) this.roster.set(p.principal.id, p);
         this.sessions.clear();
