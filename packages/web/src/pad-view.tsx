@@ -53,8 +53,6 @@ import { PadTopRight } from "./top-right.tsx";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
-import { isVmEmbedLink } from "./vm-embed-policy.ts";
-import { VmEmbed } from "./vm-embed.tsx";
 /**
  * Scene flush cadence, i.e. remote motion smoothness (up to ~60Hz configured; 53.7Hz
  * measured under the harness's 55Hz synthetic pointer). Chosen from measured
@@ -878,9 +876,6 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   const renderEmbeddable = useCallback(
     (element: NonDeleted<ExcalidrawEmbeddableElement>, appState: AppState) => {
-      if (isVmEmbedLink(element.link)) {
-        return <VmEmbed link={element.link} token={identity.token} />;
-      }
       if (element.link !== TERMINAL_LINK) return null;
       const customData = TerminalCustomDataSchema.safeParse(element.customData);
       if (!customData.success) {
@@ -955,7 +950,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         />
       );
     },
-    [client, identity.token, machines, openAndBindTerminal, publishImmediately],
+    [client, machines, openAndBindTerminal, publishImmediately],
   );
 
   /** null = never fetched (render the machine-agnostic item); [] = none online. */

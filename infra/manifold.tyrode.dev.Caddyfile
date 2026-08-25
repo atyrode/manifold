@@ -19,25 +19,3 @@ manifold.tyrode.dev {
 
 	reverse_proxy 127.0.0.1:7777
 }
-
-# Browser VNC bridge for the manifold-os KVM guest on WSL. QEMU and websockify
-# stay loopback-only behind the restricted reverse SSH tunnel; the public
-# boundary accepts only short-lived manifold cookies.
-vm.manifold.tyrode.dev {
-	encode zstd gzip
-
-	header {
-		Content-Security-Policy "frame-ancestors https://manifold.tyrode.dev"
-		Referrer-Policy no-referrer
-		X-Content-Type-Options nosniff
-	}
-
-	forward_auth 127.0.0.1:7777 {
-		uri /api/vm/authorize
-	}
-
-	@root path /
-	redir @root /vnc.html?autoconnect=1&resize=scale&host=vm.manifold.tyrode.dev&port=443&encrypt=1&compression=2&reconnect=1&reconnect_delay=1000
-
-	reverse_proxy 127.0.0.1:16080
-}
