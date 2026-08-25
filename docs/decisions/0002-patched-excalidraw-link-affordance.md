@@ -1,7 +1,7 @@
 # 0002 — Patch @excalidraw/excalidraw instead of forking it
 
 Date: 2026-08-24
-Status: accepted
+Status: mechanism superseded by 0005 (semantics unchanged, now source-level in the fork)
 
 ## Context
 

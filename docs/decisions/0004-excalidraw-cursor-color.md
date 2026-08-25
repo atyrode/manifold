@@ -1,7 +1,7 @@
 # 0004 — Excalidraw patch: collaborator cursors honor principal color
 
 Date: 2026-08-25
-Status: accepted
+Status: mechanism superseded by 0005 (semantics unchanged, now source-level in the fork)
 
 ## Context
 
