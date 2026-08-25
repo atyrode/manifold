@@ -28,6 +28,19 @@ The boot log line `manifold ready url=…` deliberately omits the key: `docker l
 output is a persisted stream, and the owner key must never enter logs (the command
 above reads it from the data volume instead; it goes only to your terminal).
 
+## Already running a reverse proxy on this box?
+
+Skip the bundled caddy: publish manifold on loopback and keep your existing proxy
+as the TLS front (Caddy v2 forwards WebSocket upgrades natively):
+
+```sh
+docker compose -f compose.yaml -f infra/compose.hostproxy.yaml up -d --build manifold
+```
+
+Point your proxy's vhost at `127.0.0.1:7777` (Caddy block:
+`infra/manifold.tyrode.dev.Caddyfile`). `MANIFOLD_DOMAIN` in `.env` must still be
+the public domain — it feeds `MANIFOLD_PUBLIC_URL`.
+
 ## Where data lives
 
 Everything durable is in the `manifold-data` named volume, mounted at `/data`:
