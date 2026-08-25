@@ -1,4 +1,9 @@
-export { PROTOCOL_VERSION } from "./version.ts";
+export {
+  AGENT_LIVENESS_TIMEOUT_MS,
+  MACHINE_PING_INTERVAL_MS,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  PROTOCOL_VERSION,
+} from "./version.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
 export { PrincipalSchema, type Principal } from "./principal.ts";
 export {

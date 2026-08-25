@@ -1,6 +1,8 @@
 import {
   AGENT_MESSAGE_TYPES,
   AgentMessageSchema,
+  MACHINE_PING_INTERVAL_MS,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
@@ -25,16 +27,6 @@ const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 );
 
 const SUPERSEDE_DAMP_MS = 5_000;
-
-/**
- * App-level liveness for the machine channel: TCP alone leaves a frozen or
- * network-partitioned agent (laptop lid close is the common case) "online"
- * indefinitely. The server pings every interval; a ping that is still
- * unanswered when the next one fires closes the socket, so offline detection
- * is bounded by two intervals. The agent side already answers `ping` with
- * `pong` — this is the server half of that contract.
- */
-export const MACHINE_PING_INTERVAL_MS = 30_000;
 
 interface PendingMachineConnection {
   socket: RawSocket;
@@ -123,7 +115,10 @@ export class MachineGateway {
     };
     connection.cancelHelloTimeout = this.timers.schedule(() => {
       connection.cancelHelloTimeout = null;
-      if (connection.channel === null) socket.close(4002, "hello timeout");
+      if (connection.channel === null) {
+        this.logger.warn("machine_hello_timeout");
+        socket.close(4002, "hello timeout");
+      }
     }, 10_000);
     this.connections.set(id, connection);
   }
@@ -162,10 +157,19 @@ export class MachineGateway {
 
   private hello(connection: PendingMachineConnection, message: AgentMessage): void {
     if (message.type !== "hello") {
+      this.logger.warn("machine_rejected", { code: 4002, reason: "first frame must be hello" });
       connection.socket.close(4002, "first frame must be hello");
       return;
     }
-    if (message.protocolVersion !== PROTOCOL_VERSION) {
+    if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
+      // Long-lived agents survive server deploys; reject only wire-incompatible ones,
+      // and say so out loud — a silent 4409 lockout is a diagnosed outage (2026-08-25).
+      this.logger.warn("machine_version_rejected", {
+        agentProtocolVersion: message.protocolVersion,
+        serverProtocolVersion: PROTOCOL_VERSION,
+        agentVersion: message.agentVersion,
+        machineName: message.name,
+      });
       connection.socket.close(4409, "protocol version mismatch");
       return;
     }
@@ -175,8 +179,18 @@ export class MachineGateway {
       authenticated = this.auth.authenticateMachine(message.token);
     } catch (error) {
       if (error instanceof ServiceError && error.code === "forbidden") {
+        this.logger.warn("machine_rejected", {
+          code: 4403,
+          reason: "revoked",
+          machineName: message.name,
+        });
         connection.socket.close(4403, "revoked");
       } else {
+        this.logger.warn("machine_rejected", {
+          code: 4401,
+          reason: "unauthorized",
+          machineName: message.name,
+        });
         connection.socket.close(4401, "unauthorized");
       }
       return;
@@ -196,6 +210,7 @@ export class MachineGateway {
     ) {
       connection.cancelHelloTimeout?.();
       connection.cancelHelloTimeout = null;
+      this.logger.warn("machine_supersession_damped", { machineId: authenticated.id });
       connection.socket.close(4003, "supersession damped");
       return;
     }

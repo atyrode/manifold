@@ -275,3 +275,134 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     server.stop(true);
   }
 }, 20000);
+
+/**
+ * Scripted in-memory socket (agent-side mirror of the server tests' FakeSocket):
+ * the test plays the server role by driving open/receive/serverClose, so these
+ * cases stay deterministic and network-free per AGENTS.md invariant 7.
+ */
+class ScriptedSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  readyState: number = WebSocket.CONNECTING;
+  readonly sent: AgentMessage[] = [];
+  closedByAgent: { code: number | undefined; reason: string | undefined } | null = null;
+  onSend: ((msg: AgentMessage) => void) | null = null;
+
+  asWebSocket(): WebSocket {
+    return this as unknown as WebSocket;
+  }
+
+  open(): void {
+    this.readyState = WebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  receive(message: Record<string, unknown>): void {
+    this.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+  }
+
+  serverClose(code: number, reason: string): void {
+    this.readyState = WebSocket.CLOSED;
+    this.onclose?.({ code, reason } as CloseEvent);
+  }
+
+  send(data: string): void {
+    const msg = AgentMessageSchema.parse(JSON.parse(data));
+    this.sent.push(msg);
+    this.onSend?.(msg);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closedByAgent = { code, reason };
+    this.readyState = WebSocket.CLOSED;
+    // Mirror runtime behavior: a locally initiated close still emits a close event.
+    this.onclose?.({ code: code ?? 1000, reason: reason ?? "" } as CloseEvent);
+  }
+}
+
+test("phantom transport: silence past the liveness deadline forces close and re-dial", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const secondDial = Promise.withResolvers<ScriptedSocket>();
+  const records: Array<{ evt: string; [k: string]: unknown }> = [];
+  const livenessFired = Promise.withResolvers<void>();
+
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "watchdog-machine",
+    backoff: { baseMs: 1, capMs: 5 },
+    livenessTimeoutMs: 20, // the watchdog's own real timer, kept tiny; no test-side sleeps
+    sink: (record) => {
+      records.push(record);
+      if (record.evt === "liveness_timeout") livenessFired.resolve();
+    },
+    createSocket: () => {
+      const socket = new ScriptedSocket();
+      socket.onSend = (msg) => {
+        // First dial: welcome the hello, then go silent forever — no pings, no
+        // frames. This models the phantom transport (dead TCP nobody RST).
+        if (msg.type === "hello" && sockets.length === 1) {
+          socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
+        }
+      };
+      sockets.push(socket);
+      if (sockets.length === 2) secondDial.resolve(socket);
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  try {
+    await agent.connect();
+    await livenessFired.promise; // the agent's watchdog, not a test timer
+    const first = sockets[0];
+    expect(first?.closedByAgent?.code).toBe(4008);
+
+    const second = await secondDial.promise; // silence was fatal: the agent re-dialed
+    expect(second).toBeDefined();
+    expect(records.some((r) => r.evt === "disconnected")).toBe(true);
+  } finally {
+    await agent.shutdown();
+  }
+}, 20000);
+
+test("server close code and reason surface in logs; 4409 gets the version-rejected marker", async () => {
+  const records: Array<{ evt: string; [k: string]: unknown }> = [];
+  const disconnectedSeen = Promise.withResolvers<void>();
+  const socket = new ScriptedSocket();
+
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "rejected-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 }, // park the retry loop out of test scope
+    sink: (record) => {
+      records.push(record);
+      if (record.evt === "disconnected") disconnectedSeen.resolve();
+    },
+    createSocket: () => {
+      socket.onSend = (msg) => {
+        if (msg.type === "hello") socket.serverClose(4409, "protocol version mismatch");
+      };
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  const connectAttempt = agent.connect(); // never resolves (no welcome); shutdown unblocks teardown
+  try {
+    await disconnectedSeen.promise;
+    const rejected = records.find((r) => r.evt === "protocol_version_rejected");
+    expect(rejected?.code).toBe(4409);
+    expect(rejected?.level).toBe("error");
+    const disconnected = records.find((r) => r.evt === "disconnected");
+    expect(disconnected?.code).toBe(4409);
+    expect(disconnected?.reason).toBe("protocol version mismatch");
+  } finally {
+    await agent.shutdown();
+    void connectAttempt;
+  }
+}, 20000);

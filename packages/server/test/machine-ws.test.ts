@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MACHINE_PING_INTERVAL_MS,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type Pad,
@@ -7,7 +9,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import { LiveMachineChannel, MACHINE_PING_INTERVAL_MS, MachineGateway } from "../src/machine-ws.ts";
+import { LiveMachineChannel, MachineGateway } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -167,6 +169,132 @@ describe("machine hello reconciliation", () => {
     );
 
     expect(machineMessages(socket).map((message) => message.type)).toEqual(["welcome", "kill"]);
+    gateway.shutdown();
+    store.close();
+  });
+
+  test("current PROTOCOL_VERSION is always machine-channel accepted", () => {
+    // Guards the AGENTS.md invariant: whoever bumps PROTOCOL_VERSION must decide
+    // whether the agent wire changed (reset the set) or not (extend it) — this
+    // fails the build until that decision is made explicitly.
+    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
+  });
+
+  test("welcomes a legacy compat-version hello and adopts its advertised durable session", () => {
+    const legacy = [...MACHINE_PROTOCOL_COMPAT_VERSIONS].filter((v) => v !== PROTOCOL_VERSION);
+    if (legacy.length === 0) return; // wire-breaking era: no legacy versions accepted
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "f".repeat(64), runtime);
+    const root = auth.authenticate("f".repeat(64));
+    const pad: Pad = { id: runtime.newId(), name: "legacy pad", createdAt: runtime.now() };
+    store.createPad(pad);
+    const enrollment = auth.enrollMachine("agent", root);
+    const sessionGrant = auth.mintSessionAgentToken("legacy-session", pad.id, root.principal.id);
+    store.createSession({
+      id: "legacy-session",
+      machineId: enrollment.machine.id,
+      padId: pad.id,
+      elementId: "terminal",
+      createdBy: root.principal.id,
+      agentPrincipalId: sessionGrant.principal.id,
+      createdAt: runtime.now(),
+    });
+    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+    );
+    rooms.setSessionProvider((padId) => broker.listForPad(padId));
+    rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+    const gateway = new MachineGateway(
+      auth,
+      store,
+      broker,
+      clock,
+      silentLogger,
+      "server-epoch",
+      runtime,
+    );
+    const socket = new FakeSocket();
+    gateway.open("connection", socket);
+
+    gateway.message(
+      "connection",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "agent",
+        agentVersion: "test-legacy",
+        protocolVersion: legacy[0],
+        sessions: [{ sessionId: "legacy-session", cols: 120, rows: 40, alive: true, seq: 42 }],
+      }),
+    );
+
+    // Adoption-specific observables, identical to a current-version hello:
+    // welcomed with NO kill (the unadoptable path would kill), and the broker
+    // re-registers the PTY with the ADVERTISED geometry — only adoptSession
+    // writes 120x40 into session state.
+    expect(machineMessages(socket).map((message) => message.type)).toEqual(["welcome"]);
+    expect(store.getSession("legacy-session")?.status).toBe("running");
+    const adopted = broker.listForPad(pad.id)[0];
+    expect(adopted?.status).toBe("running");
+    expect(adopted?.cols).toBe(120);
+    expect(adopted?.rows).toBe(40);
+    gateway.shutdown();
+    store.close();
+  });
+
+  test("rejects a wire-incompatible protocol version with 4409 and a structured log", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "a".repeat(64), runtime);
+    const root = auth.authenticate("a".repeat(64));
+    const enrollment = auth.enrollMachine("agent", root);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+    );
+    const warned: Array<{ evt: string; fields: Record<string, unknown> | undefined }> = [];
+    const logger: Logger = {
+      info: () => {},
+      warn: (evt, fields) => warned.push({ evt, fields }),
+      error: () => {},
+    };
+    const gateway = new MachineGateway(auth, store, broker, clock, logger, "server-epoch", runtime);
+    const socket = new FakeSocket();
+    gateway.open("connection", socket);
+
+    gateway.message(
+      "connection",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "agent",
+        agentVersion: "test-old",
+        protocolVersion: 1,
+        sessions: [],
+      }),
+    );
+
+    expect(socket.closed?.code).toBe(4409);
+    expect(machineMessages(socket)).toEqual([]);
+    const rejected = warned.find((w) => w.evt === "machine_version_rejected");
+    expect(rejected?.fields?.agentProtocolVersion).toBe(1);
+    expect(rejected?.fields?.serverProtocolVersion).toBe(PROTOCOL_VERSION);
     gateway.shutdown();
     store.close();
   });

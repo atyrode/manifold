@@ -1,4 +1,5 @@
 import {
+  AGENT_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
@@ -52,6 +53,10 @@ export interface AgentOptions {
   readonly runtime?: RuntimeDeps;
   readonly sink?: AgentLogSink;
   readonly backoff?: AgentBackoffOptions;
+  /** Silence deadline before the transport is declared dead (default 75s; protocol version.ts). */
+  readonly livenessTimeoutMs?: number;
+  /** Socket factory; DI seam (mirrors the server's RawSocket) so unit tests inject fakes. */
+  readonly createSocket?: (url: string) => WebSocket;
   /** Shell argv for spawned PTYs; DI seam so tests pin a deterministic shell. */
   readonly shellCommand?: readonly string[];
 }
@@ -108,13 +113,16 @@ export class Agent {
   private readonly baseMs: number;
   private readonly capMs: number;
   private readonly shellCommand: readonly string[] | undefined;
+  private readonly livenessTimeoutMs: number;
 
   private readonly sessions = new Map<string, PtySession>();
+  private readonly createSocket: (url: string) => WebSocket;
   private socket: WebSocket | null = null;
   private machineId: string | null = null;
   private serverEpochValue: string | null = null;
   private attempts = 0;
   private reconnectTimer: Timer | null = null;
+  private livenessTimer: Timer | null = null;
   private stopped = false;
   private welcomeWaiters: Array<() => void> = [];
 
@@ -127,6 +135,8 @@ export class Agent {
     this.baseMs = opts.backoff?.baseMs ?? 500;
     this.capMs = opts.backoff?.capMs ?? 15_000;
     this.shellCommand = opts.shellCommand;
+    this.livenessTimeoutMs = opts.livenessTimeoutMs ?? AGENT_LIVENESS_TIMEOUT_MS;
+    this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
   }
 
   /** Machine id learned from `welcome` (null until the first successful handshake). */
@@ -163,6 +173,10 @@ export class Agent {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.livenessTimer !== null) {
+      clearTimeout(this.livenessTimer);
+      this.livenessTimer = null;
+    }
     const socket = this.socket;
     this.socket = null;
     if (socket !== null) socket.close(1000, "shutdown");
@@ -179,17 +193,25 @@ export class Agent {
 
   private dial(): void {
     if (this.stopped) return;
-    const socket = new WebSocket(this.wsUrl);
+    const socket = this.createSocket(this.wsUrl);
     this.socket = socket;
     this.log("info", "dialing", { attempt: this.attempts });
     socket.onopen = () => {
-      if (this.socket === socket) this.sendHello(socket);
+      if (this.socket === socket) {
+        this.armLiveness(socket);
+        this.sendHello(socket);
+      }
     };
     socket.onmessage = (ev: MessageEvent) => {
-      if (this.socket === socket) this.onFrame(socket, ev.data);
+      if (this.socket === socket) {
+        this.armLiveness(socket);
+        this.onFrame(socket, ev.data);
+      }
     };
+    // Spec says a close event follows every error, but route defensively anyway:
+    // onDisconnect is idempotent per socket, so a follow-up close is a no-op.
     socket.onerror = () => this.onDisconnect(socket);
-    socket.onclose = () => this.onDisconnect(socket);
+    socket.onclose = (ev: CloseEvent) => this.onDisconnect(socket, ev.code, ev.reason);
   }
 
   private sendHello(socket: WebSocket): void {
@@ -350,12 +372,43 @@ export class Agent {
     socket.send(JSON.stringify(msg));
   }
 
-  private onDisconnect(socket: WebSocket): void {
+  /**
+   * Phantom-transport watchdog: a healthy connection carries server pings every
+   * 30s even when idle, so silence past the deadline means dead TCP that nobody
+   * RST (a mid-reload proxy swallowing the close is the observed case,
+   * 2026-08-25). Close locally and heal via the reconnect path.
+   */
+  private armLiveness(socket: WebSocket): void {
+    if (this.livenessTimer !== null) {
+      clearTimeout(this.livenessTimer);
+      this.livenessTimer = null;
+    }
+    this.livenessTimer = setTimeout(() => {
+      this.livenessTimer = null;
+      if (this.socket !== socket) return;
+      this.log("warn", "liveness_timeout", { timeoutMs: this.livenessTimeoutMs });
+      socket.close(4008, "server silent past deadline");
+    }, this.livenessTimeoutMs);
+  }
+
+  private onDisconnect(socket: WebSocket, code?: number, reason?: string): void {
     if (this.socket !== socket) return; // stale/superseded socket
     this.socket = null;
     this.machineId = null;
     this.serverEpochValue = null;
-    this.log("warn", "disconnected");
+    if (this.livenessTimer !== null) {
+      clearTimeout(this.livenessTimer);
+      this.livenessTimer = null;
+    }
+    if (code === 4409) {
+      // Version-locked out: this process runs different wire code than the server.
+      // Reconnecting cannot fix that — only a process restart reloads current code.
+      this.log("error", "protocol_version_rejected", { code, reason });
+    }
+    this.log("warn", "disconnected", {
+      ...(code !== undefined ? { code } : {}),
+      ...(reason !== undefined && reason !== "" ? { reason } : {}),
+    });
     if (!this.stopped) this.scheduleReconnect();
   }
 
