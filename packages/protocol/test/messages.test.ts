@@ -6,6 +6,7 @@ import {
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
   ServerMessageSchema,
+  TerminalCustomDataSchema,
   buildProtocolJsonSchema,
   hasCap,
 } from "@manifold/protocol";
@@ -122,6 +123,19 @@ describe("session channel schemas", () => {
     expect(
       ClientMessageSchema.safeParse({ type: "cursor", connId: "spoof", x: 12, y: 34 }).success,
     ).toBe(false);
+  });
+
+  test("terminal customData is loose: unknown keys like showHyperlinkIcon survive", () => {
+    const parsed = TerminalCustomDataSchema.parse({
+      kind: "terminal",
+      sessionId: "s1",
+      showHyperlinkIcon: false,
+    });
+    expect(parsed.sessionId).toBe("s1");
+    // The web layer rides this passthrough to disable Excalidraw's link
+    // affordance on terminal embeds; a stricter schema would strip (object)
+    // or reject (strictObject) the key and re-enable the affordance.
+    expect((parsed as Record<string, unknown>)["showHyperlinkIcon"]).toBe(false);
   });
 });
 

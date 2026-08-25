@@ -632,6 +632,9 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       roughness: 0,
       opacity: 100,
       link: TERMINAL_LINK,
+      // Excalidraw's link affordance (badge/cursor/navigation) is disabled for
+      // terminal embeds via the patched showHyperlinkIcon guard (see patches/).
+      customData: { showHyperlinkIcon: false },
       x: center.x - TERMINAL_WIDTH / 2,
       y: center.y - TERMINAL_HEIGHT / 2,
       width: TERMINAL_WIDTH,
@@ -679,7 +682,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       const latest = currentElements.find((element) => element.id === terminalElement.id);
       if (latest === undefined) return;
       const boundElement = newElementWith(latest, {
-        customData: { kind: "terminal", sessionId: session.id },
+        customData: { kind: "terminal", sessionId: session.id, showHyperlinkIcon: false },
       });
       const boundParsed = SceneElementSchema.safeParse(boundElement);
       if (!boundParsed.success) {
