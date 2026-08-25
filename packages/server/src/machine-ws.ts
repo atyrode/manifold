@@ -26,10 +26,22 @@ const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 
 const SUPERSEDE_DAMP_MS = 5_000;
 
+/**
+ * App-level liveness for the machine channel: TCP alone leaves a frozen or
+ * network-partitioned agent (laptop lid close is the common case) "online"
+ * indefinitely. The server pings every interval; a ping that is still
+ * unanswered when the next one fires closes the socket, so offline detection
+ * is bounded by two intervals. The agent side already answers `ping` with
+ * `pong` — this is the server half of that contract.
+ */
+export const MACHINE_PING_INTERVAL_MS = 30_000;
+
 interface PendingMachineConnection {
   socket: RawSocket;
   channel: LiveMachineChannel | null;
   cancelHelloTimeout: (() => void) | null;
+  cancelPing: (() => void) | null;
+  awaitingPong: boolean;
 }
 
 export class LiveMachineChannel implements MachineChannel {
@@ -106,6 +118,8 @@ export class MachineGateway {
       socket,
       channel: null,
       cancelHelloTimeout: null,
+      cancelPing: null,
+      awaitingPong: false,
     };
     connection.cancelHelloTimeout = this.timers.schedule(() => {
       connection.cancelHelloTimeout = null;
@@ -133,6 +147,10 @@ export class MachineGateway {
           return;
         }
         if (this.activeByMachine.get(connection.channel.machineId) !== connection.channel) return;
+        if (classified.message.type === "pong") {
+          connection.awaitingPong = false;
+          return;
+        }
         this.dispatch(connection.channel, classified.message);
         return;
       default: {
@@ -203,6 +221,27 @@ export class MachineGateway {
       older.close(4001, "superseded");
     }
     this.broker.reconcileMachineHello(authenticated.id, message.sessions);
+    this.schedulePing(connection);
+  }
+
+  /** Arms the next liveness ping; an unanswered previous ping closes the socket. */
+  private schedulePing(connection: PendingMachineConnection): void {
+    connection.cancelPing = this.timers.schedule(() => {
+      connection.cancelPing = null;
+      const channel = connection.channel;
+      if (channel === null) return;
+      if (connection.awaitingPong) {
+        this.logger.warn("machine_liveness_timeout", { machineId: channel.machineId });
+        channel.close(4008, "liveness timeout");
+        return;
+      }
+      connection.awaitingPong = true;
+      if (!channel.send({ type: "ping" })) {
+        channel.close(1011, "ping frame dropped");
+        return;
+      }
+      this.schedulePing(connection);
+    }, MACHINE_PING_INTERVAL_MS);
   }
 
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
@@ -240,6 +279,8 @@ export class MachineGateway {
     if (connection === undefined) return;
     this.connections.delete(id);
     connection.cancelHelloTimeout?.();
+    connection.cancelPing?.();
+    connection.cancelPing = null;
     const channel = connection.channel;
     if (channel === null) return;
     if (this.activeByMachine.get(channel.machineId) === channel) {

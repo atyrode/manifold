@@ -187,10 +187,15 @@ advertises surviving PTYs `{ sessionId, cols, rows, alive, seq }` (server-restar
 adoption). Server replies `welcome { machineId, epoch }` or closes 4401.
 
 Server→agent: `create { sessionId, cols, rows, cwd?, env }`, `input { sessionId, data }`,
-`resize`, `kill`, `snapshot_request { sessionId }`.
+`resize`, `kill`, `snapshot_request { sessionId }`, `ping`.
 Agent→server: `created { sessionId }` | `create_error { sessionId, message }`,
 `output { sessionId, seq, data }` (seq: monotonic per session, assigned at emission),
-`snapshot { sessionId, seq, data }`, `exited { sessionId, exitCode }`.
+`snapshot { sessionId, seq, data }`, `exited { sessionId, exitCode }`, `pong`.
+
+Liveness: after `welcome` the server sends `ping` every 30s; a ping still unanswered when
+the next fires closes the socket (4008 `liveness timeout`), so a frozen or partitioned
+agent (laptop sleep, dropped network) is marked offline within two intervals — TCP alone
+would keep it "online" indefinitely. The agent's reconnect loop then re-dials as usual.
 
 Reconnect: agent redials with jittered backoff (cap 15s), re-`hello`s with surviving
 sessions; a new server epoch re-adopts them. Stale sockets are fenced: the server drops a

@@ -7,7 +7,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import { LiveMachineChannel, MachineGateway } from "../src/machine-ws.ts";
+import { LiveMachineChannel, MACHINE_PING_INTERVAL_MS, MachineGateway } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -240,5 +240,91 @@ describe("machine hello reconciliation", () => {
     ]);
     gateway.shutdown();
     store.close();
+  });
+});
+
+describe("machine liveness heartbeat", () => {
+  function fixture(ownerKey: string) {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, ownerKey, runtime);
+    const root = auth.authenticate(ownerKey);
+    const enrollment = auth.enrollMachine("agent", root);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+    );
+    const gateway = new MachineGateway(
+      auth,
+      store,
+      broker,
+      clock,
+      silentLogger,
+      "server-epoch",
+      runtime,
+    );
+    const socket = new FakeSocket();
+    gateway.open("connection", socket);
+    gateway.message(
+      "connection",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "agent",
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        sessions: [],
+      }),
+    );
+    return { clock, store, gateway, socket, machineId: enrollment.machine.id };
+  }
+
+  test("a ponging machine stays online across many intervals", () => {
+    const value = fixture("1".repeat(64));
+
+    for (let round = 0; round < 3; round++) {
+      value.clock.advance(MACHINE_PING_INTERVAL_MS);
+      const pings = machineMessages(value.socket).filter((m) => m.type === "ping");
+      expect(pings).toHaveLength(round + 1);
+      value.gateway.message("connection", JSON.stringify({ type: "pong" }));
+    }
+
+    expect(value.socket.closed).toBeNull();
+    expect(value.gateway.isOnline(value.machineId)).toBe(true);
+    value.gateway.shutdown();
+    value.store.close();
+  });
+
+  test("an unanswered ping closes the socket within two intervals", () => {
+    const value = fixture("2".repeat(64));
+
+    value.clock.advance(MACHINE_PING_INTERVAL_MS); // ping sent
+    expect(value.socket.closed).toBeNull();
+    value.clock.advance(MACHINE_PING_INTERVAL_MS); // still unanswered -> close
+
+    expect(value.socket.closed?.code).toBe(4008);
+    expect(value.socket.closed?.reason).toBe("liveness timeout");
+    // The transport close event then reaches the gateway, taking the machine offline.
+    value.gateway.close("connection");
+    expect(value.gateway.isOnline(value.machineId)).toBe(false);
+    value.gateway.shutdown();
+    value.store.close();
+  });
+
+  test("closing a connection disarms its ping timer", () => {
+    const value = fixture("3".repeat(64));
+
+    expect(value.clock.pendingJobs).toBeGreaterThan(0);
+    value.gateway.close("connection");
+    expect(value.clock.pendingJobs).toBe(0);
+    value.gateway.shutdown();
+    value.store.close();
   });
 });
