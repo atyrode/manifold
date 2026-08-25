@@ -26,6 +26,23 @@ const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "appl
 const marker = `PUBLIC_${Date.now().toString(36).toUpperCase()}`;
 const results: { name: string; ok: boolean; detail: string }[] = [];
 
+/** Every run creates a pad on the PRODUCTION origin; never leave it behind. */
+async function cleanupPad(): Promise<void> {
+  if (padId === "") return;
+  try {
+    const res = await fetch(`${origin}/api/pads/${encodeURIComponent(padId)}`, {
+      method: "DELETE",
+      headers: httpHeaders,
+    });
+    if (!res.ok) console.log(`WARN  evt=verify_pad_cleanup_failed status=${res.status}`);
+  } catch (error) {
+    // A failed cleanup must not mask the gate verdict — but never hide it either.
+    console.log(
+      `WARN  evt=verify_pad_cleanup_failed ${error instanceof Error ? error.message : "error"}`,
+    );
+  }
+}
+
 async function step(name: string, run: () => Promise<string>): Promise<void> {
   try {
     const detail = await run();
@@ -293,7 +310,8 @@ await step("co-hosted origin still serves (no collateral damage)", async () => {
   return `${peerOrigin} -> ${res.status}`;
 });
 
-await browser.close();
+await browser.close().catch(() => console.log("WARN  evt=verify_browser_close_failed"));
+await cleanupPad();
 
 const failed = results.filter((r) => !r.ok);
 console.log(

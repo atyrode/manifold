@@ -1,6 +1,6 @@
 import type { Pad } from "@manifold/protocol";
 import { useEffect, useState, type FormEvent } from "react";
-import { createPad, listPads, type StoredIdentity } from "./api.ts";
+import { createPad, deletePad, listPads, type StoredIdentity } from "./api.ts";
 
 interface PadListProps {
   readonly identity: StoredIdentity;
@@ -12,6 +12,7 @@ export function PadList({ identity, navigate }: PadListProps) {
   const [pads, setPads] = useState<Pad[] | null>(null);
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,21 @@ export function PadList({ identity, navigate }: PadListProps) {
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create the pad");
       setCreating(false);
+    }
+  };
+
+  const remove = async (pad: Pad): Promise<void> => {
+    // Deletion is canonical and unrecoverable (scene + sessions); confirm by name.
+    if (!window.confirm(`Delete pad "${pad.name}"? This cannot be undone.`)) return;
+    setDeletingId(pad.id);
+    setError(null);
+    try {
+      await deletePad(identity.token, pad.id);
+      setPads(await listPads(identity.token));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Could not delete the pad");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -89,10 +105,20 @@ export function PadList({ identity, navigate }: PadListProps) {
       ) : (
         <ul className="pad-grid">
           {pads.map((pad) => (
-            <li key={pad.id}>
+            <li key={pad.id} className="pad-card">
               <button type="button" onClick={() => navigate(`/p/${encodeURIComponent(pad.id)}`)}>
                 <span className="pad-card-name">{pad.name}</span>
                 <span className="pad-card-action">Open canvas</span>
+              </button>
+              <button
+                type="button"
+                className="pad-card-delete"
+                title={`Delete pad ${pad.name}`}
+                aria-label={`Delete pad ${pad.name}`}
+                disabled={deletingId !== null}
+                onClick={() => void remove(pad)}
+              >
+                {deletingId === pad.id ? "…" : "✕"}
               </button>
             </li>
           ))}

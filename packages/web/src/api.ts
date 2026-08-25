@@ -106,3 +106,11 @@ export async function getMachines(token: string): Promise<readonly MachineSummar
   });
   return MachinesResponseSchema.parse(body).machines;
 }
+
+/** Deletes a pad (server enforces root authority); resolves when the server confirms. */
+export async function deletePad(token: string, padId: string): Promise<void> {
+  await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
+}

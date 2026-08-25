@@ -247,6 +247,10 @@ input:focus {
   list-style: none;
 }
 
+.pad-card {
+  position: relative;
+}
+
 .pad-grid button {
   display: flex;
   flex-direction: column;
@@ -263,6 +267,31 @@ input:focus {
 
 .pad-grid button:hover {
   border-color: #5c7cfa;
+  background: #1d2128;
+}
+
+/* Small destructive affordance in the card corner; server enforces authority. */
+.pad-card-delete {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 1;
+}
+
+.pad-grid .pad-card-delete {
+  display: inline-grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border-radius: 0.4rem;
+  color: #868e96;
+  font-size: 0.8rem;
+}
+
+.pad-grid .pad-card-delete:hover {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
   background: #1d2128;
 }
 
