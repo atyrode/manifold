@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { base64ToBytes, type SessionClient } from "@manifold/sdk";
+import type { Principal } from "@manifold/protocol";
 import { useEffect, useReducer, useRef, useState, type FocusEvent, type WheelEvent } from "react";
 
 interface TerminalViewProps {
@@ -10,22 +11,36 @@ interface TerminalViewProps {
   readonly elementId: string;
   /** Excalidraw activation state; a rising edge focuses xterm so typing works right away. */
   readonly active: boolean;
+  /** True when other live elements are bound to this same session (clones/mirrors). */
+  readonly sessionShared: boolean;
+  /** Tombstones this element; kills the PTY only when it was the last binding. */
+  readonly onClose: () => void;
+  /** Opens a fresh PTY session and rebinds it to this element (restart in place). */
+  readonly onRestart: () => Promise<void>;
 }
 
-type AttachmentState = "none" | "queued" | "open";
-
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
-export function TerminalView({ client, sessionId, elementId, active }: TerminalViewProps) {
+export function TerminalView({
+  client,
+  sessionId,
+  elementId,
+  active,
+  sessionShared,
+  onClose,
+  onRestart,
+}: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
-  const detachTimerRef = useRef<number | null>(null);
-  const attachmentRef = useRef<AttachmentState>("none");
   const scheduleResizeRef = useRef<(() => void) | null>(null);
   const focusedRef = useRef(false);
   const [viewOnlyError, setViewOnlyError] = useState(false);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   const session = client.sessions.get(sessionId);
   const selfId = client.self?.id ?? null;
@@ -77,6 +92,75 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
     };
   }, [active]);
 
+  // Maximize = this terminal becomes the view. The Popover API promotes the
+  // SAME node into the browser top layer (xterm survives, no remount), escaping
+  // Excalidraw's transform without browser-chrome fullscreen. popover="manual"
+  // so an outside click can't accidentally restore; Esc and the button do.
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (frame === null) return;
+    if (isMaximized) {
+      frame.setAttribute("popover", "manual");
+      try {
+        frame.showPopover();
+      } catch (reason: unknown) {
+        // Unreachable by design (the button is disabled without Popover
+        // support) — but if showPopover still throws, recover instead of
+        // wedging in a maximized-without-top-layer state.
+        console.error("evt=terminal_maximize_failed", reason);
+        frame.removeAttribute("popover");
+        const recover = requestAnimationFrame(() => setIsMaximized(false));
+        return () => cancelAnimationFrame(recover);
+      }
+      // Esc restores ONLY while the shell doesn't own the keyboard: inside
+      // xterm, Escape belongs to the running program (vim, readline). While
+      // typing, the Restore button is the way back.
+      const onKeyDown = (event: KeyboardEvent): void => {
+        if (event.key !== "Escape") return;
+        const host = containerRef.current;
+        if (host !== null && host.contains(document.activeElement)) return;
+        event.stopPropagation();
+        setIsMaximized(false);
+      };
+      document.addEventListener("keydown", onKeyDown, true);
+      const onToggle = (event: Event): void => {
+        if ((event as ToggleEvent).newState === "closed") setIsMaximized(false);
+      };
+      frame.addEventListener("toggle", onToggle);
+      requestAnimationFrame(() => {
+        fitRef.current?.fit();
+        scheduleResizeRef.current?.();
+        terminalRef.current?.focus();
+      });
+      return () => {
+        document.removeEventListener("keydown", onKeyDown, true);
+        frame.removeEventListener("toggle", onToggle);
+        if (frame.hasAttribute("popover")) {
+          try {
+            frame.hidePopover();
+          } catch {
+            // already hidden
+          }
+          frame.removeAttribute("popover");
+        }
+      };
+    }
+    requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      scheduleResizeRef.current?.();
+    });
+    return;
+  }, [isMaximized]);
+
+  // A collapsed host has no size to fit against; refit when it reappears.
+  useEffect(() => {
+    if (isMinimized) return;
+    requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      scheduleResizeRef.current?.();
+    });
+  }, [isMinimized]);
+
   useEffect(() => {
     const refreshSession = (): void => {
       if (client.sessions.get(sessionId)?.controllerId === client.self?.id) {
@@ -95,11 +179,6 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
-
-    if (detachTimerRef.current !== null) {
-      window.clearTimeout(detachTimerRef.current);
-      detachTimerRef.current = null;
-    }
 
     const terminal = new Terminal({
       convertEol: false,
@@ -202,20 +281,13 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
       client.sendTerminalInput(sessionId, data);
     });
 
-    if (attachmentRef.current === "none") {
-      client.attachTerminal(sessionId);
-      attachmentRef.current = client.status === "open" ? "open" : "queued";
-    }
+    // The SDK refcounts attach/detach per session (clones share one wire
+    // subscription) and re-subscribes by itself after a reconnect.
+    client.attachTerminal(sessionId);
 
     const offStatus = client.on("status", (status) => {
-      if (status === "open") {
-        if (attachmentRef.current !== "open") {
-          client.attachTerminal(sessionId);
-          attachmentRef.current = "open";
-        }
-        return;
-      }
-      if (attachmentRef.current === "open") attachmentRef.current = "none";
+      if (status === "open") return;
+      // Connection dropped: the next snapshot starts a fresh sequence.
       snapshotSeq = null;
       lastWrittenSeq = 0;
       bufferedOutputs.clear();
@@ -238,11 +310,7 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
-      detachTimerRef.current = window.setTimeout(() => {
-        client.detachTerminal(sessionId);
-        attachmentRef.current = "none";
-        detachTimerRef.current = null;
-      }, 0);
+      client.detachTerminal(sessionId);
     };
   }, [client, sessionId]);
 
@@ -252,14 +320,23 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
     scheduleResizeRef.current?.();
   }, [isController]);
 
-  const controllerId = session?.controllerId ?? null;
-  const controller =
-    controllerId === client.self?.id
-      ? client.self
-      : controllerId === null
-        ? null
-        : (client.roster.get(controllerId)?.principal ?? null);
+  const isRunning = session?.status === "running";
   const showViewOnly = viewOnlyError && !isController;
+  // Close is offered when it can complete cleanly: as controller, once the
+  // session stopped running, or when this element is just one of several
+  // mirrors of the session (closing a mirror never kills the PTY).
+  const canClose = isController || !isRunning || sessionShared;
+
+  // Focus presence — other principals whose ephemeral focus is on THIS terminal.
+  // Distinct from controllerId (the write lease): this is "who is looking/typing
+  // here right now", the signal that veils the terminal for everyone else.
+  const selfPrincipalId = client.self?.id ?? null;
+  const remoteFocusers: Principal[] = [];
+  for (const state of client.roster.values()) {
+    if (state.principal.id === selfPrincipalId) continue;
+    if (state.payload.focus?.elementId === elementId) remoteFocusers.push(state.principal);
+  }
+  const remoteFocuser = remoteFocusers[0] ?? null;
 
   const handleFocus = (): void => {
     if (focusedRef.current) return;
@@ -278,28 +355,104 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
     if (focusedRef.current) event.stopPropagation();
   };
 
+  const supportsMaximize = "showPopover" in HTMLElement.prototype;
+  const toggleMaximize = (): void => {
+    setIsMaximized((value) => !value);
+  };
+
+  // All close semantics (tombstone + last-binding kill decision) live in the
+  // host's onClose, which sees the authoritative scene at click time.
+  const handleClose = (): void => onClose();
+
+  const frameClass = [
+    "manifold-terminal",
+    isMinimized ? "manifold-terminal--collapsed" : "",
+    isMaximized ? "manifold-terminal--maximized" : "",
+    remoteFocuser === null ? "" : "manifold-terminal--remote-focus",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div
-      className="manifold-terminal"
+      ref={frameRef}
+      className={frameClass}
+      style={
+        remoteFocuser === null
+          ? undefined
+          : { borderColor: remoteFocuser.color, boxShadow: `0 0 0 2px ${remoteFocuser.color}` }
+      }
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={stopFocusedWheel}
       onKeyDown={(event) => event.stopPropagation()}
       onFocus={handleFocus}
       onBlur={handleBlur}
     >
-      <div className="terminal-toolbar">
-        <span
-          className="controller-badge"
-          style={
-            controller === null
-              ? undefined
-              : { borderColor: controller.color, color: controller.color }
-          }
-        >
-          {controller === null ? "no controller" : `controller: ${controller.name}`}
+      {remoteFocuser === null ? null : (
+        <div className="terminal-presence" aria-hidden="true">
+          {remoteFocusers.slice(0, 3).map((principal) => (
+            <span
+              key={principal.id}
+              className="terminal-presence__tag"
+              style={{ backgroundColor: principal.color }}
+              title={`${principal.name} is here`}
+            >
+              <span className="terminal-presence__initial">
+                {principal.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="terminal-presence__name">{principal.name}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="terminal-titlebar">
+        <span className="terminal-titlebar__title">
+          <span className="terminal-titlebar__glyph" aria-hidden="true">
+            {">_"}
+          </span>
+          terminal
         </span>
+        <div className="terminal-titlebar__controls">
+          <button
+            type="button"
+            className="terminal-ctl"
+            title={isMinimized ? "Expand" : "Minimize"}
+            aria-label={isMinimized ? "Expand terminal" : "Minimize terminal"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setIsMinimized((value) => !value)}
+          >
+            {isMinimized ? "□" : "–"}
+          </button>
+          <button
+            type="button"
+            className="terminal-ctl"
+            title={isMaximized ? "Restore (Esc)" : "Maximize"}
+            aria-label={isMaximized ? "Restore terminal" : "Maximize terminal"}
+            disabled={!supportsMaximize}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={toggleMaximize}
+          >
+            ⛶
+          </button>
+          {canClose ? (
+            <button
+              type="button"
+              className="terminal-ctl terminal-ctl--close"
+              title="Close terminal (ends session)"
+              aria-label="Close terminal"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={handleClose}
+            >
+              ✕
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="xterm-host" ref={containerRef} />
+      <div
+        className={`terminal-idle-veil${active || isMinimized || isMaximized ? "" : " terminal-idle-veil--on"}`}
+        aria-hidden="true"
+      />
       {showViewOnly ? (
         <button
           className="view-only-ribbon"
@@ -315,7 +468,22 @@ export function TerminalView({ client, sessionId, elementId, active }: TerminalV
         </button>
       ) : null}
       {session?.status === "exited" ? (
-        <div className="terminal-exited">exited (code {session.exitCode ?? "unknown"})</div>
+        <div className="terminal-exited">
+          <span>exited (code {session.exitCode ?? "unknown"})</span>
+          <button
+            type="button"
+            className="terminal-restart"
+            title="Restart terminal (new shell, same spot)"
+            disabled={isRestarting}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setIsRestarting(true);
+              void onRestart().finally(() => setIsRestarting(false));
+            }}
+          >
+            {isRestarting ? "⟳ restarting…" : "⟳ restart"}
+          </button>
+        </div>
       ) : null}
     </div>
   );

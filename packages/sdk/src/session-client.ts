@@ -147,6 +147,8 @@ export class SessionClient {
   readonly scene = new Map<string, SceneElement>();
   readonly roster = new Map<string, PresenceState>();
   readonly sessions = new Map<string, SessionInfo>();
+  /** Live view refcounts per attached session (see attachTerminal). */
+  private readonly attachCounts = new Map<string, number>();
   epoch = "";
   rev = 0;
   self: Principal | null = null;
@@ -389,6 +391,13 @@ export class SessionClient {
         this.setStatus("open");
         this.startKeepalive();
         this.flushOutbox();
+        // Re-subscribe every session views still hold: the server's viewer
+        // registry is connection-scoped and did not survive the reconnect.
+        for (const attachedId of this.attachCounts.keys()) {
+          if (this.sessions.get(attachedId)?.status === "running") {
+            this.send({ type: "terminal_attach", sessionId: attachedId });
+          }
+        }
         if (rebaseEligible) {
           const rebase = reconcile(this.scene, localBefore).accepted;
           if (rebase.length > 0) this.updateScene(rebase);
@@ -661,12 +670,27 @@ export class SessionClient {
     return promise;
   }
 
+  /**
+   * Attach/detach are refcounted: several views of one session (cloned terminal
+   * elements) share a single wire subscription, because the server keys viewers
+   * by connection — a raw detach from one view would starve every other view on
+   * this client. Wire frames fire only on the 0→1 / 1→0 transitions; the no-gap
+   * invariant holds because every attach yields a fresh snapshot(S)+outputs(S+1…).
+   */
   attachTerminal(sessionId: string): void {
-    this.send({ type: "terminal_attach", sessionId });
+    const next = (this.attachCounts.get(sessionId) ?? 0) + 1;
+    this.attachCounts.set(sessionId, next);
+    if (next === 1) this.send({ type: "terminal_attach", sessionId });
   }
 
   detachTerminal(sessionId: string): void {
-    this.send({ type: "terminal_detach", sessionId });
+    const current = this.attachCounts.get(sessionId) ?? 0;
+    if (current > 1) {
+      this.attachCounts.set(sessionId, current - 1);
+      return;
+    }
+    this.attachCounts.delete(sessionId);
+    if (current === 1) this.send({ type: "terminal_detach", sessionId });
   }
 
   sendTerminalInput(sessionId: string, data: string | Uint8Array): void {
