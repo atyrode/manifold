@@ -133,6 +133,7 @@ export class HttpApp {
             ok: true,
             version: SERVER_VERSION,
             protocolVersion: PROTOCOL_VERSION,
+            ...(this.config.build !== undefined ? { build: this.config.build } : {}),
           }),
         );
       }

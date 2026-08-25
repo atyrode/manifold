@@ -2,7 +2,12 @@
 # record makes it the master node AND a terminal-serving machine (docs/SELF-HOST.md).
 services:
   manifold:
-    build: .
+    build:
+      context: .
+      args:
+        # `MANIFOLD_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build`
+        # stamps /healthz with the deployed tree; defaults to "dev" when unset.
+        MANIFOLD_BUILD: ${MANIFOLD_BUILD:-dev}
     restart: unless-stopped
     environment:
       - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}

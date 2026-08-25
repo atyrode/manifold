@@ -24,6 +24,7 @@ function fixture(readCmdline: AgentSpawnDeps["readCmdline"], localMachineName = 
     spawnAgent: true,
     localMachineName,
     announceKey: false,
+    build: undefined,
   };
   const store = testStore();
   const auth = new AuthService(store, config.ownerKey, new FakeRuntime());

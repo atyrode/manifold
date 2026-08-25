@@ -16,6 +16,8 @@ export interface ServerConfig {
   localMachineName: string;
   /** Opt-in (`MANIFOLD_ANNOUNCE_KEY=1`): embed `#key=` in the boot announce. Off by default so the owner key never enters log streams. */
   announceKey: boolean;
+  /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) surfaced on `/healthz`; undefined on ad-hoc runs. */
+  build: string | undefined;
 }
 
 function randomHex(bytes: number): string {
@@ -91,6 +93,7 @@ export function loadConfig(
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
   const localMachineName = (env.MANIFOLD_MACHINE_NAME ?? "local").trim();
   if (localMachineName.length === 0) throw new Error("MANIFOLD_MACHINE_NAME must not be empty");
+  const build = env.MANIFOLD_BUILD?.trim();
   return {
     port,
     hostname,
@@ -102,6 +105,7 @@ export function loadConfig(
     spawnAgent: env.MANIFOLD_SPAWN_AGENT !== "0",
     localMachineName,
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
+    build: build !== undefined && build.length > 0 ? build : undefined,
   };
 }
 

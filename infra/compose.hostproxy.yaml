@@ -1,7 +1,11 @@
 # Override for boxes that already run a host reverse proxy (Caddy/nginx) on
-# 80/443: publish manifold on loopback only and do not start the bundled caddy.
+# 80/443: publish manifold on loopback only and keep the bundled caddy from
+# starting (it would fight the host proxy for 80/443).
 #
-#   docker compose -f compose.yaml -f infra/compose.hostproxy.yaml up -d --build manifold
+# Make it sticky so plain `docker compose up/restart/ps` all use it, by
+# putting this in .env:
+#
+#   COMPOSE_FILE=compose.yaml:infra/compose.hostproxy.yaml
 #
 # Point the existing proxy's vhost at 127.0.0.1:7777 (see
 # infra/manifold.tyrode.dev.Caddyfile for the Caddy block).
@@ -9,3 +13,6 @@ services:
   manifold:
     ports:
       - "127.0.0.1:7777:7777"
+  caddy:
+    # Never started in host-proxy mode; the profile makes `up -d` skip it.
+    profiles: ["bundled-proxy"]

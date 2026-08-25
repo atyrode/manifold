@@ -65,6 +65,8 @@ export const HealthResponseSchema = z.strictObject({
   ok: z.literal(true),
   version: z.string(),
   protocolVersion: z.number().int().positive(),
+  /** Image/tree provenance (git SHA) baked at build time; absent on ad-hoc dev runs. */
+  build: z.string().min(1).optional(),
 });
 
 export const OkResponseSchema = z.strictObject({ ok: z.literal(true) });

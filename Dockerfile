@@ -17,8 +17,12 @@ FROM oven/bun:1
 WORKDIR /app
 COPY --from=build /app /app
 
+# Provenance: /healthz reports this so a running deployment is attributable to a
+# tree (an unattributable image cost a multi-hour diagnosis, 2026-08-25).
+ARG MANIFOLD_BUILD=dev
 ENV MANIFOLD_BIND=0.0.0.0 \
-    MANIFOLD_DATA_DIR=/data
+    MANIFOLD_DATA_DIR=/data \
+    MANIFOLD_BUILD=${MANIFOLD_BUILD}
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

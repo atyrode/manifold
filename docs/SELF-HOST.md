@@ -37,6 +37,19 @@ as the TLS front (Caddy v2 forwards WebSocket upgrades natively):
 docker compose -f compose.yaml -f infra/compose.hostproxy.yaml up -d --build manifold
 ```
 
+Make the override sticky so every plain `docker compose` command (yours, an
+agent's, a cron job's) uses it — one line in `.env`:
+
+```sh
+COMPOSE_FILE=compose.yaml:infra/compose.hostproxy.yaml
+```
+
+Without this, a plain `docker compose up -d` recreates the container with no
+published port (the base file publishes nothing by design) and the proxy 502s.
+The override also fences the bundled caddy behind a profile so it can never
+contend for 80/443 in this mode. Note the scope: `.env` is per-checkout — an
+explicit `-f` invocation or another working directory still bypasses it.
+
 Point your proxy's vhost at `127.0.0.1:7777` (Caddy block:
 `infra/manifold.tyrode.dev.Caddyfile`). `MANIFOLD_DOMAIN` in `.env` must still be
 the public domain — it feeds `MANIFOLD_PUBLIC_URL`.
