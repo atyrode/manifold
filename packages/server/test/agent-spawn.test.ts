@@ -139,6 +139,29 @@ describe("local agent spawn ownership", () => {
     expect(existsSync(join(value.config.dataDir, "agent.lock"))).toBe(false);
     value.store.close();
   });
+
+  test("a lock recording our own pid is stale (container PID-namespace reuse)", () => {
+    // Unclean container death: the volume keeps agent.lock with pid 1, and the
+    // restarted server is pid 1 again with the SAME server cmdline — the
+    // liveness check alone would wrongly conclude another server holds it.
+    const value = fixture(() => "bun\0packages/server/src/main.ts\0");
+    writeFileSync(join(value.config.dataDir, "agent.lock"), `${value.deps.pid}\n`);
+
+    const lease = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+
+    expect(value.spawned).toEqual([9000]);
+    expect(lease?.pid).toBe(9000);
+    lease?.release();
+    expect(existsSync(join(value.config.dataDir, "agent.lock"))).toBe(false);
+    value.store.close();
+  });
 });
 
 describe("configurable local machine name", () => {

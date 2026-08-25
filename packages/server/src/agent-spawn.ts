@@ -72,6 +72,18 @@ function livePid(path: string, marker: string, deps: AgentSpawnDeps): number | n
   }
 }
 
+function recordedLockPid(path: string): number | null {
+  try {
+    const pid = Number(readFileSync(path, "utf8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Lock paths this process actively holds — distinguishes "we already own it" from a dead prior incarnation that recorded our (reused) pid. */
+const heldLockPaths = new Set<string>();
+
 function acquireBootLock(path: string, deps: AgentSpawnDeps): (() => void) | null {
   try {
     const fd = openSync(path, "wx", 0o600);
@@ -82,7 +94,16 @@ function acquireBootLock(path: string, deps: AgentSpawnDeps): (() => void) | nul
     }
   } catch (error) {
     if (!(error instanceof Error) || Reflect.get(error, "code") !== "EEXIST") throw error;
-    if (livePid(path, SERVER_ENTRY_MARKER, deps) !== null) return null;
+    if (recordedLockPid(path) === deps.pid) {
+      // Our own pid on disk. Either this process already holds the lease
+      // (double acquisition — still exclusive), or a prior incarnation died
+      // uncleanly and the pid namespace was reused (container restart: old
+      // pid 1, new pid 1, same server cmdline — livePid cannot tell them
+      // apart). Only the in-process ledger distinguishes the two.
+      if (heldLockPaths.has(path)) return null;
+    } else if (livePid(path, SERVER_ENTRY_MARKER, deps) !== null) {
+      return null;
+    }
     try {
       unlinkSync(path);
     } catch (unlinkError) {
@@ -93,10 +114,12 @@ function acquireBootLock(path: string, deps: AgentSpawnDeps): (() => void) | nul
     return acquireBootLock(path, deps);
   }
 
+  heldLockPaths.add(path);
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    heldLockPaths.delete(path);
     let owner: string;
     try {
       owner = readFileSync(path, "utf8").trim();
