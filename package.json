@@ -19,7 +19,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "dev:server": "bun --watch packages/server/src/main.ts",
+    "dev:server": "MANIFOLD_ANNOUNCE_KEY=1 bun --watch packages/server/src/main.ts",
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
     "gate": "bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence && bun run verify:terminal-selection && bun run verify:terminal-mirror"

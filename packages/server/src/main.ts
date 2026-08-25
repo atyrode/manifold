@@ -138,7 +138,11 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   finalizePublicUrl(config, boundPort);
   const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger);
   if (options.announce !== false) {
-    console.log(`manifold ready url=${config.publicUrl}/#key=${config.ownerKey}`);
+    // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
+    // dev/test only) so the owner key never enters persisted log streams;
+    // operators read <data>/owner.key instead (docs/SELF-HOST.md).
+    const fragment = config.announceKey ? `/#key=${config.ownerKey}` : "";
+    console.log(`manifold ready url=${config.publicUrl}${fragment}`);
   }
 
   let stopped = false;

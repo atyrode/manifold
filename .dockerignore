@@ -1,0 +1,7 @@
+# Never bake host state, secrets, or build output into the image.
+.git
+node_modules
+data
+packages/web/dist
+*.log
+.env

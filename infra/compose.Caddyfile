@@ -1,0 +1,19 @@
+# manifold compose vhost — mounted into the caddy service by compose.yaml.
+#
+# {$MANIFOLD_DOMAIN} comes from .env via the compose file. A real domain gets
+# Let's Encrypt automatically; MANIFOLD_DOMAIN=localhost uses Caddy's internal
+# CA (self-signed — smoke tests pass -k / relax TLS verification).
+#
+# Caddy v2's reverse_proxy forwards WebSocket upgrades natively, which is what
+# /ws/session and /ws/machine need — same rationale as manifold.tyrode.dev.Caddyfile.
+
+{$MANIFOLD_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	reverse_proxy manifold:7777
+}

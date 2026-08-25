@@ -13,6 +13,9 @@ export interface ServerConfig {
   publicUrlExplicit: boolean;
   webDist: string;
   spawnAgent: boolean;
+  localMachineName: string;
+  /** Opt-in (`MANIFOLD_ANNOUNCE_KEY=1`): embed `#key=` in the boot announce. Off by default so the owner key never enters log streams. */
+  announceKey: boolean;
 }
 
 function randomHex(bytes: number): string {
@@ -86,6 +89,8 @@ export function loadConfig(
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const explicit = env.MANIFOLD_PUBLIC_URL !== undefined;
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
+  const localMachineName = (env.MANIFOLD_MACHINE_NAME ?? "local").trim();
+  if (localMachineName.length === 0) throw new Error("MANIFOLD_MACHINE_NAME must not be empty");
   return {
     port,
     hostname,
@@ -95,6 +100,8 @@ export function loadConfig(
     publicUrlExplicit: explicit,
     webDist: resolve(cwd, env.MANIFOLD_WEB_DIST ?? "packages/web/dist"),
     spawnAgent: env.MANIFOLD_SPAWN_AGENT !== "0",
+    localMachineName,
+    announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
   };
 }
 

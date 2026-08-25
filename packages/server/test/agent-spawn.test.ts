@@ -10,7 +10,7 @@ import { FakeRuntime, testStore } from "./helpers.ts";
 
 const temporaryDirectories: string[] = [];
 
-function fixture(readCmdline: AgentSpawnDeps["readCmdline"]) {
+function fixture(readCmdline: AgentSpawnDeps["readCmdline"], localMachineName = "local") {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-agent-spawn-test-"));
   temporaryDirectories.push(dataDir);
   const config: ServerConfig = {
@@ -22,23 +22,27 @@ function fixture(readCmdline: AgentSpawnDeps["readCmdline"]) {
     publicUrlExplicit: false,
     webDist: join(dataDir, "web"),
     spawnAgent: true,
+    localMachineName,
+    announceKey: false,
   };
   const store = testStore();
   const auth = new AuthService(store, config.ownerKey, new FakeRuntime());
   const spawned: number[] = [];
+  const spawnedEnvs: Record<string, string>[] = [];
   const deps: AgentSpawnDeps = {
     platform: "linux",
     pid: 4242,
     readCmdline,
     processExists: () => true,
-    spawn: () => {
+    spawn: (_command, options) => {
       const pid = 9000 + spawned.length;
       spawned.push(pid);
+      spawnedEnvs.push({ ...options.env });
       return { pid, unref() {} };
     },
   };
   const logger: Logger = { info() {}, warn() {}, error() {} };
-  return { config, store, auth, spawned, deps, logger };
+  return { config, store, auth, spawned, spawnedEnvs, deps, logger };
 }
 
 afterEach(() => {
@@ -133,6 +137,87 @@ describe("local agent spawn ownership", () => {
 
     first?.release();
     expect(existsSync(join(value.config.dataDir, "agent.lock"))).toBe(false);
+    value.store.close();
+  });
+});
+
+describe("configurable local machine name", () => {
+  test("a custom name enrolls the machine and reaches the child env", () => {
+    const value = fixture(() => "not-an-agent", "hub");
+
+    const lease = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+
+    expect(value.store.getMachineByName("hub")).not.toBeNull();
+    expect(value.store.getMachineByName("local")).toBeNull();
+    expect(value.spawnedEnvs[0]?.["MANIFOLD_MACHINE_NAME"]).toBe("hub");
+    lease?.release();
+    value.store.close();
+  });
+
+  test("a second boot under the same name rotates instead of duplicating", () => {
+    const value = fixture(() => "not-an-agent", "hub");
+    const first = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+    first?.release();
+    // A stale token file from another machine identity must not be honored.
+    writeFileSync(join(value.config.dataDir, "agent.token"), "not-a-valid-token\n");
+
+    const second = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+
+    expect(value.store.listMachines().filter((machine) => machine.name === "hub")).toHaveLength(1);
+    expect(value.spawnedEnvs).toHaveLength(2);
+    second?.release();
+    value.store.close();
+  });
+
+  test("a valid saved token keeps its machine identity when the configured name changes", () => {
+    const value = fixture(() => "not-an-agent");
+    const first = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+    first?.release();
+
+    // Same data dir, new configured name: the saved token wins at spawn time
+    // (the documented seed-strips-agent.token edge in docs/SELF-HOST.md).
+    value.config.localMachineName = "hub";
+    const second = spawnLocalAgent(
+      value.config,
+      7777,
+      value.auth,
+      value.store,
+      value.logger,
+      value.deps,
+    );
+
+    expect(value.store.getMachineByName("local")).not.toBeNull();
+    expect(value.store.getMachineByName("hub")).toBeNull();
+    expect(value.spawnedEnvs[1]?.["MANIFOLD_MACHINE_NAME"]).toBe("hub");
+    second?.release();
     value.store.close();
   });
 });

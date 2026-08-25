@@ -158,10 +158,10 @@ export function spawnLocalAgent(
   const tokenPath = resolve(config.dataDir, "agent.token");
   let enrollment = savedEnrollment(tokenPath, auth, store);
   if (enrollment === null) {
-    const existingMachine = store.getMachineByName("local");
+    const existingMachine = store.getMachineByName(config.localMachineName);
     enrollment =
       existingMachine === null
-        ? auth.enrollLocalMachine("local")
+        ? auth.enrollLocalMachine(config.localMachineName)
         : auth.rotateMachineToken(existingMachine);
     writeFileSync(tokenPath, `${enrollment.machineToken}\n`, {
       encoding: "utf8",
@@ -176,7 +176,7 @@ export function spawnLocalAgent(
   }
   environment.MANIFOLD_SERVER_URL = `http://127.0.0.1:${boundPort}`;
   environment.MANIFOLD_MACHINE_TOKEN = enrollment.machineToken;
-  environment.MANIFOLD_MACHINE_NAME = "local";
+  environment.MANIFOLD_MACHINE_NAME = config.localMachineName;
 
   const child = deps.spawn(["bun", AGENT_ENTRY_MARKER], {
     cwd: resolve(import.meta.dir, "../../.."),

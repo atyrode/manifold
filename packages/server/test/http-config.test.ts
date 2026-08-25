@@ -46,6 +46,38 @@ describe("server bind policy", () => {
     expect(loadConfig({ ...common, MANIFOLD_BIND: "::1" }, cwd).hostname).toBe("::1");
   });
 
+  test("local machine name defaults, trims, and rejects empty", () => {
+    const cwd = temporaryDirectory();
+    const common = {
+      MANIFOLD_PORT: "0",
+      MANIFOLD_DATA_DIR: "data",
+      MANIFOLD_OWNER_KEY: "f".repeat(64),
+      MANIFOLD_SPAWN_AGENT: "0",
+    };
+
+    expect(loadConfig(common, cwd).localMachineName).toBe("local");
+    expect(loadConfig({ ...common, MANIFOLD_MACHINE_NAME: "  hub  " }, cwd).localMachineName).toBe(
+      "hub",
+    );
+    expect(() => loadConfig({ ...common, MANIFOLD_MACHINE_NAME: "  " }, cwd)).toThrow(
+      "MANIFOLD_MACHINE_NAME must not be empty",
+    );
+  });
+
+  test("the boot announce embeds the owner key only on explicit opt-in", () => {
+    const cwd = temporaryDirectory();
+    const common = {
+      MANIFOLD_PORT: "0",
+      MANIFOLD_DATA_DIR: "data",
+      MANIFOLD_OWNER_KEY: "f".repeat(64),
+      MANIFOLD_SPAWN_AGENT: "0",
+    };
+
+    expect(loadConfig(common, cwd).announceKey).toBe(false);
+    expect(loadConfig({ ...common, MANIFOLD_ANNOUNCE_KEY: "0" }, cwd).announceKey).toBe(false);
+    expect(loadConfig({ ...common, MANIFOLD_ANNOUNCE_KEY: "1" }, cwd).announceKey).toBe(true);
+  });
+
   test("the real Bun listener appears only on 127.0.0.1 in ss", async () => {
     const cwd = temporaryDirectory();
     const config = loadConfig(

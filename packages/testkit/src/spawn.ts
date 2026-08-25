@@ -318,6 +318,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
   env.MANIFOLD_DATA_DIR = dataDir;
   env.MANIFOLD_OWNER_KEY = configuredOwnerKey;
   env.MANIFOLD_SPAWN_AGENT = (options.spawnAgent ?? false) ? "1" : "0";
+  // Tests bootstrap by parsing the pre-authed ready line; stdout here is an
+  // in-memory capture, not a persisted log stream, so opting in is safe.
+  env.MANIFOLD_ANNOUNCE_KEY = "1";
   delete env.MANIFOLD_PUBLIC_URL;
   if (port !== 0) env.MANIFOLD_PUBLIC_URL = `http://localhost:${port}`;
 

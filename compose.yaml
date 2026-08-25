@@ -1,0 +1,33 @@
+# Self-hosted manifold hub: `docker compose up -d --build` on any box with a DNS
+# record makes it the master node AND a terminal-serving machine (docs/SELF-HOST.md).
+services:
+  manifold:
+    build: .
+    restart: unless-stopped
+    environment:
+      - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}
+      - MANIFOLD_MACHINE_NAME=${MANIFOLD_MACHINE_NAME:-hub}
+      # Passthrough only when set in .env: pins the owner key instead of
+      # generating one at /data/owner.key on first boot.
+      - MANIFOLD_OWNER_KEY
+    volumes:
+      - manifold-data:/data
+    # No published ports: only Caddy reaches manifold:7777 on the compose network.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - MANIFOLD_DOMAIN=${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}
+    volumes:
+      - ./infra/compose.Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  manifold-data:
+  caddy-data:
+  caddy-config:
