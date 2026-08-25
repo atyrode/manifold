@@ -506,19 +506,6 @@ input:focus {
   opacity: 1;
 }
 
-/* Stock hover pill ("Click to interact"); obsolete now that a single click
-   anywhere on the terminal activates it (fullInteractionTarget guard). */
-.excalidraw__embeddable-hint {
-  display: none;
-}
-
-/* A terminal is an embed, not a shape — Excalidraw's stroke/fill/style panel is
-   meaningless for it. When the selection is purely terminals, suppress just that
-   panel (the hamburger menu, tools, and resize box are untouched). */
-.pad-view--terminals-only .selected-shape-actions {
-  display: none;
-}
-
 .terminal-titlebar {
   position: absolute;
   z-index: 3;

@@ -291,13 +291,6 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       ) {
         lastSelectionRef.current = selection;
         client.sendPresence({ selection });
-        // Terminals are embeds, not shapes: suppress Excalidraw's styling panel
-        // when the selection is purely terminals (CSS keys off this root class).
-        const terminalIds = new Set(
-          elements.filter((el) => el.link === TERMINAL_LINK).map((el) => el.id),
-        );
-        const terminalsOnly = selection.length > 0 && selection.every((id) => terminalIds.has(id));
-        rootRef.current?.classList.toggle("pad-view--terminals-only", terminalsOnly);
       }
 
       sendViewportOnChange({
@@ -651,6 +644,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
             sessionId: session.id,
             showHyperlinkIcon: false,
             fullInteractionTarget: true,
+            showShapeActions: false,
           },
         });
         const boundParsed = SceneElementSchema.safeParse(boundElement);
@@ -718,10 +712,15 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       roughness: 0,
       opacity: 100,
       link: TERMINAL_LINK,
-      // Both flags feed the re-derived guards patched into @excalidraw/excalidraw
-      // (see patches/, docs/decisions/0002): link affordance off, and the whole
-      // element (not just the stock center third) activates on click.
-      customData: { showHyperlinkIcon: false, fullInteractionTarget: true },
+      // The flags feed re-derived per-element gates in the maintained fork
+      // (atyrode/excalidraw-manifold, docs/decisions/0005): link affordance off,
+      // whole-element click-to-activate, and the style panel suppressed while
+      // the selection is terminals-only.
+      customData: {
+        showHyperlinkIcon: false,
+        fullInteractionTarget: true,
+        showShapeActions: false,
+      },
       x: center.x - TERMINAL_WIDTH / 2,
       y: center.y - TERMINAL_HEIGHT / 2,
       width: TERMINAL_WIDTH,

@@ -33,7 +33,6 @@
     "typescript-eslint": "^8.68.0"
   },
   "patchedDependencies": {
-    "@excalidraw/excalidraw@0.18.1": "patches/@excalidraw%2Fexcalidraw@0.18.1.patch",
     "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch"
   }
 }

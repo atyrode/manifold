@@ -125,20 +125,23 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("terminal customData carries the patched-guard flags and stays loose", () => {
+  test("terminal customData carries the fork-gate flags and stays loose", () => {
     const parsed = TerminalCustomDataSchema.parse({
       kind: "terminal",
       sessionId: "s1",
       showHyperlinkIcon: false,
       fullInteractionTarget: true,
+      showShapeActions: false,
       futureKey: "still passes",
     });
     expect(parsed.sessionId).toBe("s1");
-    // The web layer rides these into the patched @excalidraw/excalidraw guards
-    // (link affordance off, whole-element click-to-activate). A stricter schema
-    // would strip (object) or reject (strictObject) them and revert to stock.
+    // The web layer rides these into the fork's re-derived per-element gates
+    // (link affordance off, whole-element click-to-activate, style panel
+    // suppressed). A stricter schema would strip (object) or reject
+    // (strictObject) them and revert to stock.
     expect(parsed.showHyperlinkIcon).toBe(false);
     expect(parsed.fullInteractionTarget).toBe(true);
+    expect(parsed.showShapeActions).toBe(false);
     expect((parsed as Record<string, unknown>)["futureKey"]).toBe("still passes");
   });
 });

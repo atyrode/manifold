@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@excalidraw/excalidraw": "0.18.1",
+    "@excalidraw/excalidraw": "https://github.com/atyrode/excalidraw-manifold/releases/download/v0.18.1-manifold.1/excalidraw-excalidraw-0.18.1-manifold.1.tgz",
     "@manifold/protocol": "workspace:*",
     "@manifold/sdk": "workspace:*",
     "@xterm/addon-fit": "0.11.0",
