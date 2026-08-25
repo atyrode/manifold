@@ -147,6 +147,28 @@ try {
   const cursorColor = "#e03131";
   await openPad(browserA, debugPortA, "convA", cursorColor);
   await openPad(browserB, debugPortB, "convB");
+
+  // ------------------------------------------------ presence & status chrome
+
+  if (await browserA.evaluate<boolean>("document.querySelector('.UserList') !== null")) {
+    throw new Error("convA: stock UserList rendered despite UIOptions.userList=false");
+  }
+  console.log("PASS  stock UserList suppressed");
+  await until(
+    () => browserA.evaluate<boolean>("document.querySelectorAll('.presence-avatar').length === 2"),
+    10_000,
+    "convA: presence island shows self + convB",
+  );
+  console.log("PASS  presence island shows both principals");
+  if (
+    !(await browserA.evaluate<boolean>(
+      "(document.querySelector('.status-island [data-testid=connection-state]')?.textContent ?? '') === 'open'",
+    ))
+  ) {
+    throw new Error("convA: status island missing or not open");
+  }
+  console.log("PASS  status island live in the top-right cluster");
+
   const identityBeforeRefresh = await browserA.evaluate<string>(
     "localStorage.getItem('manifold.identity') ?? ''",
   );
