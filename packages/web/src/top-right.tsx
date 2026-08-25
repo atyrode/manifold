@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionStatus } from "@manifold/sdk";
+import type { MachineSummary } from "@manifold/protocol";
 import type { RosterRow } from "./roster-model.ts";
+import { machineColor } from "./machine-visibility.ts";
 
 const MAX_AVATARS = 4;
 
@@ -100,16 +102,41 @@ export function StatusIsland({ status, savedAt, rev }: StatusIslandProps) {
   );
 }
 
+/** Fleet rail: every enrolled machine with its deterministic dot and liveness. */
+export function MachinesIsland({ machines }: { machines: readonly MachineSummary[] | null }) {
+  if (machines === null || machines.length === 0) return null;
+  return (
+    <div className="machines-island" data-testid="machines-rail">
+      {machines.map((machine) => (
+        <div
+          className={`machine-row${machine.online ? "" : " is-offline"}`}
+          key={machine.id}
+          title={`${machine.name} — ${machine.online ? "online" : "offline"}`}
+        >
+          <span
+            className={`machine-dot${machine.online ? "" : " is-offline"}`}
+            style={{ backgroundColor: machineColor(machine.id) }}
+          />
+          <span className="machine-name">{machine.name}</span>
+          <span className="machine-state">{machine.online ? "online" : "offline"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface PadTopRightProps extends StatusIslandProps {
   readonly isMobile: boolean;
   readonly rows: readonly RosterRow[];
+  readonly machines: readonly MachineSummary[] | null;
 }
 
 /** manifold-owned top-right cluster rendered through excalidraw's renderTopRightUI slot. */
-export function PadTopRight({ isMobile, rows, status, savedAt, rev }: PadTopRightProps) {
+export function PadTopRight({ isMobile, rows, machines, status, savedAt, rev }: PadTopRightProps) {
   return (
     <>
       {isMobile ? null : <StatusIsland status={status} savedAt={savedAt} rev={rev} />}
+      {isMobile ? null : <MachinesIsland machines={machines} />}
       <PresenceIsland rows={rows} />
     </>
   );

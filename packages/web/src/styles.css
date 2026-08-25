@@ -304,6 +304,62 @@ input:focus {
   cursor: default;
 }
 
+/* Machine badge in the terminal title bar. */
+.terminal-machine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  color: #868e96;
+  font-size: 0.68rem;
+}
+
+.machine-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex: none;
+}
+
+.machine-dot.is-offline {
+  opacity: 0.35;
+}
+
+/* Fleet rail: enrolled machines with liveness, in the top-right island family. */
+.machines-island {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--border-radius-lg, 0.5rem);
+  background: var(--island-bg-color, rgb(20 22 27 / 82%));
+  box-shadow: var(--shadow-island, 0 0.5rem 1.5rem rgb(0 0 0 / 20%));
+  font-size: 0.7rem;
+}
+
+.machine-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.machine-row.is-offline {
+  opacity: 0.55;
+}
+
+.machine-name {
+  overflow: hidden;
+  max-width: 9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.machine-state {
+  margin-left: auto;
+  color: #868e96;
+}
+
 .pad-load-error {
   position: absolute;
   z-index: 25;

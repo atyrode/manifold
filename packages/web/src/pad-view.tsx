@@ -46,6 +46,7 @@ import {
   recallMachine,
   rememberMachine,
 } from "./machine-choice.ts";
+import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { PadTopRight } from "./top-right.tsx";
@@ -623,7 +624,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
 
   useEffect(() => {
     refreshMachines();
+    // 10s fleet poll while the pad is open — deliberately no new protocol
+    // message at this fleet size (docs/PLAN M3); the pre-decided upgrade path
+    // is a machine_changed broadcast added protocol-first.
+    const interval = window.setInterval(refreshMachines, 10_000);
     return () => {
+      window.clearInterval(interval);
       // Invalidate in-flight fetches so a late resolution never lands post-unmount.
       machinesEpochRef.current += 1;
     };
@@ -924,6 +930,13 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           client.killTerminal(sessionId);
         }
       };
+      const session = client.sessions.get(sessionId);
+      const boundMachine =
+        session === undefined ? null : sessionMachine(machines, session.machineId);
+      const restartTarget =
+        session === undefined
+          ? undefined
+          : machines?.find((candidate) => candidate.id === session.machineId);
       return (
         <TerminalView
           client={client}
@@ -932,11 +945,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           active={active}
           sessionShared={sessionShared}
           onClose={onClose}
-          onRestart={() => openAndBindTerminal(element.id)}
+          onRestart={() => openAndBindTerminal(element.id, restartTarget)}
+          machine={boundMachine}
         />
       );
     },
-    [client, openAndBindTerminal, publishImmediately],
+    [client, machines, openAndBindTerminal, publishImmediately],
   );
 
   /** null = never fetched (render the machine-agnostic item); [] = none online. */
@@ -963,6 +977,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           <PadTopRight
             isMobile={isMobile}
             rows={rosterRows}
+            machines={machines}
             status={connectionStatus}
             savedAt={savedAt}
             rev={revision}

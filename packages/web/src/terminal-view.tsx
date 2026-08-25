@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { base64ToBytes, type SessionClient } from "@manifold/sdk";
 import type { Principal } from "@manifold/protocol";
 import { useEffect, useReducer, useRef, useState, type FocusEvent, type WheelEvent } from "react";
+import type { SessionMachine } from "./machine-visibility.ts";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
@@ -17,6 +18,8 @@ interface TerminalViewProps {
   readonly onClose: () => void;
   /** Opens a fresh PTY session and rebinds it to this element (restart in place). */
   readonly onRestart: () => Promise<void>;
+  /** Resolved machine of this session; null before the first machines fetch. */
+  readonly machine: SessionMachine | null;
 }
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
@@ -28,6 +31,7 @@ export function TerminalView({
   sessionShared,
   onClose,
   onRestart,
+  machine,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -43,6 +47,8 @@ export function TerminalView({
   const [isRestarting, setIsRestarting] = useState(false);
 
   const session = client.sessions.get(sessionId);
+  /** Non-null exactly when this session's machine is known and NOT online. */
+  const offlineMachine = machine !== null && !machine.online ? machine : null;
   const selfId = client.self?.id ?? null;
   const isController = selfId !== null && session?.controllerId === selfId;
   const isControllerRef = useRef(false);
@@ -411,6 +417,12 @@ export function TerminalView({
             {">_"}
           </span>
           terminal
+          {machine === null ? null : (
+            <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
+              <span className="machine-dot" style={{ backgroundColor: machine.color }} />
+              {machine.name}
+            </span>
+          )}
         </span>
         <div className="terminal-titlebar__controls">
           <button
@@ -467,22 +479,28 @@ export function TerminalView({
           view-only — click to take control
         </button>
       ) : null}
-      {session?.status === "exited" ? (
+      {session?.status === "exited" || offlineMachine !== null ? (
         <div className="terminal-exited">
-          <span>exited (code {session.exitCode ?? "unknown"})</span>
-          <button
-            type="button"
-            className="terminal-restart"
-            title="Restart terminal (new shell, same spot)"
-            disabled={isRestarting}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => {
-              setIsRestarting(true);
-              void onRestart().finally(() => setIsRestarting(false));
-            }}
-          >
-            {isRestarting ? "⟳ restarting…" : "⟳ restart"}
-          </button>
+          {offlineMachine !== null ? (
+            <span>machine offline — {offlineMachine.name}</span>
+          ) : (
+            <span>exited (code {session?.exitCode ?? "unknown"})</span>
+          )}
+          {session?.status === "exited" && offlineMachine === null ? (
+            <button
+              type="button"
+              className="terminal-restart"
+              title="Restart terminal (new shell, same spot)"
+              disabled={isRestarting}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setIsRestarting(true);
+                void onRestart().finally(() => setIsRestarting(false));
+              }}
+            >
+              {isRestarting ? "⟳ restarting…" : "⟳ restart"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

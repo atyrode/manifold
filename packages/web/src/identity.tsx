@@ -7,7 +7,8 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 
-const IDENTITY_COLORS = [
+/** The one color scheme: principals pick from it, machine dots hash into it. */
+export const IDENTITY_COLORS = [
   "#e03131",
   "#f08c00",
   "#2f9e44",
