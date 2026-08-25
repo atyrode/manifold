@@ -190,9 +190,15 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
-Handshake: agent sends `hello { token, name, agentVersion, sessions }` where `sessions`
-advertises surviving PTYs `{ sessionId, cols, rows, alive, seq }` (server-restart
-adoption). Server replies `welcome { machineId, epoch }` or closes 4401.
+Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, sessions }`
+where `sessions` advertises surviving PTYs `{ sessionId, cols, rows, alive, seq }`
+(server-restart adoption). Server replies `welcome { machineId, epoch }` or closes:
+4401 unauthorized, 4403 revoked, 4409 version. Version acceptance is the
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set (protocol/version.ts), NOT strict equality:
+agents are long-lived and survive server deploys, so every version whose agent wire is
+identical stays accepted (session/browser joins remain strictly current). Every
+rejection path emits a structured server log (`machine_version_rejected`,
+`machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
 
 Server→agent: `create { sessionId, cols, rows, cwd?, env }`, `input { sessionId, data }`,
 `resize`, `kill`, `snapshot_request { sessionId }`, `ping`.
@@ -200,10 +206,14 @@ Agent→server: `created { sessionId }` | `create_error { sessionId, message }`,
 `output { sessionId, seq, data }` (seq: monotonic per session, assigned at emission),
 `snapshot { sessionId, seq, data }`, `exited { sessionId, exitCode }`, `pong`.
 
-Liveness: after `welcome` the server sends `ping` every 30s; a ping still unanswered when
-the next fires closes the socket (4008 `liveness timeout`), so a frozen or partitioned
-agent (laptop sleep, dropped network) is marked offline within two intervals — TCP alone
-would keep it "online" indefinitely. The agent's reconnect loop then re-dials as usual.
+Liveness, server half: after `welcome` the server sends `ping` every
+`MACHINE_PING_INTERVAL_MS` (30s); a ping still unanswered when the next fires closes the
+socket (4008 `liveness timeout`), so a frozen or partitioned agent (laptop sleep, dropped
+network) is marked offline within two intervals — TCP alone would keep it "online"
+indefinitely. Agent half: a healthy connection carries those pings even when idle, so the
+agent closes and re-dials after `AGENT_LIVENESS_TIMEOUT_MS` (75s) of total silence —
+catching phantom transports (dead TCP with no RST, e.g. a proxy swallowing the close
+mid-reload). The agent also logs every disconnect's close code/reason.
 
 Reconnect: agent redials with jittered backoff (cap 15s), re-`hello`s with surviving
 sessions; a new server epoch re-adopts them. Stale sockets are fenced: the server drops a

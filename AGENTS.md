@@ -68,6 +68,13 @@ technology verdicts with evidence.
    it mutates painted elements in place and desynchronizes reconcile. Clone at the paint
    boundary (CONTRACTS.md §Testability). User-visible interaction boundaries get tests AT
    that boundary: wire-level green is not evidence the UI layer works.
+10. **Protocol version discipline**: `PROTOCOL_VERSION` bumps ship as dedicated
+    `protocol:` commits — never buried inside feature commits. Agents are long-lived:
+    a bump that leaves the agent wire identical ADDS the new version to
+    `MACHINE_PROTOCOL_COMPAT_VERSIONS`; one that changes the agent wire RESETS that
+    set and requires a coordinated fleet restart (server + spokes together). A
+    version bump hidden in a `web:` commit silently locked every spoke out on
+    2026-08-25.
 
 ## Conventions
 
