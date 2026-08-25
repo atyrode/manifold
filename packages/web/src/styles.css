@@ -194,8 +194,7 @@ input:focus {
   background: #171a1f;
 }
 
-.identity-dot,
-.roster-dot {
+.identity-dot {
   flex: 0 0 auto;
   width: 0.65rem;
   height: 0.65rem;
@@ -296,114 +295,6 @@ input:focus {
   font-size: 0.82rem;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.roster-overlay {
-  position: absolute;
-  z-index: 20;
-  top: 0.75rem;
-  right: 0.75rem;
-  display: grid;
-  gap: 0.25rem;
-  width: min(20rem, calc(100vw - 1.5rem));
-  padding: 0.4rem;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 0.65rem;
-  background: rgb(20 22 27 / 82%);
-  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 20%);
-  backdrop-filter: blur(10px);
-  pointer-events: none;
-}
-
-.roster-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 1.55rem;
-  padding: 0.2rem 0.3rem;
-  font-size: 0.72rem;
-}
-
-.roster-name {
-  overflow: hidden;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.you-label {
-  margin-left: 0.35rem;
-  color: #91a7ff;
-  font-size: 0.62rem;
-  font-weight: 500;
-}
-
-.kind-badge {
-  display: inline-grid;
-  place-items: center;
-  width: 1.2rem;
-  height: 1.2rem;
-  border: 1px solid #495057;
-  border-radius: 0.3rem;
-  color: #ced4da;
-  font-size: 0.75rem;
-  line-height: 1;
-}
-
-.kind-badge.agent {
-  width: auto;
-  padding: 0 0.3rem;
-  font-size: 0.58rem;
-  color: #ffd43b;
-}
-
-.roster-status {
-  color: #adb5bd;
-}
-
-.connection-count {
-  min-width: 1.4rem;
-  color: #868e96;
-  text-align: right;
-}
-
-.status-bar {
-  position: absolute;
-  z-index: 20;
-  bottom: 3.25rem;
-  left: 0.65rem;
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 999px;
-  padding: 0.3rem 0.6rem;
-  color: #adb5bd;
-  background: rgb(20 22 27 / 80%);
-  font-size: 0.65rem;
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.status-indicator {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 999px;
-  background: #868e96;
-}
-
-.status-indicator.open {
-  background: #51cf66;
-}
-
-.status-indicator.connecting,
-.status-indicator.reconnecting {
-  background: #fcc419;
-}
-
-.status-indicator.closed {
-  background: #ff6b6b;
 }
 
 .pad-load-error {
@@ -684,27 +575,162 @@ input:focus {
   cursor: default;
 }
 
+/* manifold top-right cluster — rendered inside .excalidraw via renderTopRightUI,
+   so excalidraw design tokens cascade. The slot's flex row owns layout. */
+.presence-wrapper {
+  position: relative;
+}
+
+.presence-stack {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  cursor: pointer;
+}
+
+.presence-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--island-bg-color);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.presence-avatar + .presence-avatar {
+  margin-left: -0.25rem;
+}
+
+.presence-avatar.is-agent {
+  border-radius: var(--border-radius-md);
+}
+
+.presence-avatar.is-self {
+  outline: 1px solid var(--color-primary);
+}
+
+.presence-overflow {
+  background: var(--island-bg-color);
+  border-color: var(--default-border-color);
+  color: var(--text-primary-color);
+}
+
+.presence-popover {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  display: grid;
+  gap: 0.25rem;
+  width: max-content;
+  min-width: 14rem;
+  max-width: min(20rem, calc(100vw - 1.5rem));
+  padding: 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  color: var(--text-primary-color);
+  font-size: 0.72rem;
+}
+
+.presence-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.55rem;
+  padding: 0.2rem 0.3rem;
+}
+
+.presence-dot {
+  flex: 0 0 auto;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+}
+
+.presence-name {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.you-chip,
+.agent-chip {
+  margin-left: 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
+.you-chip {
+  color: var(--color-primary);
+}
+
+.agent-chip {
+  color: #ffd43b;
+}
+
+.presence-status {
+  color: var(--text-primary-color);
+  opacity: 0.7;
+}
+
+.presence-connections {
+  min-width: 1.4rem;
+  opacity: 0.55;
+  text-align: right;
+}
+
+.status-island {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  color: var(--text-primary-color);
+  font-size: 0.65rem;
+  pointer-events: none;
+}
+
+.status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #868e96;
+}
+
+.status-dot.open {
+  background: #51cf66;
+}
+
+.status-dot.connecting,
+.status-dot.reconnecting {
+  background: #fcc419;
+}
+
+.status-dot.closed {
+  background: #ff6b6b;
+}
+
 @media (max-width: 700px) {
   .create-pad-row {
     flex-direction: column;
   }
 
-  .roster-overlay {
-    top: auto;
-    right: 0.5rem;
-    bottom: 2.8rem;
-    width: min(18rem, calc(100vw - 1rem));
-  }
-
-  .roster-status {
-    display: none;
-  }
-
-  .roster-row {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-  }
-
-  .status-bar span:nth-last-child(-n + 2) {
+  .status-meta {
     display: none;
   }
 }

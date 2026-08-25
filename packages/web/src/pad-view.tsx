@@ -41,7 +41,8 @@ import { mergeCanonicalScene } from "./canvas-merge.ts";
 import { recordRemoteCursor, remoteCursorSocketId, type RemoteCursor } from "./cursor-identity.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
-import { Roster, StatusBar } from "./overlays.tsx";
+import { PadTopRight } from "./top-right.tsx";
+import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
 /**
@@ -145,7 +146,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [revision, setRevision] = useState(0);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [, setRosterVersion] = useState(0);
+  const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
 
   const flushScene = useCallback((): void => {
     sceneTimerRef.current = null;
@@ -512,14 +513,19 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const offSceneChanged = client.on("scene_changed", () => {
       dispatchPaintReadiness({ type: "scene_changed" });
     });
+    const refreshRosterRows = (): void => {
+      setRosterRows(deriveRosterRows(client.roster.values(), client.self ?? identity.principal));
+    };
     const offRoster = client.on("roster_changed", () => {
       const connected = new Set(client.roster.keys());
       for (const [socketId, cursor] of remoteCursorsRef.current) {
         if (!connected.has(cursor.principalId)) remoteCursorsRef.current.delete(socketId);
       }
       syncCollaborators();
-      setRosterVersion((version) => version + 1);
+      refreshRosterRows();
     });
+    // Seed once at subscription time: init/resync can land before this effect mounts.
+    refreshRosterRows();
     const offCursor = client.on("cursor", (message) => {
       if (recordRemoteCursor(remoteCursorsRef.current, message, client.selfConnId)) {
         syncCollaborators();
@@ -541,7 +547,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       offSaved();
       offMessage();
     };
-  }, [client, flushScene, syncCollaborators]);
+  }, [client, flushScene, syncCollaborators, identity.principal]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -881,6 +887,16 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         onChange={handleCanvasChange}
         validateEmbeddable={(link) => link === TERMINAL_LINK}
         renderEmbeddable={renderEmbeddable}
+        UIOptions={{ userList: false }}
+        renderTopRightUI={(isMobile) => (
+          <PadTopRight
+            isMobile={isMobile}
+            rows={rosterRows}
+            status={connectionStatus}
+            savedAt={savedAt}
+            rev={revision}
+          />
+        )}
       >
         <MainMenu>
           <MainMenu.Item onSelect={() => void createTerminal()}>New terminal</MainMenu.Item>
@@ -889,8 +905,6 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           <MainMenu.ItemCustom className="pad-name-menu-item">{padName}</MainMenu.ItemCustom>
         </MainMenu>
       </Excalidraw>
-      <Roster client={client} fallbackSelf={identity.principal} />
-      <StatusBar status={connectionStatus} savedAt={savedAt} rev={revision} />
       {padLoadError === null ? null : <div className="pad-load-error">{padLoadError}</div>}
       {connectError === null ? null : <div className="pad-load-error">{connectError}</div>}
     </div>
