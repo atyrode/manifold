@@ -671,16 +671,18 @@ export class SessionClient {
   }
 
   /**
-   * Attach/detach are refcounted: several views of one session (cloned terminal
-   * elements) share a single wire subscription, because the server keys viewers
-   * by connection — a raw detach from one view would starve every other view on
-   * this client. Wire frames fire only on the 0→1 / 1→0 transitions; the no-gap
-   * invariant holds because every attach yields a fresh snapshot(S)+outputs(S+1…).
+   * Every view-attach sends a wire `terminal_attach`: the server replaces this
+   * connection's viewer and emits a fresh snapshot(S)+outputs(S+1…), so EVERY
+   * local view (old and new) re-renders from a coherent stream — a view that
+   * subscribes late (cloned terminal element, mount race after refresh) would
+   * otherwise never receive screen state and stay blank. Detach stays
+   * refcounted because the server keys viewers by connection: a raw detach
+   * from one view would starve every other view on this client.
    */
   attachTerminal(sessionId: string): void {
     const next = (this.attachCounts.get(sessionId) ?? 0) + 1;
     this.attachCounts.set(sessionId, next);
-    if (next === 1) this.send({ type: "terminal_attach", sessionId });
+    this.send({ type: "terminal_attach", sessionId });
   }
 
   detachTerminal(sessionId: string): void {

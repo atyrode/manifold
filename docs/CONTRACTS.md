@@ -152,10 +152,13 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
-- **Client-side attach refcounting.** The viewer registry above is **connection-scoped**
+- **Client-side view pairing.** The viewer registry above is **connection-scoped**
   (one `Viewer` per socket). A client presenting several views of one session (cloned
-  terminal elements are mirrors) MUST refcount locally and emit `terminal_attach` /
-  `terminal_detach` only on the 0→1 / 1→0 transitions — a raw detach from one view
+  terminal elements are mirrors) sends `terminal_attach` on EVERY view-attach: the
+  server replaces the connection's viewer and re-emits snapshot(S′)+outputs(S′+1…),
+  which is a late view's only path to existing screen state (frames broadcast to all
+  local views; each re-renders from the fresh snapshot). `terminal_detach` is
+  refcounted and fires only on the 1→0 transition — a raw detach from one view
   starves every other view on that connection. The SDK owns this (plus re-attach after
   reconnect, since the registry dies with the socket); components just pair
   attach/detach per view. Guarded by SDK contract tests.

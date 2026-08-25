@@ -568,16 +568,53 @@ describe("terminal attach refcounting", () => {
   };
   const INIT_WITH_SESSION: ServerMessage = { ...INIT, sessions: [SESSION] };
 
-  test("several views share one wire subscription; only the last detach unsubscribes", () => {
+  test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
     const { client, socket } = connected();
     client.attachTerminal("s1");
-    client.attachTerminal("s1"); // second view (cloned element)
-    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(1);
+    // A late view (cloned terminal element) MUST trigger a fresh server
+    // snapshot, or it renders nothing: attach always sends on the wire.
+    client.attachTerminal("s1");
+    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
     client.detachTerminal("s1"); // closing one view must NOT starve the other
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
     client.detachTerminal("s1"); // last view gone -> unsubscribe on the wire
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
     client.detachTerminal("s1"); // over-detach stays a no-op
+    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
+  });
+
+  test("a late view attaching mid-stream receives the re-snapshot; no duplicates", () => {
+    const { client, socket } = connected();
+    socket.receive(INIT_WITH_SESSION);
+    const seenA: string[] = [];
+    const seenB: string[] = [];
+    client.on("terminal_snapshot", (m) => seenA.push(`snap:${m.seq}`));
+    client.on("terminal_output", (m) => seenA.push(`out:${m.seq}`));
+    client.attachTerminal("s1");
+    // A is live mid-stream before B even exists.
+    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 3, data: "" });
+    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 4, data: "" });
+    expect(seenA).toEqual(["snap:3", "out:4"]);
+    // B (cloned element) subscribes late and attaches: the wire re-attach makes
+    // the server emit a fresh snapshot, which is B's ONLY path to screen state.
+    client.on("terminal_snapshot", (m) => seenB.push(`snap:${m.seq}`));
+    client.on("terminal_output", (m) => seenB.push(`out:${m.seq}`));
+    client.attachTerminal("s1");
+    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
+    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 7, data: "" });
+    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 8, data: "" });
+    // B renders from the re-snapshot; A sees exactly one reset snapshot and no
+    // duplicated output frames.
+    expect(seenB).toEqual(["snap:7", "out:8"]);
+    expect(seenA).toEqual(["snap:3", "out:4", "snap:7", "out:8"]);
+    // Detaching one view keeps the shared wire viewer alive: outputs still flow.
+    client.detachTerminal("s1");
+    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 9, data: "" });
+    expect(seenA.at(-1)).toBe("out:9");
+    expect(seenB.at(-1)).toBe("out:9");
+    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
+    // The last view leaving is what unsubscribes on the wire.
+    client.detachTerminal("s1");
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
   });
 
