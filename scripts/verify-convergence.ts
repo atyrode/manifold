@@ -108,12 +108,24 @@ try {
 
   // ---------------------------------------------------------------- clients
 
-  async function openPad(browser: Browser, debugPort: number, name: string): Promise<void> {
+  async function openPad(
+    browser: Browser,
+    debugPort: number,
+    name: string,
+    color?: string,
+  ): Promise<void> {
     await browser.launch(debugPort);
     await browser.goto(`${origin}/#key=${ownerKey}`);
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
     if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
       await browser.typeInto("input", name);
+      if (color !== undefined) {
+        const selected = await browser.evaluate<boolean>(
+          `(() => { const swatch = document.querySelector(${JSON.stringify(`[aria-label="Use color ${color}"]`)});
+            if (!(swatch instanceof HTMLButtonElement)) return false; swatch.click(); return true; })()`,
+        );
+        if (!selected) throw new Error(`${name}: identity color ${color} not found`);
+      }
       await browser.clickText("Enter manifold");
     }
     await browser.goto(`${origin}/p/${padId}`);
@@ -132,8 +144,62 @@ try {
     );
   }
 
-  await openPad(browserA, debugPortA, "convA");
+  const cursorColor = "#e03131";
+  await openPad(browserA, debugPortA, "convA", cursorColor);
   await openPad(browserB, debugPortB, "convB");
+  const identityBeforeRefresh = await browserA.evaluate<string>(
+    "localStorage.getItem('manifold.identity') ?? ''",
+  );
+  await browserA.goto(`${origin}/p/${padId}`);
+  await until(
+    () =>
+      browserA.evaluate<boolean>(
+        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
+      ),
+    20_000,
+    "convA: session reopened after refresh",
+  );
+  const identityAfterRefresh = await browserA.evaluate<string>(
+    "localStorage.getItem('manifold.identity') ?? ''",
+  );
+  if (identityAfterRefresh !== identityBeforeRefresh) {
+    throw new Error("convA: persisted principal changed across page refresh");
+  }
+  await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 620, y: 360 });
+  await until(
+    () =>
+      browserB.evaluate<boolean>(
+        `(() => {
+          const target = [224, 49, 49];
+          for (const canvas of document.querySelectorAll('canvas')) {
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            const context = canvas.getContext('2d');
+            if (context === null) continue;
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const left = Math.max(0, Math.floor((620 - rect.left - 45) * scaleX));
+            const top = Math.max(0, Math.floor((360 - rect.top - 45) * scaleY));
+            const width = Math.min(canvas.width - left, Math.ceil(90 * scaleX));
+            const height = Math.min(canvas.height - top, Math.ceil(90 * scaleY));
+            if (width <= 0 || height <= 0) continue;
+            const pixels = context.getImageData(left, top, width, height).data;
+            for (let i = 0; i < pixels.length; i += 4) {
+              if (
+                Math.abs(pixels[i] - target[0]) <= 2 &&
+                Math.abs(pixels[i + 1] - target[1]) <= 2 &&
+                Math.abs(pixels[i + 2] - target[2]) <= 2 &&
+                pixels[i + 3] > 200
+              ) return true;
+            }
+          }
+          return false;
+        })()`,
+      ),
+    5_000,
+    "convA: chosen identity color rendered on convB cursor after refresh",
+  );
+  console.log("PASS  refresh preserves principal and chosen cursor color");
 
   const sdk = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
