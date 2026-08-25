@@ -14,6 +14,7 @@
     "e2e": "bun test packages/testkit --timeout 60000",
     "verify:convergence": "bun scripts/verify-convergence.ts",
     "verify:public": "bun scripts/verify-public.ts",
+    "verify:terminal-selection": "bun scripts/verify-terminal-selection.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -32,6 +33,7 @@
     "typescript-eslint": "^8.68.0"
   },
   "patchedDependencies": {
-    "@excalidraw/excalidraw@0.18.1": "patches/@excalidraw%2Fexcalidraw@0.18.1.patch"
+    "@excalidraw/excalidraw@0.18.1": "patches/@excalidraw%2Fexcalidraw@0.18.1.patch",
+    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch"
   }
 }
