@@ -447,6 +447,37 @@ input:focus {
   pointer-events: none;
 }
 
+.terminal-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* Idle state: macOS-terminal-style unfocus — a faint white haze dims the whole
+   surface (readable underneath) and lifts on focus. It sits above the terminal
+   content AND its toolbar (uniform tint) yet never intercepts input — Excalidraw
+   already disables pointer events on the embed until it is activated. */
+.terminal-idle-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: 0.45rem;
+  background: rgb(255 255 255 / 12%);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.terminal-frame--idle .terminal-idle-veil {
+  opacity: 1;
+}
+
+/* Stock hover pill ("Click to interact"); obsolete now that a single click
+   anywhere on the terminal activates it (fullInteractionTarget guard). */
+.excalidraw__embeddable-hint {
+  display: none;
+}
+
 .terminal-toolbar {
   position: absolute;
   z-index: 3;

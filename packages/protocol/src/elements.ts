@@ -16,10 +16,18 @@ export const SceneElementSchema = z.looseObject({
 });
 export type SceneElement = z.infer<typeof SceneElementSchema>;
 
-/** Terminal elements carry their session binding in customData (set by the opening client). */
+/**
+ * Terminal elements carry their session binding in customData (set by the opening client).
+ * The two optional flags feed re-derived guards patched into @excalidraw/excalidraw
+ * (patches/, docs/decisions/0002): `showHyperlinkIcon: false` suppresses the link badge
+ * and its hit-testing; `fullInteractionTarget: true` widens click-to-activate from the
+ * stock center-third region to the whole element. Loose object: unknown keys still pass.
+ */
 export const TerminalCustomDataSchema = z.looseObject({
   kind: z.literal("terminal"),
   sessionId: z.string().min(1),
+  showHyperlinkIcon: z.literal(false).optional(),
+  fullInteractionTarget: z.literal(true).optional(),
 });
 export type TerminalCustomData = z.infer<typeof TerminalCustomDataSchema>;
 

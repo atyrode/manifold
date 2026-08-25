@@ -125,17 +125,21 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("terminal customData is loose: unknown keys like showHyperlinkIcon survive", () => {
+  test("terminal customData carries the patched-guard flags and stays loose", () => {
     const parsed = TerminalCustomDataSchema.parse({
       kind: "terminal",
       sessionId: "s1",
       showHyperlinkIcon: false,
+      fullInteractionTarget: true,
+      futureKey: "still passes",
     });
     expect(parsed.sessionId).toBe("s1");
-    // The web layer rides this passthrough to disable Excalidraw's link
-    // affordance on terminal embeds; a stricter schema would strip (object)
-    // or reject (strictObject) the key and re-enable the affordance.
-    expect((parsed as Record<string, unknown>)["showHyperlinkIcon"]).toBe(false);
+    // The web layer rides these into the patched @excalidraw/excalidraw guards
+    // (link affordance off, whole-element click-to-activate). A stricter schema
+    // would strip (object) or reject (strictObject) them and revert to stock.
+    expect(parsed.showHyperlinkIcon).toBe(false);
+    expect(parsed.fullInteractionTarget).toBe(true);
+    expect((parsed as Record<string, unknown>)["futureKey"]).toBe("still passes");
   });
 });
 

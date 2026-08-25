@@ -632,9 +632,10 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       roughness: 0,
       opacity: 100,
       link: TERMINAL_LINK,
-      // Excalidraw's link affordance (badge/cursor/navigation) is disabled for
-      // terminal embeds via the patched showHyperlinkIcon guard (see patches/).
-      customData: { showHyperlinkIcon: false },
+      // Both flags feed the re-derived guards patched into @excalidraw/excalidraw
+      // (see patches/, docs/decisions/0002): link affordance off, and the whole
+      // element (not just the stock center third) activates on click.
+      customData: { showHyperlinkIcon: false, fullInteractionTarget: true },
       x: center.x - TERMINAL_WIDTH / 2,
       y: center.y - TERMINAL_HEIGHT / 2,
       width: TERMINAL_WIDTH,
@@ -682,7 +683,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       const latest = currentElements.find((element) => element.id === terminalElement.id);
       if (latest === undefined) return;
       const boundElement = newElementWith(latest, {
-        customData: { kind: "terminal", sessionId: session.id, showHyperlinkIcon: false },
+        customData: {
+          kind: "terminal",
+          sessionId: session.id,
+          showHyperlinkIcon: false,
+          fullInteractionTarget: true,
+        },
       });
       const boundParsed = SceneElementSchema.safeParse(boundElement);
       if (!boundParsed.success) {
@@ -706,18 +712,28 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   }, [client, publishImmediately, runtime]);
 
   const renderEmbeddable = useCallback(
-    (element: NonDeleted<ExcalidrawEmbeddableElement>) => {
+    (element: NonDeleted<ExcalidrawEmbeddableElement>, appState: AppState) => {
       if (element.link !== TERMINAL_LINK) return null;
       const customData = TerminalCustomDataSchema.safeParse(element.customData);
       if (!customData.success) {
         return <div className="terminal-placeholder">Opening terminal…</div>;
       }
+      // Excalidraw disables pointer events on the embed until it is "active"
+      // (one click anywhere on it, via the fullInteractionTarget guard). Until
+      // then a translucent veil marks the terminal as idle-but-readable.
+      const active =
+        appState.activeEmbeddable?.element.id === element.id &&
+        appState.activeEmbeddable.state === "active";
       return (
-        <TerminalView
-          client={client}
-          sessionId={customData.data.sessionId}
-          elementId={element.id}
-        />
+        <div className={active ? "terminal-frame" : "terminal-frame terminal-frame--idle"}>
+          <TerminalView
+            client={client}
+            sessionId={customData.data.sessionId}
+            elementId={element.id}
+            active={active}
+          />
+          <div className="terminal-idle-veil" aria-hidden="true" />
+        </div>
       );
     },
     [client],

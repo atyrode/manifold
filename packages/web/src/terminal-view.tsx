@@ -8,12 +8,14 @@ interface TerminalViewProps {
   readonly client: SessionClient;
   readonly sessionId: string;
   readonly elementId: string;
+  /** Excalidraw activation state; a rising edge focuses xterm so typing works right away. */
+  readonly active: boolean;
 }
 
 type AttachmentState = "none" | "queued" | "open";
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
-export function TerminalView({ client, sessionId, elementId }: TerminalViewProps) {
+export function TerminalView({ client, sessionId, elementId, active }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -33,6 +35,47 @@ export function TerminalView({ client, sessionId, elementId }: TerminalViewProps
   useEffect(() => {
     isControllerRef.current = isController;
   }, [isController]);
+
+  /**
+   * Real-terminal feel: activation (one click-release anywhere on the embed)
+   * wakes the cursor immediately. Edge-triggered on inactive→active. The focus
+   * is re-asserted frame-by-frame for a short window because the browser's own
+   * post-click focusing (and Excalidraw's) can land after ours; it stops as
+   * soon as focus settles inside the terminal, yields to any deliberate focus
+   * on an editable element elsewhere, and dies with deactivation.
+   */
+  const wasActiveRef = useRef(false);
+  useEffect(() => {
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active || wasActive) return;
+    let cancelled = false;
+    const deadline = performance.now() + 350;
+    const tick = (): void => {
+      if (cancelled) return;
+      const host = containerRef.current;
+      const terminal = terminalRef.current;
+      if (host === null || terminal === null) return;
+      const focused = document.activeElement;
+      const settled = focused !== null && host.contains(focused);
+      const editableElsewhere =
+        !settled &&
+        focused instanceof HTMLElement &&
+        (focused.tagName === "INPUT" ||
+          focused.tagName === "TEXTAREA" ||
+          focused.isContentEditable);
+      if (editableElsewhere) return; // user chose another input: stop wrestling
+      if (!settled) terminal.focus();
+      // Keep watching through the whole activation transition: a post-click
+      // Excalidraw or browser refocus can land after our first success.
+      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
+    };
+    let frame = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [active]);
 
   useEffect(() => {
     const refreshSession = (): void => {
@@ -60,6 +103,7 @@ export function TerminalView({ client, sessionId, elementId }: TerminalViewProps
 
     const terminal = new Terminal({
       convertEol: false,
+      cursorBlink: true,
       scrollback: 2000,
       fontSize: 13,
       theme: {
@@ -260,7 +304,12 @@ export function TerminalView({ client, sessionId, elementId }: TerminalViewProps
         <button
           className="view-only-ribbon"
           type="button"
-          onClick={() => client.takeTerminal(sessionId)}
+          onClick={() => {
+            client.takeTerminal(sessionId);
+            // Hand focus straight back to the terminal: the whole point of
+            // taking control is to type, and the button click just stole focus.
+            terminalRef.current?.focus();
+          }}
         >
           view-only — click to take control
         </button>
