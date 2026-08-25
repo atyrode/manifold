@@ -26,12 +26,13 @@ import {
   VIEWPORT_MIN_INTERVAL_MS,
   compareElements,
   defaultRuntime,
+  type MachineSummary,
   type RuntimeDeps,
   type SceneElement,
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { getPad, type StoredIdentity } from "./api.ts";
+import { getMachines, getPad, type StoredIdentity } from "./api.ts";
 import {
   INITIAL_CANVAS_PAINT_READINESS,
   advanceCanvasPaintReadiness,
@@ -39,6 +40,12 @@ import {
 } from "./canvas-readiness.ts";
 import { mergeCanonicalScene } from "./canvas-merge.ts";
 import { recordRemoteCursor, remoteCursorSocketId, type RemoteCursor } from "./cursor-identity.ts";
+import {
+  browserMachineStorage,
+  chooseDefaultMachine,
+  recallMachine,
+  rememberMachine,
+} from "./machine-choice.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { PadTopRight } from "./top-right.tsx";
@@ -139,6 +146,12 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const connectStartedRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
+  /** Last observed Excalidraw menu state; a closed→canvas transition refreshes machines. */
+  const lastOpenMenuRef = useRef<AppState["openMenu"]>(null);
+  /** Latest completed machines fetch, readable inside stable callbacks. */
+  const machinesRef = useRef<readonly MachineSummary[] | null>(null);
+  /** Monotonic fetch epoch: stale responses (and post-unmount ones) are dropped. */
+  const machinesEpochRef = useRef(0);
 
   const [padName, setPadName] = useState<string>(padId);
   const [padLoadError, setPadLoadError] = useState<string | null>(null);
@@ -147,6 +160,22 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const [revision, setRevision] = useState(0);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
+  const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
+
+  /** Refreshes the enrolled-machines list; failures keep the last known list. */
+  const refreshMachines = useCallback((): void => {
+    const epoch = ++machinesEpochRef.current;
+    void getMachines(identity.token)
+      .then((fetched) => {
+        if (machinesEpochRef.current !== epoch) return;
+        machinesRef.current = fetched;
+        setMachines(fetched);
+      })
+      .catch(() => {
+        // Menu falls back to the machine-agnostic item; the server still
+        // enforces the sole-online-machine rule and errors precisely.
+      });
+  }, [identity.token]);
 
   const flushScene = useCallback((): void => {
     sceneTimerRef.current = null;
@@ -290,6 +319,10 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       }
       rootRef.current?.classList.toggle("is-panning", appState.activeTool.type === "hand");
 
+      const openMenu = appState.openMenu;
+      if (openMenu === "canvas" && lastOpenMenuRef.current !== "canvas") refreshMachines();
+      lastOpenMenuRef.current = openMenu;
+
       const selection = Object.keys(appState.selectedElementIds).sort();
       const previousSelection = lastSelectionRef.current;
       if (
@@ -328,7 +361,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       }
       if (changed) scheduleSceneFlush();
     },
-    [client, scheduleSceneFlush, sendViewportOnChange],
+    [client, refreshMachines, scheduleSceneFlush, sendViewportOnChange],
   );
 
   const syncCanvas = useCallback((): void => {
@@ -589,6 +622,14 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   }, [identity.token, padId]);
 
   useEffect(() => {
+    refreshMachines();
+    return () => {
+      // Invalidate in-flight fetches so a late resolution never lands post-unmount.
+      machinesEpochRef.current += 1;
+    };
+  }, [refreshMachines]);
+
+  useEffect(() => {
     const reportVisibility = (): void => {
       client.sendPresence({ status: document.hidden ? "idle" : "active" });
     };
@@ -647,6 +688,19 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   }, [flushScene]);
 
   /**
+   * Picks the machine an implicit open (restart, single "New terminal" item)
+   * should target. Only meaningful when several machines are online — with one
+   * or none, omitting machineId keeps the server's own selection rule (and its
+   * precise no_machine error) as the single source of truth.
+   */
+  const pickDefaultMachine = useCallback((): MachineSummary | null => {
+    const fetched = machinesRef.current;
+    if (fetched === null) return null;
+    if (fetched.filter((machine) => machine.online).length <= 1) return null;
+    return chooseDefaultMachine(fetched, recallMachine(browserMachineStorage(), padId));
+  }, [padId]);
+
+  /**
    * Opens a fresh PTY session for an existing terminal element and rebinds the
    * element's customData to it — used by creation and by restarting an exited
    * terminal in place (geometry preserved). Concurrent restarts: LWW settles
@@ -656,7 +710,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
    * path needs a server-side conditional rebind; deliberately out of scope.
    */
   const openAndBindTerminal = useCallback(
-    async (elementId: string): Promise<void> => {
+    async (elementId: string, requested?: MachineSummary): Promise<void> => {
       const api = apiRef.current;
       if (api === null) return;
       const existing = api
@@ -669,8 +723,14 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       ) {
         return; // someone already restarted this terminal
       }
+      const target = requested ?? pickDefaultMachine() ?? undefined;
       try {
-        const session = await client.openTerminal({ elementId, cols: 80, rows: 24 });
+        const session = await client.openTerminal({
+          elementId,
+          cols: 80,
+          rows: 24,
+          ...(target !== undefined ? { machineId: target.id } : {}),
+        });
         // Any failure to bind below leaves the fresh PTY orphaned — kill our
         // own session (we are its controller) before bailing.
         const abandon = (): void => client.killTerminal(session.id);
@@ -714,91 +774,99 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           }
         }, 2000);
       } catch (reason: unknown) {
+        const failure = reason instanceof Error ? reason.message : "Could not open terminal";
         apiRef.current?.setToast({
-          message: reason instanceof Error ? reason.message : "Could not open terminal",
+          message: requested === undefined ? failure : `${failure} (machine ${requested.name})`,
           closable: true,
         });
       }
     },
-    [client, publishImmediately],
+    [client, pickDefaultMachine, publishImmediately],
   );
 
-  const createTerminal = useCallback(async (): Promise<void> => {
-    const api = apiRef.current;
-    if (api === null) return;
-    if (client.epoch === "") {
-      api.setToast({ message: "Waiting for the pad connection" });
-      return;
-    }
-    const appState = api.getAppState();
-    const center = viewportCoordsToSceneCoords(
-      {
-        clientX: appState.offsetLeft + appState.width / 2,
-        clientY: appState.offsetTop + appState.height / 2,
-      },
-      appState,
-    );
-    const terminalSkeleton = {
-      id: runtime.newId(),
-      type: "embeddable",
-      // Transparent on the canvas: the embed DOM owns every pixel, so the
-      // canvas-painted stroke (inverted near-white by dark theme) never rings
-      // the terminal. Existing terminals keep old colors until recreated.
-      strokeColor: "transparent",
-      backgroundColor: "transparent",
-      fillStyle: "solid",
-      strokeWidth: 1,
-      strokeStyle: "solid",
-      roundness: null,
-      roughness: 0,
-      opacity: 100,
-      link: TERMINAL_LINK,
-      // The flags feed re-derived per-element gates in the maintained fork
-      // (atyrode/excalidraw-manifold, docs/decisions/0005): link affordance off,
-      // whole-element click-to-activate, and the style panel suppressed while
-      // the selection is terminals-only.
-      customData: {
-        showHyperlinkIcon: false,
-        fullInteractionTarget: true,
-        showShapeActions: false,
-      },
-      x: center.x - TERMINAL_WIDTH / 2,
-      y: center.y - TERMINAL_HEIGHT / 2,
-      width: TERMINAL_WIDTH,
-      height: TERMINAL_HEIGHT,
-      angle: 0,
-      seed: 1,
-      version: 1,
-      versionNonce: 0,
-      index: null,
-      isDeleted: false,
-      groupIds: [],
-      frameId: null,
-      boundElements: null,
-      updated: runtime.now(),
-      locked: false,
-    } as const;
-    const converted = convertToExcalidrawElements(
-      [terminalSkeleton as unknown as ExcalidrawElementSkeleton],
-      { regenerateIds: false },
-    );
-    const terminalElement = converted[0];
-    if (terminalElement === undefined) throw new Error("Could not create terminal element");
-    const parsed = SceneElementSchema.safeParse(terminalElement);
-    if (!parsed.success) {
-      console.error("terminal element failed protocol validation", parsed.error.issues);
-      api.setToast({ message: "Could not create terminal element (see console)", closable: true });
-      return;
-    }
-    const parsedTerminal = parsed.data;
-    api.updateScene({
-      elements: [...api.getSceneElementsIncludingDeleted(), terminalElement],
-      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-    });
-    publishImmediately([parsedTerminal]);
+  const createTerminal = useCallback(
+    async (machine?: MachineSummary): Promise<void> => {
+      const api = apiRef.current;
+      if (api === null) return;
+      if (client.epoch === "") {
+        api.setToast({ message: "Waiting for the pad connection" });
+        return;
+      }
+      if (machine !== undefined) rememberMachine(browserMachineStorage(), padId, machine.id);
+      const appState = api.getAppState();
+      const center = viewportCoordsToSceneCoords(
+        {
+          clientX: appState.offsetLeft + appState.width / 2,
+          clientY: appState.offsetTop + appState.height / 2,
+        },
+        appState,
+      );
+      const terminalSkeleton = {
+        id: runtime.newId(),
+        type: "embeddable",
+        // Transparent on the canvas: the embed DOM owns every pixel, so the
+        // canvas-painted stroke (inverted near-white by dark theme) never rings
+        // the terminal. Existing terminals keep old colors until recreated.
+        strokeColor: "transparent",
+        backgroundColor: "transparent",
+        fillStyle: "solid",
+        strokeWidth: 1,
+        strokeStyle: "solid",
+        roundness: null,
+        roughness: 0,
+        opacity: 100,
+        link: TERMINAL_LINK,
+        // The flags feed re-derived per-element gates in the maintained fork
+        // (atyrode/excalidraw-manifold, docs/decisions/0005): link affordance off,
+        // whole-element click-to-activate, and the style panel suppressed while
+        // the selection is terminals-only.
+        customData: {
+          showHyperlinkIcon: false,
+          fullInteractionTarget: true,
+          showShapeActions: false,
+        },
+        x: center.x - TERMINAL_WIDTH / 2,
+        y: center.y - TERMINAL_HEIGHT / 2,
+        width: TERMINAL_WIDTH,
+        height: TERMINAL_HEIGHT,
+        angle: 0,
+        seed: 1,
+        version: 1,
+        versionNonce: 0,
+        index: null,
+        isDeleted: false,
+        groupIds: [],
+        frameId: null,
+        boundElements: null,
+        updated: runtime.now(),
+        locked: false,
+      } as const;
+      const converted = convertToExcalidrawElements(
+        [terminalSkeleton as unknown as ExcalidrawElementSkeleton],
+        { regenerateIds: false },
+      );
+      const terminalElement = converted[0];
+      if (terminalElement === undefined) throw new Error("Could not create terminal element");
+      const parsed = SceneElementSchema.safeParse(terminalElement);
+      if (!parsed.success) {
+        console.error("terminal element failed protocol validation", parsed.error.issues);
+        api.setToast({
+          message: "Could not create terminal element (see console)",
+          closable: true,
+        });
+        return;
+      }
+      const parsedTerminal = parsed.data;
+      api.updateScene({
+        elements: [...api.getSceneElementsIncludingDeleted(), terminalElement],
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      publishImmediately([parsedTerminal]);
 
-    await openAndBindTerminal(terminalElement.id);
-  }, [client, openAndBindTerminal, publishImmediately, runtime]);
+      await openAndBindTerminal(terminalElement.id, machine);
+    },
+    [client, openAndBindTerminal, padId, publishImmediately, runtime],
+  );
 
   const renderEmbeddable = useCallback(
     (element: NonDeleted<ExcalidrawEmbeddableElement>, appState: AppState) => {
@@ -871,6 +939,9 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     [client, openAndBindTerminal, publishImmediately],
   );
 
+  /** null = never fetched (render the machine-agnostic item); [] = none online. */
+  const onlineMachines = machines === null ? null : machines.filter((machine) => machine.online);
+
   return (
     <div
       className="pad-view"
@@ -899,7 +970,19 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         )}
       >
         <MainMenu>
-          <MainMenu.Item onSelect={() => void createTerminal()}>New terminal</MainMenu.Item>
+          {onlineMachines !== null && onlineMachines.length === 0 ? (
+            <MainMenu.ItemCustom className="machine-none-menu-item">
+              No machine online
+            </MainMenu.ItemCustom>
+          ) : onlineMachines !== null && onlineMachines.length > 1 ? (
+            onlineMachines.map((machine) => (
+              <MainMenu.Item key={machine.id} onSelect={() => void createTerminal(machine)}>
+                New terminal on {machine.name}
+              </MainMenu.Item>
+            ))
+          ) : (
+            <MainMenu.Item onSelect={() => void createTerminal()}>New terminal</MainMenu.Item>
+          )}
           <MainMenu.Item onSelect={() => navigate("/")}>Back to pads</MainMenu.Item>
           <MainMenu.Separator />
           <MainMenu.ItemCustom className="pad-name-menu-item">{padName}</MainMenu.ItemCustom>

@@ -297,6 +297,13 @@ input:focus {
   white-space: nowrap;
 }
 
+/* Non-actionable menu row: no machine can host a terminal right now. */
+.machine-none-menu-item {
+  color: #868e96;
+  font-size: 0.82rem;
+  cursor: default;
+}
+
 .pad-load-error {
   position: absolute;
   z-index: 25;

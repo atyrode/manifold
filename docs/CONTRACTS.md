@@ -134,8 +134,11 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
 
 ### Terminals over the session channel
 
-- `terminal_open { elementId, cols, rows, cwd?, machineId? }` → server picks the machine
-  (v0: sole online machine; error `no_machine` otherwise), mints a **session-scoped agent
+- `terminal_open { elementId, cols, rows, cwd?, machineId? }` → server targets `machineId`
+  when given (error `no_machine` if it is unknown or offline); without it the server
+  falls back to the sole online machine (error `no_machine` when zero or several are
+  online — clients with a picker, like the web menu, pass `machineId` explicitly), mints
+  a **session-scoped agent
   token** (caps `[pads:read, scene:write, terminal:spawn, terminal:write]`, padId-scoped),
   asks the agent to create the PTY with env `MANIFOLD_URL`, `MANIFOLD_PAD`,
   `MANIFOLD_ELEMENT`, `MANIFOLD_TOKEN` injected, then replies

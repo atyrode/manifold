@@ -77,6 +77,7 @@ export const MachineSummarySchema = z.strictObject({
   name: z.string().min(1),
   online: z.boolean(),
 });
+export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({
   machines: z.array(MachineSummarySchema),
 });

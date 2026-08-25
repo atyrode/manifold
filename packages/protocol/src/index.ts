@@ -65,6 +65,7 @@ export {
   HealthResponseSchema,
   MachineEnrollResponseSchema,
   MachineSummarySchema,
+  type MachineSummary,
   MachinesResponseSchema,
   OkResponseSchema,
   PadResponseSchema,

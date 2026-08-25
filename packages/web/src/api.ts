@@ -2,8 +2,10 @@ import {
   BootstrapPrincipalRequestSchema,
   CreatePadRequestSchema,
   HttpErrorSchema,
+  MachinesResponseSchema,
   PadSchema,
   TokenGrantSchema,
+  type MachineSummary,
   type Pad,
   type Principal,
 } from "@manifold/protocol";
@@ -95,4 +97,12 @@ export async function createPad(token: string, name: string): Promise<Pad> {
     body: JSON.stringify(request),
   });
   return PadSchema.parse(fieldFromObject(body, "pad"));
+}
+
+/** Loads the enrolled machines with live online state (`GET /api/machines`). */
+export async function getMachines(token: string): Promise<readonly MachineSummary[]> {
+  const body = await requestJson("/api/machines", {
+    headers: authHeaders(token, false),
+  });
+  return MachinesResponseSchema.parse(body).machines;
 }
