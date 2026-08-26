@@ -145,7 +145,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [confirmFolderDeleteId, setConfirmFolderDeleteId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(initialSessionTree);
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
-  const [reordering, setReordering] = useState(false);
+  const reorderingRef = useRef(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [, renderTreeState] = useState(0);
   const dndFrameRef = useRef<number | null>(null);
@@ -544,7 +544,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     canReorder: true,
     seperateDragHandle: true,
     canDrag: (items) => {
-      if (reordering || items.length !== 1) return false;
+      if (reorderingRef.current || items.length !== 1) return false;
       const data = items[0]?.getItemData();
       if (data === undefined || data === null) return false;
       return data.kind === "pad"
@@ -554,7 +554,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
     onDrop: async (items, target) => {
       const moved = items[0]?.getItemData();
-      if (moved === undefined || moved === null || reordering) return;
+      if (moved === undefined || moved === null || reorderingRef.current) return;
       const targetData = target.item.getItemData();
       const parentId =
         targetData === null
@@ -565,21 +565,27 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       const index = isOrderedDragTarget(target)
         ? target.insertionIndex
         : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
-      setReordering(true);
-      setError(null);
+      reorderingRef.current = true;
       try {
-        setTreeItems(
-          await movePadTreeItem(
-            identity.token,
-            { kind: moved.kind, id: treeItemId(moved) },
-            parentId,
-            index,
-          ),
+        const nextTreeItems = await movePadTreeItem(
+          identity.token,
+          { kind: moved.kind, id: treeItemId(moved) },
+          parentId,
+          index,
         );
+        // Headless Tree clears native DnD state only after onDrop resolves. Rendering
+        // before then exposes React to mutable ItemInstance references and can tear
+        // down the root, so publish the server result in the following task.
+        window.setTimeout(() => {
+          setError(null);
+          setTreeItems(nextTreeItems);
+          reorderingRef.current = false;
+        }, 0);
       } catch (reason: unknown) {
-        setError(reason instanceof Error ? reason.message : "Could not move the sidebar item");
-      } finally {
-        setReordering(false);
+        window.setTimeout(() => {
+          setError(reason instanceof Error ? reason.message : "Could not move the sidebar item");
+          reorderingRef.current = false;
+        }, 0);
       }
     },
     features: [
