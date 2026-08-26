@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored the eraser cursor while erasing with a right-button drag.
+
 ## [0.2.2] - 2026-08-26
 
 ### Changed
