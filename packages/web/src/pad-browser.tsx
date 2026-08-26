@@ -204,23 +204,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           ?.classList.toggle("is-drop-target", item.isDragTarget());
       }
 
-      const liveRegion = container.querySelector<HTMLElement>(".pad-tree-assistive");
-      if (liveRegion !== null) {
-        const dnd = tree.getState().dnd;
-        const names = dnd?.draggedItems?.map((item) => item.getItemName()).join(", ");
-        const target = dnd?.dragTarget;
-        const position =
-          target === null || target === undefined
-            ? "No drop target."
-            : isOrderedDragTarget(target)
-              ? `Position ${target.insertionIndex + 1} near ${target.item.getItemName()}.`
-              : `Inside ${target.item.getItemName()}.`;
-        liveRegion.textContent =
-          names === undefined
-            ? "Press Control+Shift+D to move the focused item."
-            : `Moving ${names}. ${position} Use arrow keys to choose a position, Enter to drop, or Escape to cancel.`;
-      }
-
       const dragLine = container.querySelector<HTMLElement>(".pad-tree-drag-line");
       if (dragLine !== null) {
         dragLine.removeAttribute("style");
@@ -1177,9 +1160,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             className="pad-sidebar-list pad-sidebar-tree"
             data-testid="pad-sidebar-list"
           >
-            <span className="pad-tree-assistive" role="status" aria-live="polite">
-              Press Control+Shift+D to move the focused item.
-            </span>
             {sidebarOpen && treeItems === null ? (
               <p className="pad-sidebar-muted">Loading pads…</p>
             ) : null}
