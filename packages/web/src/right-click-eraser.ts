@@ -1,4 +1,19 @@
 export const RIGHT_CLICK_ERASER_HOLD_MS = 150;
+export interface ContextMenuSuppression {
+  readonly isTrusted: boolean;
+  readonly button: number;
+  readonly isCanvas: boolean;
+  readonly isHeldRightClick: boolean;
+  readonly isCompletedRightClick: boolean;
+}
+
+export function shouldSuppressNativeContextMenu(context: ContextMenuSuppression): boolean {
+  return (
+    context.isTrusted &&
+    context.button === 2 &&
+    (context.isCanvas || context.isHeldRightClick || context.isCompletedRightClick)
+  );
+}
 
 export interface RightClickPointer {
   readonly pointerId: number;

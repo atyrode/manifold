@@ -6,6 +6,7 @@ import {
   moveRightClick,
   hasRightClickDragStarted,
   releaseRightClick,
+  shouldSuppressNativeContextMenu,
   type RightClickPointer,
 } from "./right-click-eraser.ts";
 
@@ -50,6 +51,36 @@ describe("right-click eraser policy", () => {
 
     expect(hasRightClickDragStarted(pending, pointer())).toBe(false);
     expect(hasRightClickDragStarted(pending, pointer({ clientX: 121 }))).toBe(true);
+  });
+
+  test("native canvas menus are suppressed even when Excalidraw changes the event target", () => {
+    expect(
+      shouldSuppressNativeContextMenu({
+        isTrusted: true,
+        button: 2,
+        isCanvas: false,
+        isHeldRightClick: false,
+        isCompletedRightClick: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSuppressNativeContextMenu({
+        isTrusted: false,
+        button: 2,
+        isCanvas: true,
+        isHeldRightClick: false,
+        isCompletedRightClick: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressNativeContextMenu({
+        isTrusted: true,
+        button: 2,
+        isCanvas: false,
+        isHeldRightClick: false,
+        isCompletedRightClick: false,
+      }),
+    ).toBe(false);
   });
 
   test("events from another pointer cannot activate or release the gesture", () => {
