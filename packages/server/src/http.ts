@@ -229,11 +229,17 @@ export class HttpApp {
           throw new RequestError("forbidden", "scoped tokens cannot create pad folders");
         }
         const input = parseRequest(CreatePadFolderRequestSchema, await parseJsonBody(request));
-        const folder = this.store.createPadFolder({
-          id: this.runtime.newId(),
-          name: input.name,
-          createdAt: this.runtime.now(),
-        });
+        const folder = this.store.createPadFolder(
+          {
+            id: this.runtime.newId(),
+            name: input.name,
+            createdAt: this.runtime.now(),
+          },
+          input.padIds,
+        );
+        if (folder === null) {
+          throw new RequestError("conflict", "folder pads changed while grouping");
+        }
         return jsonResponse(PadFolderResponseSchema.parse({ folder }));
       }
     }

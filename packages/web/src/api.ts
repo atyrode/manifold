@@ -138,8 +138,12 @@ export async function listPadFolders(token: string): Promise<readonly PadFolder[
   return PadFoldersResponseSchema.parse(body).folders;
 }
 
-export async function createPadFolder(token: string, name: string): Promise<PadFolder> {
-  const request = CreatePadFolderRequestSchema.parse({ name });
+export async function createPadFolder(
+  token: string,
+  name: string,
+  padIds: readonly string[] = [],
+): Promise<PadFolder> {
+  const request = CreatePadFolderRequestSchema.parse({ name, padIds });
   const body = await requestJson("/api/pad-folders", {
     method: "POST",
     headers: authHeaders(token, true),

@@ -27,6 +27,7 @@ export const RenamePadRequestSchema = z.strictObject({
 });
 export const CreatePadFolderRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
+  padIds: z.array(z.string().min(1)).max(10_000).default([]),
 });
 export const ReorderPadsRequestSchema = z.strictObject({
   padIds: z.array(z.string().min(1)).max(10_000),

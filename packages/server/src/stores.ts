@@ -305,13 +305,29 @@ export class ServerStore {
     return this.listPadFolders().find((folder) => folder.id === id) ?? null;
   }
 
-  createPadFolder(folder: Omit<PadFolder, "padIds">): PadFolder {
-    this.db
-      .query<void, [string, string, number]>(
-        "INSERT INTO pad_folders(id, name, created_at) VALUES (?, ?, ?)",
-      )
-      .run(folder.id, folder.name, folder.createdAt);
-    return { ...folder, padIds: [] };
+  createPadFolder(
+    folder: Omit<PadFolder, "padIds">,
+    padIds: readonly string[] = [],
+  ): PadFolder | null {
+    return this.db.transaction(() => {
+      const uniquePadIds = new Set(padIds);
+      if (
+        uniquePadIds.size !== padIds.length ||
+        padIds.some((padId) => this.getPad(padId) === null)
+      ) {
+        return null;
+      }
+      this.db
+        .query<void, [string, string, number]>(
+          "INSERT INTO pad_folders(id, name, created_at) VALUES (?, ?, ?)",
+        )
+        .run(folder.id, folder.name, folder.createdAt);
+      const assign = this.db.query<void, [string, string]>(
+        "UPDATE pads SET folder_id = ? WHERE id = ?",
+      );
+      padIds.forEach((padId) => assign.run(folder.id, padId));
+      return { ...folder, padIds: [...padIds] };
+    })();
   }
 
   renamePadFolder(id: string, name: string): PadFolder | null {

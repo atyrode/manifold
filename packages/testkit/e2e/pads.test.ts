@@ -64,10 +64,15 @@ test("pad order and folders persist through the public HTTP contract", async () 
     const createdFolder = await ownerFetch(server, "/api/pad-folders", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(CreatePadFolderRequestSchema.parse({ name: "Focused" })),
+      body: JSON.stringify(
+        CreatePadFolderRequestSchema.parse({
+          name: "Focused",
+          padIds: [gamma.id, alpha.id],
+        }),
+      ),
       responseSchema: PadFolderResponseSchema,
     });
-    await ownerFetch(server, `/api/pads/${alpha.id}/folder`, {
+    await ownerFetch(server, `/api/pads/${beta.id}/folder`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(MovePadRequestSchema.parse({ folderId: createdFolder.folder.id })),
@@ -76,7 +81,9 @@ test("pad order and folders persist through the public HTTP contract", async () 
     const folders = await ownerFetch(server, "/api/pad-folders", {
       responseSchema: PadFoldersResponseSchema,
     });
-    expect(folders.folders).toEqual([{ ...createdFolder.folder, padIds: [alpha.id] }]);
+    expect(folders.folders).toEqual([
+      { ...createdFolder.folder, padIds: [gamma.id, alpha.id, beta.id] },
+    ]);
 
     await ownerFetch(server, `/api/pad-folders/${createdFolder.folder.id}`, {
       method: "DELETE",

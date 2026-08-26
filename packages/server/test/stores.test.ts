@@ -62,15 +62,26 @@ describe("ServerStore pad organization", () => {
     expect(store.reorderPads([alpha.id, beta.id])).toBeFalse();
     expect(store.listPads().map((pad) => pad.id)).toEqual([gamma.id, alpha.id, beta.id]);
 
-    const folder = store.createPadFolder({
-      id: "folder-1",
-      name: "Focused",
-      createdAt: 40,
-    });
-    expect(store.movePadToFolder(alpha.id, folder.id)).toBeTrue();
-    expect(store.getPadFolder(folder.id)?.padIds).toEqual([alpha.id]);
+    const folder = store.createPadFolder(
+      {
+        id: "folder-1",
+        name: "Focused",
+        createdAt: 40,
+      },
+      [alpha.id, beta.id],
+    );
+    if (folder === null) throw new Error("expected folder");
+    expect(store.getPadFolder(folder.id)?.padIds).toEqual([alpha.id, beta.id]);
+    expect(
+      store.createPadFolder({ id: "folder-invalid", name: "Invalid", createdAt: 50 }, [
+        gamma.id,
+        "missing",
+      ]),
+    ).toBeNull();
+    expect(store.listPadFolders().map((candidate) => candidate.id)).toEqual([folder.id]);
     expect(store.deletePadFolder(folder.id)).toBeTrue();
     expect(store.getPad(alpha.id)).toEqual(alpha);
+    expect(store.getPad(beta.id)).toEqual(beta);
     expect(store.listPadFolders()).toEqual([]);
     store.close();
   });
