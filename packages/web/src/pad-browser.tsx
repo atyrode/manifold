@@ -36,6 +36,7 @@ import {
   WorkspaceStatus,
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
+import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
 interface NavigateOptions {
   readonly replace?: boolean;
@@ -214,8 +215,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     readonly { readonly id: string; readonly top: number; readonly bottom: number }[]
   >([]);
   const [renaming, setRenaming] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const versionButtonRef = useRef<HTMLButtonElement | null>(null);
+  const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
   const [memory] = useState(browserPadStorage);
 
   useEffect(() => {
@@ -318,6 +322,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     document.addEventListener("pointermove", trackDragPointer, { capture: true });
     return () => document.removeEventListener("pointermove", trackDragPointer, { capture: true });
   }, []);
+
+  useEffect(() => {
+    if (!changelogOpen) return;
+    const dialog = changelogDialogRef.current;
+    if (dialog !== null && !dialog.open) dialog.showModal();
+  }, [changelogOpen]);
 
   useEffect(() => {
     if (renameTarget === null) return;
@@ -824,9 +834,24 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       >
         <aside className="pad-sidebar" aria-label="Pads">
           <header className="pad-sidebar-header">
-            <span className="pad-sidebar-brand" aria-label="manifold">
-              <span className="pad-sidebar-mark">M</span>
-              {sidebarOpen ? <strong>manifold</strong> : null}
+            <span className="pad-sidebar-brand">
+              <span className="pad-sidebar-mark" aria-hidden="true">
+                M
+              </span>
+              {sidebarOpen ? (
+                <span className="pad-sidebar-brand-copy">
+                  <strong>manifold</strong>
+                  <button
+                    ref={versionButtonRef}
+                    className="pad-sidebar-version"
+                    type="button"
+                    aria-label={`Open web changelog for ${WEB_VERSION_LABEL}`}
+                    onClick={() => setChangelogOpen(true)}
+                  >
+                    {WEB_VERSION_LABEL}
+                  </button>
+                </span>
+              ) : null}
             </span>
             <button
               className="pad-sidebar-icon-button"
@@ -1190,6 +1215,61 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           )}
         </section>
       </main>
+      {typeof document !== "undefined" && changelogOpen
+        ? createPortal(
+            <dialog
+              ref={changelogDialogRef}
+              className="web-changelog-dialog"
+              aria-labelledby="web-changelog-title"
+              onCancel={(event) => {
+                event.preventDefault();
+                setChangelogOpen(false);
+                window.requestAnimationFrame(() => versionButtonRef.current?.focus());
+              }}
+              onPointerDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                setChangelogOpen(false);
+                window.requestAnimationFrame(() => versionButtonRef.current?.focus());
+              }}
+            >
+              <section className="web-changelog-card">
+                <header>
+                  <div>
+                    <span>Web application</span>
+                    <h2 id="web-changelog-title">What’s new</h2>
+                    <code>{WEB_VERSION_LABEL}</code>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Close changelog"
+                    onClick={() => {
+                      setChangelogOpen(false);
+                      window.requestAnimationFrame(() => versionButtonRef.current?.focus());
+                    }}
+                  >
+                    ×
+                  </button>
+                </header>
+                <div className="web-changelog-releases">
+                  {WEB_CHANGELOG.map((release) => (
+                    <article key={release.version}>
+                      <div>
+                        <h3>Version {release.version}</h3>
+                        <time dateTime={release.date}>{release.date}</time>
+                      </div>
+                      <ul>
+                        {release.changes.map((change) => (
+                          <li key={change}>{change}</li>
+                        ))}
+                      </ul>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </dialog>,
+            document.body,
+          )
+        : null}
       {typeof document !== "undefined" &&
       collapsedPresence !== null &&
       collapsedPresencePrincipals.length > 0

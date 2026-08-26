@@ -172,6 +172,57 @@ try {
   }
   console.log("PASS  sidebar workspace status is live");
 
+  const changelogOpened = await browserA.evaluate<boolean>(
+    `(() => {
+      const button = document.querySelector('.pad-sidebar-version');
+      if (!(button instanceof HTMLButtonElement)) return false;
+      button.click();
+      return true;
+    })()`,
+  );
+  if (!changelogOpened) throw new Error("convA: web version button missing");
+  await until(
+    () =>
+      browserA.evaluate<boolean>(
+        "document.querySelector('.web-changelog-dialog')?.hasAttribute('open') === true",
+      ),
+    5_000,
+    "convA: changelog dialog open",
+  );
+  const changelogValid = await browserA.evaluate<boolean>(
+    `(() => {
+      const dialog = document.querySelector('.web-changelog-dialog');
+      const label = document.querySelector('.pad-sidebar-version')?.textContent ?? '';
+      return dialog?.getAttribute('aria-labelledby') === 'web-changelog-title'
+        && label.startsWith('v') && label.includes(' · ')
+        && dialog.querySelectorAll('.web-changelog-releases li').length > 0;
+    })()`,
+  );
+  if (!changelogValid) throw new Error("convA: changelog dialog content or build label invalid");
+  await browserA.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await browserA.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await until(
+    () =>
+      browserA.evaluate<boolean>(
+        "document.querySelector('.web-changelog-dialog') === null && document.activeElement?.classList.contains('pad-sidebar-version') === true",
+      ),
+    5_000,
+    "convA: changelog closes and restores focus",
+  );
+  console.log("PASS  web build label opens an accessible changelog and Escape restores focus");
+
   const identityBeforeRefresh = await browserA.evaluate<string>(
     "localStorage.getItem('manifold.identity') ?? ''",
   );
@@ -413,6 +464,46 @@ try {
   const canvasLeftA = await browserA.evaluate<number>(
     "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
   );
+
+  const emptyCanvasPoint = { x: canvasLeftA + 850, y: 720 };
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    ...emptyCanvasPoint,
+  });
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...emptyCanvasPoint,
+    button: "right",
+    buttons: 2,
+    clickCount: 1,
+  });
+  await sleep(100);
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...emptyCanvasPoint,
+    button: "right",
+    clickCount: 1,
+  });
+  await until(
+    () => browserA.evaluate<boolean>("document.querySelector('.context-menu') !== null"),
+    5_000,
+    "convA: short right-click context menu",
+  );
+  await browserA.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await browserA.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  console.log("PASS  short right-click opens the canvas context menu");
 
   await round("R1 solo stroke", { adds: 1 }, () => freedraw(browserA, canvasLeftA + 300, 250));
 
@@ -678,6 +769,82 @@ try {
       offCursor();
     }
   }
+
+  const beforeEraserTarget = new Set(
+    [...sdk.scene.values()].filter((element) => element["type"] === "rectangle").map((el) => el.id),
+  );
+  await round("R9a eraser target created", { adds: 1 }, async () => {
+    await selectTool(browserA, "rectangle");
+    await browserA.drag(
+      [
+        { x: canvasLeftA + 720, y: 500 },
+        { x: canvasLeftA + 880, y: 600 },
+      ],
+      30,
+    );
+  });
+  const eraserTarget = [...sdk.scene.values()].find(
+    (element) => element["type"] === "rectangle" && !beforeEraserTarget.has(element.id),
+  );
+  if (eraserTarget === undefined) throw new Error("right-click eraser target not canonical");
+
+  await round(
+    "R9b held right-click erases and restores the prior tool",
+    { adds: 0, changes: [eraserTarget.id] },
+    async () => {
+      await selectTool(browserA, "selection");
+      const edge = await edgeOf(browserA, eraserTarget.id);
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: edge.x - 50,
+        y: edge.y,
+      });
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: edge.x - 50,
+        y: edge.y,
+        button: "right",
+        buttons: 2,
+        clickCount: 1,
+      });
+      await sleep(450);
+      const eraserActive = await browserA.evaluate<boolean>(
+        `(() => {
+        const checked = [...document.querySelectorAll('input[type=radio]:checked')]
+          .some((input) => input.closest('[aria-label]')?.getAttribute('aria-label') === 'Eraser');
+        const cursor = document.querySelector('.excalidraw__canvas.interactive')?.style.cursor ?? '';
+        return checked && cursor.startsWith('url(');
+      })()`,
+      );
+      if (!eraserActive) throw new Error("held right-click did not activate the eraser cursor");
+      for (let i = 1; i <= 10; i++) {
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: edge.x - 50 + i * 10,
+          y: edge.y,
+          button: "right",
+          buttons: 2,
+        });
+        await sleep(15);
+      }
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: edge.x + 50,
+        y: edge.y,
+        button: "right",
+        clickCount: 1,
+      });
+      await sleep(250);
+      const restored = await browserA.evaluate<boolean>(
+        `(() => {
+        const selection = [...document.querySelectorAll('input[type=radio]:checked')]
+          .some((input) => input.closest('[aria-label]')?.getAttribute('aria-label') === 'Selection');
+        return selection && document.querySelector('.context-menu') === null;
+      })()`,
+      );
+      if (!restored) throw new Error("right-click release did not restore Selection cleanly");
+    },
+  );
 } finally {
   // ---------------------------------------------------------------- teardown
   await browserA.close().catch(() => undefined);
