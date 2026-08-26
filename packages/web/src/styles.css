@@ -964,6 +964,19 @@ button.pad-sidebar-session.is-summary > small {
   line-height: 1.45;
 }
 
+.web-changelog-releases a {
+  color: #91a7ff;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.web-changelog-releases a:hover,
+.web-changelog-releases a:focus-visible {
+  color: #bac8ff;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
 .pad-sidebar-action-menu {
   position: absolute;
   z-index: 30;
