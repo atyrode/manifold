@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Restored the trail behind the eraser during right-button drags (#34).
+- Restored the trail behind the eraser during right-button drags (#34, #35).
 
 ## [0.3.0] - 2026-08-26
 
