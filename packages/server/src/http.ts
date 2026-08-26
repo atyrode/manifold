@@ -2,18 +2,24 @@ import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
   BootstrapPrincipalRequestSchema,
+  CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
+  MovePadRequestSchema,
   OkResponseSchema,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
+  PadFolderResponseSchema,
+  PadFoldersResponseSchema,
+  PadSessionsResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
   RenamePadRequestSchema,
+  ReorderPadsRequestSchema,
   RevokeRequestSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
@@ -189,6 +195,99 @@ export class HttpApp {
         .filter((pad) => context.padScope === null || pad.id === context.padScope);
       return jsonResponse(PadsResponseSchema.parse({ pads }));
     }
+    if (request.method === "PUT" && pathname === "/api/pads/order") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot reorder pads");
+      }
+      const input = parseRequest(ReorderPadsRequestSchema, await parseJsonBody(request));
+      if (!this.store.reorderPads(input.padIds)) {
+        throw new RequestError("conflict", "pad list changed while reordering");
+      }
+      return jsonResponse(OkResponseSchema.parse({ ok: true }));
+    }
+    if (pathname === "/api/pad-folders") {
+      const context = this.authenticate(request);
+      if (request.method === "GET") {
+        this.requireCap(context, "pads:read");
+        const folders =
+          context.padScope === null
+            ? this.store.listPadFolders()
+            : this.store
+                .listPadFolders()
+                .map((folder) => ({
+                  ...folder,
+                  padIds: folder.padIds.filter((padId) => padId === context.padScope),
+                }))
+                .filter((folder) => folder.padIds.length > 0);
+        return jsonResponse(PadFoldersResponseSchema.parse({ folders }));
+      }
+      if (request.method === "POST") {
+        this.requireCap(context, "pads:write");
+        if (context.padScope !== null) {
+          throw new RequestError("forbidden", "scoped tokens cannot create pad folders");
+        }
+        const input = parseRequest(CreatePadFolderRequestSchema, await parseJsonBody(request));
+        const folder = this.store.createPadFolder({
+          id: this.runtime.newId(),
+          name: input.name,
+          createdAt: this.runtime.now(),
+        });
+        return jsonResponse(PadFolderResponseSchema.parse({ folder }));
+      }
+    }
+
+    const folderMatch = /^\/api\/pad-folders\/([^/]+)$/.exec(pathname);
+    if (folderMatch !== null) {
+      const encodedId = folderMatch[1];
+      if (encodedId === undefined) throw new RequestError("invalid", "folder id is missing");
+      let folderId: string;
+      try {
+        folderId = decodeURIComponent(encodedId);
+      } catch {
+        throw new RequestError("invalid", "folder id is invalid");
+      }
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot modify pad folders");
+      }
+      if (request.method === "PATCH") {
+        const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
+        const folder = this.store.renamePadFolder(folderId, input.name);
+        if (folder === null) throw new RequestError("not_found", "pad folder not found");
+        return jsonResponse(PadFolderResponseSchema.parse({ folder }));
+      }
+      if (request.method === "DELETE") {
+        if (!this.store.deletePadFolder(folderId)) {
+          throw new RequestError("not_found", "pad folder not found");
+        }
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
+    }
+
+    const movePadMatch = /^\/api\/pads\/([^/]+)\/folder$/.exec(pathname);
+    if (movePadMatch !== null && request.method === "PUT") {
+      const encodedId = movePadMatch[1];
+      if (encodedId === undefined) throw new RequestError("invalid", "pad id is missing");
+      let padId: string;
+      try {
+        padId = decodeURIComponent(encodedId);
+      } catch {
+        throw new RequestError("invalid", "pad id is invalid");
+      }
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write", padId);
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot organize pads");
+      }
+      const input = parseRequest(MovePadRequestSchema, await parseJsonBody(request));
+      if (!this.store.movePadToFolder(padId, input.folderId)) {
+        throw new RequestError("not_found", "pad or folder not found");
+      }
+      return jsonResponse(OkResponseSchema.parse({ ok: true }));
+    }
 
     if (request.method === "GET" && pathname === "/api/pad-presence") {
       const context = this.authenticate(request);
@@ -197,6 +296,23 @@ export class HttpApp {
         .presence()
         .filter((pad) => context.padScope === null || pad.padId === context.padScope);
       return jsonResponse(PadPresenceResponseSchema.parse({ pads }));
+    }
+    if (request.method === "GET" && pathname === "/api/pad-sessions") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      const sessions = this.store
+        .listSessions()
+        .filter((session) => context.padScope === null || session.padId === context.padScope)
+        .map((session) => ({
+          id: session.id,
+          padId: session.padId,
+          machineId: session.machineId,
+          elementId: session.elementId,
+          createdAt: session.createdAt,
+          status: session.status,
+          exitCode: session.exitCode,
+        }));
+      return jsonResponse(PadSessionsResponseSchema.parse({ sessions }));
     }
 
     if (request.method === "POST" && pathname === "/api/pads") {

@@ -25,6 +25,23 @@ export const CreatePadRequestSchema = z.strictObject({
 export const RenamePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
+export const CreatePadFolderRequestSchema = z.strictObject({
+  name: z.string().min(1).max(120),
+});
+export const ReorderPadsRequestSchema = z.strictObject({
+  padIds: z.array(z.string().min(1)).max(10_000),
+});
+export type ReorderPadsRequest = z.infer<typeof ReorderPadsRequestSchema>;
+export const PadFolderSchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string().min(1).max(120),
+  createdAt: z.number().int().nonnegative(),
+  padIds: z.array(z.string().min(1)),
+});
+export type PadFolder = z.infer<typeof PadFolderSchema>;
+export const MovePadRequestSchema = z.strictObject({
+  folderId: z.string().min(1).nullable(),
+});
 
 export const BootstrapPrincipalRequestSchema = z.strictObject({
   name: z.string().min(1).max(64),
@@ -83,6 +100,22 @@ export const PadPresenceSchema = z.strictObject({
 export type PadPresence = z.infer<typeof PadPresenceSchema>;
 export const PadPresenceResponseSchema = z.strictObject({
   pads: z.array(PadPresenceSchema),
+});
+export const PadFolderResponseSchema = z.strictObject({ folder: PadFolderSchema });
+export const PadFoldersResponseSchema = z.strictObject({ folders: z.array(PadFolderSchema) });
+
+export const PadSessionSummarySchema = z.strictObject({
+  id: z.string().min(1),
+  padId: z.string().min(1),
+  machineId: z.string().min(1),
+  elementId: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  status: z.enum(["running", "exited"]),
+  exitCode: z.number().int().nullable(),
+});
+export type PadSessionSummary = z.infer<typeof PadSessionSummarySchema>;
+export const PadSessionsResponseSchema = z.strictObject({
+  sessions: z.array(PadSessionSummarySchema),
 });
 
 export const MachineSummarySchema = z.strictObject({

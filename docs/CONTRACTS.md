@@ -45,10 +45,14 @@ Auto-spawned local agent: server mints a machine token (raw copy kept at
 Web URL scheme: `/` is the authenticated pad-browser entry point. It replaces itself with
 the last pad used by that principal on this device, falling back to the first visible pad;
 `/p/<padId>` remains the canonical deep link. Both routes render one persistent browser
-shell with a collapsible pad sidebar and the active canvas—there is no separate pad-list
-surface. The server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to
-`index.html`. The URL fragment is reserved for `#key=<owner-key>` bootstrap and is stripped
-by the client after storing it.
+shell with a collapsible, resizable pad sidebar and the active canvas—there is no separate
+pad-list surface. The sidebar is the owner-visible workspace index: machines are first-class,
+pads may be reordered or grouped into collapsible folders, and optional live session rows nest
+beneath their pads. Folder membership and pad order are durable server state; collapsed
+sections, session-tree visibility, and sidebar width are device-local presentation state. The
+server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
+fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
+storing it.
 
 ## Identity, tokens, capabilities
 
@@ -64,22 +68,29 @@ by the client after storing it.
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path             | Auth cap              | Req → Res                                                                                                                                        |
-| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GET /healthz            | none                  | → `{ ok, version, protocolVersion }`                                                                                                             |
-| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
-| GET /api/pads           | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
-| GET /api/pad-presence   | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected principals; scoped tokens see only their pad                                         |
-| POST /api/pads          | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
-| GET /api/pads/:id       | pads:read             | → `{ pad }`                                                                                                                                      |
-| PATCH /api/pads/:id     | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
-| DELETE /api/pads/:id    | `*`                   | → `{ ok }`                                                                                                                                       |
-| POST /api/principals    | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
-| POST /api/tokens        | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |
-| POST /api/tokens/revoke | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                     |
-| POST /api/machines      | machines:mint         | `{ name }` → `{ machine: {id, name}, machineToken }` — raw token returned exactly once; DB stores the hash. Agents authenticate `hello` with it. |
-| GET /api/machines       | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
-| GET /api/introspect     | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
+| Method+Path                 | Auth cap              | Req → Res                                                                                                                                        |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET /healthz                | none                  | → `{ ok, version, protocolVersion }`                                                                                                             |
+| GET /api/protocol           | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
+| GET /api/pads               | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
+| GET /api/pad-presence       | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected principals; scoped tokens see only their pad                                         |
+| POST /api/pads              | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
+| GET /api/pads/:id           | pads:read             | → `{ pad }`                                                                                                                                      |
+| PATCH /api/pads/:id         | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
+| DELETE /api/pads/:id        | `*`                   | → `{ ok }`                                                                                                                                       |
+| PUT /api/pads/order         | pads:write            | `{ padIds }` containing every visible pad exactly once → `{ ok }`                                                                                |
+| GET /api/pad-folders        | pads:read             | → `{ folders: [{id,name,createdAt,padIds}] }`; scoped tokens receive no folders                                                                  |
+| POST /api/pad-folders       | `*`                   | `{ name }` → `{ folder }`                                                                                                                        |
+| PATCH /api/pad-folders/:id  | `*`                   | `{ name }` → `{ folder }`                                                                                                                        |
+| DELETE /api/pad-folders/:id | `*`                   | → `{ ok }`; pads become ungrouped                                                                                                                |
+| PUT /api/pads/:id/folder    | `*`                   | `{ folderId: string                                                                                                                              | null }`→`{ ok }` |
+| GET /api/pad-sessions       | pads:read             | → `{ sessions: [{id,padId,machineId,elementId,createdAt,status,exitCode}] }`; scoped tokens see only their pad                                   |
+| POST /api/principals        | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
+| POST /api/tokens            | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |
+| POST /api/tokens/revoke     | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                     |
+| POST /api/machines          | machines:mint         | `{ name }` → `{ machine: {id, name}, machineToken }` — raw token returned exactly once; DB stores the hash. Agents authenticate `hello` with it. |
+| GET /api/machines           | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
+| GET /api/introspect         | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
@@ -165,6 +176,11 @@ Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server 
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
+- **Snapshot geometry.** A viewer MUST construct xterm at the advertised session
+  `cols`/`rows` and replay the serialized snapshot before fitting to its canvas element.
+  Serialized cursor movement is geometry-dependent; fitting first can corrupt wrapping after
+  a pad switch or reload. After replay, the viewer fits once rendering settles and the
+  controller reports the resulting geometry through `terminal_resize`.
 - **Client-side view pairing.** The viewer registry above is **connection-scoped**
   (one `Viewer` per socket). A client presenting several views of one session (cloned
   terminal elements are mirrors) sends `terminal_attach` on EVERY view-attach: the

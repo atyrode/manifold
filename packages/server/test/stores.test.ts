@@ -46,3 +46,32 @@ describe("ServerStore event retention", () => {
     store.close();
   });
 });
+
+describe("ServerStore pad organization", () => {
+  test("persists pad order and folder membership without deleting pads with a folder", () => {
+    const store = testStore();
+    const alpha = { id: "pad-a", name: "Alpha", createdAt: 10 };
+    const beta = { id: "pad-b", name: "Beta", createdAt: 20 };
+    const gamma = { id: "pad-c", name: "Gamma", createdAt: 30 };
+    store.createPad(alpha);
+    store.createPad(beta);
+    store.createPad(gamma);
+
+    expect(store.reorderPads([gamma.id, alpha.id, beta.id])).toBeTrue();
+    expect(store.listPads().map((pad) => pad.id)).toEqual([gamma.id, alpha.id, beta.id]);
+    expect(store.reorderPads([alpha.id, beta.id])).toBeFalse();
+    expect(store.listPads().map((pad) => pad.id)).toEqual([gamma.id, alpha.id, beta.id]);
+
+    const folder = store.createPadFolder({
+      id: "folder-1",
+      name: "Focused",
+      createdAt: 40,
+    });
+    expect(store.movePadToFolder(alpha.id, folder.id)).toBeTrue();
+    expect(store.getPadFolder(folder.id)?.padIds).toEqual([alpha.id]);
+    expect(store.deletePadFolder(folder.id)).toBeTrue();
+    expect(store.getPad(alpha.id)).toEqual(alpha);
+    expect(store.listPadFolders()).toEqual([]);
+    store.close();
+  });
+});

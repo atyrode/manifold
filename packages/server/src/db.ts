@@ -1,14 +1,7 @@
 import { Database } from "bun:sqlite";
 
-/**
- * Current durable schema revision. Migrations advance this monotonically.
- *
- * There is exactly ONE baseline migration on purpose: manifold has never shipped, so
- * there is no deployed data to migrate. The runner below stays because the first schema
- * change AFTER real pads exist will need it — but until then, new columns belong in the
- * baseline rather than in a migration nobody will ever run.
- */
-export const SCHEMA_VERSION = 1;
+/** Current durable schema revision. Migrations advance this monotonically. */
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -73,6 +66,22 @@ CREATE TABLE IF NOT EXISTS meta(
   value TEXT
 );
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '1');
+`,
+  2: `
+ALTER TABLE pads ADD COLUMN sort_order INTEGER;
+ALTER TABLE pads ADD COLUMN folder_id TEXT;
+WITH ordered AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) - 1 AS position
+  FROM pads
+)
+UPDATE pads
+SET sort_order = (SELECT position FROM ordered WHERE ordered.id = pads.id);
+CREATE TABLE pad_folders(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');
 `,
 };
 

@@ -7,6 +7,7 @@ import {
   SceneElementSchema,
   type Cap,
   type Pad,
+  type PadFolder,
   type Principal,
   type SceneElement,
 } from "@manifold/protocol";
@@ -17,6 +18,11 @@ export const EVENTS_MAX_PER_PAD = 10_000;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 
 interface PadRow {
+  id: string;
+  name: string;
+  created_at: number;
+}
+interface PadFolderRow {
   id: string;
   name: string;
   created_at: number;
@@ -222,7 +228,9 @@ export class ServerStore {
 
   listPads(): Pad[] {
     return this.db
-      .query<PadRow, []>("SELECT id, name, created_at FROM pads ORDER BY created_at, id")
+      .query<PadRow, []>(
+        "SELECT id, name, created_at FROM pads ORDER BY sort_order, created_at, id",
+      )
       .all()
       .map((row) => PadSchema.parse({ id: row.id, name: row.name, createdAt: row.created_at }));
   }
@@ -240,10 +248,97 @@ export class ServerStore {
     PadSchema.parse(pad);
     this.db
       .query<void, [string, string, number]>(
-        "INSERT INTO pads(id, name, created_at) VALUES (?, ?, ?)",
+        `INSERT INTO pads(id, name, created_at, sort_order)
+         VALUES (?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM pads), 0))`,
       )
       .run(pad.id, pad.name, pad.createdAt);
   }
+  reorderPads(padIds: readonly string[]): boolean {
+    const reorder = this.db.transaction(() => {
+      const current = this.listPads().map((pad) => pad.id);
+      const requested = new Set(padIds);
+      if (
+        current.length !== padIds.length ||
+        requested.size !== padIds.length ||
+        current.some((id) => !requested.has(id))
+      ) {
+        return false;
+      }
+      const update = this.db.query<void, [number, string]>(
+        "UPDATE pads SET sort_order = ? WHERE id = ?",
+      );
+      padIds.forEach((id, index) => update.run(index, id));
+      return true;
+    });
+    return reorder();
+  }
+  listPadFolders(): PadFolder[] {
+    const padRows = this.db
+      .query<{ id: string; folder_id: string }, []>(
+        `SELECT id, folder_id FROM pads
+         WHERE folder_id IS NOT NULL ORDER BY sort_order, created_at, id`,
+      )
+      .all();
+    const padIdsByFolder = new Map<string, string[]>();
+    for (const row of padRows) {
+      const ids = padIdsByFolder.get(row.folder_id);
+      if (ids === undefined) {
+        padIdsByFolder.set(row.folder_id, [row.id]);
+      } else {
+        ids.push(row.id);
+      }
+    }
+    return this.db
+      .query<PadFolderRow, []>(
+        "SELECT id, name, created_at FROM pad_folders ORDER BY created_at, id",
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        padIds: padIdsByFolder.get(row.id) ?? [],
+      }));
+  }
+
+  getPadFolder(id: string): PadFolder | null {
+    return this.listPadFolders().find((folder) => folder.id === id) ?? null;
+  }
+
+  createPadFolder(folder: Omit<PadFolder, "padIds">): PadFolder {
+    this.db
+      .query<void, [string, string, number]>(
+        "INSERT INTO pad_folders(id, name, created_at) VALUES (?, ?, ?)",
+      )
+      .run(folder.id, folder.name, folder.createdAt);
+    return { ...folder, padIds: [] };
+  }
+
+  renamePadFolder(id: string, name: string): PadFolder | null {
+    const result = this.db
+      .query<void, [string, string]>("UPDATE pad_folders SET name = ? WHERE id = ?")
+      .run(name, id);
+    return result.changes === 0 ? null : this.getPadFolder(id);
+  }
+
+  deletePadFolder(id: string): boolean {
+    return this.db.transaction(() => {
+      this.db.query<void, [string]>("UPDATE pads SET folder_id = NULL WHERE folder_id = ?").run(id);
+      return (
+        this.db.query<void, [string]>("DELETE FROM pad_folders WHERE id = ?").run(id).changes > 0
+      );
+    })();
+  }
+
+  movePadToFolder(padId: string, folderId: string | null): boolean {
+    if (folderId !== null && this.getPadFolder(folderId) === null) return false;
+    return (
+      this.db
+        .query<void, [string | null, string]>("UPDATE pads SET folder_id = ? WHERE id = ?")
+        .run(folderId, padId).changes > 0
+    );
+  }
+
   renamePad(id: string, name: string): Pad | null {
     const result = this.db
       .query<void, [string, string]>("UPDATE pads SET name = ? WHERE id = ?")
@@ -597,6 +692,16 @@ export class ServerStore {
          FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
+      .map(toSession);
+  }
+  listRunningSessions(): StoredSession[] {
+    return this.db
+      .query<SessionDbRow, []>(
+        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+                status, exit_code, created_at
+         FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
+      )
+      .all()
       .map(toSession);
   }
 
