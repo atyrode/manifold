@@ -1,4 +1,4 @@
-export const RIGHT_CLICK_ERASER_HOLD_MS = 350;
+export const RIGHT_CLICK_ERASER_HOLD_MS = 150;
 
 export interface RightClickPointer {
   readonly pointerId: number;
