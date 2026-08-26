@@ -56,6 +56,7 @@ import {
   hasRightClickDragStarted,
   moveRightClick,
   releaseRightClick,
+  shouldSuppressNativeContextMenu,
   type RightClickPointer,
   type RightClickState,
 } from "./right-click-eraser.ts";
@@ -237,10 +238,7 @@ export function PadView({
   const rightClickTargetRef = useRef<HTMLCanvasElement | null>(null);
   const rightClickTimerRef = useRef<number | null>(null);
   const rightClickPreviousToolRef = useRef<AppState["activeTool"] | null>(null);
-  const suppressedContextMenuRef = useRef<{
-    readonly target: EventTarget;
-    readonly until: number;
-  } | null>(null);
+  const suppressNativeContextMenuUntilRef = useRef(0);
   const apiGenerationRef = useRef(0);
   const readyApiGenerationRef = useRef(0);
   const applyingRemoteRef = useRef(false);
@@ -1374,10 +1372,8 @@ export function PadView({
       const target = rightClickTargetRef.current;
       rightClickTargetRef.current = null;
       if (target !== null) {
-        suppressedContextMenuRef.current = {
-          target,
-          until: runtime.now() + NATIVE_CONTEXT_MENU_SUPPRESSION_MS,
-        };
+        suppressNativeContextMenuUntilRef.current =
+          runtime.now() + NATIVE_CONTEXT_MENU_SUPPRESSION_MS;
       }
 
       if (release.action === "finish_erasing") {
@@ -1426,14 +1422,20 @@ export function PadView({
 
   const handleContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>): void => {
-      if (!event.nativeEvent.isTrusted || event.button !== 2) return;
-      const suppressed = suppressedContextMenuRef.current;
       const isHeldRightClick = rightClickStateRef.current.phase !== "idle";
-      const isCompletedRightClick =
-        suppressed !== null &&
-        suppressed.target === event.target &&
-        suppressed.until >= runtime.now();
-      if (!isHeldRightClick && !isCompletedRightClick) return;
+      const isCompletedRightClick = suppressNativeContextMenuUntilRef.current >= runtime.now();
+      if (
+        !shouldSuppressNativeContextMenu({
+          isTrusted: event.nativeEvent.isTrusted,
+          button: event.button,
+          isCanvas: isInteractiveCanvas(event.target),
+          isHeldRightClick,
+          isCompletedRightClick,
+        })
+      ) {
+        return;
+      }
+      suppressNativeContextMenuUntilRef.current = 0;
       event.preventDefault();
       event.stopPropagation();
     },
