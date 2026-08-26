@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Standardized issue and pull-request references across the repository and in-app changelogs (#31, #33).
+
 ### Fixed
 
 - Restored the eraser cursor while erasing with a right-button drag (#30, #32).

@@ -32,6 +32,18 @@ bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (draw
                        # works — run this before claiming one does.
 ```
 
+## Issues and pull requests
+
+- Every planned code or user-visible documentation change MUST start from an
+  operator-authored GitHub issue that states the problem and acceptance criteria.
+- All non-release changes MUST land through a pull request whose body links the issue
+  with `Closes #N`. Direct commits to `main` are reserved for `bun run release`.
+- Every user-visible changelog bullet MUST end with `(#issue, #pull-request)`, in that
+  order. Push the implementation branch and open its PR to obtain the second number,
+  then finalize the changelog and run `bun run gate` before merge. Bare `#N` references
+  are intentional: GitHub links them in `CHANGELOG.md`, and the web changelog links them
+  to the same issue or pull request.
+
 ## Changelog and releases
 
 - Every user-visible change MUST add one brief, user-facing bullet under `## [Unreleased]`

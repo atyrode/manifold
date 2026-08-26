@@ -33,6 +33,7 @@ import {
   renamePadFolder,
   type StoredIdentity,
 } from "./api.ts";
+import { parseChangelogReferences } from "./changelog-references.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { PadView } from "./pad-view.tsx";
@@ -46,6 +47,24 @@ import {
 } from "./top-right.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
+
+function renderChangelogChange(change: string): ReactNode {
+  return parseChangelogReferences(change).map((part, index) =>
+    part.kind === "text" ? (
+      part.text
+    ) : (
+      <a
+        key={`${part.href}-${index}`}
+        href={part.href}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${part.text} on GitHub`}
+      >
+        {part.text}
+      </a>
+    ),
+  );
+}
 
 interface NavigateOptions {
   readonly replace?: boolean;
@@ -1317,7 +1336,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                       </div>
                       <ul>
                         {release.changes.map((change) => (
-                          <li key={change}>{change}</li>
+                          <li key={change}>{renderChangelogChange(change)}</li>
                         ))}
                       </ul>
                     </article>
