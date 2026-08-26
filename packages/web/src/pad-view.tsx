@@ -31,6 +31,7 @@ import {
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { getMachines, getPad, type StoredIdentity } from "./api.ts";
 import {
   INITIAL_CANVAS_PAINT_READINESS,
@@ -47,6 +48,16 @@ import {
 } from "./machine-choice.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
+import {
+  IDLE_RIGHT_CLICK_STATE,
+  RIGHT_CLICK_ERASER_HOLD_MS,
+  activateRightClickEraser,
+  beginRightClick,
+  moveRightClick,
+  releaseRightClick,
+  type RightClickPointer,
+  type RightClickState,
+} from "./right-click-eraser.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { buildSessionRows, type SessionRow } from "./session-inventory.ts";
 import { PadTopRight, type WorkspaceSidebarState } from "./top-right.tsx";
@@ -70,6 +81,101 @@ const TERMINAL_LINK = "manifold://terminal";
 const TERMINAL_WIDTH = 720;
 const TERMINAL_HEIGHT = 480;
 
+const PRIMARY_POINTER_BUTTON = 0;
+const PRIMARY_POINTER_BUTTONS_MASK = 1;
+const NATIVE_CONTEXT_MENU_SUPPRESSION_MS = 1_000;
+
+function isInteractiveCanvas(target: EventTarget | null): target is HTMLCanvasElement {
+  return (
+    target instanceof HTMLCanvasElement &&
+    target.classList.contains("excalidraw__canvas") &&
+    target.classList.contains("interactive")
+  );
+}
+
+function snapshotRightClickPointer(event: RightClickPointer): RightClickPointer {
+  return {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    pointerType: event.pointerType,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+  };
+}
+
+function dispatchEraserPointerDown(target: HTMLCanvasElement, pointer: RightClickPointer): void {
+  target.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: pointer.pointerId,
+      pointerType: pointer.pointerType,
+      isPrimary: true,
+      button: PRIMARY_POINTER_BUTTON,
+      buttons: PRIMARY_POINTER_BUTTONS_MASK,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      altKey: pointer.altKey,
+      ctrlKey: pointer.ctrlKey,
+      metaKey: pointer.metaKey,
+      shiftKey: pointer.shiftKey,
+    }),
+  );
+}
+
+function dispatchEraserPointerUp(target: HTMLCanvasElement, pointer: RightClickPointer): void {
+  target.dispatchEvent(
+    new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: pointer.pointerId,
+      pointerType: pointer.pointerType,
+      isPrimary: true,
+      button: PRIMARY_POINTER_BUTTON,
+      buttons: 0,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      altKey: pointer.altKey,
+      ctrlKey: pointer.ctrlKey,
+      metaKey: pointer.metaKey,
+      shiftKey: pointer.shiftKey,
+    }),
+  );
+}
+
+function dispatchCanvasContextMenu(target: HTMLCanvasElement, pointer: RightClickPointer): void {
+  target.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      button: 2,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      altKey: pointer.altKey,
+      ctrlKey: pointer.ctrlKey,
+      metaKey: pointer.metaKey,
+      shiftKey: pointer.shiftKey,
+    }),
+  );
+}
+
+function restoreActiveTool(api: ExcalidrawImperativeAPI, tool: AppState["activeTool"]): void {
+  if (tool.type === "custom") {
+    api.setActiveTool({
+      type: "custom",
+      customType: tool.customType,
+      locked: tool.locked,
+    });
+    return;
+  }
+  api.setActiveTool({ type: tool.type, locked: tool.locked });
+}
 interface ElementVersion {
   readonly version: number;
   readonly versionNonce: number;
@@ -126,6 +232,14 @@ export function PadView({
   const viewportRestoredRef = useRef(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const rightClickStateRef = useRef<RightClickState>(IDLE_RIGHT_CLICK_STATE);
+  const rightClickTargetRef = useRef<HTMLCanvasElement | null>(null);
+  const rightClickTimerRef = useRef<number | null>(null);
+  const rightClickPreviousToolRef = useRef<AppState["activeTool"] | null>(null);
+  const suppressedContextMenuRef = useRef<{
+    readonly target: EventTarget;
+    readonly until: number;
+  } | null>(null);
   const apiGenerationRef = useRef(0);
   const readyApiGenerationRef = useRef(0);
   const applyingRemoteRef = useRef(false);
@@ -1178,6 +1292,158 @@ export function PadView({
     sessionRows,
   ]);
 
+  const clearRightClickTimer = useCallback((): void => {
+    if (rightClickTimerRef.current === null) return;
+    window.clearTimeout(rightClickTimerRef.current);
+    rightClickTimerRef.current = null;
+  }, []);
+
+  const handleRightPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (
+        event.button !== 2 ||
+        !isInteractiveCanvas(event.target) ||
+        rightClickStateRef.current.phase !== "idle"
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const pointer = snapshotRightClickPointer(event);
+      const target = event.target;
+      target.setPointerCapture(pointer.pointerId);
+      rightClickStateRef.current = beginRightClick(pointer);
+      rightClickTargetRef.current = target;
+      clearRightClickTimer();
+      rightClickTimerRef.current = window.setTimeout(() => {
+        rightClickTimerRef.current = null;
+        const active = activateRightClickEraser(rightClickStateRef.current, pointer.pointerId);
+        if (active.phase !== "erasing") return;
+        const api = apiRef.current;
+        const currentTarget = rightClickTargetRef.current;
+        if (api === null || !currentTarget?.isConnected) return;
+        rightClickStateRef.current = active;
+        rightClickPreviousToolRef.current = api.getAppState().activeTool;
+        api.setActiveTool({ type: "eraser", locked: true });
+        window.requestAnimationFrame(() => {
+          const current = rightClickStateRef.current;
+          if (
+            current.phase === "erasing" &&
+            current.pointer.pointerId === pointer.pointerId &&
+            rightClickTargetRef.current === currentTarget
+          ) {
+            dispatchEraserPointerDown(currentTarget, current.pointer);
+          }
+        });
+      }, RIGHT_CLICK_ERASER_HOLD_MS);
+    },
+    [clearRightClickTimer],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      lastClientRef.current = { x: event.clientX, y: event.clientY };
+      rightClickStateRef.current = moveRightClick(
+        rightClickStateRef.current,
+        snapshotRightClickPointer(event),
+      );
+      emitCursorFromClient();
+    },
+    [emitCursorFromClient],
+  );
+
+  const handleRightPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (event.button !== 2) return;
+      const pointer = snapshotRightClickPointer(event);
+      const release = releaseRightClick(rightClickStateRef.current, pointer);
+      if (release.action === "ignore") return;
+
+      clearRightClickTimer();
+      rightClickStateRef.current = release.state;
+      const target = rightClickTargetRef.current;
+      rightClickTargetRef.current = null;
+      if (target !== null) {
+        suppressedContextMenuRef.current = {
+          target,
+          until: runtime.now() + NATIVE_CONTEXT_MENU_SUPPRESSION_MS,
+        };
+      }
+
+      if (release.action === "finish_erasing") {
+        if (target !== null) dispatchEraserPointerUp(target, pointer);
+        const previousTool = rightClickPreviousToolRef.current;
+        rightClickPreviousToolRef.current = null;
+        const api = apiRef.current;
+        if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (target === null) return;
+      if (target.hasPointerCapture(pointer.pointerId)) {
+        target.releasePointerCapture(pointer.pointerId);
+      }
+      dispatchCanvasContextMenu(target, pointer);
+    },
+    [clearRightClickTimer, runtime],
+  );
+
+  const handleRightPointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      const state = rightClickStateRef.current;
+      if (state.phase === "idle" || state.pointer.pointerId !== event.pointerId) return;
+      clearRightClickTimer();
+      if (state.phase === "erasing") {
+        const target = rightClickTargetRef.current;
+        if (target !== null) {
+          dispatchEraserPointerUp(target, snapshotRightClickPointer(event));
+        }
+        const previousTool = rightClickPreviousToolRef.current;
+        const api = apiRef.current;
+        if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+      }
+      rightClickPreviousToolRef.current = null;
+      rightClickStateRef.current = IDLE_RIGHT_CLICK_STATE;
+      rightClickTargetRef.current = null;
+      if (state.phase === "pending") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [clearRightClickTimer],
+  );
+
+  const handleContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>): void => {
+      if (!event.nativeEvent.isTrusted || event.button !== 2) return;
+      const suppressed = suppressedContextMenuRef.current;
+      const isHeldRightClick = rightClickStateRef.current.phase !== "idle";
+      const isCompletedRightClick =
+        suppressed !== null &&
+        suppressed.target === event.target &&
+        suppressed.until >= runtime.now();
+      if (!isHeldRightClick && !isCompletedRightClick) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    [runtime],
+  );
+
+  useEffect(
+    () => () => {
+      clearRightClickTimer();
+      const previousTool = rightClickPreviousToolRef.current;
+      const api = apiRef.current;
+      if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+      rightClickPreviousToolRef.current = null;
+      rightClickStateRef.current = IDLE_RIGHT_CLICK_STATE;
+      rightClickTargetRef.current = null;
+    },
+    [clearRightClickTimer],
+  );
+
   useEffect(
     () => () => {
       onWorkspaceChange(null);
@@ -1189,10 +1455,11 @@ export function PadView({
     <div
       className="pad-view"
       ref={rootRef}
-      onPointerMoveCapture={(event) => {
-        lastClientRef.current = { x: event.clientX, y: event.clientY };
-        emitCursorFromClient();
-      }}
+      onPointerDownCapture={handleRightPointerDown}
+      onPointerMoveCapture={handlePointerMove}
+      onPointerUpCapture={handleRightPointerUp}
+      onPointerCancelCapture={handleRightPointerCancel}
+      onContextMenuCapture={handleContextMenu}
     >
       <Excalidraw
         theme="dark"
