@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 import { renderWebChangelog } from "./release-core.ts";
-import { format } from "prettier";
+import { format, resolveConfig } from "prettier";
 
 const sourcePath = "CHANGELOG.md";
 const outputPath = "packages/web/src/generated-changelog.ts";
+const prettierConfig = await resolveConfig(outputPath);
 const expected = await format(renderWebChangelog(await Bun.file(sourcePath).text()), {
+  ...prettierConfig,
   parser: "typescript",
 });
 const check = process.argv.includes("--check");
