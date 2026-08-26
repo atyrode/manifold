@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-26
+
 ### Changed
 
 - Standardized issue and pull-request references across the repository and in-app changelogs (#31, #33).
