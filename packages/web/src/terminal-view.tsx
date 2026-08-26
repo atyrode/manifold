@@ -50,6 +50,7 @@ export function TerminalView({
   const [isRestarting, setIsRestarting] = useState(false);
 
   const session = client.sessions.get(sessionId);
+  const sessionReady = session !== undefined;
   /** Non-null exactly when this session's machine is known and NOT online. */
   const offlineMachine = machine !== null && !machine.online ? machine : null;
   const selfId = client.self?.id ?? null;
@@ -186,10 +187,15 @@ export function TerminalView({
   }, [client, sessionId]);
 
   useEffect(() => {
+    if (!sessionReady) return;
     const container = containerRef.current;
     if (container === null) return;
 
+    const initialSession = client.sessions.get(sessionId);
+    if (initialSession === undefined) return;
     const terminal = new Terminal({
+      cols: initialSession.cols,
+      rows: initialSession.rows,
       convertEol: false,
       cursorBlink: true,
       scrollback: 2000,
@@ -235,8 +241,34 @@ export function TerminalView({
     scheduleResizeRef.current = scheduleResize;
 
     const fitAndScheduleResize = (): void => {
+      // Serialized snapshots contain cursor movements for the agent's PTY
+      // geometry. Replaying them into an eagerly-fitted viewport corrupts
+      // wrapping and character placement. Keep the advertised geometry until
+      // replay completes, then fit the painted terminal to its canvas box.
+      if (!hasRenderedSnapshot) return;
       fitAddon.fit();
       scheduleResize();
+    };
+    let settleFrame: number | null = null;
+    let settleFollowupFrame: number | null = null;
+    const settleAfterReplay = (): void => {
+      if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
+      if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
+      settleFrame = window.requestAnimationFrame(() => {
+        settleFrame = null;
+        fitAddon.fit();
+        terminal.refresh(0, terminal.rows - 1);
+        scheduleResize();
+        // Excalidraw installs and transforms the embed across successive frames.
+        // A second measurement catches that settled box without waiting for a
+        // user resize to make xterm repaint at the correct cell geometry.
+        settleFollowupFrame = window.requestAnimationFrame(() => {
+          settleFollowupFrame = null;
+          fitAddon.fit();
+          terminal.refresh(0, terminal.rows - 1);
+          scheduleResize();
+        });
+      });
     };
 
     const observer = new ResizeObserver(fitAndScheduleResize);
@@ -246,17 +278,24 @@ export function TerminalView({
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (message.sessionId !== sessionId) return;
       if (hasRenderedSnapshot) terminal.reset();
-      terminal.write(base64ToBytes(message.data));
       snapshotSeq = message.seq;
       lastWrittenSeq = message.seq;
       hasRenderedSnapshot = true;
-      const queued = [...bufferedOutputs.entries()].sort(([left], [right]) => left - right);
+      const queued = [...bufferedOutputs.entries()]
+        .filter(([seq]) => seq > message.seq)
+        .sort(([left], [right]) => left - right);
       bufferedOutputs.clear();
-      for (const [seq, data] of queued) {
-        if (seq <= message.seq) continue;
-        terminal.write(base64ToBytes(data));
+      terminal.write(
+        base64ToBytes(message.data),
+        queued.length === 0 ? settleAfterReplay : undefined,
+      );
+      queued.forEach(([seq, data], index) => {
+        terminal.write(
+          base64ToBytes(data),
+          index === queued.length - 1 ? settleAfterReplay : undefined,
+        );
         lastWrittenSeq = seq;
-      }
+      });
     });
 
     const offOutput = client.on("terminal_output", (message) => {
@@ -311,6 +350,8 @@ export function TerminalView({
       inputDisposable.dispose();
       observer.disconnect();
       window.cancelAnimationFrame(initialFitFrame);
+      if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
+      if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
       if (resizeTimerRef.current !== null) {
         window.clearTimeout(resizeTimerRef.current);
         resizeTimerRef.current = null;
@@ -321,7 +362,7 @@ export function TerminalView({
       fitRef.current = null;
       client.detachTerminal(sessionId);
     };
-  }, [client, sessionId]);
+  }, [client, sessionId, sessionReady]);
 
   useEffect(() => {
     if (!isController) return;

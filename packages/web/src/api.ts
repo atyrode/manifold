@@ -1,15 +1,24 @@
 import {
   BootstrapPrincipalRequestSchema,
+  CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   HttpErrorSchema,
   MachinesResponseSchema,
+  MovePadRequestSchema,
+  OkResponseSchema,
+  PadFolderResponseSchema,
+  PadFoldersResponseSchema,
   PadPresenceResponseSchema,
+  PadSessionsResponseSchema,
   PadSchema,
   RenamePadRequestSchema,
+  ReorderPadsRequestSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
+  type PadFolder,
   type PadPresence,
+  type PadSessionSummary,
   type Principal,
 } from "@manifold/protocol";
 
@@ -112,6 +121,68 @@ export async function renamePad(token: string, padId: string, name: string): Pro
   });
   return PadSchema.parse(fieldFromObject(body, "pad"));
 }
+/** Persists the complete owner-visible pad order atomically. */
+export async function reorderPads(token: string, padIds: readonly string[]): Promise<void> {
+  const request = ReorderPadsRequestSchema.parse({ padIds });
+  const body = await requestJson("/api/pads/order", {
+    method: "PUT",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  OkResponseSchema.parse(body);
+}
+export async function listPadFolders(token: string): Promise<readonly PadFolder[]> {
+  const body = await requestJson("/api/pad-folders", {
+    headers: authHeaders(token, false),
+  });
+  return PadFoldersResponseSchema.parse(body).folders;
+}
+
+export async function createPadFolder(token: string, name: string): Promise<PadFolder> {
+  const request = CreatePadFolderRequestSchema.parse({ name });
+  const body = await requestJson("/api/pad-folders", {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return PadFolderResponseSchema.parse(body).folder;
+}
+
+export async function renamePadFolder(
+  token: string,
+  folderId: string,
+  name: string,
+): Promise<PadFolder> {
+  const request = RenamePadRequestSchema.parse({ name });
+  const body = await requestJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return PadFolderResponseSchema.parse(body).folder;
+}
+
+export async function deletePadFolder(token: string, folderId: string): Promise<void> {
+  const body = await requestJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
+  OkResponseSchema.parse(body);
+}
+
+export async function movePadToFolder(
+  token: string,
+  padId: string,
+  folderId: string | null,
+): Promise<void> {
+  const request = MovePadRequestSchema.parse({ folderId });
+  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/folder`, {
+    method: "PUT",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  OkResponseSchema.parse(body);
+}
 
 /** Loads principal-level presence for pads with connected viewers. */
 export async function getPadPresence(token: string): Promise<readonly PadPresence[]> {
@@ -119,6 +190,13 @@ export async function getPadPresence(token: string): Promise<readonly PadPresenc
     headers: authHeaders(token, false),
   });
   return PadPresenceResponseSchema.parse(body).pads;
+}
+/** Loads open terminal sessions across every pad visible to the current principal. */
+export async function getPadSessions(token: string): Promise<readonly PadSessionSummary[]> {
+  const body = await requestJson("/api/pad-sessions", {
+    headers: authHeaders(token, false),
+  });
+  return PadSessionsResponseSchema.parse(body).sessions;
 }
 
 /** Loads the enrolled machines with live online state (`GET /api/machines`). */

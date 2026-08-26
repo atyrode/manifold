@@ -123,7 +123,7 @@ export function PresenceIsland({ rows }: { rows: readonly RosterRow[] }) {
   );
 }
 
-export interface WorkspacePanelProps {
+export interface WorkspaceSidebarState {
   readonly status: ConnectionStatus;
   readonly savedAt: number | null;
   readonly rev: number;
@@ -148,7 +148,7 @@ interface WorkspaceSessionRowProps {
   readonly onHighlight: (elementId: string | null) => void;
 }
 
-function WorkspaceSessionRow({
+export function WorkspaceSessionRow({
   row,
   onFocus,
   onKill,
@@ -301,123 +301,79 @@ function WorkspaceSessionRow({
   );
 }
 
-/** First-class sidebar sections for machine and terminal lifecycle, plus ambient sync status. */
-export function WorkspacePanel({
-  status,
-  savedAt,
-  rev,
+/** First-class machine inventory, positioned beside pad navigation. */
+export function MachinesSection({
   machines,
-  rows,
   onCreateTerminal,
-  onFocus,
-  onKill,
-  onRestore,
-  onRemoveCopy,
-  onRemoveAllCopies,
-  onHighlight,
-}: WorkspacePanelProps) {
+}: Pick<WorkspaceSidebarState, "machines" | "onCreateTerminal">) {
   const availableMachines = machines?.filter((machine) => machine.online).length ?? 0;
-  const runningSessions = rows.filter((row) => row.status === "running").length;
-  const orphanedSessions = rows.filter((row) => row.orphaned).length;
-  const savedLabel = savedAt === null ? "Not saved yet" : new Date(savedAt).toLocaleTimeString();
-  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-
-  useEffect(
-    () => () => {
-      onHighlight(null);
-    },
-    [onHighlight],
-  );
-
   return (
-    <div className="workspace-sidebar">
-      <details className="workspace-sidebar-section" data-testid="machines-section">
-        <summary>
-          <span>Machines</span>
-          <span>
-            {availableMachines}/{machines?.length ?? 0} online
-          </span>
-        </summary>
-        <div className="workspace-sidebar-section-content">
-          <div className="workspace-list" data-testid="machines-rail">
-            {machines === null ? (
-              <span className="workspace-empty">Loading machines…</span>
-            ) : machines.length === 0 ? (
-              <span className="workspace-empty">No machines enrolled</span>
-            ) : (
-              machines.map((machine) => (
-                <div
-                  className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
-                  key={machine.id}
-                >
-                  <span
-                    className={`machine-dot${machine.online ? "" : " is-offline"}`}
-                    style={{ backgroundColor: machineColor(machine.id) }}
-                  />
-                  <strong>{machine.name}</strong>
-                  <span>{machine.online ? "Online" : "Offline"}</span>
-                  {machine.online ? (
-                    <Button
-                      className="workspace-machine-create"
-                      aria-label={`New terminal on ${machine.name}`}
-                      title={`New terminal on ${machine.name}`}
-                      onSelect={() => onCreateTerminal(machine)}
-                    >
-                      <span aria-hidden="true">+</span>
-                    </Button>
-                  ) : null}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </details>
-
-      <details
-        className={`workspace-sidebar-section${orphanedSessions > 0 ? " has-orphans" : ""}`}
-        data-testid="sessions-section"
-      >
-        <summary>
-          <span>Sessions</span>
-          <span>
-            {runningSessions} running
-            {orphanedSessions > 0 ? ` · ${orphanedSessions} unbound` : ""}
-          </span>
-        </summary>
-        <div className="workspace-sidebar-section-content workspace-list">
-          {rows.length === 0 ? (
-            <span className="workspace-empty">No terminal sessions</span>
+    <details className="workspace-sidebar-section" data-testid="machines-section" open>
+      <summary>
+        <span>Machines</span>
+        <span>
+          {availableMachines}/{machines?.length ?? 0} online
+        </span>
+      </summary>
+      <div className="workspace-sidebar-section-content">
+        <div className="workspace-list" data-testid="machines-rail">
+          {machines === null ? (
+            <span className="workspace-empty">Loading machines…</span>
+          ) : machines.length === 0 ? (
+            <span className="workspace-empty">No machines enrolled</span>
           ) : (
-            rows.map((row) => (
-              <WorkspaceSessionRow
-                key={row.id}
-                row={row}
-                onFocus={onFocus}
-                onKill={onKill}
-                onRestore={onRestore}
-                onRemoveCopy={onRemoveCopy}
-                onRemoveAllCopies={onRemoveAllCopies}
-                onHighlight={onHighlight}
-              />
+            machines.map((machine) => (
+              <div
+                className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
+                key={machine.id}
+              >
+                <span
+                  className={`machine-dot${machine.online ? "" : " is-offline"}`}
+                  style={{ backgroundColor: machineColor(machine.id) }}
+                />
+                <strong>{machine.name}</strong>
+                <span>{machine.online ? "Online" : "Offline"}</span>
+                {machine.online ? (
+                  <Button
+                    className="workspace-machine-create"
+                    aria-label={`New terminal on ${machine.name}`}
+                    title={`New terminal on ${machine.name}`}
+                    onSelect={() => onCreateTerminal(machine)}
+                  >
+                    <span aria-hidden="true">+</span>
+                  </Button>
+                ) : null}
+              </div>
             ))
           )}
         </div>
-      </details>
-
-      <div
-        className="workspace-status"
-        title={`Connection ${status} · ${savedLabel} · revision ${rev}`}
-        role="status"
-        data-testid="connection-status"
-      >
-        <span className={`status-dot ${status}`} aria-hidden="true" />
-        <span>
-          <strong data-testid="connection-state">{statusLabel}</strong>
-          <small>
-            {savedAt === null ? "Not saved" : `Saved ${savedLabel}`} · rev {rev}
-          </small>
-        </span>
       </div>
+    </details>
+  );
+}
+
+/** Ambient connection and persistence state; intentionally compact and visually quiet. */
+export function WorkspaceStatus({
+  status,
+  savedAt,
+  rev,
+}: Pick<WorkspaceSidebarState, "status" | "savedAt" | "rev">) {
+  const savedLabel = savedAt === null ? "Not saved yet" : new Date(savedAt).toLocaleTimeString();
+  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+  return (
+    <div
+      className="workspace-status"
+      title={`Connection ${status} · ${savedLabel} · revision ${rev}`}
+      role="status"
+      data-testid="connection-status"
+    >
+      <span className={`status-dot ${status}`} aria-hidden="true" />
+      <span>
+        <strong data-testid="connection-state">{statusLabel}</strong>
+        <small>
+          {savedAt === null ? "Not saved" : `Saved ${savedLabel}`} · rev {rev}
+        </small>
+      </span>
     </div>
   );
 }

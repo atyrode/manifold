@@ -1,19 +1,41 @@
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortableOperation, useSortable } from "@dnd-kit/react/sortable";
 import { Button } from "@excalidraw/excalidraw";
-import type { Pad, PadPresence } from "@manifold/protocol";
-import { useEffect, useRef, useState } from "react";
+import type { Pad, PadFolder, PadPresence, PadSessionSummary } from "@manifold/protocol";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   createPad,
+  createPadFolder,
   deletePad,
+  deletePadFolder,
   getPadPresence,
+  getPadSessions,
+  listPadFolders,
   listPads,
+  movePadToFolder,
   renamePad,
+  renamePadFolder,
+  reorderPads,
   type StoredIdentity,
 } from "./api.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { PadView } from "./pad-view.tsx";
-import { WorkspacePanel, type WorkspacePanelProps } from "./top-right.tsx";
+import { projectLocalPresence } from "./presence-projection.ts";
+import {
+  MachinesSection,
+  WorkspaceSessionRow,
+  WorkspaceStatus,
+  type WorkspaceSidebarState,
+} from "./top-right.tsx";
 
 interface NavigateOptions {
   readonly replace?: boolean;
@@ -57,18 +79,96 @@ function initialSidebarOpen(): boolean {
     return true;
   }
 }
+const DEFAULT_SIDEBAR_WIDTH = 280;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 480;
+
+function initialSidebarWidth(): number {
+  try {
+    const raw = window.localStorage.getItem("manifold:sidebar-width");
+    if (raw === null) return DEFAULT_SIDEBAR_WIDTH;
+    const stored = Number(raw);
+    return Number.isFinite(stored)
+      ? Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, stored))
+      : DEFAULT_SIDEBAR_WIDTH;
+  } catch {
+    return DEFAULT_SIDEBAR_WIDTH;
+  }
+}
+function rememberSidebarWidth(width: number): void {
+  try {
+    window.localStorage.setItem("manifold:sidebar-width", String(width));
+  } catch {
+    // Sidebar memory is optional.
+  }
+}
+
+function initialSessionTree(): boolean {
+  try {
+    return window.localStorage.getItem("manifold:show-pad-sessions") === "true";
+  } catch {
+    return false;
+  }
+}
+
+interface SortablePadShellProps {
+  readonly id: string;
+  readonly index: number;
+  readonly group: string;
+  readonly disabled: boolean;
+  readonly name: string;
+  readonly children: ReactNode;
+}
+
+function SortablePadShell({ id, index, group, disabled, name, children }: SortablePadShellProps) {
+  const { ref, handleRef, isDragging } = useSortable({
+    id,
+    index,
+    group,
+    disabled,
+    transition: { duration: 160, easing: "ease" },
+  });
+  return (
+    <div ref={ref} className={`pad-sortable${isDragging ? " is-dragging" : ""}`}>
+      {disabled ? null : (
+        <button
+          ref={handleRef}
+          className="pad-drag-handle"
+          type="button"
+          aria-label={`Reorder ${name}`}
+          title={`Drag or use the keyboard to reorder ${name}`}
+        >
+          <span aria-hidden="true">⠿</span>
+        </button>
+      )}
+      {children}
+    </div>
+  );
+}
 
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
   const [pads, setPads] = useState<Pad[] | null>(null);
+  const [folders, setFolders] = useState<readonly PadFolder[] | null>(null);
+  const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
+  const [folderCreateOpen, setFolderCreateOpen] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [folderRenameName, setFolderRenameName] = useState("");
+  const [confirmFolderDeleteId, setConfirmFolderDeleteId] = useState<string | null>(null);
+  const [showSessions, setShowSessions] = useState(initialSessionTree);
+  const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
+  const [reordering, setReordering] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
-  const [workspace, setWorkspace] = useState<WorkspacePanelProps | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
   const [collapsedPresence, setCollapsedPresence] = useState<CollapsedPresencePopover | null>(null);
   const [actionPadId, setActionPadId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
@@ -81,15 +181,36 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   useEffect(() => {
     let active = true;
-    void listPads(identity.token)
-      .then((nextPads) => {
-        if (active) setPads(nextPads);
+    void Promise.all([listPads(identity.token), listPadFolders(identity.token)])
+      .then(([nextPads, nextFolders]) => {
+        if (!active) return;
+        setPads(nextPads);
+        setFolders(nextFolders);
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : "Could not load pads");
       });
     return () => {
       active = false;
+    };
+  }, [identity.token]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = (): void => {
+      void getPadSessions(identity.token)
+        .then((sessions) => {
+          if (active) setPadSessions(sessions);
+        })
+        .catch(() => {
+          // Session inventory keeps its last successful snapshot across transient failures.
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
     };
   }, [identity.token]);
 
@@ -105,12 +226,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         });
     };
     refresh();
-    const interval = window.setInterval(refresh, 3_000);
+    const interval = window.setInterval(refresh, 1_500);
     return () => {
       active = false;
       window.clearInterval(interval);
     };
-  }, [identity.token]);
+  }, [identity.token, requestedPadId]);
 
   useEffect(() => {
     if (pads === null) return;
@@ -238,20 +359,385 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     }
   };
 
+  const submitFolder = async (): Promise<void> => {
+    const trimmedName = folderName.trim();
+    if (trimmedName.length === 0) return;
+    setCreatingFolder(true);
+    setError(null);
+    try {
+      const folder = await createPadFolder(identity.token, trimmedName);
+      setFolders((current) => [...(current ?? []), folder]);
+      setFolderName("");
+      setFolderCreateOpen(false);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Could not create the folder");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const submitFolderRename = async (folder: PadFolder): Promise<void> => {
+    const trimmedName = folderRenameName.trim();
+    if (trimmedName.length === 0 || trimmedName === folder.name) {
+      setRenamingFolderId(null);
+      return;
+    }
+    setError(null);
+    try {
+      const renamed = await renamePadFolder(identity.token, folder.id, trimmedName);
+      setFolders(
+        (current) =>
+          current?.map((candidate) => (candidate.id === renamed.id ? renamed : candidate)) ?? null,
+      );
+      setRenamingFolderId(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Could not rename the folder");
+    }
+  };
+
+  const removeFolder = async (folder: PadFolder): Promise<void> => {
+    setDeletingFolderId(folder.id);
+    setError(null);
+    try {
+      await deletePadFolder(identity.token, folder.id);
+      setFolders((current) => current?.filter((candidate) => candidate.id !== folder.id) ?? null);
+      setConfirmFolderDeleteId(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Could not delete the folder");
+    } finally {
+      setDeletingFolderId(null);
+    }
+  };
+
+  const movePad = async (padId: string, folderId: string | null): Promise<void> => {
+    const previous = folders;
+    setError(null);
+    setFolders(
+      (current) =>
+        current?.map((folder) => ({
+          ...folder,
+          padIds: [
+            ...folder.padIds.filter((candidate) => candidate !== padId),
+            ...(folder.id === folderId ? [padId] : []),
+          ],
+        })) ?? null,
+    );
+    try {
+      await movePadToFolder(identity.token, padId, folderId);
+    } catch (reason: unknown) {
+      setFolders(previous);
+      setError(reason instanceof Error ? reason.message : "Could not move the pad");
+    }
+  };
+
+  const commitPadOrder = async (sourceId: string, targetId: string): Promise<void> => {
+    if (pads === null || sourceId === targetId || reordering) return;
+    const sourceIndex = pads.findIndex((pad) => pad.id === sourceId);
+    const targetIndex = pads.findIndex((pad) => pad.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const previous = pads;
+    const next = [...pads];
+    const [moved] = next.splice(sourceIndex, 1);
+    if (moved === undefined) return;
+    next.splice(targetIndex, 0, moved);
+    setPads(next);
+    setReordering(true);
+    try {
+      await reorderPads(
+        identity.token,
+        next.map((pad) => pad.id),
+      );
+    } catch (reason: unknown) {
+      setPads(previous);
+      setError(reason instanceof Error ? reason.message : "Could not reorder pads");
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const beginSidebarResize = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    if (!sidebarOpen || event.button !== 0) return;
+    event.preventDefault();
+    const move = (pointer: PointerEvent): void => {
+      const max = Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 320);
+      setSidebarWidth(Math.max(MIN_SIDEBAR_WIDTH, Math.min(max, pointer.clientX)));
+    };
+    const finish = (pointer: PointerEvent): void => {
+      move(pointer);
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", finish);
+      const max = Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 320);
+      const width = Math.max(MIN_SIDEBAR_WIDTH, Math.min(max, pointer.clientX));
+      rememberSidebarWidth(width);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", finish);
+  };
+
   const selectPad = (pad: Pad): void => {
     rememberPad(memory, identity.principal.id, pad.id);
     navigate(`/p/${encodeURIComponent(pad.id)}`);
   };
+  const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
+  const renderPad = (
+    pad: Pad,
+    group: string,
+    groupIndex: number,
+    folderId: string | null,
+  ): ReactNode => {
+    const active = pad.id === requestedPadId;
+    const principals = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
+    const otherPrincipals = principals.filter(
+      (principal) => principal.id !== identity.principal.id,
+    );
+    const visiblePrincipals = principals.slice(0, 3);
+    const summaries = padSessions.filter((session) => session.padId === pad.id);
+    const activeWorkspace = active ? workspace : null;
+    const activeRows = activeWorkspace?.rows ?? null;
+    const runningCount =
+      activeRows?.filter((row) => row.status === "running").length ??
+      summaries.filter((session) => session.status === "running").length;
+    const sortableDisabled =
+      !sidebarOpen || reordering || renameTarget?.id === pad.id || confirmDeleteId === pad.id;
+
+    let row: ReactNode;
+    if (sidebarOpen && renameTarget?.id === pad.id) {
+      row = (
+        <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
+          <span className="pad-sidebar-pad-mark" aria-hidden="true" />
+          <input
+            ref={renameInputRef}
+            className="pad-sidebar-rename-input"
+            aria-label={`Rename ${pad.name}`}
+            maxLength={120}
+            value={renameName}
+            disabled={renaming}
+            onChange={(event) => setRenameName(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void submitRename();
+              if (event.key === "Escape") setRenameTarget(null);
+            }}
+          />
+          <Button
+            className="pad-sidebar-inline-action is-primary"
+            aria-label={`Save name for ${pad.name}`}
+            title="Save"
+            disabled={renaming || renameName.trim() === "" || renameName.trim() === pad.name}
+            onSelect={() => void submitRename()}
+          >
+            <span aria-hidden="true">✓</span>
+          </Button>
+          <Button
+            className="pad-sidebar-inline-action"
+            aria-label={`Cancel renaming ${pad.name}`}
+            title="Cancel"
+            disabled={renaming}
+            onSelect={() => setRenameTarget(null)}
+          >
+            <span aria-hidden="true">×</span>
+          </Button>
+        </div>
+      );
+    } else if (sidebarOpen && confirmDeleteId === pad.id) {
+      row = (
+        <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
+          <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
+          <Button
+            className="pad-sidebar-confirm-delete"
+            disabled={deletingId !== null}
+            onSelect={() => void remove(pad)}
+          >
+            {deletingId === pad.id ? "Deleting…" : "Delete"}
+          </Button>
+          <Button
+            className="pad-sidebar-confirm-cancel"
+            disabled={deletingId !== null}
+            onSelect={() => setConfirmDeleteId(null)}
+          >
+            Cancel
+          </Button>
+        </div>
+      );
+    } else {
+      row = (
+        <div className={`pad-sidebar-row${active ? " is-active" : ""}`}>
+          <button
+            className="pad-sidebar-link"
+            type="button"
+            title={pad.name}
+            aria-label={`Open pad ${pad.name}`}
+            aria-current={active ? "page" : undefined}
+            onClick={() => selectPad(pad)}
+          >
+            <span className="pad-sidebar-pad-mark" aria-hidden="true" />
+            {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
+            {sidebarOpen && runningCount > 0 ? (
+              <span
+                className="pad-sidebar-session-count"
+                title={`${runningCount} open ${runningCount === 1 ? "session" : "sessions"}`}
+              >
+                {runningCount}
+              </span>
+            ) : null}
+            {sidebarOpen && principals.length > 0 ? (
+              <span
+                className="pad-sidebar-presence"
+                aria-label={`${principals.length} present on ${pad.name}`}
+              >
+                {visiblePrincipals.map((principal) => (
+                  <span
+                    className={`presence-avatar${principal.kind === "agent" ? " is-agent" : ""}`}
+                    style={{ backgroundColor: principal.color }}
+                    title={`${principal.name} (${principal.kind})`}
+                    key={principal.id}
+                  >
+                    {initials(principal.name)}
+                  </span>
+                ))}
+                {principals.length > visiblePrincipals.length ? (
+                  <span className="presence-avatar presence-overflow">
+                    +{principals.length - visiblePrincipals.length}
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </button>
+          {!sidebarOpen && otherPrincipals.length > 0 ? (
+            <button
+              className="pad-sidebar-collapsed-presence"
+              type="button"
+              aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} on ${pad.name}`}
+              aria-describedby={
+                collapsedPresence?.padId === pad.id ? "collapsed-presence-popover" : undefined
+              }
+              onPointerEnter={(event) => {
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setCollapsedPresence({ padId: pad.id, top: bounds.top, left: bounds.right + 8 });
+              }}
+              onPointerLeave={() => setCollapsedPresence(null)}
+              onFocus={(event) => {
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setCollapsedPresence({ padId: pad.id, top: bounds.top, left: bounds.right + 8 });
+              }}
+              onBlur={() => setCollapsedPresence(null)}
+            >
+              +{otherPrincipals.length}
+            </button>
+          ) : null}
+          {sidebarOpen ? (
+            <div className="pad-sidebar-actions">
+              <Button
+                className="pad-sidebar-delete"
+                title={`Pad actions for ${pad.name}`}
+                aria-label={`Pad actions for ${pad.name}`}
+                selected={actionPadId === pad.id}
+                onSelect={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
+              >
+                <span aria-hidden="true">•••</span>
+              </Button>
+              {actionPadId === pad.id ? (
+                <div className="pad-sidebar-action-menu" role="menu">
+                  <Button role="menuitem" onSelect={() => openRename(pad)}>
+                    Rename
+                  </Button>
+                  <label className="pad-sidebar-folder-picker">
+                    <span>Folder</span>
+                    <select
+                      value={folderId ?? ""}
+                      onChange={(event) => {
+                        setActionPadId(null);
+                        void movePad(pad.id, event.currentTarget.value || null);
+                      }}
+                    >
+                      <option value="">No folder</option>
+                      {folders?.map((folder) => (
+                        <option value={folder.id} key={folder.id}>
+                          {folder.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button
+                    className="is-danger"
+                    role="menuitem"
+                    disabled={deletingId !== null}
+                    onSelect={() => {
+                      setActionPadId(null);
+                      setConfirmDeleteId(pad.id);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    return (
+      <SortablePadShell
+        id={pad.id}
+        index={groupIndex}
+        group={group}
+        disabled={sortableDisabled}
+        name={pad.name}
+        key={pad.id}
+      >
+        {row}
+        {sidebarOpen && showSessions && activeWorkspace !== null
+          ? activeWorkspace.rows.map((session) => (
+              <div className="pad-sidebar-session" key={session.id}>
+                <WorkspaceSessionRow
+                  row={session}
+                  onFocus={activeWorkspace.onFocus}
+                  onKill={activeWorkspace.onKill}
+                  onRestore={activeWorkspace.onRestore}
+                  onRemoveCopy={activeWorkspace.onRemoveCopy}
+                  onRemoveAllCopies={activeWorkspace.onRemoveAllCopies}
+                  onHighlight={activeWorkspace.onHighlight}
+                />
+              </div>
+            ))
+          : null}
+        {sidebarOpen && showSessions && activeWorkspace === null
+          ? summaries.map((session) => {
+              const machine = workspace?.machines?.find(
+                (candidate) => candidate.id === session.machineId,
+              );
+              return (
+                <button
+                  className={`pad-sidebar-session is-summary${session.status === "exited" ? " is-exited" : ""}`}
+                  type="button"
+                  onClick={() => selectPad(pad)}
+                  key={session.id}
+                >
+                  <span aria-hidden="true">{session.status === "running" ? "●" : "○"}</span>
+                  <span>{machine?.name ?? session.machineId}</span>
+                  <small>{session.status}</small>
+                </button>
+              );
+            })
+          : null}
+      </SortablePadShell>
+    );
+  };
+
   const collapsedPresencePrincipals =
     collapsedPresence === null
       ? []
       : (
-          presence.find((entry) => entry.padId === collapsedPresence.padId)?.principals ?? []
+          displayedPresence.find((entry) => entry.padId === collapsedPresence.padId)?.principals ??
+          []
         ).filter((principal) => principal.id !== identity.principal.id);
 
   return (
     <>
-      <main className={`pad-browser${sidebarOpen ? "" : " is-collapsed"}`}>
+      <main
+        className={`pad-browser${sidebarOpen ? "" : " is-collapsed"}`}
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
         <aside className="pad-sidebar" aria-label="Pads">
           <header className="pad-sidebar-header">
             <span className="pad-sidebar-brand" aria-label="manifold">
@@ -311,193 +797,205 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             </form>
           ) : null}
 
-          <div className="pad-sidebar-list" data-testid="pad-sidebar-list">
-            {sidebarOpen && pads === null ? (
-              <p className="pad-sidebar-muted">Loading pads…</p>
-            ) : null}
-            {sidebarOpen && pads?.length === 0 ? (
-              <p className="pad-sidebar-muted">No pads yet</p>
-            ) : null}
-            {pads?.map((pad) => {
-              const active = pad.id === requestedPadId;
-              const principals = presence.find((entry) => entry.padId === pad.id)?.principals ?? [];
-              const otherPrincipals = principals.filter(
-                (principal) => principal.id !== identity.principal.id,
-              );
-              const visiblePrincipals = principals.slice(0, 3);
-              if (sidebarOpen && renameTarget?.id === pad.id) {
-                return (
-                  <div
-                    className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}
-                    key={pad.id}
-                  >
-                    <span className="pad-sidebar-pad-mark" aria-hidden="true" />
-                    <input
-                      ref={renameInputRef}
-                      className="pad-sidebar-rename-input"
-                      aria-label={`Rename ${pad.name}`}
-                      maxLength={120}
-                      value={renameName}
-                      disabled={renaming}
-                      onChange={(event) => setRenameName(event.currentTarget.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void submitRename();
-                        if (event.key === "Escape") setRenameTarget(null);
-                      }}
-                    />
-                    <Button
-                      className="pad-sidebar-inline-action is-primary"
-                      aria-label={`Save name for ${pad.name}`}
-                      title="Save"
-                      disabled={
-                        renaming || renameName.trim() === "" || renameName.trim() === pad.name
-                      }
-                      onSelect={() => void submitRename()}
-                    >
-                      <span aria-hidden="true">✓</span>
-                    </Button>
-                    <Button
-                      className="pad-sidebar-inline-action"
-                      aria-label={`Cancel renaming ${pad.name}`}
-                      title="Cancel"
-                      disabled={renaming}
-                      onSelect={() => setRenameTarget(null)}
-                    >
-                      <span aria-hidden="true">×</span>
-                    </Button>
-                  </div>
-                );
-              }
-              if (sidebarOpen && confirmDeleteId === pad.id) {
-                return (
-                  <div
-                    className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}
-                    key={pad.id}
-                  >
-                    <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
-                    <Button
-                      className="pad-sidebar-confirm-delete"
-                      disabled={deletingId !== null}
-                      onSelect={() => void remove(pad)}
-                    >
-                      {deletingId === pad.id ? "Deleting…" : "Delete"}
-                    </Button>
-                    <Button
-                      className="pad-sidebar-confirm-cancel"
-                      disabled={deletingId !== null}
-                      onSelect={() => setConfirmDeleteId(null)}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                );
-              }
-              return (
-                <div className={`pad-sidebar-row${active ? " is-active" : ""}`} key={pad.id}>
-                  <button
-                    className="pad-sidebar-link"
-                    type="button"
-                    title={pad.name}
-                    aria-label={`Open pad ${pad.name}`}
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => selectPad(pad)}
-                  >
-                    <span className="pad-sidebar-pad-mark" aria-hidden="true" />
-                    {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
-                    {sidebarOpen && principals.length > 0 ? (
-                      <span
-                        className="pad-sidebar-presence"
-                        aria-label={`${principals.length} present on ${pad.name}`}
-                      >
-                        {visiblePrincipals.map((principal) => (
-                          <span
-                            className={`presence-avatar${principal.kind === "agent" ? " is-agent" : ""}`}
-                            style={{ backgroundColor: principal.color }}
-                            title={`${principal.name} (${principal.kind})`}
-                            key={principal.id}
-                          >
-                            {initials(principal.name)}
-                          </span>
-                        ))}
-                        {principals.length > visiblePrincipals.length ? (
-                          <span className="presence-avatar presence-overflow">
-                            +{principals.length - visiblePrincipals.length}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
-                  </button>
-                  {!sidebarOpen && otherPrincipals.length > 0 ? (
-                    <button
-                      className="pad-sidebar-collapsed-presence"
-                      type="button"
-                      aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} on ${pad.name}`}
-                      aria-describedby={
-                        collapsedPresence?.padId === pad.id
-                          ? "collapsed-presence-popover"
-                          : undefined
-                      }
-                      onPointerEnter={(event) => {
-                        const bounds = event.currentTarget.getBoundingClientRect();
-                        setCollapsedPresence({
-                          padId: pad.id,
-                          top: bounds.top,
-                          left: bounds.right + 8,
-                        });
-                      }}
-                      onPointerLeave={() => setCollapsedPresence(null)}
-                      onFocus={(event) => {
-                        const bounds = event.currentTarget.getBoundingClientRect();
-                        setCollapsedPresence({
-                          padId: pad.id,
-                          top: bounds.top,
-                          left: bounds.right + 8,
-                        });
-                      }}
-                      onBlur={() => setCollapsedPresence(null)}
-                    >
-                      +{otherPrincipals.length}
-                    </button>
-                  ) : null}
-                  {sidebarOpen ? (
-                    <div className="pad-sidebar-actions">
-                      <Button
-                        className="pad-sidebar-delete"
-                        title={`Pad actions for ${pad.name}`}
-                        aria-label={`Pad actions for ${pad.name}`}
-                        selected={actionPadId === pad.id}
-                        onSelect={() =>
-                          setActionPadId((current) => (current === pad.id ? null : pad.id))
-                        }
-                      >
-                        <span aria-hidden="true">•••</span>
-                      </Button>
-                      {actionPadId === pad.id ? (
-                        <div className="pad-sidebar-action-menu" role="menu">
-                          <Button role="menuitem" onSelect={() => openRename(pad)}>
-                            Rename
-                          </Button>
-                          <Button
-                            className="is-danger"
-                            role="menuitem"
-                            disabled={deletingId !== null}
-                            onSelect={() => {
-                              setActionPadId(null);
-                              setConfirmDeleteId(pad.id);
-                            }}
-                          >
-                            Delete
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
           {sidebarOpen && workspace !== null ? (
-            <WorkspacePanel key={requestedPadId} {...workspace} />
+            <div className="workspace-sidebar workspace-machines">
+              <MachinesSection
+                machines={workspace.machines}
+                onCreateTerminal={workspace.onCreateTerminal}
+              />
+            </div>
+          ) : null}
+
+          {sidebarOpen ? (
+            <div className="pad-sidebar-section-heading">
+              <strong>Pads</strong>
+              <span>{pads?.length ?? 0}</span>
+              <Button
+                className="pad-sidebar-section-action"
+                selected={showSessions}
+                title={showSessions ? "Hide sessions under pads" : "Show sessions under pads"}
+                aria-label={showSessions ? "Hide pad session tree" : "Show pad session tree"}
+                onSelect={() => {
+                  setShowSessions((current) => {
+                    try {
+                      window.localStorage.setItem("manifold:show-pad-sessions", String(!current));
+                    } catch {
+                      // Session tree memory is optional.
+                    }
+                    return !current;
+                  });
+                }}
+              >
+                <span aria-hidden="true">⌘</span>
+              </Button>
+              <Button
+                className="pad-sidebar-section-action"
+                title="New folder"
+                aria-label="New pad folder"
+                onSelect={() => setFolderCreateOpen(true)}
+              >
+                <span aria-hidden="true">+</span>
+              </Button>
+            </div>
+          ) : null}
+
+          {sidebarOpen && folderCreateOpen ? (
+            <form
+              className="pad-sidebar-create pad-sidebar-folder-create"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitFolder();
+              }}
+            >
+              <input
+                maxLength={120}
+                value={folderName}
+                onChange={(event) => setFolderName(event.currentTarget.value)}
+                placeholder="Folder name"
+                aria-label="Folder name"
+                autoFocus
+                disabled={creatingFolder}
+              />
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setFolderCreateOpen(false)}
+                  disabled={creatingFolder}
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>
+                  {creatingFolder ? "Creating…" : "Create"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          <DragDropProvider
+            onDragEnd={(event) => {
+              if (event.canceled || !isSortableOperation(event.operation)) return;
+              const source = event.operation.source;
+              const target = event.operation.target;
+              if (source === null || target === null) return;
+              void commitPadOrder(String(source.id), String(target.id));
+            }}
+          >
+            <div className="pad-sidebar-list" data-testid="pad-sidebar-list">
+              {sidebarOpen && pads === null ? (
+                <p className="pad-sidebar-muted">Loading pads…</p>
+              ) : null}
+              {sidebarOpen && pads?.length === 0 ? (
+                <p className="pad-sidebar-muted">No pads yet</p>
+              ) : null}
+              {(() => {
+                if (pads === null) return null;
+                const assigned = new Set(folders?.flatMap((folder) => folder.padIds) ?? []);
+                const ungrouped = pads.filter((pad) => !assigned.has(pad.id));
+                return (
+                  <>
+                    {ungrouped.map((pad, index) => renderPad(pad, "ungrouped", index, null))}
+                    {sidebarOpen
+                      ? folders?.map((folder) => {
+                          const folderPads = pads.filter((pad) => folder.padIds.includes(pad.id));
+                          return (
+                            <details className="pad-sidebar-folder" open key={folder.id}>
+                              <summary>
+                                <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+                                <strong>{folder.name}</strong>
+                                <span>{folderPads.length}</span>
+                              </summary>
+                              <div className="pad-sidebar-folder-content">
+                                {folderPads.length === 0 ? (
+                                  <span className="pad-sidebar-folder-empty">
+                                    Move pads here from their ••• menu
+                                  </span>
+                                ) : (
+                                  folderPads.map((pad, index) =>
+                                    renderPad(pad, folder.id, index, folder.id),
+                                  )
+                                )}
+                                <div className="pad-sidebar-folder-actions">
+                                  {renamingFolderId === folder.id ? (
+                                    <form
+                                      onSubmit={(event) => {
+                                        event.preventDefault();
+                                        void submitFolderRename(folder);
+                                      }}
+                                    >
+                                      <input
+                                        value={folderRenameName}
+                                        maxLength={120}
+                                        aria-label={`Rename folder ${folder.name}`}
+                                        autoFocus
+                                        onChange={(event) =>
+                                          setFolderRenameName(event.currentTarget.value)
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === "Escape") setRenamingFolderId(null);
+                                        }}
+                                      />
+                                      <button
+                                        type="submit"
+                                        disabled={folderRenameName.trim() === ""}
+                                      >
+                                        Save
+                                      </button>
+                                      <Button onSelect={() => setRenamingFolderId(null)}>
+                                        Cancel
+                                      </Button>
+                                    </form>
+                                  ) : deletingFolderId === folder.id ? (
+                                    <span>Deleting…</span>
+                                  ) : confirmFolderDeleteId === folder.id ? (
+                                    <>
+                                      <span>Keep pads, delete folder?</span>
+                                      <Button
+                                        className="is-danger"
+                                        onSelect={() => void removeFolder(folder)}
+                                      >
+                                        Delete
+                                      </Button>
+                                      <Button onSelect={() => setConfirmFolderDeleteId(null)}>
+                                        Cancel
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        onSelect={() => {
+                                          setRenamingFolderId(folder.id);
+                                          setFolderRenameName(folder.name);
+                                        }}
+                                      >
+                                        Rename
+                                      </Button>
+                                      <Button
+                                        className="is-danger"
+                                        title={`Delete ${folder.name}; pads become ungrouped`}
+                                        onSelect={() => setConfirmFolderDeleteId(folder.id)}
+                                      >
+                                        Delete
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </details>
+                          );
+                        })
+                      : null}
+                  </>
+                );
+              })()}
+            </div>
+          </DragDropProvider>
+
+          {sidebarOpen && workspace !== null ? (
+            <WorkspaceStatus
+              status={workspace.status}
+              savedAt={workspace.savedAt}
+              rev={workspace.rev}
+            />
           ) : null}
 
           {sidebarOpen && error !== null ? <p className="pad-sidebar-error">{error}</p> : null}
@@ -506,6 +1004,36 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             {sidebarOpen ? <span>{identity.principal.name}</span> : null}
           </footer>
         </aside>
+        {sidebarOpen ? (
+          <button
+            className="pad-sidebar-resize"
+            type="button"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize pad sidebar"
+            aria-valuemin={MIN_SIDEBAR_WIDTH}
+            aria-valuemax={MAX_SIDEBAR_WIDTH}
+            aria-valuenow={Math.round(sidebarWidth)}
+            onPointerDown={beginSidebarResize}
+            onDoubleClick={() => {
+              setSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+              rememberSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const delta = event.key === "ArrowLeft" ? -16 : 16;
+              setSidebarWidth((current) => {
+                const next = Math.max(
+                  MIN_SIDEBAR_WIDTH,
+                  Math.min(MAX_SIDEBAR_WIDTH, current + delta),
+                );
+                rememberSidebarWidth(next);
+                return next;
+              });
+            }}
+          />
+        ) : null}
 
         <section className="pad-browser-canvas" aria-label="Active pad">
           {requestedPadId === null ? (

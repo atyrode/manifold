@@ -49,7 +49,7 @@ import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { buildSessionRows, type SessionRow } from "./session-inventory.ts";
-import { PadTopRight, type WorkspacePanelProps } from "./top-right.tsx";
+import { PadTopRight, type WorkspaceSidebarState } from "./top-right.tsx";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
@@ -91,7 +91,7 @@ interface PadViewProps {
   readonly padId: string;
   readonly identity: StoredIdentity;
   readonly runtime?: RuntimeDeps;
-  readonly onWorkspaceChange: (workspace: WorkspacePanelProps | null) => void;
+  readonly onWorkspaceChange: (workspace: WorkspaceSidebarState | null) => void;
 }
 
 function sessionUrl(): string {

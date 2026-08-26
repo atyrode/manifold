@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { OkResponseSchema } from "@manifold/protocol";
+import { OkResponseSchema, PadSessionsResponseSchema } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -68,6 +68,19 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     });
     expect(session.status).toBe("running");
     expect(session.controllerId).toBe(alice.principal.id);
+    const inventory = await ownerFetch(server, "/api/pad-sessions", {
+      responseSchema: PadSessionsResponseSchema,
+    });
+    const listedSession = inventory.sessions.find((candidate) => candidate.id === session.id);
+    expect(listedSession).toMatchObject({
+      id: session.id,
+      padId: pad.id,
+      machineId: enrolled.machineId,
+      elementId: "el-term-1",
+      status: "running",
+      exitCode: null,
+    });
+    expect(listedSession?.createdAt).toBeNumber();
     const terminalElementAck = nextMessage(clientA, "scene_ack", 10_000, (message) =>
       message.acceptedIds.includes("el-term-1"),
     );

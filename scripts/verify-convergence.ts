@@ -473,9 +473,10 @@ try {
   );
 
   await round("R6 rapid-fire strokes", { adds: 3 }, async () => {
-    await freedraw(browserA, 250, 700);
-    await freedraw(browserA, 550, 720);
-    await freedraw(browserA, 850, 700);
+    // Keep client coordinates clear of the resizable workspace sidebar.
+    await freedraw(browserA, 340, 700);
+    await freedraw(browserA, 610, 720);
+    await freedraw(browserA, 880, 700);
   });
 
   // R7: THE aliasing regression — B moves an element it received from A (painted from the
