@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Standardized issue and pull-request references across the repository and in-app changelogs (#31).
+- Standardized issue and pull-request references across the repository and in-app changelogs (#31, #33).
 
 ### Fixed
 
