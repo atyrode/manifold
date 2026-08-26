@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Restored the eraser cursor while erasing with a right-button drag.
+- Restored the eraser cursor while erasing with a right-button drag (#30, #32).
 
 ## [0.2.2] - 2026-08-26
 
