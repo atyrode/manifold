@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -82,6 +82,48 @@ CREATE TABLE pad_folders(
   created_at INTEGER NOT NULL
 );
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');
+`,
+  3: `
+ALTER TABLE pad_folders ADD COLUMN parent_folder_id TEXT;
+ALTER TABLE pad_folders ADD COLUMN sort_order INTEGER;
+
+UPDATE pad_folders
+SET sort_order = COALESCE(
+  (SELECT MIN(sort_order) FROM pads WHERE pads.folder_id = pad_folders.id),
+  (SELECT COUNT(*) FROM pads) + ROWID
+);
+
+CREATE TEMP TABLE tree_migration_order(kind TEXT, id TEXT, sibling_order INTEGER);
+INSERT INTO tree_migration_order(kind, id, sibling_order)
+SELECT kind, id, ROW_NUMBER() OVER (ORDER BY position, created_at, kind, id) - 1
+FROM (
+  SELECT 'pad' AS kind, id, sort_order AS position, created_at FROM pads WHERE folder_id IS NULL
+  UNION ALL
+  SELECT 'folder' AS kind, id, sort_order AS position, created_at FROM pad_folders
+);
+UPDATE pads
+SET sort_order = (
+  SELECT sibling_order FROM tree_migration_order
+  WHERE tree_migration_order.kind = 'pad' AND tree_migration_order.id = pads.id
+)
+WHERE folder_id IS NULL;
+UPDATE pad_folders
+SET sort_order = (
+  SELECT sibling_order FROM tree_migration_order
+  WHERE tree_migration_order.kind = 'folder' AND tree_migration_order.id = pad_folders.id
+);
+DROP TABLE tree_migration_order;
+
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (PARTITION BY folder_id ORDER BY sort_order, created_at, id) - 1 AS sibling_order
+  FROM pads
+  WHERE folder_id IS NOT NULL
+)
+UPDATE pads
+SET sort_order = (SELECT sibling_order FROM ranked WHERE ranked.id = pads.id)
+WHERE folder_id IS NOT NULL;
+
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');
 `,
 };
 

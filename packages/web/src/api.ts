@@ -4,20 +4,17 @@ import {
   CreatePadRequestSchema,
   HttpErrorSchema,
   MachinesResponseSchema,
-  MovePadRequestSchema,
-  OkResponseSchema,
-  PadFolderResponseSchema,
-  PadFoldersResponseSchema,
+  MovePadTreeItemRequestSchema,
+  PadTreeResponseSchema,
   PadPresenceResponseSchema,
   PadSessionsResponseSchema,
   PadSchema,
   RenamePadRequestSchema,
-  ReorderPadsRequestSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
-  type PadFolder,
   type PadPresence,
+  type PadTreeItem,
   type PadSessionSummary,
   type Principal,
 } from "@manifold/protocol";
@@ -121,71 +118,65 @@ export async function renamePad(token: string, padId: string, name: string): Pro
   });
   return PadSchema.parse(fieldFromObject(body, "pad"));
 }
-/** Persists the complete owner-visible pad order atomically. */
-export async function reorderPads(token: string, padIds: readonly string[]): Promise<void> {
-  const request = ReorderPadsRequestSchema.parse({ padIds });
-  const body = await requestJson("/api/pads/order", {
-    method: "PUT",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  OkResponseSchema.parse(body);
-}
-export async function listPadFolders(token: string): Promise<readonly PadFolder[]> {
-  const body = await requestJson("/api/pad-folders", {
+export async function listPadTree(token: string): Promise<readonly PadTreeItem[]> {
+  const body = await requestJson("/api/pad-tree", {
     headers: authHeaders(token, false),
   });
-  return PadFoldersResponseSchema.parse(body).folders;
+  return PadTreeResponseSchema.parse(body).items;
 }
 
 export async function createPadFolder(
   token: string,
   name: string,
-  padIds: readonly string[] = [],
-): Promise<PadFolder> {
-  const request = CreatePadFolderRequestSchema.parse({ name, padIds });
+  parentId: string | null,
+): Promise<readonly PadTreeItem[]> {
+  const request = CreatePadFolderRequestSchema.parse({ name, parentId });
   const body = await requestJson("/api/pad-folders", {
     method: "POST",
     headers: authHeaders(token, true),
     body: JSON.stringify(request),
   });
-  return PadFolderResponseSchema.parse(body).folder;
+  return PadTreeResponseSchema.parse(body).items;
 }
 
 export async function renamePadFolder(
   token: string,
   folderId: string,
   name: string,
-): Promise<PadFolder> {
+): Promise<readonly PadTreeItem[]> {
   const request = RenamePadRequestSchema.parse({ name });
   const body = await requestJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, {
     method: "PATCH",
     headers: authHeaders(token, true),
     body: JSON.stringify(request),
   });
-  return PadFolderResponseSchema.parse(body).folder;
+  return PadTreeResponseSchema.parse(body).items;
 }
 
-export async function deletePadFolder(token: string, folderId: string): Promise<void> {
+export async function deletePadFolder(
+  token: string,
+  folderId: string,
+): Promise<readonly PadTreeItem[]> {
   const body = await requestJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, {
     method: "DELETE",
     headers: authHeaders(token, false),
   });
-  OkResponseSchema.parse(body);
+  return PadTreeResponseSchema.parse(body).items;
 }
 
-export async function movePadToFolder(
+export async function movePadTreeItem(
   token: string,
-  padId: string,
-  folderId: string | null,
-): Promise<void> {
-  const request = MovePadRequestSchema.parse({ folderId });
-  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/folder`, {
+  item: { readonly kind: "pad" | "folder"; readonly id: string },
+  parentId: string | null,
+  index: number,
+): Promise<readonly PadTreeItem[]> {
+  const request = MovePadTreeItemRequestSchema.parse({ item, parentId, index });
+  const body = await requestJson("/api/pad-tree", {
     method: "PUT",
     headers: authHeaders(token, true),
     body: JSON.stringify(request),
   });
-  OkResponseSchema.parse(body);
+  return PadTreeResponseSchema.parse(body).items;
 }
 
 /** Loads principal-level presence for pads with connected viewers. */

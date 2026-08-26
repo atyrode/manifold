@@ -3,11 +3,12 @@ import type { Database } from "bun:sqlite";
 import {
   CapSchema,
   PadSchema,
+  PadTreeItemSchema,
   PrincipalSchema,
   SceneElementSchema,
   type Cap,
   type Pad,
-  type PadFolder,
+  type PadTreeItem,
   type Principal,
   type SceneElement,
 } from "@manifold/protocol";
@@ -22,10 +23,17 @@ interface PadRow {
   name: string;
   created_at: number;
 }
-interface PadFolderRow {
+interface PadTreeRow {
+  kind: "pad" | "folder";
   id: string;
   name: string;
   created_at: number;
+  parent_id: string | null;
+  sort_order: number;
+}
+interface TreeRef {
+  kind: "pad" | "folder";
+  id: string;
 }
 
 interface PrincipalRow {
@@ -226,13 +234,43 @@ export class ServerStore {
       .run(key, value);
   }
 
-  listPads(): Pad[] {
+  listPadTree(): PadTreeItem[] {
     return this.db
-      .query<PadRow, []>(
-        "SELECT id, name, created_at FROM pads ORDER BY sort_order, created_at, id",
+      .query<PadTreeRow, []>(
+        `SELECT kind, id, name, created_at, parent_id, sort_order
+         FROM (
+           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order
+           FROM pads
+           UNION ALL
+           SELECT 'folder' AS kind, id, name, created_at, parent_folder_id AS parent_id, sort_order
+           FROM pad_folders
+         )
+         ORDER BY COALESCE(parent_id, ''), sort_order, created_at, id`,
       )
       .all()
-      .map((row) => PadSchema.parse({ id: row.id, name: row.name, createdAt: row.created_at }));
+      .map((row) =>
+        row.kind === "pad"
+          ? PadTreeItemSchema.parse({
+              kind: "pad",
+              pad: { id: row.id, name: row.name, createdAt: row.created_at },
+              parentId: row.parent_id,
+              sortOrder: row.sort_order,
+            })
+          : PadTreeItemSchema.parse({
+              kind: "folder",
+              id: row.id,
+              name: row.name,
+              createdAt: row.created_at,
+              parentId: row.parent_id,
+              sortOrder: row.sort_order,
+            }),
+      );
+  }
+
+  listPads(): Pad[] {
+    return this.listPadTree()
+      .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
+      .map((item) => item.pad);
   }
 
   getPad(id: string): Pad | null {
@@ -244,115 +282,138 @@ export class ServerStore {
       : PadSchema.parse({ id: row.id, name: row.name, createdAt: row.created_at });
   }
 
-  createPad(pad: Pad): void {
-    PadSchema.parse(pad);
-    this.db
-      .query<void, [string, string, number]>(
-        `INSERT INTO pads(id, name, created_at, sort_order)
-         VALUES (?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM pads), 0))`,
-      )
-      .run(pad.id, pad.name, pad.createdAt);
-  }
-  reorderPads(padIds: readonly string[]): boolean {
-    const reorder = this.db.transaction(() => {
-      const current = this.listPads().map((pad) => pad.id);
-      const requested = new Set(padIds);
-      if (
-        current.length !== padIds.length ||
-        requested.size !== padIds.length ||
-        current.some((id) => !requested.has(id))
-      ) {
-        return false;
-      }
-      const update = this.db.query<void, [number, string]>(
-        "UPDATE pads SET sort_order = ? WHERE id = ?",
-      );
-      padIds.forEach((id, index) => update.run(index, id));
-      return true;
-    });
-    return reorder();
-  }
-  listPadFolders(): PadFolder[] {
-    const padRows = this.db
-      .query<{ id: string; folder_id: string }, []>(
-        `SELECT id, folder_id FROM pads
-         WHERE folder_id IS NOT NULL ORDER BY sort_order, created_at, id`,
-      )
-      .all();
-    const padIdsByFolder = new Map<string, string[]>();
-    for (const row of padRows) {
-      const ids = padIdsByFolder.get(row.folder_id);
-      if (ids === undefined) {
-        padIdsByFolder.set(row.folder_id, [row.id]);
-      } else {
-        ids.push(row.id);
-      }
-    }
+  private siblingRefs(parentId: string | null): TreeRef[] {
     return this.db
-      .query<PadFolderRow, []>(
-        "SELECT id, name, created_at FROM pad_folders ORDER BY created_at, id",
+      .query<TreeRef, [string | null, string | null]>(
+        `SELECT 'pad' AS kind, id, sort_order FROM pads WHERE folder_id IS ?
+         UNION ALL
+         SELECT 'folder' AS kind, id, sort_order FROM pad_folders WHERE parent_folder_id IS ?
+         ORDER BY sort_order, kind, id`,
       )
-      .all()
-      .map((row) => ({
-        id: row.id,
-        name: row.name,
-        createdAt: row.created_at,
-        padIds: padIdsByFolder.get(row.id) ?? [],
-      }));
+      .all(parentId, parentId)
+      .map(({ kind, id }) => ({ kind, id }));
   }
 
-  getPadFolder(id: string): PadFolder | null {
-    return this.listPadFolders().find((folder) => folder.id === id) ?? null;
+  private setTreePosition(item: TreeRef, parentId: string | null, sortOrder: number): void {
+    if (item.kind === "pad") {
+      this.db
+        .query<void, [string | null, number, string]>(
+          "UPDATE pads SET folder_id = ?, sort_order = ? WHERE id = ?",
+        )
+        .run(parentId, sortOrder, item.id);
+    } else {
+      this.db
+        .query<void, [string | null, number, string]>(
+          "UPDATE pad_folders SET parent_folder_id = ?, sort_order = ? WHERE id = ?",
+        )
+        .run(parentId, sortOrder, item.id);
+    }
+  }
+
+  private reindexSiblings(parentId: string | null, siblings: readonly TreeRef[]): void {
+    siblings.forEach((item, index) => this.setTreePosition(item, parentId, index));
+  }
+
+  createPad(pad: Pad): void {
+    PadSchema.parse(pad);
+    const sortOrder = this.siblingRefs(null).length;
+    this.db
+      .query<void, [string, string, number, number]>(
+        "INSERT INTO pads(id, name, created_at, sort_order, folder_id) VALUES (?, ?, ?, ?, NULL)",
+      )
+      .run(pad.id, pad.name, pad.createdAt, sortOrder);
   }
 
   createPadFolder(
-    folder: Omit<PadFolder, "padIds">,
-    padIds: readonly string[] = [],
-  ): PadFolder | null {
-    return this.db.transaction(() => {
-      const uniquePadIds = new Set(padIds);
-      if (
-        uniquePadIds.size !== padIds.length ||
-        padIds.some((padId) => this.getPad(padId) === null)
-      ) {
-        return null;
-      }
+    folder: { readonly id: string; readonly name: string; readonly createdAt: number },
+    parentId: string | null,
+  ): boolean {
+    if (
+      parentId !== null &&
       this.db
-        .query<void, [string, string, number]>(
-          "INSERT INTO pad_folders(id, name, created_at) VALUES (?, ?, ?)",
-        )
-        .run(folder.id, folder.name, folder.createdAt);
-      const assign = this.db.query<void, [string, string]>(
-        "UPDATE pads SET folder_id = ? WHERE id = ?",
-      );
-      padIds.forEach((padId) => assign.run(folder.id, padId));
-      return { ...folder, padIds: [...padIds] };
-    })();
+        .query<ExistsRow, [string]>("SELECT 1 AS found FROM pad_folders WHERE id = ?")
+        .get(parentId) === null
+    ) {
+      return false;
+    }
+    const sortOrder = this.siblingRefs(parentId).length;
+    this.db
+      .query<void, [string, string, number, string | null, number]>(
+        `INSERT INTO pad_folders(id, name, created_at, parent_folder_id, sort_order)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(folder.id, folder.name, folder.createdAt, parentId, sortOrder);
+    return true;
   }
 
-  renamePadFolder(id: string, name: string): PadFolder | null {
-    const result = this.db
-      .query<void, [string, string]>("UPDATE pad_folders SET name = ? WHERE id = ?")
-      .run(name, id);
-    return result.changes === 0 ? null : this.getPadFolder(id);
+  renamePadFolder(id: string, name: string): boolean {
+    return (
+      this.db
+        .query<void, [string, string]>("UPDATE pad_folders SET name = ? WHERE id = ?")
+        .run(name, id).changes > 0
+    );
   }
 
   deletePadFolder(id: string): boolean {
     return this.db.transaction(() => {
-      this.db.query<void, [string]>("UPDATE pads SET folder_id = NULL WHERE folder_id = ?").run(id);
-      return (
-        this.db.query<void, [string]>("DELETE FROM pad_folders WHERE id = ?").run(id).changes > 0
+      const folder = this.listPadTree().find(
+        (item): item is Extract<PadTreeItem, { kind: "folder" }> =>
+          item.kind === "folder" && item.id === id,
       );
+      if (folder === undefined) return false;
+      const siblings = this.siblingRefs(folder.parentId).filter(
+        (item) => !(item.kind === "folder" && item.id === id),
+      );
+      const children = this.siblingRefs(id);
+      const insertionIndex = Math.min(folder.sortOrder, siblings.length);
+      siblings.splice(insertionIndex, 0, ...children);
+      for (const child of children) this.setTreePosition(child, folder.parentId, 0);
+      this.db.query<void, [string]>("DELETE FROM pad_folders WHERE id = ?").run(id);
+      this.reindexSiblings(folder.parentId, siblings);
+      return true;
     })();
   }
 
-  movePadToFolder(padId: string, folderId: string | null): boolean {
-    if (folderId !== null && this.getPadFolder(folderId) === null) return false;
-    return (
-      this.db
-        .query<void, [string | null, string]>("UPDATE pads SET folder_id = ? WHERE id = ?")
-        .run(folderId, padId).changes > 0
-    );
+  movePadTreeItem(item: TreeRef, parentId: string | null, index: number): boolean {
+    return this.db.transaction(() => {
+      const tree = this.listPadTree();
+      const current = tree.find((candidate) =>
+        candidate.kind === "pad"
+          ? item.kind === "pad" && candidate.pad.id === item.id
+          : item.kind === "folder" && candidate.id === item.id,
+      );
+      if (current === undefined) return false;
+      if (parentId !== null) {
+        const parent = tree.find(
+          (candidate) => candidate.kind === "folder" && candidate.id === parentId,
+        );
+        if (parent === undefined) return false;
+      }
+      if (item.kind === "folder") {
+        let ancestorId = parentId;
+        while (ancestorId !== null) {
+          if (ancestorId === item.id) return false;
+          const ancestor = tree.find(
+            (candidate) => candidate.kind === "folder" && candidate.id === ancestorId,
+          );
+          ancestorId = ancestor?.parentId ?? null;
+        }
+      }
+      const oldParentId = current.parentId;
+      const oldSiblings = this.siblingRefs(oldParentId).filter(
+        (candidate) => !(candidate.kind === item.kind && candidate.id === item.id),
+      );
+      const destination =
+        oldParentId === parentId
+          ? oldSiblings
+          : this.siblingRefs(parentId).filter(
+              (candidate) => !(candidate.kind === item.kind && candidate.id === item.id),
+            );
+      destination.splice(Math.min(index, destination.length), 0, item);
+      if (oldParentId !== parentId) this.reindexSiblings(oldParentId, oldSiblings);
+      this.reindexSiblings(parentId, destination);
+      return true;
+    })();
   }
 
   renamePad(id: string, name: string): Pad | null {
@@ -363,13 +424,25 @@ export class ServerStore {
   }
 
   deletePad(id: string): boolean {
-    const remove = this.db.transaction(() => {
+    return this.db.transaction(() => {
+      const current = this.listPadTree().find(
+        (item): item is Extract<PadTreeItem, { kind: "pad" }> =>
+          item.kind === "pad" && item.pad.id === id,
+      );
+      if (current === undefined) return false;
       this.db.query<void, [string]>("DELETE FROM snapshots WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM events WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM sessions WHERE pad_id = ?").run(id);
-      return this.db.query<void, [string]>("DELETE FROM pads WHERE id = ?").run(id).changes > 0;
-    });
-    return remove();
+      const removed = this.db.query<void, [string]>("DELETE FROM pads WHERE id = ?").run(id);
+      if (removed.changes === 0) return false;
+      this.reindexSiblings(
+        current.parentId,
+        this.siblingRefs(current.parentId).filter(
+          (item) => !(item.kind === "pad" && item.id === id),
+        ),
+      );
+      return true;
+    })();
   }
 
   latestSnapshot(

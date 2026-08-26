@@ -1,0 +1,76 @@
+import { expect, test } from "bun:test";
+import type { PadTreeItem } from "@manifold/protocol";
+import { buildPadTree, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+
+const pad = (
+  id: string,
+  parentId: string | null,
+  sortOrder: number,
+): Extract<PadTreeItem, { kind: "pad" }> => ({
+  kind: "pad",
+  pad: { id, name: id, createdAt: sortOrder },
+  parentId,
+  sortOrder,
+});
+
+const folder = (
+  id: string,
+  parentId: string | null,
+  sortOrder: number,
+): Extract<PadTreeItem, { kind: "folder" }> => ({
+  kind: "folder",
+  id,
+  name: id,
+  createdAt: sortOrder,
+  parentId,
+  sortOrder,
+});
+
+const shape = (nodes: readonly PadTreeNode[]): unknown =>
+  nodes.map((node) => [`${node.item.kind}:${treeItemId(node.item)}`, shape(node.children)]);
+
+test("builds one ordered recursive tree from mixed pad and folder siblings", () => {
+  expect(
+    shape(
+      buildPadTree([
+        pad("loose", null, 2),
+        folder("projects", null, 1),
+        pad("active", "projects", 0),
+        folder("archive", "projects", 1),
+        pad("old", "archive", 0),
+      ]),
+    ),
+  ).toEqual([
+    [
+      "folder:projects",
+      [
+        ["pad:active", []],
+        ["folder:archive", [["pad:old", []]]],
+      ],
+    ],
+    ["pad:loose", []],
+  ]);
+});
+
+test("emits malformed or duplicate input at most once without recursing forever", () => {
+  const nodes = buildPadTree([
+    folder("cycle-a", "cycle-b", 0),
+    folder("cycle-b", "cycle-a", 0),
+    pad("orphan", "missing", 1),
+    pad("same-id", "same-id", 0),
+    folder("same-id", null, 2),
+    pad("orphan", null, 99),
+  ]);
+  const flattened: string[] = [];
+  const visit = (entries: readonly PadTreeNode[]): void => {
+    for (const node of entries) {
+      flattened.push(`${node.item.kind}:${treeItemId(node.item)}`);
+      visit(node.children);
+    }
+  };
+  visit(nodes);
+  expect(flattened).toHaveLength(5);
+  expect(new Set(flattened).size).toBe(5);
+  expect(flattened).toContain("pad:same-id");
+  expect(flattened).toContain("folder:same-id");
+});

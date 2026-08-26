@@ -9,17 +9,15 @@ import {
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
-  MovePadRequestSchema,
+  MovePadTreeItemRequestSchema,
   OkResponseSchema,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
-  PadFolderResponseSchema,
-  PadFoldersResponseSchema,
+  PadTreeResponseSchema,
   PadSessionsResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
   RenamePadRequestSchema,
-  ReorderPadsRequestSchema,
   RevokeRequestSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
@@ -195,53 +193,66 @@ export class HttpApp {
         .filter((pad) => context.padScope === null || pad.id === context.padScope);
       return jsonResponse(PadsResponseSchema.parse({ pads }));
     }
-    if (request.method === "PUT" && pathname === "/api/pads/order") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot reorder pads");
-      }
-      const input = parseRequest(ReorderPadsRequestSchema, await parseJsonBody(request));
-      if (!this.store.reorderPads(input.padIds)) {
-        throw new RequestError("conflict", "pad list changed while reordering");
-      }
-      return jsonResponse(OkResponseSchema.parse({ ok: true }));
-    }
-    if (pathname === "/api/pad-folders") {
+    if (pathname === "/api/pad-tree") {
       const context = this.authenticate(request);
       if (request.method === "GET") {
         this.requireCap(context, "pads:read");
-        const folders =
-          context.padScope === null
-            ? this.store.listPadFolders()
-            : this.store
-                .listPadFolders()
-                .map((folder) => ({
-                  ...folder,
-                  padIds: folder.padIds.filter((padId) => padId === context.padScope),
-                }))
-                .filter((folder) => folder.padIds.length > 0);
-        return jsonResponse(PadFoldersResponseSchema.parse({ folders }));
+        const tree = this.store.listPadTree();
+        if (context.padScope === null) {
+          return jsonResponse(PadTreeResponseSchema.parse({ items: tree }));
+        }
+        const included = new Set<string>();
+        const pad = tree.find((item) => item.kind === "pad" && item.pad.id === context.padScope);
+        if (pad?.kind === "pad") {
+          included.add(`pad:${pad.pad.id}`);
+          let parentId = pad.parentId;
+          while (parentId !== null) {
+            const folder = tree.find((item) => item.kind === "folder" && item.id === parentId);
+            if (folder?.kind !== "folder") break;
+            included.add(`folder:${folder.id}`);
+            parentId = folder.parentId;
+          }
+        }
+        return jsonResponse(
+          PadTreeResponseSchema.parse({
+            items: tree.filter((item) =>
+              included.has(item.kind === "pad" ? `pad:${item.pad.id}` : `folder:${item.id}`),
+            ),
+          }),
+        );
       }
-      if (request.method === "POST") {
+      if (request.method === "PUT") {
         this.requireCap(context, "pads:write");
         if (context.padScope !== null) {
-          throw new RequestError("forbidden", "scoped tokens cannot create pad folders");
+          throw new RequestError("forbidden", "scoped tokens cannot organize pads");
         }
-        const input = parseRequest(CreatePadFolderRequestSchema, await parseJsonBody(request));
-        const folder = this.store.createPadFolder(
+        const input = parseRequest(MovePadTreeItemRequestSchema, await parseJsonBody(request));
+        if (!this.store.movePadTreeItem(input.item, input.parentId, input.index)) {
+          throw new RequestError("conflict", "sidebar tree changed while moving an item");
+        }
+        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
+      }
+    }
+    if (pathname === "/api/pad-folders" && request.method === "POST") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot create pad folders");
+      }
+      const input = parseRequest(CreatePadFolderRequestSchema, await parseJsonBody(request));
+      if (
+        !this.store.createPadFolder(
           {
             id: this.runtime.newId(),
             name: input.name,
             createdAt: this.runtime.now(),
           },
-          input.padIds,
-        );
-        if (folder === null) {
-          throw new RequestError("conflict", "folder pads changed while grouping");
-        }
-        return jsonResponse(PadFolderResponseSchema.parse({ folder }));
+          input.parentId,
+        )
+      ) {
+        throw new RequestError("conflict", "parent folder changed while creating a folder");
       }
+      return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
     }
 
     const folderMatch = /^\/api\/pad-folders\/([^/]+)$/.exec(pathname);
@@ -261,38 +272,17 @@ export class HttpApp {
       }
       if (request.method === "PATCH") {
         const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
-        const folder = this.store.renamePadFolder(folderId, input.name);
-        if (folder === null) throw new RequestError("not_found", "pad folder not found");
-        return jsonResponse(PadFolderResponseSchema.parse({ folder }));
+        if (!this.store.renamePadFolder(folderId, input.name)) {
+          throw new RequestError("not_found", "pad folder not found");
+        }
+        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
       }
       if (request.method === "DELETE") {
         if (!this.store.deletePadFolder(folderId)) {
           throw new RequestError("not_found", "pad folder not found");
         }
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
       }
-    }
-
-    const movePadMatch = /^\/api\/pads\/([^/]+)\/folder$/.exec(pathname);
-    if (movePadMatch !== null && request.method === "PUT") {
-      const encodedId = movePadMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "pad id is missing");
-      let padId: string;
-      try {
-        padId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "pad id is invalid");
-      }
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write", padId);
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot organize pads");
-      }
-      const input = parseRequest(MovePadRequestSchema, await parseJsonBody(request));
-      if (!this.store.movePadToFolder(padId, input.folderId)) {
-        throw new RequestError("not_found", "pad or folder not found");
-      }
-      return jsonResponse(OkResponseSchema.parse({ ok: true }));
     }
 
     if (request.method === "GET" && pathname === "/api/pad-presence") {
