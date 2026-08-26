@@ -42,10 +42,13 @@ Auto-spawned local agent: server mints a machine token (raw copy kept at
 `bun packages/agent/src/main.ts` **detached** (survives server exit), and writes
 `<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one.
 
-Web URL scheme: the app lives at `/` (pad list) and `/p/<padId>` (pad view). The server
-SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
-fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
-storing it.
+Web URL scheme: `/` is the authenticated pad-browser entry point. It replaces itself with
+the last pad used by that principal on this device, falling back to the first visible pad;
+`/p/<padId>` remains the canonical deep link. Both routes render one persistent browser
+shell with a collapsible pad sidebar and the active canvas—there is no separate pad-list
+surface. The server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to
+`index.html`. The URL fragment is reserved for `#key=<owner-key>` bootstrap and is stripped
+by the client after storing it.
 
 ## Identity, tokens, capabilities
 
@@ -66,8 +69,10 @@ storing it.
 | GET /healthz            | none                  | → `{ ok, version, protocolVersion }`                                                                                                             |
 | GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
 | GET /api/pads           | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
+| GET /api/pad-presence   | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected principals; scoped tokens see only their pad                                         |
 | POST /api/pads          | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
 | GET /api/pads/:id       | pads:read             | → `{ pad }`                                                                                                                                      |
+| PATCH /api/pads/:id     | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
 | DELETE /api/pads/:id    | `*`                   | → `{ ok }`                                                                                                                                       |
 | POST /api/principals    | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
 | POST /api/tokens        | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |

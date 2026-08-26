@@ -10,8 +10,10 @@ import {
   MintTokenRequestSchema,
   OkResponseSchema,
   PROTOCOL_VERSION,
+  PadPresenceResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
+  RenamePadRequestSchema,
   RevokeRequestSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
@@ -188,6 +190,15 @@ export class HttpApp {
       return jsonResponse(PadsResponseSchema.parse({ pads }));
     }
 
+    if (request.method === "GET" && pathname === "/api/pad-presence") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      const pads = this.rooms
+        .presence()
+        .filter((pad) => context.padScope === null || pad.padId === context.padScope);
+      return jsonResponse(PadPresenceResponseSchema.parse({ pads }));
+    }
+
     if (request.method === "POST" && pathname === "/api/pads") {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
@@ -218,6 +229,13 @@ export class HttpApp {
       if (request.method === "GET") {
         this.requireCap(context, "pads:read", padId);
         const pad = this.store.getPad(padId);
+        if (pad === null) throw new RequestError("not_found", "pad not found");
+        return jsonResponse(PadResponseSchema.parse({ pad }));
+      }
+      if (request.method === "PATCH") {
+        this.requireCap(context, "pads:write", padId);
+        const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
+        const pad = this.store.renamePad(padId, input.name);
         if (pad === null) throw new RequestError("not_found", "pad not found");
         return jsonResponse(PadResponseSchema.parse({ pad }));
       }

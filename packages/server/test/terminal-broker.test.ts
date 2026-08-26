@@ -232,6 +232,46 @@ describe("TerminalBroker controller lease", () => {
     fixture.store.close();
   });
 
+  test("offline kill persists exit and kills the PTY if its machine reconnects", () => {
+    const fixture = brokerFixture();
+    const room = fixture.rooms.get(fixture.pad.id);
+    if (room === null) throw new Error("missing room");
+    room.join(fixture.opener);
+    fixture.socket.clear();
+    fixture.broker.setMachineOffline(fixture.machine);
+
+    fixture.broker.kill(fixture.opener, {
+      type: "terminal_kill",
+      sessionId: fixture.create.sessionId,
+    });
+
+    expect(fixture.store.getSession(fixture.create.sessionId)?.status).toBe("exited");
+    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
+    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    expect(fixture.socket.messages()).toContainEqual({
+      type: "session_event",
+      sessionId: fixture.create.sessionId,
+      kind: "exited",
+      exitCode: null,
+    });
+
+    fixture.broker.setMachineOnline(fixture.machine);
+    fixture.broker.reconcileMachineHello(fixture.machine.machineId, [
+      {
+        sessionId: fixture.create.sessionId,
+        cols: 80,
+        rows: 24,
+        alive: true,
+        seq: 0,
+      },
+    ]);
+    expect(fixture.machine.sent).toContainEqual({
+      type: "kill",
+      sessionId: fixture.create.sessionId,
+    });
+    fixture.store.close();
+  });
+
   test("session re-adoption broadcasts the reset controller lease", () => {
     const fixture = brokerFixture();
     const room = fixture.rooms.get(fixture.pad.id);

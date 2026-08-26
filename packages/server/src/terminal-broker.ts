@@ -762,14 +762,15 @@ export class TerminalBroker {
       return;
     }
     const machine = this.machines.get(session.info.machineId);
-    if (
-      machine === undefined ||
-      !machine.send({
-        type: "kill",
-        sessionId: message.sessionId,
-      })
-    ) {
-      peer.send({ type: "error", code: "no_machine", ref: message.sessionId });
+    if (machine === undefined) {
+      // A kill is durable even while the machine is offline. Persisting the exit
+      // prevents this stale row from surviving forever; if the PTY later reconnects,
+      // hello reconciliation sees the exited record and explicitly kills it.
+      this.onExited(session.info.machineId, message.sessionId, null);
+      return;
+    }
+    if (!machine.send({ type: "kill", sessionId: message.sessionId })) {
+      this.onExited(session.info.machineId, message.sessionId, null);
     }
   }
 

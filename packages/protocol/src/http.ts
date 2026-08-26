@@ -22,6 +22,9 @@ export type HttpError = z.infer<typeof HttpErrorSchema>;
 export const CreatePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
+export const RenamePadRequestSchema = z.strictObject({
+  name: z.string().min(1).max(120),
+});
 
 export const BootstrapPrincipalRequestSchema = z.strictObject({
   name: z.string().min(1).max(64),
@@ -73,6 +76,14 @@ export const OkResponseSchema = z.strictObject({ ok: z.literal(true) });
 
 export const PadResponseSchema = z.strictObject({ pad: PadSchema });
 export const PadsResponseSchema = z.strictObject({ pads: z.array(PadSchema) });
+export const PadPresenceSchema = z.strictObject({
+  padId: z.string().min(1),
+  principals: z.array(PrincipalSchema),
+});
+export type PadPresence = z.infer<typeof PadPresenceSchema>;
+export const PadPresenceResponseSchema = z.strictObject({
+  pads: z.array(PadPresenceSchema),
+});
 
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),

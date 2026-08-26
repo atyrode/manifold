@@ -56,11 +56,13 @@ export {
   HttpErrorSchema,
   MintTokenRequestSchema,
   PadSchema,
+  RenamePadRequestSchema,
   RevokeRequestSchema,
   TokenGrantSchema,
   type BootstrapPrincipalRequest,
   type HttpError,
   type MintTokenRequest,
+  type PadPresence,
   type Pad,
   type TokenGrant,
 } from "./http.ts";
@@ -74,5 +76,7 @@ export {
   MachinesResponseSchema,
   OkResponseSchema,
   PadResponseSchema,
+  PadPresenceResponseSchema,
+  PadPresenceSchema,
   PadsResponseSchema,
 } from "./http.ts";

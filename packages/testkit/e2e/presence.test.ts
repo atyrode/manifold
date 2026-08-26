@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import type { Cursor, Principal } from "@manifold/protocol";
+import { PadPresenceResponseSchema, type Cursor, type Principal } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createPad,
   mintToken,
+  ownerFetch,
   startServer,
   waitFor,
   type TestServer,
@@ -25,6 +26,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
     const server = await startServer();
     servers.push(server);
     const pad = await createPad(server, "presence");
+    const otherPad = await createPad(server, "other presence");
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Alice Presence", color: "#d13f62" },
       caps: ["pads:read", "scene:write"],
@@ -35,9 +37,15 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
       caps: ["pads:read", "scene:write"],
       padId: pad.id,
     });
+    const charlie = await mintToken(server, {
+      principal: { kind: "human", name: "Charlie Presence", color: "#2f9e44" },
+      caps: ["pads:read"],
+      padId: otherPad.id,
+    });
     const clientA = await connect(server, { padId: pad.id, token: alice.token });
     const clientB = await connect(server, { padId: pad.id, token: bob.token });
-    clients.push(clientA, clientB);
+    const clientC = await connect(server, { padId: otherPad.id, token: charlie.token });
+    clients.push(clientA, clientB, clientC);
 
     await waitFor(() => clientA.roster.size === 2 && clientB.roster.size === 2, 5_000, 20);
     const rosterAlice = clientB.roster.get(alice.principal.id);
@@ -47,6 +55,34 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
     }
     expectPrincipal(rosterAlice.principal, alice.principal);
     expectPrincipal(rosterBob.principal, bob.principal);
+
+    const crossPadPresence = await ownerFetch(server, "/api/pad-presence", {
+      responseSchema: PadPresenceResponseSchema,
+    });
+    expect(crossPadPresence.pads).toContainEqual({
+      padId: pad.id,
+      principals: [alice.principal, bob.principal].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+    });
+    expect(crossPadPresence.pads).toContainEqual({
+      padId: otherPad.id,
+      principals: [charlie.principal],
+    });
+
+    const scopedResponse = await fetch(`${server.httpUrl}/api/pad-presence`, {
+      headers: { authorization: `Bearer ${alice.token}` },
+    });
+    expect(scopedResponse.status).toBe(200);
+    const scopedPresence = PadPresenceResponseSchema.parse(await scopedResponse.json());
+    expect(scopedPresence.pads).toEqual([
+      {
+        padId: pad.id,
+        principals: [alice.principal, bob.principal].sort((left, right) =>
+          left.id.localeCompare(right.id),
+        ),
+      },
+    ]);
     expect(rosterAlice.connections).toBe(1);
     expect(rosterBob.connections).toBe(1);
 

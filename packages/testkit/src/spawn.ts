@@ -6,6 +6,7 @@ import {
   MachinesResponseSchema,
   MintTokenRequestSchema,
   OkResponseSchema,
+  PadPresenceResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
   TokenGrantSchema,
@@ -99,6 +100,7 @@ const RESPONSE_SCHEMA_BY_REQUEST: Record<string, ResponseSchema<unknown>> = {
   "GET /api/machines": MachinesResponseSchema,
   "POST /api/machines": MachineEnrollResponseSchema,
   "GET /api/pads": PadsResponseSchema,
+  "GET /api/pad-presence": PadPresenceResponseSchema,
   "POST /api/pads": PadResponseSchema,
   "POST /api/tokens": TokenGrantSchema,
   "POST /api/tokens/revoke": OkResponseSchema,
@@ -110,6 +112,7 @@ function defaultResponseSchema(path: string, method: string): ResponseSchema<unk
   if (exact !== undefined) return exact;
   if (/^\/api\/pads\/[^/]+$/.test(pathname)) {
     if (method === "GET") return PadResponseSchema;
+    if (method === "PATCH") return PadResponseSchema;
     if (method === "DELETE") return OkResponseSchema;
   }
   return undefined;

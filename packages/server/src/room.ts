@@ -8,6 +8,8 @@ import {
   type PresencePayload,
   type PresenceState,
   type RuntimeDeps,
+  type PadPresence,
+  type Principal,
   type SceneElement,
   type ServerMessage,
   type SessionInfo,
@@ -385,6 +387,16 @@ export class Room {
     return false;
   }
 
+  /** Returns the principal-level live roster without cursor or viewport payloads. */
+  livePrincipals(): Principal[] {
+    const principals: Principal[] = [];
+    for (const peers of this.connections.values()) {
+      const first = peers.values().next().value;
+      if (first !== undefined) principals.push(first.auth.principal);
+    }
+    return principals.sort((left, right) => left.id.localeCompare(right.id));
+  }
+
   /** Safe live-room summary for root introspection; no presence payloads or secrets. */
   introspect(): Record<string, unknown> {
     let connectionCount = 0;
@@ -449,6 +461,16 @@ export class RoomManager {
   /** Returns only an already materialized room; broker events must never load one. */
   live(padId: string): Room | null {
     return this.rooms.get(padId) ?? null;
+  }
+
+  /** Summarizes presence from already-live rooms without materializing idle pads. */
+  presence(): PadPresence[] {
+    const pads: PadPresence[] = [];
+    for (const room of this.rooms.values()) {
+      const principals = room.livePrincipals();
+      if (principals.length > 0) pads.push({ padId: room.padId, principals });
+    }
+    return pads.sort((left, right) => left.padId.localeCompare(right.padId));
   }
 
   /** Rechecks an idle resident after its last running terminal exits. */

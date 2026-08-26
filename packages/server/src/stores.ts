@@ -244,6 +244,12 @@ export class ServerStore {
       )
       .run(pad.id, pad.name, pad.createdAt);
   }
+  renamePad(id: string, name: string): Pad | null {
+    const result = this.db
+      .query<void, [string, string]>("UPDATE pads SET name = ? WHERE id = ?")
+      .run(name, id);
+    return result.changes === 0 ? null : this.getPad(id);
+  }
 
   deletePad(id: string): boolean {
     const remove = this.db.transaction(() => {
