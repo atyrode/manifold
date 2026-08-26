@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-26
+
 ### Fixed
 
 - Restored the trail behind the eraser during right-button drags (#34, #35).
