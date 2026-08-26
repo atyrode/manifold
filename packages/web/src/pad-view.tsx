@@ -1358,10 +1358,20 @@ export function PadView({
       const pointer = snapshotRightClickPointer(event);
       const dragStarted = hasRightClickDragStarted(rightClickStateRef.current, pointer);
       rightClickStateRef.current = moveRightClick(rightClickStateRef.current, pointer);
-      if (dragStarted) startRightClickErasing(pointer.pointerId);
+      if (dragStarted) {
+        // Regression guard (#34): activate from a timer task exactly like the
+        // proven hold path. Activating inside this continuous pointer event let
+        // the rAF dispatch outrun React's deferred tool-state commit, so
+        // Excalidraw skipped eraserTrail.startPath() and the trail vanished.
+        clearRightClickTimer();
+        rightClickTimerRef.current = window.setTimeout(
+          () => startRightClickErasing(pointer.pointerId),
+          0,
+        );
+      }
       emitCursorFromClient();
     },
-    [emitCursorFromClient, startRightClickErasing],
+    [clearRightClickTimer, emitCursorFromClient, startRightClickErasing],
   );
 
   const handleRightPointerUp = useCallback(
