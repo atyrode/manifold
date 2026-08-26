@@ -4,6 +4,7 @@ import {
   activateRightClickEraser,
   beginRightClick,
   moveRightClick,
+  hasRightClickDragStarted,
   releaseRightClick,
   type RightClickPointer,
 } from "./right-click-eraser.ts";
@@ -42,6 +43,13 @@ describe("right-click eraser policy", () => {
       action: "finish_erasing",
       state: IDLE_RIGHT_CLICK_STATE,
     });
+  });
+
+  test("the first right-button movement activates drag", () => {
+    const pending = beginRightClick(pointer());
+
+    expect(hasRightClickDragStarted(pending, pointer())).toBe(false);
+    expect(hasRightClickDragStarted(pending, pointer({ clientX: 121 }))).toBe(true);
   });
 
   test("events from another pointer cannot activate or release the gesture", () => {

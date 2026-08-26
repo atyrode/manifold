@@ -7,11 +7,9 @@ import {
   type ItemInstance,
   type TreeInstance,
 } from "@headless-tree/core";
-import { AssistiveTreeDescription } from "@headless-tree/react";
 import { Button } from "@excalidraw/excalidraw";
 import type { Pad, PadPresence, PadSessionSummary, PadTreeItem } from "@manifold/protocol";
 import {
-  memo,
   useCallback,
   useEffect,
   useRef,
@@ -39,7 +37,7 @@ import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { PadView } from "./pad-view.tsx";
 import { projectLocalPresence } from "./presence-projection.ts";
-import { buildPadTree, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
   MachinesSection,
   WorkspaceSessionRow,
@@ -94,6 +92,14 @@ function initialSidebarOpen(): boolean {
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 480;
+const SIDEBAR_ROOT_ITEM: PadTreeItem = {
+  kind: "folder",
+  id: "__sidebar_root__",
+  name: "Pads",
+  createdAt: 0,
+  parentId: null,
+  sortOrder: -1,
+};
 
 function initialSidebarWidth(): number {
   try {
@@ -123,23 +129,6 @@ function initialSessionTree(): boolean {
   }
 }
 
-interface DragStableTreeProps {
-  readonly tree: TreeInstance<PadTreeItem | null>;
-  readonly render: () => ReactNode;
-}
-
-/**
- * Native DnD keeps mutable ItemInstance references in Headless Tree state. Parent
- * polling continues during a drag, so hold the last settled tree render until the
- * core clears DnD state; direct DOM presentation still paints targets and drag lines.
- */
-const DragStableTree = memo(
-  function DragStableTree({ render }: DragStableTreeProps): ReactNode {
-    return render();
-  },
-  (_previous, next) => next.tree.getState().dnd != null,
-);
-
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
   const [treeItems, setTreeItems] = useState<readonly PadTreeItem[] | null>(null);
@@ -167,7 +156,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [, renderTreeState] = useState(0);
   const dndFrameRef = useRef<number | null>(null);
-  const treeInstanceRef = useRef<TreeInstance<PadTreeItem | null> | null>(null);
+  const treeInstanceRef = useRef<TreeInstance<PadTreeItem> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
@@ -281,7 +270,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const refresh = (): void => {
       void getPadSessions(identity.token)
         .then((sessions) => {
-          if (active) setPadSessions(sessions);
+          if (active && treeInstanceRef.current?.getState().dnd == null) {
+            setPadSessions(sessions);
+          }
         })
         .catch(() => {
           // Session inventory keeps its last successful snapshot across transient failures.
@@ -300,7 +291,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const refresh = (): void => {
       void getPadPresence(identity.token)
         .then((nextPresence) => {
-          if (active) setPresence(nextPresence);
+          if (active && treeInstanceRef.current?.getState().dnd == null) {
+            setPresence(nextPresence);
+          }
         })
         .catch(() => {
           // Presence is ephemeral; keep the last successful snapshot.
@@ -531,7 +524,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   };
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
   const treeData = useMemo(() => {
-    const data = new Map<string, { item: PadTreeItem | null; children: string[] }>();
+    const data = new Map<string, { item: PadTreeItem; children: string[] }>();
     const roots = buildPadTree(treeItems ?? []);
     const addNodes = (nodes: readonly PadTreeNode[]): string[] =>
       nodes.map((node) => {
@@ -539,11 +532,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         data.set(id, { item: node.item, children: addNodes(node.children) });
         return id;
       });
-    data.set("root", { item: null, children: addNodes(roots) });
+    data.set("root", { item: SIDEBAR_ROOT_ITEM, children: addNodes(roots) });
     return data;
   }, [treeItems]);
   const treeDataRef = useRef(treeData);
-  const tree = useHeadlessTree<PadTreeItem | null>({
+  const tree = useHeadlessTree<PadTreeItem>({
     initialState: { expandedItems: initialExpandedItems },
     // Core owns drag targeting; this paints its state without routing ItemInstance objects
     // through React, which tears down the tree during native drags in React 19.
@@ -551,16 +544,21 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     rootItemId: "root",
     getItemName: (item) => {
       const data = item.getItemData();
-      return data === null ? "Pads" : data.kind === "pad" ? data.pad.name : data.name;
+      return item.getId() === "root" ? "Pads" : data.kind === "pad" ? data.pad.name : data.name;
     },
-    isItemFolder: (item) => item.getItemData()?.kind === "folder" || item.getId() === "root",
+    isItemFolder: (item) => item.getItemData().kind === "folder",
     dataLoader: {
-      getItem: (itemId) => treeDataRef.current.get(itemId)?.item ?? null,
+      getItem: (itemId) => {
+        const entry = treeDataRef.current.get(itemId);
+        if (entry === undefined) throw new Error(`Unknown sidebar tree item: ${itemId}`);
+        return entry.item;
+      },
       getChildren: (itemId) => treeDataRef.current.get(itemId)?.children ?? [],
     },
     indent: 16,
     canReorder: true,
-    seperateDragHandle: true,
+    seperateDragHandle: false,
+    draggedItemOverwritesSelection: true,
     canDrag: (items) => {
       if (reorderingRef.current || items.length !== 1) return false;
       const data = items[0]?.getItemData();
@@ -570,12 +568,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
-    onDrop: async (items, target) => {
+    onDrop: (items, target) => {
       const moved = items[0]?.getItemData();
-      if (moved === undefined || moved === null || reorderingRef.current) return;
+      if (moved === undefined || moved === null || reorderingRef.current || treeItems === null) {
+        return;
+      }
       const targetData = target.item.getItemData();
       const parentId =
-        targetData === null
+        target.item.getId() === "root"
           ? null
           : targetData.kind === "folder"
             ? targetData.id
@@ -583,28 +583,34 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       const index = isOrderedDragTarget(target)
         ? target.insertionIndex
         : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
+      const item = { kind: moved.kind, id: treeItemId(moved) } as const;
+      const previousTreeItems = treeItems;
+      const optimisticTreeItems = projectPadTreeMove(treeItems, item, parentId, index);
+      const request = movePadTreeItem(identity.token, item, parentId, index).then(
+        (nextTreeItems) => ({ ok: true, nextTreeItems }) as const,
+        (reason: unknown) => ({ ok: false, reason }) as const,
+      );
+
       reorderingRef.current = true;
-      try {
-        const nextTreeItems = await movePadTreeItem(
-          identity.token,
-          { kind: moved.kind, id: treeItemId(moved) },
-          parentId,
-          index,
-        );
-        // Headless Tree clears native DnD state only after onDrop resolves. Rendering
-        // before then exposes React to mutable ItemInstance references and can tear
-        // down the root, so publish the server result in the following task.
-        window.setTimeout(() => {
-          setError(null);
-          setTreeItems(nextTreeItems);
+      // Headless Tree clears native DnD state after onDrop returns. Paint the local
+      // projection in the following task, then reconcile with the server response.
+      window.setTimeout(() => {
+        setError(null);
+        setTreeItems(optimisticTreeItems);
+        void request.then((outcome) => {
+          if (outcome.ok) {
+            setTreeItems(outcome.nextTreeItems);
+          } else {
+            setTreeItems(previousTreeItems);
+            setError(
+              outcome.reason instanceof Error
+                ? outcome.reason.message
+                : "Could not move the sidebar item",
+            );
+          }
           reorderingRef.current = false;
-        }, 0);
-      } catch (reason: unknown) {
-        window.setTimeout(() => {
-          setError(reason instanceof Error ? reason.message : "Could not move the sidebar item");
-          reorderingRef.current = false;
-        }, 0);
-      }
+        });
+      }, 0);
     },
     features: [
       syncDataLoaderFeature,
@@ -872,7 +878,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   const renderFolder = (
     folder: Extract<PadTreeItem, { kind: "folder" }>,
-    item: ItemInstance<PadTreeItem | null>,
+    item: ItemInstance<PadTreeItem>,
   ): ReactNode => {
     const actionId = `folder:${folder.id}`;
     if (!sidebarOpen) {
@@ -1166,58 +1172,47 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
           {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
 
-          <DragStableTree
-            tree={tree}
-            render={() => (
-              <div
-                {...tree.getContainerProps()}
-                className="pad-sidebar-list pad-sidebar-tree"
-                data-testid="pad-sidebar-list"
-              >
-                <AssistiveTreeDescription className="pad-tree-assistive" tree={tree} />
-                {sidebarOpen && treeItems === null ? (
-                  <p className="pad-sidebar-muted">Loading pads…</p>
-                ) : null}
-                {sidebarOpen && treeItems?.length === 0 ? (
-                  <p className="pad-sidebar-muted">No pads yet</p>
-                ) : null}
-                {treeItems === null
-                  ? null
-                  : tree.getItems().map((item) => {
-                      const data = item.getItemData();
-                      if (data === null) return null;
-                      const name = data.kind === "pad" ? data.pad.name : data.name;
-                      return (
-                        <div
-                          {...item.getProps()}
-                          className={`pad-tree-item${item.isDragTarget() ? " is-drop-target" : ""}`}
-                          data-tree-kind={data.kind}
-                          data-tree-id={treeItemId(data)}
-                          style={
-                            sidebarOpen
-                              ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
-                              : undefined
-                          }
-                          key={item.getId()}
-                        >
-                          <span
-                            {...item.getDragHandleProps()}
-                            className="pad-drag-handle"
-                            aria-label={`Reorder ${name}`}
-                            role="button"
-                            tabIndex={0}
-                            title={`Drag or use the keyboard to reorder ${name}`}
-                          >
-                            <span aria-hidden="true">⋮⋮</span>
-                          </span>
-                          {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
-                        </div>
-                      );
-                    })}
-                <div style={tree.getDragLineStyle()} className="pad-tree-drag-line" />
-              </div>
-            )}
-          />
+          <div
+            {...tree.getContainerProps()}
+            className="pad-sidebar-list pad-sidebar-tree"
+            data-testid="pad-sidebar-list"
+          >
+            <span className="pad-tree-assistive" role="status" aria-live="polite">
+              Press Control+Shift+D to move the focused item.
+            </span>
+            {sidebarOpen && treeItems === null ? (
+              <p className="pad-sidebar-muted">Loading pads…</p>
+            ) : null}
+            {sidebarOpen && treeItems?.length === 0 ? (
+              <p className="pad-sidebar-muted">No pads yet</p>
+            ) : null}
+            {treeItems === null
+              ? null
+              : tree.getItems().map((item) => {
+                  const data = item.getItemData();
+                  const itemProps = item.getProps();
+                  return (
+                    <div
+                      {...itemProps}
+                      className="pad-tree-item"
+                      data-tree-kind={data.kind}
+                      data-tree-id={treeItemId(data)}
+                      style={
+                        sidebarOpen
+                          ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
+                          : undefined
+                      }
+                      key={item.getId()}
+                    >
+                      <span className="pad-drag-handle" aria-hidden="true">
+                        ⋮⋮
+                      </span>
+                      {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
+                    </div>
+                  );
+                })}
+            <div style={{ display: "none" }} className="pad-tree-drag-line" />
+          </div>
 
           {sidebarOpen && workspace !== null ? (
             <WorkspaceStatus

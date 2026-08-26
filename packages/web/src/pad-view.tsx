@@ -53,6 +53,7 @@ import {
   RIGHT_CLICK_ERASER_HOLD_MS,
   activateRightClickEraser,
   beginRightClick,
+  hasRightClickDragStarted,
   moveRightClick,
   releaseRightClick,
   type RightClickPointer,
@@ -1298,6 +1299,31 @@ export function PadView({
     rightClickTimerRef.current = null;
   }, []);
 
+  const startRightClickErasing = useCallback(
+    (pointerId: number): void => {
+      clearRightClickTimer();
+      const active = activateRightClickEraser(rightClickStateRef.current, pointerId);
+      if (active.phase !== "erasing") return;
+      const api = apiRef.current;
+      const target = rightClickTargetRef.current;
+      if (api === null || !target?.isConnected) return;
+      rightClickStateRef.current = active;
+      rightClickPreviousToolRef.current = api.getAppState().activeTool;
+      api.setActiveTool({ type: "eraser", locked: true });
+      window.requestAnimationFrame(() => {
+        const current = rightClickStateRef.current;
+        if (
+          current.phase === "erasing" &&
+          current.pointer.pointerId === pointerId &&
+          rightClickTargetRef.current === target
+        ) {
+          dispatchEraserPointerDown(target, current.pointer);
+        }
+      });
+    },
+    [clearRightClickTimer],
+  );
+
   const handleRightPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
       if (
@@ -1316,41 +1342,24 @@ export function PadView({
       rightClickStateRef.current = beginRightClick(pointer);
       rightClickTargetRef.current = target;
       clearRightClickTimer();
-      rightClickTimerRef.current = window.setTimeout(() => {
-        rightClickTimerRef.current = null;
-        const active = activateRightClickEraser(rightClickStateRef.current, pointer.pointerId);
-        if (active.phase !== "erasing") return;
-        const api = apiRef.current;
-        const currentTarget = rightClickTargetRef.current;
-        if (api === null || !currentTarget?.isConnected) return;
-        rightClickStateRef.current = active;
-        rightClickPreviousToolRef.current = api.getAppState().activeTool;
-        api.setActiveTool({ type: "eraser", locked: true });
-        window.requestAnimationFrame(() => {
-          const current = rightClickStateRef.current;
-          if (
-            current.phase === "erasing" &&
-            current.pointer.pointerId === pointer.pointerId &&
-            rightClickTargetRef.current === currentTarget
-          ) {
-            dispatchEraserPointerDown(currentTarget, current.pointer);
-          }
-        });
-      }, RIGHT_CLICK_ERASER_HOLD_MS);
+      rightClickTimerRef.current = window.setTimeout(
+        () => startRightClickErasing(pointer.pointerId),
+        RIGHT_CLICK_ERASER_HOLD_MS,
+      );
     },
-    [clearRightClickTimer],
+    [clearRightClickTimer, startRightClickErasing],
   );
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
       lastClientRef.current = { x: event.clientX, y: event.clientY };
-      rightClickStateRef.current = moveRightClick(
-        rightClickStateRef.current,
-        snapshotRightClickPointer(event),
-      );
+      const pointer = snapshotRightClickPointer(event);
+      const dragStarted = hasRightClickDragStarted(rightClickStateRef.current, pointer);
+      rightClickStateRef.current = moveRightClick(rightClickStateRef.current, pointer);
+      if (dragStarted) startRightClickErasing(pointer.pointerId);
       emitCursorFromClient();
     },
-    [emitCursorFromClient],
+    [emitCursorFromClient, startRightClickErasing],
   );
 
   const handleRightPointerUp = useCallback(
@@ -1359,8 +1368,8 @@ export function PadView({
       const pointer = snapshotRightClickPointer(event);
       const release = releaseRightClick(rightClickStateRef.current, pointer);
       if (release.action === "ignore") return;
-
       clearRightClickTimer();
+
       rightClickStateRef.current = release.state;
       const target = rightClickTargetRef.current;
       rightClickTargetRef.current = null;

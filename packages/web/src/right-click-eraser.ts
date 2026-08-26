@@ -31,6 +31,15 @@ export function moveRightClick(
   if (state.phase === "idle" || state.pointer.pointerId !== pointer.pointerId) return state;
   return { ...state, pointer };
 }
+export function hasRightClickDragStarted(
+  state: RightClickState,
+  pointer: RightClickPointer,
+): boolean {
+  if (state.phase !== "pending" || state.pointer.pointerId !== pointer.pointerId) return false;
+  const deltaX = pointer.clientX - state.pointer.clientX;
+  const deltaY = pointer.clientY - state.pointer.clientY;
+  return deltaX !== 0 || deltaY !== 0;
+}
 
 export function activateRightClickEraser(
   state: RightClickState,
