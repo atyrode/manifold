@@ -1,10 +1,20 @@
-import { DragDropProvider } from "@dnd-kit/react";
-import { isSortableOperation, useSortable } from "@dnd-kit/react/sortable";
-import { Button } from "@excalidraw/excalidraw";
-import type { Pad, PadFolder, PadPresence, PadSessionSummary } from "@manifold/protocol";
 import {
+  dragAndDropFeature,
+  hotkeysCoreFeature,
+  isOrderedDragTarget,
+  keyboardDragAndDropFeature,
+  syncDataLoaderFeature,
+  type ItemInstance,
+  type TreeInstance,
+} from "@headless-tree/core";
+import { AssistiveTreeDescription } from "@headless-tree/react";
+import { Button } from "@excalidraw/excalidraw";
+import type { Pad, PadPresence, PadSessionSummary, PadTreeItem } from "@manifold/protocol";
+import {
+  useCallback,
   useEffect,
   useRef,
+  useMemo,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -18,18 +28,17 @@ import {
   deletePadFolder,
   getPadPresence,
   getPadSessions,
-  listPadFolders,
-  listPads,
-  movePadToFolder,
+  listPadTree,
+  movePadTreeItem,
   renamePad,
   renamePadFolder,
-  reorderPads,
   type StoredIdentity,
 } from "./api.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { PadView } from "./pad-view.tsx";
 import { projectLocalPresence } from "./presence-projection.ts";
+import { buildPadTree, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
   MachinesSection,
   WorkspaceSessionRow,
@@ -37,6 +46,7 @@ import {
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
+import { useHeadlessTree } from "./use-headless-tree.ts";
 
 interface NavigateOptions {
   readonly replace?: boolean;
@@ -112,86 +122,21 @@ function initialSessionTree(): boolean {
   }
 }
 
-type PadNavigationEntry =
-  | { readonly kind: "pad"; readonly pad: Pad }
-  | { readonly kind: "folder"; readonly folder: PadFolder; readonly pads: readonly Pad[] };
-
-function buildPadNavigationEntries(
-  pads: readonly Pad[],
-  folders: readonly PadFolder[],
-): readonly PadNavigationEntry[] {
-  const folderByPadId = new Map<string, PadFolder>();
-  folders.forEach((folder) => folder.padIds.forEach((padId) => folderByPadId.set(padId, folder)));
-  const emittedFolders = new Set<string>();
-  const entries: PadNavigationEntry[] = [];
-  pads.forEach((pad) => {
-    const folder = folderByPadId.get(pad.id);
-    if (folder === undefined) {
-      entries.push({ kind: "pad", pad });
-    } else if (!emittedFolders.has(folder.id)) {
-      emittedFolders.add(folder.id);
-      entries.push({
-        kind: "folder",
-        folder,
-        pads: pads.filter((candidate) => folder.padIds.includes(candidate.id)),
-      });
-    }
-  });
-  folders.forEach((folder) => {
-    if (!emittedFolders.has(folder.id)) entries.push({ kind: "folder", folder, pads: [] });
-  });
-  return entries;
-}
-
-interface SortablePadShellProps {
-  readonly id: string;
-  readonly index: number;
-  readonly group: string;
-  readonly disabled: boolean;
-  readonly name: string;
-  readonly children: ReactNode;
-}
-
-function SortablePadShell({ id, index, group, disabled, name, children }: SortablePadShellProps) {
-  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
-    id,
-    index,
-    group,
-    disabled,
-    transition: { duration: 160, easing: "ease" },
-  });
-  return (
-    <div
-      ref={ref}
-      className={`pad-sortable${isDragging ? " is-dragging" : ""}${isDropTarget ? " is-drop-target" : ""}`}
-      data-pad-id={id}
-    >
-      {disabled ? null : (
-        <button
-          ref={handleRef}
-          className="pad-drag-handle"
-          type="button"
-          aria-label={`Reorder ${name}`}
-          title={`Drag or use the keyboard to reorder ${name}`}
-        >
-          <span aria-hidden="true">⠿</span>
-        </button>
-      )}
-      {children}
-    </div>
-  );
-}
-
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
-  const [pads, setPads] = useState<Pad[] | null>(null);
-  const [folders, setFolders] = useState<readonly PadFolder[] | null>(null);
+  const [treeItems, setTreeItems] = useState<readonly PadTreeItem[] | null>(null);
+  const pads =
+    treeItems === null
+      ? null
+      : treeItems
+          .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
+          .map((item) => item.pad);
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
-  const [folderCreateOpen, setFolderCreateOpen] = useState(false);
+  const [folderCreateParentId, setFolderCreateParentId] = useState<string | null | undefined>();
   const [folderName, setFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
@@ -202,6 +147,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const [reordering, setReordering] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [, renderTreeState] = useState(0);
+  const dndFrameRef = useRef<number | null>(null);
+  const treeInstanceRef = useRef<TreeInstance<PadTreeItem | null> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
@@ -210,10 +158,18 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
-  const dragPointerYRef = useRef<number | null>(null);
-  const dragTargetsRef = useRef<
-    readonly { readonly id: string; readonly top: number; readonly bottom: number }[]
-  >([]);
+  const [initialExpandedItems] = useState<string[]>(() => {
+    try {
+      const stored: unknown = JSON.parse(
+        window.localStorage.getItem("manifold:expanded-pad-folders") ?? "[]",
+      );
+      return Array.isArray(stored)
+        ? stored.filter((id): id is string => typeof id === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const [renaming, setRenaming] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -222,13 +178,77 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
   const [memory] = useState(browserPadStorage);
 
+  const scheduleDndPresentation = useCallback((): void => {
+    if (dndFrameRef.current !== null) return;
+    dndFrameRef.current = window.requestAnimationFrame(() => {
+      dndFrameRef.current = null;
+      const tree = treeInstanceRef.current;
+      if (tree === null) return;
+      const container = tree.getElement();
+      if (container === null || container === undefined) return;
+
+      for (const element of container.querySelectorAll(".pad-tree-item.is-drop-target")) {
+        element.classList.remove("is-drop-target");
+      }
+      for (const item of tree.getItems()) {
+        item
+          .getElement()
+          ?.closest(".pad-tree-item")
+          ?.classList.toggle("is-drop-target", item.isDragTarget());
+      }
+
+      const liveRegion = container.querySelector<HTMLElement>(".pad-tree-assistive");
+      if (liveRegion !== null) {
+        const dnd = tree.getState().dnd;
+        const names = dnd?.draggedItems?.map((item) => item.getItemName()).join(", ");
+        const target = dnd?.dragTarget;
+        const position =
+          target === null || target === undefined
+            ? "No drop target."
+            : isOrderedDragTarget(target)
+              ? `Position ${target.insertionIndex + 1} near ${target.item.getItemName()}.`
+              : `Inside ${target.item.getItemName()}.`;
+        liveRegion.textContent =
+          names === undefined
+            ? "Press Control+Shift+D to move the focused item."
+            : `Moving ${names}. ${position} Use arrow keys to choose a position, Enter to drop, or Escape to cancel.`;
+      }
+
+      const dragLine = container.querySelector<HTMLElement>(".pad-tree-drag-line");
+      if (dragLine !== null) {
+        dragLine.removeAttribute("style");
+        Object.assign(dragLine.style, tree.getDragLineStyle());
+      }
+    });
+  }, []);
+
+  const renderSettledTreeState = useCallback((): void => {
+    const tree = treeInstanceRef.current;
+    if (tree === null) return;
+    if (tree.getState().dnd !== null && tree.getState().dnd !== undefined) return;
+    try {
+      window.localStorage.setItem(
+        "manifold:expanded-pad-folders",
+        JSON.stringify(tree.getState().expandedItems),
+      );
+    } catch {
+      // Folder expansion memory is optional.
+    }
+    renderTreeState((revision) => revision + 1);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (dndFrameRef.current !== null) window.cancelAnimationFrame(dndFrameRef.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     let active = true;
-    void Promise.all([listPads(identity.token), listPadFolders(identity.token)])
-      .then(([nextPads, nextFolders]) => {
-        if (!active) return;
-        setPads(nextPads);
-        setFolders(nextFolders);
+    void listPadTree(identity.token)
+      .then((items) => {
+        if (active) setTreeItems(items);
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : "Could not load pads");
@@ -316,14 +336,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   }, [actionPadId]);
 
   useEffect(() => {
-    const trackDragPointer = (event: PointerEvent): void => {
-      if (event.buttons !== 0) dragPointerYRef.current = event.clientY;
-    };
-    document.addEventListener("pointermove", trackDragPointer, { capture: true });
-    return () => document.removeEventListener("pointermove", trackDragPointer, { capture: true });
-  }, []);
-
-  useEffect(() => {
     if (!changelogOpen) return;
     const dialog = changelogDialogRef.current;
     if (dialog !== null && !dialog.open) dialog.showModal();
@@ -352,7 +364,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setError(null);
     try {
       const pad = await createPad(identity.token, trimmedName);
-      setPads((current) => [...(current ?? []), pad]);
+      setTreeItems(await listPadTree(identity.token));
       setName("");
       setCreateOpen(false);
       rememberPad(memory, identity.principal.id, pad.id);
@@ -369,8 +381,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setError(null);
     try {
       await deletePad(identity.token, pad.id);
-      const remaining = (pads ?? []).filter((candidate) => candidate.id !== pad.id);
-      setPads(remaining);
+      const nextTree = await listPadTree(identity.token);
+      const remaining = nextTree
+        .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
+        .map((item) => item.pad);
+      setTreeItems(nextTree);
       forgetPad(memory, identity.principal.id, pad.id);
       if (requestedPadId === pad.id) {
         const deletedIndex = (pads ?? []).findIndex((candidate) => candidate.id === pad.id);
@@ -407,7 +422,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setError(null);
     try {
       const renamed = await renamePad(identity.token, renameTarget.id, trimmedName);
-      setPads((current) => current?.map((pad) => (pad.id === renamed.id ? renamed : pad)) ?? null);
+      setTreeItems(
+        (current) =>
+          current?.map((item) =>
+            item.kind === "pad" && item.pad.id === renamed.id ? { ...item, pad: renamed } : item,
+          ) ?? null,
+      );
       setRenameTarget(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not rename the pad");
@@ -418,14 +438,18 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   const submitFolder = async (): Promise<void> => {
     const trimmedName = folderName.trim();
-    if (trimmedName.length === 0) return;
+    if (trimmedName.length === 0 || folderCreateParentId === undefined) return;
     setCreatingFolder(true);
     setError(null);
     try {
-      const folder = await createPadFolder(identity.token, trimmedName);
-      setFolders((current) => [...(current ?? []), folder]);
+      const nextTree = await createPadFolder(identity.token, trimmedName, folderCreateParentId);
+      setTreeItems(nextTree);
+      if (folderCreateParentId !== null) {
+        tree.getItemInstance(`folder:${folderCreateParentId}`).expand();
+        renderSettledTreeState();
+      }
       setFolderName("");
-      setFolderCreateOpen(false);
+      setFolderCreateParentId(undefined);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create the folder");
     } finally {
@@ -433,7 +457,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     }
   };
 
-  const submitFolderRename = async (folder: PadFolder): Promise<void> => {
+  const submitFolderRename = async (
+    folder: Extract<PadTreeItem, { kind: "folder" }>,
+  ): Promise<void> => {
     const trimmedName = folderRenameName.trim();
     if (trimmedName.length === 0 || trimmedName === folder.name) {
       setRenamingFolderId(null);
@@ -441,113 +467,24 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     }
     setError(null);
     try {
-      const renamed = await renamePadFolder(identity.token, folder.id, trimmedName);
-      setFolders(
-        (current) =>
-          current?.map((candidate) => (candidate.id === renamed.id ? renamed : candidate)) ?? null,
-      );
+      setTreeItems(await renamePadFolder(identity.token, folder.id, trimmedName));
       setRenamingFolderId(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not rename the folder");
     }
   };
 
-  const removeFolder = async (folder: PadFolder): Promise<void> => {
+  const removeFolder = async (folder: Extract<PadTreeItem, { kind: "folder" }>): Promise<void> => {
     setDeletingFolderId(folder.id);
     setError(null);
     try {
-      await deletePadFolder(identity.token, folder.id);
-      setFolders((current) => current?.filter((candidate) => candidate.id !== folder.id) ?? null);
+      setTreeItems(await deletePadFolder(identity.token, folder.id));
       setConfirmFolderDeleteId(null);
+      setRenamingFolderId(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not delete the folder");
     } finally {
       setDeletingFolderId(null);
-    }
-  };
-
-  const movePad = async (padId: string, folderId: string | null): Promise<void> => {
-    const previous = folders;
-    setError(null);
-    setFolders(
-      (current) =>
-        current?.map((folder) => ({
-          ...folder,
-          padIds: [
-            ...folder.padIds.filter((candidate) => candidate !== padId),
-            ...(folder.id === folderId ? [padId] : []),
-          ],
-        })) ?? null,
-    );
-    try {
-      await movePadToFolder(identity.token, padId, folderId);
-    } catch (reason: unknown) {
-      setFolders(previous);
-      setError(reason instanceof Error ? reason.message : "Could not move the pad");
-    }
-  };
-
-  const commitPadOrder = async (sourceId: string, targetId: string): Promise<void> => {
-    if (pads === null || sourceId === targetId || reordering) return;
-    const sourceIndex = pads.findIndex((pad) => pad.id === sourceId);
-    const targetIndex = pads.findIndex((pad) => pad.id === targetId);
-    if (sourceIndex < 0 || targetIndex < 0) return;
-    const previous = pads;
-    const next = [...pads];
-    const [moved] = next.splice(sourceIndex, 1);
-    if (moved === undefined) return;
-    next.splice(targetIndex, 0, moved);
-    setPads(next);
-    setReordering(true);
-    try {
-      await reorderPads(
-        identity.token,
-        next.map((pad) => pad.id),
-      );
-    } catch (reason: unknown) {
-      setPads(previous);
-      setError(reason instanceof Error ? reason.message : "Could not reorder pads");
-    } finally {
-      setReordering(false);
-    }
-  };
-
-  const groupPadWithTarget = async (sourceId: string, targetId: string): Promise<void> => {
-    if (pads === null || folders === null || sourceId === targetId || reordering) return;
-    const targetFolder = folders.find((folder) => folder.padIds.includes(targetId)) ?? null;
-    const sourceFolder = folders.find((folder) => folder.padIds.includes(sourceId)) ?? null;
-    if (targetFolder !== null) {
-      if (sourceFolder?.id === targetFolder.id) {
-        await commitPadOrder(sourceId, targetId);
-      } else {
-        await movePad(sourceId, targetFolder.id);
-      }
-      return;
-    }
-
-    const previous = folders;
-    const groupedIds = [sourceId, targetId].sort(
-      (left, right) =>
-        pads.findIndex((pad) => pad.id === left) - pads.findIndex((pad) => pad.id === right),
-    );
-    setReordering(true);
-    setError(null);
-    try {
-      const folder = await createPadFolder(identity.token, "New folder", groupedIds);
-      setFolders((current) => [
-        ...(current ?? []).map((candidate) => ({
-          ...candidate,
-          padIds: candidate.padIds.filter((padId) => !groupedIds.includes(padId)),
-        })),
-        folder,
-      ]);
-      setRenamingFolderId(folder.id);
-      setFolderRenameName(folder.name);
-    } catch (reason: unknown) {
-      setFolders(previous);
-      setError(reason instanceof Error ? reason.message : "Could not group the pads");
-    } finally {
-      setReordering(false);
     }
   };
 
@@ -575,11 +512,94 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     navigate(`/p/${encodeURIComponent(pad.id)}`);
   };
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
-  const navigationEntries = pads === null ? [] : buildPadNavigationEntries(pads, folders ?? []);
-  const navigationPads = navigationEntries.flatMap((entry) =>
-    entry.kind === "pad" ? [entry.pad] : entry.pads,
-  );
-  const renderPad = (pad: Pad, groupIndex: number, folderId: string | null): ReactNode => {
+  const treeData = useMemo(() => {
+    const data = new Map<string, { item: PadTreeItem | null; children: string[] }>();
+    const roots = buildPadTree(treeItems ?? []);
+    const addNodes = (nodes: readonly PadTreeNode[]): string[] =>
+      nodes.map((node) => {
+        const id = `${node.item.kind}:${treeItemId(node.item)}`;
+        data.set(id, { item: node.item, children: addNodes(node.children) });
+        return id;
+      });
+    data.set("root", { item: null, children: addNodes(roots) });
+    return data;
+  }, [treeItems]);
+  const treeDataRef = useRef(treeData);
+  const tree = useHeadlessTree<PadTreeItem | null>({
+    initialState: { expandedItems: initialExpandedItems },
+    // Core owns drag targeting; this paints its state without routing ItemInstance objects
+    // through React, which tears down the tree during native drags in React 19.
+    setDndState: scheduleDndPresentation,
+    rootItemId: "root",
+    getItemName: (item) => {
+      const data = item.getItemData();
+      return data === null ? "Pads" : data.kind === "pad" ? data.pad.name : data.name;
+    },
+    isItemFolder: (item) => item.getItemData()?.kind === "folder" || item.getId() === "root",
+    dataLoader: {
+      getItem: (itemId) => treeDataRef.current.get(itemId)?.item ?? null,
+      getChildren: (itemId) => treeDataRef.current.get(itemId)?.children ?? [],
+    },
+    indent: 16,
+    canReorder: true,
+    seperateDragHandle: true,
+    canDrag: (items) => {
+      if (reordering || items.length !== 1) return false;
+      const data = items[0]?.getItemData();
+      if (data === undefined || data === null) return false;
+      return data.kind === "pad"
+        ? renameTarget?.id !== data.pad.id && confirmDeleteId !== data.pad.id
+        : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
+    },
+    canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
+    onDrop: async (items, target) => {
+      const moved = items[0]?.getItemData();
+      if (moved === undefined || moved === null || reordering) return;
+      const targetData = target.item.getItemData();
+      const parentId =
+        targetData === null
+          ? null
+          : targetData.kind === "folder"
+            ? targetData.id
+            : targetData.parentId;
+      const index = isOrderedDragTarget(target)
+        ? target.insertionIndex
+        : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
+      setReordering(true);
+      setError(null);
+      try {
+        setTreeItems(
+          await movePadTreeItem(
+            identity.token,
+            { kind: moved.kind, id: treeItemId(moved) },
+            parentId,
+            index,
+          ),
+        );
+      } catch (reason: unknown) {
+        setError(reason instanceof Error ? reason.message : "Could not move the sidebar item");
+      } finally {
+        setReordering(false);
+      }
+    },
+    features: [
+      syncDataLoaderFeature,
+      dragAndDropFeature,
+      keyboardDragAndDropFeature,
+      hotkeysCoreFeature,
+    ],
+  });
+
+  useEffect(() => {
+    treeInstanceRef.current = tree;
+    treeDataRef.current = treeData;
+    tree.rebuildTree();
+    return () => {
+      treeInstanceRef.current = null;
+    };
+  }, [tree, treeData]);
+
+  const renderPad = (pad: Pad): ReactNode => {
     const active = pad.id === requestedPadId;
     const principals = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
     const otherPrincipals = principals.filter(
@@ -591,8 +611,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const liveRows = activeWorkspace?.status === "open" ? activeWorkspace.rows : null;
     const displayedSessions = liveRows ?? summaries;
     const runningCount = displayedSessions.filter((session) => session.status === "running").length;
-    const sortableDisabled =
-      !sidebarOpen || reordering || renameTarget?.id === pad.id || confirmDeleteId === pad.id;
 
     let row: ReactNode;
     if (sidebarOpen && renameTarget?.id === pad.id) {
@@ -638,6 +656,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
           <Button
             className="pad-sidebar-confirm-delete"
+            aria-label={`Confirm deleting ${pad.name}`}
             disabled={deletingId !== null}
             onSelect={() => void remove(pad)}
           >
@@ -645,6 +664,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           </Button>
           <Button
             className="pad-sidebar-confirm-cancel"
+            aria-label={`Cancel deleting ${pad.name}`}
             disabled={deletingId !== null}
             onSelect={() => setConfirmDeleteId(null)}
           >
@@ -734,23 +754,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                   <Button role="menuitem" onSelect={() => openRename(pad)}>
                     Rename
                   </Button>
-                  <label className="pad-sidebar-folder-picker">
-                    <span>Folder</span>
-                    <select
-                      value={folderId ?? ""}
-                      onChange={(event) => {
-                        setActionPadId(null);
-                        void movePad(pad.id, event.currentTarget.value || null);
-                      }}
-                    >
-                      <option value="">No folder</option>
-                      {folders?.map((folder) => (
-                        <option value={folder.id} key={folder.id}>
-                          {folder.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                   <Button
                     className="is-danger"
                     role="menuitem"
@@ -771,14 +774,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     }
 
     return (
-      <SortablePadShell
-        id={pad.id}
-        index={pads?.findIndex((candidate) => candidate.id === pad.id) ?? groupIndex}
-        group="pads"
-        disabled={sortableDisabled}
-        name={pad.name}
-        key={pad.id}
-      >
+      <>
         {row}
         {sidebarOpen && showSessions && activeWorkspace?.status === "open"
           ? activeWorkspace.rows.map((session) => (
@@ -814,7 +810,195 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               );
             })
           : null}
-      </SortablePadShell>
+      </>
+    );
+  };
+
+  const renderFolderCreateForm = (nested: boolean): ReactNode => (
+    <form
+      className={`pad-sidebar-create pad-sidebar-folder-create${nested ? " is-nested" : ""}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submitFolder();
+      }}
+    >
+      <input
+        maxLength={120}
+        value={folderName}
+        onChange={(event) => setFolderName(event.currentTarget.value)}
+        placeholder="Folder name"
+        aria-label="Folder name"
+        autoFocus
+        disabled={creatingFolder}
+      />
+      <div>
+        <button
+          type="button"
+          onClick={() => setFolderCreateParentId(undefined)}
+          disabled={creatingFolder}
+        >
+          Cancel
+        </button>
+        <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>
+          {creatingFolder ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </form>
+  );
+
+  const renderFolder = (
+    folder: Extract<PadTreeItem, { kind: "folder" }>,
+    item: ItemInstance<PadTreeItem | null>,
+  ): ReactNode => {
+    const actionId = `folder:${folder.id}`;
+    if (!sidebarOpen) {
+      return (
+        <div className="pad-sidebar-row">
+          <button
+            className="pad-sidebar-link"
+            type="button"
+            title={folder.name}
+            aria-label={`${item.isExpanded() ? "Collapse" : "Expand"} folder ${folder.name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (item.isExpanded()) item.collapse();
+              else item.expand();
+              renderSettledTreeState();
+            }}
+          >
+            <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+          </button>
+        </div>
+      );
+    }
+    if (renamingFolderId === folder.id) {
+      return (
+        <div className="pad-sidebar-row is-editing">
+          <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+          <input
+            className="pad-sidebar-rename-input"
+            value={folderRenameName}
+            maxLength={120}
+            aria-label={`Rename folder ${folder.name}`}
+            autoFocus
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setFolderRenameName(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void submitFolderRename(folder);
+              if (event.key === "Escape") setRenamingFolderId(null);
+            }}
+          />
+          <Button
+            className="pad-sidebar-inline-action is-primary"
+            aria-label={`Save name for ${folder.name}`}
+            disabled={folderRenameName.trim() === ""}
+            onSelect={() => void submitFolderRename(folder)}
+          >
+            <span aria-hidden="true">✓</span>
+          </Button>
+          <Button
+            className="pad-sidebar-inline-action"
+            aria-label={`Cancel renaming ${folder.name}`}
+            onSelect={() => setRenamingFolderId(null)}
+          >
+            <span aria-hidden="true">×</span>
+          </Button>
+        </div>
+      );
+    }
+    if (confirmFolderDeleteId === folder.id) {
+      return (
+        <div className="pad-sidebar-row is-confirming">
+          <span className="pad-sidebar-confirm-label">Delete folder? Children move up.</span>
+          <Button
+            className="pad-sidebar-confirm-delete"
+            aria-label={`Confirm deleting folder ${folder.name}`}
+            disabled={deletingFolderId === folder.id}
+            onSelect={() => void removeFolder(folder)}
+          >
+            {deletingFolderId === folder.id ? "Deleting…" : "Delete"}
+          </Button>
+          <Button
+            className="pad-sidebar-confirm-cancel"
+            aria-label={`Cancel deleting folder ${folder.name}`}
+            disabled={deletingFolderId === folder.id}
+            onSelect={() => setConfirmFolderDeleteId(null)}
+          >
+            Cancel
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <>
+        <div className="pad-sidebar-row pad-sidebar-folder-row">
+          <button
+            className="pad-sidebar-folder-toggle"
+            type="button"
+            aria-label={`${item.isExpanded() ? "Collapse" : "Expand"} folder ${folder.name}`}
+            aria-expanded={item.isExpanded()}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (item.isExpanded()) item.collapse();
+              else item.expand();
+              renderSettledTreeState();
+            }}
+          >
+            <span className="pad-sidebar-folder-chevron" aria-hidden="true">
+              {item.isExpanded() ? "⌄" : "›"}
+            </span>
+            <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+            <strong>{folder.name}</strong>
+          </button>
+          <div className="pad-sidebar-actions" onClick={(event) => event.stopPropagation()}>
+            <Button
+              className="pad-sidebar-folder-add"
+              title={`New folder inside ${folder.name}`}
+              aria-label={`New folder inside ${folder.name}`}
+              onSelect={() => {
+                setFolderName("");
+                setFolderCreateParentId(folder.id);
+              }}
+            >
+              <span aria-hidden="true">+</span>
+            </Button>
+            <Button
+              className="pad-sidebar-delete"
+              title={`Folder actions for ${folder.name}`}
+              aria-label={`Folder actions for ${folder.name}`}
+              selected={actionPadId === actionId}
+              onSelect={() => setActionPadId((current) => (current === actionId ? null : actionId))}
+            >
+              <span aria-hidden="true">•••</span>
+            </Button>
+            {actionPadId === actionId ? (
+              <div className="pad-sidebar-action-menu" role="menu">
+                <Button
+                  role="menuitem"
+                  onSelect={() => {
+                    setActionPadId(null);
+                    setRenamingFolderId(folder.id);
+                    setFolderRenameName(folder.name);
+                  }}
+                >
+                  Rename
+                </Button>
+                <Button
+                  className="is-danger"
+                  role="menuitem"
+                  onSelect={() => {
+                    setActionPadId(null);
+                    setConfirmFolderDeleteId(folder.id);
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {folderCreateParentId === folder.id ? renderFolderCreateForm(true) : null}
+      </>
     );
   };
 
@@ -864,19 +1048,35 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             </button>
           </header>
 
-          <button
-            className="pad-sidebar-new"
-            type="button"
-            title="New pad"
-            aria-label="New pad"
-            onClick={() => {
-              if (!sidebarOpen) setOpen(true);
-              setCreateOpen(true);
-            }}
-          >
-            <SidebarIcon kind="plus" />
-            {sidebarOpen ? <span>New pad</span> : null}
-          </button>
+          <div className="pad-sidebar-create-buttons">
+            <button
+              className="pad-sidebar-new"
+              type="button"
+              title="New pad"
+              aria-label="New pad"
+              onClick={() => {
+                if (!sidebarOpen) setOpen(true);
+                setCreateOpen(true);
+              }}
+            >
+              <SidebarIcon kind="plus" />
+              {sidebarOpen ? <span>New pad</span> : null}
+            </button>
+            <button
+              className="pad-sidebar-new pad-sidebar-new-folder"
+              type="button"
+              title="New folder"
+              aria-label="New folder"
+              onClick={() => {
+                if (!sidebarOpen) setOpen(true);
+                setFolderName("");
+                setFolderCreateParentId(null);
+              }}
+            >
+              <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+              {sidebarOpen ? <span>New folder</span> : null}
+            </button>
+          </div>
 
           {sidebarOpen && createOpen ? (
             <form
@@ -937,204 +1137,58 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               >
                 <span aria-hidden="true">⌘</span>
               </Button>
-              <Button
-                className="pad-sidebar-section-action"
-                title="New folder"
-                aria-label="New pad folder"
-                onSelect={() => setFolderCreateOpen(true)}
-              >
-                <span aria-hidden="true">+</span>
-              </Button>
             </div>
           ) : null}
 
-          {sidebarOpen && folderCreateOpen ? (
-            <form
-              className="pad-sidebar-create pad-sidebar-folder-create"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submitFolder();
-              }}
-            >
-              <input
-                maxLength={120}
-                value={folderName}
-                onChange={(event) => setFolderName(event.currentTarget.value)}
-                placeholder="Folder name"
-                aria-label="Folder name"
-                autoFocus
-                disabled={creatingFolder}
-              />
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setFolderCreateOpen(false)}
-                  disabled={creatingFolder}
-                >
-                  Cancel
-                </button>
-                <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>
-                  {creatingFolder ? "Creating…" : "Create"}
-                </button>
-              </div>
-            </form>
-          ) : null}
+          {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
 
-          <DragDropProvider
-            onDragStart={() => {
-              dragPointerYRef.current = null;
-              dragTargetsRef.current = [
-                ...document.querySelectorAll<HTMLElement>(".pad-sortable[data-pad-id]"),
-              ].flatMap((sortable) => {
-                const row = sortable.querySelector(".pad-sidebar-row");
-                const id = sortable.dataset.padId;
-                if (row === null || id === undefined) return [];
-                const bounds = row.getBoundingClientRect();
-                return [{ id, top: bounds.top, bottom: bounds.bottom }];
-              });
-            }}
-            onDragEnd={(event) => {
-              const pointerY = dragPointerYRef.current;
-              const pointerTarget =
-                pointerY === null
-                  ? null
-                  : (dragTargetsRef.current.find(
-                      (target) => pointerY >= target.top && pointerY <= target.bottom,
-                    ) ?? null);
-              dragPointerYRef.current = null;
-              dragTargetsRef.current = [];
-              if (event.canceled || !isSortableOperation(event.operation)) return;
-              const source = event.operation.source;
-              if (source === null) return;
-              const targetPad =
-                pointerTarget === null
-                  ? navigationPads[source.index]
-                  : navigationPads.find((pad) => pad.id === pointerTarget.id);
-              if (targetPad === undefined || targetPad.id === source.id) return;
-              const sourceId = String(source.id);
-              const centerDrop =
-                pointerY !== null &&
-                pointerTarget !== null &&
-                pointerY >= pointerTarget.top + (pointerTarget.bottom - pointerTarget.top) * 0.25 &&
-                pointerY <=
-                  pointerTarget.bottom - (pointerTarget.bottom - pointerTarget.top) * 0.25;
-              if (centerDrop) {
-                void groupPadWithTarget(sourceId, targetPad.id);
-              } else {
-                void commitPadOrder(sourceId, targetPad.id);
-              }
-            }}
+          <div
+            {...tree.getContainerProps()}
+            className="pad-sidebar-list pad-sidebar-tree"
+            data-testid="pad-sidebar-list"
           >
-            <div className="pad-sidebar-list" data-testid="pad-sidebar-list">
-              {sidebarOpen && pads === null ? (
-                <p className="pad-sidebar-muted">Loading pads…</p>
-              ) : null}
-              {sidebarOpen && pads?.length === 0 ? (
-                <p className="pad-sidebar-muted">No pads yet</p>
-              ) : null}
-              {(() => {
-                if (pads === null) return null;
-                if (!sidebarOpen) {
-                  return pads.map((pad, index) => renderPad(pad, index, null));
-                }
-
-                return navigationEntries.map((entry) => {
-                  if (entry.kind === "pad") {
-                    return renderPad(
-                      entry.pad,
-                      navigationPads.findIndex((pad) => pad.id === entry.pad.id),
-                      null,
-                    );
-                  }
-                  const folder = entry.folder;
-                  const folderPads = entry.pads;
+            <AssistiveTreeDescription className="pad-tree-assistive" tree={tree} />
+            {sidebarOpen && treeItems === null ? (
+              <p className="pad-sidebar-muted">Loading pads…</p>
+            ) : null}
+            {sidebarOpen && treeItems?.length === 0 ? (
+              <p className="pad-sidebar-muted">No pads yet</p>
+            ) : null}
+            {treeItems === null
+              ? null
+              : tree.getItems().map((item) => {
+                  const data = item.getItemData();
+                  if (data === null) return null;
+                  const name = data.kind === "pad" ? data.pad.name : data.name;
                   return (
-                    <details className="pad-sidebar-folder" open key={folder.id}>
-                      <summary>
-                        <span className="pad-sidebar-folder-icon" aria-hidden="true" />
-                        <strong>{folder.name}</strong>
-                        <span>{folderPads.length}</span>
-                      </summary>
-                      <div className="pad-sidebar-folder-content">
-                        {folderPads.length === 0 ? (
-                          <span className="pad-sidebar-folder-empty">
-                            Drag pads here or use their ••• menu
-                          </span>
-                        ) : (
-                          folderPads.map((pad) =>
-                            renderPad(
-                              pad,
-                              navigationPads.findIndex((candidate) => candidate.id === pad.id),
-                              folder.id,
-                            ),
-                          )
-                        )}
-                        <div className="pad-sidebar-folder-actions">
-                          {renamingFolderId === folder.id ? (
-                            <form
-                              onSubmit={(event) => {
-                                event.preventDefault();
-                                void submitFolderRename(folder);
-                              }}
-                            >
-                              <input
-                                value={folderRenameName}
-                                maxLength={120}
-                                aria-label={`Rename folder ${folder.name}`}
-                                autoFocus
-                                onFocus={(event) => event.currentTarget.select()}
-                                onChange={(event) => setFolderRenameName(event.currentTarget.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Escape") setRenamingFolderId(null);
-                                }}
-                              />
-                              <button type="submit" disabled={folderRenameName.trim() === ""}>
-                                Save
-                              </button>
-                              <Button onSelect={() => setRenamingFolderId(null)}>Cancel</Button>
-                            </form>
-                          ) : deletingFolderId === folder.id ? (
-                            <span>Deleting…</span>
-                          ) : confirmFolderDeleteId === folder.id ? (
-                            <>
-                              <span>Keep pads, delete folder?</span>
-                              <Button
-                                className="is-danger"
-                                onSelect={() => void removeFolder(folder)}
-                              >
-                                Delete
-                              </Button>
-                              <Button onSelect={() => setConfirmFolderDeleteId(null)}>
-                                Cancel
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button
-                                onSelect={() => {
-                                  setRenamingFolderId(folder.id);
-                                  setFolderRenameName(folder.name);
-                                }}
-                              >
-                                Rename
-                              </Button>
-                              <Button
-                                className="is-danger"
-                                title={`Delete ${folder.name}; pads become ungrouped`}
-                                onSelect={() => setConfirmFolderDeleteId(folder.id)}
-                              >
-                                Delete
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </details>
+                    <div
+                      {...item.getProps()}
+                      className={`pad-tree-item${item.isDragTarget() ? " is-drop-target" : ""}`}
+                      data-tree-kind={data.kind}
+                      data-tree-id={treeItemId(data)}
+                      style={
+                        sidebarOpen
+                          ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
+                          : undefined
+                      }
+                      key={item.getId()}
+                    >
+                      <span
+                        {...item.getDragHandleProps()}
+                        className="pad-drag-handle"
+                        aria-label={`Reorder ${name}`}
+                        role="button"
+                        tabIndex={0}
+                        title={`Drag or use the keyboard to reorder ${name}`}
+                      >
+                        <span aria-hidden="true">⋮⋮</span>
+                      </span>
+                      {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
+                    </div>
                   );
-                });
-              })()}
-            </div>
-          </DragDropProvider>
+                })}
+            <div style={tree.getDragLineStyle()} className="pad-tree-drag-line" />
+          </div>
 
           {sidebarOpen && workspace !== null ? (
             <WorkspaceStatus

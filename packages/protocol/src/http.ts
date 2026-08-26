@@ -25,23 +25,35 @@ export const CreatePadRequestSchema = z.strictObject({
 export const RenamePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
+export const TreeParentIdSchema = z.string().min(1).nullable();
+export const PadTreeItemSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("pad"),
+    pad: PadSchema,
+    parentId: TreeParentIdSchema,
+    sortOrder: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    kind: z.literal("folder"),
+    id: z.string().min(1),
+    name: z.string().min(1).max(120),
+    createdAt: z.number().int().nonnegative(),
+    parentId: TreeParentIdSchema,
+    sortOrder: z.number().int().nonnegative(),
+  }),
+]);
+export type PadTreeItem = z.infer<typeof PadTreeItemSchema>;
 export const CreatePadFolderRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
-  padIds: z.array(z.string().min(1)).max(10_000).default([]),
+  parentId: TreeParentIdSchema.default(null),
 });
-export const ReorderPadsRequestSchema = z.strictObject({
-  padIds: z.array(z.string().min(1)).max(10_000),
-});
-export type ReorderPadsRequest = z.infer<typeof ReorderPadsRequestSchema>;
-export const PadFolderSchema = z.strictObject({
-  id: z.string().min(1),
-  name: z.string().min(1).max(120),
-  createdAt: z.number().int().nonnegative(),
-  padIds: z.array(z.string().min(1)),
-});
-export type PadFolder = z.infer<typeof PadFolderSchema>;
-export const MovePadRequestSchema = z.strictObject({
-  folderId: z.string().min(1).nullable(),
+export const MovePadTreeItemRequestSchema = z.strictObject({
+  item: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("pad"), id: z.string().min(1) }),
+    z.strictObject({ kind: z.literal("folder"), id: z.string().min(1) }),
+  ]),
+  parentId: TreeParentIdSchema,
+  index: z.number().int().nonnegative(),
 });
 
 export const BootstrapPrincipalRequestSchema = z.strictObject({
@@ -102,8 +114,7 @@ export type PadPresence = z.infer<typeof PadPresenceSchema>;
 export const PadPresenceResponseSchema = z.strictObject({
   pads: z.array(PadPresenceSchema),
 });
-export const PadFolderResponseSchema = z.strictObject({ folder: PadFolderSchema });
-export const PadFoldersResponseSchema = z.strictObject({ folders: z.array(PadFolderSchema) });
+export const PadTreeResponseSchema = z.strictObject({ items: z.array(PadTreeItemSchema) });
 
 export const PadSessionSummarySchema = z.strictObject({
   id: z.string().min(1),
