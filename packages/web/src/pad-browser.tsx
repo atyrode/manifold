@@ -111,6 +111,37 @@ function initialSessionTree(): boolean {
   }
 }
 
+type PadNavigationEntry =
+  | { readonly kind: "pad"; readonly pad: Pad }
+  | { readonly kind: "folder"; readonly folder: PadFolder; readonly pads: readonly Pad[] };
+
+function buildPadNavigationEntries(
+  pads: readonly Pad[],
+  folders: readonly PadFolder[],
+): readonly PadNavigationEntry[] {
+  const folderByPadId = new Map<string, PadFolder>();
+  folders.forEach((folder) => folder.padIds.forEach((padId) => folderByPadId.set(padId, folder)));
+  const emittedFolders = new Set<string>();
+  const entries: PadNavigationEntry[] = [];
+  pads.forEach((pad) => {
+    const folder = folderByPadId.get(pad.id);
+    if (folder === undefined) {
+      entries.push({ kind: "pad", pad });
+    } else if (!emittedFolders.has(folder.id)) {
+      emittedFolders.add(folder.id);
+      entries.push({
+        kind: "folder",
+        folder,
+        pads: pads.filter((candidate) => folder.padIds.includes(candidate.id)),
+      });
+    }
+  });
+  folders.forEach((folder) => {
+    if (!emittedFolders.has(folder.id)) entries.push({ kind: "folder", folder, pads: [] });
+  });
+  return entries;
+}
+
 interface SortablePadShellProps {
   readonly id: string;
   readonly index: number;
@@ -121,7 +152,7 @@ interface SortablePadShellProps {
 }
 
 function SortablePadShell({ id, index, group, disabled, name, children }: SortablePadShellProps) {
-  const { ref, handleRef, isDragging } = useSortable({
+  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
     id,
     index,
     group,
@@ -129,7 +160,11 @@ function SortablePadShell({ id, index, group, disabled, name, children }: Sortab
     transition: { duration: 160, easing: "ease" },
   });
   return (
-    <div ref={ref} className={`pad-sortable${isDragging ? " is-dragging" : ""}`}>
+    <div
+      ref={ref}
+      className={`pad-sortable${isDragging ? " is-dragging" : ""}${isDropTarget ? " is-drop-target" : ""}`}
+      data-pad-id={id}
+    >
       {disabled ? null : (
         <button
           ref={handleRef}
@@ -174,6 +209,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
+  const dragPointerYRef = useRef<number | null>(null);
+  const dragTargetsRef = useRef<
+    readonly { readonly id: string; readonly top: number; readonly bottom: number }[]
+  >([]);
   const [renaming, setRenaming] = useState(false);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -271,6 +310,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [actionPadId]);
+
+  useEffect(() => {
+    const trackDragPointer = (event: PointerEvent): void => {
+      if (event.buttons !== 0) dragPointerYRef.current = event.clientY;
+    };
+    document.addEventListener("pointermove", trackDragPointer, { capture: true });
+    return () => document.removeEventListener("pointermove", trackDragPointer, { capture: true });
+  }, []);
 
   useEffect(() => {
     if (renameTarget === null) return;
@@ -455,6 +502,45 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     }
   };
 
+  const groupPadWithTarget = async (sourceId: string, targetId: string): Promise<void> => {
+    if (pads === null || folders === null || sourceId === targetId || reordering) return;
+    const targetFolder = folders.find((folder) => folder.padIds.includes(targetId)) ?? null;
+    const sourceFolder = folders.find((folder) => folder.padIds.includes(sourceId)) ?? null;
+    if (targetFolder !== null) {
+      if (sourceFolder?.id === targetFolder.id) {
+        await commitPadOrder(sourceId, targetId);
+      } else {
+        await movePad(sourceId, targetFolder.id);
+      }
+      return;
+    }
+
+    const previous = folders;
+    const groupedIds = [sourceId, targetId].sort(
+      (left, right) =>
+        pads.findIndex((pad) => pad.id === left) - pads.findIndex((pad) => pad.id === right),
+    );
+    setReordering(true);
+    setError(null);
+    try {
+      const folder = await createPadFolder(identity.token, "New folder", groupedIds);
+      setFolders((current) => [
+        ...(current ?? []).map((candidate) => ({
+          ...candidate,
+          padIds: candidate.padIds.filter((padId) => !groupedIds.includes(padId)),
+        })),
+        folder,
+      ]);
+      setRenamingFolderId(folder.id);
+      setFolderRenameName(folder.name);
+    } catch (reason: unknown) {
+      setFolders(previous);
+      setError(reason instanceof Error ? reason.message : "Could not group the pads");
+    } finally {
+      setReordering(false);
+    }
+  };
+
   const beginSidebarResize = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     if (!sidebarOpen || event.button !== 0) return;
     event.preventDefault();
@@ -479,12 +565,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     navigate(`/p/${encodeURIComponent(pad.id)}`);
   };
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
-  const renderPad = (
-    pad: Pad,
-    group: string,
-    groupIndex: number,
-    folderId: string | null,
-  ): ReactNode => {
+  const navigationEntries = pads === null ? [] : buildPadNavigationEntries(pads, folders ?? []);
+  const navigationPads = navigationEntries.flatMap((entry) =>
+    entry.kind === "pad" ? [entry.pad] : entry.pads,
+  );
+  const renderPad = (pad: Pad, groupIndex: number, folderId: string | null): ReactNode => {
     const active = pad.id === requestedPadId;
     const principals = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
     const otherPrincipals = principals.filter(
@@ -493,10 +578,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const visiblePrincipals = principals.slice(0, 3);
     const summaries = padSessions.filter((session) => session.padId === pad.id);
     const activeWorkspace = active ? workspace : null;
-    const activeRows = activeWorkspace?.rows ?? null;
-    const runningCount =
-      activeRows?.filter((row) => row.status === "running").length ??
-      summaries.filter((session) => session.status === "running").length;
+    const liveRows = activeWorkspace?.status === "open" ? activeWorkspace.rows : null;
+    const displayedSessions = liveRows ?? summaries;
+    const runningCount = displayedSessions.filter((session) => session.status === "running").length;
     const sortableDisabled =
       !sidebarOpen || reordering || renameTarget?.id === pad.id || confirmDeleteId === pad.id;
 
@@ -679,14 +763,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     return (
       <SortablePadShell
         id={pad.id}
-        index={groupIndex}
-        group={group}
+        index={pads?.findIndex((candidate) => candidate.id === pad.id) ?? groupIndex}
+        group="pads"
         disabled={sortableDisabled}
         name={pad.name}
         key={pad.id}
       >
         {row}
-        {sidebarOpen && showSessions && activeWorkspace !== null
+        {sidebarOpen && showSessions && activeWorkspace?.status === "open"
           ? activeWorkspace.rows.map((session) => (
               <div className="pad-sidebar-session" key={session.id}>
                 <WorkspaceSessionRow
@@ -701,7 +785,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               </div>
             ))
           : null}
-        {sidebarOpen && showSessions && activeWorkspace === null
+        {sidebarOpen && showSessions && activeWorkspace?.status !== "open"
           ? summaries.map((session) => {
               const machine = workspace?.machines?.find(
                 (candidate) => candidate.id === session.machineId,
@@ -872,12 +956,48 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           ) : null}
 
           <DragDropProvider
+            onDragStart={() => {
+              dragPointerYRef.current = null;
+              dragTargetsRef.current = [
+                ...document.querySelectorAll<HTMLElement>(".pad-sortable[data-pad-id]"),
+              ].flatMap((sortable) => {
+                const row = sortable.querySelector(".pad-sidebar-row");
+                const id = sortable.dataset.padId;
+                if (row === null || id === undefined) return [];
+                const bounds = row.getBoundingClientRect();
+                return [{ id, top: bounds.top, bottom: bounds.bottom }];
+              });
+            }}
             onDragEnd={(event) => {
+              const pointerY = dragPointerYRef.current;
+              const pointerTarget =
+                pointerY === null
+                  ? null
+                  : (dragTargetsRef.current.find(
+                      (target) => pointerY >= target.top && pointerY <= target.bottom,
+                    ) ?? null);
+              dragPointerYRef.current = null;
+              dragTargetsRef.current = [];
               if (event.canceled || !isSortableOperation(event.operation)) return;
               const source = event.operation.source;
-              const target = event.operation.target;
-              if (source === null || target === null) return;
-              void commitPadOrder(String(source.id), String(target.id));
+              if (source === null) return;
+              const targetPad =
+                pointerTarget === null
+                  ? navigationPads[source.index]
+                  : navigationPads.find((pad) => pad.id === pointerTarget.id);
+              if (targetPad === undefined || targetPad.id === source.id) return;
+              const sourceId = String(source.id);
+              const centerDrop =
+                pointerY !== null &&
+                pointerTarget !== null &&
+                pointerY >= pointerTarget.top + (pointerTarget.bottom - pointerTarget.top) * 0.25 &&
+                pointerY <=
+                  pointerTarget.bottom - (pointerTarget.bottom - pointerTarget.top) * 0.25;
+              if (centerDrop) {
+                void groupPadWithTarget(sourceId, targetPad.id);
+              } else {
+                void commitPadOrder(sourceId, targetPad.id);
+              }
             }}
           >
             <div className="pad-sidebar-list" data-testid="pad-sidebar-list">
@@ -889,103 +1009,104 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               ) : null}
               {(() => {
                 if (pads === null) return null;
-                const assigned = new Set(folders?.flatMap((folder) => folder.padIds) ?? []);
-                const ungrouped = pads.filter((pad) => !assigned.has(pad.id));
-                return (
-                  <>
-                    {ungrouped.map((pad, index) => renderPad(pad, "ungrouped", index, null))}
-                    {sidebarOpen
-                      ? folders?.map((folder) => {
-                          const folderPads = pads.filter((pad) => folder.padIds.includes(pad.id));
-                          return (
-                            <details className="pad-sidebar-folder" open key={folder.id}>
-                              <summary>
-                                <span className="pad-sidebar-folder-icon" aria-hidden="true" />
-                                <strong>{folder.name}</strong>
-                                <span>{folderPads.length}</span>
-                              </summary>
-                              <div className="pad-sidebar-folder-content">
-                                {folderPads.length === 0 ? (
-                                  <span className="pad-sidebar-folder-empty">
-                                    Move pads here from their ••• menu
-                                  </span>
-                                ) : (
-                                  folderPads.map((pad, index) =>
-                                    renderPad(pad, folder.id, index, folder.id),
-                                  )
-                                )}
-                                <div className="pad-sidebar-folder-actions">
-                                  {renamingFolderId === folder.id ? (
-                                    <form
-                                      onSubmit={(event) => {
-                                        event.preventDefault();
-                                        void submitFolderRename(folder);
-                                      }}
-                                    >
-                                      <input
-                                        value={folderRenameName}
-                                        maxLength={120}
-                                        aria-label={`Rename folder ${folder.name}`}
-                                        autoFocus
-                                        onChange={(event) =>
-                                          setFolderRenameName(event.currentTarget.value)
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === "Escape") setRenamingFolderId(null);
-                                        }}
-                                      />
-                                      <button
-                                        type="submit"
-                                        disabled={folderRenameName.trim() === ""}
-                                      >
-                                        Save
-                                      </button>
-                                      <Button onSelect={() => setRenamingFolderId(null)}>
-                                        Cancel
-                                      </Button>
-                                    </form>
-                                  ) : deletingFolderId === folder.id ? (
-                                    <span>Deleting…</span>
-                                  ) : confirmFolderDeleteId === folder.id ? (
-                                    <>
-                                      <span>Keep pads, delete folder?</span>
-                                      <Button
-                                        className="is-danger"
-                                        onSelect={() => void removeFolder(folder)}
-                                      >
-                                        Delete
-                                      </Button>
-                                      <Button onSelect={() => setConfirmFolderDeleteId(null)}>
-                                        Cancel
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Button
-                                        onSelect={() => {
-                                          setRenamingFolderId(folder.id);
-                                          setFolderRenameName(folder.name);
-                                        }}
-                                      >
-                                        Rename
-                                      </Button>
-                                      <Button
-                                        className="is-danger"
-                                        title={`Delete ${folder.name}; pads become ungrouped`}
-                                        onSelect={() => setConfirmFolderDeleteId(folder.id)}
-                                      >
-                                        Delete
-                                      </Button>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </details>
-                          );
-                        })
-                      : null}
-                  </>
-                );
+                if (!sidebarOpen) {
+                  return pads.map((pad, index) => renderPad(pad, index, null));
+                }
+
+                return navigationEntries.map((entry) => {
+                  if (entry.kind === "pad") {
+                    return renderPad(
+                      entry.pad,
+                      navigationPads.findIndex((pad) => pad.id === entry.pad.id),
+                      null,
+                    );
+                  }
+                  const folder = entry.folder;
+                  const folderPads = entry.pads;
+                  return (
+                    <details className="pad-sidebar-folder" open key={folder.id}>
+                      <summary>
+                        <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+                        <strong>{folder.name}</strong>
+                        <span>{folderPads.length}</span>
+                      </summary>
+                      <div className="pad-sidebar-folder-content">
+                        {folderPads.length === 0 ? (
+                          <span className="pad-sidebar-folder-empty">
+                            Drag pads here or use their ••• menu
+                          </span>
+                        ) : (
+                          folderPads.map((pad) =>
+                            renderPad(
+                              pad,
+                              navigationPads.findIndex((candidate) => candidate.id === pad.id),
+                              folder.id,
+                            ),
+                          )
+                        )}
+                        <div className="pad-sidebar-folder-actions">
+                          {renamingFolderId === folder.id ? (
+                            <form
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                void submitFolderRename(folder);
+                              }}
+                            >
+                              <input
+                                value={folderRenameName}
+                                maxLength={120}
+                                aria-label={`Rename folder ${folder.name}`}
+                                autoFocus
+                                onFocus={(event) => event.currentTarget.select()}
+                                onChange={(event) => setFolderRenameName(event.currentTarget.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Escape") setRenamingFolderId(null);
+                                }}
+                              />
+                              <button type="submit" disabled={folderRenameName.trim() === ""}>
+                                Save
+                              </button>
+                              <Button onSelect={() => setRenamingFolderId(null)}>Cancel</Button>
+                            </form>
+                          ) : deletingFolderId === folder.id ? (
+                            <span>Deleting…</span>
+                          ) : confirmFolderDeleteId === folder.id ? (
+                            <>
+                              <span>Keep pads, delete folder?</span>
+                              <Button
+                                className="is-danger"
+                                onSelect={() => void removeFolder(folder)}
+                              >
+                                Delete
+                              </Button>
+                              <Button onSelect={() => setConfirmFolderDeleteId(null)}>
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                onSelect={() => {
+                                  setRenamingFolderId(folder.id);
+                                  setFolderRenameName(folder.name);
+                                }}
+                              >
+                                Rename
+                              </Button>
+                              <Button
+                                className="is-danger"
+                                title={`Delete ${folder.name}; pads become ungrouped`}
+                                onSelect={() => setConfirmFolderDeleteId(folder.id)}
+                              >
+                                Delete
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </details>
+                  );
+                });
               })()}
             </div>
           </DragDropProvider>

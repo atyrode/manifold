@@ -422,6 +422,12 @@ input:focus {
   min-width: 0;
 }
 
+.pad-sortable.is-drop-target > .pad-sidebar-row {
+  outline: 1px solid #748ffc;
+  outline-offset: -1px;
+  background: rgb(92 124 250 / 12%);
+}
+
 .pad-sortable.is-dragging {
   z-index: 20;
   opacity: 0.78;
@@ -431,7 +437,7 @@ input:focus {
 .pad-drag-handle {
   position: absolute;
   z-index: 4;
-  top: 50%;
+  top: 1.125rem;
   left: 0.12rem;
   display: grid;
   place-items: center;
@@ -448,7 +454,7 @@ input:focus {
 }
 
 .pad-sortable:hover .pad-drag-handle,
-.pad-sortable:focus-within .pad-drag-handle {
+.pad-drag-handle:focus-visible {
   opacity: 1;
 }
 
