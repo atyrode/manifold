@@ -15,6 +15,8 @@ bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint
 bun run format         # prettier
 bun run gate           # all of the above + verify:convergence; green before any push
+bun run changelog:check # generated in-app release history matches CHANGELOG.md
+bun run release -- minor # bump, finalize, verify, tag, push, publish GitHub release
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
 bun run dev:web        # vite on :5173, proxying to :7777
 
@@ -29,6 +31,20 @@ bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (draw
                        # denial. Localhost green is NOT evidence a public deployment
                        # works — run this before claiming one does.
 ```
+
+## Changelog and releases
+
+- Every user-visible change MUST add one brief, user-facing bullet under `## [Unreleased]`
+  in `CHANGELOG.md`, using sections in this order when present: `Breaking Changes`, `Added`,
+  `Changed`, `Fixed`, `Removed`. Explain implementation details in the commit or PR instead.
+- Released sections are immutable. `packages/web/src/generated-changelog.ts` is generated
+  from them; never edit it directly.
+- Changes accumulate under `Unreleased` without ad hoc version bumps. From a clean,
+  up-to-date `main`, `bun run release -- <major|minor|patch|x.y.z>` is the only release
+  path: it bumps the web package, freezes the changelog, regenerates the in-app history,
+  runs the full gate, creates the `release:` commit and tag, pushes atomically, and waits
+  for the GitHub Release workflow.
+- Never edit a released version, create a release tag, or publish a GitHub Release by hand.
 
 ## Map
 
@@ -90,4 +106,4 @@ technology verdicts with evidence.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
-  `sdk:`, `e2e:`, `docs:` prefixes). Push only after `bun run gate` is green.
+  `sdk:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is green.

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { PadTreeItem } from "@manifold/protocol";
-import { buildPadTree, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 
 const pad = (
   id: string,
@@ -73,4 +73,32 @@ test("emits malformed or duplicate input at most once without recursing forever"
   expect(new Set(flattened).size).toBe(5);
   expect(flattened).toContain("pad:same-id");
   expect(flattened).toContain("folder:same-id");
+});
+
+test("projects a pad move into a folder and closes both sibling orderings", () => {
+  const first = pad("first", null, 0);
+  const moved = pad("moved", null, 1);
+  const target = folder("target", null, 2);
+  const child = pad("child", "target", 0);
+  const items: PadTreeItem[] = [first, moved, target, child];
+
+  expect(projectPadTreeMove(items, { kind: "pad", id: "moved" }, "target", 0)).toEqual([
+    first,
+    { ...moved, parentId: "target", sortOrder: 0 },
+    { ...target, sortOrder: 1 },
+    { ...child, sortOrder: 1 },
+  ]);
+});
+
+test("projects folder reordering among its current siblings", () => {
+  const first = folder("first", null, 0);
+  const moved = folder("moved", null, 1);
+  const last = pad("last", null, 2);
+  const items: PadTreeItem[] = [first, moved, last];
+
+  expect(projectPadTreeMove(items, { kind: "folder", id: "moved" }, null, 0)).toEqual([
+    { ...first, sortOrder: 1 },
+    { ...moved, sortOrder: 0 },
+    last,
+  ]);
 });

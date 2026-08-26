@@ -3,13 +3,14 @@
 # Debian-based oven/bun provides bash and PTY support for in-container shells.
 FROM oven/bun:1 AS build
 WORKDIR /app
+ARG MANIFOLD_BUILD=dev
 
 # Full-source install: the web workspace depends on a GitHub-release tarball
 # (@excalidraw/excalidraw fork) that bun links correctly only with the real
 # workspace tree present — manifest-only installs leave it unlinked.
 COPY . .
 RUN bun install --frozen-lockfile
-RUN bun run build:web
+RUN VITE_MANIFOLD_WEB_BUILD="${MANIFOLD_BUILD}" bun run build:web
 
 # Runtime ships the workspace source (agent-spawn runs `bun packages/agent/src/main.ts`
 # from source), the installed node_modules, and the built web bundle — no build caches.
