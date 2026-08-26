@@ -1,20 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import type { StoredIdentity } from "./api.ts";
-import { PadErrorBoundary } from "./error-boundary.tsx";
-import { PadList } from "./pad-list.tsx";
-import { PadView } from "./pad-view.tsx";
+import { PadBrowser } from "./pad-browser.tsx";
 
 type Route =
-  | { readonly kind: "pads" }
-  | { readonly kind: "pad"; readonly padId: string }
-  | { readonly kind: "not_found" };
+  { readonly kind: "browser"; readonly padId: string | null } | { readonly kind: "not_found" };
 
 function currentRoute(): Route {
-  if (window.location.pathname === "/") return { kind: "pads" };
+  if (window.location.pathname === "/") return { kind: "browser", padId: null };
   const match = /^\/p\/([^/]+)$/.exec(window.location.pathname);
   if (match?.[1] !== undefined) {
     try {
-      return { kind: "pad", padId: decodeURIComponent(match[1]) };
+      return { kind: "browser", padId: decodeURIComponent(match[1]) };
     } catch {
       return { kind: "not_found" };
     }
@@ -26,7 +22,7 @@ interface AppProps {
   readonly identity: StoredIdentity;
 }
 
-/** Routes the two v0 browser surfaces using the platform history API only. */
+/** Keeps the pad browser shell mounted across root and direct-pad routes. */
 export function App({ identity }: AppProps) {
   const [route, setRoute] = useState<Route>(() => currentRoute());
 
@@ -36,21 +32,15 @@ export function App({ identity }: AppProps) {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const navigate = useCallback((path: string): void => {
+  const navigate = useCallback((path: string, options?: { readonly replace?: boolean }): void => {
     if (`${window.location.pathname}${window.location.search}` === path) return;
-    window.history.pushState(null, "", path);
+    window.history[options?.replace === true ? "replaceState" : "pushState"](null, "", path);
     setRoute(currentRoute());
   }, []);
 
   switch (route.kind) {
-    case "pads":
-      return <PadList identity={identity} navigate={navigate} />;
-    case "pad":
-      return (
-        <PadErrorBoundary key={route.padId}>
-          <PadView padId={route.padId} identity={identity} navigate={navigate} />
-        </PadErrorBoundary>
-      );
+    case "browser":
+      return <PadBrowser identity={identity} requestedPadId={route.padId} navigate={navigate} />;
     case "not_found":
       return (
         <main className="gate-screen">
@@ -58,7 +48,7 @@ export function App({ identity }: AppProps) {
             <p className="eyebrow">not found</p>
             <h1>This manifold route does not exist</h1>
             <button className="primary-button" type="button" onClick={() => navigate("/")}>
-              Back to pads
+              Open manifold
             </button>
           </section>
         </main>

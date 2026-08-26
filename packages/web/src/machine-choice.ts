@@ -33,9 +33,9 @@ export function browserMachineStorage(): MachineStorage {
 }
 
 /**
- * Picks the machine a bare "New terminal" should target:
+ * Picks the machine for an implicit terminal restart:
  * the remembered machine when it is online, else the sole online machine,
- * else null (caller renders a disabled/zero-machine state or a picker).
+ * else null so the server's selection rule remains authoritative.
  */
 export function chooseDefaultMachine(
   machines: readonly MachineSummary[],

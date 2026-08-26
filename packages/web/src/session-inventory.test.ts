@@ -25,7 +25,7 @@ const MACHINES: readonly MachineSummary[] = [
 
 const BASE = {
   machines: MACHINES,
-  liveBindings: new Map([["s1", "el1"]]),
+  liveBindings: new Map([["s1", ["el1"]]]),
   selfId: "me",
   selfCaps: ["pads:read", "terminal:write"] as readonly string[],
 };
@@ -37,7 +37,7 @@ describe("buildSessionRows", () => {
     expect(rows[0]).toMatchObject({
       id: "s1",
       orphaned: false,
-      boundElementId: "el1",
+      boundElementIds: ["el1"],
       machineName: "tyrode-vps",
       machineOnline: true,
       isController: true,
@@ -52,19 +52,30 @@ describe("buildSessionRows", () => {
       sessions: [session({})],
     });
     expect(rows[0]?.orphaned).toBe(true);
-    expect(rows[0]?.boundElementId).toBeNull();
+    expect(rows[0]?.boundElementIds).toEqual([]);
   });
 
-  test("deleted-element tombstones are the caller's concern; only live bindings count", () => {
-    // The caller filters isDeleted elements out of liveBindings; a session whose
-    // element was deleted therefore shows up orphaned.
+  test("unbound exited sessions disappear because they have no remaining action", () => {
     const rows = buildSessionRows({
       ...BASE,
       liveBindings: new Map(),
       sessions: [session({}), session({ id: "s2", status: "exited", exitCode: 0 })],
     });
-    expect(rows.map((row) => row.orphaned)).toEqual([true, false]);
-    expect(rows.find((row) => row.id === "s2")?.canKill).toBe(false);
+    expect(rows.map((row) => row.id)).toEqual(["s1"]);
+  });
+
+  test("bound exited sessions remain revealable and cannot be killed", () => {
+    const rows = buildSessionRows({
+      ...BASE,
+      liveBindings: new Map([["s2", ["el-exited"]]]),
+      sessions: [session({ id: "s2", status: "exited", exitCode: 0 })],
+    });
+    expect(rows[0]).toMatchObject({
+      id: "s2",
+      status: "exited",
+      boundElementIds: ["el-exited"],
+      canKill: false,
+    });
   });
 
   test("wildcard capability grants kill on foreign sessions", () => {
@@ -87,6 +98,17 @@ describe("buildSessionRows", () => {
     expect(rows[0]?.canKill).toBe(false);
   });
 
+  test("terminal writer can claim and kill an unbound foreign session", () => {
+    const rows = buildSessionRows({
+      ...BASE,
+      liveBindings: new Map(),
+      selfCaps: ["pads:read", "terminal:write"],
+      selfId: "someone-else",
+      sessions: [session({ controllerId: "another" })],
+    });
+    expect(rows[0]).toMatchObject({ orphaned: true, isController: false, canKill: true });
+  });
+
   test("offline machine surfaces through the row", () => {
     const rows = buildSessionRows({
       ...BASE,
@@ -98,7 +120,10 @@ describe("buildSessionRows", () => {
   test("rows sort orphans first, then bound running, then exited", () => {
     const rows = buildSessionRows({
       ...BASE,
-      liveBindings: new Map([["bound", "el-bound"]]),
+      liveBindings: new Map([
+        ["bound", ["el-bound"]],
+        ["zz-exited", ["el-exited"]],
+      ]),
       sessions: [
         session({ id: "zz-exited", status: "exited", exitCode: 1 }),
         session({ id: "orphan", elementId: "gone" }),
@@ -106,6 +131,18 @@ describe("buildSessionRows", () => {
       ],
     });
     expect(rows.map((row) => row.id)).toEqual(["orphan", "bound", "zz-exited"]);
+  });
+
+  test("cloned bindings preserve stable canvas order", () => {
+    const rows = buildSessionRows({
+      ...BASE,
+      liveBindings: new Map([["s1", ["el-z", "el-a", "el1", "el-m"]]]),
+      sessions: [session({})],
+    });
+    expect(rows[0]).toMatchObject({
+      orphaned: false,
+      boundElementIds: ["el-z", "el-a", "el1", "el-m"],
+    });
   });
 
   test("unknown machine yields null machine fields without crashing", () => {

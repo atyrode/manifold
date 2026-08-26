@@ -98,10 +98,28 @@ try {
     "canvas mounted",
   );
 
-  // Create a terminal through the app's own menu flow.
-  await browser.evaluate("document.querySelector('.main-menu-trigger').click()");
-  await sleep(400);
-  await browser.clickText("New terminal");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('[data-testid=machines-section] > summary') !== null",
+      ),
+    20_000,
+    "sidebar machine section",
+  );
+
+  // Create a terminal directly from an online machine row in the sidebar.
+  await browser.evaluate(
+    "document.querySelector('[data-testid=machines-section] > summary').click()",
+  );
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('[aria-label^=\"New terminal on \"]') !== null",
+      ),
+    20_000,
+    "online machine terminal action",
+  );
+  await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
     20_000,
@@ -221,9 +239,25 @@ try {
 
   // 4. Closing one mirror leaves the other live and typeable.
   const closeBtn = await browser.evaluate<{ x: number; y: number } | null>(
-    "(() => { const t = [...document.querySelectorAll('.manifold-terminal')][1]; const b = [...t.querySelectorAll('button')].find(x => (x.getAttribute('aria-label') || '').includes('Close')); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()",
+    `(() => {
+      const canvas = document.querySelector('.pad-browser-canvas')?.getBoundingClientRect();
+      if (canvas === undefined) return null;
+      for (const terminal of document.querySelectorAll('.manifold-terminal')) {
+        const button = [...terminal.querySelectorAll('button')].find((candidate) =>
+          (candidate.getAttribute('aria-label') || '').includes('Close')
+        );
+        if (button === undefined) continue;
+        const rect = button.getBoundingClientRect();
+        const x = rect.x + rect.width / 2;
+        const y = rect.y + rect.height / 2;
+        if (x >= canvas.left && x <= canvas.right && y >= canvas.top && y <= canvas.bottom) {
+          return { x, y };
+        }
+      }
+      return null;
+    })()`,
   );
-  if (closeBtn === null) throw new Error("clone has no close button");
+  if (closeBtn === null) throw new Error("no visible mirror has a close button");
   await browser.drag([closeBtn], 30);
   await until(async () => (await termCount()) === 1, 10_000, "mirror closed");
   await sleep(600);

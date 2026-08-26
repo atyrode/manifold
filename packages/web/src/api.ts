@@ -3,10 +3,13 @@ import {
   CreatePadRequestSchema,
   HttpErrorSchema,
   MachinesResponseSchema,
+  PadPresenceResponseSchema,
   PadSchema,
+  RenamePadRequestSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
+  type PadPresence,
   type Principal,
 } from "@manifold/protocol";
 
@@ -97,6 +100,25 @@ export async function createPad(token: string, name: string): Promise<Pad> {
     body: JSON.stringify(request),
   });
   return PadSchema.parse(fieldFromObject(body, "pad"));
+}
+
+/** Renames a pad through the protocol-owned request schema. */
+export async function renamePad(token: string, padId: string, name: string): Promise<Pad> {
+  const request = RenamePadRequestSchema.parse({ name });
+  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return PadSchema.parse(fieldFromObject(body, "pad"));
+}
+
+/** Loads principal-level presence for pads with connected viewers. */
+export async function getPadPresence(token: string): Promise<readonly PadPresence[]> {
+  const body = await requestJson("/api/pad-presence", {
+    headers: authHeaders(token, false),
+  });
+  return PadPresenceResponseSchema.parse(body).pads;
 }
 
 /** Loads the enrolled machines with live online state (`GET /api/machines`). */

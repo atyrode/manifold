@@ -102,8 +102,9 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
 
 - Agent log shows `welcome` (its machineId) after connecting.
 - `GET /api/machines` lists the machine `online: true`.
-- The pad menu offers "New terminal on <name>"; a shell opens and typing
-  round-trips; a second browser attaches to the same session.
+- Expanding **Machines** in the sidebar shows a terminal `+` action beside the
+  enrolled machine; selecting it opens a shell, typing round-trips, and a second
+  browser attaches to the same session.
 - Other machines' terminals are unaffected.
 - Flap test: kill the agent ~30s, sessions on it fail with `no_machine`;
   restart → machine back online, surviving PTYs re-adopted (`re-adoption` in

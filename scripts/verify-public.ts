@@ -121,7 +121,7 @@ try {
     await until(
       () =>
         browser.evaluate<boolean>(
-          "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
+          "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
         ),
       20_000,
       "session open through public origin",
@@ -146,8 +146,11 @@ try {
     if (!toolSelected) throw new Error("freedraw tool button not found");
     await sleep(300);
     // One ~600ms gesture spanning many scene-flush windows.
+    const canvasLeft = await browser.evaluate<number>(
+      "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
+    );
     const points = Array.from({ length: 40 }, (_, i) => ({
-      x: 360 + i * 12,
+      x: canvasLeft + 360 + i * 12,
       y: 320 + Math.round(Math.sin(i / 4) * 80),
     }));
     await browser.drag(points, 15);
@@ -199,10 +202,17 @@ try {
 
   await step("embedded terminal opens and runs a command in the browser", async () => {
     await browser.evaluate(
-      "(() => { const b = document.querySelector('.dropdown-menu-button'); if (b) b.click(); })()",
+      "document.querySelector('[data-testid=machines-section] > summary').click()",
     );
-    await sleep(500);
-    await browser.clickText("New terminal");
+    await until(
+      () =>
+        browser.evaluate<boolean>(
+          "document.querySelector('[aria-label^=\"New terminal on \"]') !== null",
+        ),
+      30_000,
+      "online machine terminal action",
+    );
+    await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
     await until(
       () => browser.evaluate<boolean>("document.querySelector('.xterm') !== null"),
       30_000,

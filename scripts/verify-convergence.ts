@@ -132,7 +132,7 @@ try {
     await until(
       () =>
         browser.evaluate<boolean>(
-          "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
+          "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
         ),
       20_000,
       `${name}: session open`,
@@ -155,19 +155,22 @@ try {
   }
   console.log("PASS  stock UserList suppressed");
   await until(
-    () => browserA.evaluate<boolean>("document.querySelectorAll('.presence-avatar').length === 2"),
+    () =>
+      browserA.evaluate<boolean>(
+        "document.querySelectorAll('.presence-wrapper .presence-avatar').length === 2",
+      ),
     10_000,
     "convA: presence island shows self + convB",
   );
   console.log("PASS  presence island shows both principals");
   if (
     !(await browserA.evaluate<boolean>(
-      "(document.querySelector('.status-island [data-testid=connection-state]')?.textContent ?? '') === 'open'",
+      "(document.querySelector('.pad-sidebar .workspace-status [data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
     ))
   ) {
-    throw new Error("convA: status island missing or not open");
+    throw new Error("convA: sidebar workspace status missing or not open");
   }
-  console.log("PASS  status island live in the top-right cluster");
+  console.log("PASS  sidebar workspace status is live");
 
   const identityBeforeRefresh = await browserA.evaluate<string>(
     "localStorage.getItem('manifold.identity') ?? ''",
@@ -176,7 +179,7 @@ try {
   await until(
     () =>
       browserA.evaluate<boolean>(
-        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '') === 'open'",
+        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
       ),
     20_000,
     "convA: session reopened after refresh",
@@ -407,8 +410,11 @@ try {
   // ---------------------------------------------------------------- rounds
 
   console.log(`convergence rounds against ${origin} pad ${padId}`);
+  const canvasLeftA = await browserA.evaluate<number>(
+    "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
+  );
 
-  await round("R1 solo stroke", { adds: 1 }, () => freedraw(browserA, 300, 250));
+  await round("R1 solo stroke", { adds: 1 }, () => freedraw(browserA, canvasLeftA + 300, 250));
 
   await round("R2 concurrent strokes", { adds: 2 }, async () => {
     await Promise.all([freedraw(browserA, 300, 500), freedraw(browserB, 800, 250)]);
@@ -530,23 +536,23 @@ try {
       const scrollBefore = await browserA.evaluate<number>("window.__manifold.viewport().scrollX");
       // Approach: plain move to the grab spot.
       for (let i = 0; i <= 10; i++) {
-        await mouse("mouseMoved", 400 + i * 10, 360);
+        await mouse("mouseMoved", canvasLeftA + 400 + i * 10, 360);
         await sleep(15);
       }
       await sleep(200);
       const grabRawIndex = rawCursorLog.length;
       // Middle-drag pan: screen -160,-80.
-      await mouse("mousePressed", 500, 360, "middle", 4);
+      await mouse("mousePressed", canvasLeftA + 500, 360, "middle", 4);
       for (let i = 1; i <= 16; i++) {
-        await mouse("mouseMoved", 500 - i * 10, 360 - i * 5, "middle", 4);
+        await mouse("mouseMoved", canvasLeftA + 500 - i * 10, 360 - i * 5, "middle", 4);
         await sleep(15);
       }
-      await mouse("mouseReleased", 340, 280, "middle");
+      await mouse("mouseReleased", canvasLeftA + 340, 280, "middle");
       await sleep(250);
       const panEndRawIndex = rawCursorLog.length;
       // Post-pan plain move: +100px screen X at zoom 1 => +100 scene X.
       for (let i = 0; i <= 10; i++) {
-        await mouse("mouseMoved", 340 + i * 10, 280);
+        await mouse("mouseMoved", canvasLeftA + 340 + i * 10, 280);
         await sleep(15);
       }
       await sleep(250);
@@ -563,7 +569,7 @@ try {
       for (let i = 0; i < 8; i++) {
         await browserA.send("Input.dispatchMouseEvent", {
           type: "mouseWheel",
-          x: 440,
+          x: canvasLeftA + 440,
           y: 280,
           deltaX: 0,
           deltaY: 40,

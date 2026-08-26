@@ -88,10 +88,19 @@ try {
     "debug seam installed",
   );
 
-  // Create a terminal through the app's own menu flow.
-  await browser.evaluate("document.querySelector('.main-menu-trigger').click()");
-  await sleep(400);
-  await browser.clickText("New terminal");
+  // Create a terminal directly from an online machine row in the sidebar.
+  await browser.evaluate(
+    "document.querySelector('[data-testid=machines-section] > summary').click()",
+  );
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('[aria-label^=\"New terminal on \"]') !== null",
+      ),
+    20_000,
+    "online machine terminal action",
+  );
+  await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
     20_000,

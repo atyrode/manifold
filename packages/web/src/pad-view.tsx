@@ -1,7 +1,6 @@
 import {
   CaptureUpdateAction,
   Excalidraw,
-  MainMenu,
   convertToExcalidrawElements,
   newElementWith,
   viewportCoordsToSceneCoords,
@@ -50,7 +49,7 @@ import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import { sceneResetAction } from "./scene-reset-policy.ts";
 import { buildSessionRows, type SessionRow } from "./session-inventory.ts";
-import { PadTopRight } from "./top-right.tsx";
+import { PadTopRight, type WorkspacePanelProps } from "./top-right.tsx";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
@@ -91,8 +90,8 @@ interface ViewportUpdate {
 interface PadViewProps {
   readonly padId: string;
   readonly identity: StoredIdentity;
-  readonly navigate: (path: string) => void;
   readonly runtime?: RuntimeDeps;
+  readonly onWorkspaceChange: (workspace: WorkspacePanelProps | null) => void;
 }
 
 function sessionUrl(): string {
@@ -101,7 +100,12 @@ function sessionUrl(): string {
 }
 
 /** Owns exactly one SDK session client and projects its scene, presence, and PTYs into Excalidraw. */
-export function PadView({ padId, identity, navigate, runtime = defaultRuntime }: PadViewProps) {
+export function PadView({
+  padId,
+  identity,
+  onWorkspaceChange,
+  runtime = defaultRuntime,
+}: PadViewProps) {
   const [client] = useState(
     () =>
       new SessionClient({
@@ -154,8 +158,9 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const machinesRef = useRef<readonly MachineSummary[] | null>(null);
   /** Monotonic fetch epoch: stale responses (and post-unmount ones) are dropped. */
   const machinesEpochRef = useRef(0);
+  /** Exited sessions explicitly removed from this canvas stay hidden while deletion syncs. */
+  const dismissedSessionIdsRef = useRef(new Set<string>());
 
-  const [padName, setPadName] = useState<string>(padId);
   const [padLoadError, setPadLoadError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -164,6 +169,7 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   const [sessionRows, setSessionRows] = useState<readonly SessionRow[]>([]);
+  const [highlightedTerminalId, setHighlightedTerminalId] = useState<string | null>(null);
 
   /** Refreshes the enrolled-machines list; failures keep the last known list. */
   const refreshMachines = useCallback((): void => {
@@ -563,21 +569,26 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const refreshSessionRows = (): void => {
       // Live bindings only: tombstoned elements must NOT satisfy a session —
       // that is exactly the orphan condition the janitor panel exists to show.
-      const bindings = new Map<string, string>();
+      const bindings = new Map<string, string[]>();
       for (const el of apiRef.current?.getSceneElementsIncludingDeleted() ?? []) {
         if (el.isDeleted || el.link !== TERMINAL_LINK) continue;
         const bound = TerminalCustomDataSchema.safeParse(el.customData);
-        if (bound.success) bindings.set(bound.data.sessionId, el.id);
+        if (!bound.success) continue;
+        const elementIds = bindings.get(bound.data.sessionId);
+        if (elementIds === undefined) {
+          bindings.set(bound.data.sessionId, [el.id]);
+        } else {
+          elementIds.push(el.id);
+        }
       }
-      setSessionRows(
-        buildSessionRows({
-          sessions: [...client.sessions.values()],
-          machines: machinesRef.current,
-          liveBindings: bindings,
-          selfId: client.self?.id ?? null,
-          selfCaps: client.selfCaps,
-        }),
-      );
+      const projected = buildSessionRows({
+        sessions: [...client.sessions.values()],
+        machines: machinesRef.current,
+        liveBindings: bindings,
+        selfId: client.self?.id ?? null,
+        selfCaps: client.selfCaps,
+      });
+      setSessionRows(projected.filter((row) => !dismissedSessionIdsRef.current.has(row.id)));
     };
     const offSessions = client.on("sessions_changed", refreshSessionRows);
     const offSceneApplied = client.on("scene_applied", () => refreshSessionRows());
@@ -635,8 +646,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   useEffect(() => {
     let active = true;
     void getPad(identity.token, padId)
-      .then((pad) => {
-        if (active) setPadName(pad.name);
+      .then(() => {
+        // The browser already has the list entry; this preserves direct-link not-found errors.
       })
       .catch((reason: unknown) => {
         if (active) {
@@ -720,10 +731,10 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
   }, [flushScene]);
 
   /**
-   * Picks the machine an implicit open (restart, single "New terminal" item)
-   * should target. Only meaningful when several machines are online — with one
-   * or none, omitting machineId keeps the server's own selection rule (and its
-   * precise no_machine error) as the single source of truth.
+   * Picks the machine for an implicit terminal restart. Only meaningful when
+   * several machines are online — with one or none, omitting machineId keeps
+   * the server's own selection rule (and its precise no_machine error) as the
+   * single source of truth.
    */
   const pickDefaultMachine = useCallback((): MachineSummary | null => {
     const fetched = machinesRef.current;
@@ -816,15 +827,11 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     [client, pickDefaultMachine, publishImmediately],
   );
 
-  const createTerminal = useCallback(
-    async (machine?: MachineSummary): Promise<void> => {
+  /** Places one terminal surface at the viewport center, optionally bound to a live session. */
+  const placeTerminalElement = useCallback(
+    (sessionId?: string): string | null => {
       const api = apiRef.current;
-      if (api === null) return;
-      if (client.epoch === "") {
-        api.setToast({ message: "Waiting for the pad connection" });
-        return;
-      }
-      if (machine !== undefined) rememberMachine(browserMachineStorage(), padId, machine.id);
+      if (api === null) return null;
       const appState = api.getAppState();
       const center = viewportCoordsToSceneCoords(
         {
@@ -836,9 +843,6 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
       const terminalSkeleton = {
         id: runtime.newId(),
         type: "embeddable",
-        // Transparent on the canvas: the embed DOM owns every pixel, so the
-        // canvas-painted stroke (inverted near-white by dark theme) never rings
-        // the terminal. Existing terminals keep old colors until recreated.
         strokeColor: "transparent",
         backgroundColor: "transparent",
         fillStyle: "solid",
@@ -848,15 +852,20 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         roughness: 0,
         opacity: 100,
         link: TERMINAL_LINK,
-        // The flags feed re-derived per-element gates in the maintained fork
-        // (atyrode/excalidraw-manifold, docs/decisions/0005): link affordance off,
-        // whole-element click-to-activate, and the style panel suppressed while
-        // the selection is terminals-only.
-        customData: {
-          showHyperlinkIcon: false,
-          fullInteractionTarget: true,
-          showShapeActions: false,
-        },
+        customData:
+          sessionId === undefined
+            ? {
+                showHyperlinkIcon: false,
+                fullInteractionTarget: true,
+                showShapeActions: false,
+              }
+            : {
+                kind: "terminal",
+                sessionId,
+                showHyperlinkIcon: false,
+                fullInteractionTarget: true,
+                showShapeActions: false,
+              },
         x: center.x - TERMINAL_WIDTH / 2,
         y: center.y - TERMINAL_HEIGHT / 2,
         width: TERMINAL_WIDTH,
@@ -873,11 +882,10 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         updated: runtime.now(),
         locked: false,
       } as const;
-      const converted = convertToExcalidrawElements(
+      const [terminalElement] = convertToExcalidrawElements(
         [terminalSkeleton as unknown as ExcalidrawElementSkeleton],
         { regenerateIds: false },
       );
-      const terminalElement = converted[0];
       if (terminalElement === undefined) throw new Error("Could not create terminal element");
       const parsed = SceneElementSchema.safeParse(terminalElement);
       if (!parsed.success) {
@@ -886,18 +894,32 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           message: "Could not create terminal element (see console)",
           closable: true,
         });
-        return;
+        return null;
       }
-      const parsedTerminal = parsed.data;
       api.updateScene({
         elements: [...api.getSceneElementsIncludingDeleted(), terminalElement],
         captureUpdate: CaptureUpdateAction.IMMEDIATELY,
       });
-      publishImmediately([parsedTerminal]);
-
-      await openAndBindTerminal(terminalElement.id, machine);
+      publishImmediately([parsed.data]);
+      return terminalElement.id;
     },
-    [client, openAndBindTerminal, padId, publishImmediately, runtime],
+    [publishImmediately, runtime],
+  );
+
+  const createTerminal = useCallback(
+    async (machine?: MachineSummary): Promise<void> => {
+      const api = apiRef.current;
+      if (api === null) return;
+      if (client.epoch === "") {
+        api.setToast({ message: "Waiting for the pad connection" });
+        return;
+      }
+      if (machine !== undefined) rememberMachine(browserMachineStorage(), padId, machine.id);
+      const elementId = placeTerminalElement();
+      if (elementId === null) return;
+      await openAndBindTerminal(elementId, machine);
+    },
+    [client, openAndBindTerminal, padId, placeTerminalElement],
   );
 
   const renderEmbeddable = useCallback(
@@ -973,17 +995,15 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
           elementId={element.id}
           active={active}
           sessionShared={sessionShared}
+          panelHighlighted={highlightedTerminalId === element.id}
           onClose={onClose}
           onRestart={() => openAndBindTerminal(element.id, restartTarget)}
           machine={boundMachine}
         />
       );
     },
-    [client, machines, openAndBindTerminal, publishImmediately],
+    [client, highlightedTerminalId, machines, openAndBindTerminal, publishImmediately],
   );
-
-  /** null = never fetched (render the machine-agnostic item); [] = none online. */
-  const onlineMachines = machines === null ? null : machines.filter((machine) => machine.online);
 
   const focusSession = useCallback((elementId: string): void => {
     const api = apiRef.current;
@@ -991,9 +1011,178 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
     const target = api.getSceneElementsIncludingDeleted().find((el) => el.id === elementId);
     if (target !== undefined) api.scrollToContent(target, { fitToViewport: true });
   }, []);
+  const restoreSession = useCallback(
+    (sessionId: string): void => {
+      const api = apiRef.current;
+      const session = client.sessions.get(sessionId);
+      if (api === null || session?.status !== "running") return;
+
+      const elements = api.getSceneElementsIncludingDeleted();
+      const original = elements.find((element) => element.id === session.elementId);
+      if (original !== undefined && original.isDeleted && original.link === TERMINAL_LINK) {
+        const restored = newElementWith(original, {
+          isDeleted: false,
+          customData: {
+            kind: "terminal",
+            sessionId,
+            showHyperlinkIcon: false,
+            fullInteractionTarget: true,
+            showShapeActions: false,
+          },
+        });
+        const parsed = SceneElementSchema.safeParse(restored);
+        if (!parsed.success) {
+          api.setToast({ message: "Could not restore terminal", closable: true });
+          return;
+        }
+        api.updateScene({
+          elements: elements.map((element) => (element.id === restored.id ? restored : element)),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+        publishImmediately([parsed.data]);
+        api.scrollToContent(restored, { fitToViewport: true });
+        return;
+      }
+
+      const restoredId = placeTerminalElement(sessionId);
+      if (restoredId === null) return;
+      const restored = api
+        .getSceneElementsIncludingDeleted()
+        .find((element) => element.id === restoredId);
+      if (restored !== undefined) api.scrollToContent(restored, { fitToViewport: true });
+    },
+    [client, placeTerminalElement, publishImmediately],
+  );
+
+  const removeTerminalCopies = useCallback(
+    (sessionId: string, elementId: string | null): void => {
+      const session = client.sessions.get(sessionId);
+      if (session === undefined) return;
+      const api = apiRef.current;
+      if (api === null) return;
+      const elements = api.getSceneElementsIncludingDeleted();
+      const targets = elements.filter((element) => {
+        if (element.isDeleted || element.link !== TERMINAL_LINK) return false;
+        if (elementId !== null && element.id !== elementId) return false;
+        const binding = TerminalCustomDataSchema.safeParse(element.customData);
+        return binding.success && binding.data.sessionId === sessionId;
+      });
+      if (targets.length === 0) return;
+
+      const removedById = new Map<string, (typeof elements)[number]>();
+      const records: SceneElement[] = [];
+      for (const target of targets) {
+        const removed = newElementWith(target, { isDeleted: true });
+        const parsed = SceneElementSchema.safeParse(removed);
+        if (!parsed.success) {
+          api.setToast({ message: "Could not remove terminal copies", closable: true });
+          return;
+        }
+        removedById.set(target.id, removed);
+        records.push(parsed.data);
+      }
+
+      const remainingElementIds: string[] = [];
+      for (const element of elements) {
+        if (element.isDeleted || element.link !== TERMINAL_LINK || removedById.has(element.id)) {
+          continue;
+        }
+        const binding = TerminalCustomDataSchema.safeParse(element.customData);
+        if (binding.success && binding.data.sessionId === sessionId) {
+          remainingElementIds.push(element.id);
+        }
+      }
+      remainingElementIds.sort();
+      if (session.status === "exited" && remainingElementIds.length === 0) {
+        dismissedSessionIdsRef.current.add(sessionId);
+      }
+
+      api.updateScene({
+        elements: elements.map((element) => removedById.get(element.id) ?? element),
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      publishImmediately(records);
+      setSessionRows((current) =>
+        current.flatMap((row) => {
+          if (row.id !== sessionId) return [row];
+          if (session.status === "exited" && remainingElementIds.length === 0) return [];
+          const orphaned = session.status === "running" && remainingElementIds.length === 0;
+          const canClaimOrphan =
+            orphaned &&
+            (client.selfCaps.includes("*") || client.selfCaps.includes("terminal:write"));
+          return [
+            {
+              ...row,
+              boundElementIds: remainingElementIds,
+              orphaned,
+              canKill: row.canKill || canClaimOrphan,
+            },
+          ];
+        }),
+      );
+    },
+    [client, publishImmediately],
+  );
+
+  const removeTerminalCopy = useCallback(
+    (sessionId: string, elementId: string): void => removeTerminalCopies(sessionId, elementId),
+    [removeTerminalCopies],
+  );
+
+  const removeAllTerminalCopies = useCallback(
+    (sessionId: string): void => removeTerminalCopies(sessionId, null),
+    [removeTerminalCopies],
+  );
+
   const killSession = useCallback(
-    (sessionId: string): void => client.killTerminal(sessionId),
-    [client],
+    (sessionId: string): void => {
+      const row = sessionRows.find((candidate) => candidate.id === sessionId);
+      if (row?.orphaned && !row.isController && !client.selfCaps.includes("*")) {
+        // An unbound session has no terminal surface from which to claim its controller
+        // lease. Claim and kill in-order on the same socket so janitor cleanup works.
+        client.takeTerminal(sessionId);
+      }
+      client.killTerminal(sessionId);
+      apiRef.current?.setToast({ message: "Termination requested" });
+    },
+    [client, sessionRows],
+  );
+
+  useEffect(() => {
+    onWorkspaceChange({
+      status: connectionStatus,
+      savedAt,
+      rev: revision,
+      machines,
+      rows: sessionRows,
+      onCreateTerminal: createTerminal,
+      onFocus: focusSession,
+      onKill: killSession,
+      onRestore: restoreSession,
+      onRemoveCopy: removeTerminalCopy,
+      onRemoveAllCopies: removeAllTerminalCopies,
+      onHighlight: setHighlightedTerminalId,
+    });
+  }, [
+    connectionStatus,
+    createTerminal,
+    focusSession,
+    killSession,
+    machines,
+    onWorkspaceChange,
+    removeAllTerminalCopies,
+    removeTerminalCopy,
+    restoreSession,
+    revision,
+    savedAt,
+    sessionRows,
+  ]);
+
+  useEffect(
+    () => () => {
+      onWorkspaceChange(null);
+    },
+    [onWorkspaceChange],
   );
 
   return (
@@ -1013,39 +1202,8 @@ export function PadView({ padId, identity, navigate, runtime = defaultRuntime }:
         validateEmbeddable={() => true}
         renderEmbeddable={renderEmbeddable}
         UIOptions={{ userList: false }}
-        renderTopRightUI={(isMobile) => (
-          <PadTopRight
-            isMobile={isMobile}
-            rows={rosterRows}
-            machines={machines}
-            sessionRows={sessionRows}
-            onFocusSession={focusSession}
-            onKillSession={killSession}
-            status={connectionStatus}
-            savedAt={savedAt}
-            rev={revision}
-          />
-        )}
-      >
-        <MainMenu>
-          {onlineMachines !== null && onlineMachines.length === 0 ? (
-            <MainMenu.ItemCustom className="machine-none-menu-item">
-              No machine online
-            </MainMenu.ItemCustom>
-          ) : onlineMachines !== null && onlineMachines.length > 1 ? (
-            onlineMachines.map((machine) => (
-              <MainMenu.Item key={machine.id} onSelect={() => void createTerminal(machine)}>
-                New terminal on {machine.name}
-              </MainMenu.Item>
-            ))
-          ) : (
-            <MainMenu.Item onSelect={() => void createTerminal()}>New terminal</MainMenu.Item>
-          )}
-          <MainMenu.Item onSelect={() => navigate("/")}>Back to pads</MainMenu.Item>
-          <MainMenu.Separator />
-          <MainMenu.ItemCustom className="pad-name-menu-item">{padName}</MainMenu.ItemCustom>
-        </MainMenu>
-      </Excalidraw>
+        renderTopRightUI={() => <PadTopRight rows={rosterRows} />}
+      />
       {padLoadError === null ? null : <div className="pad-load-error">{padLoadError}</div>}
       {connectError === null ? null : <div className="pad-load-error">{connectError}</div>}
     </div>

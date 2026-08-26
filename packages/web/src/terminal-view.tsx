@@ -14,6 +14,8 @@ interface TerminalViewProps {
   readonly active: boolean;
   /** True when other live elements are bound to this same session (clones/mirrors). */
   readonly sessionShared: boolean;
+  /** Session-panel hover target; highlights this copy without changing the viewport. */
+  readonly panelHighlighted: boolean;
   /** Tombstones this element; kills the PTY only when it was the last binding. */
   readonly onClose: () => void;
   /** Opens a fresh PTY session and rebinds it to this element (restart in place). */
@@ -29,6 +31,7 @@ export function TerminalView({
   elementId,
   active,
   sessionShared,
+  panelHighlighted,
   onClose,
   onRestart,
   machine,
@@ -375,6 +378,7 @@ export function TerminalView({
     isMinimized ? "manifold-terminal--collapsed" : "",
     isMaximized ? "manifold-terminal--maximized" : "",
     remoteFocuser === null ? "" : "manifold-terminal--remote-focus",
+    panelHighlighted ? "manifold-terminal--panel-highlight" : "",
   ]
     .filter(Boolean)
     .join(" ");
