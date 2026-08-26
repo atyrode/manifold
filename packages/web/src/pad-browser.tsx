@@ -11,6 +11,7 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { Button } from "@excalidraw/excalidraw";
 import type { Pad, PadPresence, PadSessionSummary, PadTreeItem } from "@manifold/protocol";
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -121,6 +122,23 @@ function initialSessionTree(): boolean {
     return false;
   }
 }
+
+interface DragStableTreeProps {
+  readonly tree: TreeInstance<PadTreeItem | null>;
+  readonly render: () => ReactNode;
+}
+
+/**
+ * Native DnD keeps mutable ItemInstance references in Headless Tree state. Parent
+ * polling continues during a drag, so hold the last settled tree render until the
+ * core clears DnD state; direct DOM presentation still paints targets and drag lines.
+ */
+const DragStableTree = memo(
+  function DragStableTree({ render }: DragStableTreeProps): ReactNode {
+    return render();
+  },
+  (_previous, next) => next.tree.getState().dnd != null,
+);
 
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
@@ -1148,53 +1166,58 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
           {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
 
-          <div
-            {...tree.getContainerProps()}
-            className="pad-sidebar-list pad-sidebar-tree"
-            data-testid="pad-sidebar-list"
-          >
-            <AssistiveTreeDescription className="pad-tree-assistive" tree={tree} />
-            {sidebarOpen && treeItems === null ? (
-              <p className="pad-sidebar-muted">Loading pads…</p>
-            ) : null}
-            {sidebarOpen && treeItems?.length === 0 ? (
-              <p className="pad-sidebar-muted">No pads yet</p>
-            ) : null}
-            {treeItems === null
-              ? null
-              : tree.getItems().map((item) => {
-                  const data = item.getItemData();
-                  if (data === null) return null;
-                  const name = data.kind === "pad" ? data.pad.name : data.name;
-                  return (
-                    <div
-                      {...item.getProps()}
-                      className={`pad-tree-item${item.isDragTarget() ? " is-drop-target" : ""}`}
-                      data-tree-kind={data.kind}
-                      data-tree-id={treeItemId(data)}
-                      style={
-                        sidebarOpen
-                          ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
-                          : undefined
-                      }
-                      key={item.getId()}
-                    >
-                      <span
-                        {...item.getDragHandleProps()}
-                        className="pad-drag-handle"
-                        aria-label={`Reorder ${name}`}
-                        role="button"
-                        tabIndex={0}
-                        title={`Drag or use the keyboard to reorder ${name}`}
-                      >
-                        <span aria-hidden="true">⋮⋮</span>
-                      </span>
-                      {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
-                    </div>
-                  );
-                })}
-            <div style={tree.getDragLineStyle()} className="pad-tree-drag-line" />
-          </div>
+          <DragStableTree
+            tree={tree}
+            render={() => (
+              <div
+                {...tree.getContainerProps()}
+                className="pad-sidebar-list pad-sidebar-tree"
+                data-testid="pad-sidebar-list"
+              >
+                <AssistiveTreeDescription className="pad-tree-assistive" tree={tree} />
+                {sidebarOpen && treeItems === null ? (
+                  <p className="pad-sidebar-muted">Loading pads…</p>
+                ) : null}
+                {sidebarOpen && treeItems?.length === 0 ? (
+                  <p className="pad-sidebar-muted">No pads yet</p>
+                ) : null}
+                {treeItems === null
+                  ? null
+                  : tree.getItems().map((item) => {
+                      const data = item.getItemData();
+                      if (data === null) return null;
+                      const name = data.kind === "pad" ? data.pad.name : data.name;
+                      return (
+                        <div
+                          {...item.getProps()}
+                          className={`pad-tree-item${item.isDragTarget() ? " is-drop-target" : ""}`}
+                          data-tree-kind={data.kind}
+                          data-tree-id={treeItemId(data)}
+                          style={
+                            sidebarOpen
+                              ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
+                              : undefined
+                          }
+                          key={item.getId()}
+                        >
+                          <span
+                            {...item.getDragHandleProps()}
+                            className="pad-drag-handle"
+                            aria-label={`Reorder ${name}`}
+                            role="button"
+                            tabIndex={0}
+                            title={`Drag or use the keyboard to reorder ${name}`}
+                          >
+                            <span aria-hidden="true">⋮⋮</span>
+                          </span>
+                          {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
+                        </div>
+                      );
+                    })}
+                <div style={tree.getDragLineStyle()} className="pad-tree-drag-line" />
+              </div>
+            )}
+          />
 
           {sidebarOpen && workspace !== null ? (
             <WorkspaceStatus
