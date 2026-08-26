@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-26
+
 ### Fixed
 
 - Fixed canvas right-clicks opening the browser context menu on top of Excalidraw’s menu.
