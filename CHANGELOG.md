@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the drag-and-drop instruction text above the pad list.
+
 ## [0.2.1] - 2026-08-26
 
 ### Fixed
