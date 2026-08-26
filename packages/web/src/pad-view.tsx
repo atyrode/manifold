@@ -48,6 +48,7 @@ import {
 } from "./machine-choice.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
+import { applyRightClickEraserCursor } from "./right-click-eraser-cursor.ts";
 import {
   IDLE_RIGHT_CLICK_STATE,
   RIGHT_CLICK_ERASER_HOLD_MS,
@@ -238,6 +239,7 @@ export function PadView({
   const rightClickTargetRef = useRef<HTMLCanvasElement | null>(null);
   const rightClickTimerRef = useRef<number | null>(null);
   const rightClickPreviousToolRef = useRef<AppState["activeTool"] | null>(null);
+  const rightClickPreviousCursorRef = useRef<string | null>(null);
   const suppressNativeContextMenuUntilRef = useRef(0);
   const apiGenerationRef = useRef(0);
   const readyApiGenerationRef = useRef(0);
@@ -1307,6 +1309,7 @@ export function PadView({
       if (api === null || !target?.isConnected) return;
       rightClickStateRef.current = active;
       rightClickPreviousToolRef.current = api.getAppState().activeTool;
+      rightClickPreviousCursorRef.current = target.style.cursor;
       api.setActiveTool({ type: "eraser", locked: true });
       window.requestAnimationFrame(() => {
         const current = rightClickStateRef.current;
@@ -1316,6 +1319,7 @@ export function PadView({
           rightClickTargetRef.current === target
         ) {
           dispatchEraserPointerDown(target, current.pointer);
+          applyRightClickEraserCursor(target, api.getAppState().theme);
         }
       });
     },
@@ -1382,6 +1386,8 @@ export function PadView({
         rightClickPreviousToolRef.current = null;
         const api = apiRef.current;
         if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+        if (target !== null) target.style.cursor = rightClickPreviousCursorRef.current ?? "";
+        rightClickPreviousCursorRef.current = null;
         return;
       }
       event.preventDefault();
@@ -1408,8 +1414,10 @@ export function PadView({
         const previousTool = rightClickPreviousToolRef.current;
         const api = apiRef.current;
         if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+        if (target !== null) target.style.cursor = rightClickPreviousCursorRef.current ?? "";
       }
       rightClickPreviousToolRef.current = null;
+      rightClickPreviousCursorRef.current = null;
       rightClickStateRef.current = IDLE_RIGHT_CLICK_STATE;
       rightClickTargetRef.current = null;
       if (state.phase === "pending") {
@@ -1448,7 +1456,10 @@ export function PadView({
       const previousTool = rightClickPreviousToolRef.current;
       const api = apiRef.current;
       if (api !== null && previousTool !== null) restoreActiveTool(api, previousTool);
+      const target = rightClickTargetRef.current;
+      if (target !== null) target.style.cursor = rightClickPreviousCursorRef.current ?? "";
       rightClickPreviousToolRef.current = null;
+      rightClickPreviousCursorRef.current = null;
       rightClickStateRef.current = IDLE_RIGHT_CLICK_STATE;
       rightClickTargetRef.current = null;
     },
