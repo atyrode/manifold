@@ -4,6 +4,7 @@ import {
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
+  EnrollMachineRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
@@ -389,8 +390,22 @@ export class HttpApp {
       if (context.padScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot enroll machines");
       }
-      const input = parseRequest(CreatePadRequestSchema, await parseJsonBody(request));
-      const enrolled = this.auth.enrollMachine(input.name, context);
+      const input = parseRequest(EnrollMachineRequestSchema, await parseJsonBody(request));
+      // Idempotent re-enroll (issue #40): an existing name returns its row without minting,
+      // so a re-run provision flow never invalidates the token a running agent holds.
+      // `rotateToken` is the explicit recovery path for a lost token file.
+      const existing = this.store.getMachineByName(input.name);
+      if (existing !== null && input.rotateToken !== true) {
+        return jsonResponse(
+          MachineEnrollResponseSchema.parse({
+            machine: { id: existing.id, name: existing.name },
+          }),
+        );
+      }
+      const enrolled =
+        existing === null
+          ? this.auth.enrollMachine(input.name, context)
+          : this.auth.rotateMachineToken(existing, context.principal.id);
       return jsonResponse(
         MachineEnrollResponseSchema.parse({
           machine: { id: enrolled.machine.id, name: enrolled.machine.name },

@@ -283,18 +283,23 @@ export class AuthService {
     return this.persistMachine(name, this.ownerPrincipal.id);
   }
 
-  /** Rotates an existing machine's unavailable raw secret for local-agent recovery. */
-  rotateMachineToken(machine: MachineRecord): MachineEnrollment {
+  /**
+   * Rotates an existing machine's raw secret: revokes the old token and mints a fresh one.
+   * `actorId` attributes the rotation; local-agent boot recovery omits it because that path
+   * acts with owner authority by definition.
+   */
+  rotateMachineToken(machine: MachineRecord, actorId?: string): MachineEnrollment {
+    const actor = actorId ?? this.ownerPrincipal.id;
     const result = this.store.transaction(() => {
       const at = this.runtime.now();
       const revoked = this.store.revokeToken(machine.tokenId, at);
       if (revoked) {
-        this.store.addEvent(null, at, this.ownerPrincipal.id, "token_revoked", {
+        this.store.addEvent(null, at, actor, "token_revoked", {
           subjectPrincipalId: machine.id,
           count: 1,
         });
       }
-      const minted = this.persistToken(machine.id, [], null, this.ownerPrincipal.id);
+      const minted = this.persistToken(machine.id, [], null, actor);
       const lastSeen = this.runtime.now();
       this.store.updateMachineToken(machine.id, minted.record.id, lastSeen);
       return {
