@@ -15,15 +15,17 @@ import {
   enrollMachine,
   mintToken,
   ownerFetch,
-  rawMachineSocket,
-  rawSessionSocket,
   startServer,
   waitFor,
-  type AdversarialMachineSocket,
-  type AdversarialSessionSocket,
   type TestServer,
 } from "../src/index.ts";
 import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.ts";
+import {
+  rawMachineSocket,
+  rawSessionSocket,
+  type AdversarialMachineSocket,
+  type AdversarialSessionSocket,
+} from "../src/adversarial.ts";
 
 interface Parser<T> {
   parse(input: unknown): T;

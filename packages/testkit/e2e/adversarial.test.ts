@@ -6,15 +6,17 @@ import {
   createPad,
   enrollMachine,
   mintToken,
-  rawMachineSocket,
-  rawSessionSocket,
   startServer,
   waitFor,
-  type AdversarialMachineSocket,
-  type AdversarialSessionSocket,
   type TestServer,
 } from "../src/index.ts";
 import { closeClients, e2eFailure, nextMessage, sceneElement, stopProcesses } from "./helpers.ts";
+import {
+  rawMachineSocket,
+  rawSessionSocket,
+  type AdversarialMachineSocket,
+  type AdversarialSessionSocket,
+} from "../src/adversarial.ts";
 
 type InitMessage = Extract<ServerMessage, { type: "init" }>;
 

@@ -215,7 +215,7 @@ function mergedEnvironment(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined && !key.startsWith("MANIFOLD_")) env[key] = value;
   }
   if (extra !== undefined) Object.assign(env, extra);
   return env;
@@ -324,7 +324,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
   // Tests bootstrap by parsing the pre-authed ready line; stdout here is an
   // in-memory capture, not a persisted log stream, so opting in is safe.
   env.MANIFOLD_ANNOUNCE_KEY = "1";
-  delete env.MANIFOLD_PUBLIC_URL;
   if (port !== 0) env.MANIFOLD_PUBLIC_URL = `http://localhost:${port}`;
 
   const proc = spawnPiped(["bun", "packages/server/src/main.ts"], env);
