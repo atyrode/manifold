@@ -33,10 +33,17 @@ jobs:
       - name: Verify release
         run: bun run gate
 
+      - name: Build fleet binaries
+        # Compiled single-file binaries for fleet consumers (dotfiles pins
+        # these assets). The nix flake's bunDeps fixed-output derivation
+        # proved non-reproducible across machines (#51), so release assets
+        # are the stable consumption path; the flake stays for development.
+        run: bun build --compile packages/agent/src/main.ts --outfile manifold-agent-linux-x64
+
       - name: Build release notes
         run: bun scripts/release-notes.ts "${GITHUB_REF_NAME}" > release-notes.md
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --verify-tag --title "manifold ${GITHUB_REF_NAME}" --notes-file release-notes.md
+        run: gh release create "${GITHUB_REF_NAME}" manifold-agent-linux-x64 --verify-tag --title "manifold ${GITHUB_REF_NAME}" --notes-file release-notes.md
