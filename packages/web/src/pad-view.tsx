@@ -67,6 +67,11 @@ import { PadTopRight, type WorkspaceSidebarState } from "./top-right.tsx";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { TerminalView } from "./terminal-view.tsx";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
+import {
+  createTransportCadence,
+  type CursorUpdate,
+  type ViewportUpdate,
+} from "./transport-cadence.ts";
 /**
  * Scene flush cadence, i.e. remote motion smoothness (up to ~60Hz configured; 53.7Hz
  * measured under the harness's 55Hz synthetic pointer). Chosen from measured
@@ -179,22 +184,6 @@ function restoreActiveTool(api: ExcalidrawImperativeAPI, tool: AppState["activeT
   }
   api.setActiveTool({ type: tool.type, locked: tool.locked });
 }
-interface ElementVersion {
-  readonly version: number;
-  readonly versionNonce: number;
-}
-
-interface CursorUpdate {
-  readonly x: number;
-  readonly y: number;
-  readonly tool: "pointer" | "laser";
-}
-
-interface ViewportUpdate {
-  readonly x: number;
-  readonly y: number;
-  readonly zoom: number;
-}
 
 interface PadViewProps {
   readonly padId: string;
@@ -247,19 +236,8 @@ export function PadView({
   const remoteApplyTokenRef = useRef(0);
   /** Next canonical paint replaces the canvas wholesale (epoch adoption) instead of merging. */
   const needsFullRepaintRef = useRef(true);
-  const versionPairsRef = useRef(new Map<string, ElementVersion>());
-  const pendingElementsRef = useRef(new Map<string, SceneElement>());
   /** Epoch whose lineage the current pending/bookkeeping state belongs to. */
   const lastEpochRef = useRef("");
-  const sceneTimerRef = useRef<number | null>(null);
-  const lastSceneSentAtRef = useRef<number | null>(null);
-  const cursorTimerRef = useRef<number | null>(null);
-  const pendingCursorRef = useRef<CursorUpdate | null>(null);
-  const lastCursorSentAtRef = useRef<number | null>(null);
-  const viewportTimerRef = useRef<number | null>(null);
-  const pendingViewportRef = useRef<ViewportUpdate | null>(null);
-  const observedViewportRef = useRef<ViewportUpdate | null>(null);
-  const lastViewportSentAtRef = useRef<number | null>(null);
   const lastSelectionRef = useRef<readonly string[] | null>(null);
   /** Physical pointer position in client coords — OUR truth for cursor broadcasting. */
   const lastClientRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
@@ -301,137 +279,39 @@ export function PadView({
       });
   }, [identity.token]);
 
-  const flushScene = useCallback((): void => {
-    sceneTimerRef.current = null;
-    if (client.epoch === "") return;
-    const pending = [...pendingElementsRef.current.values()];
-    pendingElementsRef.current.clear();
-    if (pending.length === 0) return;
-    lastSceneSentAtRef.current = runtime.now();
-    for (let offset = 0; offset < pending.length; offset += MAX_ELEMENTS_PER_UPDATE) {
-      client.updateScene(pending.slice(offset, offset + MAX_ELEMENTS_PER_UPDATE));
-    }
-  }, [client, runtime]);
-
-  const scheduleSceneFlush = useCallback((): void => {
-    if (sceneTimerRef.current !== null) return;
-    const lastSentAt = lastSceneSentAtRef.current;
-    const delay =
-      lastSentAt === null
-        ? SCENE_SEND_INTERVAL_MS
-        : Math.max(0, SCENE_SEND_INTERVAL_MS - (runtime.now() - lastSentAt));
-    sceneTimerRef.current = window.setTimeout(flushScene, delay);
-  }, [flushScene, runtime]);
-
-  const publishImmediately = useCallback(
-    (elements: readonly SceneElement[]): void => {
-      for (const element of elements) {
-        versionPairsRef.current.set(element.id, {
-          version: element.version,
-          versionNonce: element.versionNonce,
-        });
-        pendingElementsRef.current.delete(element.id);
-      }
-      if (pendingElementsRef.current.size === 0 && sceneTimerRef.current !== null) {
-        window.clearTimeout(sceneTimerRef.current);
-        sceneTimerRef.current = null;
-      }
-      lastSceneSentAtRef.current = runtime.now();
-      for (let offset = 0; offset < elements.length; offset += MAX_ELEMENTS_PER_UPDATE) {
-        client.updateScene(elements.slice(offset, offset + MAX_ELEMENTS_PER_UPDATE));
-      }
-    },
-    [client, runtime],
+  const [transportCadence] = useState(() =>
+    createTransportCadence<SceneElement, CursorUpdate, ViewportUpdate>({
+      now: () => runtime.now(),
+      setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      clearTimer: (timer) => window.clearTimeout(timer),
+      sceneIntervalMs: SCENE_SEND_INTERVAL_MS,
+      cursorIntervalMs: CURSOR_MIN_INTERVAL_MS,
+      viewportIntervalMs: VIEWPORT_MIN_INTERVAL_MS,
+      maxSceneBatchSize: MAX_ELEMENTS_PER_UPDATE,
+      canSendScene: () => client.epoch !== "",
+      sendScene: (elements) => client.updateScene(elements),
+      sendCursor: (cursor) => client.sendCursor(cursor.x, cursor.y, cursor.tool),
+      sendViewport: (viewport) => client.sendPresence({ viewport }),
+      sameViewport: (left, right) =>
+        left.x === right.x && left.y === right.y && left.zoom === right.zoom,
+    }),
   );
+  const flushScene = transportCadence.flushScene;
+  const publishImmediately = transportCadence.publishSceneImmediately;
+  const sendCursor = transportCadence.sendCursor;
+  const sendViewportOnChange = transportCadence.sendViewport;
 
-  const flushCursor = useCallback((): void => {
-    cursorTimerRef.current = null;
-    const cursor = pendingCursorRef.current;
-    pendingCursorRef.current = null;
-    if (cursor === null) return;
-    client.sendCursor(cursor.x, cursor.y, cursor.tool);
-    lastCursorSentAtRef.current = runtime.now();
-  }, [client, runtime]);
-
-  const sendCursor = useCallback(
-    (cursor: CursorUpdate): void => {
-      const lastSentAt = lastCursorSentAtRef.current;
-      if (lastSentAt === null || runtime.now() - lastSentAt >= CURSOR_MIN_INTERVAL_MS) {
-        if (cursorTimerRef.current !== null) {
-          window.clearTimeout(cursorTimerRef.current);
-          cursorTimerRef.current = null;
-        }
-        pendingCursorRef.current = null;
-        client.sendCursor(cursor.x, cursor.y, cursor.tool);
-        lastCursorSentAtRef.current = runtime.now();
-        return;
-      }
-      pendingCursorRef.current = cursor;
-      if (cursorTimerRef.current === null) {
-        const delay = Math.max(0, CURSOR_MIN_INTERVAL_MS - (runtime.now() - lastSentAt));
-        cursorTimerRef.current = window.setTimeout(flushCursor, delay);
-      }
-    },
-    [client, flushCursor, runtime],
-  );
-
-  /**
-   * Cursor truth is OUR pointermove listener + the committed camera, not Excalidraw's
-   * onPointerUpdate: during pans its emissions use stale scroll (and the pan teardown
-   * replays the pointerdown coords against the final camera), which made a panning
-   * user's cursor drift across remote canvases and teleport on release. Recomputing from
-   * the physical position also keeps the cursor glued through wheel pans and zooms,
-   * where Excalidraw emits nothing at all.
-   */
-  const emitCursorFromClient = useCallback((): void => {
-    const api = apiRef.current;
-    const clientPos = lastClientRef.current;
-    if (api === null || clientPos === null) return;
-    const appState = api.getAppState();
-    const scene = viewportCoordsToSceneCoords(
-      { clientX: clientPos.x, clientY: clientPos.y },
-      appState,
-    );
-    sendCursor({
-      x: scene.x,
-      y: scene.y,
-      tool: appState.activeTool.type === "laser" ? "laser" : "pointer",
+  // Device-local viewport persistence rides the send cadence as a listener, registered in
+  // effect scope: the factory options above run during render, where reading
+  // viewportRestoredRef would violate the react-hooks/refs rule.
+  useEffect(() => {
+    transportCadence.setViewportSentListener((viewport) => {
+      if (viewportRestoredRef.current) saveViewport(window.localStorage, padId, viewport);
     });
-  }, [sendCursor]);
-
-  const flushViewport = useCallback((): void => {
-    viewportTimerRef.current = null;
-    const viewport = pendingViewportRef.current;
-    pendingViewportRef.current = null;
-    if (viewport === null) return;
-    client.sendPresence({ viewport });
-    lastViewportSentAtRef.current = runtime.now();
-    if (viewportRestoredRef.current) saveViewport(window.localStorage, padId, viewport);
-  }, [client, padId, runtime]);
-
-  const sendViewportOnChange = useCallback(
-    (viewport: ViewportUpdate): void => {
-      const previous = observedViewportRef.current;
-      if (
-        previous !== null &&
-        previous.x === viewport.x &&
-        previous.y === viewport.y &&
-        previous.zoom === viewport.zoom
-      ) {
-        return;
-      }
-      observedViewportRef.current = viewport;
-      pendingViewportRef.current = viewport;
-      if (viewportTimerRef.current !== null) return;
-      const lastSentAt = lastViewportSentAtRef.current;
-      const delay =
-        lastSentAt === null
-          ? 0
-          : Math.max(0, VIEWPORT_MIN_INTERVAL_MS - (runtime.now() - lastSentAt));
-      viewportTimerRef.current = window.setTimeout(flushViewport, delay);
-    },
-    [flushViewport, runtime],
-  );
+    return () => {
+      transportCadence.setViewportSentListener(null);
+    };
+  }, [transportCadence, padId]);
 
   const handleCanvasChange = useCallback(
     (elements: readonly OrderedExcalidrawElement[], appState: AppState): void => {
@@ -465,27 +345,9 @@ export function PadView({
       });
 
       if (applyingRemoteRef.current) return;
-      let changed = false;
-      for (const element of elements) {
-        const parsed = SceneElementSchema.parse(element);
-        const previous = versionPairsRef.current.get(parsed.id);
-        if (
-          previous !== undefined &&
-          previous.version === parsed.version &&
-          previous.versionNonce === parsed.versionNonce
-        ) {
-          continue;
-        }
-        versionPairsRef.current.set(parsed.id, {
-          version: parsed.version,
-          versionNonce: parsed.versionNonce,
-        });
-        pendingElementsRef.current.set(parsed.id, parsed);
-        changed = true;
-      }
-      if (changed) scheduleSceneFlush();
+      transportCadence.queueScene(elements, (element) => SceneElementSchema.parse(element));
     },
-    [client, refreshMachines, scheduleSceneFlush, sendViewportOnChange],
+    [client, refreshMachines, sendViewportOnChange, transportCadence],
   );
 
   const syncCanvas = useCallback((): void => {
@@ -500,13 +362,7 @@ export function PadView({
       // place on later gestures, and aliasing client.scene made those edits invisible to
       // reconcile (idempotent duplicates), silently never sent.
       const sorted = [...client.scene.values()].sort(compareElements);
-      for (const element of sorted) {
-        versionPairsRef.current.set(element.id, {
-          version: element.version,
-          versionNonce: element.versionNonce,
-        });
-        pendingElementsRef.current.delete(element.id);
-      }
+      transportCadence.recordCanonicalScene(sorted);
       const cloned = sorted.map((element) => ({ ...element }));
       canvasElements = cloned as unknown as readonly OrderedExcalidrawElement[];
     } else {
@@ -516,13 +372,7 @@ export function PadView({
       // partial — and clearing their pending entries would drop the final state forever.
       const merge = mergeCanonicalScene(api.getSceneElementsIncludingDeleted(), client.scene);
       if (merge === null) return; // canvas at or ahead of canonical: nothing to repaint
-      for (const element of merge.winners) {
-        versionPairsRef.current.set(element.id, {
-          version: element.version,
-          versionNonce: element.versionNonce,
-        });
-        pendingElementsRef.current.delete(element.id);
-      }
+      transportCadence.recordCanonicalScene(merge.winners);
       canvasElements = merge.elements as unknown as readonly OrderedExcalidrawElement[];
     }
     const applyToken = ++remoteApplyTokenRef.current;
@@ -534,7 +384,7 @@ export function PadView({
     queueMicrotask(() => {
       if (remoteApplyTokenRef.current === applyToken) applyingRemoteRef.current = false;
     });
-  }, [client]);
+  }, [client, transportCadence]);
 
   const syncCollaborators = useCallback((): void => {
     const api = apiRef.current;
@@ -584,6 +434,27 @@ export function PadView({
     api.updateScene({ collaborators, captureUpdate: CaptureUpdateAction.NEVER });
   }, [client]);
 
+  /**
+   * Cursor truth is OUR pointermove listener + the committed camera, not Excalidraw's
+   * onPointerUpdate: during pans its emissions use stale scroll. Recompute from the
+   * physical position so the cursor stays anchored through pans and zooms.
+   */
+  const emitCursorFromClient = useCallback((): void => {
+    const api = apiRef.current;
+    const clientPos = lastClientRef.current;
+    if (api === null || clientPos === null) return;
+    const appState = api.getAppState();
+    const scene = viewportCoordsToSceneCoords(
+      { clientX: clientPos.x, clientY: clientPos.y },
+      appState,
+    );
+    sendCursor({
+      x: scene.x,
+      y: scene.y,
+      tool: appState.activeTool.type === "laser" ? "laser" : "pointer",
+    });
+  }, [sendCursor]);
+
   // Latest-callback ref: initialized at declaration (no stale first-render window) and
   // refreshed in an effect, since refs must not be written during render.
   const emitCursorRef = useRef(emitCursorFromClient);
@@ -626,7 +497,7 @@ export function PadView({
   // A refresh right after a pan must not lose the last (still-throttled) camera.
   useEffect(() => {
     const persistLatest = (): void => {
-      const latest = observedViewportRef.current;
+      const latest = transportCadence.latestViewport();
       if (latest !== null && viewportRestoredRef.current) {
         saveViewport(window.localStorage, padId, latest);
       }
@@ -635,7 +506,7 @@ export function PadView({
     return () => {
       window.removeEventListener("pagehide", persistLatest);
     };
-  }, [padId]);
+  }, [padId, transportCadence]);
 
   useEffect(() => {
     const offSceneReset = client.on("scene_reset", () => {
@@ -645,12 +516,7 @@ export function PadView({
       if (action.discardPending) {
         // Old-lineage edits: re-stamping them into the new epoch would bypass the SDK's
         // lineage fence and resurrect deliberately-dropped content.
-        pendingElementsRef.current.clear();
-        versionPairsRef.current.clear();
-        if (sceneTimerRef.current !== null) {
-          window.clearTimeout(sceneTimerRef.current);
-          sceneTimerRef.current = null;
-        }
+        transportCadence.resetScene();
       }
       needsFullRepaintRef.current = action.repaint === "replace";
       if (action.flushPending) flushScene();
@@ -660,7 +526,7 @@ export function PadView({
       // Never swallow: surface the loss and un-record the version pairs so a later edit
       // of the same element re-enters the pending pipeline instead of being deduped.
       for (const rejection of rejections) {
-        versionPairsRef.current.delete(rejection.element.id);
+        transportCadence.forgetSceneVersion(rejection.element.id);
       }
       apiRef.current?.setToast({
         message: `${String(rejections.length)} element(s) could not be synced`,
@@ -733,7 +599,7 @@ export function PadView({
       offSaved();
       offMessage();
     };
-  }, [client, flushScene, syncCollaborators, identity.principal, machines]);
+  }, [client, flushScene, syncCollaborators, identity.principal, transportCadence]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -801,7 +667,7 @@ export function PadView({
       scene: () => [...client.scene.values()].map(toElementSnapshot),
       canvas: () =>
         (apiRef.current?.getSceneElementsIncludingDeleted() ?? []).map(toElementSnapshot),
-      pending: () => [...pendingElementsRef.current.keys()],
+      pending: () => transportCadence.pendingSceneIds(),
       rev: () => client.rev,
       epoch: () => client.epoch,
       viewport: () => {
@@ -820,7 +686,7 @@ export function PadView({
     return () => {
       delete window.__manifold;
     };
-  }, [client]);
+  }, [client, transportCadence]);
 
   useEffect(() => {
     // Edits inside the last throttle window must not die with the tab: flushScene is
@@ -836,14 +702,12 @@ export function PadView({
       document.removeEventListener("visibilitychange", flushOnHide);
       // Unmount: flush BEFORE the deferred client.close() (scheduled at 0ms elsewhere)
       // so navigation away does not drop the last window of edits.
-      if (sceneTimerRef.current !== null) window.clearTimeout(sceneTimerRef.current);
+      transportCadence.cancel();
       flushScene();
-      if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
-      if (viewportTimerRef.current !== null) window.clearTimeout(viewportTimerRef.current);
       offScrollChangeRef.current?.();
       offScrollChangeRef.current = null;
     };
-  }, [flushScene]);
+  }, [flushScene, transportCadence]);
 
   /**
    * Picks the machine for an implicit terminal restart. Only meaningful when
