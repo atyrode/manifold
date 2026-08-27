@@ -10,7 +10,11 @@ import {
 import type { AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
 import type { RoomManager, RoomTimers } from "./room.ts";
-import type { SessionPeer } from "./session-peer.ts";
+import {
+  serializeServerMessage,
+  type SerializedServerMessage,
+  type SessionPeer,
+} from "./session-peer.ts";
 import type { ServerStore } from "./stores.ts";
 
 type TerminalOpen = Extract<ClientMessage, { type: "terminal_open" }>;
@@ -251,7 +255,9 @@ export class TerminalBroker {
       this.sessions.set(stored.id, session);
     }
     if (!advertised.alive) {
-      if (session.info.status === "running") this.onExited(machineId, advertised.sessionId, null);
+      if (session.info.status === "running") {
+        this.onExited(machineId, advertised.sessionId, advertised.exitCode ?? null);
+      }
       return false;
     }
     if (stored.status !== "running") return false;
@@ -531,16 +537,17 @@ export class TerminalBroker {
     }
     if (output.seq <= session.lastReceivedOutputSeq) return;
     session.lastReceivedOutputSeq = output.seq;
+    let serialized: SerializedServerMessage | null = null;
     for (const [peer, viewer] of session.viewers) {
       if (viewer.state === "LIVE") {
         if (output.seq <= viewer.lastDeliveredSeq) continue;
-        const delivered = peer.send({
+        serialized ??= serializeServerMessage({
           type: "terminal_output",
           sessionId: output.sessionId,
           seq: output.seq,
           data: output.data,
         });
-        if (!delivered) {
+        if (!peer.sendSerialized(serialized)) {
           viewer.cancelSnapshotDeadline?.();
           session.viewers.delete(peer);
           continue;
@@ -569,18 +576,18 @@ export class TerminalBroker {
     if (!session.snapshotRequestOutstanding) return;
     const generation = session.snapshotGeneration;
     session.snapshotRequestOutstanding = false;
+    const snapshotFrame = serializeServerMessage({
+      type: "terminal_snapshot",
+      sessionId: snapshot.sessionId,
+      seq: snapshot.seq,
+      data: snapshot.data,
+    });
+    const outputFrames = new Map<number, SerializedServerMessage>();
     for (const [peer, viewer] of session.viewers) {
       if (viewer.state !== "PENDING" || viewer.snapshotGeneration !== generation) continue;
       viewer.cancelSnapshotDeadline?.();
       viewer.cancelSnapshotDeadline = null;
-      if (
-        !peer.send({
-          type: "terminal_snapshot",
-          sessionId: snapshot.sessionId,
-          seq: snapshot.seq,
-          data: snapshot.data,
-        })
-      ) {
+      if (!peer.sendSerialized(snapshotFrame)) {
         session.viewers.delete(peer);
         continue;
       }
@@ -589,14 +596,17 @@ export class TerminalBroker {
       let live = true;
       for (const output of viewer.queue) {
         if (output.seq <= lastSeq) continue;
-        if (
-          !peer.send({
+        let outputFrame = outputFrames.get(output.seq);
+        if (outputFrame === undefined) {
+          outputFrame = serializeServerMessage({
             type: "terminal_output",
             sessionId: output.sessionId,
             seq: output.seq,
             data: output.data,
-          })
-        ) {
+          });
+          outputFrames.set(output.seq, outputFrame);
+        }
+        if (!peer.sendSerialized(outputFrame)) {
           live = false;
           break;
         }
@@ -803,24 +813,30 @@ export class TerminalBroker {
     this.rooms.evictIfIdle(session.info.padId);
   }
 
-  /** Lists protocol session state for one room's init/resync payload. */
-  listForPad(padId: string): SessionInfo[] {
+  /**
+   * Deletes exited sessions whose canvas element no longer references them. This is
+   * explicitly invoked at exit and before init/resync; ordinary roster reads stay pure.
+   */
+  pruneExitedUnreferencedForPad(padId: string): void {
     const room = this.rooms.live(padId);
-    if (room !== null) {
-      for (const [sessionId, session] of this.sessions) {
-        if (
-          session.info.padId !== padId ||
-          session.info.status !== "exited" ||
-          room.referencesSession(sessionId)
-        ) {
-          continue;
-        }
-        for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
-        session.viewers.clear();
-        this.sessions.delete(sessionId);
-        this.store.deleteSession(sessionId);
+    if (room === null) return;
+    for (const [sessionId, session] of this.sessions) {
+      if (
+        session.info.padId !== padId ||
+        session.info.status !== "exited" ||
+        room.referencesSession(sessionId)
+      ) {
+        continue;
       }
+      for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+      session.viewers.clear();
+      this.sessions.delete(sessionId);
+      this.store.deleteSession(sessionId);
     }
+  }
+
+  /** Purely lists protocol session state for room state and residency reads. */
+  listForPad(padId: string): SessionInfo[] {
     return [...this.sessions.values()]
       .map((session) => session.info)
       .filter((session) => session.padId === padId)

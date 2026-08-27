@@ -206,6 +206,8 @@ function toSession(row: SessionDbRow): StoredSession {
 
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
+  private readonly eventCountByPad = new Map<string, number>();
+
   constructor(readonly db: Database) {
     db.exec(`
       CREATE INDEX IF NOT EXISTS events_by_timestamp ON events(ts);
@@ -424,6 +426,7 @@ export class ServerStore {
   }
 
   deletePad(id: string): boolean {
+    this.eventCountByPad.delete(id);
     return this.db.transaction(() => {
       const current = this.listPadTree().find(
         (item): item is Extract<PadTreeItem, { kind: "pad" }> =>
@@ -634,7 +637,7 @@ export class ServerStore {
     type: string,
     payload: Readonly<Record<string, unknown>>,
   ): void {
-    this.transaction(() => {
+    const retainedCount = this.transaction((): number | null => {
       this.db
         .query<void, [string | null, number, string | null, string, string]>(
           "INSERT INTO events(pad_id, ts, principal_id, type, payload) VALUES (?, ?, ?, ?, ?)",
@@ -643,12 +646,18 @@ export class ServerStore {
       this.db
         .query<void, [number]>("DELETE FROM events WHERE ts < ?")
         .run(ts - EVENTS_RETENTION_DAYS * MILLISECONDS_PER_DAY);
-      if (padId === null) return;
+      if (padId === null) return null;
 
-      const count = this.db
-        .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM events WHERE pad_id = ?")
-        .get(padId)!.count;
-      if (count <= EVENTS_MAX_PER_PAD) return;
+      const cachedCount = this.eventCountByPad.get(padId);
+      let count =
+        cachedCount === undefined
+          ? this.db
+              .query<{ count: number }, [string]>(
+                "SELECT COUNT(*) AS count FROM events WHERE pad_id = ?",
+              )
+              .get(padId)!.count
+          : cachedCount + 1;
+      if (count <= EVENTS_MAX_PER_PAD) return count;
       this.db
         .query<void, [string, number]>(
           `DELETE FROM events
@@ -658,7 +667,12 @@ export class ServerStore {
            )`,
         )
         .run(padId, EVENTS_MAX_PER_PAD);
+      count = EVENTS_MAX_PER_PAD;
+      return count;
     });
+    if (padId !== null && retainedCount !== null) {
+      this.eventCountByPad.set(padId, retainedCount);
+    }
   }
 
   createMachine(machine: MachineRecord): void {

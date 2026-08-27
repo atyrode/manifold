@@ -103,6 +103,13 @@ export class MachineGateway {
       this.revokePrincipal(principalId, padId);
     });
   }
+  private pruneExpiredSupersessionDamp(now: number): void {
+    for (const [tokenPrincipalId, supersededAt] of this.lastSupersededAtByToken) {
+      if (now - supersededAt >= SUPERSEDE_DAMP_MS) {
+        this.lastSupersededAtByToken.delete(tokenPrincipalId);
+      }
+    }
+  }
 
   /** Starts a bounded hello deadline for a newly upgraded machine socket. */
   open(id: string, socket: RawSocket): void {
@@ -196,6 +203,8 @@ export class MachineGateway {
       return;
     }
 
+    const now = this.runtime.now();
+    this.pruneExpiredSupersessionDamp(now);
     const channel = new LiveMachineChannel(
       authenticated.id,
       authenticated.tokenPrincipalId,
@@ -206,7 +215,7 @@ export class MachineGateway {
     if (
       older !== undefined &&
       lastSupersededAt !== undefined &&
-      this.runtime.now() - lastSupersededAt < SUPERSEDE_DAMP_MS
+      now - lastSupersededAt < SUPERSEDE_DAMP_MS
     ) {
       connection.cancelHelloTimeout?.();
       connection.cancelHelloTimeout = null;
@@ -217,7 +226,7 @@ export class MachineGateway {
     connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
-    this.store.touchMachine(authenticated.id, message.name, this.runtime.now());
+    this.store.touchMachine(authenticated.id, message.name, now);
     if (
       !channel.send({
         type: "welcome",
@@ -231,7 +240,7 @@ export class MachineGateway {
     this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
     if (older !== undefined) {
-      this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, this.runtime.now());
+      this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, now);
       this.logger.info("machine_superseded", { machineId: authenticated.id });
       older.close(4001, "superseded");
     }

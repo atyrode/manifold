@@ -161,6 +161,7 @@ export class SessionGateway {
       connection.socket.close(4404, "pad not found");
       return;
     }
+    this.broker.pruneExitedUnreferencedForPad(message.padId);
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
@@ -216,6 +217,7 @@ export class SessionGateway {
       connection.cancelResyncFlush?.();
       connection.cancelResyncFlush = null;
       connection.lastResyncAt = now;
+      this.broker.pruneExitedUnreferencedForPad(peer.padId);
       room.sendResync(peer);
       return;
     }
@@ -228,6 +230,7 @@ export class SessionGateway {
       const liveRoom = connection.room;
       if (livePeer === null || liveRoom === null) return;
       connection.lastResyncAt = this.runtime.now();
+      this.broker.pruneExitedUnreferencedForPad(livePeer.padId);
       liveRoom.sendResync(livePeer);
     }, RESYNC_MIN_INTERVAL_MS - elapsed);
   }

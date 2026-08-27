@@ -245,7 +245,10 @@ describe("TerminalBroker controller lease", () => {
       sessionId: fixture.create.sessionId,
     });
 
-    expect(fixture.store.getSession(fixture.create.sessionId)?.status).toBe("exited");
+    expect(fixture.broker.listForPad(fixture.pad.id)).toMatchObject([
+      { id: fixture.create.sessionId, status: "exited", exitCode: null },
+    ]);
+    fixture.broker.pruneExitedUnreferencedForPad(fixture.pad.id);
     expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
     expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
     expect(fixture.socket.messages()).toContainEqual({
@@ -329,6 +332,83 @@ describe("TerminalBroker controller lease", () => {
       kind: "controller_changed",
       controllerId: fixture.root.principal.id,
     });
+    fixture.store.close();
+  });
+  test("disconnected exit adoption records the advertised exit code", () => {
+    const fixture = brokerFixture();
+
+    expect(
+      fixture.broker.adoptSession(fixture.machine.machineId, {
+        sessionId: fixture.create.sessionId,
+        cols: 80,
+        rows: 24,
+        alive: false,
+        exitCode: 23,
+        seq: 4,
+      }),
+    ).toBeFalse();
+
+    expect(fixture.store.getSession(fixture.create.sessionId)).toMatchObject({
+      status: "exited",
+      exitCode: 23,
+    });
+    fixture.store.close();
+  });
+
+  test("successful adoption re-pends existing viewers and requests a healing snapshot", () => {
+    const fixture = brokerFixture();
+    fixture.broker.attach(fixture.opener, {
+      type: "terminal_attach",
+      sessionId: fixture.create.sessionId,
+    });
+    fixture.broker.onSnapshot(fixture.machine.machineId, {
+      type: "snapshot",
+      sessionId: fixture.create.sessionId,
+      seq: 0,
+      data: encoded("initial"),
+    });
+    fixture.socket.clear();
+    fixture.machine.clear();
+
+    expect(
+      fixture.broker.adoptSession(fixture.machine.machineId, {
+        sessionId: fixture.create.sessionId,
+        cols: 100,
+        rows: 30,
+        alive: true,
+        seq: 10,
+      }),
+    ).toBeTrue();
+    expect(fixture.machine.sent).toEqual([
+      { type: "snapshot_request", sessionId: fixture.create.sessionId },
+    ]);
+
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      sessionId: fixture.create.sessionId,
+      seq: 11,
+      data: encoded("tail"),
+    });
+    expect(fixture.socket.messages()).not.toContainEqual(
+      expect.objectContaining({ type: "terminal_output" }),
+    );
+    fixture.broker.onSnapshot(fixture.machine.machineId, {
+      type: "snapshot",
+      sessionId: fixture.create.sessionId,
+      seq: 10,
+      data: encoded("healed"),
+    });
+    expect(
+      fixture.socket
+        .messages()
+        .filter(
+          (message) => message.type === "terminal_snapshot" || message.type === "terminal_output",
+        )
+        .map((message) => [message.type, message.seq]),
+    ).toEqual([
+      ["terminal_snapshot", 10],
+      ["terminal_output", 11],
+    ]);
     fixture.store.close();
   });
 });
@@ -432,7 +512,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
     fixture.store.close();
   });
 
-  test("dereferenced exited sessions are pruned from memory and persistence", () => {
+  test("an exited session stays listed until the explicit init/resync prune", () => {
     const fixture = brokerFixture();
     const room = fixture.rooms.get(fixture.pad.id);
     if (room === null) throw new Error("missing room");
@@ -440,6 +520,25 @@ describe("TerminalBroker lifecycle cleanup", () => {
     fixture.socket.clear();
 
     fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
+    expect(fixture.broker.listForPad(fixture.pad.id)).toMatchObject([
+      { id: fixture.create.sessionId, status: "exited", exitCode: 0 },
+    ]);
+    fixture.broker.pruneExitedUnreferencedForPad(fixture.pad.id);
+    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
+    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    fixture.store.close();
+  });
+
+  test("session listing is pure and explicit init pruning removes stale exited rows", () => {
+    const fixture = brokerFixture();
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
+    const room = fixture.rooms.get(fixture.pad.id);
+    if (room === null) throw new Error("missing room");
+
+    expect(fixture.broker.listForPad(fixture.pad.id)).toHaveLength(1);
+    expect(fixture.store.getSession(fixture.create.sessionId)).not.toBeNull();
+
+    fixture.broker.pruneExitedUnreferencedForPad(fixture.pad.id);
     expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
     expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
     fixture.store.close();
