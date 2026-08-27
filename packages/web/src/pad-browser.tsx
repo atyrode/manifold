@@ -151,12 +151,15 @@ function initialSessionTree(): boolean {
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
   const [treeItems, setTreeItems] = useState<readonly PadTreeItem[] | null>(null);
-  const pads =
-    treeItems === null
-      ? null
-      : treeItems
-          .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
-          .map((item) => item.pad);
+  const pads = useMemo(
+    () =>
+      treeItems === null
+        ? null
+        : treeItems
+            .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
+            .map((item) => item.pad),
+    [treeItems],
+  );
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
