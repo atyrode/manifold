@@ -76,6 +76,7 @@ export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { buildProtocolJsonSchema } from "./jsonschema.ts";
 export {
   HealthResponseSchema,
+  EnrollMachineRequestSchema,
   MachineEnrollResponseSchema,
   MachineSummarySchema,
   type MachineSummary,
