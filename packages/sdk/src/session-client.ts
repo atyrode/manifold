@@ -7,6 +7,7 @@ import {
   ServerMessageSchema,
   applyAccepted,
   reconcile,
+  reconnectDelayMs,
   type ClientMessage,
   type PresencePayload,
   type PresenceState,
@@ -37,6 +38,25 @@ type ClassifiedFrame =
  * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors —
  * the caller closes the socket (4002) and heals via reconnect → fresh init.
  */
+type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "terminal_snapshot" }>;
+
+function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
+  const type = Reflect.get(raw, "type");
+  const sessionId = Reflect.get(raw, "sessionId");
+  const seq = Reflect.get(raw, "seq");
+  const data = Reflect.get(raw, "data");
+  return (
+    (type === "terminal_output" || type === "terminal_snapshot") &&
+    typeof sessionId === "string" &&
+    sessionId.length > 0 &&
+    typeof seq === "number" &&
+    Number.isInteger(seq) &&
+    seq >= 0 &&
+    typeof data === "string" &&
+    data.length <= 700_000
+  );
+}
+
 function classifyServerFrame(data: unknown): ClassifiedFrame {
   if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
   let raw: unknown;
@@ -50,6 +70,11 @@ function classifyServerFrame(data: unknown): ClassifiedFrame {
   }
   const type = Reflect.get(raw, "type") as string;
   if (!KNOWN_SERVER_TYPES.has(type)) return { kind: "unknown_type" };
+  if (type === "terminal_output" || type === "terminal_snapshot") {
+    return isTerminalDataFrame(raw)
+      ? { kind: "message", message: raw }
+      : { kind: "malformed", detail: `invalid ${type} frame` };
+  }
   const parsed = ServerMessageSchema.safeParse(raw);
   if (!parsed.success) return { kind: "malformed", detail: `invalid ${type} frame` };
   return { kind: "message", message: parsed.data };
@@ -346,7 +371,7 @@ export class SessionClient {
         return;
       }
       const cap = this.opts.backoffCapMs ?? 8000;
-      const delay = Math.min(cap, 250 * 2 ** this.attempts) * (0.5 + Math.random() * 0.5);
+      const delay = reconnectDelayMs(this.attempts, 250, cap);
       this.attempts += 1;
       const timer = setTimeout(() => {
         // clearTimeout cannot retract a callback already queued by the event loop. The
@@ -384,6 +409,7 @@ export class SessionClient {
         for (const el of msg.elements) this.scene.set(el.id, el);
         this.epoch = msg.epoch;
         this.rev = msg.rev;
+        const previousSelfConnId = this.selfConnId;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
         this.selfCaps = msg.selfCaps;
@@ -394,11 +420,13 @@ export class SessionClient {
         this.setStatus("open");
         this.startKeepalive();
         this.flushOutbox();
-        // Re-subscribe every session views still hold: the server's viewer
-        // registry is connection-scoped and did not survive the reconnect.
-        for (const attachedId of this.attachCounts.keys()) {
-          if (this.sessions.get(attachedId)?.status === "running") {
-            this.send({ type: "terminal_attach", sessionId: attachedId });
+        // Re-subscribe views only after a real reconnect: the server's viewer registry is
+        // connection-scoped, while a same-connection resync preserves those subscriptions.
+        if (previousSelfConnId !== null && previousSelfConnId !== msg.selfConnId) {
+          for (const attachedId of this.attachCounts.keys()) {
+            if (this.sessions.get(attachedId)?.status === "running") {
+              this.send({ type: "terminal_attach", sessionId: attachedId });
+            }
           }
         }
         if (rebaseEligible) {
@@ -519,9 +547,12 @@ export class SessionClient {
 
   private send(msg: ClientMessage): void {
     if (this.socket !== null && this.socket.readyState === 1 && this.status === "open") {
-      // Development guard: never put an invalid frame on the wire. Before first init,
-      // optimistic scene updates carry the not-yet-adopted empty epoch only in the outbox.
-      ClientMessageSchema.parse(msg);
+      // Development guard: never put an invalid frame on the wire. The two high-volume
+      // frame types are constructed entirely by this SDK, so repeating schema validation
+      // here only rescans their payloads.
+      if (msg.type !== "cursor" && msg.type !== "terminal_input") {
+        ClientMessageSchema.parse(msg);
+      }
       this.socket.send(JSON.stringify(msg));
       return;
     }
@@ -648,6 +679,7 @@ export class SessionClient {
       clearTimeout(timer);
       offOpened();
       offError();
+      offStatus();
       outcome();
     };
     const timer = setTimeout(
@@ -661,6 +693,11 @@ export class SessionClient {
     const offError = this.on("error", (msg) => {
       if (msg.ref !== opts.elementId) return;
       settle(() => reject(new Error(`terminal_open failed: ${msg.code}`)));
+    });
+    const offStatus = this.on("status", (status: ConnectionStatus) => {
+      if (status === "closed") {
+        settle(() => reject(this.closeError ?? new Error("session closed before terminal opened")));
+      }
     });
     this.send({
       type: "terminal_open",

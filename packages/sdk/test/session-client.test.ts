@@ -453,6 +453,27 @@ describe("frame policy", () => {
     expect(socket.closedWith).toBeNull();
   });
 
+  test("terminal data fast-path accepts structurally valid frames without base64 rescanning", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    client.on("terminal_snapshot", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
+    client.on("terminal_output", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
+
+    // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
+    // validates the frame shape and bounded payload rather than rescanning its contents.
+    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 0, data: "%" });
+    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 0, data: "%" });
+
+    expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:0:%"]);
+    expect(socket.closedWith).toBeNull();
+  });
+
+  test("malformed terminal data frame still closes 4002", () => {
+    const { socket } = connected();
+    socket.receive({ type: "terminal_output", sessionId: "s1", data: "" });
+    expect(socket.closedWith?.code).toBe(4002);
+  });
+
   test("malformed KNOWN frame closes 4002", () => {
     const { socket } = connected();
     socket.receive({ type: "scene_applied", rev: "not a number" });
@@ -619,6 +640,21 @@ describe("terminal attach refcounting", () => {
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
   });
 
+  test("same-connection resync preserves the existing wire subscription", () => {
+    const { client, socket } = connected();
+    socket.receive(INIT_WITH_SESSION);
+    client.attachTerminal("s1");
+    const attachesBeforeResync = sentTypes(socket).filter(
+      (type) => type === "terminal_attach",
+    ).length;
+
+    socket.receive({ ...INIT_WITH_SESSION, type: "resync" });
+
+    expect(sentTypes(socket).filter((type) => type === "terminal_attach")).toHaveLength(
+      attachesBeforeResync,
+    );
+  });
+
   test("reconnect re-subscribes running sessions views still hold, without double-counting", () => {
     const { client } = dialing({ reconnect: true });
     const first = FakeSocket.instances.at(-1);
@@ -635,7 +671,7 @@ describe("terminal attach refcounting", () => {
       const second = FakeSocket.instances.at(-1);
       if (second === undefined || second === first) throw new Error("no reconnect socket");
       second.open();
-      second.receive(INIT_WITH_SESSION);
+      second.receive({ ...INIT_WITH_SESSION, selfConnId: "conn-reconnected" });
       // server viewer registry is connection-scoped: SDK must re-attach exactly once
       expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
       // a single detach still fully unsubscribes (refcount untouched by reconnect)
@@ -644,5 +680,16 @@ describe("terminal attach refcounting", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("terminal opening", () => {
+  test("rejects immediately when the client closes", async () => {
+    const { client } = connected();
+    const opening = client.openTerminal({ elementId: "el1", cols: 80, rows: 24 });
+
+    client.close();
+
+    await expect(opening).rejects.toThrow("session closed before terminal opened");
   });
 });
