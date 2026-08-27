@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Machine names are now unique in storage; duplicate enrollments left by the old always-mint path are deduplicated to the most recently seen machine, and their stale tokens revoked (#46, #47).
+
 ## [0.4.1] - 2026-08-27
 
 ### Fixed
