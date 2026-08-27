@@ -282,7 +282,7 @@ events(id INTEGER PK AUTOINCREMENT, pad_id TEXT, ts INTEGER, principal_id TEXT,
 principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER)
 tokens(id TEXT PK, hash TEXT UNIQUE, principal_id TEXT, caps TEXT, pad_id TEXT,
        created_at INTEGER, revoked_at INTEGER)        -- store token HASH, never raw
-machines(id TEXT PK, name TEXT, token_id TEXT, last_seen INTEGER)
+machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
 sessions(id TEXT PK, machine_id TEXT, pad_id TEXT, element_id TEXT, created_by TEXT,
          status TEXT, exit_code INTEGER, created_at INTEGER)
 meta(key TEXT PK, value TEXT)                         -- schema_version etc.

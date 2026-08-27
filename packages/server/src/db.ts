@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -124,6 +124,37 @@ SET sort_order = (SELECT sibling_order FROM ranked WHERE ranked.id = pads.id)
 WHERE folder_id IS NOT NULL;
 
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');
+`,
+  4: `
+-- Enrollment is idempotent by machine name (#43), so storage must enforce the
+-- name's uniqueness (#46). Databases shaped by the pre-#43 always-mint path may
+-- hold duplicate names: keep the row the live agent authenticates with (the
+-- most recently seen; tie-break: newest rowid), revoke the losers' tokens so a
+-- stale agent is fenced loudly instead of lingering, and drop their sessions.
+CREATE TEMP TABLE machine_survivors(id TEXT);
+INSERT INTO machine_survivors(id)
+SELECT id FROM (
+  SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY last_seen DESC, rowid DESC) AS rank
+  FROM machines
+)
+WHERE rank = 1;
+UPDATE tokens
+SET revoked_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+WHERE revoked_at IS NULL
+  AND id IN (
+    SELECT token_id FROM machines
+    WHERE id NOT IN (SELECT id FROM machine_survivors)
+  );
+DELETE FROM sessions
+WHERE machine_id IN (
+  SELECT id FROM machines WHERE id NOT IN (SELECT id FROM machine_survivors)
+);
+DELETE FROM machines WHERE id NOT IN (SELECT id FROM machine_survivors);
+DROP TABLE machine_survivors;
+
+CREATE UNIQUE INDEX IF NOT EXISTS machines_name_unique ON machines(name);
+
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '4');
 `,
 };
 
