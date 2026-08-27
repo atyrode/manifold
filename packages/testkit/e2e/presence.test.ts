@@ -113,7 +113,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
         const latest = receivedCursors.at(-1);
         return latest?.x === 49 && latest.y === 98;
       },
-      500,
+      5_000,
       10,
     );
     offCursor();

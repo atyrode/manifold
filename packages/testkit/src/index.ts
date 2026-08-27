@@ -19,10 +19,3 @@ export {
   type TestAgent,
   type TestServer,
 } from "./spawn.ts";
-export {
-  rawSessionSocket,
-  rawMachineSocket,
-  type AdversarialMachineSocket,
-  type AdversarialSessionSocket,
-  type RawCloseInfo,
-} from "./adversarial.ts";

@@ -28,13 +28,34 @@ import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
+function debugPortIsAvailable(port: number): boolean {
+  try {
+    const probe = Bun.listen({
+      hostname: "127.0.0.1",
+      port,
+      socket: { data() {} },
+    });
+    probe.stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function availableDebugPorts(): readonly [number, number] {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const first = 9400 + Math.floor(Math.random() * 200);
+    const second = first + 200 + Math.floor(Math.random() * 200);
+    if (debugPortIsAvailable(first) && debugPortIsAvailable(second)) return [first, second];
+  }
+  throw new Error("could not find two available Chromium debug ports");
+}
+
 const repoRoot = join(import.meta.dir, "..");
 const distDir = mkdtempSync(join(tmpdir(), "manifold-conv-dist-"));
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-conv-data-"));
-const port = 39000 + Math.floor(Math.random() * 2000);
-const debugPortA = 9400 + Math.floor(Math.random() * 200);
-const debugPortB = debugPortA + 200 + Math.floor(Math.random() * 200);
-const origin = `http://127.0.0.1:${String(port)}`;
+const [debugPortA, debugPortB] = availableDebugPorts();
+let origin = "";
 
 console.log("building web bundle...");
 const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
@@ -51,14 +72,42 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   cwd: repoRoot,
   env: {
     ...process.env,
-    MANIFOLD_PORT: String(port),
+    MANIFOLD_PORT: "0",
     MANIFOLD_DATA_DIR: dataDir,
     MANIFOLD_WEB_DIST: distDir,
     MANIFOLD_SPAWN_AGENT: "0",
   },
-  stdout: "ignore",
+  stdout: "pipe",
   stderr: "inherit",
 });
+
+async function serverOriginFromReadyLine(): Promise<string> {
+  const reader = server.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffered += decoder.decode(chunk.value, { stream: true });
+    const lines = buffered.split(/\r?\n/);
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      const readyUrl = /manifold ready url=(https?:\/\/[^\s"']+)/.exec(line)?.[1];
+      if (readyUrl !== undefined) return new URL(readyUrl).origin;
+    }
+  }
+  throw new Error("server exited before emitting its ready URL");
+}
+
+async function stopServer(): Promise<void> {
+  if (server.exitCode === null) server.kill("SIGTERM");
+  const stopped = await Promise.race([
+    server.exited.then(() => true),
+    Bun.sleep(5_000).then(() => false),
+  ]);
+  if (!stopped && server.exitCode === null) server.kill("SIGKILL");
+  await server.exited;
+}
 
 const browserA = new Browser();
 const browserB = new Browser();
@@ -85,6 +134,12 @@ interface Viewport {
 }
 
 try {
+  origin = await Promise.race([
+    serverOriginFromReadyLine(),
+    Bun.sleep(20_000).then(() => {
+      throw new Error("server readiness timed out after 20000ms");
+    }),
+  ]);
   await until(
     async () => {
       try {
@@ -850,7 +905,7 @@ try {
   await browserA.close().catch(() => undefined);
   await browserB.close().catch(() => undefined);
   observer?.close();
-  server.kill();
+  await stopServer();
   rmSync(distDir, { recursive: true, force: true });
   rmSync(dataDir, { recursive: true, force: true });
 }

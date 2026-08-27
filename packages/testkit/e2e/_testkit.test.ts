@@ -11,10 +11,14 @@ test("startServer parses a fake bun ready line and stop terminates the child", a
   const binDir = `${root}/bin`;
   const dataDir = `${root}/data`;
   let server: TestServer | null = null;
+  const inheritedManifoldValue = process.env.MANIFOLD_INHERITED_TEST;
+  process.env.MANIFOLD_INHERITED_TEST = "must-not-leak";
   try {
     await mkdir(binDir, { recursive: true });
     const fakeBun = `${binDir}/bun`;
     const expression =
+      'console.log(`inherited=${process.env.MANIFOLD_INHERITED_TEST ?? "<unset>"}`);' +
+      'console.log(`explicit=${process.env.MANIFOLD_EXPLICIT_TEST ?? "<unset>"}`);' +
       `console.log("manifold ready url=http://127.0.0.1:${FAKE_PORT}/#key=${FAKE_OWNER_KEY}");` +
       // The fake child must remain alive until stop() proves SIGTERM waiting; no application
       // event exists to await because this is intentionally only a process-lifecycle fixture.
@@ -26,7 +30,10 @@ test("startServer parses a fake bun ready line and stop terminates the child", a
       dataDir,
       port: 0,
       ownerKey: FAKE_OWNER_KEY,
-      env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        MANIFOLD_EXPLICIT_TEST: "kept",
+      },
     });
     expect(server.url).toBe(`http://127.0.0.1:${FAKE_PORT}/#key=${FAKE_OWNER_KEY}`);
     expect(server.port).toBe(FAKE_PORT);
@@ -34,12 +41,16 @@ test("startServer parses a fake bun ready line and stop terminates the child", a
     expect(server.httpUrl).toBe(`http://127.0.0.1:${FAKE_PORT}`);
     expect(server.wsUrl).toBe(`ws://127.0.0.1:${FAKE_PORT}/ws/session`);
     expect(server.dataDir).toBe(dataDir);
+    expect(server.output.stdout).toContain("inherited=<unset>");
+    expect(server.output.stdout).toContain("explicit=kept");
 
     await server.stop();
     expect(typeof (await server.proc.exited)).toBe("number");
   } catch (error) {
     throw e2eFailure(error, [server]);
   } finally {
+    if (inheritedManifoldValue === undefined) delete process.env.MANIFOLD_INHERITED_TEST;
+    else process.env.MANIFOLD_INHERITED_TEST = inheritedManifoldValue;
     await stopProcesses([server]);
     await rm(root, { recursive: true, force: true });
   }
