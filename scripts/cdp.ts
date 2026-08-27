@@ -47,9 +47,10 @@ export class Browser {
   }
 
   async launch(port = 9333): Promise<void> {
-    this.proc = Bun.spawn(
+    const binary = Browser.detect();
+    const proc = Bun.spawn(
       [
-        Browser.detect(),
+        binary,
         "--headless=new",
         `--remote-debugging-port=${String(port)}`,
         `--user-data-dir=/tmp/manifold-verify-${String(port)}-${String(Date.now())}`,
@@ -59,24 +60,46 @@ export class Browser {
         "--window-size=1440,900",
         "about:blank",
       ],
-      { stdout: "ignore", stderr: "ignore" },
+      { stdout: "ignore", stderr: "pipe" },
     );
+    this.proc = proc;
+
+    // Keep a bounded stderr tail: launch failures on CI runners are
+    // undiagnosable without it (issue #44).
+    let stderrTail = "";
+    void (async () => {
+      const decoder = new TextDecoder();
+      const reader = proc.stderr.getReader();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stderrTail = (stderrTail + decoder.decode(chunk.value)).slice(-4096);
+      }
+    })();
+    const diagnostics = (): string =>
+      `${binary} (devtools port ${String(port)})${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
 
     let endpoint = "";
-    await until(
-      async () => {
-        try {
-          const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`);
-          const body = (await res.json()) as { webSocketDebuggerUrl?: string };
-          endpoint = body.webSocketDebuggerUrl ?? "";
-          return endpoint !== "";
-        } catch {
-          return false;
-        }
-      },
-      20_000,
-      "chromium devtools endpoint",
-    );
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      if (proc.exitCode !== null) {
+        throw new Error(
+          `chromium exited with code ${String(proc.exitCode)} before its devtools endpoint came up: ${diagnostics()}`,
+        );
+      }
+      try {
+        const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`);
+        const body = (await res.json()) as { webSocketDebuggerUrl?: string };
+        endpoint = body.webSocketDebuggerUrl ?? "";
+        if (endpoint !== "") break;
+      } catch {
+        // devtools endpoint not accepting connections yet
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics()}`);
+      }
+      await sleep(150);
+    }
 
     const socket = new WebSocket(endpoint);
     this.socket = socket;
