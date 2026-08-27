@@ -8,7 +8,7 @@
 #   COMPOSE_FILE=compose.yaml:infra/compose.hostproxy.yaml
 #
 # Point the existing proxy's vhost at 127.0.0.1:7777 (see
-# infra/manifold.tyrode.dev.Caddyfile for the Caddy block).
+# infra/Caddyfile.example for the Caddy block).
 services:
   manifold:
     ports:

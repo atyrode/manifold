@@ -25,7 +25,7 @@ bun run verify:convergence              # TWO real browsers, real pointer gestur
                        # canvasB (stamps AND geometry) with per-round effect assertions.
                        # The Excalidraw<->SDK projection layer shipped two divergence
                        # bugs no SDK-level test could see; this is the gate that sees.
-bun scripts/verify-public.ts [origin]   # public-origin gate: real browser (draw + canvas
+bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw + canvas
                        # + embedded terminal), public WebSockets, two viewers on one
                        # session, session survival after all viewers leave, anonymous
                        # denial. Localhost green is NOT evidence a public deployment

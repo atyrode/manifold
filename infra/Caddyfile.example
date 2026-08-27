@@ -1,15 +1,15 @@
-# manifold public vhost — https://manifold.tyrode.dev
+# manifold public vhost — example Caddy block for host-proxy deployments.
 #
-# Installed to /var/www/manifold/Caddyfile and pulled in by a single additive
-# `import` line at the end of the host's main Caddyfile, matching the existing
-# per-site convention there. Keeping the block in this repo means manifold's
-# public surface is versioned with the code it serves.
+# Copy next to your host's Caddy configuration (or `import` it from the main
+# Caddyfile) and set MANIFOLD_DOMAIN in Caddy's environment to the public
+# domain. It must match MANIFOLD_DOMAIN in the compose `.env`, which feeds
+# MANIFOLD_PUBLIC_URL.
 #
 # The manifold server binds 127.0.0.1:7777 (MANIFOLD_BIND default), so this
 # proxy is the only public entrance. Caddy v2's reverse_proxy forwards
 # WebSocket upgrades natively, which is what /ws/session and /ws/machine need.
 
-manifold.tyrode.dev {
+{$MANIFOLD_DOMAIN} {
 	encode zstd gzip
 
 	header {
