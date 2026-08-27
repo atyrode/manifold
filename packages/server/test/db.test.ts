@@ -42,7 +42,7 @@ VALUES ('s-old', 'm-old', 'p', 'e1', 'c', 'running', 1),
 }
 
 describe("migration 4: machines.name uniqueness", () => {
-  test("dedupes by newest last_seen, revokes loser tokens, drops loser sessions, enforces the index", () => {
+  test("retires losers by rename keeping all rows, revokes their tokens, enforces the index", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-db-migration-"));
     const path = join(dir, "manifold.db");
     try {
@@ -55,12 +55,15 @@ describe("migration 4: machines.name uniqueness", () => {
       expect(version?.value).toBe(String(SCHEMA_VERSION));
 
       const machines = db
-        .query<{ id: string; name: string }, []>("SELECT id, name FROM machines ORDER BY name")
+        .query<{ id: string; name: string }, []>("SELECT id, name FROM machines ORDER BY id")
         .all();
       expect(machines).toEqual([
         { id: "m-new", name: "dup-node" },
+        // Retired, never deleted: losers keep their row under a collision-proof name.
+        { id: "m-old", name: "dup-node#m-old" },
         { id: "m-solo", name: "solo-node" },
-        // Equal last_seen: the newer rowid (later enrollment) survives.
+        // Equal last_seen: the newer rowid (later enrollment) keeps the bare name.
+        { id: "m-tie-a", name: "tie-node#m-tie-a" },
         { id: "m-tie-b", name: "tie-node" },
       ]);
 
@@ -74,11 +77,12 @@ describe("migration 4: machines.name uniqueness", () => {
         "t-tie-a",
       ]);
 
+      // Session history is untouched — including sessions of retired machines.
       const sessions = db
         .query<{ id: string }, []>("SELECT id FROM sessions ORDER BY id")
         .all()
         .map((row) => row.id);
-      expect(sessions).toEqual(["s-new", "s-solo"]);
+      expect(sessions).toEqual(["s-new", "s-old", "s-solo"]);
 
       expect(() => {
         db.query("INSERT INTO machines(id, name, token_id, last_seen) VALUES (?, ?, ?, ?)").run(
