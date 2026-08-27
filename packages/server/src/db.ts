@@ -128,9 +128,16 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');
   4: `
 -- Enrollment is idempotent by machine name (#43), so storage must enforce the
 -- name's uniqueness (#46). Databases shaped by the pre-#43 always-mint path may
--- hold duplicate names: keep the row the live agent authenticates with (the
--- most recently seen; tie-break: newest rowid), revoke the losers' tokens so a
--- stale agent is fenced loudly instead of lingering, and drop their sessions.
+-- hold duplicate names. Non-destructive resolution (#48): the row the live
+-- agent authenticates with (most recently seen; tie-break: newest rowid) keeps
+-- the bare name; every other duplicate is RETIRED, never deleted — renamed out
+-- of the way with its own id as suffix (a UUID cannot collide with a real
+-- name) and its token revoked so a stale agent is fenced loudly instead of
+-- lingering. Machine rows and their sessions are persisted history; a wrong
+-- survivor pick stays recoverable.
+-- Amended in place before any durable database applied schema v4 (prod was
+-- still v3); version-stamped ephemeral DBs that ran the earlier destructive
+-- shape never re-run it, and both shapes satisfy the index.
 CREATE TEMP TABLE machine_survivors(id TEXT);
 INSERT INTO machine_survivors(id)
 SELECT id FROM (
@@ -145,11 +152,9 @@ WHERE revoked_at IS NULL
     SELECT token_id FROM machines
     WHERE id NOT IN (SELECT id FROM machine_survivors)
   );
-DELETE FROM sessions
-WHERE machine_id IN (
-  SELECT id FROM machines WHERE id NOT IN (SELECT id FROM machine_survivors)
-);
-DELETE FROM machines WHERE id NOT IN (SELECT id FROM machine_survivors);
+UPDATE machines
+SET name = name || '#' || id
+WHERE id NOT IN (SELECT id FROM machine_survivors);
 DROP TABLE machine_survivors;
 
 CREATE UNIQUE INDEX IF NOT EXISTS machines_name_unique ON machines(name);

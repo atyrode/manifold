@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duplicate machine rows are now retired by rename instead of deleted during the uniqueness migration, preserving machine and session history (#48, #49).
+
 ## [0.4.2] - 2026-08-27
 
 ### Fixed
