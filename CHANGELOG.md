@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed release verification failing to start the browser on GitHub's updated CI image (#44, #45).
+
 ## [0.4.0] - 2026-08-27
 
 ### Added
