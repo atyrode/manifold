@@ -703,7 +703,7 @@ export class ServerStore {
   getMachineByName(name: string): MachineRecord | null {
     const row = this.db
       .query<MachineRow, [string]>(
-        "SELECT id, name, token_id, last_seen FROM machines WHERE name = ? ORDER BY rowid LIMIT 1",
+        "SELECT id, name, token_id, last_seen FROM machines WHERE name = ?",
       )
       .get(name);
     return row === null ? null : toMachine(row);
