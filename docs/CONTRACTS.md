@@ -78,12 +78,11 @@ storing it.
 | GET /api/pads/:id           | pads:read             | → `{ pad }`                                                                                                                                      |
 | PATCH /api/pads/:id         | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
 | DELETE /api/pads/:id        | `*`                   | → `{ ok }`                                                                                                                                       |
-| PUT /api/pads/order         | pads:write            | `{ padIds }` containing every visible pad exactly once → `{ ok }`                                                                                |
-| GET /api/pad-folders        | pads:read             | → `{ folders: [{id,name,createdAt,padIds}] }`; scoped tokens receive no folders                                                                  |
-| POST /api/pad-folders       | `*`                   | `{ name }` → `{ folder }`                                                                                                                        |
-| PATCH /api/pad-folders/:id  | `*`                   | `{ name }` → `{ folder }`                                                                                                                        |
-| DELETE /api/pad-folders/:id | `*`                   | → `{ ok }`; pads become ungrouped                                                                                                                |
-| PUT /api/pads/:id/folder    | `*`                   | `{ folderId: string                                                                                                                              | null }`→`{ ok }` |
+| GET /api/pad-tree           | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                      |
+| PUT /api/pad-tree           | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                  |
+| POST /api/pad-folders       | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                              |
+| PATCH /api/pad-folders/:id  | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                          |
+| DELETE /api/pad-folders/:id | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                     |
 | GET /api/pad-sessions       | pads:read             | → `{ sessions: [{id,padId,machineId,elementId,createdAt,status,exitCode}] }`; scoped tokens see only their pad                                   |
 | POST /api/principals        | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
 | POST /api/tokens            | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |
@@ -91,6 +90,13 @@ storing it.
 | POST /api/machines          | machines:mint         | `{ name }` → `{ machine: {id, name}, machineToken }` — raw token returned exactly once; DB stores the hash. Agents authenticate `hello` with it. |
 | GET /api/machines           | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                             |
 | GET /api/introspect         | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                               |
+
+`PadTreeItem` is either `{ kind:"pad", pad:{ id, name, createdAt }, parentId:
+string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
+parentId: string|null, sortOrder: nonnegative integer }`. A pad-tree move's `item` is exactly
+`{ kind:"pad", id }` or `{ kind:"folder", id }`, and `index` is a nonnegative integer.
+All pad-tree organization mutations (`PUT /api/pad-tree` and folder create/rename/delete)
+reject pad-scoped tokens even when they have `pads:write`.
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
@@ -108,11 +114,15 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 
 ## WS /ws/session — session channel (JSON text frames)
 
-Handshake: first client frame MUST be `join { padId, token, lastRev? }`. Server replies
-`init { epoch, rev, elements, roster, presences, sessions, self, selfCaps }` or closes:
+Handshake: first client frame MUST be
+`join { padId, token, protocolVersion, lastEpoch?, lastRev? }`. Server replies
+`init { protocolVersion, epoch, rev, elements, roster, sessions, self, selfCaps,
+selfConnId }` or closes:
 4401 bad token · 4403 revoked/forbidden · 4404 unknown pad · 4409 protocol version mismatch.
 `selfCaps` mirrors the joining principal's granted caps so clients can gate UI affordances
 (e.g. the sessions janitor's kill buttons) without a separate introspection round-trip.
+Presence is carried by `roster`, whose entries are `PresenceState`; there is no separate
+`presences` field.
 
 ### Scene sync (consistency model — NOT naive LWW)
 
@@ -212,12 +222,20 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, sessions }`
-where `sessions` advertises surviving PTYs `{ sessionId, cols, rows, alive, seq }`
-(server-restart adoption). Server replies `welcome { machineId, epoch }` or closes:
-4401 unauthorized, 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set (protocol/version.ts), NOT strict equality:
-agents are long-lived and survive server deploys, so every version whose agent wire is
-identical stays accepted (session/browser joins remain strictly current). Every
+where `sessions` advertises retained PTYs
+`{ sessionId, cols, rows, alive, seq, exitCode? }` (server-restart adoption). An
+`alive:false` advertisement reports a real `exitCode` when the PTY exited while
+disconnected; absence is equivalent to `null`. Such exited sessions are retained through
+the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
+Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
+4403 revoked, 4409 version. Version acceptance is the
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{2,3,4}` (protocol/version.ts), NOT strict equality:
+agents are long-lived and survive server deploys, so every compatible agent version stays
+accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
+new version to the set; a strictly additive-optional change also adds it when every old
+frame still parses and the absent-field default reproduces pre-bump semantics. Any other
+agent-wire change resets the set to the new version and requires a coordinated fleet
+restart. Every
 rejection path emits a structured server log (`machine_version_rejected`,
 `machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
 
@@ -236,11 +254,17 @@ agent closes and re-dials after `AGENT_LIVENESS_TIMEOUT_MS` (75s) of total silen
 catching phantom transports (dead TCP with no RST, e.g. a proxy swallowing the close
 mid-reload). The agent also logs every disconnect's close code/reason.
 
-Reconnect: agent redials with jittered backoff (cap 15s), re-`hello`s with surviving
-sessions; a new server epoch re-adopts them. Stale sockets are fenced: the server drops a
-machine's previous socket when a new `hello` for the same machine token arrives.
+Reconnect: agent redials with jittered backoff (cap 15s), re-`hello`s with retained
+sessions; a new server epoch re-adopts them. On successful re-adoption of a running
+session, the server transitions every existing viewer back to PENDING and uses the normal
+attach machinery to request a fresh snapshot. This heals output dropped during the
+disconnect window, including ring-buffer overflow. Stale sockets are fenced: the server
+drops a machine's previous socket when a new `hello` for the same machine token arrives.
 PTY output while disconnected goes to the agent's per-session ring buffer (default 2MiB);
 the headless mirror keeps render state, so post-reconnect attaches snapshot correctly.
+If WebSocket `bufferedAmount` exceeds the 8MiB hard cap, the agent logs the structured
+backpressure event, closes the socket, and re-dials through this same ring/mirror and
+re-adoption path rather than allowing unbounded process memory growth.
 
 The agent daemon owns its PTYs. Agent↔server disconnects preserve them for re-adoption, but
 an agent process restart kills every PTY it owns; PTYs do not survive the daemon. Node
@@ -296,9 +320,15 @@ owner keys, or terminal data. `/api/introspect` exposes live state for agent-ope
 
 1. Clean room: no code, schemas, CSS, or config copied from pad.ws — concepts only.
 2. `@manifold/protocol` is the only place wire types exist. No inline message types.
-3. Every message handler validates with the zod schema before acting; unknown message
-   types are logged and ignored (forward compatibility), malformed frames of KNOWN types
-   close the socket (server: policy close; client: 4002 + reconnect into a fresh init).
+3. Every message handler validates with the zod schema before acting, except that the SDK
+   MAY structurally validate inbound `terminal_output`/`terminal_snapshot` (type tag,
+   nonempty `sessionId`, nonnegative integer `seq`, and string `data` bounded to 700,000
+   characters) instead of rerunning zod's base64-alphabet check. The SDK MAY likewise skip
+   full zod parsing for the SDK-constructed outbound `cursor` and `terminal_input` hot
+   paths. The server still performs full schema validation at the untrusted boundary, and
+   every other frame keeps full schema validation on both sides. Unknown message types are
+   logged and ignored (forward compatibility); malformed frames of KNOWN types close the
+   socket (server: policy close; client: 4002 + reconnect into a fresh init).
 4. No package imports another package's internals — only workspace package roots.
 5. Determinism in tests: server/agent take `RuntimeDeps { newId, now }` from
    `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake
