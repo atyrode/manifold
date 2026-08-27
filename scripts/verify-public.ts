@@ -6,18 +6,25 @@
  * outside. This script drives the PUBLIC origin end to end — a real browser (system
  * chromium over CDP, no extra dependency), real public WebSockets, real PTYs.
  *
- * Usage:  bun scripts/verify-public.ts [origin]     # default https://manifold.tyrode.dev
- * Env:    MANIFOLD_OWNER_KEY (else ./data/owner.key), MANIFOLD_CHROMIUM,
- *         MANIFOLD_PEER_ORIGIN (co-hosted origin that must keep working)
+ * Usage:  bun scripts/verify-public.ts <origin>    # or MANIFOLD_ORIGIN
+ * Env:    MANIFOLD_ORIGIN (when no argv origin), MANIFOLD_OWNER_KEY (else ./data/owner.key),
+ *         MANIFOLD_CHROMIUM, MANIFOLD_PEER_ORIGIN (optional co-hosted origin that must
+ *         keep working; the step is skipped when unset)
  *
  * Exit 0 only if every check passes.
  */
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
-const origin = (process.argv[2] ?? "https://manifold.tyrode.dev").replace(/\/$/, "");
+const originInput = process.argv[2] ?? process.env["MANIFOLD_ORIGIN"] ?? "";
+if (originInput === "") {
+  throw new Error("pass the public origin as argv or MANIFOLD_ORIGIN; there is no default");
+}
+const origin = originInput.replace(/\/$/, "");
 const wsOrigin = origin.replace(/^http/, "ws");
-const peerOrigin = process.env["MANIFOLD_PEER_ORIGIN"] ?? "https://pad.ws";
+// Optional: another vhost on the same host/proxy that a manifold deploy must
+// not take down. Deployment-specific, so never defaulted.
+const peerOrigin = process.env["MANIFOLD_PEER_ORIGIN"] ?? "";
 const ownerKey =
   process.env["MANIFOLD_OWNER_KEY"] ?? (await Bun.file("data/owner.key").text()).trim();
 if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error("owner key missing or malformed");
@@ -316,11 +323,13 @@ try {
     return `scene ${before} -> ${size}, element persisted`;
   });
 
-  await step("co-hosted origin still serves (no collateral damage)", async () => {
-    const res = await fetch(peerOrigin, { redirect: "manual" });
-    if (res.status >= 500) throw new Error(`${peerOrigin} returned ${res.status}`);
-    return `${peerOrigin} -> ${res.status}`;
-  });
+  if (peerOrigin !== "") {
+    await step("co-hosted origin still serves (no collateral damage)", async () => {
+      const res = await fetch(peerOrigin, { redirect: "manual" });
+      if (res.status >= 500) throw new Error(`${peerOrigin} returned ${res.status}`);
+      return `${peerOrigin} -> ${res.status}`;
+    });
+  }
 } finally {
   // Structural guarantee: once the pad exists, no exit path may leave it behind
   // on the production origin — cleanup runs on success, failure, and throw alike.

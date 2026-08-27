@@ -51,7 +51,7 @@ contend for 80/443 in this mode. Note the scope: `.env` is per-checkout — an
 explicit `-f` invocation or another working directory still bypasses it.
 
 Point your proxy's vhost at `127.0.0.1:7777` (Caddy block:
-`infra/manifold.tyrode.dev.Caddyfile`). `MANIFOLD_DOMAIN` in `.env` must still be
+`infra/Caddyfile.example`). `MANIFOLD_DOMAIN` in `.env` must still be
 the public domain — it feeds `MANIFOLD_PUBLIC_URL`.
 
 ## Where data lives
