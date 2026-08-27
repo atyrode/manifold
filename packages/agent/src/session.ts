@@ -161,6 +161,10 @@ export interface PtySessionOptions {
    * A DI seam so PTY tests pin a deterministic shell instead of inheriting the ambient one.
    */
   readonly command?: readonly string[];
+  /** Mirror factory seam used to verify construction cleanup without patching xterm globals. */
+  readonly createMirror?: (
+    options: ConstructorParameters<typeof HeadlessTerminal>[0],
+  ) => HeadlessTerminal;
 }
 
 export class PtySession {
@@ -180,6 +184,7 @@ export class PtySession {
   private rowsValue: number;
   private aliveFlag = true;
   private disposed = false;
+  private exitCodeValue: number | null | undefined;
 
   /** Resolves once the PTY has exited, with the process exit code (null if signalled). */
   readonly exited: Promise<PtyExit>;
@@ -196,7 +201,7 @@ export class PtySession {
 
     // Headless mirror: parses the same byte stream the PTY produces so snapshots reflect the
     // rendered terminal state (screen + scrollback), independent of the server connection.
-    this.mirror = new HeadlessTerminal({
+    this.mirror = (opts.createMirror ?? ((options) => new HeadlessTerminal(options)))({
       cols: opts.cols,
       rows: opts.rows,
       scrollback: MIRROR_SCROLLBACK_LINES,
@@ -205,23 +210,32 @@ export class PtySession {
     this.serializer = new SerializeAddon();
     this.mirror.loadAddon(this.serializer);
 
-    this.proc = Bun.spawn([...command], {
-      cwd: opts.cwd ?? homedir(),
-      env: buildPtyEnvironment(opts.env),
-      terminal: {
-        cols: opts.cols,
-        rows: opts.rows,
-        data: (_pty, chunk) => this.ingest(chunk),
-      },
-    });
+    let proc: Bun.Subprocess | undefined;
+    try {
+      proc = Bun.spawn([...command], {
+        cwd: opts.cwd ?? homedir(),
+        env: buildPtyEnvironment(opts.env),
+        terminal: {
+          cols: opts.cols,
+          rows: opts.rows,
+          data: (_pty, chunk) => this.ingest(chunk),
+        },
+      });
 
-    const pty = this.proc.terminal;
-    if (pty === undefined) {
-      this.proc.kill("SIGKILL");
-      throw new PtyError(`no PTY attached for session ${opts.sessionId}`);
+      const pty = proc.terminal;
+      if (pty === undefined) {
+        throw new PtyError(`no PTY attached for session ${opts.sessionId}`);
+      }
+      this.proc = proc;
+      this.pty = pty;
+      this.exited = this.trackExit();
+    } catch (error) {
+      proc?.kill("SIGKILL");
+      const pty = proc?.terminal;
+      if (pty !== undefined && !pty.closed) pty.close();
+      this.mirror.dispose();
+      throw error;
     }
-    this.pty = pty;
-    this.exited = this.trackExit();
   }
 
   /**
@@ -243,7 +257,8 @@ export class PtySession {
     this.aliveFlag = false;
     // `exitCode` is null for signal deaths (signalCode is set instead); the wire schema
     // (exited.exitCode) is nullable, so we surface the true code and null for signals.
-    return { exitCode: this.proc.exitCode };
+    this.exitCodeValue = this.proc.exitCode;
+    return { exitCode: this.exitCodeValue };
   }
 
   /** Writes caller bytes (decoded terminal input) straight to the PTY. */
@@ -268,6 +283,12 @@ export class PtySession {
     this.proc.kill();
     if (!this.pty.closed) this.pty.close();
     return this.exited;
+  }
+
+  /** Escalates a session that survived graceful shutdown; SIGKILL cannot be trapped. */
+  forceKill(): void {
+    this.proc.kill("SIGKILL");
+    if (!this.pty.closed) this.pty.close();
   }
 
   /**
@@ -390,6 +411,7 @@ export class PtySession {
       rows: this.rowsValue,
       alive: this.aliveFlag,
       seq: this.currentSeq,
+      ...(!this.aliveFlag ? { exitCode: this.exitCodeValue ?? null } : {}),
     };
   }
 }

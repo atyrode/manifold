@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { AgentMessageSchema, type AgentMessage } from "@manifold/protocol";
-import { Agent } from "../src/agent.ts";
+import { Agent, MAX_SOCKET_BUFFERED_AMOUNT_BYTES } from "../src/agent.ts";
 import { PtySession } from "../src/session.ts";
 
 /**
@@ -287,6 +287,7 @@ class ScriptedSocket {
   onerror: (() => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
   readyState: number = WebSocket.CONNECTING;
+  bufferedAmount = 0;
   readonly sent: AgentMessage[] = [];
   closedByAgent: { code: number | undefined; reason: string | undefined } | null = null;
   onSend: ((msg: AgentMessage) => void) | null = null;
@@ -406,3 +407,158 @@ test("server close code and reason surface in logs; 4409 gets the version-reject
     void connectAttempt;
   }
 }, 20000);
+
+test("disconnected exit is advertised with its code and forgotten on welcome", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const created = Promise.withResolvers<void>();
+  const secondHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "exit-retention-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    shellCommand: [BASH, "--norc", "-c", "read -r _; exit 17"],
+    createSocket: () => {
+      const socket = new ScriptedSocket();
+      socket.onSend = (msg) => {
+        if (msg.type === "hello") {
+          if (sockets.length === 1) {
+            socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
+          } else {
+            secondHello.resolve(msg);
+          }
+        } else if (msg.type === "created") {
+          created.resolve();
+        }
+      };
+      sockets.push(socket);
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  try {
+    await agent.connect();
+    const first = sockets[0];
+    if (first === undefined) throw new Error("missing first socket");
+    first.receive({
+      type: "create",
+      sessionId: "dead-while-away",
+      cols: 80,
+      rows: 24,
+      env: {},
+    });
+    await created.promise;
+
+    first.serverClose(1006, "transport lost");
+    const session = sessionForTest(agent, "dead-while-away");
+    session.write("finish\n");
+    const exit = await session.exited;
+    expect(exit.exitCode).toBe(17);
+    expect(agent.sessionCount).toBe(1);
+
+    const internals = agent as unknown as { reconnectTimer: Timer | null; dial: () => void };
+    clearTimeout(internals.reconnectTimer ?? undefined);
+    internals.reconnectTimer = null;
+    internals.dial();
+
+    const hello = await secondHello.promise;
+    expect(hello.sessions).toContainEqual({
+      sessionId: "dead-while-away",
+      cols: 80,
+      rows: 24,
+      alive: false,
+      seq: session.seq,
+      exitCode: 17,
+    });
+    expect(agent.sessionCount).toBe(1);
+
+    const second = sockets[1];
+    if (second === undefined) throw new Error("missing second socket");
+    second.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-2" });
+    expect(agent.sessionCount).toBe(0);
+  } finally {
+    await agent.shutdown();
+  }
+}, 20000);
+
+test("socket output backpressure closes the transport for reconnect recovery", async () => {
+  const socket = new ScriptedSocket();
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "backpressure-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    sink: (record) => records.push(record),
+    createSocket: () => {
+      socket.onSend = (msg) => {
+        if (msg.type === "hello") {
+          socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  try {
+    await agent.connect();
+    socket.bufferedAmount = MAX_SOCKET_BUFFERED_AMOUNT_BYTES + 1;
+    const internals = agent as unknown as {
+      onOutput: (sessionId: string, output: { seq: number; bytes: Uint8Array }) => void;
+    };
+    internals.onOutput("busy-session", { seq: 1, bytes: new Uint8Array([1]) });
+
+    expect(socket.closedByAgent).toEqual({ code: 4009, reason: "outbound buffer exceeded" });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        evt: "socket_backpressure",
+        bufferedAmount: MAX_SOCKET_BUFFERED_AMOUNT_BYTES + 1,
+        capBytes: MAX_SOCKET_BUFFERED_AMOUNT_BYTES,
+      }),
+    );
+    expect(socket.sent.some((msg) => msg.type === "output")).toBe(false);
+  } finally {
+    await agent.shutdown();
+  }
+});
+
+test("shutdown escalates a signal-trapping PTY after its grace window", async () => {
+  const socket = new ScriptedSocket();
+  const created = Promise.withResolvers<void>();
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "bounded-shutdown-machine",
+    shutdownGraceMs: 25,
+    shellCommand: [BASH, "--norc", "-c", "trap '' TERM HUP; while :; do sleep 1; done"],
+    createSocket: () => {
+      socket.onSend = (msg) => {
+        if (msg.type === "hello") {
+          socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
+        } else if (msg.type === "created") {
+          created.resolve();
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  await agent.connect();
+  socket.receive({
+    type: "create",
+    sessionId: "trap-signals",
+    cols: 80,
+    rows: 24,
+    env: {},
+  });
+  await created.promise;
+
+  const startedAt = performance.now();
+  await agent.shutdown();
+  expect(performance.now() - startedAt).toBeLessThan(1_000);
+  expect(agent.sessionCount).toBe(0);
+}, 5000);

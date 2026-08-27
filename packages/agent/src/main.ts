@@ -34,10 +34,24 @@ function main(): void {
 
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals): void => {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      sink({ ts: Date.now(), level: "warn", evt: "forced_shutdown", signal });
+      process.exit(1);
+    }
     shuttingDown = true;
     sink({ ts: Date.now(), level: "info", evt: "signal", signal });
-    void agent.shutdown().then(() => process.exit(0));
+    void agent.shutdown().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        sink({
+          ts: Date.now(),
+          level: "error",
+          evt: "shutdown_error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exit(1);
+      },
+    );
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
