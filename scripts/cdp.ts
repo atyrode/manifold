@@ -48,6 +48,15 @@ export class Browser {
 
   async launch(port = 9333): Promise<void> {
     const binary = Browser.detect();
+    // GitHub's ubuntu-24.04 image 20260823.283 exports a malformed
+    // DBUS_SESSION_BUS_ADDRESS; chromium retries the bus for tens of seconds
+    // before its devtools endpoint accepts connections (issue #44). Strip the
+    // bus addresses — headless verification needs no DBus.
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (name === "DBUS_SESSION_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
+      if (value !== undefined) env[name] = value;
+    }
     const proc = Bun.spawn(
       [
         binary,
@@ -57,10 +66,11 @@ export class Browser {
         "--no-first-run",
         "--no-sandbox",
         "--disable-gpu",
+        "--disable-dev-shm-usage",
         "--window-size=1440,900",
         "about:blank",
       ],
-      { stdout: "ignore", stderr: "pipe" },
+      { stdout: "ignore", stderr: "pipe", env },
     );
     this.proc = proc;
 
@@ -80,7 +90,7 @@ export class Browser {
       `${binary} (devtools port ${String(port)})${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
 
     let endpoint = "";
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + 60_000;
     for (;;) {
       if (proc.exitCode !== null) {
         throw new Error(
