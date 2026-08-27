@@ -23,6 +23,12 @@ export const AdvertisedSessionSchema = z.strictObject({
   alive: z.boolean(),
   /** Highest output seq emitted so far (survives server restarts with the agent). */
   seq: z.number().int().nonnegative(),
+  /**
+   * Exit code of a PTY that exited while the machine channel was down (only meaningful
+   * with `alive: false`). Optional and additive: pre-v4 agents never send it, and the
+   * server treats absence as `null` (unknown/signal) — the pre-v4 semantics exactly.
+   */
+  exitCode: z.number().int().nullable().optional(),
 });
 export type AdvertisedSession = z.infer<typeof AdvertisedSessionSchema>;
 

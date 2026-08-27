@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -8,14 +8,22 @@ export const PROTOCOL_VERSION = 3;
  * adoption semantics are identical to the current one. Session (browser)
  * joins stay strictly current — the server always serves the matching SPA.
  *
- * Discipline (AGENTS.md invariant 10): a bump that does NOT touch the agent
- * wire ADDS the new version here; a bump that DOES touch it RESETS the set to
- * only the new version and requires a coordinated fleet restart.
+ * Discipline (AGENTS.md invariant 10): a bump that leaves the agent wire
+ * identical ADDS the new version here. A bump whose agent-wire change is
+ * strictly additive-optional (every pre-bump frame still parses, and the
+ * server's default for the absent field reproduces pre-bump semantics) also
+ * ADDS — forcing a fleet restart for a change that locks nobody out would be
+ * the exact failure the invariant guards against. Any other agent-wire change
+ * RESETS the set to only the new version and requires a coordinated fleet
+ * restart (server + spokes together).
  *
  * v2 -> v3: session-channel only (init/resync gained selfCaps); agent wire
  * verified identical, so v2 agents stay accepted.
+ * v3 -> v4: agent wire gained OPTIONAL `exitCode` on advertised sessions
+ * (hello). Absence ≡ the old `null` adoption semantics, so v2/v3 agents stay
+ * accepted; they merely keep reporting disconnect-window exits as null.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this
