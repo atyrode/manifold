@@ -349,3 +349,27 @@ test("opens a PTY via PATH discovery when SHELL is unset (no command override)",
     else process.env.SHELL = saved;
   }
 }, 12000);
+
+test("spawn failure disposes the mirror allocated during construction", () => {
+  let disposed = false;
+  class DisposeSpyTerminal extends HeadlessTerminal {
+    override dispose(): void {
+      disposed = true;
+      super.dispose();
+    }
+  }
+
+  expect(
+    () =>
+      new PtySession({
+        sessionId: "spawn-failure",
+        cols: 80,
+        rows: 24,
+        cwd: "/definitely/missing/manifold-agent-cwd",
+        command: [BASH, "--norc", "-i"],
+        onOutput: () => {},
+        createMirror: (options) => new DisposeSpyTerminal(options),
+      }),
+  ).toThrow();
+  expect(disposed).toBe(true);
+});

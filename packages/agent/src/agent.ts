@@ -4,6 +4,7 @@ import {
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
   defaultRuntime,
+  reconnectDelayMs,
   type AdvertisedSession,
   type AgentMessage,
   type RuntimeDeps,
@@ -25,6 +26,12 @@ import { PtySession, type PtyOutput } from "./session.ts";
 
 /** Reported in `hello`; bump on breaking agent-side behavior. */
 const AGENT_VERSION = "0.1.0";
+
+/** Maximum queued websocket bytes before reconnect recovery replaces live streaming. */
+export const MAX_SOCKET_BUFFERED_AMOUNT_BYTES = 8 * 1024 * 1024;
+
+/** Grace allowed for normal PTY termination before shutdown escalates to SIGKILL. */
+export const SHUTDOWN_GRACE_MS = 3_000;
 
 /** Structured log record; `ts` is stamped from the injected runtime clock. */
 export interface AgentLogRecord {
@@ -48,6 +55,8 @@ export interface AgentOptions {
   /** http(s) URL of the server; the ws(s) `/ws/machine` URL is derived from it. */
   readonly serverUrl: string;
   readonly machineToken: string;
+  /** Grace before shutdown escalates PTYs to SIGKILL; defaults to 3 seconds. */
+  readonly shutdownGraceMs?: number;
   readonly machineName: string;
   /** id/clock injection (defaults to wall-clock); lets tests seed deterministic log times. */
   readonly runtime?: RuntimeDeps;
@@ -114,6 +123,7 @@ export class Agent {
   private readonly capMs: number;
   private readonly shellCommand: readonly string[] | undefined;
   private readonly livenessTimeoutMs: number;
+  private readonly shutdownGraceMs: number;
 
   private readonly sessions = new Map<string, PtySession>();
   private readonly createSocket: (url: string) => WebSocket;
@@ -125,6 +135,7 @@ export class Agent {
   private livenessTimer: Timer | null = null;
   private stopped = false;
   private welcomeWaiters: Array<() => void> = [];
+  private advertisedDeadSessions = new Map<string, PtySession>();
 
   constructor(opts: AgentOptions) {
     this.machineToken = opts.machineToken;
@@ -136,6 +147,7 @@ export class Agent {
     this.capMs = opts.backoff?.capMs ?? 15_000;
     this.shellCommand = opts.shellCommand;
     this.livenessTimeoutMs = opts.livenessTimeoutMs ?? AGENT_LIVENESS_TIMEOUT_MS;
+    this.shutdownGraceMs = opts.shutdownGraceMs ?? SHUTDOWN_GRACE_MS;
     this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
   }
 
@@ -149,7 +161,7 @@ export class Agent {
     return this.serverEpochValue;
   }
 
-  /** Count of live PTY sessions currently owned by this agent. */
+  /** Count of retained PTY sessions currently owned by this agent. */
   get sessionCount(): number {
     return this.sessions.size;
   }
@@ -180,8 +192,19 @@ export class Agent {
     const socket = this.socket;
     this.socket = null;
     if (socket !== null) socket.close(1000, "shutdown");
-    const kills: Array<Promise<unknown>> = [];
-    for (const session of this.sessions.values()) kills.push(session.kill());
+    const sessions = [...this.sessions.values()];
+    const kills = sessions.map((session) => session.kill());
+    let graceTimer: Timer | undefined;
+    await Promise.race([
+      Promise.all(kills),
+      new Promise<void>((resolve) => {
+        graceTimer = setTimeout(resolve, this.shutdownGraceMs);
+      }),
+    ]);
+    clearTimeout(graceTimer);
+    for (const session of sessions) {
+      if (session.alive) session.forceKill();
+    }
     await Promise.all(kills);
     this.sessions.clear();
     this.log("info", "shutdown");
@@ -216,8 +239,10 @@ export class Agent {
 
   private sendHello(socket: WebSocket): void {
     const sessions: AdvertisedSession[] = [];
-    for (const session of this.sessions.values()) {
-      if (session.alive) sessions.push(session.toAdvertised());
+    this.advertisedDeadSessions = new Map();
+    for (const [sessionId, session] of this.sessions) {
+      sessions.push(session.toAdvertised());
+      if (!session.alive) this.advertisedDeadSessions.set(sessionId, session);
     }
     this.send(socket, {
       type: "hello",
@@ -254,6 +279,15 @@ export class Agent {
         this.machineId = msg.machineId;
         this.serverEpochValue = msg.serverEpoch;
         this.attempts = 0; // handshake succeeded: reset backoff
+        // Forget only dead records included in this acknowledged hello. A live session can
+        // exit after hello but before welcome and must remain for the next reconciliation.
+        for (const [sessionId, advertisedSession] of this.advertisedDeadSessions) {
+          if (this.sessions.get(sessionId) === advertisedSession) {
+            this.sessions.delete(sessionId);
+            advertisedSession.dispose();
+          }
+        }
+        this.advertisedDeadSessions.clear();
         this.log("info", "welcome", { machineId: msg.machineId, serverEpoch: msg.serverEpoch });
         const waiters = this.welcomeWaiters;
         this.welcomeWaiters = [];
@@ -275,7 +309,14 @@ export class Agent {
       }
       case "kill": {
         const session = this.sessions.get(msg.sessionId);
-        if (session !== undefined) void session.kill();
+        if (session !== undefined) {
+          if (session.alive) {
+            void session.kill();
+          } else {
+            this.sessions.delete(msg.sessionId);
+            session.dispose();
+          }
+        }
         return;
       }
       case "snapshot_request":
@@ -324,6 +365,17 @@ export class Agent {
     // via snapshot semantics (CONTRACTS.md). Gating here also skips base64 work while down.
     const socket = this.socket;
     if (socket === null || socket.readyState !== WebSocket.OPEN) return;
+    // A websocket queue above 8 MiB is treated as a sick transport. Each session retains
+    // 2 MiB locally, so this tolerates several busy sessions before reconnect recovery takes
+    // over, while still bounding duplicate buffering in the websocket implementation.
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
+      this.log("warn", "socket_backpressure", {
+        bufferedAmount: socket.bufferedAmount,
+        capBytes: MAX_SOCKET_BUFFERED_AMOUNT_BYTES,
+      });
+      socket.close(4009, "outbound buffer exceeded");
+      return;
+    }
     this.send(socket, {
       type: "output",
       sessionId,
@@ -356,13 +408,14 @@ export class Agent {
 
   private async watchExit(sessionId: string, session: PtySession): Promise<void> {
     const { exitCode } = await session.exited;
-    // Emit `exited` if connected, then DROP the dead session from the registry (the server
-    // persists status; a dropped session is simply not advertised on the next hello).
+    // A connected server receives the terminal status immediately. While disconnected, retain
+    // the disposed mirror/process record so the next hello can advertise alive:false plus the
+    // real exit code; welcome (or a server kill) then acknowledges and forgets that record.
     const socket = this.socket;
     if (socket !== null && socket.readyState === WebSocket.OPEN) {
       this.send(socket, { type: "exited", sessionId, exitCode });
+      this.sessions.delete(sessionId);
     }
-    this.sessions.delete(sessionId);
     session.dispose();
     this.log("info", "exited", { sessionId, exitCode });
   }
@@ -396,6 +449,7 @@ export class Agent {
     this.socket = null;
     this.machineId = null;
     this.serverEpochValue = null;
+    this.advertisedDeadSessions.clear();
     if (this.livenessTimer !== null) {
       clearTimeout(this.livenessTimer);
       this.livenessTimer = null;
@@ -413,10 +467,7 @@ export class Agent {
   }
 
   private scheduleReconnect(): void {
-    // Jittered exponential backoff capped at capMs: delay ∈ [50%, 100%] of min(cap, base·2^n).
-    // Jitter spreads reconnect storms; the cap bounds worst-case latency (CONTRACTS.md).
-    const ceiling = Math.min(this.capMs, this.baseMs * 2 ** this.attempts);
-    const delay = ceiling * (0.5 + Math.random() * 0.5);
+    const delay = reconnectDelayMs(this.attempts, this.baseMs, this.capMs);
     this.attempts += 1;
     this.log("info", "reconnect_scheduled", { attempt: this.attempts, delayMs: Math.round(delay) });
     this.reconnectTimer = setTimeout(() => {
