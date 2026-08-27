@@ -29,7 +29,7 @@ padctl/tests ───┘                            ▲
 | Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only) |
-| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), `MANIFOLD_MACHINE_TOKEN` (required), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                  |
+| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                        |
 | web dev | `bun run --cwd packages/web dev`  | vite :5173, proxies `/api` + `/ws` → :7777                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
@@ -241,6 +241,11 @@ sessions; a new server epoch re-adopts them. Stale sockets are fenced: the serve
 machine's previous socket when a new `hello` for the same machine token arrives.
 PTY output while disconnected goes to the agent's per-session ring buffer (default 2MiB);
 the headless mirror keeps render state, so post-reconnect attaches snapshot correctly.
+
+The agent daemon owns its PTYs. Agent↔server disconnects preserve them for re-adoption, but
+an agent process restart kills every PTY it owns; PTYs do not survive the daemon. Node
+upgrades and redeploys therefore MUST be operator-timed or idle-gated, never automatic on
+deploy.
 
 ## Persistence (SQLite, WAL; server-only)
 

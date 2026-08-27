@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   HttpErrorSchema,
   MachineEnrollResponseSchema,
+  MachinesResponseSchema,
   MintTokenRequestSchema,
   OkResponseSchema,
   RevokeRequestSchema,
@@ -455,3 +456,111 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     await Promise.all([closeRawSockets(rawSockets), stopProcesses(servers)]);
   }
 }, 45_000);
+
+test("machine re-enroll is idempotent and rotation fences the live agent", async () => {
+  const servers: TestServer[] = [];
+  const rawSockets: AdversarialMachineSocket[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+
+    const enrolled = await ownerFetch(server, "/api/machines", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "idempotent-machine" }),
+      responseSchema: MachineEnrollResponseSchema,
+    });
+    if (enrolled.machineToken === undefined) {
+      throw new Error("fresh enrollment must mint a token");
+    }
+
+    const live = await rawMachineSocket(server);
+    rawSockets.push(live);
+    live.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "idempotent-machine",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const welcome = await waitFor(
+      () => live.frames.find((frame) => frame.type === "welcome"),
+      5_000,
+      20,
+    );
+    if (welcome.type !== "welcome") throw new Error("live machine did not receive welcome");
+    expect(welcome.machineId).toBe(enrolled.machine.id);
+
+    // Idempotent re-enroll: same row back, no token minted, live agent untouched.
+    const reenrolled = await ownerFetch(server, "/api/machines", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "idempotent-machine" }),
+      responseSchema: MachineEnrollResponseSchema,
+    });
+    expect(reenrolled.machine.id).toBe(enrolled.machine.id);
+    expect(reenrolled.machineToken).toBeUndefined();
+    expect(live.closeInfo).toBeNull();
+
+    const listed = await ownerFetch(server, "/api/machines", {
+      responseSchema: MachinesResponseSchema,
+    });
+    expect(listed.machines.filter((machine) => machine.name === "idempotent-machine")).toHaveLength(
+      1,
+    );
+
+    // Explicit rotation: new token, same row, old token revoked and its socket fenced.
+    const rotated = await ownerFetch(server, "/api/machines", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "idempotent-machine", rotateToken: true }),
+      responseSchema: MachineEnrollResponseSchema,
+    });
+    expect(rotated.machine.id).toBe(enrolled.machine.id);
+    if (rotated.machineToken === undefined) {
+      throw new Error("rotation must mint a token");
+    }
+    expect(rotated.machineToken).not.toBe(enrolled.machineToken);
+
+    const fenced = await waitFor(() => live.closeInfo, 5_000, 20);
+    expect(fenced.code).toBe(4403);
+
+    const stale = await rawMachineSocket(server);
+    rawSockets.push(stale);
+    stale.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "idempotent-machine",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const staleClose = await waitFor(() => stale.closeInfo, 5_000, 20);
+    // The rotated machine row references only the new token, so the stale secret no longer
+    // resolves to a machine at all: unauthorized (4401), not revoked-while-referenced (4403).
+    expect(staleClose.code).toBe(4401);
+
+    const fresh = await rawMachineSocket(server);
+    rawSockets.push(fresh);
+    fresh.send({
+      type: "hello",
+      token: rotated.machineToken,
+      name: "idempotent-machine",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: [],
+    });
+    const freshWelcome = await waitFor(
+      () => fresh.frames.find((frame) => frame.type === "welcome"),
+      5_000,
+      20,
+    );
+    if (freshWelcome.type !== "welcome") throw new Error("rotated token was not accepted");
+    expect(freshWelcome.machineId).toBe(enrolled.machine.id);
+  } catch (error) {
+    throw e2eFailure(error, servers);
+  } finally {
+    await Promise.all([closeRawSockets(rawSockets), stopProcesses(servers)]);
+  }
+}, 30_000);

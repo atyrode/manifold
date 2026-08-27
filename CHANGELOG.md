@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Nix flake packages that build `manifold-agent` and `manifold-server` as standalone binaries for fleet machines (#40, #43).
+- Added `MANIFOLD_MACHINE_TOKEN_FILE` so an agent can read its machine token from a private file instead of the environment (#40, #43).
+
+### Changed
+
+- Re-enrolling an existing machine name now returns the enrolled machine unchanged; pass `rotateToken` to explicitly replace a lost token (#40, #43).
+
 ## [0.3.1] - 2026-08-26
 
 ### Fixed

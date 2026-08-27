@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { PROTOCOL_VERSION } from "@manifold/protocol";
+import { resolveMachineToken } from "./machine-token.ts";
 import { Agent, type AgentLogRecord } from "./agent.ts";
 
 /**
@@ -20,7 +23,7 @@ function requireEnv(name: string): string {
 
 function main(): void {
   const serverUrl = requireEnv("MANIFOLD_SERVER_URL");
-  const machineToken = requireEnv("MANIFOLD_MACHINE_TOKEN");
+  const machineToken = resolveMachineToken(process.env, (path) => readFileSync(path, "utf8"));
   const machineName = process.env.MANIFOLD_MACHINE_NAME ?? hostname();
 
   const sink = (record: AgentLogRecord): void => {
@@ -39,7 +42,15 @@ function main(): void {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  sink({ ts: Date.now(), level: "info", evt: "starting", server: serverUrl, machineName });
+  sink({
+    ts: Date.now(),
+    level: "info",
+    evt: "starting",
+    server: serverUrl,
+    machineName,
+    protocolVersion: PROTOCOL_VERSION,
+    build: process.env.MANIFOLD_BUILD ?? "unknown",
+  });
   void agent.connect();
 }
 

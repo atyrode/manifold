@@ -450,6 +450,9 @@ export async function enrollMachine(
     body: JSON.stringify({ name }),
     responseSchema: MachineEnrollResponseSchema,
   });
+  if (response.machineToken === undefined) {
+    throw new Error(`machine ${JSON.stringify(name)} was already enrolled; no token minted`);
+  }
   return { machineId: response.machine.id, machineToken: response.machineToken };
 }
 

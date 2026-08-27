@@ -139,8 +139,17 @@ export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({
   machines: z.array(MachineSummarySchema),
 });
+export const EnrollMachineRequestSchema = z.strictObject({
+  name: z.string().min(1).max(120),
+  /** Revoke and re-mint the token when the name is already enrolled (recovers a lost token file). */
+  rotateToken: z.boolean().optional(),
+});
 export const MachineEnrollResponseSchema = z.strictObject({
   machine: z.strictObject({ id: z.string().min(1), name: z.string().min(1) }),
-  /** Raw token — returned exactly once at enrollment; the DB keeps only its hash. */
-  machineToken: z.string().min(1),
+  /**
+   * Raw token — returned exactly once, only when a token was minted (new machine or explicit
+   * rotation); the DB keeps only its hash. Absent on an idempotent re-enroll of an existing
+   * name, which never invalidates the token the running agent already holds.
+   */
+  machineToken: z.string().min(1).optional(),
 });
