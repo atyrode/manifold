@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Replaced the dev branch's normal pad renderer with React Flow, removed the Excalidraw runtime dependency, and kept existing terminal scene records compatible while the new drawing surface is prototyped (#15, #57).
+- Replaced the canvas renderer with a smoothly draggable React Flow terminal canvas and native terminal-only scene records. (#15, #57)
 
 ## [0.4.4] - 2026-08-27
 

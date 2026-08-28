@@ -468,26 +468,78 @@ try {
     dx: number,
     dy: number,
   ): Promise<void> => {
-    const start = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
+    const start = await browser.evaluate<{
+      readonly pointerX: number;
+      readonly pointerY: number;
+      readonly nodeX: number;
+      readonly nodeY: number;
+    } | null>(
       `(() => {
-          const titlebar = document.querySelector(
-            ${JSON.stringify(`.react-flow__node[data-id="${elementId}"] .terminal-titlebar`)},
+          const node = document.querySelector(
+            ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
           );
-          if (!(titlebar instanceof HTMLElement)) return null;
-          const rect = titlebar.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0) return null;
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          const titlebar = node?.querySelector(".terminal-titlebar");
+          if (!(node instanceof HTMLElement) || !(titlebar instanceof HTMLElement)) return null;
+          const nodeRect = node.getBoundingClientRect();
+          const titlebarRect = titlebar.getBoundingClientRect();
+          if (titlebarRect.width <= 0 || titlebarRect.height <= 0) return null;
+          return {
+            pointerX: titlebarRect.left + titlebarRect.width / 2,
+            pointerY: titlebarRect.top + titlebarRect.height / 2,
+            nodeX: nodeRect.left,
+            nodeY: nodeRect.top,
+          };
         })()`,
     );
     if (start === null) throw new Error(`terminal ${elementId} has no rendered drag handle`);
     const steps = 20;
-    await browser.drag(
-      Array.from({ length: steps + 1 }, (_, index) => ({
-        x: start.x + (dx * index) / steps,
-        y: start.y + (dy * index) / steps,
-      })),
-      15,
+    await browser.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: start.pointerX,
+      y: start.pointerY,
+    });
+    await browser.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: start.pointerX,
+      y: start.pointerY,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (let index = 1; index <= steps; index += 1) {
+      await browser.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: start.pointerX + (dx * index) / steps,
+        y: start.pointerY + (dy * index) / steps,
+        button: "left",
+        buttons: 1,
+      });
+      await sleep(15);
+    }
+    const duringDrag = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
+      `(() => {
+          const node = document.querySelector(
+            ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
+          );
+          if (!(node instanceof HTMLElement)) return null;
+          const rect = node.getBoundingClientRect();
+          return { x: rect.left, y: rect.top };
+        })()`,
     );
+    await browser.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: start.pointerX + dx,
+      y: start.pointerY + dy,
+      button: "left",
+      clickCount: 1,
+    });
+    if (
+      duringDrag === null ||
+      Math.abs(duringDrag.x - start.nodeX) < Math.abs(dx) * 0.5 ||
+      Math.abs(duringDrag.y - start.nodeY) < Math.abs(dy) * 0.5
+    ) {
+      throw new Error(`terminal ${elementId} did not move visually before pointer release`);
+    }
   };
 
   const first = terminalElement(crypto.randomUUID(), 280, 180);

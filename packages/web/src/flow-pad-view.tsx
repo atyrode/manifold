@@ -9,8 +9,8 @@ import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
   ReactFlow,
   ViewportPortal,
+  useNodesState,
   type Node,
-  type NodeChange,
   type NodeTypes,
   type ReactFlowInstance,
 } from "@xyflow/react";
@@ -173,7 +173,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     return projectTerminals(client.scene);
   }, [client, sceneRevision]);
 
-  const nodes = useMemo<Node[]>(
+  const canonicalNodes = useMemo<Node[]>(
     () =>
       projected.map((terminal) => ({
         id: terminal.id,
@@ -188,6 +188,11 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       })),
     [highlightedId, projected],
   );
+  const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
+
+  useEffect(() => {
+    setNodes(canonicalNodes);
+  }, [canonicalNodes, setNodes]);
 
   const publish = useCallback(
     (elements: readonly SceneElement[]): void => {
@@ -206,9 +211,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     },
     [client, publish],
   );
-
-  /** Selection is local UI state; geometry commits only on drag/resize end. */
-  const handleNodesChange = useCallback((_changes: readonly NodeChange[]): void => {}, []);
 
   const handleResize = useCallback(
     (elementId: string, width: number, height: number): void => {
