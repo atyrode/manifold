@@ -128,3 +128,33 @@ describe("applyNodeMove", () => {
     ).toBeNull();
   });
 });
+
+describe("drag-stop round trip", () => {
+  /**
+   * Regression: the first spike committed from `onNodesChange`, whose drag-end change
+   * carries `dragging: false` but no `position`, so nothing was ever published — the node
+   * moved on screen and snapped back on reload. This pins the path the fix restored: a
+   * finished drag must survive being written into the scene and re-projected.
+   */
+  test("a committed move survives re-projection at the new position", () => {
+    const scene = sceneOf(element({ x: 220, y: 210, version: 4 }));
+    const moved = applyNodeMove(scene, { id: "e1", position: { x: 340, y: 306 } }, () => 7);
+    expect(moved).not.toBeNull();
+    if (moved === null) return;
+
+    scene.set(moved.id, moved);
+    const [node] = projectTerminals(scene);
+    expect(node?.position).toEqual({ x: 340, y: 306 });
+    expect(node?.data.sessionId).toBe("s1");
+    expect(moved.version).toBe(5);
+  });
+
+  test("re-committing the same finished position is a no-op, so a drag cannot double-publish", () => {
+    const scene = sceneOf(element({ x: 220, y: 210 }));
+    const first = applyNodeMove(scene, { id: "e1", position: { x: 340, y: 306 } });
+    expect(first).not.toBeNull();
+    if (first === null) return;
+    scene.set(first.id, first);
+    expect(applyNodeMove(scene, { id: "e1", position: { x: 340, y: 306 } })).toBeNull();
+  });
+});

@@ -138,26 +138,36 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
     [client, writesEnabled],
   );
 
-  const handleNodesChange = useCallback(
-    (changes: readonly NodeChange[]): void => {
+  /**
+   * Commits a finished drag. Two traps are load-bearing here, both found by measurement:
+   *
+   * 1. `onNodeDragStop` is the ONLY position seam. React Flow's drag-end `NodeChange`
+   *    carries `dragging: false` but no `position`, so committing from `onNodesChange`
+   *    silently never fired: the node moved on screen (React Flow's internal geometry)
+   *    and snapped back on reload.
+   * 2. NEVER write the new element into `client.scene` before sending. That map is the
+   *    SDK's own mirror; pre-advancing it makes the SDK treat the outgoing edit as an
+   *    idempotent duplicate and drop it, so the server never sees the move. This is
+   *    manifold's projection-ownership rule (AGENTS invariant 9) biting a second time,
+   *    in a canvas that does not even use Excalidraw — the lesson generalises. The SDK
+   *    owns the mirror; we publish and let `scene_changed` re-project.
+   */
+  const handleNodeDragStop = useCallback(
+    (_event: unknown, node: Node): void => {
       if (!writesEnabled) return;
-      const updates: SceneElement[] = [];
-      for (const change of changes) {
-        // Only commit on drag END: committing every intermediate frame would mint a
-        // version per frame and flood the reliable scene channel.
-        if (change.type !== "position" || change.dragging === true) continue;
-        if (change.position === undefined) continue;
-        const moved = applyNodeMove(client.scene, { id: change.id, position: change.position });
-        if (moved !== null) updates.push(moved);
-      }
-      if (updates.length > 0) {
-        for (const element of updates) client.scene.set(element.id, element);
-        publish(updates);
-        setSceneRevision((value) => value + 1);
-      }
+      const moved = applyNodeMove(client.scene, { id: node.id, position: node.position });
+      if (moved === null) return;
+      publish([moved]);
     },
     [client, publish, writesEnabled],
   );
+
+  /**
+   * Controlled mode requires the handler to exist so React Flow reports changes, but
+   * manifold deliberately ignores them: selection is presence-level, and position is
+   * committed once on drag stop above.
+   */
+  const handleNodesChange = useCallback((_changes: readonly NodeChange[]): void => {}, []);
 
   const machineFor = useCallback(
     (sessionId: string) => {
@@ -187,9 +197,9 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
       const tombstoned = bumpElement(element, { isDeleted: true });
       const parsed = SceneElementSchema.safeParse(tombstoned);
       if (!parsed.success) return;
-      client.scene.set(elementId, parsed.data);
+      // Same rule as the drag path: publish only. Pre-writing the SDK's mirror would make
+      // the tombstone look like a duplicate and the close would never reach the server.
       publish([parsed.data]);
-      setSceneRevision((value) => value + 1);
       const session = client.sessions.get(sessionId);
       if (
         !sessionShared(elementId, sessionId) &&
@@ -221,19 +231,25 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
     [client, machineFor, machines, onClose, sessionShared],
   );
 
-  // Read-only probe for the spike's acceptance criteria, mirroring debug-seam.ts's shape.
+  /**
+   * Read-only probe for the spike's acceptance criteria, gated exactly like
+   * `debug-seam.ts`: opt-in via `localStorage['manifold:debug'] = '1'`. It exposes internal
+   * epoch state, which must not be reachable from a normal production page.
+   */
   useEffect(() => {
+    if (window.localStorage.getItem("manifold:debug") !== "1") return;
     const probe = {
       mounts: () => Object.fromEntries(mountCountsRef.current),
       nodeCount: () => nodes.length,
       writesEnabled: () => writesEnabled,
       status: () => status,
+      epoch: () => client.epoch,
     };
     (window as unknown as Record<string, unknown>)["__manifoldFlow"] = probe;
     return () => {
       delete (window as unknown as Record<string, unknown>)["__manifoldFlow"];
     };
-  }, [nodes.length, status, writesEnabled]);
+  }, [client, nodes.length, status, writesEnabled]);
 
   return (
     <div className="flow-pad-view">
@@ -257,6 +273,7 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
             edges={NO_EDGES as never[]}
             nodeTypes={NODE_TYPES}
             onNodesChange={handleNodesChange}
+            onNodeDragStop={handleNodeDragStop}
             zIndexMode="manual"
             onlyRenderVisibleElements={false}
             nodesConnectable={false}

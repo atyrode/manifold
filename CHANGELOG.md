@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an experimental `/flow/:padId` canvas route that renders a pad's terminals on React Flow instead of Excalidraw, for evaluating a lighter canvas layer; it reads the same scene as the normal pad view, shows terminals only, and is read-only unless opened with `?write=1` (#15, #57).
+
 ## [0.4.4] - 2026-08-27
 
 ### Added
