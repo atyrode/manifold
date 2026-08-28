@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { Y, createSceneDoc } from "@manifold/scene";
+import { sha256Hex } from "../src/stores.ts";
 import { testStore } from "./helpers.ts";
 
 interface EventRow {
@@ -8,6 +10,12 @@ interface EventRow {
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const EXPECTED_MAX_PER_PAD = 10_000;
+
+function documentUpdate(value: number): Uint8Array {
+  const doc = createSceneDoc();
+  doc.getMap<number>("values").set("value", value);
+  return Y.encodeStateAsUpdate(doc);
+}
 
 describe("ServerStore event retention", () => {
   test("addEvent prunes rows older than 30 days using the caller timestamp", () => {
@@ -105,6 +113,53 @@ describe("ServerStore pad tree", () => {
     expect(store.getPad(alpha.id)).toEqual(alpha);
     expect(store.getPad(beta.id)).toEqual(beta);
     expect(store.getPad(gamma.id)).toEqual(gamma);
+    store.close();
+  });
+});
+
+describe("ServerStore scene documents", () => {
+  test("keeps the newest thirty revisions per pad", () => {
+    const store = testStore();
+    for (let rev = 0; rev < 31; rev += 1) {
+      store.saveDoc("pad", "epoch", rev, rev, documentUpdate(rev));
+    }
+
+    const revisions = store.db
+      .query<{ rev: number }, [string]>(
+        "SELECT rev FROM scene_docs WHERE pad_id = ? ORDER BY rev ASC",
+      )
+      .all("pad")
+      .map((row) => row.rev);
+    expect(revisions).toHaveLength(30);
+    expect(revisions[0]).toBe(1);
+    expect(revisions.at(-1)).toBe(30);
+    expect(store.latestDoc("pad")?.rev).toBe(30);
+    store.close();
+  });
+
+  test("skips hash-mismatched and undecodable newest rows", () => {
+    const store = testStore();
+    store.saveDoc("pad", "epoch", 1, 1, documentUpdate(1));
+    store.saveDoc("pad", "epoch", 2, 2, documentUpdate(2));
+    store.db
+      .query<void, [string, string, number]>(
+        "UPDATE scene_docs SET hash = ? WHERE pad_id = ? AND rev = ?",
+      )
+      .run("wrong", "pad", 2);
+
+    const invalid: number[] = [];
+    expect(store.latestDoc("pad", (_error, record) => invalid.push(record.rev))?.rev).toBe(1);
+    expect(invalid).toEqual([2]);
+
+    const malformed = Uint8Array.of(255, 255);
+    store.db
+      .query<void, [Uint8Array, string, string, number]>(
+        "UPDATE scene_docs SET doc = ?, hash = ? WHERE pad_id = ? AND rev = ?",
+      )
+      .run(malformed, sha256Hex(malformed), "pad", 2);
+    invalid.length = 0;
+    expect(store.latestDoc("pad", (_error, record) => invalid.push(record.rev))?.rev).toBe(1);
+    expect(invalid).toEqual([2]);
     store.close();
   });
 });

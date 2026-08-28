@@ -5,13 +5,12 @@ import {
   PadSchema,
   PadTreeItemSchema,
   PrincipalSchema,
-  SceneElementSchema,
   type Cap,
   type Pad,
   type PadTreeItem,
   type Principal,
-  type SceneElement,
 } from "@manifold/protocol";
+import { Y } from "@manifold/scene";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_PAD = 10_000;
@@ -55,13 +54,13 @@ interface TokenRow {
   revoked_at: number | null;
 }
 
-interface SnapshotRow {
+interface DocRow {
   pad_id: string;
   epoch: string;
   rev: number;
   ts: number;
   hash: string;
-  blob: string;
+  doc: Uint8Array;
 }
 
 interface MachineRow {
@@ -109,18 +108,18 @@ export interface TokenRecord {
   revokedAt: number | null;
 }
 
-/** Latest canonical scene snapshot loaded into a room. */
-export interface SnapshotRecord {
+/** Latest canonical Yjs document loaded into a room. */
+export interface DocRecord {
   padId: string;
   epoch: string;
   rev: number;
   ts: number;
   hash: string;
-  elements: readonly SceneElement[];
+  doc: Uint8Array;
 }
 
-/** Safe identity logged when a corrupt snapshot is skipped during fallback loading. */
-export interface InvalidSnapshot {
+/** Safe identity logged when a corrupt document row is skipped during fallback loading. */
+export interface InvalidDoc {
   epoch: string;
   rev: number;
 }
@@ -163,8 +162,8 @@ export interface NewStoredSession {
   createdAt: number;
 }
 
-/** SHA-256 hex encoding used for bearer secrets and snapshot integrity hashes. */
-export function sha256Hex(value: string): string {
+/** SHA-256 hex encoding used for bearer secrets and document integrity hashes. */
+export function sha256Hex(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -433,7 +432,7 @@ export class ServerStore {
           item.kind === "pad" && item.pad.id === id,
       );
       if (current === undefined) return false;
-      this.db.query<void, [string]>("DELETE FROM snapshots WHERE pad_id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM scene_docs WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM events WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM sessions WHERE pad_id = ?").run(id);
       const removed = this.db.query<void, [string]>("DELETE FROM pads WHERE id = ?").run(id);
@@ -448,66 +447,61 @@ export class ServerStore {
     })();
   }
 
-  latestSnapshot(
+  latestDoc(
     padId: string,
-    onInvalid?: (error: Error, snapshot: InvalidSnapshot) => void,
-  ): SnapshotRecord | null {
+    onInvalid?: (error: Error, record: InvalidDoc) => void,
+  ): DocRecord | null {
     const rows = this.db
-      .query<SnapshotRow, [string]>(
-        `SELECT pad_id, epoch, rev, ts, hash, blob FROM snapshots
+      .query<DocRow, [string]>(
+        `SELECT pad_id, epoch, rev, ts, hash, doc FROM scene_docs
          WHERE pad_id = ? ORDER BY ts DESC, rev DESC LIMIT 30`,
       )
       .all(padId);
     for (const row of rows) {
       try {
-        if (sha256Hex(row.blob) !== row.hash) {
-          throw new Error(`snapshot hash mismatch for pad ${padId}`);
+        if (sha256Hex(row.doc) !== row.hash) {
+          throw new Error(`scene document hash mismatch for pad ${padId}`);
         }
-        const parsed: unknown = JSON.parse(row.blob);
+        const probe = new Y.Doc();
+        Y.applyUpdate(probe, row.doc);
+        probe.destroy();
         return {
           padId: row.pad_id,
           epoch: row.epoch,
           rev: row.rev,
           ts: row.ts,
           hash: row.hash,
-          elements: SceneElementSchema.array().parse(parsed),
+          doc: new Uint8Array(row.doc),
         };
       } catch (error) {
-        const failure = error instanceof Error ? error : new Error("invalid snapshot");
+        const failure = error instanceof Error ? error : new Error("invalid scene document");
         onInvalid?.(failure, { epoch: row.epoch, rev: row.rev });
       }
     }
     return null;
   }
 
-  saveSnapshot(
-    padId: string,
-    epoch: string,
-    rev: number,
-    ts: number,
-    elements: readonly SceneElement[],
-  ): SnapshotRecord {
-    const blob = JSON.stringify(elements);
-    const hash = sha256Hex(blob);
+  saveDoc(padId: string, epoch: string, rev: number, ts: number, doc: Uint8Array): DocRecord {
+    const hash = sha256Hex(doc);
     const save = this.db.transaction(() => {
       this.db
-        .query<void, [string, string, number, number, string, string]>(
-          `INSERT OR REPLACE INTO snapshots(pad_id, epoch, rev, ts, hash, blob)
+        .query<void, [string, string, number, number, string, Uint8Array]>(
+          `INSERT OR REPLACE INTO scene_docs(pad_id, epoch, rev, ts, hash, doc)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(padId, epoch, rev, ts, hash, blob);
+        .run(padId, epoch, rev, ts, hash, doc);
       this.db
         .query<void, [string, string]>(
-          `DELETE FROM snapshots
+          `DELETE FROM scene_docs
            WHERE pad_id = ? AND rowid NOT IN (
-             SELECT rowid FROM snapshots WHERE pad_id = ?
+             SELECT rowid FROM scene_docs WHERE pad_id = ?
              ORDER BY ts DESC, rev DESC LIMIT 30
            )`,
         )
         .run(padId, padId);
     });
     save();
-    return { padId, epoch, rev, ts, hash, elements: [...elements] };
+    return { padId, epoch, rev, ts, hash, doc: new Uint8Array(doc) };
   }
 
   createPrincipal(principal: Principal, createdAt: number): void {

@@ -1,18 +1,27 @@
 import {
+  MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
-  applyAccepted,
-  compareElements,
-  reconcile,
   type ClientMessage,
+  type PadPresence,
   type PresencePayload,
   type PresenceState,
-  type RuntimeDeps,
-  type PadPresence,
   type Principal,
-  type SceneElement,
+  type RuntimeDeps,
   type ServerMessage,
   type SessionInfo,
 } from "@manifold/protocol";
+import {
+  REPAIR_ORIGIN,
+  Y,
+  changedElementIds,
+  createSceneDoc,
+  decodeUpdate,
+  elementsMap,
+  encodeUpdate,
+  readElement,
+  readElements,
+  removeElement,
+} from "@manifold/scene";
 import type { Logger } from "./log.ts";
 import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
@@ -26,12 +35,15 @@ const MAX_SAVE_MS = 10_000;
 
 /**
  * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
- * sessions while allowing canonical scenes substantially larger than the client frame cap.
+ * sessions while allowing canonical documents substantially larger than one client update.
  */
-export const SCENE_BYTES_LIMIT = 12 * 1_048_576;
+export const DOC_BYTES_LIMIT = 12 * 1_048_576;
+const DOC_UPDATES_PER_SECOND = 120;
+const DOC_UPDATE_BURST = 240;
 
-type SceneUpdate = Extract<ClientMessage, { type: "scene_update" }>;
+type DocUpdate = Extract<ClientMessage, { type: "doc_update" }>;
 type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
+type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
 
 /** Timer seam whose returned cancellation closures avoid platform-specific handle types. */
 export interface RoomTimers {
@@ -48,19 +60,21 @@ export const defaultRoomTimers: RoomTimers = {
   },
 };
 
-/** Canonical in-memory scene and ephemeral membership for one persisted pad. */
+/** Canonical in-memory Yjs document and ephemeral membership for one persisted pad. */
 export class Room {
-  readonly scene = new Map<string, SceneElement>();
+  readonly doc = createSceneDoc();
   readonly epoch: string;
   rev: number;
 
   private readonly connections = new Map<string, Set<SessionPeer>>();
   private readonly presences = new Map<string, PresencePayload>();
+  private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private dirty = false;
   private cancelQuiet: (() => void) | null = null;
   private cancelMax: (() => void) | null = null;
-  private readonly elementBytes = new Map<string, number>();
-  private sceneBytes = 2;
+  private collectingIds: Set<string> | null = null;
+  private docBytes = 0;
+  private overLimit = false;
 
   constructor(
     readonly padId: string,
@@ -71,24 +85,35 @@ export class Room {
     private readonly sessions: () => readonly SessionInfo[],
     private readonly onEmpty: (room: Room) => void,
   ) {
-    const snapshot = store.latestSnapshot(padId, (error, invalid) => {
-      logger.error("snapshot_load_skipped", {
+    const record = store.latestDoc(padId, (error, invalid) => {
+      logger.error("scene_doc_load_skipped", {
         padId,
         epoch: invalid.epoch,
         rev: invalid.rev,
         error: error.message,
       });
     });
-    this.epoch = snapshot?.epoch ?? runtime.newId();
-    this.rev = snapshot?.rev ?? 0;
-    if (snapshot !== null) {
-      for (const element of snapshot.elements) {
-        this.scene.set(element.id, element);
-        const bytes = Buffer.byteLength(JSON.stringify(element));
-        this.elementBytes.set(element.id, bytes);
-        this.sceneBytes += bytes + (this.scene.size === 1 ? 0 : 1);
+    this.epoch = record?.epoch ?? runtime.newId();
+    this.rev = record?.rev ?? 0;
+    if (record !== null) Y.applyUpdate(this.doc, record.doc);
+    this.docBytes = Y.encodeStateAsUpdate(this.doc).byteLength;
+    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
+
+    elementsMap(this.doc).observeDeep((events) => {
+      if (this.collectingIds === null) return;
+      for (const id of changedElementIds(events as unknown as readonly Y.YEvent<never>[])) {
+        this.collectingIds.add(id);
       }
-    }
+    });
+    this.doc.on("update", (update, origin) => {
+      this.rev += 1;
+      this.broadcast({
+        type: "doc_update",
+        update: encodeUpdate(update),
+        by: origin === REPAIR_ORIGIN || typeof origin !== "string" ? "server" : origin,
+      });
+      this.scheduleSnapshot();
+    });
   }
 
   private roster(): PresenceState[] {
@@ -111,7 +136,7 @@ export class Room {
       protocolVersion: PROTOCOL_VERSION,
       epoch: this.epoch,
       rev: this.rev,
-      elements: [...this.scene.values()].sort(compareElements),
+      doc: encodeUpdate(Y.encodeStateAsUpdate(this.doc)),
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
       selfConnId: peer.id,
@@ -176,6 +201,7 @@ export class Room {
     const principalId = peer.auth.principal.id;
     const peers = this.connections.get(principalId);
     if (peers === undefined || !peers.delete(peer)) return;
+    this.updateBuckets.delete(peer.id);
     if (peers.size === 0) {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
@@ -202,73 +228,63 @@ export class Room {
     this.sendState("resync", peer);
   }
 
-  /** Applies epoch-fenced reconciliation, increments rev only for winners, and acks once. */
-  applyUpdate(peer: SessionPeer, update: SceneUpdate): boolean {
-    if (update.epoch !== this.epoch) {
-      peer.send({
-        type: "error",
-        code: "epoch_mismatch",
-        message: "scene epoch changed",
-        ref: update.updateId,
-      });
+  private consumeDocUpdate(peer: SessionPeer): boolean {
+    const now = this.runtime.now();
+    const previous = this.updateBuckets.get(peer.id) ?? {
+      tokens: DOC_UPDATE_BURST,
+      at: now,
+    };
+    const elapsed = Math.max(0, now - previous.at);
+    const tokens = Math.min(
+      DOC_UPDATE_BURST,
+      previous.tokens + (elapsed * DOC_UPDATES_PER_SECOND) / 1_000,
+    );
+    if (tokens < 1) {
+      this.updateBuckets.set(peer.id, { tokens, at: now });
+      return false;
+    }
+    this.updateBuckets.set(peer.id, { tokens: tokens - 1, at: now });
+    return true;
+  }
+
+  /** Applies one bounded update, then repairs schema-invalid element projections. */
+  applyDocUpdate(peer: SessionPeer, encoded: DocUpdate["update"]): boolean {
+    let update: Uint8Array;
+    try {
+      update = decodeUpdate(encoded);
+    } catch {
+      peer.send({ type: "error", code: "invalid", message: "invalid doc update" });
+      return false;
+    }
+    if (update.byteLength > MAX_DOC_UPDATE_BYTES) {
+      peer.send({ type: "error", code: "invalid", message: "doc update too large" });
+      return false;
+    }
+    if (!this.consumeDocUpdate(peer)) {
+      peer.send({ type: "error", code: "rate_limited", message: "doc update rate limit exceeded" });
+      return false;
+    }
+    if (this.overLimit) {
+      peer.send({ type: "error", code: "invalid", message: "scene too large" });
       return false;
     }
 
-    const result = reconcile(this.scene, update.elements);
-    const acceptedBytes = new Map<string, number>();
-    let candidateBytes = this.sceneBytes;
-    let candidateCount = this.scene.size;
-    for (const element of result.accepted) {
-      const bytes = Buffer.byteLength(JSON.stringify(element));
-      acceptedBytes.set(element.id, bytes);
-      const previous = this.elementBytes.get(element.id);
-      if (previous === undefined) {
-        candidateBytes += bytes + (candidateCount === 0 ? 0 : 1);
-        candidateCount += 1;
-      } else {
-        candidateBytes += bytes - previous;
-      }
-    }
-    if (candidateBytes > SCENE_BYTES_LIMIT) {
-      this.logger.warn("scene_update_rejected_size", {
-        padId: this.padId,
-        bytes: candidateBytes,
-        limit: SCENE_BYTES_LIMIT,
-      });
-      peer.send({
-        type: "error",
-        code: "invalid",
-        message: "scene too large",
-        ref: update.updateId,
-      });
-      peer.send({
-        type: "scene_ack",
-        updateId: update.updateId,
-        rev: this.rev,
-        acceptedIds: [],
-      });
-      return true;
+    const changed = new Set<string>();
+    this.collectingIds = changed;
+    try {
+      Y.applyUpdate(this.doc, update, peer.auth.principal.id);
+    } catch {
+      peer.send({ type: "error", code: "invalid", message: "invalid doc update" });
+      return false;
+    } finally {
+      this.collectingIds = null;
     }
 
-    if (result.accepted.length > 0) {
-      applyAccepted(this.scene, result.accepted);
-      for (const [id, bytes] of acceptedBytes) this.elementBytes.set(id, bytes);
-      this.sceneBytes = candidateBytes;
-      this.rev += 1;
-      this.broadcast({
-        type: "scene_applied",
-        rev: this.rev,
-        elements: result.accepted,
-        by: peer.auth.principal.id,
-      });
-      this.scheduleSnapshot();
+    for (const id of changed) {
+      if (readElement(this.doc, id) === null && removeElement(this.doc, id, REPAIR_ORIGIN)) {
+        this.logger.warn("scene_element_repaired", { padId: this.padId, id });
+      }
     }
-    peer.send({
-      type: "scene_ack",
-      updateId: update.updateId,
-      rev: this.rev,
-      acceptedIds: result.accepted.map((element) => element.id),
-    });
     return true;
   }
 
@@ -290,6 +306,17 @@ export class Room {
         x: cursor.x,
         y: cursor.y,
         ...(cursor.tool === undefined ? {} : { tool: cursor.tool }),
+      },
+      true,
+    );
+  }
+  /** Relays high-rate gesture motion with droppable delivery under socket pressure. */
+  relayGesture(peer: SessionPeer, gesture: GestureUpdate): void {
+    this.broadcast(
+      {
+        ...gesture,
+        principalId: peer.auth.principal.id,
+        connId: peer.id,
       },
       true,
     );
@@ -324,7 +351,7 @@ export class Room {
     try {
       this.flushSnapshot();
     } catch (error) {
-      this.logger.error("snapshot_save_failed", {
+      this.logger.error("scene_doc_save_failed", {
         padId: this.padId,
         cadence,
         error: error instanceof Error ? error.message : "unknown failure",
@@ -337,13 +364,17 @@ export class Room {
   flushSnapshot(): boolean {
     if (!this.dirty) return false;
     const at = this.runtime.now();
-    this.store.saveSnapshot(
-      this.padId,
-      this.epoch,
-      this.rev,
-      at,
-      [...this.scene.values()].sort(compareElements),
-    );
+    const doc = Y.encodeStateAsUpdate(this.doc);
+    this.docBytes = doc.byteLength;
+    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
+    if (this.overLimit) {
+      this.logger.warn("scene_doc_over_limit", {
+        padId: this.padId,
+        bytes: this.docBytes,
+        limit: DOC_BYTES_LIMIT,
+      });
+    }
+    this.store.saveDoc(this.padId, this.epoch, this.rev, at, doc);
     this.dirty = false;
     this.cancelQuiet?.();
     this.cancelMax?.();
@@ -369,6 +400,7 @@ export class Room {
     }
     this.connections.clear();
     this.presences.clear();
+    this.updateBuckets.clear();
   }
 
   /** Whether this room still has any joined sockets. */
@@ -376,10 +408,10 @@ export class Room {
     return this.connections.size > 0;
   }
 
-  /** Whether a live, non-deleted terminal element still points at a persisted session. */
+  /** Whether a live terminal element still points at a persisted session. */
   referencesSession(sessionId: string): boolean {
-    for (const element of this.scene.values()) {
-      if (!element.isDeleted && element.sessionId === sessionId) return true;
+    for (const element of readElements(this.doc).values()) {
+      if (element.type === "terminal" && element.sessionId === sessionId) return true;
     }
     return false;
   }
@@ -402,7 +434,8 @@ export class Room {
       padId: this.padId,
       epoch: this.epoch,
       rev: this.rev,
-      elements: this.scene.size,
+      elements: readElements(this.doc).size,
+      docBytes: this.docBytes,
       principals: this.connections.size,
       connections: connectionCount,
     };

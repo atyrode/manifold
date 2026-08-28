@@ -1,6 +1,8 @@
 import {
   CLIENT_MESSAGE_TYPES,
+  CURSOR_MIN_INTERVAL_MS,
   ClientMessageSchema,
+  GESTURE_MIN_INTERVAL_MS,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   type ClientMessage,
@@ -18,13 +20,13 @@ type ClassifiedFrame =
   | { kind: "malformed"; detail: string };
 
 type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
+type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
 
 const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   CLIENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
 );
 
 const RESYNC_MIN_INTERVAL_MS = 1_000;
-const CURSOR_MIN_INTERVAL_MS = 30;
 
 interface SessionConnection {
   socket: RawSocket;
@@ -36,6 +38,9 @@ interface SessionConnection {
   lastCursorAt: number | null;
   pendingCursor: CursorUpdate | null;
   cancelCursorFlush: (() => void) | null;
+  lastGestureAt: number | null;
+  pendingGesture: GestureUpdate | null;
+  cancelGestureFlush: (() => void) | null;
   closed: boolean;
 }
 
@@ -95,6 +100,9 @@ export class SessionGateway {
       lastCursorAt: null,
       pendingCursor: null,
       cancelCursorFlush: null,
+      lastGestureAt: null,
+      pendingGesture: null,
+      cancelGestureFlush: null,
       closed: false,
     };
     connection.cancelJoinTimeout = this.timers.schedule(() => {
@@ -207,6 +215,51 @@ export class SessionGateway {
       liveRoom.relayCursor(livePeer, pending);
     }, CURSOR_MIN_INTERVAL_MS - elapsed);
   }
+  /**
+   * Relays gesture end frames immediately; active frames are newest-wins at the gesture
+   * cadence so a remote override can never be stranded by a throttled release.
+   */
+  private relayGesture(
+    connection: SessionConnection,
+    peer: SessionPeer,
+    room: Room,
+    gesture: GestureUpdate,
+  ): void {
+    const now = this.runtime.now();
+    if (gesture.phase === "end") {
+      connection.cancelGestureFlush?.();
+      connection.cancelGestureFlush = null;
+      connection.pendingGesture = null;
+      connection.lastGestureAt = now;
+      room.relayGesture(peer, gesture);
+      return;
+    }
+
+    const elapsed =
+      connection.lastGestureAt === null ? GESTURE_MIN_INTERVAL_MS : now - connection.lastGestureAt;
+    if (elapsed >= GESTURE_MIN_INTERVAL_MS) {
+      connection.cancelGestureFlush?.();
+      connection.cancelGestureFlush = null;
+      connection.pendingGesture = null;
+      connection.lastGestureAt = now;
+      room.relayGesture(peer, gesture);
+      return;
+    }
+
+    connection.pendingGesture = gesture;
+    if (connection.cancelGestureFlush !== null) return;
+    connection.cancelGestureFlush = this.timers.schedule(() => {
+      connection.cancelGestureFlush = null;
+      const pending = connection.pendingGesture;
+      connection.pendingGesture = null;
+      if (connection.closed || pending === null) return;
+      const livePeer = connection.peer;
+      const liveRoom = connection.room;
+      if (livePeer === null || liveRoom === null) return;
+      connection.lastGestureAt = this.runtime.now();
+      liveRoom.relayGesture(livePeer, pending);
+    }, GESTURE_MIN_INTERVAL_MS - elapsed);
+  }
 
   /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */
   private sendResyncIfDue(connection: SessionConnection, peer: SessionPeer, room: Room): void {
@@ -243,17 +296,27 @@ export class SessionGateway {
       case "join":
         peer.close(4002, "duplicate join");
         return;
-      case "scene_update":
+      case "doc_update":
         if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
           peer.send({
             type: "error",
             code: "forbidden",
             message: "scene:write capability required",
-            ref: message.updateId,
           });
           return;
         }
-        if (!room.applyUpdate(peer, message)) this.sendResyncIfDue(connection, peer, room);
+        room.applyDocUpdate(peer, message.update);
+        return;
+      case "gesture":
+        if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
+          peer.send({
+            type: "error",
+            code: "forbidden",
+            message: "scene:write capability required",
+          });
+          return;
+        }
+        this.relayGesture(connection, peer, room, message);
         return;
       case "presence":
         room.updatePresence(peer, message.payload);
@@ -309,6 +372,9 @@ export class SessionGateway {
     connection.pendingCursor = null;
     connection.cancelCursorFlush?.();
     connection.cancelCursorFlush = null;
+    connection.pendingGesture = null;
+    connection.cancelGestureFlush?.();
+    connection.cancelGestureFlush = null;
     connection.cancelResyncFlush?.();
     connection.cancelResyncFlush = null;
     connection.cancelJoinTimeout?.();

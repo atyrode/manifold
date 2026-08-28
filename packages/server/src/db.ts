@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -160,6 +160,19 @@ DROP TABLE machine_survivors;
 CREATE UNIQUE INDEX IF NOT EXISTS machines_name_unique ON machines(name);
 
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '4');
+`,
+  5: `
+CREATE TABLE scene_docs(
+  pad_id TEXT NOT NULL,
+  epoch TEXT NOT NULL,
+  rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  doc BLOB NOT NULL,
+  PRIMARY KEY (pad_id, epoch, rev)
+);
+DROP TABLE snapshots;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '5');
 `,
 };
 

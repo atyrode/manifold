@@ -14,6 +14,8 @@ CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, ca
   pad_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE sessions(id TEXT PRIMARY KEY, machine_id TEXT, pad_id TEXT, element_id TEXT,
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT);
+CREATE TABLE snapshots(pad_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, blob TEXT,
+  PRIMARY KEY(pad_id, epoch, rev));
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 INSERT INTO meta(key, value) VALUES ('schema_version', '3');
 

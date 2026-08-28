@@ -206,48 +206,97 @@ describe("SessionGateway connection identity", () => {
   });
 });
 
-describe("SessionGateway automatic resync cadence", () => {
-  test("rapid epoch-mismatched updates share the one-per-second resync gate", () => {
+describe("SessionGateway gesture cadence", () => {
+  test("active gestures coalesce while end bypasses the cadence immediately", () => {
     const fixture = gatewayFixture();
-    const socket = new FakeSocket();
-    join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
 
-    const sendMismatch = (index: number): void => {
+    const gesture = (phase: "active" | "end", x: number) =>
+      JSON.stringify({
+        type: "gesture",
+        kind: "move",
+        phase,
+        elementId: "element",
+        x,
+        y: x,
+      });
+
+    fixture.gateway.message("first", gesture("active", 1));
+    expect(second.messages().at(-1)).toMatchObject({
+      type: "gesture",
+      principalId: expect.any(String),
+      connId: "first",
+      phase: "active",
+      x: 1,
+    });
+    second.clear();
+
+    fixture.clock.advance(10);
+    fixture.gateway.message("first", gesture("active", 2));
+    fixture.gateway.message("first", gesture("active", 3));
+    expect(second.messages()).toEqual([]);
+    expect(fixture.clock.pendingJobs).toBe(1);
+
+    fixture.gateway.message("first", gesture("end", 4));
+    expect(fixture.clock.pendingJobs).toBe(0);
+    expect(second.messages()).toEqual([
+      expect.objectContaining({
+        type: "gesture",
+        connId: "first",
+        phase: "end",
+        x: 4,
+      }),
+    ]);
+    fixture.clock.advance(30);
+    expect(second.messages()).toHaveLength(1);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a trailing active gesture sends only the newest coordinates", () => {
+    const fixture = gatewayFixture();
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
+    fixture.gateway.message(
+      "first",
+      JSON.stringify({
+        type: "gesture",
+        kind: "resize",
+        phase: "active",
+        elementId: "element",
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+      }),
+    );
+    second.clear();
+    fixture.clock.advance(5);
+    for (const width of [20, 30, 40]) {
       fixture.gateway.message(
-        "peer",
+        "first",
         JSON.stringify({
-          type: "scene_update",
-          updateId: `mismatch-${index}`,
-          epoch: "wrong-epoch",
-          baseRev: 0,
-          elements: [
-            {
-              id: "element",
-              type: "terminal",
-              sessionId: "session-element",
-              x: 0,
-              y: 0,
-              width: 720,
-              height: 480,
-              zIndex: 0,
-              version: index + 1,
-              versionNonce: 1,
-              isDeleted: false,
-            },
-          ],
+          type: "gesture",
+          kind: "resize",
+          phase: "active",
+          elementId: "element",
+          x: 0,
+          y: 0,
+          width,
+          height: width,
         }),
       );
-    };
-    for (let index = 0; index < 300; index += 1) sendMismatch(index);
+    }
+    fixture.clock.advance(25);
 
-    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
-    expect(socket.messages().filter((message) => message.type === "error")).toHaveLength(300);
-    fixture.clock.advance(999);
-    sendMismatch(300);
-    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
-    fixture.clock.advance(1);
-    sendMismatch(301);
-    expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(2);
+    expect(second.messages()).toEqual([
+      expect.objectContaining({ type: "gesture", width: 40, height: 40 }),
+    ]);
     fixture.gateway.shutdown();
     fixture.store.close();
   });

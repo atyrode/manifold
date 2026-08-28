@@ -71,7 +71,7 @@ describe("SessionPeer authoritative queue collapse", () => {
           protocolVersion: PROTOCOL_VERSION,
           epoch: "epoch",
           rev,
-          elements: [],
+          doc: "AAA=",
           self: peer.auth.principal,
           selfConnId: peer.id,
           selfCaps: ["*"],
