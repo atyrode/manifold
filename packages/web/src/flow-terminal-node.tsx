@@ -19,8 +19,24 @@ export interface FlowPadContextValue {
   readonly onClose: (elementId: string, sessionId: string) => void;
   readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
   readonly sessionShared: (elementId: string, sessionId: string) => boolean;
-  /** Commits a finished resize; a no-op while the route is read-only. */
-  readonly onResize: (elementId: string, width: number, height: number) => void;
+  /** Streams live resize geometry and commits its final frame. */
+  readonly onResize: (
+    elementId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => void;
+  readonly onResizeEnd: (
+    elementId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => void;
+  readonly editingId: string | null;
+  readonly beginTextEditing: (elementId: string) => void;
+  readonly endTextEditing: (elementId: string) => void;
   /**
    * Remount telemetry for the spike's acceptance criteria. A terminal that survives
    * pan/zoom/select must report exactly one mount for the life of the route.
@@ -34,7 +50,7 @@ export const FlowPadProvider = FlowPadContext.Provider;
 
 export function useFlowPad(): FlowPadContextValue {
   const value = useContext(FlowPadContext);
-  if (value === null) throw new Error("FlowPadContext is missing above a terminal node");
+  if (value === null) throw new Error("FlowPadContext is missing above a canvas node");
   return value;
 }
 
@@ -72,7 +88,12 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
         isVisible={selected === true}
         minWidth={MIN_TERMINAL_WIDTH}
         minHeight={MIN_TERMINAL_HEIGHT}
-        onResizeEnd={(_event, params) => pad.onResize(id, params.width, params.height)}
+        onResize={(_event, params) =>
+          pad.onResize(id, params.x, params.y, params.width, params.height)
+        }
+        onResizeEnd={(_event, params) =>
+          pad.onResizeEnd(id, params.x, params.y, params.width, params.height)
+        }
       />
       {/*
         The titlebar is the drag handle (see TERMINAL_DRAG_HANDLE). `nowheel` is deliberately

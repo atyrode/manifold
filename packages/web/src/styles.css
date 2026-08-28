@@ -2106,3 +2106,97 @@ button.pad-sidebar-session.is-summary > small {
 .flow-pad-canvas .react-flow__resize-control.line {
   border-color: #8ab4f8;
 }
+
+.flow-pad-canvas:focus {
+  outline: none;
+}
+
+.flow-text {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 0.5rem;
+  color: #f8f9fa;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.flow-text__editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 1px solid #748ffc;
+  border-radius: 0.35rem;
+  outline: none;
+  padding: 0.5rem;
+  color: #f8f9fa;
+  background: rgb(20 22 27 / 92%);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  box-shadow: 0 0 0 3px rgb(116 143 252 / 18%);
+}
+
+.flow-draw {
+  display: block;
+  pointer-events: none;
+}
+
+.flow-draw path {
+  pointer-events: stroke;
+}
+
+.flow-toolbar {
+  position: absolute;
+  z-index: 20;
+  bottom: 1rem;
+  left: 50%;
+  display: flex;
+  gap: 0.25rem;
+  border: 1px solid #343a40;
+  border-radius: 0.65rem;
+  padding: 0.3rem;
+  background: rgb(24 27 32 / 94%);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 30%);
+  transform: translateX(-50%);
+}
+
+.flow-toolbar__button {
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  color: #adb5bd;
+  background: transparent;
+  cursor: pointer;
+}
+
+.flow-toolbar__button:hover {
+  color: #f8f9fa;
+  background: #343a40;
+}
+
+.flow-toolbar__button--active {
+  color: #fff;
+  background: #4263eb;
+}
+
+.flow-toolbar__button--active:hover {
+  background: #3b5bdb;
+}
+
+.flow-stroke-preview {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.flow-remote-selection {
+  position: absolute;
+  border: 2px solid;
+  border-radius: 0.3rem;
+  pointer-events: none;
+  transform-origin: 0 0;
+}

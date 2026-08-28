@@ -1,0 +1,106 @@
+import { GESTURE_TTL_MS, type ServerGesture } from "@manifold/protocol";
+import { GESTURE_HALF_LIFE_MS, stepToward } from "./interpolate";
+
+export interface GestureGeometry {
+  readonly x: number;
+  readonly y: number;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+export interface GestureOverride {
+  readonly connId: string;
+  readonly principalId: string;
+  readonly elementId: string;
+  readonly kind: "move" | "resize" | "draw";
+  readonly target: GestureGeometry;
+  readonly current: GestureGeometry;
+  readonly points?: readonly number[];
+  readonly updatedAt: number;
+}
+
+export function applyGestureFrame(
+  state: Map<string, GestureOverride>,
+  frame: ServerGesture,
+  selfConnId: string | null,
+  now: number,
+): boolean {
+  if (frame.connId === selfConnId) return false;
+  if (frame.phase === "end") {
+    if (state.get(frame.elementId)?.connId !== frame.connId) return false;
+    return state.delete(frame.elementId);
+  }
+
+  const previous = state.get(frame.elementId);
+  const target = {
+    x: frame.x,
+    y: frame.y,
+    ...(frame.width === undefined ? {} : { width: frame.width }),
+    ...(frame.height === undefined ? {} : { height: frame.height }),
+  };
+  const sameSender = previous?.connId === frame.connId;
+  state.set(frame.elementId, {
+    connId: frame.connId,
+    principalId: frame.principalId,
+    elementId: frame.elementId,
+    kind: frame.kind,
+    target,
+    current: sameSender && previous !== undefined ? previous.current : target,
+    ...(frame.points === undefined ? {} : { points: frame.points }),
+    updatedAt: now,
+  });
+  return true;
+}
+
+export function expireGestures(state: Map<string, GestureOverride>, now: number): boolean {
+  let changed = false;
+  for (const [elementId, gesture] of state) {
+    if (now - gesture.updatedAt > GESTURE_TTL_MS) {
+      state.delete(elementId);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function stepGestures(state: Map<string, GestureOverride>, dtMs: number): boolean {
+  let changed = false;
+  for (const [elementId, gesture] of state) {
+    const current = gesture.current;
+    const target = gesture.target;
+    const next = {
+      x: stepToward(current.x, target.x, dtMs, GESTURE_HALF_LIFE_MS),
+      y: stepToward(current.y, target.y, dtMs, GESTURE_HALF_LIFE_MS),
+      ...(target.width === undefined
+        ? {}
+        : {
+            width: stepToward(
+              current.width ?? target.width,
+              target.width,
+              dtMs,
+              GESTURE_HALF_LIFE_MS,
+            ),
+          }),
+      ...(target.height === undefined
+        ? {}
+        : {
+            height: stepToward(
+              current.height ?? target.height,
+              target.height,
+              dtMs,
+              GESTURE_HALF_LIFE_MS,
+            ),
+          }),
+    };
+    if (
+      next.x !== current.x ||
+      next.y !== current.y ||
+      next.width !== current.width ||
+      next.height !== current.height
+    ) {
+      state.set(elementId, { ...gesture, current: next });
+      changed = true;
+    }
+  }
+  return changed;
+}

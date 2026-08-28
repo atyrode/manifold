@@ -1,0 +1,85 @@
+import { describe, expect, test } from "bun:test";
+import type { ServerGesture } from "@manifold/protocol";
+import {
+  applyGestureFrame,
+  expireGestures,
+  stepGestures,
+  type GestureOverride,
+} from "./remote-gestures";
+
+function frame(x: number, phase: "active" | "end" = "active"): ServerGesture {
+  return {
+    type: "gesture",
+    connId: "peer-connection",
+    principalId: "peer",
+    kind: "resize",
+    phase,
+    elementId: "element",
+    x,
+    y: x + 10,
+    width: x + 100,
+    height: x + 200,
+  };
+}
+
+describe("remote gestures", () => {
+  test("ignores self echoes and applies peer frames", () => {
+    const state = new Map<string, GestureOverride>();
+    expect(applyGestureFrame(state, frame(10), "peer-connection", 100)).toBe(false);
+    expect(state.size).toBe(0);
+
+    expect(applyGestureFrame(state, frame(10), "self-connection", 100)).toBe(true);
+    expect(state.get("element")).toMatchObject({
+      connId: "peer-connection",
+      principalId: "peer",
+      target: { x: 10, y: 20, width: 110, height: 210 },
+      current: { x: 10, y: 20, width: 110, height: 210 },
+      updatedAt: 100,
+    });
+  });
+
+  test("retargets without snapping and removes an ended gesture", () => {
+    const state = new Map<string, GestureOverride>();
+    applyGestureFrame(state, frame(0), null, 0);
+    applyGestureFrame(state, frame(100), null, 30);
+    expect(state.get("element")?.current.x).toBe(0);
+    expect(state.get("element")?.target.x).toBe(100);
+
+    expect(stepGestures(state, 60)).toBe(true);
+    expect(state.get("element")?.current.x).toBe(50);
+    expect(applyGestureFrame(state, frame(100, "end"), null, 90)).toBe(true);
+    expect(state.size).toBe(0);
+  });
+
+  test("does not let a stale sender end a newer sender's override", () => {
+    const state = new Map<string, GestureOverride>();
+    applyGestureFrame(state, frame(10), null, 10);
+    const newer = { ...frame(20), connId: "newer-connection" };
+    applyGestureFrame(state, newer, null, 20);
+
+    expect(applyGestureFrame(state, frame(10, "end"), null, 30)).toBe(false);
+    expect(state.get("element")?.connId).toBe("newer-connection");
+    expect(applyGestureFrame(state, { ...newer, phase: "end" }, null, 40)).toBe(true);
+    expect(state.size).toBe(0);
+  });
+
+  test("keeps newest draw points and expires abandoned overrides", () => {
+    const state = new Map<string, GestureOverride>();
+    const draw: ServerGesture = {
+      type: "gesture",
+      connId: "peer-connection",
+      principalId: "peer",
+      kind: "draw",
+      phase: "active",
+      elementId: "stroke",
+      x: 2,
+      y: 3,
+      points: [0, 1, 2, 3],
+    };
+    applyGestureFrame(state, draw, null, 10);
+    expect(state.get("stroke")?.points).toEqual([0, 1, 2, 3]);
+    expect(expireGestures(state, 3_010)).toBe(false);
+    expect(expireGestures(state, 3_011)).toBe(true);
+    expect(state.size).toBe(0);
+  });
+});

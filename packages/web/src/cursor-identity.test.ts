@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { recordRemoteCursor, remoteCursorSocketId, type RemoteCursor } from "./cursor-identity.ts";
+import {
+  recordRemoteCursor,
+  remoteCursorSocketId,
+  stepRemoteCursors,
+  type RemoteCursor,
+} from "./cursor-identity.ts";
 
 describe("connection-scoped cursor identity", () => {
   test("filters only this connection's echo and retains a same-principal sibling", () => {
@@ -15,9 +20,32 @@ describe("connection-scoped cursor identity", () => {
     expect([...cursors]).toEqual([
       [
         remoteCursorSocketId("owner", "sibling"),
-        { principalId: "owner", connId: "sibling", x: 3, y: 4, tool: "pointer" },
+        {
+          principalId: "owner",
+          connId: "sibling",
+          x: 3,
+          y: 4,
+          targetX: 3,
+          targetY: 4,
+          tool: "pointer",
+        },
       ],
     ]);
+  });
+
+  test("retargets an existing cursor and advances it smoothly", () => {
+    const cursors = new Map<string, RemoteCursor>();
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 0, y: 0 }, null);
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 100, y: 50 }, null);
+
+    expect(cursors.get("peer:socket")).toMatchObject({
+      x: 0,
+      y: 0,
+      targetX: 100,
+      targetY: 50,
+    });
+    expect(stepRemoteCursors(cursors, 80)).toBe(true);
+    expect(cursors.get("peer:socket")).toMatchObject({ x: 50, y: 25 });
   });
 
   test("connection ids produce distinct remote cursor ids for one principal", () => {
