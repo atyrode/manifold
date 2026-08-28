@@ -8,15 +8,20 @@ export { reconnectDelayMs } from "./backoff.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
 export { PrincipalSchema, type Principal } from "./principal.ts";
 export {
-  MAX_ELEMENTS_PER_UPDATE,
+  HEX_COLOR,
+  MAX_DOC_UPDATE_BYTES,
+  MAX_GESTURE_POINT_VALUES,
   MAX_SESSION_FRAME_BYTES,
+  MAX_STROKE_POINT_VALUES,
+  MAX_TEXT_LENGTH,
   SceneElementSchema,
   compareElements,
   type SceneElement,
 } from "./elements.ts";
-export { applyAccepted, reconcile, shouldAccept, type ReconcileResult } from "./reconcile.ts";
 export {
   CURSOR_MIN_INTERVAL_MS,
+  GESTURE_MIN_INTERVAL_MS,
+  GESTURE_TTL_MS,
   VIEWPORT_MIN_INTERVAL_MS,
   CursorSchema,
   PresencePayloadSchema,
@@ -30,12 +35,16 @@ export {
 export {
   CLIENT_MESSAGE_TYPES,
   ClientMessageSchema,
+  GestureFields,
+  GestureSchema,
   SERVER_MESSAGE_TYPES,
   ErrorCodeSchema,
   ServerMessageSchema,
   SessionInfoSchema,
   type ClientMessage,
   type ErrorCode,
+  type Gesture,
+  type ServerGesture,
   type ServerMessage,
   type SessionInfo,
 } from "./session.ts";

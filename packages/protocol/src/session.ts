@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_ELEMENTS_PER_UPDATE, SceneElementSchema } from "./elements.ts";
+import { MAX_GESTURE_POINT_VALUES } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
 import { PresencePayloadSchema, PresenceStateSchema } from "./presence.ts";
 import { PrincipalSchema } from "./principal.ts";
@@ -43,6 +43,18 @@ const terminalGeometry = {
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
 };
+export const GestureFields = {
+  kind: z.enum(["move", "resize", "draw"]),
+  phase: z.enum(["active", "end"]),
+  elementId: z.string().min(1).max(128),
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().finite().positive().optional(),
+  height: z.number().finite().positive().optional(),
+  points: z.array(z.number().finite()).max(MAX_GESTURE_POINT_VALUES).optional(),
+};
+export const GestureSchema = z.strictObject(GestureFields);
+export type Gesture = z.infer<typeof GestureSchema>;
 
 // ---------------------------------------------------------------------------- client → server
 
@@ -56,19 +68,8 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     lastEpoch: z.string().optional(),
     lastRev: z.number().int().nonnegative().optional(),
   }),
-  z.strictObject({
-    type: z.literal("scene_update"),
-    /** Client-chosen id echoed in scene_ack. */
-    updateId: z.string().min(1).max(64),
-    /**
-     * Epoch fence: MUST equal the server's current scene epoch (learned via init/resync).
-     * Guarantees a client that missed a compaction/restore cannot write stale state —
-     * the server rejects with `epoch_mismatch` + a fresh resync.
-     */
-    epoch: z.string().min(1),
-    baseRev: z.number().int().nonnegative(),
-    elements: z.array(SceneElementSchema).min(1).max(MAX_ELEMENTS_PER_UPDATE),
-  }),
+  z.strictObject({ type: z.literal("doc_update"), update: z.base64().max(700_000) }),
+  z.strictObject({ type: z.literal("gesture"), ...GestureFields }),
   z.strictObject({ type: z.literal("presence"), payload: PresencePayloadSchema }),
   z.strictObject({
     type: z.literal("cursor"),
@@ -109,7 +110,7 @@ const stateFields = {
   protocolVersion: z.number().int().positive(),
   epoch: z.string().min(1),
   rev: z.number().int().nonnegative(),
-  elements: z.array(SceneElementSchema),
+  doc: z.base64(),
   self: PrincipalSchema,
   /** The joining principal's granted capabilities; drives client-side affordances. */
   selfCaps: z.array(CapSchema).min(1),
@@ -123,17 +124,15 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("init"), ...stateFields }),
   z.strictObject({ type: z.literal("resync"), ...stateFields }),
   z.strictObject({
-    type: z.literal("scene_applied"),
-    rev: z.number().int().positive(),
-    elements: z.array(SceneElementSchema).min(1),
-    /** Principal id that authored the accepted records. */
+    type: z.literal("doc_update"),
+    update: z.base64().max(700_000),
     by: z.string().min(1),
   }),
   z.strictObject({
-    type: z.literal("scene_ack"),
-    updateId: z.string().min(1),
-    rev: z.number().int().nonnegative(),
-    acceptedIds: z.array(z.string()),
+    type: z.literal("gesture"),
+    principalId: z.string().min(1),
+    connId: z.string().min(1),
+    ...GestureFields,
   }),
   z.strictObject({
     type: z.literal("roster"),
@@ -196,6 +195,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("pong") }),
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
+export type ServerGesture = Extract<ServerMessage, { type: "gesture" }>;
 
 // ---------------------------------------------------------------------------- type inventories
 
@@ -208,8 +208,8 @@ export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 export const SERVER_MESSAGE_TYPES = [
   "init",
   "resync",
-  "scene_applied",
-  "scene_ack",
+  "doc_update",
+  "gesture",
   "roster",
   "presence",
   "cursor",
@@ -224,7 +224,8 @@ export const SERVER_MESSAGE_TYPES = [
 
 export const CLIENT_MESSAGE_TYPES = [
   "join",
-  "scene_update",
+  "doc_update",
+  "gesture",
   "presence",
   "cursor",
   "resync_request",

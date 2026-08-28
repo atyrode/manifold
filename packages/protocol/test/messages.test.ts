@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AgentMessageSchema,
   ClientMessageSchema,
-  MAX_ELEMENTS_PER_UPDATE,
+  MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
   ServerMessageSchema,
@@ -20,9 +20,6 @@ const element = (id: string) => ({
   width: 720,
   height: 480,
   zIndex: 0,
-  version: 1,
-  versionNonce: 2,
-  isDeleted: false,
 });
 
 describe("session channel schemas", () => {
@@ -36,41 +33,43 @@ describe("session channel schemas", () => {
     expect(ClientMessageSchema.parse(msg)).toEqual(msg);
   });
 
-  test("scene_update requires the epoch fence", () => {
-    const noEpoch = {
-      type: "scene_update",
-      updateId: "u1",
-      baseRev: 0,
-      elements: [element("a")],
-    };
-    expect(ClientMessageSchema.safeParse(noEpoch).success).toBe(false);
-    expect(ClientMessageSchema.safeParse({ ...noEpoch, epoch: "e1" }).success).toBe(true);
-  });
-
-  test("scene updates reject undeclared renderer fields", () => {
+  test("doc updates require bounded base64 payloads", () => {
     expect(
-      ClientMessageSchema.safeParse({
-        type: "scene_update",
-        updateId: "u1",
-        epoch: "e1",
-        baseRev: 3,
-        elements: [{ ...element("a"), strokeColor: "#fff", points: [[0, 1]] }],
-      }).success,
+      ClientMessageSchema.safeParse({ type: "doc_update", update: btoa("yjs update") }).success,
+    ).toBe(true);
+    expect(
+      ClientMessageSchema.safeParse({ type: "doc_update", update: "not base64!!" }).success,
+    ).toBe(false);
+    expect(
+      ClientMessageSchema.safeParse({ type: "doc_update", update: "a".repeat(700_004) }).success,
     ).toBe(false);
   });
 
-  test("oversized batches are rejected", () => {
-    const elements = Array.from({ length: MAX_ELEMENTS_PER_UPDATE + 1 }, (_, i) =>
-      element(`e${i}`),
-    );
-    const res = ClientMessageSchema.safeParse({
-      type: "scene_update",
-      updateId: "u",
-      epoch: "e1",
-      baseRev: 0,
-      elements,
-    });
-    expect(res.success).toBe(false);
+  test("gesture frames are bounded and server identity is stamped", () => {
+    const gesture = {
+      type: "gesture" as const,
+      kind: "draw" as const,
+      phase: "active" as const,
+      elementId: "stroke-1",
+      x: 12,
+      y: 34,
+      points: [0, 0, 12, 34],
+    };
+    expect(ClientMessageSchema.safeParse(gesture).success).toBe(true);
+    expect(
+      ClientMessageSchema.safeParse({
+        ...gesture,
+        points: Array.from({ length: MAX_GESTURE_POINT_VALUES + 1 }, () => 0),
+      }).success,
+    ).toBe(false);
+    expect(
+      ServerMessageSchema.safeParse({
+        ...gesture,
+        principalId: "principal-1",
+        connId: "conn-1",
+      }).success,
+    ).toBe(true);
+    expect(ServerMessageSchema.safeParse({ ...gesture, connId: "spoof" }).success).toBe(false);
   });
 
   test("unknown message types are rejected (caller logs and ignores)", () => {
@@ -89,7 +88,7 @@ describe("session channel schemas", () => {
       protocolVersion: PROTOCOL_VERSION,
       epoch: "e1",
       rev: 7,
-      elements: [element("a")],
+      doc: btoa("document"),
       self: { id: "pr1", kind: "human", name: "alex", color: "#aabb00" },
       selfConnId: "conn-1",
       selfCaps: ["*"],
@@ -141,16 +140,39 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("scene records are strict native terminals", () => {
+  test("scene records validate terminal, collaborative text, and freedraw variants", () => {
     expect(SceneElementSchema.parse(element("terminal-1"))).toEqual(element("terminal-1"));
     expect(
       SceneElementSchema.safeParse({
-        ...element("legacy"),
-        type: "embeddable",
-        link: "manifold://terminal",
-        customData: { kind: "terminal", sessionId: "s1" },
+        id: "text-1",
+        type: "text",
+        text: "hello",
+        x: 0,
+        y: 0,
+        width: 240,
+        height: 48,
+        zIndex: 1,
+        fontSize: 20,
+        color: "#f8f9fa",
       }).success,
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      SceneElementSchema.safeParse({
+        id: "draw-1",
+        type: "draw",
+        points: [0, 0, 10, 10],
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        zIndex: 2,
+        strokeWidth: 3,
+        color: "#12abEF",
+      }).success,
+    ).toBe(true);
+    expect(SceneElementSchema.safeParse({ ...element("bad"), strokeColor: "#fff" }).success).toBe(
+      false,
+    );
     expect(SceneElementSchema.safeParse({ ...element("drawing"), type: "rectangle" }).success).toBe(
       false,
     );
