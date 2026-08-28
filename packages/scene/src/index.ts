@@ -1,0 +1,20 @@
+export {
+  ELEMENTS_KEY,
+  LOCAL_ORIGIN,
+  REMOTE_ORIGIN,
+  REPAIR_ORIGIN,
+  changedElementIds,
+  createSceneDoc,
+  decodeUpdate,
+  elementText,
+  elementsMap,
+  encodeUpdate,
+  nextZIndex,
+  patchElement,
+  readElement,
+  readElements,
+  removeElement,
+  writeElement,
+  type ScenePatch,
+} from "./scene-doc.ts";
+export * as Y from "yjs";

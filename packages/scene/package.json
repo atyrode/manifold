@@ -1,5 +1,5 @@
 {
-  "name": "@manifold/server",
+  "name": "@manifold/scene",
   "private": true,
   "type": "module",
   "exports": {
@@ -7,11 +7,7 @@
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
-    "@manifold/scene": "workspace:*",
     "yjs": "13.6.32",
     "zod": "4.4.3"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.3.2"
   }
 }
