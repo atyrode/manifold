@@ -17,7 +17,7 @@ import {
   closeClients,
   e2eFailure,
   nextMessage,
-  sceneElement,
+  terminalElement,
   sortedScene,
   stopProcesses,
   waitForTerminalText,
@@ -55,7 +55,7 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       15_000,
       (message) => message.rev >= firstSavedRev,
     );
-    expect(client.updateScene([sceneElement("el-survive-scene")])).not.toBeNull();
+    client.transact((tx) => tx.create(terminalElement("el-survive-scene")));
     await firstSaved;
 
     const session = await client.openTerminal({
@@ -70,14 +70,9 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       15_000,
       (message) => message.rev >= secondSavedRev,
     );
-    expect(
-      client.updateScene([
-        {
-          ...sceneElement("el-survive-terminal"),
-          sessionId: session.id,
-        },
-      ]),
-    ).not.toBeNull();
+    client.transact((tx) => {
+      tx.create(terminalElement("el-survive-terminal", { sessionId: session.id }));
+    });
     await secondSaved;
 
     const beforeRestartScene = sortedScene(client);

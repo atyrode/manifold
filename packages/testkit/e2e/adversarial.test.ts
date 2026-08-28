@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
-import { PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
+import { MAX_DOC_UPDATE_BYTES, PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
+import {
+  Y,
+  createSceneDoc,
+  decodeUpdate,
+  elementsMap,
+  encodeUpdate,
+  readElements,
+} from "@manifold/scene";
 import {
   connect,
   createPad,
@@ -10,7 +18,7 @@ import {
   waitFor,
   type TestServer,
 } from "../src/index.ts";
-import { closeClients, e2eFailure, nextMessage, sceneElement, stopProcesses } from "./helpers.ts";
+import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.ts";
 import {
   rawMachineSocket,
   rawSessionSocket,
@@ -64,44 +72,13 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     expect(wrongFirstClose.reason).toBe("first frame must be join");
     expect(wrongFirstClose.initiatedBy).toBe("REMOTE");
 
-    const epochMismatch = await rawSessionSocket(server);
-    sockets.push(epochMismatch);
-    const epochInit = await joinRaw(epochMismatch, pad.id, grant.token);
-    expect(epochInit.rev).toBe(0);
-    epochMismatch.sendRaw(
-      JSON.stringify({
-        type: "scene_update",
-        updateId: "wrong-epoch",
-        epoch: "WRONG",
-        baseRev: 0,
-        elements: [sceneElement("el-wrong-epoch")],
-      }),
-    );
-    await waitFor(
-      () =>
-        epochMismatch.frames.some(
-          (frame) => frame.type === "error" && frame.code === "epoch_mismatch",
-        ) && epochMismatch.frames.some((frame) => frame.type === "resync"),
-      5_000,
-      20,
-    );
-    expect(
-      epochMismatch.frames.some(
-        (frame) => frame.type === "error" && frame.code === "epoch_mismatch",
-      ),
-    ).toBe(true);
-    expect(epochMismatch.frames.some((frame) => frame.type === "resync")).toBe(true);
-
     const malformedKnown = await rawSessionSocket(server);
     sockets.push(malformedKnown);
-    const malformedInit = await joinRaw(malformedKnown, pad.id, grant.token);
+    await joinRaw(malformedKnown, pad.id, grant.token);
     malformedKnown.sendRaw(
       JSON.stringify({
-        type: "scene_update",
-        updateId: "malformed-elements",
-        epoch: malformedInit.epoch,
-        baseRev: malformedInit.rev,
-        elements: "nope",
+        type: "doc_update",
+        update: "not base64",
       }),
     );
     const malformedClose = await waitFor(() => malformedKnown.closeInfo, 5_000, 20);
@@ -119,19 +96,14 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const oversized = await rawSessionSocket(server);
     sockets.push(oversized);
-    const oversizedInit = await joinRaw(oversized, pad.id, grant.token);
+    await joinRaw(oversized, pad.id, grant.token);
     const frameStart = oversized.frames.length;
     oversized.sendRaw(
       JSON.stringify({
-        type: "scene_update",
-        updateId: "oversized-batch",
-        epoch: oversizedInit.epoch,
-        baseRev: oversizedInit.rev,
-        elements: Array.from({ length: 129 }, (_, index) => sceneElement(`el-big-${index}`)),
+        type: "doc_update",
+        update: encodeUpdate(new Uint8Array(MAX_DOC_UPDATE_BYTES + 1)),
       }),
     );
-    // The scene limit says "rejected" while the known-malformed policy says policy-close.
-    // The target explicitly permits either an `invalid` error or that close, but never acceptance.
     const oversizedOutcome = await waitFor(
       () => {
         const invalid = oversized.frames
@@ -145,13 +117,46 @@ test("raw adversarial frames prove join ordering and frame-classification policy
       20,
     );
     expect(["invalid", "closed"]).toContain(oversizedOutcome);
-    expect(
-      oversized.frames.some(
-        (frame) =>
-          frame.type === "scene_applied" &&
-          frame.elements.some((element) => element.id.startsWith("el-big-")),
-      ),
-    ).toBe(false);
+    expect(oversized.frames.slice(frameStart).some((frame) => frame.type === "doc_update")).toBe(
+      false,
+    );
+
+    const repaired = await rawSessionSocket(server);
+    sockets.push(repaired);
+    await joinRaw(repaired, pad.id, grant.token);
+    const invalidDoc = createSceneDoc();
+    const invalidElement = new Y.Map<unknown>();
+    invalidElement.set("id", "invalid-element");
+    invalidElement.set("type", "terminal");
+    elementsMap(invalidDoc).set("invalid-element", invalidElement);
+    const repairStart = repaired.frames.length;
+    repaired.sendRaw(
+      JSON.stringify({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(invalidDoc)),
+      }),
+    );
+    const repairFrames = await waitFor(
+      () => {
+        const updates = repaired.frames
+          .slice(repairStart)
+          .filter((frame) => frame.type === "doc_update");
+        return updates.length >= 2 ? updates : false;
+      },
+      5_000,
+      20,
+    );
+    expect(repairFrames.map((frame) => frame.by)).toEqual([grant.principal.id, "server"]);
+    repaired.sendRaw(JSON.stringify({ type: "resync_request" }));
+    const resync = await waitFor(
+      () => repaired.frames.slice(repairStart).find((frame) => frame.type === "resync"),
+      5_000,
+      20,
+    );
+    if (resync.type !== "resync") throw new Error("missing repaired resync");
+    const repairedDoc = createSceneDoc();
+    Y.applyUpdate(repairedDoc, decodeUpdate(resync.doc));
+    expect(readElements(repairedDoc).has("invalid-element")).toBe(false);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {

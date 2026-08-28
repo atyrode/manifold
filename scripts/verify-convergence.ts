@@ -117,13 +117,13 @@ let observer: SessionClient | null = null;
 
 interface Snapshot {
   readonly id: string;
-  readonly version: number;
-  readonly versionNonce: number;
-  readonly isDeleted: boolean;
+  readonly type: SceneElement["type"];
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
+  readonly zIndex: number;
+  readonly extra: string | number;
 }
 
 interface Viewport {
@@ -327,29 +327,29 @@ try {
 
   // ---------------------------------------------------------------- views & invariant
 
-  /** id → "version:nonce:x:y" — geometry included so converged-but-truncated states differ. */
+  /** id → full mutation stamp; every persisted element field exercised by this gate contributes. */
   type ViewMap = Map<string, string>;
 
-  const stampNumber = (value: unknown): string =>
-    typeof value === "number" ? value.toFixed(1) : "0";
+  function snapshotStamp(snapshot: Snapshot): string {
+    return `${snapshot.type}:${snapshot.x.toFixed(1)}:${snapshot.y.toFixed(1)}:${snapshot.width.toFixed(1)}:${snapshot.height.toFixed(1)}:${String(snapshot.zIndex)}:${String(snapshot.extra)}`;
+  }
 
   function toViewMap(snapshots: readonly Snapshot[]): ViewMap {
-    const map: ViewMap = new Map();
-    for (const s of snapshots) {
-      map.set(
-        s.id,
-        `${String(s.version)}:${String(s.versionNonce)}:${s.x.toFixed(1)}:${s.y.toFixed(1)}`,
-      );
-    }
-    return map;
+    return new Map(snapshots.map((snapshot) => [snapshot.id, snapshotStamp(snapshot)]));
   }
 
   function canonicalView(): ViewMap {
     const map: ViewMap = new Map();
-    for (const el of sdk.scene.values()) {
+    for (const element of sdk.elements.values()) {
+      const extra =
+        element.type === "terminal"
+          ? element.sessionId
+          : element.type === "text"
+            ? element.text
+            : element.points.length;
       map.set(
-        el.id,
-        `${String(el.version)}:${String(el.versionNonce)}:${stampNumber(el["x"])}:${stampNumber(el["y"])}`,
+        element.id,
+        `${element.type}:${element.x.toFixed(1)}:${element.y.toFixed(1)}:${element.width.toFixed(1)}:${element.height.toFixed(1)}:${String(element.zIndex)}:${String(extra)}`,
       );
     }
     return map;
@@ -412,10 +412,8 @@ try {
             [browserA, "A"],
             [browserB, "B"],
           ] as const) {
-            const pending = await browser.evaluate<readonly string[]>(
-              "window.__manifold.pending()",
-            );
-            if (pending.length > 0) lastDiff.push(`${label}.pending: ${pending.join(",")}`);
+            const outbox = await browser.evaluate<number>("window.__manifold.outbox()");
+            if (outbox > 0) lastDiff.push(`${label}.outbox: ${String(outbox)}`);
           }
           // Effect assertions: a silently no-op gesture must fail, not pass vacuously.
           const canonicalNow = canonicalView();
@@ -458,15 +456,13 @@ try {
     width: 480,
     height: 320,
     zIndex: 0,
-    version: 1,
-    versionNonce: Math.floor(Math.random() * 2 ** 31),
-    isDeleted: false,
   });
   const moveFlowNode = async (
     browser: Browser,
     elementId: string,
     dx: number,
     dy: number,
+    liveRemote?: Browser,
   ): Promise<void> => {
     const start = await browser.evaluate<{
       readonly pointerX: number;
@@ -492,6 +488,12 @@ try {
         })()`,
     );
     if (start === null) throw new Error(`terminal ${elementId} has no rendered drag handle`);
+    const remoteBefore =
+      liveRemote === undefined
+        ? null
+        : await liveRemote.evaluate<Snapshot | null>(
+            `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`,
+          );
     const steps = 20;
     await browser.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
@@ -516,6 +518,27 @@ try {
       });
       await sleep(15);
     }
+    if (liveRemote !== undefined) {
+      if (remoteBefore === null) throw new Error(`remote terminal ${elementId} was not rendered`);
+      await until(
+        async () => {
+          const remote = await liveRemote.evaluate<Snapshot | null>(
+            `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`,
+          );
+          const gestures = await liveRemote.evaluate<readonly { readonly elementId: string }[]>(
+            "window.__manifold.gestures()",
+          );
+          return (
+            remote !== null &&
+            Math.abs(remote.x - remoteBefore.x) >= Math.abs(dx) * 0.5 &&
+            Math.abs(remote.y - remoteBefore.y) >= Math.abs(dy) * 0.5 &&
+            gestures.some((gesture) => gesture.elementId === elementId)
+          );
+        },
+        5_000,
+        `remote terminal ${elementId} to move before pointer release`,
+      );
+    }
     const duringDrag = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
       `(() => {
           const node = document.querySelector(
@@ -538,21 +561,85 @@ try {
       Math.abs(duringDrag.x - start.nodeX) < Math.abs(dx) * 0.5 ||
       Math.abs(duringDrag.y - start.nodeY) < Math.abs(dy) * 0.5
     ) {
-      throw new Error(`terminal ${elementId} did not move visually before pointer release`);
+      throw new Error(
+        `terminal ${elementId} in browser ${browser === browserA ? "A" : "B"} moved ${
+          duringDrag === null
+            ? "no rendered node"
+            : `${(duringDrag.x - start.nodeX).toFixed(1)},${(duringDrag.y - start.nodeY).toFixed(1)}`
+        } before release; expected ${String(dx)},${String(dy)}`,
+      );
     }
+  };
+
+  const panePoint = async (
+    browser: Browser,
+    xRatio: number,
+    yRatio: number,
+  ): Promise<{ readonly x: number; readonly y: number }> =>
+    await browser.evaluate(
+      `(() => {
+        const pane = document.querySelector(".react-flow__pane");
+        if (!(pane instanceof HTMLElement)) throw new Error("React Flow pane missing");
+        const rect = pane.getBoundingClientRect();
+        const candidates = [
+          [${String(xRatio)}, ${String(yRatio)}],
+          ...[0.15, 0.3, 0.45, 0.6, 0.75, 0.9].flatMap((y) =>
+            [0.15, 0.3, 0.45, 0.6, 0.75, 0.9].map((x) => [x, y])),
+        ];
+        for (const [xRatio, yRatio] of candidates) {
+          const point = { x: rect.left + rect.width * xRatio, y: rect.top + rect.height * yRatio };
+          if (document.elementFromPoint(point.x, point.y) === pane) return point;
+        }
+        throw new Error("no empty React Flow pane point found");
+      })()`,
+    );
+
+  const clickAt = async (
+    browser: Browser,
+    point: { readonly x: number; readonly y: number },
+    clickCount: number,
+  ): Promise<void> => {
+    await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    for (let count = 1; count <= clickCount; count += 1) {
+      await browser.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...point,
+        button: "left",
+        buttons: 1,
+        clickCount: count,
+      });
+      await browser.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...point,
+        button: "left",
+        clickCount: count,
+      });
+    }
+  };
+
+  const pressKey = async (
+    browser: Browser,
+    key: string,
+    code: string,
+    modifiers = 0,
+  ): Promise<void> => {
+    await browser.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
+    await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
   };
 
   const first = terminalElement(crypto.randomUUID(), 280, 180);
   await round("F1 SDK seed projects into both canvases", { adds: 1 }, async () => {
-    sdk.updateScene([first]);
+    sdk.transact((tx) => tx.create(first));
   });
-  await round("F2 browser A drags a terminal", { adds: 0, changes: [first.id] }, () =>
-    moveFlowNode(browserA, first.id, 150, 90),
+  await round(
+    "F2 live remote drag reaches B before A releases",
+    { adds: 0, changes: [first.id] },
+    () => moveFlowNode(browserA, first.id, 150, 90, browserB),
   );
 
   const second = terminalElement(crypto.randomUUID(), 900, 420);
   await round("F3 second SDK seed projects into both canvases", { adds: 1 }, async () => {
-    sdk.updateScene([second]);
+    sdk.transact((tx) => tx.create(second));
   });
   await round(
     "F4 concurrent browser moves converge",
@@ -617,6 +704,285 @@ try {
     throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
   }
   console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
+
+  const drawCountBefore = [...sdk.elements.values()].filter(
+    (element) => element.type === "draw",
+  ).length;
+  await round("F7 live remote stroke renders before pointer release", { adds: 1 }, async () => {
+    const drawClicked = await browserA.evaluate<boolean>(
+      `(() => {
+        const button = document.querySelector('[data-testid="toolbar-draw"]');
+        if (!(button instanceof HTMLButtonElement)) return false;
+        button.click();
+        return true;
+      })()`,
+    );
+    if (!drawClicked) throw new Error("draw tool button was unavailable");
+    await until(
+      () =>
+        browserA.evaluate<boolean>(
+          `document.querySelector('[data-testid="toolbar-draw"]')?.getAttribute("aria-pressed") === "true"`,
+        ),
+      2_000,
+      "draw tool activation",
+    );
+    const start = await panePoint(browserA, 0.55, 0.72);
+    const points = Array.from({ length: 14 }, (_value, index) => ({
+      x: start.x + index * 12,
+      y: start.y + Math.sin(index / 2) * 24,
+    }));
+    const firstPoint = points[0];
+    if (firstPoint === undefined) throw new Error("draw path was empty");
+    await browserA.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: firstPoint.x,
+      y: firstPoint.y,
+    });
+    await browserA.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: firstPoint.x,
+      y: firstPoint.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    try {
+      for (const point of points.slice(1)) {
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: point.x,
+          y: point.y,
+          button: "left",
+          buttons: 1,
+        });
+        await sleep(20);
+      }
+      await until(
+        () =>
+          browserB.evaluate<boolean>(
+            `(() => {
+              const path = document.querySelector(".flow-stroke-preview[data-gesture-element] path");
+              return path instanceof SVGPathElement && (path.getAttribute("d") ?? "").includes("L");
+            })()`,
+          ),
+        5_000,
+        "browser B remote stroke preview before pointer release",
+      );
+    } finally {
+      const last = points.at(-1) ?? firstPoint;
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: last.x,
+        y: last.y,
+        button: "left",
+        clickCount: 1,
+      });
+    }
+    await until(
+      () =>
+        [...sdk.elements.values()].filter((element) => element.type === "draw").length ===
+        drawCountBefore + 1,
+      5_000,
+      "persisted draw element",
+    );
+    const draw = [...sdk.elements.values()].find((element) => element.type === "draw");
+    if (draw?.type !== "draw" || draw.points.length < 4) {
+      throw new Error("persisted draw element has fewer than four point values");
+    }
+    const selectActive = await browserA.evaluate<boolean>(
+      `document.querySelector('[data-testid="toolbar-select"]')?.getAttribute("aria-pressed") === "true"`,
+    );
+    if (!selectActive) throw new Error("draw completion did not restore the select tool");
+  });
+
+  const textCountBefore = [...sdk.elements.values()].filter(
+    (element) => element.type === "text",
+  ).length;
+  await round(
+    "F8a double-click creates exactly one collaborative text node",
+    { adds: 1 },
+    async () => {
+      const point = await panePoint(browserA, 0.72, 0.24);
+      await clickAt(browserA, point, 2);
+      await until(
+        () =>
+          [...sdk.elements.values()].filter((element) => element.type === "text").length ===
+          textCountBefore + 1,
+        5_000,
+        "one text element from a double-click",
+      );
+      const renderedCount = await browserA.evaluate<number>(
+        `document.querySelectorAll(".react-flow__node-text").length`,
+      );
+      if (renderedCount !== textCountBefore + 1) {
+        throw new Error(
+          `double-click rendered ${String(renderedCount - textCountBefore)} text nodes`,
+        );
+      }
+      await until(
+        () =>
+          browserA.evaluate<boolean>(
+            `document.querySelector(".flow-text__editor") instanceof HTMLTextAreaElement`,
+          ),
+        5_000,
+        "browser A text editor",
+      );
+    },
+  );
+
+  const textElement = [...sdk.elements.values()].find((element) => element.type === "text");
+  if (textElement?.type !== "text") {
+    failures.push("F8 collaborative text typing");
+    console.log("FAIL  F8 collaborative text typing — text setup did not produce an element");
+  } else {
+    await round(
+      "F8 collaborative Y.Text typing is live and convergent",
+      { adds: 0, changes: [textElement.id] },
+      async () => {
+        const focusedA = await browserA.evaluate<boolean>(
+          `(() => {
+            const editor = document.querySelector(".flow-text__editor");
+            if (!(editor instanceof HTMLTextAreaElement)) return false;
+            editor.focus();
+            editor.setSelectionRange(editor.value.length, editor.value.length);
+            return true;
+          })()`,
+        );
+        if (!focusedA) throw new Error("browser A text editor lost focus");
+        await browserA.typeText("hello");
+        await until(
+          () =>
+            browserB.evaluate<boolean>(
+              `(() => {
+                const text = document.querySelector(".flow-text");
+                return text instanceof HTMLElement && (text.textContent ?? "").includes("hello");
+              })()`,
+            ),
+          5_000,
+          "browser B live hello text",
+        );
+        const textCenter = await browserB.evaluate<{ readonly x: number; readonly y: number }>(
+          `(() => {
+            const node = document.querySelector(${JSON.stringify(
+              `.react-flow__node[data-id="${textElement.id}"]`,
+            )});
+            if (!(node instanceof HTMLElement)) throw new Error("text node missing in browser B");
+            const rect = node.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          })()`,
+        );
+        await clickAt(browserB, textCenter, 2);
+        await until(
+          () =>
+            browserB.evaluate<boolean>(
+              `document.querySelector(".flow-text__editor") instanceof HTMLTextAreaElement`,
+            ),
+          5_000,
+          "browser B text editor",
+        );
+        await browserB.evaluate(
+          `(() => {
+            const editor = document.querySelector(".flow-text__editor");
+            if (!(editor instanceof HTMLTextAreaElement)) return;
+            editor.focus();
+            editor.setSelectionRange(editor.value.length, editor.value.length);
+          })()`,
+        );
+        await browserB.typeText(" world");
+        await until(
+          () => {
+            const current = sdk.elements.get(textElement.id);
+            return (
+              current?.type === "text" &&
+              current.text.includes("hello") &&
+              current.text.includes(" world")
+            );
+          },
+          5_000,
+          "merged Y.Text content",
+        );
+        for (const browser of [browserA, browserB]) {
+          await until(
+            () =>
+              browser.evaluate<boolean>(
+                `(() => {
+                  const node = document.querySelector(${JSON.stringify(
+                    `.react-flow__node[data-id="${textElement.id}"]`,
+                  )});
+                  const value =
+                    node?.querySelector("textarea") instanceof HTMLTextAreaElement
+                      ? node.querySelector("textarea").value
+                      : node?.textContent ?? "";
+                  return value.includes("hello") && value.includes(" world");
+                })()`,
+              ),
+            5_000,
+            "live merged text in both browsers",
+          );
+        }
+        await pressKey(browserA, "Escape", "Escape");
+        await pressKey(browserB, "Escape", "Escape");
+      },
+    );
+
+    try {
+      const textCenter = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+        `(() => {
+          const node = document.querySelector(${JSON.stringify(
+            `.react-flow__node[data-id="${textElement.id}"]`,
+          )});
+          if (!(node instanceof HTMLElement)) throw new Error("text node missing before delete");
+          const rect = node.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()`,
+      );
+      await clickAt(browserA, textCenter, 1);
+      await until(
+        () =>
+          browserA.evaluate<boolean>(
+            `document.querySelector(${JSON.stringify(
+              `.react-flow__node[data-id="${textElement.id}"]`,
+            )})?.classList.contains("selected") === true`,
+          ),
+        5_000,
+        "text selection before delete",
+      );
+      await browserA.evaluate(`document.querySelector(".flow-pad-canvas")?.focus()`);
+      await pressKey(browserA, "Delete", "Delete");
+      await until(
+        async () =>
+          !sdk.elements.has(textElement.id) &&
+          !(await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+            (element) => element.id === textElement.id,
+          ) &&
+          !(await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+            (element) => element.id === textElement.id,
+          ),
+        5_000,
+        "text deletion in both browsers",
+      );
+      await browserA.evaluate(`document.querySelector(".flow-pad-canvas")?.focus()`);
+      await pressKey(browserA, "z", "KeyZ", 2);
+      await until(
+        async () =>
+          sdk.elements.get(textElement.id)?.type === "text" &&
+          (await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+            (element) => element.id === textElement.id,
+          ) &&
+          (await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+            (element) => element.id === textElement.id,
+          ),
+        8_000,
+        "text restoration after undo",
+      );
+      console.log("PASS  F9 delete and undo restore the text on both browsers");
+    } catch (error) {
+      failures.push("F9 delete and undo");
+      console.log(
+        `FAIL  F9 delete and undo — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 } finally {
   // ---------------------------------------------------------------- teardown
   await browserA.close().catch(() => undefined);

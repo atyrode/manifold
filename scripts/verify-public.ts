@@ -232,9 +232,9 @@ try {
   await step("scene persists across a public-origin reconnect", async () => {
     const client = newViewer(padId);
     await client.connect();
-    const before = client.scene.size;
-    client.updateScene([
-      {
+    const before = client.elements.size;
+    client.transact((tx) => {
+      tx.create({
         id: `verify-${marker}`,
         type: "terminal",
         sessionId: `verify-session-${marker}`,
@@ -243,18 +243,15 @@ try {
         width: 120,
         height: 80,
         zIndex: 0,
-        version: 1,
-        versionNonce: 11,
-        isDeleted: false,
-      },
-    ]);
-    await until(() => client.rev > 0, 10_000, "scene accepted");
+      });
+    });
+    await until(() => client.elements.has(`verify-${marker}`), 10_000, "scene accepted");
     client.close();
     await sleep(2500);
     const after = newViewer(padId);
     await after.connect();
-    const present = after.scene.has(`verify-${marker}`);
-    const size = after.scene.size;
+    const present = after.elements.has(`verify-${marker}`);
+    const size = after.elements.size;
     after.close();
     if (!present) throw new Error("element missing after reconnect");
     return `scene ${before} -> ${size}, element persisted`;

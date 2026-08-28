@@ -76,12 +76,12 @@ export async function waitForTerminalText(
   await waitFor(() => (capture.snapshotText + capture.outputText).includes(text), timeoutMs, 20);
 }
 
-/** Produces a protocol-valid native terminal record so tests vary only relevant LWW fields. */
-export function sceneElement(
+type TerminalElement = Extract<SceneElement, { type: "terminal" }>;
+
+/** Produces a protocol-valid native terminal element with optional test-specific fields. */
+export function terminalElement(
   id: string,
-  version = 1,
-  versionNonce = 100,
-  isDeleted = false,
+  patch: Partial<Omit<TerminalElement, "id" | "type">> = {},
 ): SceneElement {
   return {
     id,
@@ -92,15 +92,43 @@ export function sceneElement(
     width: 720,
     height: 480,
     zIndex: 0,
-    version,
-    versionNonce,
-    isDeleted,
+    ...patch,
+  };
+}
+
+export function textElement(id: string, text: string): SceneElement {
+  return {
+    id,
+    type: "text",
+    text,
+    x: 0,
+    y: 0,
+    width: 240,
+    height: 48,
+    zIndex: 0,
+    fontSize: 20,
+    color: "#f8f9fa",
+  };
+}
+
+export function drawElement(id: string, points: number[]): SceneElement {
+  return {
+    id,
+    type: "draw",
+    points,
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    zIndex: 0,
+    strokeWidth: 3,
+    color: "#2563eb",
   };
 }
 
 /** Canonicalizes scene values by id for convergence comparisons independent of Map insertion order. */
 export function sortedScene(client: SessionClient): SceneElement[] {
-  return [...client.scene.values()].sort((left, right) => left.id.localeCompare(right.id));
+  return [...client.elements.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function canonicalJson(value: unknown): string | undefined {

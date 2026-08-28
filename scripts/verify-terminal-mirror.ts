@@ -158,18 +158,16 @@ try {
     reconnect: false,
   });
   await observer.connect();
-  await until(() => observer!.scene.size === 1, 10_000, "terminal visible to mirror client");
-  const source = [...observer.scene.values()][0];
-  if (source === undefined) throw new Error("source terminal missing from canonical scene");
+  await until(() => observer!.elements.size === 1, 10_000, "terminal visible to mirror client");
+  const source = [...observer.elements.values()][0];
+  if (source?.type !== "terminal") throw new Error("source terminal missing from canonical scene");
   const clone = {
     ...source,
     id: crypto.randomUUID(),
-    x: (typeof source["x"] === "number" ? source["x"] : 0) + 120,
-    y: (typeof source["y"] === "number" ? source["y"] : 0) + 80,
-    version: 1,
-    versionNonce: Math.floor(Math.random() * 2 ** 31),
+    x: source.x + 120,
+    y: source.y + 80,
   };
-  observer.updateScene([clone]);
+  observer.transact((tx) => tx.create(clone));
   await until(async () => (await termCount()) === 2, 10_000, "SDK update produced a mirror");
   await sleep(1200);
 

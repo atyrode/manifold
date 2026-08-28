@@ -244,11 +244,8 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     try {
       revokedSocket.sendRaw(
         JSON.stringify({
-          type: "scene_update",
-          updateId: "revoked-write",
-          epoch: init.epoch,
-          baseRev: init.rev,
-          elements: [{ id: "el-revoked-write", version: 1, versionNonce: 1, isDeleted: false }],
+          type: "doc_update",
+          update: "AAA=",
         }),
       );
     } catch (error) {
@@ -260,7 +257,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const resynced = nextMessage(observer, "resync", 5_000);
     observer.requestResync();
     await resynced;
-    expect(observer.scene.has("el-revoked-write")).toBe(false);
+    expect(observer.elements.has("el-revoked-write")).toBe(false);
 
     const reconnectRevoked = await rawSessionSocket(server);
     rawSockets.push(reconnectRevoked);

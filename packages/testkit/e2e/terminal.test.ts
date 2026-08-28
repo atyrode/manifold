@@ -18,7 +18,7 @@ import {
   closeClients,
   e2eFailure,
   nextMessage,
-  sceneElement,
+  terminalElement,
   stopProcesses,
   waitForTerminalText,
   type TerminalCapture,
@@ -81,22 +81,14 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       exitCode: null,
     });
     expect(listedSession?.createdAt).toBeNumber();
-    const terminalElementAck = nextMessage(clientA, "scene_ack", 10_000, (message) =>
-      message.acceptedIds.includes("el-term-1"),
-    );
-    expect(
-      clientA.updateScene([
-        {
-          ...sceneElement("el-term-1"),
-          sessionId: session.id,
-        },
-      ]),
-    ).not.toBeNull();
-    await terminalElementAck;
+    clientA.transact((tx) => {
+      tx.create(terminalElement("el-term-1", { sessionId: session.id }));
+    });
+
     const clientB = await connect(server, { padId: pad.id, token: bob.token });
     clients.push(clientB);
     if (clientB.self === null) throw new Error("terminal viewer lacks self");
-    expect(clientB.scene.has("el-term-1")).toBe(true);
+    await waitFor(() => clientB.elements.has("el-term-1"), 10_000, 20);
     expect(clientB.sessions.get(session.id)?.status).toBe("running");
 
     const captureA = captureTerminal(clientA, session.id);
