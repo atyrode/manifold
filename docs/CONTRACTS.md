@@ -116,42 +116,42 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 
 Handshake: first client frame MUST be
 `join { padId, token, protocolVersion, lastEpoch?, lastRev? }`. Server replies
-`init { protocolVersion, epoch, rev, elements, roster, sessions, self, selfCaps,
+`init { protocolVersion, epoch, rev, doc, roster, sessions, self, selfCaps,
 selfConnId }` or closes:
 4401 bad token · 4403 revoked/forbidden · 4404 unknown pad · 4409 protocol version mismatch.
-`selfCaps` mirrors the joining principal's granted caps so clients can gate UI affordances
-(e.g. the sessions janitor's kill buttons) without a separate introspection round-trip.
-Presence is carried by `roster`, whose entries are `PresenceState`; there is no separate
-`presences` field.
+`doc` is the base64-encoded full Yjs state update for the room. `selfCaps` mirrors the
+joining principal's granted caps so clients can gate UI affordances (for example, the
+sessions janitor's kill buttons) without a separate introspection round-trip. Presence is
+carried by `roster`, whose entries are `PresenceState`; there is no separate `presences`
+field.
 
-### Scene sync (consistency model — NOT naive LWW)
+### Scene sync (Yjs CRDT)
 
-- Server holds the canonical scene per pad room. `epoch` identifies a scene lineage
-  (changes only on restore/reset); `rev` increments once per accepted update batch.
-- Protocol v5 scene records are strict native terminals:
-  `{ id, type:"terminal", sessionId, x, y, width, height, zIndex, version, versionNonce, isDeleted }`.
-  Unknown fields and pre-v5 renderer records are rejected; there is no compatibility reader
-  or snapshot migration.
-- Client sends `scene_update { updateId, baseRev, elements[] }` (≤128 elements, full
-  changed records, ≤1MB frame). Applies optimistically on its own canvas first.
-- Server reconciles each element with `@manifold/protocol` `reconcileElement`:
-  accept iff `version > cur.version || (version === cur.version && versionNonce < cur.versionNonce)`.
-  Deleted elements (`isDeleted: true`) are **retained tombstones**: kept in canonical state
-  and snapshots so any stale pre-delete copy always loses LWW (undo-of-delete with a higher
-  version legitimately resurrects — permanence is a storage rule, not an acceptance rule).
-- **Epoch fence / compaction rule**: `scene_update` carries the client's `epoch` (learned
-  from init/resync); a mismatch is rejected with `error { code:"epoch_mismatch" }` plus a
-  fresh `resync`. Compacting tombstones is legal ONLY as an epoch bump: new epoch id,
-  tombstones dropped, forced `resync` to all connected sockets — so no writer (connected or
-  returning) can submit state built on pre-compaction history. v0 never auto-compacts; the
-  fence and tests exist so it can, safely, later. Restore-from-snapshot uses the same bump.
-- Server broadcasts `scene_applied { rev, elements, by }` with ONLY the accepted records
-  (including to the sender) and acks the sender `scene_ack { updateId, rev, accepted }`.
-- Clients apply `scene_applied` through the same `reconcileElement` — both sides run the
-  identical module. Rendering sorts by (`zIndex`, `id`); the server never rewrites either.
-- Client detects a rev gap (received rev > lastRev+1) or epoch change → sends
-  `resync_request {}` → server replies with a fresh `init`-shaped `resync`. `join` carries
-  `protocolVersion`; mismatches close 4409.
+- Each room holds one canonical `Y.Doc`. Its `elements` map contains strict terminal, text,
+  and draw records from `@manifold/protocol`; a removed element is absent rather than
+  retained as a tombstone. Rendering order is (`zIndex`, `id`). `@manifold/scene` owns the
+  Yjs representation and is the only production module that imports Yjs directly.
+- The SDK applies edits optimistically with `client.transact(tx => ...)`. Field patches are
+  independent CRDT writes, text content is a nested `Y.Text`, and one local undo manager
+  tracks local create/patch/text/remove transactions. Consumers project the SDK's
+  read-only `client.elements` map instead of mutating document-owned objects.
+- A client sends `doc_update { update }`, where `update` is a base64 Yjs update capped at
+  512 KiB decoded. Updates are idempotent and commutative; disconnected clients may queue
+  document updates and merge them after reconnect.
+- **Accept-then-repair:** the server applies a structurally valid, rate-limited update to
+  the canonical document first. It then validates every changed element projection; an
+  invalid element map is removed in a server-origin repair transaction. Yjs updates cannot
+  be selectively rejected after application, so peers may observe the accepted update
+  followed by its repair. A room also bounds full document and transport sizes.
+- Every Yjs transaction update increments `rev` and broadcasts
+  `doc_update { update, by }`, including to the sender; a repair is a separate server
+  update. `rev` is a persistence/diagnostic watermark, not a sequencing requirement.
+  `saved { rev, at }` identifies the latest durable room snapshot.
+- `init` and `resync` carry a full Yjs state update. Within one `epoch`, the SDK merges that
+  state with its document and re-sends local state when needed. An epoch change is a hard
+  lineage fence: the SDK drops queued old-lineage document updates, replaces its `Y.Doc`,
+  and emits `scene_reset` so held nested types are discarded. `resync_request {}` asks for
+  the current full state; convergence does not depend on detecting contiguous revisions.
 
 ### Presence (ephemeral, never persisted)
 
@@ -159,8 +159,11 @@ Presence is carried by `roster`, whose entries are `PresenceState`; there is no 
   `{ cursor: {x,y,tool} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done" }`.
   Server stamps principal identity server-side (no spoofing) and relays to the room.
 - `cursor { x, y, tool }` is its own high-rate message: client throttles ≥30ms; server may
-  drop under backpressure (latest-wins). All other presence fields send on change only;
-  viewport ≤1Hz.
+  drop under backpressure (latest-wins). `gesture { kind, phase, elementId, x, y, width?,
+height?, points? }` carries ephemeral move, resize, and freehand previews at the same
+  cadence; the server stamps `principalId`/`connId`, relays it, and never persists it.
+  `phase:"end"` hands rendering back to the durable Yjs element. All other presence fields
+  send on change only; viewport ≤1Hz.
 - Roster: `init.roster` lists connected principals; server broadcasts
   `roster { joined?, left? }` deltas. Presence for a principal dies with its last socket.
 - Multiple sockets per principal are legal (tabs); roster entries are per principal with
@@ -178,7 +181,7 @@ Presence is carried by `roster`, whose entries are `PresenceState`; there is no 
   `MANIFOLD_ELEMENT`, `MANIFOLD_TOKEN` injected, then replies
   `terminal_opened { elementId, session }` and broadcasts `session_event { kind:"opened" }`.
   The OPENING client then writes the returned `session.id` into the element's top-level
-  `sessionId` via a normal `scene_update` (the server never mutates the scene).
+  `sessionId` through `client.transact` (the server never mutates the element for it).
 - **Attach state machine (no-gap invariant).** On `terminal_attach { sessionId }`:
   1. server registers the viewer as PENDING and starts queueing that session's live
      `output` frames for it (nothing is sent yet);
@@ -219,8 +222,8 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.
-- Session ids are opaque; every scene record is a native terminal and stores `sessionId`
-  directly.
+- Session ids are opaque; terminal elements store their `sessionId` directly. Text and draw
+  elements never reference terminal sessions.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
@@ -278,8 +281,8 @@ deploy.
 
 ```
 pads(id TEXT PK, name TEXT, created_at INTEGER)
-snapshots(pad_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, blob TEXT,
-          PRIMARY KEY (pad_id, epoch, rev))          -- keep newest 30 per pad
+scene_docs(pad_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, doc BLOB,
+           PRIMARY KEY (pad_id, epoch, rev))          -- keep newest 30 valid docs per pad
 events(id INTEGER PK AUTOINCREMENT, pad_id TEXT, ts INTEGER, principal_id TEXT,
        type TEXT, payload TEXT)                       -- lifecycle/caps/join-leave ONLY
 principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER)
@@ -291,26 +294,28 @@ sessions(id TEXT PK, machine_id TEXT, pad_id TEXT, element_id TEXT, created_by T
 meta(key TEXT PK, value TEXT)                         -- schema_version etc.
 ```
 
-Snapshot cadence: 1.5s after last change, 10s max under sustained edits, and on graceful
-shutdown. Terminal bytes NEVER touch SQLite. Presence NEVER touches SQLite.
+The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
+10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the
+newest retained documents and skips corrupt entries. Terminal bytes, presence, cursor
+frames, and gesture frames NEVER touch SQLite.
 
 ## Testability (agent-facing)
 
 - **Debug seam** (`packages/web/src/debug-seam.ts`): when `localStorage["manifold:debug"]
 === "1"`, the active pad renderer installs `window.__manifold` — READ-ONLY snapshot
-  functions (`scene()`, `canvas()`, `pending()`, `rev()`, `epoch()`, `viewport()`) exposing
-  the browser-canvas↔SDK projection boundary to automation. No mutation surface, no secrets.
-  Consumers: `scripts/verify-convergence.ts`, `scripts/verify-public.ts`. The seam exists
-  because this boundary shipped two divergence bugs no wire-level test could see; keep it
-  read-only and keep it working across renderer changes.
+  functions (`scene()`, `canvas()`, `outbox()`, `gestures()`, `rev()`, `epoch()`,
+  `viewport()`) exposing the browser-canvas↔SDK projection boundary to automation. No
+  mutation surface, no secrets. Consumers: `scripts/verify-convergence.ts`,
+  `scripts/verify-public.ts`. The seam exists because this boundary shipped two divergence
+  bugs no wire-level test could see; keep it read-only across renderer changes.
 - **Convergence invariant** (guarded by `bun run verify:convergence`, part of `gate`):
   after quiescence, `A.canvas ≡ A.sdkScene ≡ canonical ≡ B.sdkScene ≡ B.canvas` compared
-  by version stamp AND geometry, with per-round effect assertions (a no-op gesture is a
-  FAILURE, not a pass). Any change to scene sync — protocol reconcile, SDK scene handling,
-  server rooms, or the web projection — must keep this gate green.
+  by element type, geometry, z-index, and type-specific content, with per-round effect
+  assertions (a no-op gesture is a FAILURE, not a pass). The same gate proves live remote
+  drag and stroke previews before pointer release, collaborative `Y.Text`, and undo.
 - **Ownership rule**: never mutate or hand a mutating renderer an object owned by
-  `client.scene`. The SDK's canonical map is shared state; project new renderer-owned
-  objects at the paint boundary and publish edits without pre-writing the SDK mirror.
+  `client.elements` or `client.doc`. Project renderer-owned objects at the paint boundary
+  and publish edits through `client.transact`.
 
 ## Logging & introspection
 

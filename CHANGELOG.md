@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Replaced the canvas renderer with a smoothly draggable React Flow terminal canvas and native terminal-only scene records. (#15, #57)
+- Replaced the terminal-only canvas with a React Flow collaborative canvas backed by Yjs, adding smooth live terminal moves and resizes, text editing, freehand drawing, selection presence, and undo. (#15, #57)
 
 ## [0.4.4] - 2026-08-27
 
