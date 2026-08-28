@@ -1,22 +1,37 @@
 import {
   ClientMessageSchema,
-  MAX_ELEMENTS_PER_UPDATE,
-  type Cap,
-  MAX_SESSION_FRAME_BYTES,
+  MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
+  SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
-  applyAccepted,
-  reconcile,
   reconnectDelayMs,
+  type Cap,
   type ClientMessage,
+  type Gesture,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type SceneElement,
   type ServerMessage,
   type SessionInfo,
-  SERVER_MESSAGE_TYPES,
 } from "@manifold/protocol";
+import {
+  LOCAL_ORIGIN,
+  Y,
+  REMOTE_ORIGIN,
+  changedElementIds,
+  createSceneDoc,
+  decodeUpdate,
+  elementText as sceneElementText,
+  elementsMap,
+  encodeUpdate,
+  nextZIndex,
+  patchElement,
+  readElement,
+  removeElement,
+  writeElement,
+  type ScenePatch,
+} from "@manifold/scene";
 import { bytesToBase64, textToBase64 } from "./base64.ts";
 
 /**
@@ -84,23 +99,22 @@ export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" |
 
 type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
 
-export interface SceneUpdateRejection {
-  readonly element: SceneElement;
-  readonly reason: "element_too_large" | "element_not_serializable" | "server_rejected";
-  readonly serializedBytes: number | null;
-  readonly limitBytes: number;
+export interface SceneTx {
+  create(element: SceneElement): void;
+  patch(id: string, patch: ScenePatch): boolean;
+  remove(id: string): boolean;
+  text(id: string): Y.Text | null;
+  nextZIndex(): number;
 }
 
 export interface SessionEvents {
   /** Server messages, by type. */
   message: (msg: ServerMessage) => void;
   status: (status: ConnectionStatus) => void;
-  /** Scene replaced wholesale (first init, resync, or reconnect). */
+  /** Scene document was replaced after an epoch change or full state adoption. */
   scene_reset: () => void;
-  /** Scene changed incrementally (accepted records applied). */
-  scene_changed: (elements: readonly SceneElement[], by: string) => void;
-  /** Local records refused before apply or rejected by the server after optimistic apply. */
-  scene_rejected: (rejections: readonly SceneUpdateRejection[]) => void;
+  /** Validated element projections changed inside the Yjs document. */
+  elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
   roster_changed: () => void;
   sessions_changed: () => void;
 }
@@ -126,52 +140,12 @@ const KEEPALIVE_INTERVAL_MS = 45_000;
 const MALFORMED_FRAME_CLOSE_CODE = 4002;
 const TERMINAL_CLOSE_CODE_MIN = 4400;
 const TERMINAL_CLOSE_CODE_MAX = 4499;
-// Reserve 25% of the wire limit for the scene_update envelope and future metadata.
-const SCENE_UPDATE_ELEMENTS_BYTE_BUDGET = (MAX_SESSION_FRAME_BYTES * 3) / 4;
-
-/**
- * Counts the UTF-8 bytes of one element's JSON without allocating another encoded buffer.
- */
-function serializedElementByteLength(element: SceneElement): number | null {
-  let serialized: string | undefined;
-  try {
-    serialized = JSON.stringify(element);
-  } catch {
-    return null;
-  }
-  if (serialized === undefined) return null;
-
-  let bytes = 0;
-  for (let index = 0; index < serialized.length; index += 1) {
-    const code = serialized.charCodeAt(index);
-    if (code <= 0x7f) {
-      bytes += 1;
-    } else if (code <= 0x7ff) {
-      bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff) {
-      const next = serialized.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        index += 1;
-      } else {
-        bytes += 3;
-      }
-    } else {
-      bytes += 3;
-    }
-  }
-  return bytes;
-}
-interface InflightSceneElement {
-  readonly element: SceneElement;
-  readonly stamp: string;
-}
 
 export class SessionClient {
-  /** Local scene truth: canonical after init, optimistic between acks. */
-  readonly scene = new Map<string, SceneElement>();
   readonly roster = new Map<string, PresenceState>();
   readonly sessions = new Map<string, SessionInfo>();
+  private readonly elementsState = new Map<string, SceneElement>();
+  readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
   /** Live view refcounts per attached session (see attachTerminal). */
   private readonly attachCounts = new Map<string, number>();
   epoch = "";
@@ -188,15 +162,55 @@ export class SessionClient {
   private outbox: ClientMessage[] = [];
   private attempts = 0;
   private closedIntentionally = false;
-  private updateCounter = 0;
-  private readonly inflightUpdates = new Map<string, readonly InflightSceneElement[]>();
-  private readonly rejectedSceneStamps = new Set<string>();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private keepaliveTimer: NodeJS.Timeout | null = null;
   private closeError: Error | null = null;
+  private currentDoc = createSceneDoc();
+  private undoManager!: Y.UndoManager;
+  private hasLocalEdits = false;
 
   constructor(opts: SessionClientOptions) {
     this.opts = opts;
+    this.installDoc(this.currentDoc);
+  }
+
+  get doc(): Y.Doc {
+    return this.currentDoc;
+  }
+
+  private installDoc(doc: Y.Doc): void {
+    const map = elementsMap(doc);
+    this.undoManager = new Y.UndoManager(map, {
+      trackedOrigins: new Set([LOCAL_ORIGIN]),
+      captureTimeout: 400,
+    });
+    map.observeDeep((events, transaction) => {
+      const ids = changedElementIds(events as unknown as readonly Y.YEvent<never>[]);
+      for (const id of ids) {
+        const element = readElement(doc, id);
+        if (element === null) this.elementsState.delete(id);
+        else this.elementsState.set(id, element);
+      }
+      const origin =
+        transaction.origin === LOCAL_ORIGIN
+          ? "local"
+          : transaction.origin === this.undoManager
+            ? "undo"
+            : "remote";
+      if (ids.length > 0) this.emit("elements_changed", ids, origin);
+    });
+    doc.on("update", (update, origin) => {
+      if (origin === REMOTE_ORIGIN) return;
+      this.hasLocalEdits = true;
+      this.send({ type: "doc_update", update: encodeUpdate(update) });
+    });
+  }
+
+  private replaceDoc(): void {
+    this.currentDoc.destroy();
+    this.elementsState.clear();
+    this.currentDoc = createSceneDoc();
+    this.installDoc(this.currentDoc);
   }
 
   // ------------------------------------------------------------------ events
@@ -214,10 +228,9 @@ export class SessionClient {
   }
 
   /**
-   * One listener's failure must never starve its siblings: state (scene, rev) advances
-   * BEFORE emission, and a duplicate echo reconciles to zero accepted records, so a
-   * swallowed `scene_changed` would desynchronize a consumer unrecoverably. Errors are
-   * still reported (never-swallow rule) — they are just not allowed to propagate.
+   * One listener's failure must never starve its siblings: document state advances
+   * before projection events are emitted. Errors remain observable without propagating
+   * into the Yjs transaction or starving later listeners.
    */
   private emit(type: EventKey, ...args: unknown[]): void {
     const set = this.listeners.get(type);
@@ -278,8 +291,6 @@ export class SessionClient {
   close(): void {
     this.closedIntentionally = true;
     this.closeError = null;
-    this.inflightUpdates.clear();
-    this.rejectedSceneStamps.clear();
     this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -297,7 +308,6 @@ export class SessionClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.inflightUpdates.clear();
 
     // Fence every callback from the prior socket before asking it to close. Native close
     // events may arrive after the replacement has already opened.
@@ -345,7 +355,6 @@ export class SessionClient {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
       this.stopKeepalive();
-      this.inflightUpdates.clear();
 
       // 44xx codes are permanent session rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
@@ -391,24 +400,15 @@ export class SessionClient {
       case "init":
       case "resync": {
         this.attempts = 0;
-        // First epoch adoption and same-epoch reconnects rebase optimistic edits. Only a
-        // lineage change fences local records from being re-stamped into the new epoch.
-        const rebaseEligible = this.epoch === "" || this.epoch === msg.epoch;
-        if (this.epoch !== msg.epoch) this.inflightUpdates.clear();
-        const localBefore = rebaseEligible
-          ? [...this.scene.values()].filter(
-              (element) =>
-                !this.rejectedSceneStamps.has(
-                  JSON.stringify([element.id, element.version, element.versionNonce]),
-                ),
-            )
-          : [];
-        this.rejectedSceneStamps.clear();
-        this.scene.clear();
-        for (const el of msg.elements) this.scene.set(el.id, el);
+        const previousSelfConnId = this.selfConnId;
+        const lineageChanged = this.epoch !== "" && this.epoch !== msg.epoch;
+        if (lineageChanged) {
+          this.outbox = this.outbox.filter((queued) => queued.type !== "doc_update");
+          this.replaceDoc();
+        }
+        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.doc), REMOTE_ORIGIN);
         this.epoch = msg.epoch;
         this.rev = msg.rev;
-        const previousSelfConnId = this.selfConnId;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
         this.selfCaps = msg.selfCaps;
@@ -419,6 +419,18 @@ export class SessionClient {
         this.setStatus("open");
         this.startKeepalive();
         this.flushOutbox();
+        if (this.hasLocalEdits) {
+          const state = Y.encodeStateAsUpdate(this.currentDoc);
+          if (state.byteLength <= MAX_DOC_UPDATE_BYTES) {
+            this.send({ type: "doc_update", update: encodeUpdate(state) });
+          } else {
+            console.error(
+              "evt=doc_state_too_large",
+              `bytes=${state.byteLength}`,
+              `limit=${MAX_DOC_UPDATE_BYTES}`,
+            );
+          }
+        }
         // Re-subscribe views only after a real reconnect: the server's viewer registry is
         // connection-scoped, while a same-connection resync preserves those subscriptions.
         if (previousSelfConnId !== null && previousSelfConnId !== msg.selfConnId) {
@@ -428,31 +440,14 @@ export class SessionClient {
             }
           }
         }
-        if (rebaseEligible) {
-          const rebase = reconcile(this.scene, localBefore).accepted;
-          if (rebase.length > 0) this.updateScene(rebase);
-        }
         this.emit(msg.type, msg);
         this.emit("scene_reset");
         this.emit("roster_changed");
         this.emit("sessions_changed");
         break;
       }
-      case "scene_applied": {
-        if (msg.rev > this.rev + 1) {
-          // Missed a broadcast: converge via resync rather than guessing.
-          this.send({ type: "resync_request" });
-        }
-        const { accepted } = reconcile(this.scene, msg.elements);
-        applyAccepted(this.scene, accepted);
-        this.rev = Math.max(this.rev, msg.rev);
-        this.emit(msg.type, msg);
-        if (accepted.length > 0) this.emit("scene_changed", accepted, msg.by);
-        break;
-      }
-      case "scene_ack": {
-        this.inflightUpdates.delete(msg.updateId);
-        this.rev = Math.max(this.rev, msg.rev);
+      case "doc_update": {
+        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.update), REMOTE_ORIGIN);
         this.emit(msg.type, msg);
         break;
       }
@@ -501,36 +496,19 @@ export class SessionClient {
         break;
       }
       case "error": {
-        let resyncRequested = false;
-        if (msg.ref !== undefined) {
-          const rejected = this.inflightUpdates.get(msg.ref);
-          if (rejected !== undefined) {
-            this.inflightUpdates.delete(msg.ref);
-            for (const { stamp } of rejected) this.rejectedSceneStamps.add(stamp);
-            this.send({ type: "resync_request" });
-            resyncRequested = true;
-            this.emit(
-              "scene_rejected",
-              rejected.map(({ element }) => ({
-                element,
-                reason: "server_rejected",
-                serializedBytes: null,
-                limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-              })),
-            );
-          }
-        }
-        if (msg.code === "epoch_mismatch" && !resyncRequested) {
-          this.send({ type: "resync_request" });
-        }
         this.emit(msg.type, msg);
         break;
       }
       case "cursor":
+      case "gesture":
       case "terminal_snapshot":
       case "terminal_output":
-      case "saved":
       case "pong": {
+        this.emit(msg.type, msg);
+        break;
+      }
+      case "saved": {
+        this.rev = Math.max(this.rev, msg.rev);
         this.emit(msg.type, msg);
         break;
       }
@@ -546,16 +524,15 @@ export class SessionClient {
 
   private send(msg: ClientMessage): void {
     if (this.socket !== null && this.socket.readyState === 1 && this.status === "open") {
-      // Development guard: never put an invalid frame on the wire. The two high-volume
-      // frame types are constructed entirely by this SDK, so repeating schema validation
-      // here only rescans their payloads.
-      if (msg.type !== "cursor" && msg.type !== "terminal_input") {
+      // Development guard: never put an invalid frame on the wire. High-volume binary
+      // frame types are constructed entirely by this SDK, so avoid rescanning their payloads.
+      if (msg.type !== "cursor" && msg.type !== "doc_update" && msg.type !== "terminal_input") {
         ClientMessageSchema.parse(msg);
       }
       this.socket.send(JSON.stringify(msg));
       return;
     }
-    if (msg.type === "cursor" || msg.type === "ping") return; // droppable while away
+    if (msg.type === "cursor" || msg.type === "gesture" || msg.type === "ping") return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }
@@ -563,93 +540,47 @@ export class SessionClient {
   private flushOutbox(): void {
     const queued = this.outbox;
     this.outbox = [];
-    for (const msg of queued) {
-      // First adoption rebases optimistic state into the adopted epoch, so its queued
-      // empty-epoch frames are superseded and still dropped here. Only lineage changes fence
-      // old scene history; same-epoch state is replayed by the normal outbox/rebase path.
-      if (msg.type === "scene_update" && msg.epoch !== this.epoch) continue;
-      this.send(msg);
-    }
+    for (const msg of queued) this.send(msg);
   }
 
-  /**
-   * Applies elements optimistically to the local scene and submits them.
-   * Oversized records are reported through scene_rejected and left unapplied.
-   * Returns every queued updateId (each echoed in scene_ack), or null if none were queued.
-   */
-  updateScene(elements: readonly SceneElement[]): readonly string[] | null {
-    const { accepted } = reconcile(this.scene, elements);
-    if (accepted.length === 0) return null;
-
-    const chunks: SceneElement[][] = [];
-    const rejected: SceneUpdateRejection[] = [];
-    let chunk: SceneElement[] = [];
-    let chunkBytes = 0;
-
-    for (const element of accepted) {
-      const elementBytes = serializedElementByteLength(element);
-      if (elementBytes === null) {
-        rejected.push({
-          element,
-          reason: "element_not_serializable",
-          serializedBytes: null,
-          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-        });
-        continue;
-      }
-      if (elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET) {
-        rejected.push({
-          element,
-          reason: "element_too_large",
-          serializedBytes: elementBytes,
-          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-        });
-        continue;
-      }
-
-      const separatorBytes = chunk.length === 0 ? 0 : 1;
-      if (
-        chunk.length === MAX_ELEMENTS_PER_UPDATE ||
-        chunkBytes + separatorBytes + elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET
-      ) {
-        chunks.push(chunk);
-        chunk = [];
-        chunkBytes = 0;
-      }
-      if (chunk.length > 0) chunkBytes += 1;
-      chunk.push(element);
-      chunkBytes += elementBytes;
-    }
-    if (chunk.length > 0) chunks.push(chunk);
-
-    if (rejected.length > 0) this.emit("scene_rejected", rejected);
-    if (chunks.length === 0) return null;
-
-    const updateIds: string[] = [];
-    for (const acceptedChunk of chunks) {
-      const updateId = `u${++this.updateCounter}`;
-
-      // Validate and queue each bounded frame before exposing its optimistic state. If a
-      // later chunk fails, the scene still exactly reflects the frames already queued.
-      this.send({
-        type: "scene_update",
-        updateId,
-        epoch: this.epoch,
-        baseRev: this.rev,
-        elements: acceptedChunk,
+  transact(fn: (tx: SceneTx) => void): void {
+    this.currentDoc.transact(() => {
+      fn({
+        create: (element) => writeElement(this.currentDoc, element, LOCAL_ORIGIN),
+        patch: (id, patch) => patchElement(this.currentDoc, id, patch, LOCAL_ORIGIN),
+        remove: (id) => removeElement(this.currentDoc, id, LOCAL_ORIGIN),
+        text: (id) => sceneElementText(this.currentDoc, id),
+        nextZIndex: () => nextZIndex(this.currentDoc),
       });
-      this.inflightUpdates.set(
-        updateId,
-        acceptedChunk.map((element) => ({
-          element,
-          stamp: JSON.stringify([element.id, element.version, element.versionNonce]),
-        })),
-      );
-      applyAccepted(this.scene, acceptedChunk);
-      this.emit("scene_changed", acceptedChunk, this.self?.id ?? "local");
-      updateIds.push(updateId);
-    }
-    return updateIds;
+    }, LOCAL_ORIGIN);
+  }
+
+  undo(): void {
+    this.undoManager.undo();
+  }
+
+  redo(): void {
+    this.undoManager.redo();
+  }
+
+  canUndo(): boolean {
+    return this.undoManager.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.undoManager.redoStack.length > 0;
+  }
+
+  elementText(id: string): Y.Text | null {
+    return sceneElementText(this.currentDoc, id);
+  }
+
+  sendGesture(gesture: Gesture): void {
+    this.send({ type: "gesture", ...gesture });
+  }
+
+  outboxSize(): number {
+    return this.outbox.length;
   }
 
   sendPresence(payload: PresencePayload): void {

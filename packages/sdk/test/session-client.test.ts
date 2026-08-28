@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { z } from "zod";
 import { PROTOCOL_VERSION, type SceneElement, type ServerMessage } from "@manifold/protocol";
-import { SessionClient, type SceneUpdateRejection } from "@manifold/sdk";
+import {
+  LOCAL_ORIGIN,
+  Y,
+  createSceneDoc,
+  decodeUpdate,
+  encodeUpdate,
+  readElements,
+  writeElement,
+} from "@manifold/scene";
+import { SessionClient } from "@manifold/sdk";
+import { z } from "zod";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -49,30 +58,27 @@ class FakeSocket {
 
 /** Boundary-validated views of frames the fake socket captured. */
 const SentFrameSchema = z.looseObject({ type: z.string() });
-const SceneUpdateFrameSchema = z.looseObject({
-  type: z.literal("scene_update"),
-  updateId: z.string(),
-  epoch: z.string(),
-  baseRev: z.number(),
-  elements: z.array(z.looseObject({ id: z.string() })),
+const DocUpdateFrameSchema = z.looseObject({
+  type: z.literal("doc_update"),
+  update: z.string(),
 });
 
 function sentTypes(socket: FakeSocket): string[] {
   return socket.sent.map((f) => SentFrameSchema.parse(JSON.parse(f)).type);
 }
 
-type SceneUpdateFrame = z.infer<typeof SceneUpdateFrameSchema>;
+type DocUpdateFrame = z.infer<typeof DocUpdateFrameSchema>;
 
-function sceneUpdateFrames(socket: FakeSocket): SceneUpdateFrame[] {
-  const updates: SceneUpdateFrame[] = [];
+function docUpdateFrames(socket: FakeSocket): DocUpdateFrame[] {
+  const updates: DocUpdateFrame[] = [];
   for (const frame of socket.sent) {
-    const parsed = SceneUpdateFrameSchema.safeParse(JSON.parse(frame));
+    const parsed = DocUpdateFrameSchema.safeParse(JSON.parse(frame));
     if (parsed.success) updates.push(parsed.data);
   }
   return updates;
 }
 
-function element(id: string, version: number, versionNonce = 0): SceneElement {
+function element(id: string): SceneElement {
   return {
     id,
     type: "terminal",
@@ -82,10 +88,13 @@ function element(id: string, version: number, versionNonce = 0): SceneElement {
     width: 720,
     height: 480,
     zIndex: 0,
-    version,
-    versionNonce,
-    isDeleted: false,
   };
+}
+
+function encodedDoc(...elements: SceneElement[]): string {
+  const doc = createSceneDoc();
+  for (const sceneElement of elements) writeElement(doc, sceneElement, LOCAL_ORIGIN);
+  return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
 const INIT: ServerMessage = {
@@ -93,7 +102,7 @@ const INIT: ServerMessage = {
   protocolVersion: PROTOCOL_VERSION,
   epoch: "e1",
   rev: 5,
-  elements: [element("srv", 3)],
+  doc: encodedDoc(element("srv")),
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
   selfCaps: ["*"],
@@ -150,7 +159,7 @@ describe("handshake", () => {
     const { client } = connected();
     expect(client.epoch).toBe("e1");
     expect(client.rev).toBe(5);
-    expect(client.scene.get("srv")?.version).toBe(3);
+    expect(client.elements.get("srv")).toEqual(element("srv"));
     expect(client.selfConnId).toBe("conn-me");
     expect(client.status).toBe("open");
   });
@@ -241,7 +250,7 @@ describe("connection lifecycle", () => {
 
     expect(first.closedWith?.code).toBe(1000);
     first.onopen?.();
-    first.receive({ ...INIT, epoch: "stale", elements: [element("stale", 1)] });
+    first.receive({ ...INIT, epoch: "stale", doc: encodedDoc(element("stale")) });
     expect(first.sent).toHaveLength(0);
     expect(client.epoch).toBe("");
 
@@ -254,140 +263,141 @@ describe("connection lifecycle", () => {
 });
 
 describe("scene flow", () => {
-  test("updateScene applies optimistically and stamps the epoch fence", () => {
+  test("a transaction updates the local projection and sends one Yjs update", () => {
     const { client, socket } = connected();
-    client.updateScene([element("a", 1)]);
-    expect(client.scene.has("a")).toBe(true);
-    const last = socket.sent.at(-1);
-    if (last === undefined) throw new Error("nothing sent");
-    const sent = SceneUpdateFrameSchema.parse(JSON.parse(last));
-    expect(sent.epoch).toBe("e1");
-    expect(sent.baseRev).toBe(5);
+    client.transact((tx) => tx.create(element("a")));
+
+    expect(client.elements.get("a")).toEqual(element("a"));
+    const updates = docUpdateFrames(socket);
+    expect(updates).toHaveLength(1);
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, decodeUpdate(updates[0]?.update ?? ""));
+    expect(readElements(replica).get("a")).toEqual(element("a"));
   });
 
-  test("first init rebases an optimistic edit into the adopted epoch", () => {
+  test("first init merges offline edits and publishes a full converged state", () => {
     const { client, socket } = dialing();
-    client.updateScene([element("early", 1)]);
+    client.transact((tx) => tx.create(element("early")));
+    expect(client.outboxSize()).toBe(1);
 
     socket.open();
     socket.receive(INIT);
 
-    expect(client.scene.has("early")).toBe(true);
-    const updates = sceneUpdateFrames(socket);
-    expect(updates.some((frame) => frame.epoch === "e1" && frame.elements[0]?.id === "early")).toBe(
-      true,
-    );
+    expect(client.elements.has("early")).toBe(true);
+    expect(client.elements.has("srv")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(2);
+    expect(client.outboxSize()).toBe(0);
   });
 
-  test("updateScene chunks by count and returns every frame's updateId", () => {
+  test("one transaction batches many element creates into one update", () => {
     const { client, socket } = connected();
-    const elements = Array.from({ length: 200 }, (_, index) => element(`bulk-${index}`, 1));
+    client.transact((tx) => {
+      for (let index = 0; index < 200; index += 1) {
+        tx.create(element(`bulk-${index}`));
+      }
+    });
 
-    const updateIds = client.updateScene(elements);
-
-    const updates = sceneUpdateFrames(socket);
-    expect(updates).toHaveLength(2);
-    expect(updates.map((frame) => frame.elements.length)).toEqual([128, 72]);
-    expect(updateIds).toEqual(updates.map((frame) => frame.updateId));
-    expect(client.scene.size).toBe(201);
-    expect(client.scene.has("bulk-199")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(1);
+    expect(client.elements.size).toBe(201);
+    expect(client.elements.has("bulk-199")).toBe(true);
   });
 
-  test("losing update is not sent (local reconcile rejects it)", () => {
+  test("remote document updates refresh the validated projection", () => {
     const { client, socket } = connected();
-    const before = socket.sent.length;
-    const result = client.updateScene([element("srv", 2)]); // older than server's v3
-    expect(result).toBeNull();
-    expect(socket.sent.length).toBe(before);
+    const changed: Array<{ ids: readonly string[]; origin: string }> = [];
+    client.on("elements_changed", (ids, origin) => changed.push({ ids, origin }));
+
+    socket.receive({
+      type: "doc_update",
+      update: encodedDoc(element("peer")),
+      by: "peer",
+    });
+
+    expect(client.elements.get("peer")).toEqual(element("peer"));
+    expect(changed).toContainEqual({ ids: ["peer"], origin: "remote" });
   });
 
-  test("scene_applied reconciles and advances rev", () => {
+  test("new-epoch resync replaces local history", () => {
     const { client, socket } = connected();
-    socket.receive({ type: "scene_applied", rev: 6, elements: [element("peer", 1)], by: "peer" });
-    expect(client.scene.has("peer")).toBe(true);
-    expect(client.rev).toBe(6);
-  });
+    client.transact((tx) => tx.create(element("mine")));
+    const updatesBeforeResync = docUpdateFrames(socket).length;
 
-  test("rev gap triggers resync_request", () => {
-    const { socket } = connected();
-    socket.receive({ type: "scene_applied", rev: 9, elements: [element("x", 1)], by: "peer" });
-    expect(sentTypes(socket)).toContain("resync_request");
-  });
-
-  test("new-epoch resync drops optimistic history instead of resubmitting it", () => {
-    const { client, socket } = connected();
-    client.updateScene([element("mine", 10)]);
-    const updatesBeforeResync = sceneUpdateFrames(socket).length;
-
-    socket.receive({ ...INIT, type: "resync", epoch: "e2", rev: 1, elements: [element("srv", 3)] });
+    socket.receive({
+      ...INIT,
+      type: "resync",
+      epoch: "e2",
+      rev: 1,
+      doc: encodedDoc(element("replacement")),
+    });
 
     expect(client.epoch).toBe("e2");
-    expect(client.scene.has("mine")).toBe(false);
-    expect(sceneUpdateFrames(socket)).toHaveLength(updatesBeforeResync);
+    expect(client.elements.has("mine")).toBe(false);
+    expect(client.elements.has("replacement")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 1);
   });
 
-  test("same-epoch resync rebases an unsent optimistic edit", () => {
+  test("same-epoch resync replays an offline local edit", () => {
     const { client, socket } = connected();
     socket.readyState = 0;
-    client.updateScene([element("mine", 10)]);
-    expect(sceneUpdateFrames(socket)).toHaveLength(0);
+    client.transact((tx) => tx.create(element("mine")));
+    expect(client.outboxSize()).toBe(1);
     socket.readyState = 1;
 
-    socket.receive({ ...INIT, type: "resync", rev: 6, elements: [element("srv", 3)] });
-
-    const resent = sceneUpdateFrames(socket);
-    expect(resent).toHaveLength(2);
-    expect(resent.every((frame) => frame.elements[0]?.id === "mine")).toBe(true);
-    expect(client.scene.has("mine")).toBe(true);
-  });
-  test("server rejection requests resync, reports the rejected update, and filters its exact stamp from rebase", () => {
-    const { client, socket } = connected();
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
-    });
-    const rejected = element("rejected", 1, 41);
-    const retained = element("retained", 1, 42);
-    const rejectedUpdateId = client.updateScene([rejected])?.[0];
-    client.updateScene([retained]);
-    if (rejectedUpdateId === undefined) throw new Error("rejected update was not sent");
-
-    socket.receive({ type: "error", code: "invalid", ref: rejectedUpdateId });
-
-    expect(sentTypes(socket).at(-1)).toBe("resync_request");
-    expect(rejections).toEqual([
-      expect.objectContaining({
-        element: rejected,
-        reason: "server_rejected",
-        serializedBytes: null,
-      }),
-    ]);
-
-    const updatesBeforeResync = sceneUpdateFrames(socket).length;
+    const updatesBeforeResync = docUpdateFrames(socket).length;
     socket.receive({ ...INIT, type: "resync", rev: 6 });
-    const rebased = sceneUpdateFrames(socket).slice(updatesBeforeResync);
 
-    expect(rebased).toHaveLength(1);
-    expect(rebased[0]?.elements.map(({ id }) => id)).toEqual(["retained"]);
-    expect(client.scene.has("rejected")).toBe(false);
-    expect(client.scene.has("retained")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 2);
+    expect(client.elements.has("mine")).toBe(true);
+    expect(client.outboxSize()).toBe(0);
   });
 
-  test("scene_ack clears inflight tracking so a later error with its ref is ignored", () => {
-    const { client, socket } = connected();
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
+  test("undo and redo track local edits without tracking remote state", () => {
+    const { client } = connected();
+    expect(client.canUndo()).toBe(false);
+    client.transact((tx) => tx.create(element("mine")));
+    expect(client.canUndo()).toBe(true);
+
+    client.undo();
+    expect(client.elements.has("mine")).toBe(false);
+    expect(client.canRedo()).toBe(true);
+
+    client.redo();
+    expect(client.elements.get("mine")).toEqual(element("mine"));
+  });
+
+  test("collaborative text is edited through the transaction text handle", () => {
+    const { client } = connected();
+    client.transact((tx) => {
+      tx.create({
+        id: "note",
+        type: "text",
+        text: "hello",
+        x: 0,
+        y: 0,
+        width: 240,
+        height: 48,
+        zIndex: 1,
+        fontSize: 20,
+        color: "#f8f9fa",
+      });
     });
-    const updateId = client.updateScene([element("accepted", 1)])?.[0];
-    if (updateId === undefined) throw new Error("accepted update was not sent");
-    socket.receive({ type: "scene_ack", updateId, rev: 6, acceptedIds: ["accepted"] });
-    const sentBeforeError = socket.sent.length;
+    client.transact((tx) => tx.text("note")?.insert(5, " world"));
 
-    socket.receive({ type: "error", code: "invalid", ref: updateId });
+    expect(client.elementText("note")?.toString()).toBe("hello world");
+    expect(client.elements.get("note")).toMatchObject({ text: "hello world" });
+  });
 
-    expect(socket.sent).toHaveLength(sentBeforeError);
-    expect(rejections).toHaveLength(0);
+  test("gesture payloads are sent without entering durable scene state", () => {
+    const { client, socket } = connected();
+    client.sendGesture({
+      kind: "move",
+      phase: "active",
+      elementId: "srv",
+      x: 20,
+      y: 30,
+    });
+    expect(sentTypes(socket).at(-1)).toBe("gesture");
+    expect(client.elements.get("srv")).toEqual(element("srv"));
   });
 });
 
@@ -422,7 +432,7 @@ describe("frame policy", () => {
 
   test("malformed KNOWN frame closes 4002", () => {
     const { socket } = connected();
-    socket.receive({ type: "scene_applied", rev: "not a number" });
+    socket.receive({ type: "doc_update", update: "not base64", by: "peer" });
     expect(socket.closedWith?.code).toBe(4002);
   });
 
@@ -435,7 +445,7 @@ describe("frame policy", () => {
   test("the SDK's malformed-frame 4002 close still reconnects", () => {
     vi.useFakeTimers();
     const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
-    socket.receive({ type: "scene_applied", rev: "not a number" });
+    socket.receive({ type: "doc_update", update: "not base64", by: "peer" });
     expect(socket.closedWith?.code).toBe(4002);
     expect(client.status).toBe("reconnecting");
 
@@ -444,10 +454,21 @@ describe("frame policy", () => {
     client.close();
   });
 
-  test("epoch_mismatch error auto-requests resync", () => {
-    const { socket } = connected();
-    socket.receive({ type: "error", code: "epoch_mismatch" });
-    expect(sentTypes(socket)).toContain("resync_request");
+  test("server-stamped gesture frames are emitted", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    client.on("gesture", (message) => seen.push(`${message.principalId}:${message.elementId}`));
+    socket.receive({
+      type: "gesture",
+      principalId: "peer",
+      connId: "peer-conn",
+      kind: "move",
+      phase: "active",
+      elementId: "srv",
+      x: 1,
+      y: 2,
+    });
+    expect(seen).toEqual(["peer:srv"]);
   });
 });
 
@@ -484,24 +505,20 @@ describe("listener isolation", () => {
     // Never-swallow rule: the throw must stay observable even though siblings still run.
     const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      // The projection layer subscribing to scene_changed is exactly the consumer that must
-      // never lose a delta: the SDK advances scene+rev BEFORE emitting, and a duplicate echo
-      // reconciles to zero accepted, so a swallowed emission is unrecoverable without resync.
+      // The projection layer subscribing to elements_changed must never lose a delta.
       const seen: string[] = [];
-      client.on("scene_changed", () => {
+      client.on("elements_changed", () => {
         throw new Error("projection exploded");
       });
-      client.on("scene_changed", (accepted) => {
-        seen.push(...accepted.map((el) => el.id));
+      client.on("elements_changed", (ids) => {
+        seen.push(...ids);
       });
       socket.receive({
-        type: "scene_applied",
-        rev: 6,
+        type: "doc_update",
+        update: encodedDoc(element("delta")),
         by: "other",
-        elements: [element("delta", 1)],
       });
       expect(seen).toEqual(["delta"]);
-      expect(client.rev).toBe(6);
       expect(
         reported.mock.calls.some((call) =>
           call.some((arg) => arg instanceof Error && arg.message === "projection exploded"),
@@ -509,10 +526,9 @@ describe("listener isolation", () => {
       ).toBe(true);
       // Subsequent events keep flowing after the throw.
       socket.receive({
-        type: "scene_applied",
-        rev: 7,
+        type: "doc_update",
+        update: encodedDoc(element("delta2")),
         by: "other",
-        elements: [element("delta2", 1)],
       });
       expect(seen).toEqual(["delta", "delta2"]);
     } finally {
