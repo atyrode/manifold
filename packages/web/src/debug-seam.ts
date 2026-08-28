@@ -1,10 +1,10 @@
 /**
  * Agent-facing testability seam (CONTRACTS.md §testability).
  *
- * The multiplayer revert bug shipped because the Excalidraw↔SDK projection boundary was
- * observable by no test: e2e drove the SDK (correct), the browser gate asserted DOM
- * presence, and nothing could read what the canvas actually held. This seam makes that
- * boundary inspectable from automation so convergence can be ASSERTED, not assumed.
+ * The multiplayer revert bug shipped because the browser-canvas↔SDK projection boundary
+ * was observable by no test: e2e drove the SDK (correct), the browser gate asserted DOM
+ * presence, and nothing could read what the canvas actually held. This seam keeps that
+ * boundary inspectable across renderer implementations.
  *
  * Opt-in only: installed when `localStorage["manifold:debug"] === "1"`. Read-only
  * snapshots of state the page already holds; no mutation surface, no secrets.
@@ -33,7 +33,7 @@ export interface DebugViewport {
 export interface ManifoldDebugSeam {
   /** SDK canonical view: what this client believes the server scene is. */
   readonly scene: () => readonly DebugElementSnapshot[];
-  /** Live Excalidraw canvas, including deleted — the projection under test. */
+  /** Live canvas projection, including retained tombstones. */
   readonly canvas: () => readonly DebugElementSnapshot[];
   /** Element ids edited locally but not yet flushed to the wire. */
   readonly pending: () => readonly string[];

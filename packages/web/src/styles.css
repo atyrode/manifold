@@ -1294,17 +1294,6 @@ button.pad-sidebar-session.is-summary > small {
   color: #868e96;
 }
 
-.pad-view {
-  position: absolute;
-  inset: 0;
-  background: #121417;
-}
-
-.pad-view > .excalidraw {
-  width: 100%;
-  height: 100%;
-}
-
 .pad-name-menu-item {
   max-width: 16rem;
   overflow: hidden;
@@ -1384,11 +1373,6 @@ button.pad-sidebar-session.is-summary > small {
   box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
-.pad-view.is-panning .manifold-terminal,
-.pad-view.is-panning .terminal-placeholder {
-  pointer-events: none;
-}
-
 /* Maximized: the terminal is promoted to the browser top layer (Popover API)
    and becomes the view; the canvas stays behind. Esc or the button restores.
    Explicit inset/size because showPopover() alone doesn't size anything. */
@@ -1402,8 +1386,6 @@ button.pad-sidebar-session.is-summary > small {
   border: 1px solid #343a40;
   border-radius: 0.45rem;
   background: #0b0d10;
-  /* Excalidraw gates pointer events on inactive embeds; the top-layer view
-     must accept input regardless of canvas activation state. */
   pointer-events: auto;
 }
 
@@ -1487,13 +1469,6 @@ button.pad-sidebar-session.is-summary > small {
   gap: 0.1rem;
 }
 
-/* Pad navigation and terminal creation live in the application sidebar. */
-.pad-view .main-menu-trigger {
-  display: none;
-}
-
-/* Controls re-enable pointer events above Excalidraw's idle embed, so you can
-   minimize/fullscreen/close without first activating the terminal. */
 .terminal-ctl {
   display: grid;
   place-items: center;
@@ -1636,8 +1611,7 @@ button.pad-sidebar-session.is-summary > small {
   cursor: default;
 }
 
-/* manifold top-right cluster — rendered inside .excalidraw via renderTopRightUI,
-   so excalidraw design tokens cascade. The slot's flex row owns layout. */
+/* Shared presence styles are used by the pad browser's participant summaries. */
 .presence-wrapper {
   position: relative;
 }
@@ -2057,34 +2031,41 @@ button.pad-sidebar-session.is-summary > small {
   clip-path: inset(50%);
 }
 
-/* --- React Flow spike route (manifold#15). Additive; delete with the spike. --- */
 .flow-pad-view {
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
 }
-.flow-pad-banner {
+.flow-presence {
+  position: absolute;
+  z-index: 10;
+  top: 0.75rem;
+  right: 0.75rem;
+}
+.flow-remote-cursor {
+  position: absolute;
   display: flex;
-  gap: 12px;
+  gap: 0.25rem;
   align-items: center;
-  flex: 0 0 auto;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-family: var(--font-family-monospace, monospace);
-  background: #1b1b1f;
-  color: #d7d7db;
-  border-bottom: 1px solid #34343a;
+  pointer-events: none;
+  transform-origin: 0 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: nowrap;
 }
-.flow-pad-banner a {
-  color: #8ab4f8;
+
+.flow-remote-cursor svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 55%));
 }
-.flow-write-on {
-  color: #f7b955;
-  font-weight: 600;
-}
-.flow-write-off {
-  color: #7fd1a0;
+
+.flow-remote-cursor span {
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  color: #fff;
+  background: color-mix(in srgb, currentColor 80%, #111);
 }
 .flow-error {
   color: #ff6b6b;
@@ -2105,6 +2086,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 /* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
 .flow-terminal .terminal-titlebar {
+  pointer-events: auto;
   cursor: grab;
 }
 .flow-terminal .terminal-titlebar:active {

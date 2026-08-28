@@ -7,7 +7,6 @@ import {
   type ItemInstance,
   type TreeInstance,
 } from "@headless-tree/core";
-import { Button } from "@excalidraw/excalidraw";
 import type { Pad, PadPresence, PadSessionSummary, PadTreeItem } from "@manifold/protocol";
 import {
   useCallback,
@@ -36,7 +35,7 @@ import {
 import { parseChangelogReferences } from "./changelog-references.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
-import { PadView } from "./pad-view.tsx";
+import { FlowPadView } from "./flow-pad-view.tsx";
 import { projectLocalPresence } from "./presence-projection.ts";
 import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
@@ -665,46 +664,46 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               if (event.key === "Escape") setRenameTarget(null);
             }}
           />
-          <Button
+          <button
             className="pad-sidebar-inline-action is-primary"
             aria-label={`Save name for ${pad.name}`}
             title="Save"
             disabled={renaming || renameName.trim() === "" || renameName.trim() === pad.name}
-            onSelect={() => void submitRename()}
+            onClick={() => void submitRename()}
           >
             <span aria-hidden="true">✓</span>
-          </Button>
-          <Button
+          </button>
+          <button
             className="pad-sidebar-inline-action"
             aria-label={`Cancel renaming ${pad.name}`}
             title="Cancel"
             disabled={renaming}
-            onSelect={() => setRenameTarget(null)}
+            onClick={() => setRenameTarget(null)}
           >
             <span aria-hidden="true">×</span>
-          </Button>
+          </button>
         </div>
       );
     } else if (sidebarOpen && confirmDeleteId === pad.id) {
       row = (
         <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
           <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
-          <Button
+          <button
             className="pad-sidebar-confirm-delete"
             aria-label={`Confirm deleting ${pad.name}`}
             disabled={deletingId !== null}
-            onSelect={() => void remove(pad)}
+            onClick={() => void remove(pad)}
           >
             {deletingId === pad.id ? "Deleting…" : "Delete"}
-          </Button>
-          <Button
+          </button>
+          <button
             className="pad-sidebar-confirm-cancel"
             aria-label={`Cancel deleting ${pad.name}`}
             disabled={deletingId !== null}
-            onSelect={() => setConfirmDeleteId(null)}
+            onClick={() => setConfirmDeleteId(null)}
           >
             Cancel
-          </Button>
+          </button>
         </div>
       );
     } else {
@@ -775,31 +774,31 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           ) : null}
           {sidebarOpen ? (
             <div className="pad-sidebar-actions">
-              <Button
+              <button
                 className="pad-sidebar-delete"
                 title={`Pad actions for ${pad.name}`}
                 aria-label={`Pad actions for ${pad.name}`}
-                selected={actionPadId === pad.id}
-                onSelect={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
+                aria-pressed={actionPadId === pad.id}
+                onClick={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
               >
                 <span aria-hidden="true">•••</span>
-              </Button>
+              </button>
               {actionPadId === pad.id ? (
                 <div className="pad-sidebar-action-menu" role="menu">
-                  <Button role="menuitem" onSelect={() => openRename(pad)}>
+                  <button role="menuitem" onClick={() => openRename(pad)}>
                     Rename
-                  </Button>
-                  <Button
+                  </button>
+                  <button
                     className="is-danger"
                     role="menuitem"
                     disabled={deletingId !== null}
-                    onSelect={() => {
+                    onClick={() => {
                       setActionPadId(null);
                       setConfirmDeleteId(pad.id);
                     }}
                   >
                     Delete
-                  </Button>
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -923,21 +922,21 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               if (event.key === "Escape") setRenamingFolderId(null);
             }}
           />
-          <Button
+          <button
             className="pad-sidebar-inline-action is-primary"
             aria-label={`Save name for ${folder.name}`}
             disabled={folderRenameName.trim() === ""}
-            onSelect={() => void submitFolderRename(folder)}
+            onClick={() => void submitFolderRename(folder)}
           >
             <span aria-hidden="true">✓</span>
-          </Button>
-          <Button
+          </button>
+          <button
             className="pad-sidebar-inline-action"
             aria-label={`Cancel renaming ${folder.name}`}
-            onSelect={() => setRenamingFolderId(null)}
+            onClick={() => setRenamingFolderId(null)}
           >
             <span aria-hidden="true">×</span>
-          </Button>
+          </button>
         </div>
       );
     }
@@ -945,22 +944,22 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       return (
         <div className="pad-sidebar-row is-confirming">
           <span className="pad-sidebar-confirm-label">Delete folder? Children move up.</span>
-          <Button
+          <button
             className="pad-sidebar-confirm-delete"
             aria-label={`Confirm deleting folder ${folder.name}`}
             disabled={deletingFolderId === folder.id}
-            onSelect={() => void removeFolder(folder)}
+            onClick={() => void removeFolder(folder)}
           >
             {deletingFolderId === folder.id ? "Deleting…" : "Delete"}
-          </Button>
-          <Button
+          </button>
+          <button
             className="pad-sidebar-confirm-cancel"
             aria-label={`Cancel deleting folder ${folder.name}`}
             disabled={deletingFolderId === folder.id}
-            onSelect={() => setConfirmFolderDeleteId(null)}
+            onClick={() => setConfirmFolderDeleteId(null)}
           >
             Cancel
-          </Button>
+          </button>
         </div>
       );
     }
@@ -986,48 +985,48 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <strong>{folder.name}</strong>
           </button>
           <div className="pad-sidebar-actions" onClick={(event) => event.stopPropagation()}>
-            <Button
+            <button
               className="pad-sidebar-folder-add"
               title={`New folder inside ${folder.name}`}
               aria-label={`New folder inside ${folder.name}`}
-              onSelect={() => {
+              onClick={() => {
                 setFolderName("");
                 setFolderCreateParentId(folder.id);
               }}
             >
               <span aria-hidden="true">+</span>
-            </Button>
-            <Button
+            </button>
+            <button
               className="pad-sidebar-delete"
               title={`Folder actions for ${folder.name}`}
               aria-label={`Folder actions for ${folder.name}`}
-              selected={actionPadId === actionId}
-              onSelect={() => setActionPadId((current) => (current === actionId ? null : actionId))}
+              aria-pressed={actionPadId === actionId}
+              onClick={() => setActionPadId((current) => (current === actionId ? null : actionId))}
             >
               <span aria-hidden="true">•••</span>
-            </Button>
+            </button>
             {actionPadId === actionId ? (
               <div className="pad-sidebar-action-menu" role="menu">
-                <Button
+                <button
                   role="menuitem"
-                  onSelect={() => {
+                  onClick={() => {
                     setActionPadId(null);
                     setRenamingFolderId(folder.id);
                     setFolderRenameName(folder.name);
                   }}
                 >
                   Rename
-                </Button>
-                <Button
+                </button>
+                <button
                   className="is-danger"
                   role="menuitem"
-                  onSelect={() => {
+                  onClick={() => {
                     setActionPadId(null);
                     setConfirmFolderDeleteId(folder.id);
                   }}
                 >
                   Delete
-                </Button>
+                </button>
               </div>
             ) : null}
           </div>
@@ -1154,12 +1153,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <div className="pad-sidebar-section-heading">
               <strong>Pads</strong>
               <span>{pads?.length ?? 0}</span>
-              <Button
+              <button
                 className="pad-sidebar-section-action"
-                selected={showSessions}
+                aria-pressed={showSessions}
                 title={showSessions ? "Hide sessions under pads" : "Show sessions under pads"}
                 aria-label={showSessions ? "Hide pad session tree" : "Show pad session tree"}
-                onSelect={() => {
+                onClick={() => {
                   setShowSessions((current) => {
                     try {
                       window.localStorage.setItem("manifold:show-pad-sessions", String(!current));
@@ -1171,7 +1170,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 }}
               >
                 <span aria-hidden="true">⌘</span>
-              </Button>
+              </button>
             </div>
           ) : null}
 
@@ -1286,7 +1285,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             </div>
           ) : (
             <PadErrorBoundary key={requestedPadId}>
-              <PadView
+              <FlowPadView
                 padId={requestedPadId}
                 identity={identity}
                 onWorkspaceChange={setWorkspace}

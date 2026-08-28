@@ -294,22 +294,20 @@ shutdown. Terminal bytes NEVER touch SQLite. Presence NEVER touches SQLite.
 ## Testability (agent-facing)
 
 - **Debug seam** (`packages/web/src/debug-seam.ts`): when `localStorage["manifold:debug"]
-=== "1"`, `PadView` installs `window.__manifold` — READ-ONLY snapshot functions
-  (`scene()`, `canvas()`, `pending()`, `rev()`, `epoch()`, `viewport()`) exposing the
-  Excalidraw↔SDK projection boundary to automation. No mutation surface, no secrets.
+=== "1"`, the active pad renderer installs `window.__manifold` — READ-ONLY snapshot
+  functions (`scene()`, `canvas()`, `pending()`, `rev()`, `epoch()`, `viewport()`) exposing
+  the browser-canvas↔SDK projection boundary to automation. No mutation surface, no secrets.
   Consumers: `scripts/verify-convergence.ts`, `scripts/verify-public.ts`. The seam exists
   because this boundary shipped two divergence bugs no wire-level test could see; keep it
-  read-only and keep it working.
+  read-only and keep it working across renderer changes.
 - **Convergence invariant** (guarded by `bun run verify:convergence`, part of `gate`):
   after quiescence, `A.canvas ≡ A.sdkScene ≡ canonical ≡ B.sdkScene ≡ B.canvas` compared
   by version stamp AND geometry, with per-round effect assertions (a no-op gesture is a
   FAILURE, not a pass). Any change to scene sync — protocol reconcile, SDK scene handling,
   server rooms, or the web projection — must keep this gate green.
-- **Ownership rule**: never hand Excalidraw an object owned by `client.scene` (it mutates
-  painted elements in place); clone at the paint boundary. Top-level clone — the LWW
-  fields (`version`, `versionNonce`) are always top-level — matching upstream Excalidraw
-  collab, whose `restoreElements` is likewise a per-element spread before `updateScene`
-  (excalidraw v0.18.1, `excalidraw-app/collab/Collab.tsx` `_reconcileElements`).
+- **Ownership rule**: never mutate or hand a mutating renderer an object owned by
+  `client.scene`. The SDK's canonical map is shared state; project new renderer-owned
+  objects at the paint boundary and publish edits without pre-writing the SDK mirror.
 
 ## Logging & introspection
 

@@ -1,4 +1,3 @@
-import { Button } from "@excalidraw/excalidraw";
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionStatus } from "@manifold/sdk";
 import type { MachineSummary } from "@manifold/protocol";
@@ -188,23 +187,23 @@ export function WorkspaceSessionRow({
         </span>
         <span className="workspace-session-actions">
           {hasMultipleCopies ? (
-            <Button
+            <button
               className="workspace-action workspace-copies-toggle"
-              onSelect={() => setCopiesOpen((value) => !value)}
-              selected={copiesOpen}
+              onClick={() => setCopiesOpen((value) => !value)}
+              aria-pressed={copiesOpen}
               aria-expanded={copiesOpen}
               aria-label={`${copiesOpen ? "Hide" : "Show"} ${copyCount} terminal copies`}
               title={`${copiesOpen ? "Hide" : "Show"} individual terminal copies`}
             >
               <span>{copyCount}</span>
               <span className="workspace-copy-chevron" aria-hidden="true" />
-            </Button>
+            </button>
           ) : boundElementId !== null ? (
-            <Button
+            <button
               className="workspace-action is-reveal"
               onPointerEnter={() => onHighlight(boundElementId)}
               onPointerLeave={() => onHighlight(null)}
-              onSelect={() => {
+              onClick={() => {
                 onHighlight(null);
                 onFocus(boundElementId);
               }}
@@ -212,21 +211,21 @@ export function WorkspaceSessionRow({
               aria-label="Reveal terminal on canvas"
             >
               <EyeIcon />
-            </Button>
+            </button>
           ) : row.status === "running" ? (
-            <Button
+            <button
               className="workspace-action is-restore"
-              onSelect={() => onRestore(row.id)}
+              onClick={() => onRestore(row.id)}
               title="Restore running session to canvas"
               aria-label="Restore running session to canvas"
             >
               <RestoreIcon />
-            </Button>
+            </button>
           ) : null}
           {hasMultipleCopies && row.status === "exited" ? (
-            <Button
+            <button
               className="workspace-action is-remove"
-              onSelect={() => {
+              onClick={() => {
                 setCopiesOpen(false);
                 onHighlight(null);
                 onRemoveAllCopies(row.id);
@@ -235,26 +234,26 @@ export function WorkspaceSessionRow({
               aria-label={removeAllLabel}
             >
               <TrashIcon />
-            </Button>
+            </button>
           ) : !hasMultipleCopies && row.status === "exited" && boundElementId !== null ? (
-            <Button
+            <button
               className="workspace-action is-remove"
-              onSelect={() => onRemoveCopy(row.id, boundElementId)}
+              onClick={() => onRemoveCopy(row.id, boundElementId)}
               title="Remove exited terminal"
               aria-label="Remove exited terminal"
             >
               <TrashIcon />
-            </Button>
+            </button>
           ) : null}
           {row.canKill ? (
-            <Button
+            <button
               className="workspace-action is-end-session"
-              onSelect={() => onKill(row.id)}
+              onClick={() => onKill(row.id)}
               title="End shared session — all terminal copies will exit"
               aria-label="End shared terminal session"
             >
               <PowerIcon />
-            </Button>
+            </button>
           ) : null}
         </span>
       </div>
@@ -269,11 +268,11 @@ export function WorkspaceSessionRow({
                   {copyLabel}
                 </span>
                 <span className="workspace-session-actions">
-                  <Button
+                  <button
                     className="workspace-action is-reveal"
                     onPointerEnter={() => onHighlight(elementId)}
                     onPointerLeave={() => onHighlight(null)}
-                    onSelect={() => {
+                    onClick={() => {
                       onHighlight(null);
                       onFocus(elementId);
                     }}
@@ -281,16 +280,16 @@ export function WorkspaceSessionRow({
                     aria-label={`Reveal ${copyLabel.toLowerCase()} on canvas`}
                   >
                     <EyeIcon />
-                  </Button>
-                  <Button
+                  </button>
+                  <button
                     className="workspace-action is-remove"
-                    onSelect={() => onRemoveCopy(row.id, elementId)}
+                    onClick={() => onRemoveCopy(row.id, elementId)}
                     onPointerEnter={() => onHighlight(null)}
                     title={`Remove ${copyLabel.toLowerCase()} from canvas`}
                     aria-label={`Remove ${copyLabel.toLowerCase()} from canvas`}
                   >
                     <TrashIcon />
-                  </Button>
+                  </button>
                 </span>
               </div>
             );
@@ -334,14 +333,14 @@ export function MachinesSection({
                 <strong>{machine.name}</strong>
                 <span>{machine.online ? "Online" : "Offline"}</span>
                 {machine.online ? (
-                  <Button
+                  <button
                     className="workspace-machine-create"
                     aria-label={`New terminal on ${machine.name}`}
                     title={`New terminal on ${machine.name}`}
-                    onSelect={() => onCreateTerminal(machine)}
+                    onClick={() => onCreateTerminal(machine)}
                   >
                     <span aria-hidden="true">+</span>
-                  </Button>
+                  </button>
                 ) : null}
               </div>
             ))
@@ -376,13 +375,4 @@ export function WorkspaceStatus({
       </span>
     </div>
   );
-}
-
-interface PadTopRightProps {
-  readonly rows: readonly RosterRow[];
-}
-
-/** Presence remains in Excalidraw's native top-right UI slot. */
-export function PadTopRight({ rows }: PadTopRightProps) {
-  return <PresenceIsland rows={rows} />;
 }

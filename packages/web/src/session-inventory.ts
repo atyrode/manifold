@@ -9,7 +9,7 @@ export interface SessionRow {
   readonly exitCode: number | null;
   /** Running but no live (non-deleted) terminal element references it anymore. */
   readonly orphaned: boolean;
-  /** Every live canvas mirror in Excalidraw's stable scene order. */
+  /** Every live canvas mirror in stable scene order. */
   readonly boundElementIds: readonly string[];
   readonly isController: boolean;
   /** Self can terminate directly, or can claim an unbound session before terminating it. */
@@ -27,7 +27,7 @@ export interface SessionInventoryInput {
 
 /**
  * Projects wire sessions + canvas bindings into janitor rows. Pure so the
- * orphan-detection policy stays unit-testable outside Excalidraw.
+ * orphan-detection policy stays unit-testable outside a renderer.
  */
 export function buildSessionRows(input: SessionInventoryInput): readonly SessionRow[] {
   const machineById = new Map(

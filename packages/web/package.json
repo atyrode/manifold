@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@excalidraw/excalidraw": "https://github.com/atyrode/excalidraw-manifold/releases/download/v0.18.1-manifold.3/excalidraw-excalidraw-0.18.1-manifold.3.tgz",
     "@headless-tree/core": "1.7.0",
     "@headless-tree/react": "1.7.0",
     "@manifold/protocol": "workspace:*",

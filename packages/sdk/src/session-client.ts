@@ -192,8 +192,8 @@ export class SessionClient {
   private updateCounter = 0;
   private readonly inflightUpdates = new Map<string, readonly InflightSceneElement[]>();
   private readonly rejectedSceneStamps = new Set<string>();
-  private reconnectTimer: Timer | null = null;
-  private keepaliveTimer: Timer | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
   private closeError: Error | null = null;
 
   constructor(opts: SessionClientOptions) {

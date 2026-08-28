@@ -1,12 +1,11 @@
 /**
  * manifold terminal-mirror regression gate.
  *
- * Guards the cloned-terminal contract at the RENDERED boundary: duplicating a
- * terminal element (alt+drag) creates a MIRROR — same PTY, two viewports. The
+ * Guards the mirrored-terminal contract at the RENDERED boundary: two native
+ * terminal records can bind the same PTY, producing two live viewports. The
  * regression this pins: the SDK sent `terminal_attach` only on the 0→1 refcount
- * transition, so a view subscribing after the first snapshot (a fresh clone, or
- * the mount-race loser after refresh) never received screen state and rendered
- * as an empty "zombie" that ignored all live output.
+ * transition, so a view subscribing after the first snapshot never received
+ * screen state and rendered as an empty "zombie" that ignored live output.
  *
  * Asserted end to end in a REAL browser:
  *   1. the clone renders screen state that existed BEFORE it was created;
@@ -14,9 +13,8 @@
  *   3. after a reload both views render (no mount-race zombie);
  *   4. closing one mirror leaves the other live and typeable (PTY survives).
  *
- * The clone gesture here targets an IDLE (deactivated) terminal — the native
- * Excalidraw alt+drag path. Alt+drag on an ACTIVATED terminal is a separate,
- * still-open gesture-entry issue (#20) and is deliberately not covered.
+ * The second mirror is created through the production SDK. Canvas gesture policy
+ * is separate from the attach/refcount contract under test.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server +
  * agent, cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -24,6 +22,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -56,6 +55,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
 
 const failures: string[] = [];
 let browser: Browser | null = null;
+let observer: SessionClient | null = null;
 
 function check(name: string, ok: boolean, detail: string): void {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
@@ -93,7 +93,7 @@ try {
   }
   await browser.goto(`${origin}/p/${padId}`);
   await until(
-    () => browser!.evaluate<boolean>("document.querySelector('.excalidraw') !== null"),
+    () => browser!.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
     20_000,
     "canvas mounted",
   );
@@ -150,49 +150,27 @@ try {
     "marker rendered before clone",
   );
 
-  // Deactivate: click a point on EMPTY canvas derived from real geometry (a
-  // hard-coded corner can fall outside the headless viewport or on an overlay).
-  const empty = await browser.evaluate<{ x: number; y: number }>(
-    "(() => { const b = document.querySelector('.manifold-terminal').getBoundingClientRect(); return { x: Math.max(20, b.x - 80), y: Math.max(20, b.y - 80) }; })()",
-  );
-  await browser.drag([empty], 30);
-  await sleep(400);
-  const deactivated = await browser.evaluate<boolean>(
-    "document.activeElement?.closest('.manifold-terminal') === null || document.activeElement?.closest('.manifold-terminal') === undefined",
-  );
-  if (!deactivated) throw new Error("terminal still focused after empty-canvas click");
-  const start = await center();
-  const CDP_ALT = 1;
-  await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: start.x, y: start.y });
-  await browser.send("Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: start.x,
-    y: start.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-    modifiers: CDP_ALT,
+  // Create a second native canvas record bound to the same live PTY through the SDK.
+  observer = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    padId,
+    token: ownerKey,
+    reconnect: false,
   });
-  for (let i = 1; i <= 8; i++) {
-    await browser.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: start.x + i * 35,
-      y: start.y + i * 22,
-      buttons: 1,
-      modifiers: CDP_ALT,
-    });
-    await sleep(30);
-  }
-  await browser.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: start.x + 280,
-    y: start.y + 176,
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
-    modifiers: CDP_ALT,
-  });
-  await until(async () => (await termCount()) === 2, 10_000, "alt+drag produced a clone");
+  await observer.connect();
+  await until(() => observer!.scene.size === 1, 10_000, "terminal visible to mirror client");
+  const source = [...observer.scene.values()][0];
+  if (source === undefined) throw new Error("source terminal missing from canonical scene");
+  const clone = {
+    ...source,
+    id: crypto.randomUUID(),
+    x: (typeof source["x"] === "number" ? source["x"] : 0) + 120,
+    y: (typeof source["y"] === "number" ? source["y"] : 0) + 80,
+    version: 1,
+    versionNonce: Math.floor(Math.random() * 2 ** 31),
+  };
+  observer.updateScene([clone]);
+  await until(async () => (await termCount()) === 2, 10_000, "SDK update produced a mirror");
   await sleep(1200);
 
   // 1. The clone must render PRE-EXISTING screen state (the zombie regression).
@@ -238,27 +216,17 @@ try {
   );
 
   // 4. Closing one mirror leaves the other live and typeable.
-  const closeBtn = await browser.evaluate<{ x: number; y: number } | null>(
+  const cloneClosed = await browser.evaluate<boolean>(
     `(() => {
-      const canvas = document.querySelector('.pad-browser-canvas')?.getBoundingClientRect();
-      if (canvas === undefined) return null;
-      for (const terminal of document.querySelectorAll('.manifold-terminal')) {
-        const button = [...terminal.querySelectorAll('button')].find((candidate) =>
-          (candidate.getAttribute('aria-label') || '').includes('Close')
-        );
-        if (button === undefined) continue;
-        const rect = button.getBoundingClientRect();
-        const x = rect.x + rect.width / 2;
-        const y = rect.y + rect.height / 2;
-        if (x >= canvas.left && x <= canvas.right && y >= canvas.top && y <= canvas.bottom) {
-          return { x, y };
-        }
-      }
-      return null;
+      const button = document.querySelector(
+        ${JSON.stringify(`.react-flow__node[data-id="${clone.id}"] .terminal-ctl--close`)},
+      );
+      if (!(button instanceof HTMLButtonElement)) return false;
+      button.click();
+      return true;
     })()`,
   );
-  if (closeBtn === null) throw new Error("no visible mirror has a close button");
-  await browser.drag([closeBtn], 30);
+  if (!cloneClosed) throw new Error("clone node has no close button");
   await until(async () => (await termCount()) === 1, 10_000, "mirror closed");
   await sleep(600);
   const survivorState = await browser.evaluate<boolean>(
@@ -285,6 +253,7 @@ try {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
   await browser?.close();
+  observer?.close();
   server.kill();
   rmSync(distDir, { recursive: true, force: true });
   rmSync(dataDir, { recursive: true, force: true });

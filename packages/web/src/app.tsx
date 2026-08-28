@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { StoredIdentity } from "./api.ts";
-import { FlowPadView } from "./flow-pad-view.tsx";
 import { PadBrowser } from "./pad-browser.tsx";
 
 type Route =
-  | { readonly kind: "browser"; readonly padId: string | null }
-  | { readonly kind: "flow"; readonly padId: string }
-  | { readonly kind: "not_found" };
+  { readonly kind: "browser"; readonly padId: string | null } | { readonly kind: "not_found" };
 
 function currentRoute(): Route {
   if (window.location.pathname === "/") return { kind: "browser", padId: null };
@@ -14,15 +11,6 @@ function currentRoute(): Route {
   if (match?.[1] !== undefined) {
     try {
       return { kind: "browser", padId: decodeURIComponent(match[1]) };
-    } catch {
-      return { kind: "not_found" };
-    }
-  }
-  // Spike route (manifold#15): renders the same pad on React Flow instead of Excalidraw.
-  const flow = /^\/flow\/([^/]+)$/.exec(window.location.pathname);
-  if (flow?.[1] !== undefined) {
-    try {
-      return { kind: "flow", padId: decodeURIComponent(flow[1]) };
     } catch {
       return { kind: "not_found" };
     }
@@ -53,8 +41,6 @@ export function App({ identity }: AppProps) {
   switch (route.kind) {
     case "browser":
       return <PadBrowser identity={identity} requestedPadId={route.padId} navigate={navigate} />;
-    case "flow":
-      return <FlowPadView padId={route.padId} identity={identity} />;
     case "not_found":
       return (
         <main className="gate-screen">

@@ -66,11 +66,7 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
 
   return (
     <div className="flow-terminal">
-      {/*
-        Resize handles, shown only while this node is selected. React Flow has no built-in
-        resize — unlike Excalidraw, where selection handles come free — so it is an explicit
-        component. `onResizeEnd` commits once, matching the drag path's commit-on-end rule.
-      */}
+      {/* Resize handles commit once on resize end, matching the drag path. */}
       <NodeResizer
         nodeId={id}
         isVisible={selected === true}
@@ -93,7 +89,6 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
         onClose={() => pad.onClose(id, sessionId)}
         onRestart={() => pad.onRestart(id, sessionId)}
         machine={pad.machineFor(sessionId)}
-        titlebarDragsHost
       />
     </div>
   );

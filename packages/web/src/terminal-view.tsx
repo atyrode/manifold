@@ -10,7 +10,7 @@ interface TerminalViewProps {
   readonly client: SessionClient;
   readonly sessionId: string;
   readonly elementId: string;
-  /** Excalidraw activation state; a rising edge focuses xterm so typing works right away. */
+  /** Host-canvas selection state; a rising edge focuses xterm so typing works immediately. */
   readonly active: boolean;
   /** True when other live elements are bound to this same session (clones/mirrors). */
   readonly sessionShared: boolean;
@@ -22,12 +22,6 @@ interface TerminalViewProps {
   readonly onRestart: () => Promise<void>;
   /** Resolved machine of this session; null before the first machines fetch. */
   readonly machine: SessionMachine | null;
-  /**
-   * Opt-in host-canvas seam (flow route only). When true, pointerdown originating on the
-   * titlebar bubbles instead of being swallowed, so the host can treat the titlebar as a
-   * drag handle. Omitted/false reproduces the Excalidraw route's behaviour exactly.
-   */
-  readonly titlebarDragsHost?: boolean;
 }
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
@@ -41,7 +35,6 @@ export function TerminalView({
   onClose,
   onRestart,
   machine,
-  titlebarDragsHost,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -71,10 +64,10 @@ export function TerminalView({
   /**
    * Real-terminal feel: activation (one click-release anywhere on the embed)
    * wakes the cursor immediately. Edge-triggered on inactive→active. The focus
-   * is re-asserted frame-by-frame for a short window because the browser's own
-   * post-click focusing (and Excalidraw's) can land after ours; it stops as
-   * soon as focus settles inside the terminal, yields to any deliberate focus
-   * on an editable element elsewhere, and dies with deactivation.
+   * is re-asserted frame-by-frame for a short window because browser focus can
+   * land after ours; it stops as soon as focus settles inside the terminal,
+   * yields to deliberate focus on an editable element elsewhere, and dies with
+   * deactivation.
    */
   const wasActiveRef = useRef(false);
   useEffect(() => {
@@ -98,8 +91,8 @@ export function TerminalView({
           focused.isContentEditable);
       if (editableElsewhere) return; // user chose another input: stop wrestling
       if (!settled) terminal.focus();
-      // Keep watching through the whole activation transition: a post-click
-      // Excalidraw or browser refocus can land after our first success.
+      // Keep watching through the whole activation transition: browser refocus
+      // can land after our first success.
       if (performance.now() < deadline) frame = requestAnimationFrame(tick);
     };
     let frame = requestAnimationFrame(tick);
@@ -110,9 +103,8 @@ export function TerminalView({
   }, [active]);
 
   // Maximize = this terminal becomes the view. The Popover API promotes the
-  // SAME node into the browser top layer (xterm survives, no remount), escaping
-  // Excalidraw's transform without browser-chrome fullscreen. popover="manual"
-  // so an outside click can't accidentally restore; Esc and the button do.
+  // SAME node into the browser top layer (xterm survives, no remount) without
+  // browser-chrome fullscreen. popover="manual" keeps outside clicks inert.
   useEffect(() => {
     const frame = frameRef.current;
     if (frame === null) return;
@@ -266,9 +258,9 @@ export function TerminalView({
         fitAddon.fit();
         terminal.refresh(0, terminal.rows - 1);
         scheduleResize();
-        // Excalidraw installs and transforms the embed across successive frames.
-        // A second measurement catches that settled box without waiting for a
-        // user resize to make xterm repaint at the correct cell geometry.
+        // The host canvas can settle transforms across successive frames. A
+        // second measurement catches the final box without waiting for a user
+        // resize to make xterm repaint at the correct cell geometry.
         settleFollowupFrame = window.requestAnimationFrame(() => {
           settleFollowupFrame = null;
           fitAddon.fit();
@@ -441,16 +433,8 @@ export function TerminalView({
           : { borderColor: remoteFocuser.color, boxShadow: `0 0 0 2px ${remoteFocuser.color}` }
       }
       onPointerDown={(event) => {
-        // Default (Excalidraw route): swallow every pointerdown so xterm owns selection
-        // and the canvas never starts a gesture underneath us.
-        //
-        // Opt-in (flow route): let pointerdown that started on the titlebar bubble, so a
-        // host canvas can use the titlebar as its drag handle. Titlebar BUTTONS stop
-        // propagation in their own handlers, which run first, so they are unaffected.
-        if (titlebarDragsHost === true) {
-          const target = event.target;
-          if (target instanceof Element && target.closest(".terminal-titlebar") !== null) return;
-        }
+        const target = event.target;
+        if (target instanceof Element && target.closest(".terminal-titlebar") !== null) return;
         event.stopPropagation();
       }}
       onWheel={stopFocusedWheel}

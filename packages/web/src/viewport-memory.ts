@@ -14,7 +14,7 @@ export interface StoredViewport {
   readonly zoom: number;
 }
 
-/** Excalidraw's own zoom bounds; values outside are stale/garbage. */
+/** Shared bounds for every manifold canvas renderer. */
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 30;
 
@@ -34,8 +34,8 @@ export function encodeViewport(viewport: StoredViewport): string {
 
 /**
  * Parses and validates a stored viewport. Returns null for anything that is
- * not three finite numbers with zoom inside Excalidraw's bounds — restoring
- * garbage would strand the user on an unusable camera.
+ * not three finite numbers within manifold's zoom bounds — restoring garbage
+ * would strand the user on an unusable camera.
  */
 export function decodeViewport(raw: string | null): StoredViewport | null {
   if (raw === null) return null;

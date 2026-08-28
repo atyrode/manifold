@@ -10,13 +10,12 @@ import {
  *
  * Kept free of React and of `@xyflow/react` so the policy is unit-testable in isolation
  * (repo convention: nontrivial sync policy lives in pure modules, never inline in a
- * component callback). The spike deliberately reuses the EXISTING terminal element shape
- * — an `embeddable` carrying `link === TERMINAL_LINK` and terminal `customData` — so a
- * pad renders identically in both the Excalidraw route and the flow route, and no
- * migration or protocol change is involved.
+ * component callback). It reuses manifold's existing terminal record — an `embeddable`
+ * carrying `link === TERMINAL_LINK` and terminal `customData` — so persisted pads need no
+ * migration or protocol change.
  */
 
-/** Discriminator the Excalidraw route already writes; unchanged here on purpose. */
+/** Stable discriminator for terminal scene records. */
 export const TERMINAL_LINK = "manifold://terminal";
 
 export interface TerminalNodeData {
@@ -73,11 +72,10 @@ export function terminalBinding(element: SceneElement): TerminalCustomData | nul
 /**
  * Projects the canonical scene into React Flow nodes, in canonical paint order.
  *
- * Only terminals are projected: ink, shapes and text are out of scope for this spike and
- * are left untouched in the scene, so switching routes back to Excalidraw still shows
- * them. Ordering uses the protocol's own comparator (fractional `index`, id tiebreak) and
- * is flattened into a `zIndex` band, because React Flow orders by `zIndex`/array position
- * rather than by an opaque fractional index.
+ * Only terminal records project into nodes; other persisted element kinds remain canonical
+ * but intentionally have no visual representation in this prototype. Ordering uses the
+ * protocol comparator (fractional `index`, id tiebreak) and flattens it into a `zIndex`
+ * band because React Flow does not understand opaque fractional indices.
  */
 export function projectTerminals(
   scene: ReadonlyMap<string, SceneElement>,
@@ -107,9 +105,8 @@ export function projectTerminals(
 }
 
 /**
- * Excalidraw bumps `version`/`versionNonce` on every local mutation, and manifold's LWW
- * reconcile depends on that discipline. A non-Excalidraw canvas owes the same contract, so
- * the spike mints it explicitly here.
+ * Manifold's LWW reconcile requires every local mutation to bump
+ * `version`/`versionNonce`, regardless of renderer.
  *
  * `versionNonce` must stay a non-negative 31-bit integer: `shouldAccept` breaks ties by
  * LOWER nonce, and the protocol schema rejects negatives.
@@ -118,6 +115,39 @@ export const NONCE_LIMIT = 2 ** 31;
 
 export function randomNonce(random: () => number = Math.random): number {
   return Math.floor(random() * NONCE_LIMIT);
+}
+
+export const DEFAULT_TERMINAL_WIDTH = 720;
+export const DEFAULT_TERMINAL_HEIGHT = 480;
+
+/** Creates the canvas-agnostic terminal record written by the React Flow renderer. */
+export function createTerminalElement(
+  id: string,
+  sessionId: string,
+  position: { readonly x: number; readonly y: number },
+  nonce: () => number = randomNonce,
+): SceneElement {
+  return {
+    id,
+    type: "embeddable",
+    link: TERMINAL_LINK,
+    x: position.x,
+    y: position.y,
+    width: DEFAULT_TERMINAL_WIDTH,
+    height: DEFAULT_TERMINAL_HEIGHT,
+    angle: 0,
+    version: 1,
+    versionNonce: nonce(),
+    index: null,
+    isDeleted: false,
+    customData: {
+      kind: "terminal",
+      sessionId,
+      showHyperlinkIcon: false,
+      fullInteractionTarget: true,
+      showShapeActions: false,
+    },
+  } as SceneElement;
 }
 
 /**

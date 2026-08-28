@@ -1,6 +1,5 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "@excalidraw/excalidraw/index.css";
 import { App } from "./app.tsx";
 import { captureOwnerKeyFromFragment, IdentityGate } from "./identity.tsx";
 import "./styles.css";
