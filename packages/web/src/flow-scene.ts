@@ -142,9 +142,13 @@ export function bumpElement(
 /**
  * Translates a React Flow position change into a canonical element update.
  *
- * Returns `null` when the element is unknown or the position is unchanged, so an
- * idle drag (or React Flow's routine position echo) never mints a version and never
- * touches the wire.
+ * Returns `null` when the element is unknown, the position is not finite, or the position
+ * is unchanged — so an idle drag (or React Flow's routine position echo) never mints a
+ * version and never touches the wire.
+ *
+ * The finite check is not paranoia: `NaN <= 0` is `false`, so a naive range guard lets
+ * `NaN`/`Infinity` through, and a non-finite coordinate would be published to every viewer
+ * and persisted in a snapshot. Reject at the publish boundary instead.
  */
 export function applyNodeMove(
   scene: ReadonlyMap<string, SceneElement>,
@@ -153,6 +157,9 @@ export function applyNodeMove(
 ): SceneElement | null {
   const element = scene.get(move.id);
   if (element === undefined) return null;
+  if (finiteNumber(move.position.x) === null || finiteNumber(move.position.y) === null) {
+    return null;
+  }
   const geometry = terminalGeometry(element);
   if (geometry === null) return null;
   if (geometry.x === move.position.x && geometry.y === move.position.y) return null;
@@ -161,8 +168,8 @@ export function applyNodeMove(
 
 /**
  * Translates a finished React Flow resize into a canonical element update. Same contract as
- * `applyNodeMove`: unchanged geometry returns `null`, so grabbing a resize handle without
- * moving it never mints a version.
+ * `applyNodeMove`, including the finite guard: unchanged or unusable geometry returns
+ * `null`, so grabbing a resize handle without moving it never mints a version.
  */
 export function applyNodeResize(
   scene: ReadonlyMap<string, SceneElement>,
@@ -171,9 +178,12 @@ export function applyNodeResize(
 ): SceneElement | null {
   const element = scene.get(resize.id);
   if (element === undefined) return null;
+  const width = finiteNumber(resize.width);
+  const height = finiteNumber(resize.height);
+  if (width === null || height === null) return null;
+  if (width <= 0 || height <= 0) return null;
   const geometry = terminalGeometry(element);
   if (geometry === null) return null;
-  if (resize.width <= 0 || resize.height <= 0) return null;
-  if (geometry.width === resize.width && geometry.height === resize.height) return null;
-  return bumpElement(element, { width: resize.width, height: resize.height }, nonce);
+  if (geometry.width === width && geometry.height === height) return null;
+  return bumpElement(element, { width, height }, nonce);
 }
