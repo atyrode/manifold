@@ -11,10 +11,8 @@ export {
   MAX_ELEMENTS_PER_UPDATE,
   MAX_SESSION_FRAME_BYTES,
   SceneElementSchema,
-  TerminalCustomDataSchema,
   compareElements,
   type SceneElement,
-  type TerminalCustomData,
 } from "./elements.ts";
 export { applyAccepted, reconcile, shouldAccept, type ReconcileResult } from "./reconcile.ts";
 export {

@@ -166,9 +166,8 @@ export class Browser {
   }
 
   /**
-   * Clicks via the DOM rather than synthetic mouse coordinates: Excalidraw's menus and
-   * dialogs move under headless layout, and a coordinate click that lands a pixel off
-   * silently does nothing. A DOM click is what the app's own handlers listen for.
+   * Clicks via the DOM rather than synthetic coordinates because menus and dialogs move
+   * under headless layout, and a coordinate click that lands a pixel off silently does nothing.
    */
   async clickText(text: string): Promise<void> {
     const clicked = await this.evaluate<boolean>(

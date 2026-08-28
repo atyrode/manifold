@@ -41,8 +41,8 @@ describe("viewport memory", () => {
     ["non-numeric", '{"x":"1","y":2,"zoom":1}'],
     ["NaN", '{"x":null,"y":2,"zoom":1}'],
     ["infinite scroll", '{"x":1e999,"y":2,"zoom":1}'],
-    ["zoom below excalidraw min", '{"x":1,"y":2,"zoom":0.01}'],
-    ["zoom above excalidraw max", '{"x":1,"y":2,"zoom":31}'],
+    ["zoom below supported minimum", '{"x":1,"y":2,"zoom":0.01}'],
+    ["zoom above supported maximum", '{"x":1,"y":2,"zoom":31}'],
     ["zoom NaN", '{"x":1,"y":2,"zoom":"big"}'],
   ])("rejects garbage: %s", (_name, raw) => {
     expect(decodeViewport(raw)).toBeNull();

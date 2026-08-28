@@ -442,61 +442,6 @@ try {
     }
   }
 
-  // ---------------------------------------------------------------- gestures
-
-  async function selectTool(browser: Browser, tool: string): Promise<void> {
-    const clicked = await browser.evaluate<boolean>(
-      `(() => { const b = document.querySelector('[data-testid=toolbar-${tool}]'); if (!b) return false; b.click(); return true; })()`,
-    );
-    if (!clicked) throw new Error(`toolbar-${tool} not found`);
-    await sleep(200);
-  }
-
-  function strokePoints(x0: number, y0: number, dx: number, dy: number, n: number) {
-    return Array.from({ length: n }, (_, i) => ({
-      x: x0 + (dx * i) / n,
-      y: y0 + (dy * i) / n + Math.round(Math.sin(i / 3) * 30),
-    }));
-  }
-
-  async function freedraw(browser: Browser, x0: number, y0: number): Promise<void> {
-    await selectTool(browser, "freedraw");
-    await browser.drag(strokePoints(x0, y0, 260, 120, 30), 15);
-  }
-
-  /** Screen-space point on the TOP EDGE of an element — transparent-fill shapes only hit-test on their stroke. */
-  async function edgeOf(browser: Browser, elementId: string): Promise<{ x: number; y: number }> {
-    const found = await browser.evaluate<{ snap: Snapshot; vp: Viewport } | null>(
-      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(elementId)});
-        const vp = window.__manifold.viewport();
-        return el && vp ? { snap: el, vp } : null; })()`,
-    );
-    if (found === null) throw new Error(`element ${elementId} not on canvas`);
-    const { snap, vp } = found;
-    return {
-      x: (snap.x + snap.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
-      y: (snap.y + vp.scrollY) * vp.zoom + vp.offsetTop,
-    };
-  }
-
-  async function moveElementByEdge(
-    browser: Browser,
-    elementId: string,
-    dx: number,
-    dy: number,
-  ): Promise<void> {
-    await selectTool(browser, "selection");
-    const from = await edgeOf(browser, elementId);
-    const steps = 20;
-    await browser.drag(
-      Array.from({ length: steps + 1 }, (_, i) => ({
-        x: from.x + (dx * i) / steps,
-        y: from.y + (dy * i) / steps,
-      })),
-      15,
-    );
-  }
-
   // ---------------------------------------------------------------- rounds
 
   console.log(`convergence rounds against ${origin} pad ${padId}`);
@@ -504,40 +449,27 @@ try {
     "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
   );
 
-  const flowRenderer = await browserA.evaluate<boolean>(
-    "document.querySelector('.react-flow') !== null",
-  );
-  if (flowRenderer) {
-    const terminalElement = (id: string, x: number, y: number): SceneElement =>
-      ({
-        id,
-        type: "embeddable",
-        link: "manifold://terminal",
-        x,
-        y,
-        width: 480,
-        height: 320,
-        angle: 0,
-        version: 1,
-        versionNonce: Math.floor(Math.random() * 2 ** 31),
-        index: null,
-        isDeleted: false,
-        customData: {
-          kind: "terminal",
-          sessionId: `convergence-${id}`,
-          showHyperlinkIcon: false,
-          fullInteractionTarget: true,
-          showShapeActions: false,
-        },
-      }) as SceneElement;
-    const moveFlowNode = async (
-      browser: Browser,
-      elementId: string,
-      dx: number,
-      dy: number,
-    ): Promise<void> => {
-      const start = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
-        `(() => {
+  const terminalElement = (id: string, x: number, y: number): SceneElement => ({
+    id,
+    type: "terminal",
+    sessionId: `convergence-${id}`,
+    x,
+    y,
+    width: 480,
+    height: 320,
+    zIndex: 0,
+    version: 1,
+    versionNonce: Math.floor(Math.random() * 2 ** 31),
+    isDeleted: false,
+  });
+  const moveFlowNode = async (
+    browser: Browser,
+    elementId: string,
+    dx: number,
+    dy: number,
+  ): Promise<void> => {
+    const start = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
+      `(() => {
           const titlebar = document.querySelector(
             ${JSON.stringify(`.react-flow__node[data-id="${elementId}"] .terminal-titlebar`)},
           );
@@ -546,485 +478,93 @@ try {
           if (rect.width <= 0 || rect.height <= 0) return null;
           return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
         })()`,
-      );
-      if (start === null) throw new Error(`terminal ${elementId} has no rendered drag handle`);
-      const steps = 20;
-      await browser.drag(
-        Array.from({ length: steps + 1 }, (_, index) => ({
-          x: start.x + (dx * index) / steps,
-          y: start.y + (dy * index) / steps,
-        })),
-        15,
-      );
-    };
-
-    const first = terminalElement(crypto.randomUUID(), 280, 180);
-    await round("F1 SDK seed projects into both canvases", { adds: 1 }, async () => {
-      sdk.updateScene([first]);
-    });
-    await round("F2 browser A drags a terminal", { adds: 0, changes: [first.id] }, () =>
-      moveFlowNode(browserA, first.id, 150, 90),
     );
-
-    const second = terminalElement(crypto.randomUUID(), 900, 420);
-    await round("F3 second SDK seed projects into both canvases", { adds: 1 }, async () => {
-      sdk.updateScene([second]);
-    });
-    await round(
-      "F4 concurrent browser moves converge",
-      { adds: 0, changes: [first.id, second.id] },
-      async () => {
-        await Promise.all([
-          moveFlowNode(browserA, second.id, -90, 120),
-          moveFlowNode(browserB, first.id, 110, -70),
-        ]);
-      },
+    if (start === null) throw new Error(`terminal ${elementId} has no rendered drag handle`);
+    const steps = 20;
+    await browser.drag(
+      Array.from({ length: steps + 1 }, (_, index) => ({
+        x: start.x + (dx * index) / steps,
+        y: start.y + (dy * index) / steps,
+      })),
+      15,
     );
-    await round(
-      "F5 frozen tab resumes to canonical geometry",
-      { adds: 0, changes: [first.id] },
-      async () => {
-        await browserB.setLifecycle("frozen");
-        await moveFlowNode(browserA, first.id, 80, 60);
-        await sleep(500);
-        await browserB.setLifecycle("active");
-      },
-    );
+  };
 
-    const cursorFrames: { readonly x: number; readonly y: number }[] = [];
-    const offCursor = sdk.on("cursor", (message) => {
-      cursorFrames.push({ x: message.x, y: message.y });
-    });
-    const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-    const panStart = { x: canvasLeftA + 700, y: 650 };
-    await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
+  const first = terminalElement(crypto.randomUUID(), 280, 180);
+  await round("F1 SDK seed projects into both canvases", { adds: 1 }, async () => {
+    sdk.updateScene([first]);
+  });
+  await round("F2 browser A drags a terminal", { adds: 0, changes: [first.id] }, () =>
+    moveFlowNode(browserA, first.id, 150, 90),
+  );
+
+  const second = terminalElement(crypto.randomUUID(), 900, 420);
+  await round("F3 second SDK seed projects into both canvases", { adds: 1 }, async () => {
+    sdk.updateScene([second]);
+  });
+  await round(
+    "F4 concurrent browser moves converge",
+    { adds: 0, changes: [first.id, second.id] },
+    async () => {
+      await Promise.all([
+        moveFlowNode(browserA, second.id, -90, 120),
+        moveFlowNode(browserB, first.id, 110, -70),
+      ]);
+    },
+  );
+  await round(
+    "F5 frozen tab resumes to canonical geometry",
+    { adds: 0, changes: [first.id] },
+    async () => {
+      await browserB.setLifecycle("frozen");
+      await moveFlowNode(browserA, first.id, 80, 60);
+      await sleep(500);
+      await browserB.setLifecycle("active");
+    },
+  );
+
+  const cursorFrames: { readonly x: number; readonly y: number }[] = [];
+  const offCursor = sdk.on("cursor", (message) => {
+    cursorFrames.push({ x: message.x, y: message.y });
+  });
+  const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
+  const panStart = { x: canvasLeftA + 700, y: 650 };
+  await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...panStart,
+    button: "middle",
+    buttons: 4,
+  });
+  for (let index = 1; index <= 14; index += 1) {
     await browserA.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...panStart,
+      type: "mouseMoved",
+      x: panStart.x - index * 10,
+      y: panStart.y - index * 6,
       button: "middle",
       buttons: 4,
     });
-    for (let index = 1; index <= 14; index += 1) {
-      await browserA.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: panStart.x - index * 10,
-        y: panStart.y - index * 6,
-        button: "middle",
-        buttons: 4,
-      });
-      await sleep(15);
-    }
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: panStart.x - 140,
-      y: panStart.y - 84,
-      button: "middle",
-    });
-    await sleep(300);
-    const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-    offCursor();
-    if (
-      Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
-      Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) < 30
-    ) {
-      throw new Error("Flow viewport did not move under a real middle-button pan");
-    }
-    if (cursorFrames.length < 3) {
-      throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
-    }
-    console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
-  } else {
-    const emptyCanvasPoint = { x: canvasLeftA + 850, y: 720 };
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      ...emptyCanvasPoint,
-    });
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...emptyCanvasPoint,
-      button: "right",
-      buttons: 2,
-      clickCount: 1,
-    });
-    await sleep(100);
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...emptyCanvasPoint,
-      button: "right",
-      clickCount: 1,
-    });
-    await until(
-      () => browserA.evaluate<boolean>("document.querySelector('.context-menu') !== null"),
-      5_000,
-      "convA: short right-click context menu",
-    );
-    await browserA.send("Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key: "Escape",
-      code: "Escape",
-      windowsVirtualKeyCode: 27,
-      nativeVirtualKeyCode: 27,
-    });
-    await browserA.send("Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key: "Escape",
-      code: "Escape",
-      windowsVirtualKeyCode: 27,
-      nativeVirtualKeyCode: 27,
-    });
-    console.log("PASS  short right-click opens the canvas context menu");
-
-    await round("R1 solo stroke", { adds: 1 }, () => freedraw(browserA, canvasLeftA + 300, 250));
-
-    await round("R2 concurrent strokes", { adds: 2 }, async () => {
-      await Promise.all([freedraw(browserA, 300, 500), freedraw(browserB, 800, 250)]);
-    });
-
-    await round("R3a rectangle created", { adds: 1 }, async () => {
-      await selectTool(browserA, "rectangle");
-      await browserA.drag(
-        [
-          { x: 900, y: 550 },
-          { x: 1040, y: 640 },
-        ],
-        30,
-      );
-    });
-    const rect = [...sdk.scene.values()].find((el) => el["type"] === "rectangle");
-    if (rect === undefined) throw new Error("rectangle not in canonical scene");
-
-    await round("R3b concurrent move and stroke", { adds: 1, changes: [rect.id] }, async () => {
-      await Promise.all([
-        moveElementByEdge(browserA, rect.id, -180, -120),
-        freedraw(browserB, 500, 650),
-      ]);
-    });
-
-    // A second rectangle, created by B: rect1 is aliased on B, rect2 is aliased on A, so the
-    // cross-move exercises the aliasing hazard in BOTH directions with a reliably
-    // hit-testable gesture (edge drags; freedraw bounding-box edges miss the actual path —
-    // the hardened effect assertion caught exactly that as a silent no-op).
-    await round("R5a second rectangle by B", { adds: 1 }, async () => {
-      await selectTool(browserB, "rectangle");
-      // Clear of the left properties island (visible while a shape tool is active) and of
-      // every prior round's strokes.
-      await browserB.drag(
-        [
-          { x: 620, y: 130 },
-          { x: 760, y: 210 },
-        ],
-        30,
-      );
-    });
-    const rect2 = [...sdk.scene.values()].find(
-      (el) => el["type"] === "rectangle" && el.id !== rect.id,
-    );
-    if (rect2 === undefined) throw new Error("second rectangle not in canonical scene");
-
-    await round(
-      "R5b bidirectional aliased cross moves",
-      { adds: 0, changes: [rect.id, rect2.id] },
-      async () => {
-        await Promise.all([
-          moveElementByEdge(browserA, rect2.id, -40, 100),
-          moveElementByEdge(browserB, rect.id, 120, -60),
-        ]);
-      },
-    );
-
-    await round("R6 rapid-fire strokes", { adds: 3 }, async () => {
-      // Keep client coordinates clear of the resizable workspace sidebar.
-      await freedraw(browserA, 340, 700);
-      await freedraw(browserA, 610, 720);
-      await freedraw(browserA, 880, 700);
-    });
-
-    // R7: THE aliasing regression — B moves an element it received from A (painted from the
-    // canonical scene, i.e. the exact object-aliasing hazard). Pre-clone-fix this diverges:
-    // B's canvas AND B's SDK scene advance together in place, reconcile sees an idempotent
-    // duplicate, and nothing is ever sent. The `changes` effect assertion doubles as the
-    // no-op guard: if the gesture misses, rect's canonical stamp cannot advance.
-    await round("R7 aliased move (B moves A's element)", { adds: 0, changes: [rect.id] }, () =>
-      moveElementByEdge(browserB, rect.id, 150, 80),
-    );
-
-    // R4 runs LAST among rounds that touch browser B's pointer: CDP's
-    // Page.setWebLifecycleState is sticky in headless Chromium and leaves B's
-    // input pipeline waiting a ~5s ack timeout PER dispatched mouse event
-    // afterwards. With this round mid-suite, R5a/R5b/R7 (all B-input) paid
-    // ~3.5 minutes of pure timeout per gate run. Coverage is unchanged —
-    // resume-and-reconcile is asserted identically from down here.
-    await round("R4 frozen tab resume", { adds: 1, changes: [rect.id] }, async () => {
-      await browserB.setLifecycle("frozen");
-      await freedraw(browserA, 1050, 300);
-      await moveElementByEdge(browserA, rect.id, 60, 90);
-      await sleep(1500);
-      await browserB.setLifecycle("active");
-    });
-
-    // R8: pan-cursor stability — a panning user's broadcast cursor (scene coords) must
-    // stay anchored to the grabbed scene point (Excalidraw's own emissions drift on stale
-    // scroll and replay the pointerdown coords at release; manifold recomputes from the
-    // physical pointer + committed camera). Asserts: pan really scrolled the viewport,
-    // pan-window samples hold the grab point, no consecutive jump anywhere (teleport was
-    // ~an entire pan delta), and a known post-pan move lands with the expected delta.
-    {
-      const name = "R8 pan cursor stays anchored, no release teleport";
-      interface CursorSample {
-        readonly x: number;
-        readonly y: number;
-        readonly connId: string;
-      }
-      const rawCursorLog: CursorSample[] = [];
-      const offCursor = sdk.on("cursor", (msg) =>
-        rawCursorLog.push({ x: msg.x, y: msg.y, connId: msg.connId }),
-      );
-      const mouse = (
-        type: string,
-        x: number,
-        y: number,
-        button?: string,
-        buttons?: number,
-      ): Promise<unknown> =>
-        browserA.send("Input.dispatchMouseEvent", {
-          type,
-          x,
-          y,
-          ...(button === undefined ? {} : { button }),
-          ...(buttons === undefined ? {} : { buttons }),
-        });
-      try {
-        const scrollBefore = await browserA.evaluate<number>(
-          "window.__manifold.viewport().scrollX",
-        );
-        // Approach: plain move to the grab spot.
-        for (let i = 0; i <= 10; i++) {
-          await mouse("mouseMoved", canvasLeftA + 400 + i * 10, 360);
-          await sleep(15);
-        }
-        await sleep(200);
-        const grabRawIndex = rawCursorLog.length;
-        // Middle-drag pan: screen -160,-80.
-        await mouse("mousePressed", canvasLeftA + 500, 360, "middle", 4);
-        for (let i = 1; i <= 16; i++) {
-          await mouse("mouseMoved", canvasLeftA + 500 - i * 10, 360 - i * 5, "middle", 4);
-          await sleep(15);
-        }
-        await mouse("mouseReleased", canvasLeftA + 340, 280, "middle");
-        await sleep(250);
-        const panEndRawIndex = rawCursorLog.length;
-        // Post-pan plain move: +100px screen X at zoom 1 => +100 scene X.
-        for (let i = 0; i <= 10; i++) {
-          await mouse("mouseMoved", canvasLeftA + 340 + i * 10, 280);
-          await sleep(15);
-        }
-        await sleep(250);
-        // Wheel-pan leg: no pointer motion at all — pre-fix, ZERO cursor frames are
-        // emitted here (Excalidraw's wheel handler never calls savePointer), so the
-        // remote cursor froze and jumped on the next move. Post-fix the onScrollChange
-        // re-anchor emits frames that keep the cursor under the physical pointer.
-        const wheelStartRawIndex = rawCursorLog.length;
-        const vpBeforeWheel = await browserA.evaluate<{
-          scrollX: number;
-          scrollY: number;
-          zoom: number;
-        }>("window.__manifold.viewport()");
-        for (let i = 0; i < 8; i++) {
-          await browserA.send("Input.dispatchMouseEvent", {
-            type: "mouseWheel",
-            x: canvasLeftA + 440,
-            y: 280,
-            deltaX: 0,
-            deltaY: 40,
-          });
-          await sleep(60);
-        }
-        await sleep(300);
-        const vpAfterWheel = await browserA.evaluate<{
-          scrollX: number;
-          scrollY: number;
-          zoom: number;
-        }>("window.__manifold.viewport()");
-
-        const scrollAfter = await browserA.evaluate<number>("window.__manifold.viewport().scrollX");
-        const failuresHere: string[] = [];
-        // A's connection id: the approach phase is A's exclusive activity, so its samples
-        // identify A even though both browsers share one principal. Require stability.
-        const approach = rawCursorLog.slice(0, grabRawIndex);
-        const tally = new Map<string, number>();
-        for (const sample of approach)
-          tally.set(sample.connId, (tally.get(sample.connId) ?? 0) + 1);
-        const [aConn = "", dominantCount = 0] =
-          [...tally.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
-        if (aConn === "" || dominantCount < 5 || dominantCount < approach.length * 0.8) {
-          failuresHere.push(
-            `no stable A cursor stream before pan (${String(dominantCount)}/${String(approach.length)} samples for dominant connection)`,
-          );
-        }
-        const countBefore = (rawIndex: number): number =>
-          rawCursorLog.slice(0, rawIndex).filter((s) => s.connId === aConn).length;
-        const cursorLog = rawCursorLog.filter((s) => s.connId === aConn);
-        const grabIndex = countBefore(grabRawIndex);
-        const panEndIndex = countBefore(panEndRawIndex);
-        const grab = cursorLog[grabIndex - 1];
-        if (Math.abs(scrollAfter - scrollBefore) < 100) {
-          failuresHere.push(
-            `pan did not scroll the viewport (dScrollX=${String(scrollAfter - scrollBefore)})`,
-          );
-        }
-        if (grab === undefined || cursorLog.length - panEndIndex < 3) {
-          failuresHere.push("insufficient cursor samples around the pan");
-        } else {
-          for (const sample of cursorLog.slice(grabIndex, panEndIndex)) {
-            const deviation = Math.hypot(sample.x - grab.x, sample.y - grab.y);
-            if (deviation > 40) {
-              failuresHere.push(
-                `pan-window sample drifted ${deviation.toFixed(0)}px off the grab point`,
-              );
-              break;
-            }
-          }
-          for (let i = grabIndex; i < cursorLog.length; i++) {
-            const prev = cursorLog[i - 1];
-            const next = cursorLog[i];
-            if (prev === undefined || next === undefined) continue;
-            const jump = Math.hypot(next.x - prev.x, next.y - prev.y);
-            if (jump > 60) {
-              failuresHere.push(
-                `cursor teleported ${jump.toFixed(0)}px between consecutive frames`,
-              );
-              break;
-            }
-          }
-          // Post-pan window ends where the wheel leg begins — separate windows so wheel
-          // motion is never attributed to the post-pan move.
-          const wheelStartIndex = countBefore(wheelStartRawIndex);
-          const postPanLast = cursorLog[wheelStartIndex - 1];
-          const preMove = cursorLog[panEndIndex - 1] ?? grab;
-          if (postPanLast !== undefined && Math.abs(postPanLast.x - preMove.x - 100) > 30) {
-            failuresHere.push(
-              `post-pan move landed ${(postPanLast.x - preMove.x).toFixed(0)}px, expected ~100px`,
-            );
-          }
-          // Wheel leg: camera must actually have moved, re-anchor frames must exist with
-          // no pointer motion, and the cursor must track the MEASURED camera delta
-          // (scene delta = -scroll delta at constant zoom).
-          const dScrollY = vpAfterWheel.scrollY - vpBeforeWheel.scrollY;
-          const wheelSamples = cursorLog.slice(wheelStartIndex);
-          const wheelLast = wheelSamples[wheelSamples.length - 1];
-          if (
-            Math.abs(dScrollY) < 100 ||
-            Math.abs(vpAfterWheel.zoom - vpBeforeWheel.zoom) > 0.001
-          ) {
-            failuresHere.push(
-              `wheel leg did not scroll as expected (dScrollY=${dScrollY.toFixed(0)})`,
-            );
-          } else if (
-            wheelSamples.length < 2 ||
-            wheelLast === undefined ||
-            postPanLast === undefined
-          ) {
-            failuresHere.push(
-              `no cursor re-anchor frames during wheel pan (${String(wheelSamples.length)} samples) — frozen-cursor regression`,
-            );
-          } else if (Math.abs(wheelLast.y - postPanLast.y - -dScrollY) > 60) {
-            failuresHere.push(
-              `wheel-pan cursor did not track the camera: moved ${(wheelLast.y - postPanLast.y).toFixed(0)}px, camera implies ${(-dScrollY).toFixed(0)}px`,
-            );
-          }
-        }
-        if (failuresHere.length > 0) {
-          failures.push(name);
-          console.log(`FAIL  ${name}`);
-          for (const line of failuresHere) console.log(`        ${line}`);
-        } else {
-          console.log(
-            `PASS  ${name} — ${String(cursorLog.length - grabIndex)} samples, anchored within 40px`,
-          );
-        }
-      } finally {
-        offCursor();
-      }
-    }
-
-    const beforeEraserTarget = new Set(
-      [...sdk.scene.values()]
-        .filter((element) => element["type"] === "rectangle")
-        .map((el) => el.id),
-    );
-    await round("R9a eraser target created", { adds: 1 }, async () => {
-      await selectTool(browserA, "rectangle");
-      await browserA.drag(
-        [
-          { x: canvasLeftA + 720, y: 500 },
-          { x: canvasLeftA + 880, y: 600 },
-        ],
-        30,
-      );
-    });
-    const eraserTarget = [...sdk.scene.values()].find(
-      (element) => element["type"] === "rectangle" && !beforeEraserTarget.has(element.id),
-    );
-    if (eraserTarget === undefined) throw new Error("right-click eraser target not canonical");
-
-    await round(
-      "R9b held right-click erases and restores the prior tool",
-      { adds: 0, changes: [eraserTarget.id] },
-      async () => {
-        await selectTool(browserA, "selection");
-        const edge = await edgeOf(browserA, eraserTarget.id);
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: edge.x - 50,
-          y: edge.y,
-        });
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          x: edge.x - 50,
-          y: edge.y,
-          button: "right",
-          buttons: 2,
-          clickCount: 1,
-        });
-        await sleep(450);
-        const eraserActive = await browserA.evaluate<boolean>(
-          `(() => {
-        const checked = [...document.querySelectorAll('input[type=radio]:checked')]
-          .some((input) => input.closest('[aria-label]')?.getAttribute('aria-label') === 'Eraser');
-        const cursor = document.querySelector('.excalidraw__canvas.interactive')?.style.cursor ?? '';
-        return checked && cursor.startsWith('url(');
-      })()`,
-        );
-        if (!eraserActive) throw new Error("held right-click did not activate the eraser cursor");
-        for (let i = 1; i <= 10; i++) {
-          await browserA.send("Input.dispatchMouseEvent", {
-            type: "mouseMoved",
-            x: edge.x - 50 + i * 10,
-            y: edge.y,
-            button: "right",
-            buttons: 2,
-          });
-          await sleep(15);
-        }
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          x: edge.x + 50,
-          y: edge.y,
-          button: "right",
-          clickCount: 1,
-        });
-        await sleep(250);
-        const restored = await browserA.evaluate<boolean>(
-          `(() => {
-        const selection = [...document.querySelectorAll('input[type=radio]:checked')]
-          .some((input) => input.closest('[aria-label]')?.getAttribute('aria-label') === 'Selection');
-        return selection && document.querySelector('.context-menu') === null;
-      })()`,
-        );
-        if (!restored) throw new Error("right-click release did not restore Selection cleanly");
-      },
-    );
+    await sleep(15);
   }
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: panStart.x - 140,
+    y: panStart.y - 84,
+    button: "middle",
+  });
+  await sleep(300);
+  const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
+  offCursor();
+  if (
+    Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
+    Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) < 30
+  ) {
+    throw new Error("Flow viewport did not move under a real middle-button pan");
+  }
+  if (cursorFrames.length < 3) {
+    throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
+  }
+  console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
 } finally {
   // ---------------------------------------------------------------- teardown
   await browserA.close().catch(() => undefined);

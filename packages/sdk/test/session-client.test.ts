@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { z } from "zod";
-import {
-  MAX_SESSION_FRAME_BYTES,
-  PROTOCOL_VERSION,
-  type SceneElement,
-  type ServerMessage,
-} from "@manifold/protocol";
+import { PROTOCOL_VERSION, type SceneElement, type ServerMessage } from "@manifold/protocol";
 import { SessionClient, type SceneUpdateRejection } from "@manifold/sdk";
 
 afterEach(() => {
@@ -78,7 +73,19 @@ function sceneUpdateFrames(socket: FakeSocket): SceneUpdateFrame[] {
 }
 
 function element(id: string, version: number, versionNonce = 0): SceneElement {
-  return { id, version, versionNonce, isDeleted: false, index: null };
+  return {
+    id,
+    type: "terminal",
+    sessionId: `session-${id}`,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+    version,
+    versionNonce,
+    isDeleted: false,
+  };
 }
 
 const INIT: ServerMessage = {
@@ -284,67 +291,6 @@ describe("scene flow", () => {
     expect(updateIds).toEqual(updates.map((frame) => frame.updateId));
     expect(client.scene.size).toBe(201);
     expect(client.scene.has("bulk-199")).toBe(true);
-  });
-
-  test("updateScene splits two 600 KiB elements into sub-1 MiB frames", () => {
-    const { client, socket } = connected();
-    const first: SceneElement = {
-      ...element("fat-a", 1),
-      payload: "a".repeat(600 * 1024),
-    };
-    const second: SceneElement = {
-      ...element("fat-b", 1),
-      payload: "b".repeat(600 * 1024),
-    };
-
-    const updateIds = client.updateScene([first, second]);
-
-    const updates = sceneUpdateFrames(socket);
-    const wireFrames = socket.sent.filter(
-      (frame) => SentFrameSchema.parse(JSON.parse(frame)).type === "scene_update",
-    );
-    expect(updates).toHaveLength(2);
-    expect(updates.map((frame) => frame.elements.length)).toEqual([1, 1]);
-    expect(updateIds).toEqual(updates.map((frame) => frame.updateId));
-    for (const frame of wireFrames) {
-      expect(new TextEncoder().encode(frame).byteLength).toBeLessThan(MAX_SESSION_FRAME_BYTES);
-    }
-    expect(client.scene.has("fat-a")).toBe(true);
-    expect(client.scene.has("fat-b")).toBe(true);
-  });
-
-  test("an over-budget element is reported, never applied, and never rebased", () => {
-    vi.useFakeTimers();
-    const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
-    });
-    const tooLarge: SceneElement = {
-      ...element("too-fat", 1),
-      payload: "x".repeat(800 * 1024),
-    };
-    const sentBefore = socket.sent.length;
-
-    const updateIds = client.updateScene([tooLarge]);
-
-    expect(updateIds).toBeNull();
-    expect(client.scene.has("too-fat")).toBe(false);
-    expect(socket.sent).toHaveLength(sentBefore);
-    expect(rejections).toHaveLength(1);
-    expect(rejections[0]?.element.id).toBe("too-fat");
-    expect(rejections[0]?.reason).toBe("element_too_large");
-
-    socket.close(1006, "abnormal");
-    vi.runAllTimers();
-    const replacement = FakeSocket.instances.at(-1);
-    if (!replacement || replacement === socket) throw new Error("no replacement socket");
-    replacement.open();
-    replacement.receive({ ...INIT, type: "resync" });
-
-    expect(sceneUpdateFrames(replacement)).toHaveLength(0);
-    expect(client.scene.has("too-fat")).toBe(false);
-    client.close();
   });
 
   test("losing update is not sent (local reconcile rejects it)", () => {

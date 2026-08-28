@@ -1,6 +1,5 @@
 import {
   PROTOCOL_VERSION,
-  TerminalCustomDataSchema,
   applyAccepted,
   compareElements,
   reconcile,
@@ -380,9 +379,7 @@ export class Room {
   /** Whether a live, non-deleted terminal element still points at a persisted session. */
   referencesSession(sessionId: string): boolean {
     for (const element of this.scene.values()) {
-      if (element.isDeleted) continue;
-      const parsed = TerminalCustomDataSchema.safeParse(element.customData);
-      if (parsed.success && parsed.data.sessionId === sessionId) return true;
+      if (!element.isDeleted && element.sessionId === sessionId) return true;
     }
     return false;
   }

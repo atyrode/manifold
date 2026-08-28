@@ -46,13 +46,11 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
 
     const initial: SceneElement[] = Array.from({ length: 40 }, (_, index) => ({
       ...sceneElement(`el-${index}`),
-      index: `a${index.toString().padStart(3, "0")}`,
+      zIndex: index,
       x: index * 17,
       y: index * 11,
       width: 120 + index,
       height: 60,
-      strokeColor: index % 2 === 0 ? "#1f2937" : "#7c3aed",
-      backgroundColor: index % 3 === 0 ? "#fef3c7" : "transparent",
     }));
     expect(clientA.updateScene(initial)).not.toBeNull();
     await waitFor(() => clientB.scene.size === 40 && clientB.rev === clientA.rev, 10_000, 20);
@@ -67,10 +65,14 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
     const current = clientA.scene.get("el-0");
     if (current === undefined) throw new Error("missing conflict seed element");
     expect(
-      clientA.updateScene([{ ...current, version: 2, versionNonce: 5, owner: clientA.self.id }]),
+      clientA.updateScene([
+        { ...current, version: 2, versionNonce: 5, sessionId: clientA.self.id },
+      ]),
     ).not.toBeNull();
     expect(
-      clientB.updateScene([{ ...current, version: 2, versionNonce: 3, owner: clientB.self.id }]),
+      clientB.updateScene([
+        { ...current, version: 2, versionNonce: 3, sessionId: clientB.self.id },
+      ]),
     ).not.toBeNull();
     await waitFor(
       () =>
@@ -82,7 +84,7 @@ test("scene clients converge through conflicts, resume, tombstones, resurrection
       20,
     );
     offApplied();
-    expect(clientA.scene.get("el-0")?.owner).toBe(clientB.self.id);
+    expect(clientA.scene.get("el-0")?.sessionId).toBe(clientB.self.id);
     expect(sortedScene(clientB)).toEqual(sortedScene(clientA));
 
     const lastEpoch = clientB.epoch;

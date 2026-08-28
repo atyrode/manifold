@@ -129,40 +129,32 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     observer = sdk;
     await sdk.connect();
 
-    // A creates the dragged rectangle.
-    await browserA.evaluate(
-      "(() => { document.querySelector('[data-testid=toolbar-rectangle]')?.click(); })()",
-    );
-    await sleep(200);
-    await browserA.drag(
-      [
-        { x: 500, y: 400 },
-        { x: 640, y: 480 },
-      ],
-      30,
-    );
-    let rectId = "";
-    await until(
-      () => {
-        for (const el of sdk.scene.values()) {
-          if (el["type"] === "rectangle") {
-            rectId = el.id;
-            return true;
-          }
-        }
-        return false;
+    // Seed one native terminal node through the SDK, then drag it through the real renderer.
+    const nodeId = "bench-terminal";
+    sdk.updateScene([
+      {
+        id: nodeId,
+        type: "terminal",
+        sessionId: "bench-session",
+        x: 500,
+        y: 400,
+        width: 480,
+        height: 320,
+        zIndex: 0,
+        version: 1,
+        versionNonce: 1,
+        isDeleted: false,
       },
-      10_000,
-      "bench rectangle canonical",
-    );
-    const rect = { id: rectId };
+    ]);
+    await until(() => sdk.scene.has(nodeId), 10_000, "bench terminal canonical");
+    const node = { id: nodeId };
     await until(
       () =>
         browserB.evaluate<boolean>(
-          `window.__manifold.canvas().some((e) => e.id === ${JSON.stringify(rect.id)})`,
+          `window.__manifold.canvas().some((e) => e.id === ${JSON.stringify(node.id)})`,
         ),
       10_000,
-      "rectangle visible on B",
+      "terminal visible on B",
     );
 
     // Wire counters on the observer.
@@ -184,13 +176,13 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       }
     });
 
-    // B polls its own canvas for the rectangle's live position.
+    // B polls its own canvas for the terminal node's live position.
     const samples: { t: number; x: number }[] = [];
     let polling = true;
     const pollLoop = (async () => {
       while (polling) {
         const x = await browserB.evaluate<number | null>(
-          `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)});
+          `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(node.id)});
             return el ? el.x : null; })()`,
         );
         if (x !== null) samples.push({ t: performance.now(), x });
@@ -200,15 +192,15 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
 
     // A drags: grab the top edge, then sweep x monotonically right on a known schedule.
     const edge = await browserA.evaluate<{ x: number; y: number } | null>(
-      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)});
+      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(node.id)});
         const vp = window.__manifold.viewport();
         if (!el || !vp) return null;
         return { x: (el.x + el.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
                  y: (el.y + vp.scrollY) * vp.zoom + vp.offsetTop }; })()`,
     );
-    if (edge === null) throw new Error("rectangle edge not resolvable on A");
+    if (edge === null) throw new Error("terminal titlebar edge not resolvable on A");
     const startXCanvas = await browserB.evaluate<number>(
-      `window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)}).x`,
+      `window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(node.id)}).x`,
     );
 
     const steps = Math.floor((DRAG_SECONDS * 1000) / STEP_MS);

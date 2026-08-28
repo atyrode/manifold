@@ -88,7 +88,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       clientA.updateScene([
         {
           ...sceneElement("el-term-1"),
-          customData: { kind: "terminal", sessionId: session.id },
+          sessionId: session.id,
         },
       ]),
     ).not.toBeNull();

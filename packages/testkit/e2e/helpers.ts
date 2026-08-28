@@ -76,14 +76,26 @@ export async function waitForTerminalText(
   await waitFor(() => (capture.snapshotText + capture.outputText).includes(text), timeoutMs, 20);
 }
 
-/** Produces the smallest protocol-valid scene record so tests vary only relevant LWW fields. */
+/** Produces a protocol-valid native terminal record so tests vary only relevant LWW fields. */
 export function sceneElement(
   id: string,
   version = 1,
   versionNonce = 100,
   isDeleted = false,
 ): SceneElement {
-  return { id, version, versionNonce, isDeleted };
+  return {
+    id,
+    type: "terminal",
+    sessionId: `session-${id}`,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+    version,
+    versionNonce,
+    isDeleted,
+  };
 }
 
 /** Canonicalizes scene values by id for convergence comparisons independent of Map insertion order. */

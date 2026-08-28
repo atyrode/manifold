@@ -128,6 +128,10 @@ Presence is carried by `roster`, whose entries are `PresenceState`; there is no 
 
 - Server holds the canonical scene per pad room. `epoch` identifies a scene lineage
   (changes only on restore/reset); `rev` increments once per accepted update batch.
+- Protocol v5 scene records are strict native terminals:
+  `{ id, type:"terminal", sessionId, x, y, width, height, zIndex, version, versionNonce, isDeleted }`.
+  Unknown fields and pre-v5 renderer records are rejected; there is no compatibility reader
+  or snapshot migration.
 - Client sends `scene_update { updateId, baseRev, elements[] }` (≤128 elements, full
   changed records, ≤1MB frame). Applies optimistically on its own canvas first.
 - Server reconciles each element with `@manifold/protocol` `reconcileElement`:
@@ -144,8 +148,7 @@ Presence is carried by `roster`, whose entries are `PresenceState`; there is no 
 - Server broadcasts `scene_applied { rev, elements, by }` with ONLY the accepted records
   (including to the sender) and acks the sender `scene_ack { updateId, rev, accepted }`.
 - Clients apply `scene_applied` through the same `reconcileElement` — both sides run the
-  identical module. Ordering for render: sort by (`index` ?? "", `id`); the server stores
-  `index` opaquely and never rewrites it.
+  identical module. Rendering sorts by (`zIndex`, `id`); the server never rewrites either.
 - Client detects a rev gap (received rev > lastRev+1) or epoch change → sends
   `resync_request {}` → server replies with a fresh `init`-shaped `resync`. `join` carries
   `protocolVersion`; mismatches close 4409.
@@ -174,8 +177,8 @@ Presence is carried by `roster`, whose entries are `PresenceState`; there is no 
   asks the agent to create the PTY with env `MANIFOLD_URL`, `MANIFOLD_PAD`,
   `MANIFOLD_ELEMENT`, `MANIFOLD_TOKEN` injected, then replies
   `terminal_opened { elementId, session }` and broadcasts `session_event { kind:"opened" }`.
-  The OPENING client then writes `customData.sessionId` onto the element via a normal
-  `scene_update` (the server never mutates the scene).
+  The OPENING client then writes the returned `session.id` into the element's top-level
+  `sessionId` via a normal `scene_update` (the server never mutates the scene).
 - **Attach state machine (no-gap invariant).** On `terminal_attach { sessionId }`:
   1. server registers the viewer as PENDING and starts queueing that session's live
      `output` frames for it (nothing is sent yet);
@@ -216,8 +219,8 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.
-- Session ids are opaque; scene elements store only `customData.sessionId` +
-  `customData.kind === "terminal"`.
+- Session ids are opaque; every scene record is a native terminal and stores `sessionId`
+  directly.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 

@@ -48,9 +48,8 @@ import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 
 /**
- * React Flow is manifold's pad renderer on this branch. The protocol remains unchanged:
- * persisted legacy terminal elements project directly into nodes, while new terminals are
- * written as the same loose scene records without involving Excalidraw.
+ * React Flow is manifold's pad renderer. Native terminal scene records project directly
+ * into React Flow nodes.
  */
 
 /** Stable module-scope identity prevents React Flow from remounting live PTYs. */
@@ -333,15 +332,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
           rows: 24,
           ...(machineId === undefined ? {} : { machineId }),
         });
-        const rebound = bumpElement(element, {
-          customData: {
-            kind: "terminal",
-            sessionId: session.id,
-            showHyperlinkIcon: false,
-            fullInteractionTarget: true,
-            showShapeActions: false,
-          },
-        });
+        const rebound = bumpElement(element, { sessionId: session.id });
         publish([rebound]);
       } catch (reason: unknown) {
         setError(reason instanceof Error ? reason.message : "Could not restart terminal");

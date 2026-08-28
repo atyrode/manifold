@@ -62,8 +62,38 @@ function roomFixture(store: ServerStore = testStore()) {
   return { runtime, clock, store, pad, socket, peer, room };
 }
 
-function element(version: number): SceneElement {
-  return { id: "element-1", version, versionNonce: 7, isDeleted: false };
+function element(version: number, id = "element-1"): SceneElement {
+  return {
+    id,
+    type: "terminal",
+    sessionId: `session-${id}`,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+    version,
+    versionNonce: 7,
+    isDeleted: false,
+  };
+}
+function sceneAtLeastBytes(minimumBytes: number): SceneElement[] {
+  const elements: SceneElement[] = [];
+  let bytes = 2;
+  for (let index = 0; bytes < minimumBytes; index += 1) {
+    const suffix = index.toString(36);
+    const record: SceneElement = {
+      ...element(1, `element-${suffix}`),
+      sessionId: `session-${suffix}-${"s".repeat(112)}`,
+      x: 9_999_999_999,
+      y: -9_999_999_999,
+      zIndex: index,
+      versionNonce: index,
+    };
+    elements.push(record);
+    bytes += Buffer.byteLength(JSON.stringify(record)) + (elements.length === 1 ? 0 : 1);
+  }
+  return elements;
 }
 
 describe("Room scene consistency", () => {
@@ -286,14 +316,8 @@ describe("Room failure isolation and residency", () => {
 describe("Room bounded authoritative state", () => {
   test("an init larger than the old 1 MiB queue cap is delivered without closing", () => {
     const fixture = roomFixture();
-    const large: SceneElement = {
-      id: "large-element",
-      version: 1,
-      versionNonce: 1,
-      isDeleted: false,
-      payload: "x".repeat(1_100_000),
-    };
-    fixture.store.saveSnapshot(fixture.pad.id, "large-epoch", 4, 1, [large]);
+    const large = sceneAtLeastBytes(1_100_000);
+    fixture.store.saveSnapshot(fixture.pad.id, "large-epoch", 4, 1, large);
     const socket = new FakeSocket();
     const peer = new SessionPeer(
       fixture.runtime.newId(),
@@ -320,14 +344,8 @@ describe("Room bounded authoritative state", () => {
 
   test("a scene update that would exceed the canonical hard limit is rejected", () => {
     const fixture = roomFixture();
-    const nearLimit: SceneElement = {
-      id: "near-limit",
-      version: 1,
-      versionNonce: 1,
-      isDeleted: false,
-      payload: "x".repeat(SCENE_BYTES_LIMIT - 600_000),
-    };
-    fixture.store.saveSnapshot(fixture.pad.id, "bounded-epoch", 3, 1, [nearLimit]);
+    const nearLimit = sceneAtLeastBytes(SCENE_BYTES_LIMIT - 100);
+    fixture.store.saveSnapshot(fixture.pad.id, "bounded-epoch", 3, 1, nearLimit);
     const socket = new FakeSocket();
     const peer = new SessionPeer(
       fixture.runtime.newId(),
@@ -349,19 +367,11 @@ describe("Room bounded authoritative state", () => {
       updateId: "too-large",
       epoch: room.epoch,
       baseRev: room.rev,
-      elements: [
-        {
-          id: "overflow",
-          version: 1,
-          versionNonce: 1,
-          isDeleted: false,
-          payload: "y".repeat(700_000),
-        },
-      ],
+      elements: [element(1, "overflow")],
     });
 
     expect(room.rev).toBe(3);
-    expect([...room.scene.values()]).toEqual([nearLimit]);
+    expect([...room.scene.values()]).toEqual(nearLimit);
     expect(socket.messages()).toEqual([
       {
         type: "error",
@@ -469,13 +479,9 @@ test("an over-ceiling init rolls back membership, emits an error, and closes 100
   );
   expect(room.join(observer)).toBe(true);
   observerSocket.clear();
-  room.scene.set("legacy-oversized", {
-    id: "legacy-oversized",
-    version: 1,
-    versionNonce: 1,
-    isDeleted: false,
-    payload: "x".repeat(17 * 1_048_576),
-  });
+  for (const element of sceneAtLeastBytes(17 * 1_048_576)) {
+    room.scene.set(element.id, element);
+  }
   const socket = new FakeSocket();
   const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.peer.auth, fixture.pad.id);
 

@@ -6,12 +6,24 @@ import {
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
   ServerMessageSchema,
-  TerminalCustomDataSchema,
+  SceneElementSchema,
   buildProtocolJsonSchema,
   hasCap,
 } from "@manifold/protocol";
 
-const element = (id: string) => ({ id, version: 1, versionNonce: 2, isDeleted: false });
+const element = (id: string) => ({
+  id,
+  type: "terminal" as const,
+  sessionId: `session-${id}`,
+  x: 0,
+  y: 0,
+  width: 720,
+  height: 480,
+  zIndex: 0,
+  version: 1,
+  versionNonce: 2,
+  isDeleted: false,
+});
 
 describe("session channel schemas", () => {
   test("join round-trips", () => {
@@ -35,16 +47,16 @@ describe("session channel schemas", () => {
     expect(ClientMessageSchema.safeParse({ ...noEpoch, epoch: "e1" }).success).toBe(true);
   });
 
-  test("unknown Excalidraw element properties pass through opaquely", () => {
-    const msg = ClientMessageSchema.parse({
-      type: "scene_update",
-      updateId: "u1",
-      epoch: "e1",
-      baseRev: 3,
-      elements: [{ ...element("a"), strokeColor: "#fff", points: [[0, 1]] }],
-    });
-    if (msg.type !== "scene_update") throw new Error("unreachable");
-    expect(msg.elements[0]).toMatchObject({ strokeColor: "#fff" });
+  test("scene updates reject undeclared renderer fields", () => {
+    expect(
+      ClientMessageSchema.safeParse({
+        type: "scene_update",
+        updateId: "u1",
+        epoch: "e1",
+        baseRev: 3,
+        elements: [{ ...element("a"), strokeColor: "#fff", points: [[0, 1]] }],
+      }).success,
+    ).toBe(false);
   });
 
   test("oversized batches are rejected", () => {
@@ -129,24 +141,19 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("terminal customData carries the fork-gate flags and stays loose", () => {
-    const parsed = TerminalCustomDataSchema.parse({
-      kind: "terminal",
-      sessionId: "s1",
-      showHyperlinkIcon: false,
-      fullInteractionTarget: true,
-      showShapeActions: false,
-      futureKey: "still passes",
-    });
-    expect(parsed.sessionId).toBe("s1");
-    // The web layer rides these into the fork's re-derived per-element gates
-    // (link affordance off, whole-element click-to-activate, style panel
-    // suppressed). A stricter schema would strip (object) or reject
-    // (strictObject) them and revert to stock.
-    expect(parsed.showHyperlinkIcon).toBe(false);
-    expect(parsed.fullInteractionTarget).toBe(true);
-    expect(parsed.showShapeActions).toBe(false);
-    expect((parsed as Record<string, unknown>)["futureKey"]).toBe("still passes");
+  test("scene records are strict native terminals", () => {
+    expect(SceneElementSchema.parse(element("terminal-1"))).toEqual(element("terminal-1"));
+    expect(
+      SceneElementSchema.safeParse({
+        ...element("legacy"),
+        type: "embeddable",
+        link: "manifold://terminal",
+        customData: { kind: "terminal", sessionId: "s1" },
+      }).success,
+    ).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...element("drawing"), type: "rectangle" }).success).toBe(
+      false,
+    );
   });
 });
 

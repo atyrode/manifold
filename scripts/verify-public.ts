@@ -121,9 +121,9 @@ try {
     }
     await browser.goto(`${origin}/p/${padId}`);
     await until(
-      () => browser.evaluate<boolean>("document.querySelector('.excalidraw') !== null"),
+      () => browser.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
       20_000,
-      "excalidraw mount",
+      "React Flow mount",
     );
     await until(
       () =>
@@ -141,70 +141,6 @@ try {
     const path = await browser.evaluate<string>("location.pathname");
     if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
     return `canvas mounted at ${path}, session open, seam active`;
-  });
-
-  await step("freedraw stroke survives its own sync round-trip", async () => {
-    // Regression for the multiplayer revert bug: the web layer used to repaint the canvas
-    // from the canonical scene on every flush echo, reverting an in-flight gesture to the
-    // first throttled partial ("only a dot") and dropping the final stroke entirely.
-    const toolSelected = await browser.evaluate<boolean>(
-      "(() => { const b = document.querySelector('[data-testid=toolbar-freedraw]'); if (!b) return false; b.click(); return true; })()",
-    );
-    if (!toolSelected) throw new Error("freedraw tool button not found");
-    await sleep(300);
-    // One ~600ms gesture spanning many scene-flush windows.
-    const canvasLeft = await browser.evaluate<number>(
-      "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
-    );
-    const points = Array.from({ length: 40 }, (_, i) => ({
-      x: canvasLeft + 360 + i * 12,
-      y: 320 + Math.round(Math.sin(i / 4) * 80),
-    }));
-    await browser.drag(points, 15);
-    const observer = newViewer(padId);
-    await observer.connect();
-    try {
-      let observed = 0;
-      await until(
-        () => {
-          observed = 0;
-          for (const element of observer.scene.values()) {
-            if (element["type"] !== "freedraw" || element.isDeleted) continue;
-            const pts = element["points"];
-            if (Array.isArray(pts)) observed = Math.max(observed, pts.length);
-          }
-          return observed >= 20;
-        },
-        15_000,
-        "canonical freedraw stroke carrying the full gesture (>=20 points)",
-      );
-      // The drawer's OWN canvas must hold the stroke at the canonical stamp: canonical-only
-      // assertions cannot see a canvas-side revert (server keeps the stroke, drawer loses it).
-      await until(
-        async () => {
-          const canvasStamps = await browser.evaluate<readonly [string, number, number][]>(
-            "window.__manifold.canvas().map((e) => [e.id, e.version, e.versionNonce])",
-          );
-          for (const [id, version, versionNonce] of canvasStamps) {
-            const canonical = observer.scene.get(id);
-            if (
-              canonical !== undefined &&
-              canonical["type"] === "freedraw" &&
-              canonical.version === version &&
-              canonical.versionNonce === versionNonce
-            ) {
-              return true;
-            }
-          }
-          return false;
-        },
-        10_000,
-        "drawer canvas holding the stroke at the canonical stamp",
-      );
-      return `canonical stroke carries ${String(observed)} points; drawer canvas at canonical stamp`;
-    } finally {
-      observer.close();
-    }
   });
 
   await step("embedded terminal opens and runs a command in the browser", async () => {
@@ -300,15 +236,16 @@ try {
     client.updateScene([
       {
         id: `verify-${marker}`,
-        type: "rectangle",
+        type: "terminal",
+        sessionId: `verify-session-${marker}`,
         x: 40,
         y: 40,
         width: 120,
         height: 80,
+        zIndex: 0,
         version: 1,
         versionNonce: 11,
         isDeleted: false,
-        index: "a0",
       },
     ]);
     await until(() => client.rev > 0, 10_000, "scene accepted");

@@ -26,20 +26,20 @@ persistence schema. Summary:
 - **agent**: separate long-lived daemon holding PTYs (`Bun.Terminal`), dialing OUT to the
   server; sessions survive server restarts; headless xterm mirror gives gap-free attach
   snapshots.
-- **web**: React 19 + upstream `@excalidraw/excalidraw` 0.18.1 (pinned, never forked
-  in-place; fork-fresh-from-upstream is the documented escape hatch) + xterm 6 terminals
-  rendered as embeddable elements; presence rendered from the roster.
+- **web**: React 19 + React Flow 12 + xterm 6 terminals rendered as native draggable,
+  resizable nodes; presence rendered from the roster.
 - **sync**: server-canonical relay (join → init → scene_update/scene_applied → resync),
   first-party presence envelope (no CRDT runtime), high-rate cursor channel separate from
   reliable scene channel.
 
 ## v0 scope (current build)
 
-In: multiple pads with URLs; draw + full Excalidraw editing; multiplayer convergence;
-presence (roster, cursors, selection, status, terminal focus); terminals on the local
-machine via the bundled agent; multi-viewer terminals with controller lease; owner-key
-bootstrap; scoped agent tokens + env injection (`MANIFOLD_URL/PAD/ELEMENT/TOKEN`);
-revocation; snapshots + crash recovery; introspection endpoint; unit + e2e gates.
+In: multiple pads with URLs; terminal-only infinite canvas with native drag, resize, pan,
+and zoom; multiplayer convergence; presence (roster, cursors, selection, status, terminal
+focus); terminals on the local machine via the bundled agent; multi-viewer terminals with
+controller lease; owner-key bootstrap; scoped agent tokens + env injection
+(`MANIFOLD_URL/PAD/ELEMENT/TOKEN`); revocation; snapshots + crash recovery; introspection
+endpoint; unit + e2e gates.
 
 Deferred (seams named): remote-machine onboarding UX (protocol already supports it), padctl
 CLI + MCP adapter (thin layers over the SDK), follow-mode camera, freeze button in roster UI
@@ -52,27 +52,25 @@ encryption (conflicts with server-side reconciliation — deliberate), provision
 
 ## Consistency model (summary)
 
-Element-granularity last-writer-wins with Excalidraw semantics: accept iff
-`version > current.version`, tie-break `versionNonce < current.versionNonce`; deletions are
-permanent tombstones; fractional `index` stored opaquely, ordering client-side; same
-reconcile module runs on client (optimistic) and server (canonical). Known accepted
-weakness: concurrent edits to different properties of the same element — one side wins.
+Element-granularity last-writer-wins: accept iff `version > current.version`, tie-break
+`versionNonce < current.versionNonce`; deletions remain tombstones; explicit `zIndex` plus
+`id` determines paint order; the same reconcile module runs on client (optimistic) and
+server (canonical). Known accepted weakness: concurrent edits to different properties of
+the same element — one side wins.
 
 ## Risks & mitigations
 
 1. `Bun.Terminal` regressions — pinned bun 1.3.13, validated by `docs/spikes/s2-pty`;
    fallback: agent package on Node + node-pty (protocol unchanged).
-2. Excalidraw customization walls (toolbar/context menus/custom shapes are not slot-
-   replaceable in 0.18.1) — baseline fits published slots; escape hatch: fresh upstream fork.
-3. Many-xterm page cost — DOM renderer default, dispose offscreen, capped scrollback;
-   soak test before calling terminals done.
-4. External-fact drift — decisions in `docs/decisions/` are dated; re-verify on upgrade.
+2. Many-node page cost — React Flow visibility culling plus bounded xterm lifecycle;
+   soak test before calling large terminal workspaces done.
+3. External-fact drift — decisions in `docs/decisions/` are dated; re-verify on upgrade.
 
 ## Lineage (what pad.ws taught)
 
-Proven concepts carried as design (never code): terminal identity inside scene elements'
-`customData`; embed dispatch + off-viewport lifecycle; bounded patches with per-socket
-backpressure; version/versionNonce/tombstone reconciliation; debounced durable flush;
-scoped revocable agent tokens; multi-attach shared sessions. Pain not repeated: forked
-Excalidraw drift; five-service dev loop; Redis as inter-process glue; 4-hop iframe terminal
-path; cosmetic presence; owner-scoped (not principal-scoped) agent credentials.
+Proven concepts carried as design (never code): terminal identity in native scene records;
+off-viewport lifecycle; bounded patches with per-socket backpressure;
+version/versionNonce/tombstone reconciliation; debounced durable flush; scoped revocable
+agent tokens; multi-attach shared sessions. Pain not repeated: third-party renderer drift;
+five-service dev loop; Redis as inter-process glue; 4-hop iframe terminal path; cosmetic
+presence; owner-scoped (not principal-scoped) agent credentials.

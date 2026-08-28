@@ -20,7 +20,7 @@ describe("connection-scoped cursor identity", () => {
     ]);
   });
 
-  test("connection ids produce distinct Excalidraw socket ids for one principal", () => {
+  test("connection ids produce distinct remote cursor ids for one principal", () => {
     expect(remoteCursorSocketId("owner", "one")).toBe("owner:one");
     expect(remoteCursorSocketId("owner", "two")).toBe("owner:two");
     expect(remoteCursorSocketId("owner", "one")).not.toBe(remoteCursorSocketId("owner", "two"));

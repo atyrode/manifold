@@ -1418,8 +1418,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* Idle veil — faint white haze over an unfocused terminal, readable underneath;
-   sits above the title bar too, so the whole surface reads as dimmed. Never
-   intercepts input (Excalidraw already gates the embed until activated). */
+   sits above the title bar too, so the whole surface reads as dimmed without intercepting input. */
 .terminal-idle-veil {
   position: absolute;
   inset: 0;

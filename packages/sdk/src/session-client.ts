@@ -130,8 +130,7 @@ const TERMINAL_CLOSE_CODE_MAX = 4499;
 const SCENE_UPDATE_ELEMENTS_BYTE_BUDGET = (MAX_SESSION_FRAME_BYTES * 3) / 4;
 
 /**
- * Counts the UTF-8 bytes of one element's JSON without allocating another full-size
- * encoded buffer. Large freedraw records make that otherwise significant transient memory.
+ * Counts the UTF-8 bytes of one element's JSON without allocating another encoded buffer.
  */
 function serializedElementByteLength(element: SceneElement): number | null {
   let serialized: string | undefined;

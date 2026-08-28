@@ -74,7 +74,7 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       client.updateScene([
         {
           ...sceneElement("el-survive-terminal"),
-          customData: { kind: "terminal", sessionId: session.id },
+          sessionId: session.id,
         },
       ]),
     ).not.toBeNull();

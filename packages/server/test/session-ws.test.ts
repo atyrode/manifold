@@ -223,6 +223,13 @@ describe("SessionGateway automatic resync cadence", () => {
           elements: [
             {
               id: "element",
+              type: "terminal",
+              sessionId: "session-element",
+              x: 0,
+              y: 0,
+              width: 720,
+              height: 480,
+              zIndex: 0,
               version: index + 1,
               versionNonce: 1,
               isDeleted: false,

@@ -1,13 +1,12 @@
 import type { SceneElement } from "./elements.ts";
 
 /**
- * Element-granularity last-writer-wins with Excalidraw semantics. The SAME module runs on
- * the server (canonical) and in clients (optimistic + convergence) — consistency parity by
- * construction.
+ * Element-granularity last-writer-wins. The SAME module runs on the server (canonical)
+ * and in clients (optimistic + convergence) — consistency parity by construction.
  *
  * Rules:
  * - higher `version` wins;
- * - equal `version`: LOWER `versionNonce` wins (deterministic tiebreak, matches Excalidraw);
+ * - equal `version`: LOWER `versionNonce` wins as a deterministic tiebreak;
  * - deletions are ordinary LWW updates (`isDeleted: true` with a bumped version), and
  *   undo-of-delete is equally legitimate (`isDeleted: false` with a higher version).
  *

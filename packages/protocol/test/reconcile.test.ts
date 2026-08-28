@@ -7,8 +7,26 @@ import {
   type SceneElement,
 } from "@manifold/protocol";
 
-function el(id: string, version: number, versionNonce: number, extra?: object): SceneElement {
-  return { id, version, versionNonce, isDeleted: false, index: null, ...extra };
+function el(
+  id: string,
+  version: number,
+  versionNonce: number,
+  extra?: Partial<SceneElement>,
+): SceneElement {
+  return {
+    id,
+    type: "terminal",
+    sessionId: `session-${id}`,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+    version,
+    versionNonce,
+    isDeleted: false,
+    ...extra,
+  };
 }
 
 describe("shouldAccept — LWW acceptance matrix", () => {
@@ -92,14 +110,14 @@ describe("reconcile — batch semantics", () => {
 });
 
 describe("compareElements — canonical order", () => {
-  test("fractional index first, id tiebreak, missing index sorts first", () => {
+  test("z-index first, id as deterministic tiebreak", () => {
     const els = [
-      el("z", 0, 0, { index: "a1" }),
-      el("a", 0, 0, { index: "a0" }),
-      el("m", 0, 0, { index: null }),
-      el("b", 0, 0, { index: "a0" }),
+      el("z", 0, 0, { zIndex: 2 }),
+      el("a", 0, 0, { zIndex: 1 }),
+      el("m", 0, 0, { zIndex: 0 }),
+      el("b", 0, 0, { zIndex: 1 }),
     ];
     const sorted = [...els].sort(compareElements);
-    expect(sorted.map((e) => e.id)).toEqual(["m", "a", "b", "z"]);
+    expect(sorted.map((element) => element.id)).toEqual(["m", "a", "b", "z"]);
   });
 });
