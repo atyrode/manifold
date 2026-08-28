@@ -1,6 +1,6 @@
 import type { MachineSummary } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
-import type { NodeProps } from "@xyflow/react";
+import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { createContext, useContext, useEffect, useRef } from "react";
 import { TerminalView } from "./terminal-view.tsx";
 import type { SessionMachine } from "./machine-visibility.ts";
@@ -19,6 +19,8 @@ export interface FlowPadContextValue {
   readonly onClose: (elementId: string, sessionId: string) => void;
   readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
   readonly sessionShared: (elementId: string, sessionId: string) => boolean;
+  /** Commits a finished resize; a no-op while the route is read-only. */
+  readonly onResize: (elementId: string, width: number, height: number) => void;
   /**
    * Remount telemetry for the spike's acceptance criteria. A terminal that survives
    * pan/zoom/select must report exactly one mount for the life of the route.
@@ -36,8 +38,16 @@ export function useFlowPad(): FlowPadContextValue {
   return value;
 }
 
-/** Selector React Flow uses as this node's drag handle; see the grip element below. */
-export const TERMINAL_DRAG_HANDLE = ".flow-terminal__grip";
+/**
+ * React Flow drag handle. The terminal's OWN titlebar, which is what a user reaches for —
+ * enabled by `TerminalView`'s opt-in `titlebarDragsHost` seam, since the frame otherwise
+ * swallows pointerdown so xterm can own selection.
+ */
+export const TERMINAL_DRAG_HANDLE = ".terminal-titlebar";
+
+/** Keeps a resize from collapsing a terminal below a usable shell. */
+export const MIN_TERMINAL_WIDTH = 320;
+export const MIN_TERMINAL_HEIGHT = 200;
 
 export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElement {
   const sessionId = typeof data["sessionId"] === "string" ? data["sessionId"] : "";
@@ -55,38 +65,36 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
   if (sessionId === "") return <div className="terminal-placeholder">Opening terminal…</div>;
 
   return (
-    <div className="flow-terminal" style={{ width: "100%", height: "100%" }}>
+    <div className="flow-terminal">
       {/*
-        Manifold-owned drag strip, deliberately OUTSIDE TerminalView's frame. The frame
-        stops pointerdown propagation so xterm keeps its own selection and focus, which
-        also means React Flow can never observe a drag that starts inside it. Rather than
-        reach into TerminalView's internal titlebar, the node supplies its own grip.
+        Resize handles, shown only while this node is selected. React Flow has no built-in
+        resize — unlike Excalidraw, where selection handles come free — so it is an explicit
+        component. `onResizeEnd` commits once, matching the drag path's commit-on-end rule.
       */}
-      <div className={`flow-terminal__grip${selected ? " flow-terminal__grip--selected" : ""}`}>
-        <span className="flow-terminal__grip-dots" aria-hidden="true">
-          ⠿
-        </span>
-        <span className="flow-terminal__grip-hint">drag</span>
-      </div>
+      <NodeResizer
+        nodeId={id}
+        isVisible={selected === true}
+        minWidth={MIN_TERMINAL_WIDTH}
+        minHeight={MIN_TERMINAL_HEIGHT}
+        onResizeEnd={(_event, params) => pad.onResize(id, params.width, params.height)}
+      />
       {/*
-        `nodrag`/`nopan` are belt-and-braces: TerminalView already stops pointerdown, so
-        React Flow would not start a gesture here anyway. `nowheel` is deliberately NOT
-        set — TerminalView stops wheel only while focused, which preserves today's
-        behaviour where scrolling over an idle terminal still zooms the canvas.
+        The titlebar is the drag handle (see TERMINAL_DRAG_HANDLE). `nowheel` is deliberately
+        NOT set: TerminalView stops wheel only while focused, preserving today's behaviour
+        where scrolling over an idle terminal still zooms the canvas.
       */}
-      <div className="flow-terminal__body nodrag nopan">
-        <TerminalView
-          client={pad.client}
-          sessionId={sessionId}
-          elementId={id}
-          active={selected === true}
-          sessionShared={pad.sessionShared(id, sessionId)}
-          panelHighlighted={false}
-          onClose={() => pad.onClose(id, sessionId)}
-          onRestart={() => pad.onRestart(id, sessionId)}
-          machine={pad.machineFor(sessionId)}
-        />
-      </div>
+      <TerminalView
+        client={pad.client}
+        sessionId={sessionId}
+        elementId={id}
+        active={selected === true}
+        sessionShared={pad.sessionShared(id, sessionId)}
+        panelHighlighted={false}
+        onClose={() => pad.onClose(id, sessionId)}
+        onRestart={() => pad.onRestart(id, sessionId)}
+        machine={pad.machineFor(sessionId)}
+        titlebarDragsHost
+      />
     </div>
   );
 }

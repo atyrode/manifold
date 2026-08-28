@@ -158,3 +158,22 @@ export function applyNodeMove(
   if (geometry.x === move.position.x && geometry.y === move.position.y) return null;
   return bumpElement(element, { x: move.position.x, y: move.position.y }, nonce);
 }
+
+/**
+ * Translates a finished React Flow resize into a canonical element update. Same contract as
+ * `applyNodeMove`: unchanged geometry returns `null`, so grabbing a resize handle without
+ * moving it never mints a version.
+ */
+export function applyNodeResize(
+  scene: ReadonlyMap<string, SceneElement>,
+  resize: { readonly id: string; readonly width: number; readonly height: number },
+  nonce: () => number = randomNonce,
+): SceneElement | null {
+  const element = scene.get(resize.id);
+  if (element === undefined) return null;
+  const geometry = terminalGeometry(element);
+  if (geometry === null) return null;
+  if (resize.width <= 0 || resize.height <= 0) return null;
+  if (geometry.width === resize.width && geometry.height === resize.height) return null;
+  return bumpElement(element, { width: resize.width, height: resize.height }, nonce);
+}

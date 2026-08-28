@@ -16,7 +16,13 @@ import {
   TerminalNode,
   type FlowPadContextValue,
 } from "./flow-terminal-node.tsx";
-import { applyNodeMove, bumpElement, projectTerminals, terminalBinding } from "./flow-scene.ts";
+import {
+  applyNodeMove,
+  applyNodeResize,
+  bumpElement,
+  projectTerminals,
+  terminalBinding,
+} from "./flow-scene.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 
 /**
@@ -41,7 +47,13 @@ const NODE_TYPES: NodeTypes = { terminal: TerminalNode };
 /** No edges in this spike; a frozen constant keeps the prop referentially stable. */
 const NO_EDGES: readonly never[] = Object.freeze([]);
 
-const PRO_OPTIONS = Object.freeze({ hideAttribution: false });
+/**
+ * MIT imposes no attribution-display condition, and `hideAttribution` is a plain boolean in
+ * the MIT core — no licence key, no watermark enforcement. Hidden here because a prototype
+ * evaluating the library should not look like it ships a third-party badge. If manifold
+ * adopts React Flow for real, sponsoring the project is the right call.
+ */
+const PRO_OPTIONS = Object.freeze({ hideAttribution: true });
 
 /** Matches the Excalidraw route's remembered zoom range so B is tested at real extremes. */
 const MIN_ZOOM = 0.1;
@@ -169,6 +181,20 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
    */
   const handleNodesChange = useCallback((_changes: readonly NodeChange[]): void => {}, []);
 
+  /**
+   * Commits a finished resize. Same two rules as the drag path: commit once on end, and
+   * publish WITHOUT pre-writing `client.scene` (the SDK owns its mirror).
+   */
+  const handleResize = useCallback(
+    (elementId: string, width: number, height: number): void => {
+      if (!writesEnabled) return;
+      const resized = applyNodeResize(client.scene, { id: elementId, width, height });
+      if (resized === null) return;
+      publish([resized]);
+    },
+    [client, publish, writesEnabled],
+  );
+
   const machineFor = useCallback(
     (sessionId: string) => {
       const session = client.sessions.get(sessionId);
@@ -223,12 +249,13 @@ export function FlowPadView({ padId, identity }: FlowPadViewProps) {
         // scope for the read-only spike and intentionally inert rather than half-done.
       },
       sessionShared,
+      onResize: handleResize,
       noteMount: (elementId: string) => {
         const counts = mountCountsRef.current;
         counts.set(elementId, (counts.get(elementId) ?? 0) + 1);
       },
     }),
-    [client, machineFor, machines, onClose, sessionShared],
+    [client, handleResize, machineFor, machines, onClose, sessionShared],
   );
 
   /**

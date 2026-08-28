@@ -2095,38 +2095,33 @@ button.pad-sidebar-session.is-summary > small {
   min-height: 0;
 }
 .flow-terminal {
-  display: flex;
-  flex-direction: column;
-}
-.flow-terminal__grip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  height: 18px;
-  padding: 0 6px;
-  cursor: grab;
-  font-size: 10px;
-  color: #9a9aa2;
-  background: #26262b;
-  border: 1px solid #34343a;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  user-select: none;
-}
-.flow-terminal__grip--selected {
-  background: #33333a;
-  color: #d7d7db;
-}
-.flow-terminal__grip:active {
-  cursor: grabbing;
-}
-.flow-terminal__body {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.flow-terminal__body > * {
   width: 100%;
   height: 100%;
+}
+/* The terminal fills its node box; React Flow owns the node's width/height. */
+.flow-terminal > .manifold-terminal {
+  width: 100%;
+  height: 100%;
+}
+/* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
+.flow-terminal .terminal-titlebar {
+  cursor: grab;
+}
+.flow-terminal .terminal-titlebar:active {
+  cursor: grabbing;
+}
+/* Buttons inside the titlebar must not look draggable. */
+.flow-terminal .terminal-titlebar__controls,
+.flow-terminal .terminal-ctl {
+  cursor: pointer;
+}
+.flow-pad-canvas .react-flow__resize-control.handle {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #8ab4f8;
+  border: 1px solid #1b1b1f;
+}
+.flow-pad-canvas .react-flow__resize-control.line {
+  border-color: #8ab4f8;
 }

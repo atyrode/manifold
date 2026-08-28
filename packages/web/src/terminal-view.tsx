@@ -22,6 +22,12 @@ interface TerminalViewProps {
   readonly onRestart: () => Promise<void>;
   /** Resolved machine of this session; null before the first machines fetch. */
   readonly machine: SessionMachine | null;
+  /**
+   * Opt-in host-canvas seam (flow route only). When true, pointerdown originating on the
+   * titlebar bubbles instead of being swallowed, so the host can treat the titlebar as a
+   * drag handle. Omitted/false reproduces the Excalidraw route's behaviour exactly.
+   */
+  readonly titlebarDragsHost?: boolean;
 }
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
@@ -35,6 +41,7 @@ export function TerminalView({
   onClose,
   onRestart,
   machine,
+  titlebarDragsHost,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -433,7 +440,19 @@ export function TerminalView({
           ? undefined
           : { borderColor: remoteFocuser.color, boxShadow: `0 0 0 2px ${remoteFocuser.color}` }
       }
-      onPointerDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        // Default (Excalidraw route): swallow every pointerdown so xterm owns selection
+        // and the canvas never starts a gesture underneath us.
+        //
+        // Opt-in (flow route): let pointerdown that started on the titlebar bubble, so a
+        // host canvas can use the titlebar as its drag handle. Titlebar BUTTONS stop
+        // propagation in their own handlers, which run first, so they are unaffected.
+        if (titlebarDragsHost === true) {
+          const target = event.target;
+          if (target instanceof Element && target.closest(".terminal-titlebar") !== null) return;
+        }
+        event.stopPropagation();
+      }}
       onWheel={stopFocusedWheel}
       onKeyDown={(event) => event.stopPropagation()}
       onFocus={handleFocus}
