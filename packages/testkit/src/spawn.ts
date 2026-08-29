@@ -458,8 +458,15 @@ export async function enrollMachine(
 }
 
 /** Creates a pad through the owner boundary and returns only its protocol-validated record. */
-export async function createPad(server: TestServer, name: string): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name });
+export async function createPad(
+  server: TestServer,
+  name: string,
+  layout?: "canvas" | "tiled",
+): Promise<Pad> {
+  const request = CreatePadRequestSchema.parse({
+    name,
+    ...(layout === undefined ? {} : { layout }),
+  });
   const response = await ownerFetch(server, "/api/pads", {
     method: "POST",
     headers: { "content-type": "application/json" },

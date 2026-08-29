@@ -481,3 +481,63 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
     await stopProcesses([...servers, ...agents]);
   }
 }, 45_000);
+
+test("the Machines + on a view births a terminal the server places as a tile, and it streams", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const view = await createPad(server, "tiled view", "tiled");
+    expect(view.layout).toBe("tiled");
+    const enrolled = await enrollMachine(server, "tiled-open-agent");
+    const agent = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "tiled-open-agent",
+    });
+    agents.push(agent);
+
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Tile Opener", color: "#557799" },
+      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
+      padId: view.id,
+    });
+    const client = await connect(server, { padId: view.id, token: grant.token });
+    clients.push(client);
+    if (client.self === null) throw new Error("terminal opener lacks self");
+
+    // A view has no canvas to author an element on: the "+" hands placement to the
+    // container, and the server's reply carries the tile id it authored as elementId.
+    const session = await client.openTerminal({
+      elementId: "correlation-only",
+      placement: "tile",
+      cols: 80,
+      rows: 24,
+    });
+    expect(session.status).toBe("running");
+    expect(session.padId).toBe(view.id);
+    expect(session.controllerId).toBe(grant.principal.id);
+    expect(session.elementId).not.toBe("correlation-only");
+
+    await waitFor(() => client.layout()?.[session.elementId]?.surface !== undefined, 10_000, 20);
+    expect(client.layout()?.[session.elementId]?.surface).toEqual({
+      kind: "terminal",
+      sessionId: session.id,
+    });
+
+    const capture = captureTerminal(client, session.id);
+    captures.push(capture);
+    client.attachTerminal(session.id);
+    await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
+    client.sendTerminalInput(session.id, "printf 'TILE_%s\\n' ok\n");
+    await waitForTerminalText(capture, "TILE_ok", 10_000);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 45_000);

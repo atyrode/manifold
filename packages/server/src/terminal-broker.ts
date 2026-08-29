@@ -65,7 +65,18 @@ interface RuntimeSession {
 interface PendingOpen {
   sessionId: string;
   padId: string;
-  elementId: string;
+  /**
+   * The opener's correlation token (`terminal_open.elementId`): every error and the
+   * `terminal_opened.ref` echo carry it back. Under `placement: "element"` it is also
+   * the placement id, because the opener authors the canvas element under that id.
+   */
+  ref: string;
+  /**
+   * Who authors the placement. `"element"`: the opener does, on its canvas, once this
+   * resolves. `"tile"`: the container does — a view has no canvas, so the server writes
+   * the tile leaf when the PTY lands and the tile id becomes the placement id.
+   */
+  placement: "element" | "tile";
   machineId: string;
   createdBy: string;
   createdAt: number;
@@ -143,7 +154,7 @@ export class TerminalBroker {
         type: "error",
         code: "no_machine",
         message: "machine disconnected while opening terminal",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
       this.pendingOpens.delete(sessionId);
@@ -348,6 +359,23 @@ export class TerminalBroker {
       });
       return;
     }
+    // Discipline decides who authors the placement, so a mismatch is refused instead of
+    // spawning a PTY no surface would ever show: a canvas opener that forgot to author an
+    // element, or a tiled opener that thinks it can.
+    const pad = this.store.getPad(peer.padId);
+    const placement = message.placement ?? "element";
+    if ((pad?.layout === "tiled") !== (placement === "tile")) {
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message:
+          placement === "tile"
+            ? 'placement "tile" requires a tiled container'
+            : 'a tiled container places terminals server-side: send placement "tile"',
+        ref: message.elementId,
+      });
+      return;
+    }
     const machine = this.selectMachine(message.machineId);
     if (machine === null) {
       peer.send({
@@ -364,7 +392,8 @@ export class TerminalBroker {
     const pending: PendingOpen = {
       sessionId,
       padId: peer.padId,
-      elementId: message.elementId,
+      ref: message.elementId,
+      placement,
       machineId: machine.machineId,
       createdBy: peer.auth.principal.id,
       createdAt: this.runtime.now(),
@@ -385,7 +414,7 @@ export class TerminalBroker {
         type: "error",
         code: "no_machine",
         message: "terminal creation timed out",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.logger.warn("terminal_create_timeout", {
         machineId: machine.machineId,
@@ -402,7 +431,9 @@ export class TerminalBroker {
       env: {
         MANIFOLD_URL: this.publicUrl(),
         MANIFOLD_PAD: peer.padId,
-        MANIFOLD_ELEMENT: message.elementId,
+        // A tiled birth has no placement id yet — the server writes the leaf when the PTY
+        // lands — so the PTY learns its container and nothing more.
+        ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
         MANIFOLD_TOKEN: grant.token,
       },
     });
@@ -426,11 +457,38 @@ export class TerminalBroker {
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(sessionId);
     pending.cancelDeadline?.();
+    /*
+      A tiled container authors its own placements, and it does so HERE: with the PTY in
+      hand, at the same instant a canvas opener authors its element from this reply. The
+      tile id it returns IS the placement id — the identity `bind` already publishes for
+      a tiled destination. A tiled birth needs the room loaded (it holds the layout tree);
+      a canvas birth only needs one to broadcast into.
+     */
+    const room =
+      pending.placement === "tile" ? this.rooms.get(pending.padId) : this.rooms.live(pending.padId);
+    const elementId =
+      pending.placement === "tile"
+        ? (room?.placeTerminalTile(sessionId, null, null) ?? null)
+        : pending.ref;
+    if (elementId === null || (pending.placement === "tile" && room === null)) {
+      // Nothing durable exists yet, so the PTY is the only thing to undo.
+      this.machines.get(machineId)?.send({ type: "kill", sessionId });
+      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      pending.opener.send({
+        type: "error",
+        code: "conflict",
+        message: "this view could not place a new terminal",
+        ref: pending.ref,
+      });
+      this.logger.warn("terminal_placement_failed", { padId: pending.padId, sessionId });
+      this.rooms.evictIfIdle(pending.padId);
+      return;
+    }
     this.store.createSession({
       id: sessionId,
       machineId,
       padId: pending.padId,
-      elementId: pending.elementId,
+      elementId,
       createdBy: pending.createdBy,
       agentPrincipalId: pending.agentPrincipalId,
       createdAt: pending.createdAt,
@@ -439,7 +497,7 @@ export class TerminalBroker {
       id: sessionId,
       padId: pending.padId,
       name: null,
-      elementId: pending.elementId,
+      elementId,
       machineId,
       status: "running",
       exitCode: null,
@@ -455,18 +513,23 @@ export class TerminalBroker {
       snapshotGeneration: 0,
       snapshotRequestOutstanding: false,
     });
-    pending.opener.send({ type: "terminal_opened", elementId: pending.elementId, session: info });
-    const room = this.rooms.live(pending.padId);
-    room?.broadcast(
-      { type: "terminal_opened", elementId: pending.elementId, session: info },
-      false,
-      pending.opener,
-    );
+    // The opener never chose a tile id, so its reply carries the ref it did choose. Only
+    // a `placement: "tile"` opener asked for the field: pre-v11 peers strict-parse this
+    // union, so the canvas reply stays byte-identical.
+    pending.opener.send({
+      type: "terminal_opened",
+      elementId,
+      session: info,
+      ...(pending.placement === "tile" ? { ref: pending.ref } : {}),
+    });
+    room?.broadcast({ type: "terminal_opened", elementId, session: info }, false, pending.opener);
     room?.broadcast({ type: "session_event", sessionId, kind: "opened" });
+    // A second leaf is a composition, not a bubble: the same claim a dropped tile makes.
+    if (pending.placement === "tile" && room !== null) this.hardenIfComposed(pending.padId, room);
     this.store.addEvent(pending.padId, this.runtime.now(), pending.createdBy, "session_opened", {
       sessionId,
       machineId,
-      elementId: pending.elementId,
+      elementId,
     });
     this.rooms.evictIfIdle(pending.padId);
   }
@@ -482,7 +545,7 @@ export class TerminalBroker {
       type: "error",
       code: "conflict",
       message: "terminal creation failed",
-      ref: pending.elementId,
+      ref: pending.ref,
     });
     this.logger.warn("terminal_create_failed", { machineId, sessionId });
     this.rooms.evictIfIdle(pending.padId);
@@ -1412,7 +1475,7 @@ export class TerminalBroker {
         type: "error",
         code: "not_found",
         message: "pad deleted while opening terminal",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.pendingOpens.delete(sessionId);
     }

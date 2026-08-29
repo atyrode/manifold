@@ -510,6 +510,143 @@ describe("TerminalBroker container hardening", () => {
   });
 });
 
+describe("terminal_open into a tiled container", () => {
+  /** Joins a peer to a container so its own socket observes the replies it earns. */
+  function viewPeer(
+    fixture: ContainerFixture,
+    padId: string,
+  ): { peer: SessionPeer; socket: FakeSocket } {
+    const socket = new FakeSocket();
+    const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId);
+    room(fixture, padId).join(peer);
+    return { peer, socket };
+  }
+
+  test("the Machines + inside a view births a terminal the server places as a tile", () => {
+    const fixture = containerFixture();
+    const viewId = expanded(fixture, placedTerminal(fixture, "terminal-1"));
+    const inView = viewPeer(fixture, viewId);
+
+    fixture.broker.open(inView.peer, {
+      type: "terminal_open",
+      elementId: "open-ref-1",
+      cols: 100,
+      rows: 30,
+      placement: "tile",
+    });
+    const create = fixture.machine.sent.filter((message) => message.type === "create").at(-1);
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    // A tiled birth has no placement id at create time: the leaf is authored on commit,
+    // so the PTY learns its container and nothing more.
+    expect(create.env.MANIFOLD_PAD).toBe(viewId);
+    expect(create.env.MANIFOLD_ELEMENT).toBeUndefined();
+    fixture.broker.onCreated(fixture.machine.machineId, create.sessionId);
+
+    const opened = inView.socket
+      .messages()
+      .filter((message) => message.type === "terminal_opened")
+      .at(-1);
+    if (opened?.type !== "terminal_opened") throw new Error("missing terminal_opened");
+    // The opener never chose a tile id, so the reply echoes the ref it did choose.
+    expect(opened.ref).toBe("open-ref-1");
+    expect(opened.session).toMatchObject({
+      id: create.sessionId,
+      padId: viewId,
+      elementId: opened.elementId,
+      cols: 100,
+      rows: 30,
+      // Opening earns the lease exactly as it does on a canvas.
+      controllerId: fixture.root.principal.id,
+    });
+    const layout = room(fixture, viewId).tileLayout();
+    expect(layout?.[opened.elementId]?.surface).toEqual({
+      kind: "terminal",
+      sessionId: create.sessionId,
+    });
+    expect(tileLeafIds(layout ?? {})).toHaveLength(2);
+    expect(fixture.store.getSession(create.sessionId)).toMatchObject({
+      padId: viewId,
+      elementId: opened.elementId,
+      machineId: fixture.machine.machineId,
+    });
+    // Two leaves are a composition, not a bubble: the container it grew out of is durable.
+    expect(fixture.store.getPad(viewId)?.transient).toBe(false);
+  });
+
+  test("a view open targets the machine the sidebar row named", () => {
+    const fixture = containerFixture();
+    const viewId = expanded(fixture, placedTerminal(fixture, "terminal-1"));
+    const inView = viewPeer(fixture, viewId);
+    const second = new FakeMachine(
+      fixture.auth.enrollMachine("second machine", fixture.root).machine.id,
+    );
+    fixture.broker.setMachineOnline(second);
+
+    fixture.broker.open(inView.peer, {
+      type: "terminal_open",
+      elementId: "open-ref-ambiguous",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    fixture.broker.open(inView.peer, {
+      type: "terminal_open",
+      elementId: "open-ref-2",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+      machineId: second.machineId,
+    });
+    const create = second.sent.filter((message) => message.type === "create").at(-1);
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    fixture.broker.onCreated(second.machineId, create.sessionId);
+
+    expect(inView.socket.messages().filter((message) => message.type === "error")).toMatchObject([
+      { code: "no_machine", ref: "open-ref-ambiguous" },
+    ]);
+    expect(fixture.machine.sent.filter((message) => message.type === "create")).toHaveLength(1);
+    expect(fixture.store.getSession(create.sessionId)).toMatchObject({
+      padId: viewId,
+      machineId: second.machineId,
+    });
+    expect(tileLeafIds(room(fixture, viewId).tileLayout() ?? {})).toHaveLength(2);
+  });
+
+  test("a discipline mismatch is refused before any PTY is spawned", () => {
+    const fixture = containerFixture();
+    const viewId = expanded(fixture, placedTerminal(fixture, "terminal-1"));
+    const inView = viewPeer(fixture, viewId);
+    const creates = fixture.machine.sent.filter((message) => message.type === "create").length;
+
+    // A view has no canvas to author on: an element-placing open would strand the PTY.
+    fixture.broker.open(inView.peer, {
+      type: "terminal_open",
+      elementId: "canvas-shaped",
+      cols: 80,
+      rows: 24,
+    });
+    // A canvas has no layout tree: the server has nowhere to author a leaf.
+    fixture.broker.open(fixture.opener, {
+      type: "terminal_open",
+      elementId: "tile-shaped",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+
+    expect(inView.socket.messages().filter((message) => message.type === "error")).toMatchObject([
+      { code: "conflict", ref: "canvas-shaped" },
+    ]);
+    expect(fixture.socket.messages().filter((message) => message.type === "error")).toMatchObject([
+      { code: "conflict", ref: "tile-shaped" },
+    ]);
+    expect(fixture.machine.sent.filter((message) => message.type === "create")).toHaveLength(
+      creates,
+    );
+    expect(tileLeafIds(room(fixture, viewId).tileLayout() ?? {})).toHaveLength(1);
+  });
+});
+
 describe("pad tiles HTTP routes", () => {
   test("binding a pooled terminal to a view places a tile and returns its tile id", async () => {
     const fixture = containerFixture();
