@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -31,8 +31,13 @@ export const PROTOCOL_VERSION = 8;
  * existing agents stay accepted.
  * v7 -> v8: session-channel cursor frames dropped the never-rendered `tool`
  * field. The machine wire is byte-identical, so existing agents stay accepted.
+ * v8 -> v9: session-channel SessionInfo.padId became nullable and session_event
+ * gained "parked". The machine wire is byte-identical, so existing agents stay
+ * accepted.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4, 5, 6, 7, 8]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  2, 3, 4, 5, 6, 7, 8, 9,
+]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this
