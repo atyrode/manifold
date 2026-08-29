@@ -61,8 +61,10 @@ export interface FlowPadContextValue {
   /** Bearer token for the REST calls canvas nodes make on their own (portal reads). */
   readonly token: string;
   /**
-   * Opens a room socket for another container — the portal widget's live preview.
-   * The canvas owns the session URL and identity, so nodes never rebuild either.
+   * Opens a SPECTATOR room socket for another container — the portal widget's live
+   * preview. The canvas owns the session URL and identity, so nodes never rebuild
+   * either. Spectator sockets watch without occupying: no avatar, no vote in the
+   * bubble rule, and the server refuses every write they attempt.
    */
   readonly openClient: (padId: string) => SessionClient;
   /** Polled principal-level presence; portal widgets show their container's occupants. */

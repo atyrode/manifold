@@ -85,6 +85,17 @@ export function TerminalView({
   }, [isController]);
 
   /**
+   * Preview chrome paints a widget's read-only body over a SPECTATOR socket, so nothing
+   * in it may write. Held in a ref for the same reason `isController` is: the xterm
+   * lifecycle effect must not tear a live terminal down to observe a prop.
+   */
+  const readOnly = chrome === "preview";
+  const readOnlyRef = useRef(readOnly);
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+  }, [readOnly]);
+
+  /**
    * Real-terminal feel: activation (one click-release anywhere on the embed)
    * wakes the cursor immediately. Edge-triggered on inactive→active. The focus
    * is re-asserted frame-by-frame for a short window because browser focus can
@@ -175,6 +186,11 @@ export function TerminalView({
 
     const sendCurrentGeometry = (): void => {
       resizeTimerRef.current = null;
+      // A preview paints a scaled-down box, and its socket is a spectator the server
+      // refuses writes from. Sending this geometry would either be rejected or — worse,
+      // if the same principal happens to hold the PTY — squeeze the real terminal down
+      // to the size of somebody's widget.
+      if (readOnlyRef.current) return;
       if (!isControllerRef.current) return;
       const geometry = { cols: terminal.cols, rows: terminal.rows };
       if (
@@ -279,7 +295,10 @@ export function TerminalView({
       }
     });
 
+    // Previews are read-only: the widget's shield keeps focus out, and this keeps a
+    // stray keystroke from ever reaching a spectator socket the server would refuse.
     const inputDisposable = terminal.onData((data) => {
+      if (readOnlyRef.current) return;
       client.sendTerminalInput(sessionId, data);
     });
 
@@ -337,8 +356,10 @@ export function TerminalView({
   }
   const remoteFocuser = remoteFocusers[0] ?? null;
 
+  // Focus presence is a write, and a preview's socket is a spectator: xterm's helper
+  // textarea is tabbable even under the widget's shield, so the guard lives here.
   const handleFocus = (): void => {
-    if (focusedRef.current) return;
+    if (readOnly || focusedRef.current) return;
     focusedRef.current = true;
     client.sendPresence({ focus: { elementId } });
   };
@@ -346,6 +367,7 @@ export function TerminalView({
   const handleBlur = (event: FocusEvent<HTMLDivElement>): void => {
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    if (readOnly) return;
     focusedRef.current = false;
     client.sendPresence({ focus: null });
   };

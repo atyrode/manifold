@@ -964,10 +964,19 @@ export function FlowPadView({
   /**
    * Room sockets for the containers portal widgets preview. The canvas owns the
    * session URL and the token so a widget never rebuilds either.
+   *
+   * `spectator` is what keeps watching from participating: a preview socket must not
+   * fake an occupant avatar, and it must not hold a transient view open — a bubble
+   * everyone can see would otherwise be a bubble nobody can pop.
    */
   const openClient = useCallback(
     (containerId: string) =>
-      new SessionClient({ url: sessionUrl(), padId: containerId, token: identity.token }),
+      new SessionClient({
+        url: sessionUrl(),
+        padId: containerId,
+        token: identity.token,
+        spectator: true,
+      }),
     [identity.token],
   );
 
