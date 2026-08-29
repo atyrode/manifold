@@ -134,6 +134,13 @@ interface Viewport {
   readonly offsetTop: number;
 }
 
+/** Measured paint order of the presence layer against the scene's highest node band. */
+interface PaintProbe {
+  readonly state: string;
+  readonly presenceZ?: number;
+  readonly nodeZ?: number;
+}
+
 try {
   origin = await Promise.race([
     serverOriginFromReadyLine(),
@@ -705,6 +712,93 @@ try {
   }
   console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
 
+  // Presence is worthless when the canvas paints scene content over it. Element
+  // bands grow with every creation (`nextZIndex`), so the presence layer has to
+  // sit above the highest one; fixtures pinned at zIndex 0 are exactly why raised
+  // terminals could hide every remote cursor, selection and live stroke unnoticed.
+  await round(
+    "F6b raising a terminal keeps both canvases converged",
+    {
+      adds: 0,
+      changes: [second.id],
+    },
+    async () => {
+      sdk.transact((tx) => {
+        tx.patch(second.id, { zIndex: tx.nextZIndex() });
+      });
+    },
+  );
+
+  try {
+    const stacked = sdk.elements.get(second.id);
+    if (stacked === undefined) throw new Error("raised terminal missing from the canonical scene");
+    if (stacked.zIndex <= 0) {
+      throw new Error(`raised terminal landed in band ${String(stacked.zIndex)}, expected above 0`);
+    }
+    // Park B's pointer far away so the only cursor over the target is the SDK's.
+    await browserB.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      ...(await panePoint(browserB, 0.1, 0.9)),
+    });
+    const center = { x: stacked.x + stacked.width / 2, y: stacked.y + stacked.height / 2 };
+    const nodeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
+    const paintProbe = `(() => {
+      const node = document.querySelector(${nodeSelector});
+      if (!(node instanceof HTMLElement)) return { state: "no-node" };
+      const box = node.getBoundingClientRect();
+      const marker = [...document.querySelectorAll(".flow-remote-cursor")].find((cursor) => {
+        const rect = cursor.getBoundingClientRect();
+        return (
+          rect.left >= box.left - 2 &&
+          rect.left <= box.right + 2 &&
+          rect.top >= box.top - 2 &&
+          rect.top <= box.bottom + 2
+        );
+      });
+      if (marker === undefined) return { state: "no-cursor-over-node" };
+      const viewport = document.querySelector(".react-flow__viewport");
+      // Paint order is decided by the nearest ancestor-or-self carrying a numeric
+      // z-index inside the viewport's stacking context.
+      let presenceZ = 0;
+      for (let element = marker; element !== null && element !== viewport; element = element.parentElement) {
+        const band = Number.parseInt(getComputedStyle(element).zIndex, 10);
+        if (Number.isFinite(band)) { presenceZ = band; break; }
+      }
+      const nodeZ = [...document.querySelectorAll(".react-flow__node")].reduce(
+        (max, element) => Math.max(max, Number.parseInt(getComputedStyle(element).zIndex, 10) || 0),
+        0,
+      );
+      return { state: "measured", presenceZ, nodeZ };
+    })()`;
+    // Cursors are ephemeral and interpolated: keep the frame alive across the probe.
+    const cursorBeat = setInterval(() => {
+      sdk.sendCursor(center.x, center.y, "pointer");
+    }, 100);
+    try {
+      await until(
+        async () => (await browserA.evaluate<PaintProbe>(paintProbe)).state === "measured",
+        5_000,
+        "remote cursor rendered over the raised terminal",
+      );
+      const paint = await browserA.evaluate<PaintProbe>(paintProbe);
+      if ((paint.presenceZ ?? 0) <= (paint.nodeZ ?? 0)) {
+        throw new Error(
+          `presence layer paints at z=${String(paint.presenceZ)}, under scene nodes at z=${String(paint.nodeZ)}`,
+        );
+      }
+      console.log(
+        `PASS  F6b remote cursor paints above raised scene nodes — presence z=${String(paint.presenceZ)} over node z=${String(paint.nodeZ)}`,
+      );
+    } finally {
+      clearInterval(cursorBeat);
+    }
+  } catch (error) {
+    failures.push("F6b presence paint order");
+    console.log(
+      `FAIL  F6b remote cursor paints above raised scene nodes — ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   const drawCountBefore = [...sdk.elements.values()].filter(
     (element) => element.type === "draw",
   ).length;
@@ -811,9 +905,16 @@ try {
         5_000,
         "one text element from a double-click",
       );
-      const renderedCount = await browserA.evaluate<number>(
-        `document.querySelectorAll(".react-flow__node-text").length`,
+      // Canonical convergence lands before the canvas repaints; wait for the node,
+      // then let the click settle so a second node from one double-click still fails.
+      const renderedTextNodes = `document.querySelectorAll(".react-flow__node-text").length`;
+      await until(
+        async () => (await browserA.evaluate<number>(renderedTextNodes)) === textCountBefore + 1,
+        5_000,
+        "exactly one rendered text node",
       );
+      await sleep(300);
+      const renderedCount = await browserA.evaluate<number>(renderedTextNodes);
       if (renderedCount !== textCountBefore + 1) {
         throw new Error(
           `double-click rendered ${String(renderedCount - textCountBefore)} text nodes`,
