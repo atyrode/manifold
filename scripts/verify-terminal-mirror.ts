@@ -509,7 +509,13 @@ try {
       "document.querySelectorAll('.tiled-pad-view .manifold-terminal').length",
     );
   const expandButton = `.react-flow__node[data-id="${source.id}"] [aria-label="Expand terminal to full view"]`;
-  const rowFor = (name: string): string => JSON.stringify(`[aria-label="Open view ${name}"]`);
+  // The sidebar's container index labels a tiled container's row "Open composition <name>". The
+  // canvas widget's own maximize button carries the same wording, so a row assertion scopes to
+  // `.pad-sidebar-row` — otherwise a widget on screen could satisfy a check about the sidebar.
+  const rowFor = (name: string): string =>
+    JSON.stringify(`.pad-sidebar-row [aria-label="Open composition ${name}"]`);
+  const transientRowFor = (name: string): string =>
+    JSON.stringify(`.pad-sidebar-row--transient [aria-label="Open composition ${name}"]`);
 
   watcher = new Browser();
   await watcher.launch(9346);
@@ -636,11 +642,9 @@ try {
 
   const bubbleName = await padNameOf(bubbleId);
   const bubbleRow = rowFor(bubbleName);
+  const bubbleTransientRow = transientRowFor(bubbleName);
   const transientRow = await settles(
-    () =>
-      browser!.evaluate<boolean>(
-        `document.querySelector('.pad-sidebar-row--transient ' + ${bubbleRow}) !== null`,
-      ),
+    () => browser!.evaluate<boolean>(`document.querySelector(${bubbleTransientRow}) !== null`),
     20_000,
   );
   check(
@@ -824,11 +828,12 @@ try {
   );
   const splitName = await padNameOf(splitViewId);
   const splitRow = rowFor(splitName);
+  const splitTransientRow = transientRowFor(splitName);
   await openCanvas(browser, padId, "origin canvas remounted after hardening");
   const rowKept = await settles(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector(${splitRow}) !== null && document.querySelector('.pad-sidebar-row--transient ' + ${splitRow}) === null`,
+        `document.querySelector(${splitRow}) !== null && document.querySelector(${splitTransientRow}) === null`,
       ),
     20_000,
   );
@@ -1041,10 +1046,11 @@ try {
   // The composed row is read from a FRESH mount (the tree does not poll).
   await openCanvas(watcher, composePadId, "watcher mounted the compose canvas");
   const composedRow = rowFor("alpha + beta");
+  const composedTransientRow = transientRowFor("alpha + beta");
   const namedRow = await settles(
     () =>
       watcher!.evaluate<boolean>(
-        `document.querySelector(${composedRow}) !== null && document.querySelector('.pad-sidebar-row--transient ' + ${composedRow}) === null`,
+        `document.querySelector(${composedRow}) !== null && document.querySelector(${composedTransientRow}) === null`,
       ),
     25_000,
   );

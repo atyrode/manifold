@@ -54,14 +54,7 @@ import { FlowPadView } from "./flow-pad-view.tsx";
 import { TiledPadView } from "./tiled-pad-view.tsx";
 import { CONTAINER_DRAG_MIME } from "./tile-snap.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
-import {
-  buildPadTree,
-  canvasSiblingSlot,
-  isCanvasTreeItem,
-  projectPadTreeMove,
-  treeItemId,
-  type PadTreeNode,
-} from "./pad-tree.ts";
+import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
   MachinesSection,
   WorkspaceSessionRow,
@@ -158,14 +151,14 @@ const MAX_SIDEBAR_WIDTH = 480;
 const SIDEBAR_ROOT_ITEM: PadTreeItem = {
   kind: "folder",
   id: "__sidebar_root__",
-  name: "Pads",
+  name: "Views",
   createdAt: 0,
   parentId: null,
   sortOrder: -1,
 };
 
-/** Icon rail: only the pad tree survives, so its container never leaves the pad section. */
-const COLLAPSED_RAIL_SECTIONS: readonly SidebarSectionId[] = ["pads"];
+/** Icon rail: only the container index survives, so its tree container never reparents. */
+const COLLAPSED_RAIL_SECTIONS: readonly SidebarSectionId[] = ["views"];
 
 function initialSidebarWidth(): number {
   try {
@@ -198,6 +191,11 @@ function initialSessionTree(): boolean {
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
   const [treeItems, setTreeItems] = useState<readonly PadTreeItem[] | null>(null);
+  /**
+   * Every container the sidebar indexes. A pad and a composition are one object told apart by its
+   * discipline, so nothing here filters by layout: the Views section lists them together and the
+   * row's glyph carries the difference.
+   */
   const pads = useMemo(
     () =>
       treeItems === null
@@ -207,26 +205,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             .map((item) => item.pad),
     [treeItems],
   );
-  /**
-   * A View and a Pad are one container object, so the sidebar splits them by discipline: the
-   * pad tree carries the canvas half (folders included) and the Views section the tiled half.
-   */
-  const canvasPads = useMemo(
-    () => (pads === null ? null : pads.filter((pad) => pad.layout === "canvas")),
-    [pads],
-  );
-  const viewPads = useMemo(
-    () => (pads === null ? [] : pads.filter((pad) => pad.layout === "tiled")),
-    [pads],
-  );
-  const padTreeItems = useMemo(
-    () => (treeItems === null ? null : treeItems.filter(isCanvasTreeItem)),
-    [treeItems],
-  );
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
   const [terminalDropPadId, setTerminalDropPadId] = useState<string | null>(null);
-  /** Which discipline the open create form will author: a canvas pad or a tiled view. */
+  /** Which discipline the open create form will author: a freeform pad or a tiled composition. */
   const [createLayout, setCreateLayout] = useState<Pad["layout"]>("canvas");
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
@@ -265,7 +247,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
   /**
-   * A view publishes only one thing to the sidebar: how to birth a terminal inside it.
+   * A composition publishes only one thing to the sidebar: how to birth a terminal inside it.
    * The wrapper object keeps that function out of the setState updater slot, where React
    * would call it instead of storing it.
    */
@@ -301,7 +283,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [memory] = useState(browserPadStorage);
   /**
-   * The routed container's own record. The tree is the usual source, but a view born
+   * The routed container's own record. The tree is the usual source, but a composition born
    * by an expand exists before the sidebar has heard of it, so an unknown id is
    * fetched directly and the tree refetched so its row appears.
    */
@@ -311,7 +293,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   /** Shrink's return address: the last canvas the viewer was on, else the workspace root. */
   const [originPadId, setOriginPadId] = useState<string | null>(null);
 
-  /** Stable identity: the publishing effect inside the view must not re-run per render. */
+  /** Stable identity: the publishing effect inside the composition must not re-run per render. */
   const publishTiledCreate = useCallback(
     (create: ((machine?: MachineSummary) => void) | null): void => {
       setTiledCreate(create === null ? null : { create });
@@ -638,7 +620,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   };
 
   const toggleSection = (id: SidebarSectionId, collapsed: boolean): void => {
-    // The icon rail force-opens the pad section; that is layout, not a user collapse choice.
+    // The icon rail force-opens the container index; that is layout, not a user collapse choice.
     if (!sidebarOpen) return;
     setCollapsedSections((current) => {
       if (current[id] === collapsed) return current;
@@ -664,7 +646,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       setError(
         reason instanceof Error
           ? reason.message
-          : `Could not create the ${createLayout === "tiled" ? "view" : "pad"}`,
+          : `Could not create the ${createLayout === "tiled" ? "composition" : "pad"}`,
       );
     } finally {
       setCreating(false);
@@ -818,7 +800,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           : "unknown";
   const treeData = useMemo(() => {
     const data = new Map<string, { item: PadTreeItem; children: string[] }>();
-    const roots = buildPadTree(padTreeItems ?? []);
+    const roots = buildPadTree(treeItems ?? []);
     const addNodes = (nodes: readonly PadTreeNode[]): string[] =>
       nodes.map((node) => {
         const id = `${node.item.kind}:${treeItemId(node.item)}`;
@@ -827,25 +809,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       });
     data.set("root", { item: SIDEBAR_ROOT_ITEM, children: addNodes(roots) });
     return data;
-  }, [padTreeItems]);
-  /**
-   * Sibling order per parent with views included. The tree renders canvas containers only, so an
-   * insertion index read from the visible rows means something else to the server and to the
-   * optimistic projection — both order every sibling, hidden views among them.
-   */
-  const fullSiblings = useMemo(() => {
-    const byParent = new Map<string | null, readonly PadTreeItem[]>();
-    const walk = (parentId: string | null, nodes: readonly PadTreeNode[]): void => {
-      byParent.set(
-        parentId,
-        nodes.map((node) => node.item),
-      );
-      for (const node of nodes) {
-        if (node.item.kind === "folder") walk(node.item.id, node.children);
-      }
-    };
-    walk(null, buildPadTree(treeItems ?? []));
-    return byParent;
   }, [treeItems]);
   const treeDataRef = useRef(treeData);
   const tree = useHeadlessTree<PadTreeItem>({
@@ -856,7 +819,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     rootItemId: "root",
     getItemName: (item) => {
       const data = item.getItemData();
-      return item.getId() === "root" ? "Pads" : data.kind === "pad" ? data.pad.name : data.name;
+      return item.getId() === "root" ? "Views" : data.kind === "pad" ? data.pad.name : data.name;
     },
     isItemFolder: (item) => item.getItemData().kind === "folder",
     dataLoader: {
@@ -880,8 +843,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
-    // A pad row drag still advertises the container mime, so the same gesture that
-    // reorders the tree also drops a canvas into a view tile or onto another canvas.
+    // A container row drag also advertises the container mime, so the same gesture that
+    // reorders the tree drops a pad into a tile or onto another canvas.
     // Folders carry an empty payload: every drop target ignores it.
     createForeignDragObject: (items) => {
       const data = items[0]?.getItemData();
@@ -903,12 +866,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           : targetData.kind === "folder"
             ? targetData.id
             : targetData.parentId;
-      const index = canvasSiblingSlot(
-        fullSiblings.get(parentId) ?? [],
-        isOrderedDragTarget(target)
-          ? target.insertionIndex
-          : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0),
-      );
+      // The tree renders every stored sibling, so the insertion index needs no translation.
+      const index = isOrderedDragTarget(target)
+        ? target.insertionIndex
+        : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
       const item = { kind: moved.kind, id: treeItemId(moved) } as const;
       const previousTreeItems = treeItems;
       const optimisticTreeItems = projectPadTreeMove(treeItems, item, parentId, index);
@@ -955,7 +916,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     };
   }, [tree, treeData]);
 
-  /** A container's mark: a dot for a canvas pad, a split frame for a view. */
+  /** A container's mark: a dot for a freeform pad, a split frame for a composition. */
   const containerMark = (pad: Pad): ReactNode =>
     pad.layout === "tiled" ? (
       <span className="pad-sidebar-tiles-mark" aria-hidden="true">
@@ -965,7 +926,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       <span className="pad-sidebar-pad-mark" aria-hidden="true" />
     );
 
-  /** A view renames exactly like a pad — one container object — so both rows share the editor. */
+  /** A composition renames exactly like a pad — one container object — so both share the editor. */
   const renderContainerRenameRow = (pad: Pad, active: boolean): ReactNode => (
     <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
       {containerMark(pad)}
@@ -1028,7 +989,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   /** The ••• row menu: rename inline, delete behind the confirmation step. */
   const renderContainerActions = (pad: Pad): ReactNode => {
-    const kind = pad.layout === "tiled" ? "View" : "Pad";
+    const kind = pad.layout === "tiled" ? "Composition" : "Pad";
     return (
       <div className="pad-sidebar-actions">
         <button
@@ -1062,7 +1023,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     );
   };
 
-  const renderPad = (pad: Pad): ReactNode => {
+  /**
+   * One row per container, whichever discipline it holds. A pad and a composition are the same
+   * object, so the row is one renderer: the glyph carries the discipline, a bubble stays italic
+   * until something hardens it, occupancy shows as avatars either way, and a pooled terminal
+   * dropped on the row is placed into that container — a canvas element or a tile is the server's
+   * business, not the sidebar's.
+   */
+  const renderContainerRow = (pad: Pad): ReactNode => {
     const active = pad.id === requestedPadId;
     const principals = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
     const otherPrincipals = principals.filter(
@@ -1083,16 +1051,28 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     } else {
       row = (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
           {...terminalDropProps(pad.id)}
         >
           <button
             className="pad-sidebar-link"
             type="button"
             title={pad.name}
-            aria-label={`Open pad ${pad.name}`}
+            aria-label={`Open ${pad.layout === "tiled" ? "composition" : "pad"} ${pad.name}`}
             aria-current={active ? "page" : undefined}
             onClick={() => selectPad(pad)}
+            onKeyDown={(event) => {
+              // Enter is the button's own activation; F2 and Delete match the row menu's items.
+              if (event.key === "F2") {
+                event.preventDefault();
+                openRename(pad);
+              }
+              if (event.key === "Delete") {
+                event.preventDefault();
+                setActionPadId(null);
+                setConfirmDeleteId(pad.id);
+              }
+            }}
           >
             {containerMark(pad)}
             {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
@@ -1107,7 +1087,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             {sidebarOpen && principals.length > 0 ? (
               <span
                 className="pad-sidebar-presence"
-                aria-label={`${principals.length} present on ${pad.name}`}
+                aria-label={`${principals.length} present in ${pad.name}`}
               >
                 {visiblePrincipals.map((principal) => (
                   <span
@@ -1131,7 +1111,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <button
               className="pad-sidebar-collapsed-presence"
               type="button"
-              aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} on ${pad.name}`}
+              aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} in ${pad.name}`}
               aria-describedby={
                 collapsedPresence?.padId === pad.id ? "collapsed-presence-popover" : undefined
               }
@@ -1191,79 +1171,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             })
           : null}
       </>
-    );
-  };
-
-  /**
-   * One view row. Views hold no folders and never nest, so this is a flat list rather than a
-   * second headless-tree; the row still advertises the container mime, which is what lets a view
-   * be dragged into a tile or onto a canvas terminal to compose.
-   */
-  const renderView = (pad: Pad): ReactNode => {
-    const active = pad.id === requestedPadId;
-    if (renameTarget?.id === pad.id) return renderContainerRenameRow(pad, active);
-    if (confirmDeleteId === pad.id) return renderContainerConfirmRow(pad, active);
-    const occupants = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
-    const visibleOccupants = occupants.slice(0, 3);
-    return (
-      <div
-        className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}`}
-      >
-        <button
-          className="pad-sidebar-link"
-          type="button"
-          title={pad.name}
-          aria-label={`Open view ${pad.name}`}
-          aria-current={active ? "page" : undefined}
-          onClick={() => selectPad(pad)}
-          onKeyDown={(event) => {
-            // Enter is the button's own activation; F2 and Delete match the row menu's items.
-            if (event.key === "F2") {
-              event.preventDefault();
-              openRename(pad);
-            }
-            if (event.key === "Delete") {
-              event.preventDefault();
-              setActionPadId(null);
-              setConfirmDeleteId(pad.id);
-            }
-          }}
-        >
-          {containerMark(pad)}
-          <span className="pad-sidebar-pad-name">{pad.name}</span>
-          {occupants.length > 0 ? (
-            <span
-              className="pad-sidebar-session-count"
-              title={`${occupants.length} ${occupants.length === 1 ? "occupant" : "occupants"} inside`}
-            >
-              {occupants.length}
-            </span>
-          ) : null}
-          {occupants.length > 0 ? (
-            <span
-              className="pad-sidebar-presence"
-              aria-label={`${occupants.length} inside ${pad.name}`}
-            >
-              {visibleOccupants.map((principal) => (
-                <span
-                  className={`presence-avatar${principal.kind === "agent" ? " is-agent" : ""}`}
-                  style={{ backgroundColor: principal.color }}
-                  title={`${principal.name} (${principal.kind})`}
-                  key={principal.id}
-                >
-                  {initials(principal.name)}
-                </span>
-              ))}
-              {occupants.length > visibleOccupants.length ? (
-                <span className="presence-avatar presence-overflow">
-                  +{occupants.length - visibleOccupants.length}
-                </span>
-              ) : null}
-            </span>
-          ) : null}
-        </button>
-        {renderContainerActions(pad)}
-      </div>
     );
   };
 
@@ -1455,19 +1362,19 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     );
   };
 
-  const padTreeBody = (
+  const containerTreeBody = (
     <div
       {...tree.getContainerProps()}
       className="pad-sidebar-list pad-sidebar-tree"
       data-testid="pad-sidebar-list"
     >
-      {sidebarOpen && padTreeItems === null ? (
-        <p className="pad-sidebar-muted">Loading pads…</p>
+      {sidebarOpen && treeItems === null ? (
+        <p className="pad-sidebar-muted">Loading views…</p>
       ) : null}
-      {sidebarOpen && padTreeItems?.length === 0 ? (
-        <p className="pad-sidebar-muted">No pads yet</p>
+      {sidebarOpen && treeItems?.length === 0 ? (
+        <p className="pad-sidebar-muted">No views yet</p>
       ) : null}
-      {padTreeItems === null
+      {treeItems === null
         ? null
         : tree.getItems().map((item) => {
             const data = item.getItemData();
@@ -1485,7 +1392,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 }
                 key={item.getId()}
               >
-                {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
+                {data.kind === "pad" ? renderContainerRow(data.pad) : renderFolder(data, item)}
               </div>
             );
           })}
@@ -1495,7 +1402,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   /**
    * One shell per section, ordered by the user's stack. Collapsing the sidebar keeps only the
-   * pad section mounted (header hidden by CSS) so the tree container never reparents.
+   * container index mounted (header hidden by CSS) so its tree container never reparents.
    */
   const renderSidebarSection = (section: SidebarSectionId): ReactNode => {
     if (section === "machines") {
@@ -1514,8 +1421,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           key="machines"
         >
           <div className="workspace-sidebar workspace-machines">
-            {/* Whichever renderer is mounted owns the "+": a canvas authors an element,
-                a view lets the server place a tile. */}
+            {/* Whichever renderer is mounted owns the "+": a pad authors an element,
+                a composition lets the server place a tile. */}
             <MachinesSection
               machines={machines}
               onCreateTerminal={workspace?.onCreateTerminal ?? tiledCreate?.create}
@@ -1524,22 +1431,23 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         </SidebarSection>
       );
     }
-    if (section === "pads") {
+    if (section === "views") {
+      // One index for every container: pads and compositions in one tree, folders over both.
       return (
         <SidebarSection
-          id="pads"
-          title="Pads"
-          testId="pads-section"
-          count={canvasPads?.length ?? 0}
-          collapsed={sidebarOpen && collapsedSections.pads === true}
+          id="views"
+          title="Views"
+          testId="views-section"
+          count={pads?.length ?? 0}
+          collapsed={sidebarOpen && collapsedSections.views === true}
           grow
           actions={
             sidebarOpen ? (
               <button
                 className="pad-sidebar-section-action"
                 aria-pressed={showSessions}
-                title={showSessions ? "Hide sessions under pads" : "Show sessions under pads"}
-                aria-label={showSessions ? "Hide pad session tree" : "Show pad session tree"}
+                title={showSessions ? "Hide sessions under views" : "Show sessions under views"}
+                aria-label={showSessions ? "Hide session tree" : "Show session tree"}
                 onClick={(event) => {
                   // Inside the disclosure header: never toggle the section on an action click.
                   event.preventDefault();
@@ -1559,11 +1467,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             ) : undefined
           }
           onCollapsedChange={toggleSection}
-          {...sectionDragProps("pads")}
-          key="pads"
+          {...sectionDragProps("views")}
+          key="views"
         >
           {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
-          {padTreeBody}
+          {containerTreeBody}
         </SidebarSection>
       );
     }
@@ -1589,40 +1497,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         </SidebarSection>
       );
     }
-    if (section === "views") {
-      // A reserved slot in the stored order until the first view exists.
-      if (viewPads.length === 0) return null;
-      return (
-        <SidebarSection
-          id="views"
-          title="Views"
-          testId="views-section"
-          count={viewPads.length}
-          collapsed={collapsedSections.views === true}
-          onCollapsedChange={toggleSection}
-          {...sectionDragProps("views")}
-          key="views"
-        >
-          <div className="pad-sidebar-list" data-testid="views-list">
-            {viewPads.map((pad) => (
-              <div
-                className="pad-tree-item"
-                data-tree-kind="view"
-                data-tree-id={pad.id}
-                draggable={renameTarget?.id !== pad.id && confirmDeleteId !== pad.id}
-                onDragStart={(event) => {
-                  event.dataTransfer.setData(CONTAINER_DRAG_MIME, pad.id);
-                  event.dataTransfer.effectAllowed = "move";
-                }}
-                key={pad.id}
-              >
-                {renderView(pad)}
-              </div>
-            ))}
-          </div>
-        </SidebarSection>
-      );
-    }
     return null;
   };
 
@@ -1640,7 +1514,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         className={`pad-browser${sidebarOpen ? "" : " is-collapsed"}`}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <aside className="pad-sidebar" aria-label="Pads" ref={sidebarRef}>
+        <aside className="pad-sidebar" aria-label="Sidebar" ref={sidebarRef}>
           <header className="pad-sidebar-header">
             <span className="pad-sidebar-brand">
               <span className="pad-sidebar-mark" aria-hidden="true">
@@ -1665,7 +1539,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               className="pad-sidebar-icon-button"
               type="button"
               title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-              aria-label={sidebarOpen ? "Collapse pad sidebar" : "Expand pad sidebar"}
+              aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
               onClick={() => setOpen(!sidebarOpen)}
             >
               <SidebarIcon kind={sidebarOpen ? "collapse" : "expand"} />
@@ -1690,8 +1564,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <button
               className="pad-sidebar-new pad-sidebar-new-view"
               type="button"
-              title="New view"
-              aria-label="New view"
+              title="New composition"
+              aria-label="New composition"
               onClick={() => {
                 if (!sidebarOpen) setOpen(true);
                 setCreateLayout("tiled");
@@ -1699,7 +1573,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               }}
             >
               <TilesGlyph />
-              {sidebarOpen ? <span>New view</span> : null}
+              {sidebarOpen ? <span>New composition</span> : null}
             </button>
             <button
               className="pad-sidebar-new pad-sidebar-new-folder"
@@ -1730,8 +1604,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 maxLength={120}
                 value={name}
                 onChange={(event) => setName(event.currentTarget.value)}
-                placeholder={createLayout === "tiled" ? "View name" : "Pad name"}
-                aria-label={createLayout === "tiled" ? "View name" : "Pad name"}
+                placeholder={createLayout === "tiled" ? "Composition name" : "Pad name"}
+                aria-label={createLayout === "tiled" ? "Composition name" : "Pad name"}
                 disabled={creating}
               />
               <div>
@@ -1773,7 +1647,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             type="button"
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize pad sidebar"
+            aria-label="Resize sidebar"
             aria-valuemin={MIN_SIDEBAR_WIDTH}
             aria-valuemax={MAX_SIDEBAR_WIDTH}
             aria-valuenow={Math.round(sidebarWidth)}

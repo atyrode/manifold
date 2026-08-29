@@ -1,13 +1,6 @@
 import { expect, test } from "bun:test";
 import type { PadTreeItem } from "@manifold/protocol";
-import {
-  buildPadTree,
-  canvasSiblingSlot,
-  isCanvasTreeItem,
-  projectPadTreeMove,
-  treeItemId,
-  type PadTreeNode,
-} from "./pad-tree.ts";
+import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 
 const pad = (
   id: string,
@@ -110,7 +103,7 @@ test("projects folder reordering among its current siblings", () => {
   ]);
 });
 
-const view = (
+const composition = (
   id: string,
   parentId: string | null,
   sortOrder: number,
@@ -121,25 +114,46 @@ const view = (
   sortOrder,
 });
 
-test("the pad tree renders folders and canvas pads, never views", () => {
-  expect(isCanvasTreeItem(pad("canvas", null, 0))).toBe(true);
-  expect(isCanvasTreeItem(folder("folder", null, 1))).toBe(true);
-  expect(isCanvasTreeItem(view("view", null, 2))).toBe(false);
+test("indexes every container in one tree: folders hold pads and compositions alike", () => {
+  expect(
+    shape(
+      buildPadTree([
+        composition("loose-composition", null, 3),
+        folder("projects", null, 0),
+        pad("board", "projects", 0),
+        composition("nested-composition", "projects", 1),
+        pad("loose-pad", null, 1),
+      ]),
+    ),
+  ).toEqual([
+    [
+      "folder:projects",
+      [
+        ["pad:board", []],
+        ["pad:nested-composition", []],
+      ],
+    ],
+    ["pad:loose-pad", []],
+    ["pad:loose-composition", []],
+  ]);
 });
 
-test("a drop index read from the visible rows steps over the hidden views", () => {
+test("a drop index over the unified rows is the stored sibling index", () => {
   const siblings: PadTreeItem[] = [
     pad("first", null, 0),
-    view("hidden", null, 1),
-    pad("second", null, 2),
-    view("trailing", null, 3),
+    composition("second", null, 1),
+    pad("third", null, 2),
   ];
-
-  // Before the first visible row, and between two visible rows that a view sits between.
-  expect(canvasSiblingSlot(siblings, 0)).toBe(0);
-  expect(canvasSiblingSlot(siblings, 1)).toBe(2);
-  // Past the last visible row: after every hidden sibling too, never before a trailing view.
-  expect(canvasSiblingSlot(siblings, 2)).toBe(4);
-  expect(canvasSiblingSlot(siblings, 9)).toBe(4);
-  expect(canvasSiblingSlot([], 0)).toBe(0);
+  // Nothing is hidden, so a move projected at the index read from the rows lands exactly there:
+  // the composition drops between the two pads without stepping over anything.
+  expect(
+    projectPadTreeMove(siblings, { kind: "pad", id: "third" }, null, 1).map((item) => [
+      treeItemId(item),
+      item.sortOrder,
+    ]),
+  ).toEqual([
+    ["first", 0],
+    ["second", 2],
+    ["third", 1],
+  ]);
 });

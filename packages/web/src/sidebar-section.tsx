@@ -3,14 +3,10 @@ import { useRef, useState, type DragEvent, type ReactNode, type RefObject } from
 /** Drag payload reordering the sidebar's section stack; scoped so row drags stay untouched. */
 export const SECTION_DRAG_MIME = "application/x-manifold-section";
 
-export type SidebarSectionId = "machines" | "pads" | "terminals" | "views";
+export type SidebarSectionId = "machines" | "terminals" | "views";
 
-/**
- * Pads first, then views, terminals, machines. `views` is reserved: it is a valid stored id today
- * and only renders once the first view exists, so the slot is already saved for it.
- */
+/** Views first — the index of every container — then the terminal pool, then machines. */
 export const DEFAULT_SECTION_ORDER: readonly SidebarSectionId[] = [
-  "pads",
   "views",
   "terminals",
   "machines",
@@ -22,8 +18,15 @@ const COLLAPSED_STORAGE_KEY = "manifold:sidebar-section-collapsed";
 export type CollapsedSections = Readonly<Partial<Record<SidebarSectionId, boolean>>>;
 
 function isSectionId(value: unknown): value is SidebarSectionId {
-  return value === "machines" || value === "pads" || value === "terminals" || value === "views";
+  return value === "machines" || value === "terminals" || value === "views";
 }
+
+/**
+ * Pads and Views were two sections before they became one index, so a device that stored the old
+ * stack still names `pads`. Retired ids fold into their successor instead of dropping out, which
+ * keeps a returning user's arrangement rather than resetting it.
+ */
+const RETIRED_SECTION_IDS: Readonly<Record<string, SidebarSectionId>> = { pads: "views" };
 
 /** Ids missing from storage land beside the neighbour they follow by default, never at the end. */
 function withMissingSections(stored: readonly SidebarSectionId[]): readonly SidebarSectionId[] {
@@ -39,15 +42,18 @@ function withMissingSections(stored: readonly SidebarSectionId[]): readonly Side
 }
 
 /**
- * Stored order is device-local presentation memory: unknown ids drop out and ids missing from
- * storage are backfilled in their default neighbourhood, so adding a section later never strands
- * it off-screen.
+ * Stored order is device-local presentation memory: unrecognised ids drop out, retired ids fold
+ * into their successor, and ids missing from storage are backfilled in their default
+ * neighbourhood — so merging or adding a section never strands one off-screen or resets a stack.
  */
 export function initialSectionOrder(): readonly SidebarSectionId[] {
   try {
     const stored: unknown = JSON.parse(window.localStorage.getItem(ORDER_STORAGE_KEY) ?? "[]");
     if (!Array.isArray(stored)) return DEFAULT_SECTION_ORDER;
-    return withMissingSections([...new Set(stored.filter(isSectionId))]);
+    const named = stored.map((value: unknown) =>
+      typeof value === "string" ? (RETIRED_SECTION_IDS[value] ?? value) : value,
+    );
+    return withMissingSections([...new Set(named.filter(isSectionId))]);
   } catch {
     return DEFAULT_SECTION_ORDER;
   }
@@ -66,10 +72,17 @@ export function initialCollapsedSections(): CollapsedSections {
     const stored: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_STORAGE_KEY) ?? "{}");
     if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
     const collapsed: Partial<Record<SidebarSectionId, boolean>> = {};
+    /** A retired id only supplies a default: its successor's own stored state wins. */
+    const inherited: Partial<Record<SidebarSectionId, boolean>> = {};
     for (const [key, value] of Object.entries(stored)) {
-      if (isSectionId(key) && typeof value === "boolean") collapsed[key] = value;
+      if (typeof value !== "boolean") continue;
+      if (isSectionId(key)) collapsed[key] = value;
+      else {
+        const successor = RETIRED_SECTION_IDS[key];
+        if (successor !== undefined) inherited[successor] = value;
+      }
     }
-    return collapsed;
+    return { ...inherited, ...collapsed };
   } catch {
     return {};
   }
