@@ -9,6 +9,26 @@ export function treeItemId(item: PadTreeItem): string {
   return item.kind === "pad" ? item.pad.id : item.id;
 }
 
+/**
+ * Everything the pad tree renders: folders and canvas pads. A View is the same container object
+ * as a Pad, told apart by its discipline, and it lives in the sidebar's own Views section.
+ */
+export function isCanvasTreeItem(item: PadTreeItem): boolean {
+  return item.kind === "folder" || item.pad.layout === "canvas";
+}
+
+/**
+ * Translates an insertion index read from the tree's canvas-only rows into the parent's full
+ * sibling list. Views keep their slot in the stored sibling order while rendering elsewhere, so a
+ * drop between two visible rows has to step over the hidden ones — otherwise appending after the
+ * last pad would land before a view that follows it. The convention of the incoming index is
+ * preserved: the result only adds the hidden siblings that precede the chosen slot.
+ */
+export function canvasSiblingSlot(siblings: readonly PadTreeItem[], visibleIndex: number): number {
+  const successor = siblings.filter(isCanvasTreeItem)[visibleIndex];
+  return successor === undefined ? siblings.length : siblings.indexOf(successor);
+}
+
 function treeItemCreatedAt(item: PadTreeItem): number {
   return item.kind === "pad" ? item.pad.createdAt : item.createdAt;
 }

@@ -54,7 +54,14 @@ import { FlowPadView } from "./flow-pad-view.tsx";
 import { TiledPadView } from "./tiled-pad-view.tsx";
 import { CONTAINER_DRAG_MIME } from "./tile-snap.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
-import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import {
+  buildPadTree,
+  canvasSiblingSlot,
+  isCanvasTreeItem,
+  projectPadTreeMove,
+  treeItemId,
+  type PadTreeNode,
+} from "./pad-tree.ts";
 import {
   MachinesSection,
   WorkspaceSessionRow,
@@ -200,6 +207,22 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             .map((item) => item.pad),
     [treeItems],
   );
+  /**
+   * A View and a Pad are one container object, so the sidebar splits them by discipline: the
+   * pad tree carries the canvas half (folders included) and the Views section the tiled half.
+   */
+  const canvasPads = useMemo(
+    () => (pads === null ? null : pads.filter((pad) => pad.layout === "canvas")),
+    [pads],
+  );
+  const viewPads = useMemo(
+    () => (pads === null ? [] : pads.filter((pad) => pad.layout === "tiled")),
+    [pads],
+  );
+  const padTreeItems = useMemo(
+    () => (treeItems === null ? null : treeItems.filter(isCanvasTreeItem)),
+    [treeItems],
+  );
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
   const [terminalDropPadId, setTerminalDropPadId] = useState<string | null>(null);
@@ -243,9 +266,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
   // The Machines section must outlive the canvas that used to feed it: on tiled routes
   // and at the workspace root no FlowPadView is mounted, so the list falls back to HTTP.
-  const [fallbackMachines, setFallbackMachines] = useState<readonly MachineSummary[] | null>(
-    null,
-  );
+  const [fallbackMachines, setFallbackMachines] = useState<readonly MachineSummary[] | null>(null);
   const [collapsedPresence, setCollapsedPresence] = useState<CollapsedPresencePopover | null>(null);
   const [actionPadId, setActionPadId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
@@ -781,7 +802,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           : "unknown";
   const treeData = useMemo(() => {
     const data = new Map<string, { item: PadTreeItem; children: string[] }>();
-    const roots = buildPadTree(treeItems ?? []);
+    const roots = buildPadTree(padTreeItems ?? []);
     const addNodes = (nodes: readonly PadTreeNode[]): string[] =>
       nodes.map((node) => {
         const id = `${node.item.kind}:${treeItemId(node.item)}`;
@@ -790,6 +811,25 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       });
     data.set("root", { item: SIDEBAR_ROOT_ITEM, children: addNodes(roots) });
     return data;
+  }, [padTreeItems]);
+  /**
+   * Sibling order per parent with views included. The tree renders canvas containers only, so an
+   * insertion index read from the visible rows means something else to the server and to the
+   * optimistic projection — both order every sibling, hidden views among them.
+   */
+  const fullSiblings = useMemo(() => {
+    const byParent = new Map<string | null, readonly PadTreeItem[]>();
+    const walk = (parentId: string | null, nodes: readonly PadTreeNode[]): void => {
+      byParent.set(
+        parentId,
+        nodes.map((node) => node.item),
+      );
+      for (const node of nodes) {
+        if (node.item.kind === "folder") walk(node.item.id, node.children);
+      }
+    };
+    walk(null, buildPadTree(treeItems ?? []));
+    return byParent;
   }, [treeItems]);
   const treeDataRef = useRef(treeData);
   const tree = useHeadlessTree<PadTreeItem>({
@@ -847,9 +887,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           : targetData.kind === "folder"
             ? targetData.id
             : targetData.parentId;
-      const index = isOrderedDragTarget(target)
-        ? target.insertionIndex
-        : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
+      const index = canvasSiblingSlot(
+        fullSiblings.get(parentId) ?? [],
+        isOrderedDragTarget(target)
+          ? target.insertionIndex
+          : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0),
+      );
       const item = { kind: moved.kind, id: treeItemId(moved) } as const;
       const previousTreeItems = treeItems;
       const optimisticTreeItems = projectPadTreeMove(treeItems, item, parentId, index);
@@ -896,6 +939,113 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     };
   }, [tree, treeData]);
 
+  /** A container's mark: a dot for a canvas pad, a split frame for a view. */
+  const containerMark = (pad: Pad): ReactNode =>
+    pad.layout === "tiled" ? (
+      <span className="pad-sidebar-tiles-mark" aria-hidden="true">
+        <TilesGlyph />
+      </span>
+    ) : (
+      <span className="pad-sidebar-pad-mark" aria-hidden="true" />
+    );
+
+  /** A view renames exactly like a pad — one container object — so both rows share the editor. */
+  const renderContainerRenameRow = (pad: Pad, active: boolean): ReactNode => (
+    <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
+      {containerMark(pad)}
+      <input
+        ref={renameInputRef}
+        className="pad-sidebar-rename-input"
+        aria-label={`Rename ${pad.name}`}
+        maxLength={120}
+        value={renameName}
+        disabled={renaming}
+        onChange={(event) => setRenameName(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void submitRename();
+          if (event.key === "Escape") setRenameTarget(null);
+        }}
+      />
+      <button
+        className="pad-sidebar-inline-action is-primary"
+        aria-label={`Save name for ${pad.name}`}
+        title="Save"
+        disabled={renaming || renameName.trim() === "" || renameName.trim() === pad.name}
+        onClick={() => void submitRename()}
+      >
+        <span aria-hidden="true">✓</span>
+      </button>
+      <button
+        className="pad-sidebar-inline-action"
+        aria-label={`Cancel renaming ${pad.name}`}
+        title="Cancel"
+        disabled={renaming}
+        onClick={() => setRenameTarget(null)}
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+  );
+
+  /** Deleting a container is two-step for both disciplines: the row asks before it acts. */
+  const renderContainerConfirmRow = (pad: Pad, active: boolean): ReactNode => (
+    <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
+      <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
+      <button
+        className="pad-sidebar-confirm-delete"
+        aria-label={`Confirm deleting ${pad.name}`}
+        disabled={deletingId !== null}
+        onClick={() => void remove(pad)}
+      >
+        {deletingId === pad.id ? "Deleting…" : "Delete"}
+      </button>
+      <button
+        className="pad-sidebar-confirm-cancel"
+        aria-label={`Cancel deleting ${pad.name}`}
+        disabled={deletingId !== null}
+        onClick={() => setConfirmDeleteId(null)}
+      >
+        Cancel
+      </button>
+    </div>
+  );
+
+  /** The ••• row menu: rename inline, delete behind the confirmation step. */
+  const renderContainerActions = (pad: Pad): ReactNode => {
+    const kind = pad.layout === "tiled" ? "View" : "Pad";
+    return (
+      <div className="pad-sidebar-actions">
+        <button
+          className="pad-sidebar-delete"
+          title={`${kind} actions for ${pad.name}`}
+          aria-label={`${kind} actions for ${pad.name}`}
+          aria-pressed={actionPadId === pad.id}
+          onClick={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+        {actionPadId === pad.id ? (
+          <div className="pad-sidebar-action-menu" role="menu">
+            <button role="menuitem" onClick={() => openRename(pad)}>
+              Rename
+            </button>
+            <button
+              className="is-danger"
+              role="menuitem"
+              disabled={deletingId !== null}
+              onClick={() => {
+                setActionPadId(null);
+                setConfirmDeleteId(pad.id);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderPad = (pad: Pad): ReactNode => {
     const active = pad.id === requestedPadId;
     const principals = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
@@ -911,85 +1061,24 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
     let row: ReactNode;
     if (sidebarOpen && renameTarget?.id === pad.id) {
-      row = (
-        <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
-          <span className="pad-sidebar-pad-mark" aria-hidden="true" />
-          <input
-            ref={renameInputRef}
-            className="pad-sidebar-rename-input"
-            aria-label={`Rename ${pad.name}`}
-            maxLength={120}
-            value={renameName}
-            disabled={renaming}
-            onChange={(event) => setRenameName(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void submitRename();
-              if (event.key === "Escape") setRenameTarget(null);
-            }}
-          />
-          <button
-            className="pad-sidebar-inline-action is-primary"
-            aria-label={`Save name for ${pad.name}`}
-            title="Save"
-            disabled={renaming || renameName.trim() === "" || renameName.trim() === pad.name}
-            onClick={() => void submitRename()}
-          >
-            <span aria-hidden="true">✓</span>
-          </button>
-          <button
-            className="pad-sidebar-inline-action"
-            aria-label={`Cancel renaming ${pad.name}`}
-            title="Cancel"
-            disabled={renaming}
-            onClick={() => setRenameTarget(null)}
-          >
-            <span aria-hidden="true">×</span>
-          </button>
-        </div>
-      );
+      row = renderContainerRenameRow(pad, active);
     } else if (sidebarOpen && confirmDeleteId === pad.id) {
-      row = (
-        <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
-          <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
-          <button
-            className="pad-sidebar-confirm-delete"
-            aria-label={`Confirm deleting ${pad.name}`}
-            disabled={deletingId !== null}
-            onClick={() => void remove(pad)}
-          >
-            {deletingId === pad.id ? "Deleting…" : "Delete"}
-          </button>
-          <button
-            className="pad-sidebar-confirm-cancel"
-            aria-label={`Cancel deleting ${pad.name}`}
-            disabled={deletingId !== null}
-            onClick={() => setConfirmDeleteId(null)}
-          >
-            Cancel
-          </button>
-        </div>
-      );
+      row = renderContainerConfirmRow(pad, active);
     } else {
       row = (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}${pad.layout === "tiled" ? " pad-sidebar-row--tiled" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}`}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
           {...terminalDropProps(pad.id)}
         >
           <button
             className="pad-sidebar-link"
             type="button"
             title={pad.name}
-            aria-label={`Open ${pad.layout === "tiled" ? "view" : "pad"} ${pad.name}`}
+            aria-label={`Open pad ${pad.name}`}
             aria-current={active ? "page" : undefined}
             onClick={() => selectPad(pad)}
           >
-            {pad.layout === "tiled" ? (
-              <span className="pad-sidebar-tiles-mark" aria-hidden="true">
-                <TilesGlyph />
-              </span>
-            ) : (
-              <span className="pad-sidebar-pad-mark" aria-hidden="true" />
-            )}
+            {containerMark(pad)}
             {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
             {sidebarOpen && runningCount > 0 ? (
               <span
@@ -1044,37 +1133,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               +{otherPrincipals.length}
             </button>
           ) : null}
-          {sidebarOpen ? (
-            <div className="pad-sidebar-actions">
-              <button
-                className="pad-sidebar-delete"
-                title={`Pad actions for ${pad.name}`}
-                aria-label={`Pad actions for ${pad.name}`}
-                aria-pressed={actionPadId === pad.id}
-                onClick={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
-              >
-                <span aria-hidden="true">•••</span>
-              </button>
-              {actionPadId === pad.id ? (
-                <div className="pad-sidebar-action-menu" role="menu">
-                  <button role="menuitem" onClick={() => openRename(pad)}>
-                    Rename
-                  </button>
-                  <button
-                    className="is-danger"
-                    role="menuitem"
-                    disabled={deletingId !== null}
-                    onClick={() => {
-                      setActionPadId(null);
-                      setConfirmDeleteId(pad.id);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+          {sidebarOpen ? renderContainerActions(pad) : null}
         </div>
       );
     }
@@ -1116,6 +1175,79 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             })
           : null}
       </>
+    );
+  };
+
+  /**
+   * One view row. Views hold no folders and never nest, so this is a flat list rather than a
+   * second headless-tree; the row still advertises the container mime, which is what lets a view
+   * be dragged into a tile or onto a canvas terminal to compose.
+   */
+  const renderView = (pad: Pad): ReactNode => {
+    const active = pad.id === requestedPadId;
+    if (renameTarget?.id === pad.id) return renderContainerRenameRow(pad, active);
+    if (confirmDeleteId === pad.id) return renderContainerConfirmRow(pad, active);
+    const occupants = displayedPresence.find((entry) => entry.padId === pad.id)?.principals ?? [];
+    const visibleOccupants = occupants.slice(0, 3);
+    return (
+      <div
+        className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}`}
+      >
+        <button
+          className="pad-sidebar-link"
+          type="button"
+          title={pad.name}
+          aria-label={`Open view ${pad.name}`}
+          aria-current={active ? "page" : undefined}
+          onClick={() => selectPad(pad)}
+          onKeyDown={(event) => {
+            // Enter is the button's own activation; F2 and Delete match the row menu's items.
+            if (event.key === "F2") {
+              event.preventDefault();
+              openRename(pad);
+            }
+            if (event.key === "Delete") {
+              event.preventDefault();
+              setActionPadId(null);
+              setConfirmDeleteId(pad.id);
+            }
+          }}
+        >
+          {containerMark(pad)}
+          <span className="pad-sidebar-pad-name">{pad.name}</span>
+          {occupants.length > 0 ? (
+            <span
+              className="pad-sidebar-session-count"
+              title={`${occupants.length} ${occupants.length === 1 ? "occupant" : "occupants"} inside`}
+            >
+              {occupants.length}
+            </span>
+          ) : null}
+          {occupants.length > 0 ? (
+            <span
+              className="pad-sidebar-presence"
+              aria-label={`${occupants.length} inside ${pad.name}`}
+            >
+              {visibleOccupants.map((principal) => (
+                <span
+                  className={`presence-avatar${principal.kind === "agent" ? " is-agent" : ""}`}
+                  style={{ backgroundColor: principal.color }}
+                  title={`${principal.name} (${principal.kind})`}
+                  key={principal.id}
+                >
+                  {initials(principal.name)}
+                </span>
+              ))}
+              {occupants.length > visibleOccupants.length ? (
+                <span className="presence-avatar presence-overflow">
+                  +{occupants.length - visibleOccupants.length}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </button>
+        {renderContainerActions(pad)}
+      </div>
     );
   };
 
@@ -1313,13 +1445,13 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       className="pad-sidebar-list pad-sidebar-tree"
       data-testid="pad-sidebar-list"
     >
-      {sidebarOpen && treeItems === null ? (
+      {sidebarOpen && padTreeItems === null ? (
         <p className="pad-sidebar-muted">Loading pads…</p>
       ) : null}
-      {sidebarOpen && treeItems?.length === 0 ? (
+      {sidebarOpen && padTreeItems?.length === 0 ? (
         <p className="pad-sidebar-muted">No pads yet</p>
       ) : null}
-      {treeItems === null
+      {padTreeItems === null
         ? null
         : tree.getItems().map((item) => {
             const data = item.getItemData();
@@ -1377,7 +1509,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           id="pads"
           title="Pads"
           testId="pads-section"
-          count={pads?.length ?? 0}
+          count={canvasPads?.length ?? 0}
           collapsed={sidebarOpen && collapsedSections.pads === true}
           grow
           actions={
@@ -1436,7 +1568,40 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         </SidebarSection>
       );
     }
-    // "views" is a reserved slot in the stored order until the first view exists.
+    if (section === "views") {
+      // A reserved slot in the stored order until the first view exists.
+      if (viewPads.length === 0) return null;
+      return (
+        <SidebarSection
+          id="views"
+          title="Views"
+          testId="views-section"
+          count={viewPads.length}
+          collapsed={collapsedSections.views === true}
+          onCollapsedChange={toggleSection}
+          {...sectionDragProps("views")}
+          key="views"
+        >
+          <div className="pad-sidebar-list" data-testid="views-list">
+            {viewPads.map((pad) => (
+              <div
+                className="pad-tree-item"
+                data-tree-kind="view"
+                data-tree-id={pad.id}
+                draggable={renameTarget?.id !== pad.id && confirmDeleteId !== pad.id}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData(CONTAINER_DRAG_MIME, pad.id);
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                key={pad.id}
+              >
+                {renderView(pad)}
+              </div>
+            ))}
+          </div>
+        </SidebarSection>
+      );
+    }
     return null;
   };
 

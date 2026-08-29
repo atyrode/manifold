@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import type { PadTreeItem } from "@manifold/protocol";
-import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import {
+  buildPadTree,
+  canvasSiblingSlot,
+  isCanvasTreeItem,
+  projectPadTreeMove,
+  treeItemId,
+  type PadTreeNode,
+} from "./pad-tree.ts";
 
 const pad = (
   id: string,
@@ -101,4 +108,38 @@ test("projects folder reordering among its current siblings", () => {
     { ...moved, sortOrder: 0 },
     last,
   ]);
+});
+
+const view = (
+  id: string,
+  parentId: string | null,
+  sortOrder: number,
+): Extract<PadTreeItem, { kind: "pad" }> => ({
+  kind: "pad",
+  pad: { id, name: id, createdAt: sortOrder, layout: "tiled", transient: false },
+  parentId,
+  sortOrder,
+});
+
+test("the pad tree renders folders and canvas pads, never views", () => {
+  expect(isCanvasTreeItem(pad("canvas", null, 0))).toBe(true);
+  expect(isCanvasTreeItem(folder("folder", null, 1))).toBe(true);
+  expect(isCanvasTreeItem(view("view", null, 2))).toBe(false);
+});
+
+test("a drop index read from the visible rows steps over the hidden views", () => {
+  const siblings: PadTreeItem[] = [
+    pad("first", null, 0),
+    view("hidden", null, 1),
+    pad("second", null, 2),
+    view("trailing", null, 3),
+  ];
+
+  // Before the first visible row, and between two visible rows that a view sits between.
+  expect(canvasSiblingSlot(siblings, 0)).toBe(0);
+  expect(canvasSiblingSlot(siblings, 1)).toBe(2);
+  // Past the last visible row: after every hidden sibling too, never before a trailing view.
+  expect(canvasSiblingSlot(siblings, 2)).toBe(4);
+  expect(canvasSiblingSlot(siblings, 9)).toBe(4);
+  expect(canvasSiblingSlot([], 0)).toBe(0);
 });
