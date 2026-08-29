@@ -23,6 +23,10 @@
 - Errors and notices are one system: a bottom-center toast layer with auto-fading notices and sticky failures (with ✕), visible regardless of sidebar state; a burst of refusals can never bury a real failure, and previously-silent failures (pool kills, drop failures) now report. (#59)
 - View widgets resize from their frame border exactly like terminals. (#59)
 - One WebSocket per tab: session traffic is multiplexed over channels (protocol v12), so widgets, previews, and engagement never open extra connections and role changes are instant. (#59)
+- Every terminal now lives in its own composition from birth: what sits on a canvas is a live window onto it, so "fullscreen" is just entering something that already exists — no temporary views, no pinning, nothing appears or vanishes when you look closer. Dragging one terminal onto another merges their compositions ("A + B"); pulling a tile out re-homes it; compositions merge, never nest. (#59)
+- The Terminals section folded into the one sidebar index: an unparked terminal shows under the composition or canvas that holds it, and an unplaced one stands at the top level with its own icon — the sidebar lists what exists, wherever it lives. (#59)
+- Grabbing anything by its titlebar now shows collaborators the carried item live — a ghost with its name tracks the pointer in canvases and compositions alike, and the source mutates in real time. (#59)
+- Double-clicking a titlebar only renames when you double-click the name itself; anywhere else on the bar triggers the bar's action. The sidebar updates live when others create or delete things, and navigation mounts the right renderer instantly instead of showing loading text. (#59)
 
 ### Fixed
 

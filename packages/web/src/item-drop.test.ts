@@ -5,18 +5,24 @@ import {
   type Pad,
   type PlacementDenialRule,
   type PlacementDestination,
+  type PlacementItem,
   type SceneElement,
 } from "@manifold/protocol";
 import { createPlacementLookup, denialMessage } from "./item-drop.ts";
 import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
 
 function pad(id: string, layout: Pad["layout"]): Pad {
-  return { id, name: id, createdAt: 0, layout, transient: false };
+  return { id, name: id, createdAt: 0, layout };
 }
 
 const box = { x: 0, y: 0, width: 100, height: 100, zIndex: 1 };
+
+/**
+ * A terminal on a canvas is a PORTAL onto the composition it lives in — there is no terminal
+ * element kind any more — so `el-term` here is exactly what the renderer holds for one.
+ */
 const ELEMENTS: readonly SceneElement[] = [
-  { ...box, id: "el-term", type: "terminal", sessionId: "s1" },
+  { ...box, id: "el-term", type: "portal", containerId: "solo-1" },
   { ...box, id: "el-note", type: "text", text: "hi", fontSize: 20, color: "#ffffff" },
   { ...box, id: "el-ink", type: "draw", points: [0, 0, 1, 1], strokeWidth: 2, color: "#ffffff" },
   { ...box, id: "el-widget", type: "portal", containerId: "comp-1" },
@@ -24,10 +30,23 @@ const ELEMENTS: readonly SceneElement[] = [
   { ...box, id: "el-ghost", type: "portal", containerId: "gone" },
 ];
 
+/** `solo-1` holds one terminal; `comp-1` and `comp-2` hold several, so neither is absorbable. */
+const SOLO_OCCUPANTS: ReadonlyMap<string, PlacementItem> = new Map([
+  ["solo-1", { kind: "terminal", containerId: "solo-1" } satisfies PlacementItem],
+]);
+
 const lookup = createPlacementLookup({
-  pads: [pad("canvas-1", "canvas"), pad("canvas-2", "canvas"), pad("comp-1", "tiled")],
+  pads: [
+    pad("canvas-1", "canvas"),
+    pad("canvas-2", "canvas"),
+    pad("comp-1", "tiled"),
+    pad("comp-2", "tiled"),
+    pad("solo-1", "tiled"),
+  ],
   self: { padId: "canvas-1", layout: "canvas" },
   elements: new Map(ELEMENTS.map((element) => [element.id, element] as const)),
+  terminalHomes: new Map([["s1", "solo-1"]]),
+  soloOccupants: SOLO_OCCUPANTS,
 });
 
 describe("props-backed lookup", () => {
@@ -42,18 +61,31 @@ describe("props-backed lookup", () => {
       pads: [],
       self: { padId: "comp-new", layout: "tiled" },
       elements: new Map(),
+      terminalHomes: new Map(),
+      soloOccupants: new Map(),
     });
     expect(newborn.padLayout("comp-new")).toBe("tiled");
   });
 
-  test("an element is classified by what it PLACES, portals included", () => {
+  test("a terminal's home is where it lives, and an unknown session has none", () => {
+    expect(lookup.terminalHome("s1")).toBe("solo-1");
+    expect(lookup.terminalHome("gone")).toBeNull();
+  });
+
+  test("a composition of one reports its occupant; a composition of several reports nothing", () => {
+    expect(lookup.soloOccupant("solo-1")).toEqual({ kind: "terminal", containerId: "solo-1" });
+    expect(lookup.soloOccupant("comp-1")).toBeNull();
+  });
+
+  test("an element is classified by the container it POINTS AT, arity aside", () => {
+    // Classification is per discipline; looking THROUGH a solo composition to the terminal in
+    // it is resolution's job, proved in the merge case below.
     expect(lookup.elementItem("canvas-1", "el-term")).toEqual({
-      kind: "terminal",
-      containerId: null,
+      kind: "view",
+      containerId: "solo-1",
     });
     expect(lookup.elementItem("canvas-1", "el-note")).toEqual({ kind: "text", containerId: null });
     expect(lookup.elementItem("canvas-1", "el-ink")).toEqual({ kind: "draw", containerId: null });
-    // A widget onto a composition places a composition; onto a canvas, a canvas.
     expect(lookup.elementItem("canvas-1", "el-widget")).toEqual({
       kind: "view",
       containerId: "comp-1",
@@ -81,16 +113,23 @@ const CASES: readonly {
   readonly expected: string;
 }[] = [
   {
-    name: "a composition dropped on a composition leaf",
+    name: "a composition dropped on its own leaf",
     envelope: { kind: "composition", padId: "comp-1" },
     destination: { kind: "tile", padId: "comp-1", targetTileId: "t1", edge: "right" },
-    expected: "A composition does not go in a composition.",
+    expected: "A composition cannot be placed inside itself.",
   },
   {
-    name: "a composition dropped on its own canvas widget",
+    // "Compositions merge, never nest": what refuses is arity, not identity.
+    name: "a composition of several dropped into another composition",
+    envelope: { kind: "composition", padId: "comp-1" },
+    destination: { kind: "tile", padId: "comp-2", targetTileId: "t1", edge: "right" },
+    expected: "A composition holds more than one item, so it cannot merge into another.",
+  },
+  {
+    name: "a composition widget composed onto a canvas node",
     envelope: { kind: "element", padId: "canvas-1", elementId: "el-widget" },
     destination: { kind: "compose", padId: "canvas-1", targetElementId: "el-term", edge: "left" },
-    expected: "A composition does not go in a composition.",
+    expected: "A composition holds more than one item, so it cannot merge into another.",
   },
   {
     name: "a canvas dropped into itself",
@@ -99,10 +138,10 @@ const CASES: readonly {
     expected: "A canvas cannot be placed inside itself.",
   },
   {
-    name: "a note dropped in the terminal pool",
+    name: "a note released on the index",
     envelope: { kind: "element", padId: "canvas-1", elementId: "el-note" },
-    destination: { kind: "pool" },
-    expected: "A note does not go in the terminal pool.",
+    destination: { kind: "unplaced" },
+    expected: "A note does not go in the index.",
   },
   {
     name: "a stroke dropped on a composition leaf",
@@ -111,10 +150,10 @@ const CASES: readonly {
     expected: "A stroke does not go in a composition.",
   },
   {
-    name: "a tile dropped in the pool",
+    name: "a tile released on the index",
     envelope: { kind: "tile", containerId: "comp-1", tileId: "t1" },
-    destination: { kind: "pool" },
-    expected: "A tile does not go in the terminal pool.",
+    destination: { kind: "unplaced" },
+    expected: "A tile does not go in the index.",
   },
   {
     name: "a terminal tiled into a canvas",
@@ -127,6 +166,12 @@ const CASES: readonly {
     envelope: { kind: "terminal", sessionId: "s1" },
     destination: { kind: "canvas", padId: "gone", x: 0, y: 0 },
     expected: "That container no longer exists.",
+  },
+  {
+    name: "a terminal whose session is gone",
+    envelope: { kind: "terminal", sessionId: "vanished" },
+    destination: { kind: "canvas", padId: "canvas-2", x: 0, y: 0 },
+    expected: "That item no longer exists.",
   },
   {
     name: "an item that vanished mid-drag",
@@ -164,15 +209,26 @@ describe("denial prose", () => {
   test("legal placements are the majority case and produce no prose at all", () => {
     const legal: readonly { readonly envelope: ItemEnvelope; readonly to: PlacementDestination }[] =
       [
-        // The two gaps this pipeline closes: a container onto bare canvas authors a
-        // portal, and a terminal onto a composition row lands as a tile.
+        // A container onto bare canvas authors a portal — and so does a terminal, which is
+        // the same op now that a canvas terminal IS a portal onto its home.
         {
           envelope: { kind: "composition", padId: "comp-1" },
           to: { kind: "canvas", padId: "canvas-1", x: 10, y: 20 },
         },
         {
           envelope: { kind: "terminal", sessionId: "s1" },
+          to: { kind: "canvas", padId: "canvas-2", x: 10, y: 20 },
+        },
+        {
+          envelope: { kind: "terminal", sessionId: "s1" },
           to: { kind: "tile", padId: "comp-1", targetTileId: null, edge: null },
+        },
+        // MERGE: the canvas node dragged is a portal onto a solo composition, and resolution
+        // looks through it to the terminal — so the same drop that would refuse a real
+        // composition absorbs this one as an ordinary tile placement.
+        {
+          envelope: { kind: "element", padId: "canvas-1", elementId: "el-term" },
+          to: { kind: "tile", padId: "comp-1", targetTileId: "t1", edge: "right" },
         },
         // Notes tile as of this wave.
         {
@@ -183,11 +239,21 @@ describe("denial prose", () => {
           envelope: { kind: "tile", containerId: "comp-1", tileId: "t1" },
           to: { kind: "canvas", padId: "canvas-1", x: 0, y: 0 },
         },
+        // Unplacing a terminal is legal from anywhere: it is the one item that goes nowhere.
+        { envelope: { kind: "terminal", sessionId: "s1" }, to: { kind: "unplaced" } },
       ];
     const ops = legal.map((entry) => {
       const resolution = resolvePlacement(envelopeSurface(entry.envelope), entry.to, lookup);
       return resolution.ok ? resolution.op : `denied:${resolution.denial.rule}`;
     });
-    expect(ops).toEqual(["portal", "add_tile", "add_tile", "extract"]);
+    expect(ops).toEqual([
+      "portal",
+      "portal",
+      "add_tile",
+      "add_tile",
+      "add_tile",
+      "extract",
+      "unplace",
+    ]);
   });
 });

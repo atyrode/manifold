@@ -15,7 +15,9 @@ import type {
   PadSessionSummary,
   PadTreeItem,
   PlacementDestination,
-  TerminalPoolEntry,
+  PlacementItem,
+  SceneElement,
+  TerminalSummary,
 } from "@manifold/protocol";
 import {
   useCallback,
@@ -38,11 +40,10 @@ import {
   getMachines,
   getPadPresence,
   getPadSessions,
-  killPooledTerminal,
+  killTerminal,
   listPadTree,
   listTerminals,
   movePadTreeItem,
-  moveTerminalPool,
   placeItem,
   renamePad,
   renamePadFolder,
@@ -57,14 +58,19 @@ import { TiledPadView } from "./tiled-pad-view.tsx";
 import { createPlacementLookup, useItemDrop, type ItemDropAssessment } from "./item-drop.ts";
 import { carriesItem, containerEnvelope, sealEnvelope, ITEM_MIME } from "./item-envelope.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
-import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import {
+  buildPadTree,
+  projectPadTreeMove,
+  samePadTreeItems,
+  treeItemId,
+  type PadTreeNode,
+} from "./pad-tree.ts";
 import {
   MachinesSection,
   WorkspaceSessionRow,
   WorkspaceStatus,
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
-import { TerminalPoolSection } from "./terminal-pool.tsx";
 import {
   initialCollapsedSections,
   initialSectionOrder,
@@ -78,6 +84,7 @@ import {
 import { useToast } from "./toast.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
+import { usePolledResource } from "./use-polled-resource.ts";
 
 function renderChangelogChange(change: string): ReactNode {
   return parseChangelogReferences(change).map((part, index) =>
@@ -164,8 +171,12 @@ const SIDEBAR_ROOT_ITEM: PadTreeItem = {
 /** Icon rail: only the container index survives, so its tree container never reparents. */
 const COLLAPSED_RAIL_SECTIONS: readonly SidebarSectionId[] = ["views"];
 
-/** The parked pool as a destination; it has no coordinates, only a body to release over. */
-const POOL_DESTINATION: PlacementDestination = { kind: "pool" };
+/**
+ * "Nowhere" as a destination. Unplacing removes every reference to an item and leaves the item
+ * exactly where it lives, so it carries no coordinates and no index — there is nothing to
+ * position in a place that is the absence of one.
+ */
+const UNPLACED_DESTINATION: PlacementDestination = { kind: "unplaced" };
 
 function initialSidebarWidth(): number {
   try {
@@ -195,25 +206,50 @@ function initialSessionTree(): boolean {
   }
 }
 
+/**
+ * Cadences of the workspace index. Everything here is HTTP because the workspace itself has no
+ * event channel yet — rooms fan out, the index does not — so a container another tab created
+ * becomes visible one tick later. When that channel exists these three constants and every
+ * `usePolledResource` call become subscriptions.
+ */
+const INDEX_POLL_MS = 2_000;
+const PRESENCE_POLL_MS = 1_500;
+const MACHINE_POLL_MS = 5_000;
+
+/** Stable empty snapshots: a fresh literal per render would reseed nothing but churn. */
+const NO_SESSIONS: readonly PadSessionSummary[] = [];
+const NO_TERMINALS: readonly TerminalSummary[] = [];
+const NO_PRESENCE: readonly PadPresence[] = [];
+/** The sidebar joins no room, so it never holds elements: one shared empty map, not one per render. */
+const EMPTY_ELEMENTS: ReadonlyMap<string, SceneElement> = new Map();
+
+/**
+ * What a cold deep-link shows while the container record is in flight. A sentence would be a
+ * loading screen; this is the shape of what is about to arrive, so nothing jumps when it does.
+ * Every warm navigation skips it entirely — the discipline is already known.
+ */
+function CanvasSkeleton() {
+  return (
+    <div className="canvas-skeleton" role="presentation" aria-busy="true">
+      <span className="canvas-skeleton-bar" />
+      <span className="canvas-skeleton-body" />
+    </div>
+  );
+}
+
+/** The same courtesy in the index: ghost rows rather than the word “Loading”. */
+function IndexSkeleton() {
+  return (
+    <div className="index-skeleton" role="presentation" aria-busy="true">
+      <span className="index-skeleton-row" />
+      <span className="index-skeleton-row" />
+      <span className="index-skeleton-row" />
+    </div>
+  );
+}
+
 /** One application shell: pad navigation stays mounted beside the active canvas. */
 export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps) {
-  const [treeItems, setTreeItems] = useState<readonly PadTreeItem[] | null>(null);
-  /**
-   * Every container the sidebar indexes. A pad and a composition are one object told apart by its
-   * discipline, so nothing here filters by layout: the Views section lists them together and the
-   * row's glyph carries the difference.
-   */
-  const pads = useMemo(
-    () =>
-      treeItems === null
-        ? null
-        : treeItems
-            .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
-            .map((item) => item.pad),
-    [treeItems],
-  );
-  const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
-  const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
   /**
    * The container row under the cursor and what the carried item would do there. Any item can
    * be released on a row, so this is not a terminals-only hover: the assessment decides
@@ -223,8 +259,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     readonly padId: string;
     readonly assessment: ItemDropAssessment | null;
   } | null>(null);
-  /** The same question for the pool, which is one target rather than one per row. */
-  const [poolDrop, setPoolDrop] = useState<ItemDropAssessment | null>(null);
+  /** The same question for the index's own body, which is one target rather than one per row. */
+  const [unplaceDrop, setUnplaceDrop] = useState<ItemDropAssessment | null>(null);
   /** Which discipline the open create form will author: a freeform canvas or a tiled composition. */
   const [createLayout, setCreateLayout] = useState<Pad["layout"]>("canvas");
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
@@ -261,7 +297,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const dndFrameRef = useRef<number | null>(null);
   const treeInstanceRef = useRef<TreeInstance<PadTreeItem> | null>(null);
   const { notify } = useToast();
-  const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
   /**
    * A composition publishes only one thing to the sidebar: how to birth a terminal inside it.
@@ -271,9 +306,136 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [tiledCreate, setTiledCreate] = useState<{
     readonly create: (machine?: MachineSummary) => void;
   } | null>(null);
+
+  const fetchTree = useCallback(() => listPadTree(identity.token), [identity.token]);
+  const fetchSessions = useCallback(() => getPadSessions(identity.token), [identity.token]);
+  const fetchTerminals = useCallback(() => listTerminals(identity.token), [identity.token]);
+  const fetchPresence = useCallback(() => getPadPresence(identity.token), [identity.token]);
+  const fetchMachines = useCallback(() => getMachines(identity.token), [identity.token]);
+
+  /**
+   * The one question that tells a tree gesture apart from everything else. While a row is held,
+   * the tree owns its own DOM and its own idea of the index: a poll that committed underneath
+   * would rebuild the rows out from under the pointer, and the drop pipeline claiming the event
+   * would steal a sibling reorder. Held poll responses are dropped, not queued — the tick after
+   * the gesture settles carries the truth.
+   */
+  const treeOwnsDrag = useCallback(
+    (): boolean => treeInstanceRef.current?.getState().dnd != null,
+    [],
+  );
+
+  /** Set once an index exists, so a failing tick stops re-announcing what the sidebar still shows. */
+  const indexLoadedRef = useRef(false);
+
+  /**
+   * The container index, polled like everything else in the workspace: a canvas another tab
+   * creates has to appear here without a refresh. Content-compared, because the answer is
+   * usually the previous answer and committing it would rebuild the headless tree — and drop an
+   * in-flight rename — every couple of seconds for nothing.
+   */
+  const {
+    value: treeItems,
+    setValue: setTreeItems,
+    refresh: refreshTree,
+  } = usePolledResource<readonly PadTreeItem[] | null>(fetchTree, INDEX_POLL_MS, {
+    initial: null,
+    hold: treeOwnsDrag,
+    equal: (current, incoming) =>
+      current !== null && incoming !== null && samePadTreeItems(current, incoming),
+    onError: (reason) => {
+      if (indexLoadedRef.current) return;
+      notify(reason instanceof Error ? reason.message : "Could not load views", {
+        key: "tree-load",
+      });
+    },
+  });
+
+  /**
+   * Every container the sidebar indexes. A pad and a composition are one object told apart by its
+   * discipline, so nothing here filters by layout: the Views section lists them together and the
+   * row's glyph carries the difference.
+   */
+  const pads = useMemo(
+    () =>
+      treeItems === null
+        ? null
+        : treeItems
+            .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
+            .map((item) => item.pad),
+    [treeItems],
+  );
+
+  useEffect(() => {
+    indexLoadedRef.current = treeItems !== null;
+  }, [treeItems]);
+
+  /** Session inventory and presence keep their last good snapshot; a failed tick says nothing. */
+  const { value: padSessions } = usePolledResource(fetchSessions, INDEX_POLL_MS, {
+    initial: NO_SESSIONS,
+    hold: treeOwnsDrag,
+  });
+  const { value: presence } = usePolledResource(fetchPresence, PRESENCE_POLL_MS, {
+    initial: NO_PRESENCE,
+    hold: treeOwnsDrag,
+    restartKey: requestedPadId,
+  });
+
+  /**
+   * Every terminal in the workspace, not a pool: a terminal lives in a composition from birth,
+   * so this listing is how the index learns which pad rows are actually terminals wearing a
+   * composition's clothes, and which of them nothing references yet. Placing anything changes
+   * both facts, so the active canvas's session count is the signal to re-ask at once.
+   */
+  const activeSessionCount = workspace?.status === "open" ? workspace.rows.length : null;
+  const { value: terminals, refresh: refreshTerminals } = usePolledResource(
+    fetchTerminals,
+    INDEX_POLL_MS,
+    { initial: NO_TERMINALS, hold: treeOwnsDrag, restartKey: activeSessionCount },
+  );
+
+  /**
+   * A pad row IS a terminal when exactly one terminal calls it home: that is a solo
+   * composition, and the paradigm says a composition of one is the item it holds — so the
+   * index shows the terminal, with the terminal's name, glyph and actions. A composition two
+   * terminals call home is a real composition again, and falls out of this map by construction.
+   */
+  const terminalByHome = useMemo(() => {
+    const homes = new Map<string, TerminalSummary>();
+    const shared = new Set<string>();
+    for (const terminal of terminals) {
+      if (homes.has(terminal.homeId)) shared.add(terminal.homeId);
+      homes.set(terminal.homeId, terminal);
+    }
+    for (const homeId of shared) homes.delete(homeId);
+    return homes;
+  }, [terminals]);
+
+  /**
+   * The same fold as {@link terminalByHome}, in the shape the placement algebra asks for.
+   * The index is the ONLY party that can see how many items a container holds, so it owns
+   * this answer for everything below it — the sidebar's own drops and the canvas's compose
+   * gesture both read it, which is what keeps a drag preview and the server's write in
+   * agreement about "compositions merge, never nest".
+   */
+  const soloOccupants = useMemo<ReadonlyMap<string, PlacementItem>>(
+    () =>
+      new Map(
+        [...terminalByHome].map(([homeId, terminal]) => [
+          homeId,
+          { kind: "terminal" as const, containerId: terminal.homeId },
+        ]),
+      ),
+    [terminalByHome],
+  );
+
   // The Machines section must outlive the canvas that used to feed it: on tiled routes
   // and at the workspace root no FlowPadView is mounted, so the list falls back to HTTP.
-  const [fallbackMachines, setFallbackMachines] = useState<readonly MachineSummary[] | null>(null);
+  const { value: fallbackMachines } = usePolledResource<readonly MachineSummary[] | null>(
+    fetchMachines,
+    MACHINE_POLL_MS,
+    { initial: null, enabled: workspace === null },
+  );
   const [collapsedPresence, setCollapsedPresence] = useState<CollapsedPresencePopover | null>(null);
   const [actionPadId, setActionPadId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
@@ -309,6 +471,36 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const directPadFetchRef = useRef<string | null>(null);
   /** Shrink's return address: the last canvas the viewer was on, else the workspace root. */
   const [originPadId, setOriginPadId] = useState<string | null>(null);
+  /**
+   * Every container record this tab has already resolved. The renderer follows the container's
+   * discipline, so navigating to something the index has ALREADY described must not wait on a
+   * round trip — the answer is right here, and withholding it would mount a loading state over
+   * a question that is already answered. Only a cold deep-link, an id this tab has never seen,
+   * falls through to the fetch. State rather than a ref: the very first render after a
+   * navigation reads it, which is the whole point.
+   */
+  const [knownPads, setKnownPads] = useState<ReadonlyMap<string, Pad>>(() => new Map());
+  const rememberPads = useCallback((records: readonly Pad[]): void => {
+    setKnownPads((current) => {
+      // Rebuilt only when something actually changed: a poll that repeats itself must not
+      // hand every reader a new map.
+      let next: Map<string, Pad> | null = null;
+      for (const pad of records) {
+        if (current.get(pad.id) === pad) continue;
+        next ??= new Map(current);
+        next.set(pad.id, pad);
+      }
+      return next ?? current;
+    });
+  }, []);
+  const forgetContainer = useCallback((padId: string): void => {
+    setKnownPads((current) => {
+      if (!current.has(padId)) return current;
+      const next = new Map(current);
+      next.delete(padId);
+      return next;
+    });
+  }, []);
 
   /** Stable identity: the publishing effect inside the composition must not re-run per render. */
   const publishTiledCreate = useCallback(
@@ -367,46 +559,34 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     [],
   );
 
-  useEffect(() => {
-    let active = true;
-    void listPadTree(identity.token)
-      .then((items) => {
-        if (active) setTreeItems(items);
-      })
-      .catch((reason: unknown) => {
-        if (active) {
-          notify(reason instanceof Error ? reason.message : "Could not load views", {
-            key: "tree-load",
-          });
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [identity.token, notify]);
-
-  /** Refetches the routed container and the tree; pin and splits change both. */
+  /** Refetches the routed container and the index; a pin or a split changes both. */
   const refreshActivePad = useCallback((): void => {
     if (requestedPadId === null) return;
-    void Promise.all([getPad(identity.token, requestedPadId), listPadTree(identity.token)])
-      .then(([pad, items]) => {
+    refreshTree();
+    void getPad(identity.token, requestedPadId)
+      .then((pad) => {
         setFetchedPad(pad);
+        rememberPads([pad]);
         setUnresolvedPadId(null);
-        setTreeItems(items);
       })
       .catch(() => {
         // Unreachable record: fall through to the canvas renderer, which surfaces the
-        // join failure the same way a bad pad id always has.
+        // join failure the same way a bad container id always has.
         setUnresolvedPadId(requestedPadId);
       });
-  }, [identity.token, requestedPadId]);
+  }, [identity.token, refreshTree, rememberPads, requestedPadId]);
 
-  /** The routed container's record: the tree's copy when known, else the one-shot fetch. */
+  /**
+   * The routed container's record: the index's copy when it holds one, else the one-shot fetch,
+   * else what this tab already learned about that id. The last of those is what makes a warm
+   * navigation instant.
+   */
   const activePad =
     requestedPadId === null
       ? null
       : (pads?.find((pad) => pad.id === requestedPadId) ??
         (fetchedPad?.id === requestedPadId ? fetchedPad : null) ??
+        knownPads.get(requestedPadId) ??
         null);
 
   // Render-phase adjustment (not an effect): the last canvas container visited is the
@@ -425,105 +605,67 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     refreshActivePad();
   }, [pads, refreshActivePad, requestedPadId]);
 
-  useEffect(() => {
-    let active = true;
-    const refresh = (): void => {
-      void getPadSessions(identity.token)
-        .then((sessions) => {
-          if (active && treeInstanceRef.current?.getState().dnd == null) {
-            setPadSessions(sessions);
-          }
-        })
-        .catch(() => {
-          // Session inventory keeps its last successful snapshot across transient failures.
-        });
-    };
-    refresh();
-    const interval = window.setInterval(refresh, 2_000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [identity.token]);
-
-  const refreshPool = useCallback((): void => {
-    void listTerminals(identity.token)
-      .then((terminals) => setPoolTerminals(terminals))
-      .catch(() => {
-        // The parked pool keeps its last successful snapshot across transient failures.
-      });
-  }, [identity.token]);
-
-  /** Park and bind move sessions in and out of the active pad, so its row count is the pool signal. */
-  const activeSessionCount = workspace?.status === "open" ? workspace.rows.length : null;
-
-  useEffect(() => {
-    refreshPool();
-    const interval = window.setInterval(refreshPool, 2_000);
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, [activeSessionCount, refreshPool]);
-
-  const killPooled = useCallback(
+  const killTerminalRow = useCallback(
     (sessionId: string): void => {
-      void killPooledTerminal(identity.token, sessionId)
+      void killTerminal(identity.token, sessionId)
         .catch((reason: unknown) => {
           // A 409 means the session already died; the refetch below settles the row either way.
-          console.error("evt=pool_terminal_kill_failed", reason);
-          notify("Could not kill the terminal", { key: "pool-kill" });
+          console.error("evt=terminal_kill_failed", reason);
+          notify("Could not kill the terminal", { key: "terminal-kill" });
         })
-        .finally(refreshPool);
+        .finally(() => {
+          // Killing a terminal empties and deletes its home composition, so the container
+          // index changes too: both listings have to be re-asked, not just the terminals one.
+          refreshTerminals();
+          refreshTree();
+        });
     },
-    [identity.token, notify, refreshPool],
+    [identity.token, notify, refreshTerminals, refreshTree],
   );
 
-  const renamePooled = useCallback(
+  const renameTerminalRow = useCallback(
     async (sessionId: string, name: string): Promise<void> => {
       try {
         await renameTerminal(identity.token, sessionId, name);
       } catch (reason: unknown) {
         notify(reason instanceof Error ? reason.message : "Could not rename the terminal", {
-          key: "pool-rename",
+          key: "terminal-rename",
         });
         throw reason;
       } finally {
-        refreshPool();
+        refreshTerminals();
       }
     },
-    [identity.token, notify, refreshPool],
-  );
-
-  const movePooled = useCallback(
-    async (sessionId: string, index: number): Promise<void> => {
-      try {
-        setPoolTerminals(await moveTerminalPool(identity.token, sessionId, index));
-      } catch (reason: unknown) {
-        notify(reason instanceof Error ? reason.message : "Could not reorder the terminal", {
-          key: "pool-reorder",
-        });
-        refreshPool();
-        throw reason;
-      }
-    },
-    [identity.token, notify, refreshPool],
+    [identity.token, notify, refreshTerminals],
   );
 
   /**
    * The sidebar's placement pipeline. It joins no room, so it holds no elements and is not
    * itself a container: every legality question it asks is answered from the container index
    * alone, and every write goes over HTTP because there is no socket here to carry it.
+   *
+   * The index CAN answer the two questions a room would otherwise answer. `terminalHomes` is
+   * the terminals listing read the other way round, and `soloOccupants` is the same solo-comp
+   * fold the rows are drawn from — so a drag onto a row previews exactly the placement the
+   * server will perform, including looking THROUGH a solo composition to the terminal in it.
    */
   const lookup = useMemo(
-    () => createPlacementLookup({ pads: pads ?? [], self: null, elements: new Map() }),
-    [pads],
+    () =>
+      createPlacementLookup({
+        pads: pads ?? [],
+        self: null,
+        elements: EMPTY_ELEMENTS,
+        terminalHomes: new Map(terminals.map((terminal) => [terminal.id, terminal.homeId])),
+        soloOccupants,
+      }),
+    [pads, soloOccupants, terminals],
   );
   const drop = useItemDrop({
     lookup,
     place: (surface, destination) => placeItem(identity.token, surface, destination),
     notify,
     onPlaced: () => {
-      refreshPool();
+      refreshTerminals();
       refreshActivePad();
     },
   });
@@ -533,12 +675,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     pad.layout === "tiled"
       ? { kind: "tile", padId: pad.id, targetTileId: null, edge: null }
       : { kind: "canvas", padId: pad.id, x: DEFAULT_CANVAS_DROP.x, y: DEFAULT_CANVAS_DROP.y };
-
-  /**
-   * A drag the container tree owns is a sibling reorder, not a placement: the tree only holds
-   * `dnd` state for its own gesture, so this is the one question that tells the two apart.
-   */
-  const treeOwnsDrag = (): boolean => treeInstanceRef.current?.getState().dnd != null;
 
   /**
    * A container row accepts ANY carried item. The row's discipline picks the destination and the
@@ -567,72 +703,31 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   });
 
   /**
-   * The pool is a container like any other — `pool accepts parkable` — so releasing a terminal
-   * anywhere over its body parks it, whichever canvas or composition it came out of.
+   * Releasing an item over the index's own body — past the last row, not on one — unplaces it:
+   * every reference to it goes, and the item stays where it lives. That is what parking became
+   * once there was no pool to park into, and it is why the target is the index rather than a
+   * section of its own.
    */
-  const poolDropProps = {
+  const unplacedDropProps = {
     onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!carriesItem(event.dataTransfer)) return;
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
       event.preventDefault();
-      const assessment = drop.assess(POOL_DESTINATION);
+      const assessment = drop.assess(UNPLACED_DESTINATION);
       event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
-      setPoolDrop(assessment);
+      setUnplaceDrop(assessment);
     },
     onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!carriesItem(event.dataTransfer)) return;
-      setPoolDrop(null);
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      setUnplaceDrop(null);
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!carriesItem(event.dataTransfer)) return;
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
       event.preventDefault();
       event.stopPropagation();
-      setPoolDrop(null);
-      drop.commit(event.dataTransfer, POOL_DESTINATION);
+      setUnplaceDrop(null);
+      drop.commit(event.dataTransfer, UNPLACED_DESTINATION);
     },
   };
-
-  useEffect(() => {
-    let active = true;
-    const refresh = (): void => {
-      void getPadPresence(identity.token)
-        .then((nextPresence) => {
-          if (active && treeInstanceRef.current?.getState().dnd == null) {
-            setPresence(nextPresence);
-          }
-        })
-        .catch(() => {
-          // Presence is ephemeral; keep the last successful snapshot.
-        });
-    };
-    refresh();
-    const interval = window.setInterval(refresh, 1_500);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [identity.token, requestedPadId]);
-
-  useEffect(() => {
-    // Only while no canvas feeds the sidebar (tiled routes, workspace root); a mounted
-    // FlowPadView supplies live machine state through onWorkspaceChange instead.
-    if (workspace !== null) return;
-    let active = true;
-    const refresh = (): void => {
-      void getMachines(identity.token)
-        .then((machines) => {
-          if (active) setFallbackMachines(machines);
-        })
-        .catch(() => {
-          // Inventory keeps its last successful snapshot across transient failures.
-        });
-    };
-    refresh();
-    const interval = window.setInterval(refresh, 5_000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [identity.token, workspace]);
 
   useEffect(() => {
     if (pads === null) return;
@@ -712,7 +807,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setCreating(true);
     try {
       const pad = await createPad(identity.token, trimmedName, createLayout);
-      setTreeItems(await listPadTree(identity.token));
+      // The new container's record is right here, so navigation has everything the renderer
+      // needs: seed the memory and go. The index catches up on its own tick rather than making
+      // a creation wait for a second round trip before it paints.
+      rememberPads([pad]);
+      refreshTree();
       setName("");
       setCreateOpen(false);
       rememberPad(memory, identity.principal.id, pad.id);
@@ -738,6 +837,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
         .map((item) => item.pad);
       setTreeItems(nextTree);
+      forgetContainer(pad.id);
       forgetPad(memory, identity.principal.id, pad.id);
       if (requestedPadId === pad.id) {
         const deletedIndex = (pads ?? []).findIndex((candidate) => candidate.id === pad.id);
@@ -765,19 +865,32 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const openRename = (pad: Pad): void => {
     setActionPadId(null);
     setRenameTarget(pad);
-    setRenameName(pad.name);
+    setRenameName(rowName(pad));
   };
 
+  /**
+   * One rename gesture, two writes. A solo composition and the terminal in it are one object
+   * to the operator, and the terminal is the half that owns the name — so renaming that row
+   * renames the TERMINAL, and the index picks the new label up on its next tick. Every other
+   * row renames the container, which the index can apply locally at once.
+   */
   const submitRename = async (): Promise<void> => {
     if (renameTarget === null) return;
+    const target = renameTarget;
     const trimmedName = renameName.trim();
-    if (trimmedName.length === 0 || trimmedName === renameTarget.name) {
+    if (trimmedName.length === 0 || trimmedName === rowName(target)) {
       setRenameTarget(null);
       return;
     }
+    const terminal = terminalByHome.get(target.id);
     setRenaming(true);
     try {
-      const renamed = await renamePad(identity.token, renameTarget.id, trimmedName);
+      if (terminal !== undefined) {
+        await renameTerminalRow(terminal.id, trimmedName);
+        setRenameTarget(null);
+        return;
+      }
+      const renamed = await renamePad(identity.token, target.id, trimmedName);
       setTreeItems(
         (current) =>
           current?.map((item) =>
@@ -786,12 +899,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       );
       setRenameTarget(null);
     } catch (reason: unknown) {
-      notify(
-        reason instanceof Error
-          ? reason.message
-          : `Could not rename the ${renameTarget.layout === "tiled" ? "composition" : "canvas"}`,
-        { key: "container-rename" },
-      );
+      // `renameTerminalRow` already announced its own failure; only the container path speaks.
+      if (terminal !== undefined) return;
+      notify(reason instanceof Error ? reason.message : `Could not rename the ${rowNoun(target)}`, {
+        key: "container-rename",
+      });
     } finally {
       setRenaming(false);
     }
@@ -871,12 +983,22 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     document.addEventListener("pointerup", finish);
   };
 
+  /**
+   * A row click carries the record it was drawn from, so the renderer that mounts on the next
+   * render already knows the discipline. Nothing here waits on the network: the row would not
+   * exist if the index had not already answered.
+   */
   const selectPad = (pad: Pad): void => {
+    rememberPads([pad]);
     rememberPad(memory, identity.principal.id, pad.id);
     navigate(`/p/${encodeURIComponent(pad.id)}`);
   };
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
-  /** Which renderer the route asks for; `unknown` while the container record is in flight. */
+  /**
+   * Which renderer the route asks for. `unknown` is now reserved for the one case that truly is
+   * unknown — a cold deep-link to an id this tab has never resolved — because `activePad`
+   * answers from the remembered record for everything else.
+   */
   const routedLayout: Pad["layout"] | "unknown" =
     requestedPadId === null
       ? "unknown"
@@ -885,9 +1007,28 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         : unresolvedPadId === requestedPadId
           ? "canvas"
           : "unknown";
+  /**
+   * INDEX VISIBILITY: the top level is homes and the homeless. A container is a home and
+   * always shows; an ITEM shows here only while nothing holds it, because a placed item is
+   * already visible inside whatever holds it and listing it twice would make the index a
+   * second, competing statement about where things are.
+   *
+   * A terminal is the only item with an index row of its own today (its home composition), and
+   * `unplaced` is the server's own answer to "does anything reference this?" — derived, never
+   * stored, so parking and unparking leave no state to go stale. Eliding the row is curation:
+   * the composition exists either way.
+   */
+  const indexedTreeItems = useMemo(
+    () =>
+      treeItems?.filter(
+        (item) => item.kind === "folder" || (terminalByHome.get(item.pad.id)?.unplaced ?? true),
+      ) ?? null,
+    [terminalByHome, treeItems],
+  );
+
   const treeData = useMemo(() => {
     const data = new Map<string, { item: PadTreeItem; children: string[] }>();
-    const roots = buildPadTree(treeItems ?? []);
+    const roots = buildPadTree(indexedTreeItems ?? []);
     const addNodes = (nodes: readonly PadTreeNode[]): string[] =>
       nodes.map((node) => {
         const id = `${node.item.kind}:${treeItemId(node.item)}`;
@@ -896,7 +1037,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       });
     data.set("root", { item: SIDEBAR_ROOT_ITEM, children: addNodes(roots) });
     return data;
-  }, [treeItems]);
+  }, [indexedTreeItems]);
   const treeDataRef = useRef(treeData);
   const tree = useHeadlessTree<PadTreeItem>({
     initialState: { expandedItems: initialExpandedItems },
@@ -1005,86 +1146,139 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     };
   }, [tree, treeData]);
 
-  /** A container's mark: a dot for a freeform pad, a split frame for a composition. */
-  const containerMark = (pad: Pad): ReactNode =>
-    pad.layout === "tiled" ? (
+  /**
+   * A row's mark, one vocabulary for the one index: a live/dead dot for a terminal, a split
+   * frame for a composition, a dot for a freeform canvas. A solo composition wears the
+   * TERMINAL's mark, because a composition of one is the item it holds and showing it as a
+   * container would be telling the operator about bookkeeping they never asked for.
+   */
+  const containerMark = (pad: Pad): ReactNode => {
+    const terminal = terminalByHome.get(pad.id);
+    if (terminal !== undefined) {
+      return (
+        <span
+          className={`session-state ${terminal.status === "running" ? "is-running" : ""}`}
+          aria-hidden="true"
+        />
+      );
+    }
+    return pad.layout === "tiled" ? (
       <span className="pad-sidebar-tiles-mark" aria-hidden="true">
         <TilesGlyph />
       </span>
     ) : (
       <span className="pad-sidebar-pad-mark" aria-hidden="true" />
     );
+  };
 
-  /** A composition renames exactly like a canvas — one container object — so both share the editor. */
-  const renderContainerRenameRow = (pad: Pad, active: boolean): ReactNode => (
-    <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
-      {containerMark(pad)}
-      <input
-        ref={renameInputRef}
-        className="pad-sidebar-rename-input"
-        aria-label={`Rename ${pad.name}`}
-        maxLength={120}
-        value={renameName}
-        disabled={renaming}
-        onChange={(event) => setRenameName(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") void submitRename();
-          if (event.key === "Escape") setRenameTarget(null);
-        }}
-      />
-      <button
-        className="pad-sidebar-inline-action is-primary"
-        aria-label={`Save name for ${pad.name}`}
-        title="Save"
-        disabled={renaming || renameName.trim() === "" || renameName.trim() === pad.name}
-        onClick={() => void submitRename()}
-      >
-        <span aria-hidden="true">✓</span>
-      </button>
-      <button
-        className="pad-sidebar-inline-action"
-        aria-label={`Cancel renaming ${pad.name}`}
-        title="Cancel"
-        disabled={renaming}
-        onClick={() => setRenameTarget(null)}
-      >
-        <span aria-hidden="true">×</span>
-      </button>
-    </div>
-  );
+  /**
+   * What a row calls itself. A solo composition shows its terminal's name — the two are one
+   * object from the operator's side — falling back to the container's own name while the
+   * terminal is unnamed.
+   */
+  const rowName = (pad: Pad): string => terminalByHome.get(pad.id)?.name ?? pad.name;
 
-  /** Deleting a container is two-step for both disciplines: the row asks before it acts. */
-  const renderContainerConfirmRow = (pad: Pad, active: boolean): ReactNode => (
-    <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
-      <span className="pad-sidebar-confirm-label">Delete “{pad.name}”?</span>
-      <button
-        className="pad-sidebar-confirm-delete"
-        aria-label={`Confirm deleting ${pad.name}`}
-        disabled={deletingId !== null}
-        onClick={() => void remove(pad)}
-      >
-        {deletingId === pad.id ? "Deleting…" : "Delete"}
-      </button>
-      <button
-        className="pad-sidebar-confirm-cancel"
-        aria-label={`Cancel deleting ${pad.name}`}
-        disabled={deletingId !== null}
-        onClick={() => setConfirmDeleteId(null)}
-      >
-        Cancel
-      </button>
-    </div>
-  );
+  /** What a row IS, for every label that has to name it. */
+  const rowNoun = (pad: Pad): string =>
+    terminalByHome.has(pad.id) ? "terminal" : pad.layout === "tiled" ? "composition" : "canvas";
 
-  /** The ••• row menu: rename inline, delete behind the confirmation step. */
+  /**
+   * One inline editor for every index row. A canvas, a composition and a terminal are renamed
+   * the same way from here; only the write differs, and `submitRename` decides that from the
+   * row itself rather than from a second entry point.
+   */
+  const renderContainerRenameRow = (pad: Pad, active: boolean): ReactNode => {
+    const label = rowName(pad);
+    return (
+      <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
+        {containerMark(pad)}
+        <input
+          ref={renameInputRef}
+          className="pad-sidebar-rename-input"
+          aria-label={`Rename ${label}`}
+          maxLength={120}
+          value={renameName}
+          disabled={renaming}
+          onChange={(event) => setRenameName(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void submitRename();
+            if (event.key === "Escape") setRenameTarget(null);
+          }}
+        />
+        <button
+          className="pad-sidebar-inline-action is-primary"
+          aria-label={`Save name for ${label}`}
+          title="Save"
+          disabled={renaming || renameName.trim() === "" || renameName.trim() === label}
+          onClick={() => void submitRename()}
+        >
+          <span aria-hidden="true">✓</span>
+        </button>
+        <button
+          className="pad-sidebar-inline-action"
+          aria-label={`Cancel renaming ${label}`}
+          title="Cancel"
+          disabled={renaming}
+          onClick={() => setRenameTarget(null)}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+    );
+  };
+
+  /**
+   * Destroying an index row is two-step whatever the row is — and for a terminal it really is
+   * destruction: there is no pool to fall back into, so the PTY dies and the composition it
+   * lived in goes with it. The verb says so.
+   */
+  const renderContainerConfirmRow = (pad: Pad, active: boolean): ReactNode => {
+    const terminal = terminalByHome.get(pad.id);
+    const label = rowName(pad);
+    const verb = terminal === undefined ? "Delete" : "Kill";
+    return (
+      <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
+        <span className="pad-sidebar-confirm-label">
+          {verb} “{label}”?
+        </span>
+        <button
+          className="pad-sidebar-confirm-delete"
+          aria-label={`Confirm ${verb.toLowerCase()} ${label}`}
+          disabled={deletingId !== null}
+          onClick={() => {
+            if (terminal === undefined) {
+              void remove(pad);
+              return;
+            }
+            setConfirmDeleteId(null);
+            killTerminalRow(terminal.id);
+          }}
+        >
+          {deletingId === pad.id ? "Deleting…" : verb}
+        </button>
+        <button
+          className="pad-sidebar-confirm-cancel"
+          aria-label={`Cancel ${verb.toLowerCase()} ${label}`}
+          disabled={deletingId !== null}
+          onClick={() => setConfirmDeleteId(null)}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  };
+
+  /** The ••• row menu: rename inline, destroy behind the confirmation step. */
   const renderContainerActions = (pad: Pad): ReactNode => {
-    const kind = pad.layout === "tiled" ? "Composition" : "Canvas";
+    const label = rowName(pad);
+    const kind = rowNoun(pad);
+    const heading = `${kind[0]?.toUpperCase() ?? ""}${kind.slice(1)}`;
     return (
       <div className="pad-sidebar-actions">
         <button
           className="pad-sidebar-delete"
-          title={`${kind} actions for ${pad.name}`}
-          aria-label={`${kind} actions for ${pad.name}`}
+          title={`${heading} actions for ${label}`}
+          aria-label={`${heading} actions for ${label}`}
           aria-pressed={actionPadId === pad.id}
           onClick={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
         >
@@ -1104,7 +1298,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 setConfirmDeleteId(pad.id);
               }}
             >
-              Delete
+              {terminalByHome.has(pad.id) ? "Kill" : "Delete"}
             </button>
           </div>
         ) : null}
@@ -1113,11 +1307,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   };
 
   /**
-   * One row per container, whichever discipline it holds. A pad and a composition are the same
-   * object, so the row is one renderer: the glyph carries the discipline, a bubble stays italic
-   * until something hardens it, occupancy shows as avatars either way, and a pooled terminal
-   * dropped on the row is placed into that container — a canvas element or a tile is the server's
-   * business, not the sidebar's.
+   * One row per thing that exists. A canvas, a composition and a terminal are all index rows
+   * here, because a terminal lives in a composition and a composition of one IS that terminal:
+   * the glyph, the name and the destructive verb come from the row's own identity, and nothing
+   * else about the row forks. Any carried item released on it is placed into that container —
+   * whether that means a canvas element or a tile is the server's business, not the sidebar's.
    */
   const renderContainerRow = (pad: Pad): ReactNode => {
     const active = pad.id === requestedPadId;
@@ -1141,15 +1335,15 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       const rowDrop = dropRow?.padId === pad.id ? dropRow.assessment : null;
       row = (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}${rowDrop !== null && rowDrop.denial === null ? " pad-sidebar-row--terminal-target" : ""}`}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalByHome.get(pad.id)?.status === "exited" ? " is-exited" : ""}${rowDrop !== null && rowDrop.denial === null ? " pad-sidebar-row--terminal-target" : ""}`}
           {...drop.refusalProps(rowDrop)}
           {...containerDropProps(pad)}
         >
           <button
             className="pad-sidebar-link"
             type="button"
-            title={pad.name}
-            aria-label={`Open ${pad.layout === "tiled" ? "composition" : "canvas"} ${pad.name}`}
+            title={rowName(pad)}
+            aria-label={`Open ${rowNoun(pad)} ${rowName(pad)}`}
             aria-current={active ? "page" : undefined}
             onClick={() => selectPad(pad)}
             onKeyDown={(event) => {
@@ -1166,7 +1360,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             }}
           >
             {containerMark(pad)}
-            {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
+            {sidebarOpen ? <span className="pad-sidebar-pad-name">{rowName(pad)}</span> : null}
             {sidebarOpen && runningCount > 0 ? (
               <span
                 className="pad-sidebar-session-count"
@@ -1178,7 +1372,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             {sidebarOpen && principals.length > 0 ? (
               <span
                 className="pad-sidebar-presence"
-                aria-label={`${principals.length} present in ${pad.name}`}
+                aria-label={`${principals.length} present in ${rowName(pad)}`}
               >
                 {visiblePrincipals.map((principal) => (
                   <span
@@ -1202,7 +1396,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <button
               className="pad-sidebar-collapsed-presence"
               type="button"
-              aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} in ${pad.name}`}
+              aria-label={`${otherPrincipals.length} other ${otherPrincipals.length === 1 ? "participant" : "participants"} in ${rowName(pad)}`}
               aria-describedby={
                 collapsedPresence?.padId === pad.id ? "collapsed-presence-popover" : undefined
               }
@@ -1453,19 +1647,24 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     );
   };
 
+  /**
+   * The index body is itself a target: releasing an item over it — anywhere a row is not —
+   * unplaces it. The tree's own reorder gesture is excluded by `treeOwnsDrag`, and a row
+   * under the pointer stops the event before it reaches here, so the two never contend.
+   */
   const containerTreeBody = (
     <div
       {...tree.getContainerProps()}
-      className="pad-sidebar-list pad-sidebar-tree"
+      className={`pad-sidebar-list pad-sidebar-tree${unplaceDrop !== null && unplaceDrop.denial === null ? " is-drop-target" : ""}`}
       data-testid="pad-sidebar-list"
+      {...drop.refusalProps(unplaceDrop)}
+      {...unplacedDropProps}
     >
-      {sidebarOpen && treeItems === null ? (
-        <p className="pad-sidebar-muted">Loading views…</p>
+      {sidebarOpen && indexedTreeItems === null ? <IndexSkeleton /> : null}
+      {sidebarOpen && indexedTreeItems?.length === 0 ? (
+        <p className="pad-sidebar-muted">Nothing here yet</p>
       ) : null}
-      {sidebarOpen && treeItems?.length === 0 ? (
-        <p className="pad-sidebar-muted">No views yet</p>
-      ) : null}
-      {treeItems === null
+      {indexedTreeItems === null
         ? null
         : tree.getItems().map((item) => {
             const data = item.getItemData();
@@ -1523,13 +1722,15 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       );
     }
     if (section === "views") {
-      // One index for every container: pads and compositions in one tree, folders over both.
+      // ONE index: canvases, compositions, and the terminals that live in them, folders over
+      // all three. The count is what the index actually shows, not what exists — a placed
+      // terminal's row is curated out, and counting it here would contradict the rows below.
       return (
         <SidebarSection
           id="views"
           title="Views"
           testId="views-section"
-          count={pads?.length ?? 0}
+          count={indexedTreeItems?.filter((item) => item.kind === "pad").length ?? 0}
           collapsed={sidebarOpen && collapsedSections.views === true}
           grow
           actions={
@@ -1563,31 +1764,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         >
           {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
           {containerTreeBody}
-        </SidebarSection>
-      );
-    }
-    if (section === "terminals") {
-      return (
-        <SidebarSection
-          id="terminals"
-          title="Terminals"
-          testId="terminals-section"
-          count={poolTerminals.length}
-          collapsed={collapsedSections.terminals === true}
-          onCollapsedChange={toggleSection}
-          {...sectionDragProps("terminals")}
-          key="terminals"
-        >
-          <TerminalPoolSection
-            terminals={poolTerminals}
-            machines={workspace?.machines ?? []}
-            onKill={killPooled}
-            onRename={renamePooled}
-            onMove={movePooled}
-            dropProps={poolDropProps}
-            dropTarget={poolDrop !== null && poolDrop.denial === null}
-            refusal={{ ...drop.refusalProps(poolDrop) }}
-          />
         </SidebarSection>
       );
     }
@@ -1767,34 +1943,35 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
         <section className="pad-browser-canvas" aria-label="Active view">
           {requestedPadId === null ? (
-            <div className="pad-browser-empty">
-              {pads === null ? (
-                <p>Loading your workspace…</p>
-              ) : pads.length === 0 ? (
-                <>
-                  <span className="pad-browser-empty-mark">M</span>
-                  <h1>Your canvas starts here</h1>
-                  <p>Create a canvas from the sidebar to begin.</p>
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={() => {
-                      setOpen(true);
-                      setCreateLayout("canvas");
-                      setCreateOpen(true);
-                    }}
-                  >
-                    Create your first canvas
-                  </button>
-                </>
-              ) : null}
-            </div>
+            pads === null ? (
+              <CanvasSkeleton />
+            ) : (
+              <div className="pad-browser-empty">
+                {pads.length === 0 ? (
+                  <>
+                    <span className="pad-browser-empty-mark">M</span>
+                    <h1>Your canvas starts here</h1>
+                    <p>Create a canvas from the sidebar to begin.</p>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={() => {
+                        setOpen(true);
+                        setCreateLayout("canvas");
+                        setCreateOpen(true);
+                      }}
+                    >
+                      Create your first canvas
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            )
           ) : routedLayout === "unknown" ? (
-            // The renderer follows the container's discipline, so the record decides
-            // before anything mounts: guessing would mean tearing a live room down.
-            <div className="pad-browser-empty">
-              <p>Opening…</p>
-            </div>
+            // A cold deep-link only: every id this tab has already seen answered above. The
+            // renderer follows the container's discipline, so an unseen id waits for the record
+            // rather than guessing — guessing would mean tearing a live room back down.
+            <CanvasSkeleton />
           ) : routedLayout === "tiled" && activePad !== null ? (
             <PadErrorBoundary key={requestedPadId}>
               <TiledPadView
@@ -1817,6 +1994,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 navigate={navigate}
                 presence={displayedPresence}
                 onWorkspaceChange={setWorkspace}
+                soloOccupants={soloOccupants}
                 isOverSidebar={(clientX, clientY) => {
                   const bounds = sidebarRef.current?.getBoundingClientRect();
                   return (

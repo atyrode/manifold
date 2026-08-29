@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import type { PadTreeItem } from "@manifold/protocol";
-import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
+import {
+  buildPadTree,
+  projectPadTreeMove,
+  samePadTreeItems,
+  treeItemId,
+  type PadTreeNode,
+} from "./pad-tree.ts";
 
 const pad = (
   id: string,
@@ -8,7 +14,7 @@ const pad = (
   sortOrder: number,
 ): Extract<PadTreeItem, { kind: "pad" }> => ({
   kind: "pad",
-  pad: { id, name: id, createdAt: sortOrder, layout: "canvas", transient: false },
+  pad: { id, name: id, createdAt: sortOrder, layout: "canvas" },
   parentId,
   sortOrder,
 });
@@ -109,7 +115,7 @@ const composition = (
   sortOrder: number,
 ): Extract<PadTreeItem, { kind: "pad" }> => ({
   kind: "pad",
-  pad: { id, name: id, createdAt: sortOrder, layout: "tiled", transient: false },
+  pad: { id, name: id, createdAt: sortOrder, layout: "tiled" },
   parentId,
   sortOrder,
 });
@@ -156,4 +162,46 @@ test("a drop index over the unified rows is the stored sibling index", () => {
     ["second", 2],
     ["third", 1],
   ]);
+});
+
+/**
+ * The index is polled, so this comparison is what keeps an unchanged workspace from rebuilding
+ * the sidebar every couple of seconds — and what guarantees a real change still gets through.
+ */
+test("two identical index snapshots compare equal across fetches", () => {
+  const first: PadTreeItem[] = [folder("projects", null, 0), pad("notes", "projects", 0)];
+  const second: PadTreeItem[] = [folder("projects", null, 0), pad("notes", "projects", 0)];
+  expect(samePadTreeItems(first, second)).toBe(true);
+  expect(samePadTreeItems(first, first)).toBe(true);
+});
+
+test("a container another tab created reaches the sidebar", () => {
+  const before: PadTreeItem[] = [pad("notes", null, 0)];
+  expect(samePadTreeItems(before, [...before, composition("build", null, 1)])).toBe(false);
+});
+
+test("every field a row paints from is compared: name, discipline, placement, order", () => {
+  const row = pad("notes", null, 0);
+  const base: PadTreeItem[] = [row];
+  const withPad = (fields: Partial<(typeof row)["pad"]>): PadTreeItem[] => [
+    { ...row, pad: { ...row.pad, ...fields } },
+  ];
+
+  expect(samePadTreeItems(base, withPad({ name: "journal" }))).toBe(false);
+  expect(samePadTreeItems(base, withPad({ layout: "tiled" }))).toBe(false);
+  expect(samePadTreeItems(base, [{ ...row, parentId: "projects" }])).toBe(false);
+  expect(samePadTreeItems(base, [{ ...row, sortOrder: 1 }])).toBe(false);
+});
+
+test("a reordered index is a changed index, not the same set", () => {
+  const left: PadTreeItem[] = [pad("a", null, 0), pad("b", null, 1)];
+  const right: PadTreeItem[] = [
+    { ...pad("b", null, 1), sortOrder: 0 },
+    { ...pad("a", null, 0), sortOrder: 1 },
+  ];
+  expect(samePadTreeItems(left, right)).toBe(false);
+});
+
+test("a folder and a pad that share an id are never the same row", () => {
+  expect(samePadTreeItems([pad("shared", null, 0)], [folder("shared", null, 0)])).toBe(false);
 });

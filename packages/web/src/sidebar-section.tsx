@@ -3,14 +3,10 @@ import { useRef, useState, type DragEvent, type ReactNode, type RefObject } from
 /** Drag payload reordering the sidebar's section stack; scoped so row drags stay untouched. */
 export const SECTION_DRAG_MIME = "application/x-manifold-section";
 
-export type SidebarSectionId = "machines" | "terminals" | "views";
+export type SidebarSectionId = "machines" | "views";
 
-/** Views first — the index of every container — then the terminal pool, then machines. */
-export const DEFAULT_SECTION_ORDER: readonly SidebarSectionId[] = [
-  "views",
-  "terminals",
-  "machines",
-];
+/** Views first — the one index of everything that exists — then machines. */
+export const DEFAULT_SECTION_ORDER: readonly SidebarSectionId[] = ["views", "machines"];
 
 const ORDER_STORAGE_KEY = "manifold:sidebar-section-order";
 const COLLAPSED_STORAGE_KEY = "manifold:sidebar-section-collapsed";
@@ -18,15 +14,20 @@ const COLLAPSED_STORAGE_KEY = "manifold:sidebar-section-collapsed";
 export type CollapsedSections = Readonly<Partial<Record<SidebarSectionId, boolean>>>;
 
 function isSectionId(value: unknown): value is SidebarSectionId {
-  return value === "machines" || value === "terminals" || value === "views";
+  return value === "machines" || value === "views";
 }
 
 /**
- * Pads and Views were two sections before they became one index, so a device that stored the old
- * stack still names `pads`. Retired ids fold into their successor instead of dropping out, which
- * keeps a returning user's arrangement rather than resetting it.
+ * Sections merged twice on the way to one index: Pads and Views became a single container
+ * index, then Terminals folded into it too — a terminal lives in a composition, so it is an
+ * index row like anything else. A device that stored either older stack still names them.
+ * Retired ids fold into their successor instead of dropping out, which keeps a returning
+ * user's arrangement rather than resetting it.
  */
-const RETIRED_SECTION_IDS: Readonly<Record<string, SidebarSectionId>> = { pads: "views" };
+const RETIRED_SECTION_IDS: Readonly<Record<string, SidebarSectionId>> = {
+  pads: "views",
+  terminals: "views",
+};
 
 /** Ids missing from storage land beside the neighbour they follow by default, never at the end. */
 function withMissingSections(stored: readonly SidebarSectionId[]): readonly SidebarSectionId[] {
@@ -72,14 +73,19 @@ export function initialCollapsedSections(): CollapsedSections {
     const stored: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_STORAGE_KEY) ?? "{}");
     if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
     const collapsed: Partial<Record<SidebarSectionId, boolean>> = {};
-    /** A retired id only supplies a default: its successor's own stored state wins. */
+    /**
+     * A retired id only supplies a default: its successor's own stored state wins. Two retired
+     * ids can now fold onto the same successor (Pads and Terminals both became Views), so the
+     * merged section stays open unless EVERY predecessor was closed — hiding an index the user
+     * had half-open would lose rows they were looking at.
+     */
     const inherited: Partial<Record<SidebarSectionId, boolean>> = {};
     for (const [key, value] of Object.entries(stored)) {
       if (typeof value !== "boolean") continue;
       if (isSectionId(key)) collapsed[key] = value;
       else {
         const successor = RETIRED_SECTION_IDS[key];
-        if (successor !== undefined) inherited[successor] = value;
+        if (successor !== undefined) inherited[successor] = (inherited[successor] ?? true) && value;
       }
     }
     return { ...inherited, ...collapsed };

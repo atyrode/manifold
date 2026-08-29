@@ -131,13 +131,34 @@ export function NodeTitleBar({
     return () => window.clearTimeout(timer);
   }, [armed]);
 
+  /**
+   * Double-click ZONES. Three of them, and every pixel of the bar belongs to exactly one:
+   * the title TEXT opens the rename, the control cluster is its own gesture, and everything
+   * else — icon, middle slot, and the empty run that is most of a bar — is the bar's own
+   * action. That partition only holds because `.node-titlebar__title` sizes to its content
+   * (`justify-self: start`) instead of stretching across its grid column: a stretched title
+   * swallows the bar, and renaming becomes the only thing a double-click can ever do.
+   */
   const beginRename = (event: ReactMouseEvent<HTMLSpanElement>): void => {
     if (onRenameTitle === undefined) return;
-    // The bar's own double-click (expand / enter) must not also fire: renaming a
-    // title and blowing the node up are different intentions on adjacent pixels.
+    // Renaming a title and blowing the node up are different intentions on adjacent pixels.
     event.stopPropagation();
     setDraft(title ?? defaultTitle);
   };
+
+  /** A control's own double-click is the control's, never the bar's. */
+  const barDoubleClick =
+    onDoubleClick === undefined
+      ? undefined
+      : (event: ReactMouseEvent<HTMLDivElement>): void => {
+          if (
+            event.target instanceof Element &&
+            event.target.closest(`.${TITLEBAR_ACTIONS_CLASS}`) !== null
+          ) {
+            return;
+          }
+          onDoubleClick(event);
+        };
 
   const commitRename = (): void => {
     const next = (draft ?? "").trim();
@@ -155,7 +176,7 @@ export function NodeTitleBar({
   return (
     <div
       className={className === undefined ? "node-titlebar" : `node-titlebar ${className}`}
-      onDoubleClick={onDoubleClick}
+      onDoubleClick={barDoubleClick}
     >
       <span className="node-titlebar__icon" aria-hidden="true">
         {icon}

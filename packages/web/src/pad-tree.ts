@@ -24,6 +24,45 @@ function compareTreeItems(left: PadTreeItem, right: PadTreeItem): number {
   );
 }
 
+/**
+ * Whether two index snapshots say the same thing. The tree is polled, so most responses repeat
+ * the previous one verbatim; committing those would rebuild the headless tree — and blow away
+ * an in-flight rename or drag — several times a second for no change at all. Field-by-field
+ * rather than a stringify: this runs on a timer, and every field of both variants is scalar.
+ */
+export function samePadTreeItems(
+  left: readonly PadTreeItem[],
+  right: readonly PadTreeItem[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  // Order is the server's own ordering, not a set: a reordered index is a changed index.
+  for (let index = 0; index < left.length; index += 1) {
+    if (!samePadTreeItem(left[index], right[index])) return false;
+  }
+  return true;
+}
+
+function samePadTreeItem(left: PadTreeItem | undefined, right: PadTreeItem | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (left.parentId !== right.parentId || left.sortOrder !== right.sortOrder) return false;
+  if (left.kind === "pad") {
+    return (
+      right.kind === "pad" &&
+      left.pad.id === right.pad.id &&
+      left.pad.name === right.pad.name &&
+      left.pad.createdAt === right.pad.createdAt &&
+      left.pad.layout === right.pad.layout
+    );
+  }
+  return (
+    right.kind === "folder" &&
+    left.id === right.id &&
+    left.name === right.name &&
+    left.createdAt === right.createdAt
+  );
+}
+
 function placeTreeItem(item: PadTreeItem, parentId: string | null, sortOrder: number): PadTreeItem {
   return { ...item, parentId, sortOrder };
 }

@@ -2034,26 +2034,30 @@ button.pad-sidebar-session.is-summary > small {
   flex: 1 1 auto;
   min-height: 0;
 }
-.flow-terminal {
-  width: 100%;
-  height: 100%;
-}
-/* The terminal fills its node box; React Flow owns the node's width/height. */
-.flow-terminal > .manifold-terminal {
+/*
+ * A canvas terminal is a MONO PORTAL: the solo composition it lives in renders
+ * element-chrome-first, so the terminal's own titlebar is this node's bar. These
+ * rules used to be scoped to `.flow-terminal`, the retired terminal node type; that
+ * selector matches nothing now, and `.terminal-titlebar` is `pointer-events: none`
+ * by default (it floats over the xterm surface), so leaving them there made the bar
+ * pointer-transparent: the node could not be dragged and its controls could not be
+ * clicked by a real pointer.
+ */
+.flow-portal--mono .flow-portal__tile > .manifold-terminal {
   width: 100%;
   height: 100%;
 }
 /* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
-.flow-terminal .terminal-titlebar {
+.flow-portal--mono .terminal-titlebar {
   pointer-events: auto;
   cursor: grab;
 }
-.flow-terminal .terminal-titlebar:active {
+.flow-portal--mono .terminal-titlebar:active {
   cursor: grabbing;
 }
 /* Buttons inside the titlebar must not look draggable. */
-.flow-terminal .node-titlebar__actions,
-.flow-terminal .node-titlebar__ctl {
+.flow-portal--mono .node-titlebar__actions,
+.flow-portal--mono .node-titlebar__ctl {
   cursor: pointer;
 }
 /*
@@ -2745,8 +2749,14 @@ button.pad-sidebar-session.is-summary > small {
   line-height: 1;
 }
 
+/* Sized to its text, never to its column. The title is the rename zone and the rest of the bar
+   is the bar's own double-click zone, so a title stretched across `minmax(0, 1fr)` would eat
+   the bar: every double-click past the last character would open a rename. It still truncates,
+   because `max-width` keeps the column as its ceiling. */
 .node-titlebar__title {
   overflow: hidden;
+  max-width: 100%;
+  justify-self: start;
   color: #adb5bd;
   font-size: 0.7rem;
   letter-spacing: 0.02em;
@@ -3125,4 +3135,158 @@ button.pad-sidebar-session.is-summary > small {
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+/* ── Skeletons ────────────────────────────────────────────────────────────────
+   Shown only where the answer is genuinely unknown: a cold deep-link whose container
+   record this tab has never resolved, and the very first index fetch. Every warm
+   navigation renders the real thing immediately, so these must read as "the shape is
+   arriving", never as a screen with a sentence on it. */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+
+  50% {
+    opacity: 0.62;
+  }
+}
+
+.canvas-skeleton {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 1.75rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.75rem;
+  background: #121417;
+}
+
+.canvas-skeleton-bar,
+.canvas-skeleton-body,
+.index-skeleton-row {
+  border-radius: 0.35rem;
+  background: #1d2127;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.canvas-skeleton-bar {
+  width: 40%;
+  max-width: 16rem;
+}
+
+.index-skeleton {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.4rem 0.55rem;
+}
+
+.index-skeleton-row {
+  height: 1.5rem;
+}
+
+/* The rows fade back so the stack reads as depth, not as three equal placeholders. */
+.index-skeleton-row:nth-child(2) {
+  width: 82%;
+  animation-delay: 120ms;
+}
+
+.index-skeleton-row:nth-child(3) {
+  width: 64%;
+  animation-delay: 240ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-skeleton-bar,
+  .canvas-skeleton-body,
+  .index-skeleton-row {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- carry (motion) */
+
+/* A collaborator's carry, under their pointer. Deliberately a CHIP and not a copy of
+   the object: the item is not here yet, and drawing a convincing terminal in flight
+   would claim otherwise. Positioned by the renderer — flow pixels on a canvas,
+   percentages inside a composition — so this rule owns paint only. */
+.carry-ghost {
+  display: flex;
+  position: absolute;
+  z-index: 12;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid currentcolor;
+  border-radius: 0.3rem;
+  background: rgb(22 24 28 / 92%);
+  padding: 0.2rem 0.45rem;
+  max-width: 14rem;
+  color: #dee2e6;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  pointer-events: none;
+  /* Held slightly below-right of the pointer, the way a drag image sits. */
+  translate: 0.75rem 0.75rem;
+}
+
+.carry-ghost__glyph {
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.carry-ghost__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The leaf's grab handle inside a composition: the same corner grip a widget's tiles
+   wear on a canvas, so "grab it here" is one affordance in both renderers. */
+.tiled-leaf__grip {
+  display: grid;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  color: #868e96;
+  font-size: 0.9rem;
+  opacity: 0.45;
+  cursor: grab;
+}
+
+.tiled-leaf__grip:hover {
+  color: #dee2e6;
+  opacity: 1;
+}
+
+.tiled-leaf__grip:active {
+  cursor: grabbing;
+}
+
+/* The source mutates live for the person carrying it too: a leaf whose tile is in
+   flight reads as lifted rather than as still sitting there. */
+.tiled-leaf.is-carried {
+  opacity: 0.55;
+}
+
+/* A mono widget IS its terminal: no widget frame padding, no name strip, and the
+   preview scaling a composition needs would only shrink the shell. */
+.flow-portal--mono .flow-portal__viewport {
+  padding: 0;
+}
+
+.flow-portal--mono .flow-portal__tile {
+  width: 100%;
+  height: 100%;
+}
+
+/* Watching a mono widget still shields the terminal body from stray input, but its
+   OWN titlebar is this element's chrome — rename and the window controls have to stay
+   reachable, so the shield starts below the bar. */
+.flow-portal--mono .flow-portal__shield {
+  top: 1.75rem;
 }

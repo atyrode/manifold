@@ -2,11 +2,9 @@ import {
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
-  ExpandTerminalResponseSchema,
   HttpErrorSchema,
   MachinesResponseSchema,
   MovePadTreeItemRequestSchema,
-  MoveTerminalPoolRequestSchema,
   PadPresenceResponseSchema,
   PadSchema,
   PadSessionsResponseSchema,
@@ -16,7 +14,7 @@ import {
   PlacementDeniedResponseSchema,
   RenamePadRequestSchema,
   RenameTerminalRequestSchema,
-  TerminalPoolResponseSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
@@ -26,7 +24,7 @@ import {
   type PlacementDestination,
   type PlacementSurface,
   type Principal,
-  type TerminalPoolEntry,
+  type TerminalSummary,
 } from "@manifold/protocol";
 import type { PlaceOutcome } from "@manifold/sdk";
 
@@ -90,17 +88,7 @@ export async function createPrincipal(
   return { token: grant.token, principal: grant.principal };
 }
 
-/** Loads every pad visible to the current principal. */
-export async function listPads(token: string): Promise<Pad[]> {
-  const body = await requestJson("/api/pads", {
-    headers: authHeaders(token, false),
-  });
-  const pads = fieldFromObject(body, "pads");
-  if (!Array.isArray(pads)) throw new Error("Server returned an invalid pad list");
-  return pads.map((pad) => PadSchema.parse(pad));
-}
-
-/** Loads a pad so direct `/p/:padId` navigation still has its display name. */
+/** Loads one container so a direct `/p/:id` deep-link still has its name and discipline. */
 export async function getPad(token: string, padId: string): Promise<Pad> {
   const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
     headers: authHeaders(token, false),
@@ -205,12 +193,16 @@ export async function getPadSessions(token: string): Promise<readonly PadSession
   return PadSessionsResponseSchema.parse(body).sessions;
 }
 
-/** Lists parked terminals in the workspace pool (`GET /api/terminals`). */
-export async function listTerminals(token: string): Promise<readonly TerminalPoolEntry[]> {
+/**
+ * Every terminal in the workspace (`GET /api/terminals`). There is no pool and no parked
+ * variant: each row carries the composition it lives in (`homeId`) and whether anything
+ * references that home (`unplaced`), which is what puts it at the index's top level.
+ */
+export async function listTerminals(token: string): Promise<readonly TerminalSummary[]> {
   const body = await requestJson("/api/terminals", {
     headers: authHeaders(token, false),
   });
-  return TerminalPoolResponseSchema.parse(body).terminals;
+  return TerminalsResponseSchema.parse(body).terminals;
 }
 
 /**
@@ -241,7 +233,7 @@ export async function placeItem(
   throw errorFromBody(response.status, body);
 }
 
-/** Renames a terminal session (`PATCH /api/terminals/:id`); works bound or parked. */
+/** Renames a terminal session (`PATCH /api/terminals/:id`), placed or not. */
 export async function renameTerminal(
   token: string,
   sessionId: string,
@@ -255,23 +247,11 @@ export async function renameTerminal(
   });
 }
 
-/** Reorders a parked terminal within the workspace pool (`PUT /api/terminal-pool`). */
-export async function moveTerminalPool(
-  token: string,
-  sessionId: string,
-  index: number,
-): Promise<readonly TerminalPoolEntry[]> {
-  const request = MoveTerminalPoolRequestSchema.parse({ sessionId, index });
-  const body = await requestJson("/api/terminal-pool", {
-    method: "PUT",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return TerminalPoolResponseSchema.parse(body).terminals;
-}
-
-/** Kills a pooled terminal's PTY (`DELETE /api/terminals/:id`). */
-export async function killPooledTerminal(token: string, sessionId: string): Promise<void> {
+/**
+ * Kills a terminal's PTY (`DELETE /api/terminals/:id`). Nothing survives it: with no pool
+ * to fall back into, a terminal's home composition is emptied and deleted with it.
+ */
+export async function killTerminal(token: string, sessionId: string): Promise<void> {
   await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
     headers: authHeaders(token, false),
@@ -294,25 +274,13 @@ export async function deletePad(token: string, padId: string): Promise<void> {
   });
 }
 
-/**
- * Expands a terminal into a tiled view born around it (`POST /api/terminals/:id/expand`).
- * Returns the new container id; the caller navigates into it.
+/*
+ * Two calls retired with the solo-composition cutover and left no successor here.
+ * `expandTerminal` had nothing to create — every terminal already lives in a composition,
+ * so entering one is `navigate("/p/" + homeId)`. `pinPad` had nothing to claim once no
+ * container dissolved under anybody. Reordering an unplaced terminal is `movePadTreeItem`
+ * on its home, because the pool's separate ordering folded into the one index.
  */
-export async function expandTerminal(token: string, sessionId: string): Promise<string> {
-  const body = await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/expand`, {
-    method: "POST",
-    headers: authHeaders(token, false),
-  });
-  return ExpandTerminalResponseSchema.parse(body).viewId;
-}
-
-/** Hardens a transient view so it outlives its last occupant (`POST /api/pads/:id/pin`). */
-export async function pinPad(token: string, padId: string): Promise<void> {
-  await requestJson(`/api/pads/${encodeURIComponent(padId)}/pin`, {
-    method: "POST",
-    headers: authHeaders(token, false),
-  });
-}
 
 /**
  * Removes one leaf from a composition (`DELETE /api/pads/:id/tiles/:tileId`). Removal is

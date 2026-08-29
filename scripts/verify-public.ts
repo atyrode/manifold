@@ -236,8 +236,8 @@ try {
     client.transact((tx) => {
       tx.create({
         id: `verify-${marker}`,
-        type: "terminal",
-        sessionId: `verify-session-${marker}`,
+        type: "portal",
+        containerId: `verify-container-${marker}`,
         x: 40,
         y: 40,
         width: 120,

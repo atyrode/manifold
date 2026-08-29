@@ -129,13 +129,15 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     observer = sdk;
     await sdk.connect();
 
-    // Seed one native terminal node through the SDK, then drag it through the real renderer.
+    // Seed one native reference node through the SDK, then drag it through the real
+    // renderer. The bench measures gesture throughput, so the portal's target need not
+    // resolve — only its geometry travels.
     const nodeId = "bench-terminal";
     sdk.transact((tx) => {
       tx.create({
         id: nodeId,
-        type: "terminal",
-        sessionId: "bench-session",
+        type: "portal",
+        containerId: "bench-container",
         x: 500,
         y: 400,
         width: 480,

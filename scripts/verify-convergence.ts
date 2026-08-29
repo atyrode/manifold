@@ -13,6 +13,14 @@
  * EFFECT — element-count delta and per-element stamp change — so a silently no-op
  * gesture fails the round instead of passing it vacuously.
  *
+ * The canvas objects it drags are REAL terminals. A terminal lives in a solo composition
+ * and a canvas references it as a `portal` onto that composition, which renders
+ * element-chrome-first (`.flow-portal--mono`): the terminal's own titlebar IS the node's
+ * bar and its drag handle. So the gate seeds by opening PTYs over the wire and authoring
+ * the portal exactly as `flow-pad-view`'s `createTerminal` does — a fabricated portal onto
+ * a container that does not exist would render a dead card and prove nothing about the
+ * chrome every gesture below actually grabs.
+ *
  * Requires the debug seam (localStorage "manifold:debug" = "1"; packages/web/src/debug-seam.ts).
  * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up
  * even on failure.
@@ -26,7 +34,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
-import { PadResponseSchema, type SceneElement } from "../packages/protocol/src/index.ts";
+import {
+  PadResponseSchema,
+  MachinesResponseSchema,
+  type SceneElement,
+} from "../packages/protocol/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 function debugPortIsAvailable(port: number): boolean {
@@ -76,7 +88,9 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
     MANIFOLD_PORT: "0",
     MANIFOLD_DATA_DIR: dataDir,
     MANIFOLD_WEB_DIST: distDir,
-    MANIFOLD_SPAWN_AGENT: "0",
+    // A canvas terminal is a REAL terminal: the gate seeds its portals by opening
+    // PTYs over the wire, so it needs a machine to open them on.
+    MANIFOLD_SPAWN_AGENT: "1",
   },
   stdout: "pipe",
   stderr: "inherit",
@@ -365,13 +379,11 @@ try {
     const map: ViewMap = new Map();
     for (const element of sdk.elements.values()) {
       const extra =
-        element.type === "terminal"
-          ? element.sessionId
-          : element.type === "portal"
-            ? element.containerId
-            : element.type === "text"
-              ? element.text
-              : element.points.length;
+        element.type === "portal"
+          ? element.containerId
+          : element.type === "text"
+            ? element.text
+            : element.points.length;
       map.set(
         element.id,
         `${element.type}:${element.x.toFixed(1)}:${element.y.toFixed(1)}:${element.width.toFixed(1)}:${element.height.toFixed(1)}:${String(element.zIndex)}:${String(extra)}`,
@@ -472,16 +484,47 @@ try {
     "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
   );
 
-  const terminalElement = (id: string, x: number, y: number): SceneElement => ({
-    id,
-    type: "terminal",
-    sessionId: `convergence-${id}`,
-    x,
-    y,
-    width: 480,
-    height: 320,
-    zIndex: 0,
-  });
+  /**
+   * A machine to open PTYs on. The gate spawns the bundled local agent, which registers
+   * a moment after the server is listening.
+   */
+  let machineId = "";
+  await until(
+    async () => {
+      const listed = MachinesResponseSchema.parse(
+        await (await fetch(`${origin}/api/machines`, { headers: httpHeaders })).json(),
+      );
+      machineId = listed.machines.find((machine) => machine.online)?.id ?? "";
+      return machineId !== "";
+    },
+    30_000,
+    "an online machine to open terminals on",
+  );
+
+  /**
+   * Opens one REAL terminal and returns the canvas reference its opener owes — a portal
+   * onto the solo composition `terminal_open` just created, under the id the open
+   * correlated on. These are the two steps `createTerminal` in `flow-pad-view.tsx` takes,
+   * split so the round measures only the second: the PTY and its home already exist when
+   * the round starts, so what converges is the AUTHORING, not the spawn latency.
+   *
+   * The element it describes is the round's subject: every gesture below grabs the
+   * mono-portal chrome this reference makes the canvas render.
+   */
+  const terminalPortal = async (x: number, y: number): Promise<SceneElement> => {
+    const elementId = crypto.randomUUID();
+    const session = await sdk.openTerminal({ elementId, cols: 80, rows: 24, machineId });
+    return {
+      id: elementId,
+      type: "portal",
+      containerId: session.padId,
+      x,
+      y,
+      width: 480,
+      height: 320,
+      zIndex: 0,
+    };
+  };
   const moveFlowNode = async (
     browser: Browser,
     elementId: string,
@@ -494,25 +537,53 @@ try {
       readonly pointerY: number;
       readonly nodeX: number;
       readonly nodeY: number;
+      /** What the pointer would actually hit there, and how that surface advertises itself. */
+      readonly handleOwned: boolean;
+      readonly cursor: string;
     } | null>(
+      /*
+        A canvas terminal is a MONO PORTAL, so its drag handle is the terminal's own
+        titlebar inside the portal frame — the scoped selector is the point: it fails
+        loudly if the arity rule stops resolving and the node falls back to composition
+        chrome. The grab lands at a quarter width, clear of the controls on the right.
+
+        `handleOwned`/`cursor` are asserted because `.terminal-titlebar` is
+        `pointer-events: none` by default (it floats over the xterm surface): a bar that
+        renders but does not take the pointer is exactly how canvas terminals silently
+        became undraggable while every synthetic-click assertion stayed green.
+      */
       `(() => {
           const node = document.querySelector(
             ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
           );
-          const titlebar = node?.querySelector(".terminal-titlebar");
+          const titlebar = node?.querySelector(".flow-portal--mono .terminal-titlebar");
           if (!(node instanceof HTMLElement) || !(titlebar instanceof HTMLElement)) return null;
           const nodeRect = node.getBoundingClientRect();
           const titlebarRect = titlebar.getBoundingClientRect();
           if (titlebarRect.width <= 0 || titlebarRect.height <= 0) return null;
+          const pointerX = titlebarRect.left + titlebarRect.width / 4;
+          const pointerY = titlebarRect.top + titlebarRect.height / 2;
+          const hit = document.elementFromPoint(pointerX, pointerY);
           return {
-            pointerX: titlebarRect.left + titlebarRect.width / 2,
-            pointerY: titlebarRect.top + titlebarRect.height / 2,
+            pointerX,
+            pointerY,
             nodeX: nodeRect.left,
             nodeY: nodeRect.top,
+            handleOwned: hit instanceof Element && titlebar.contains(hit),
+            cursor: hit === null ? "none" : getComputedStyle(hit).cursor,
           };
         })()`,
     );
-    if (start === null) throw new Error(`terminal ${elementId} has no rendered drag handle`);
+    if (start === null) {
+      throw new Error(`terminal ${elementId} renders no mono-portal titlebar to grab`);
+    }
+    if (!start.handleOwned || start.cursor !== "grab") {
+      throw new Error(
+        `terminal ${elementId} titlebar is not a grabbable pointer target (owned=${String(
+          start.handleOwned,
+        )} cursor=${start.cursor})`,
+      );
+    }
     const remoteBefore =
       liveRemote === undefined
         ? null
@@ -652,8 +723,8 @@ try {
     await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
   };
 
-  const first = terminalElement(crypto.randomUUID(), 280, 180);
-  await round("F1 SDK seed projects into both canvases", { adds: 1 }, async () => {
+  const first = await terminalPortal(280, 180);
+  await round("F1 terminal reference projects into both canvases", { adds: 1 }, async () => {
     sdk.transact((tx) => tx.create(first));
   });
   await round(
@@ -662,8 +733,8 @@ try {
     () => moveFlowNode(browserA, first.id, 150, 90, browserB),
   );
 
-  const second = terminalElement(crypto.randomUUID(), 900, 420);
-  await round("F3 second SDK seed projects into both canvases", { adds: 1 }, async () => {
+  const second = await terminalPortal(900, 420);
+  await round("F3 second terminal reference projects into both canvases", { adds: 1 }, async () => {
     sdk.transact((tx) => tx.create(second));
   });
   await round(
@@ -681,9 +752,14 @@ try {
     { adds: 0, changes: [first.id] },
     async () => {
       await browserB.setLifecycle("frozen");
-      await moveFlowNode(browserA, first.id, 80, 60);
-      await sleep(500);
-      await browserB.setLifecycle("active");
+      try {
+        await moveFlowNode(browserA, first.id, 80, 60);
+        await sleep(500);
+      } finally {
+        // A tab left frozen never resyncs, so every LATER round would fail on B for a
+        // reason that has nothing to do with it. The thaw is not part of the contract.
+        await browserB.setLifecycle("active");
+      }
     },
   );
 
@@ -1103,9 +1179,10 @@ try {
     }
   }
 
-  // Terminals resize from their border like a desktop window: hovering the frame edge
-  // arms the OS resize cursor with no prior selection, and the drag has to reach both
-  // the canonical scene and the other browser.
+  // A canvas terminal resizes from its border like a desktop window: hovering the frame
+  // edge arms the OS resize cursor with no prior selection, and the drag has to reach both
+  // the canonical scene and the other browser. The frame is the PORTAL's — resize is
+  // canvas-item chrome, so it belongs to the node, not to the terminal painted inside it.
   const resizeTarget = sdk.elements.get(second.id);
   if (resizeTarget === undefined) {
     failures.push("F10 border resize");
@@ -1193,7 +1270,7 @@ try {
         await until(
           () =>
             browserA.evaluate<boolean>(
-              `document.querySelector(${edgeSelector})?.querySelector(".flow-terminal-resize-edge.right") !== null`,
+              `document.querySelector(${edgeSelector})?.querySelector(".flow-portal-resize-edge.right") !== null`,
             ),
           5_000,
           "right border grab zone",
@@ -1205,7 +1282,7 @@ try {
         }>(
           `(() => {
             const node = document.querySelector(${edgeSelector});
-            const handle = node.querySelector(".flow-terminal-resize-edge.right");
+            const handle = node.querySelector(".flow-portal-resize-edge.right");
             const rect = handle.getBoundingClientRect();
             return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width };
           })()`,

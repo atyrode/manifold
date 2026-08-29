@@ -7,7 +7,9 @@ import {
   type Pad,
   type PlaceResponse,
   type PlacementDenial,
+  type PlacementDenialRule,
   type PlacementDestination,
+  type PlacementItem,
   type PlacementLookup,
   type PlacementSurface,
   type SceneElement,
@@ -18,7 +20,7 @@ import { carriedItem, envelopeSurface, readEnvelope, type ItemEnvelope } from ".
 
 /**
  * THE drop pipeline. Every destination in the application — the canvas pane, a canvas
- * node, a composition's tile leaf, a sidebar container row, the terminal pool — registers
+ * node, a composition's tile leaf, a sidebar container row, the index's top level — registers
  * against this one layer, hands it the `PlacementDestination` it means, and gets three
  * things: legality for the drag preview, the refusal to wear while refusing, and the
  * write on release.
@@ -42,11 +44,15 @@ const ITEM_NOUN: Record<ItemKind, string> = {
   tile: "A tile",
 };
 
-/** Prose per container kind, in the object position of every refusal sentence. */
+/**
+ * Prose per container kind, in the object position of every refusal sentence. `unplaced`
+ * is not a place, so it reads as the one thing it actually is: the index's top level,
+ * where an item that nothing references sits.
+ */
 const CONTAINER_NOUN: Record<ContainerKind, string> = {
   canvas: "a canvas",
   view: "a composition",
-  pool: "the terminal pool",
+  unplaced: "the index",
 };
 
 /**
@@ -62,6 +68,19 @@ export interface PlacementLookupInputs {
   readonly self: { readonly padId: string; readonly layout: ContainerLayout } | null;
   /** Live elements of `self`; empty for a composition, which places no elements freely. */
   readonly elements: ReadonlyMap<string, SceneElement>;
+  /**
+   * The composition each terminal lives in. Every terminal has one from birth, so a miss
+   * here means no such session — a denial, never a terminal without a home.
+   */
+  readonly terminalHomes: ReadonlyMap<string, string>;
+  /**
+   * What a container holds when it holds exactly ONE item. This is the whole of
+   * "compositions merge, never nest": placement looks THROUGH a solo composition to its
+   * occupant, so a canvas portal onto a lone terminal drags as that terminal. Absent for
+   * a container this surface has no census of, which denies `not_solo` rather than
+   * merging something it cannot see — conservative, never wrong.
+   */
+  readonly soloOccupants: ReadonlyMap<string, PlacementItem>;
 }
 
 export function createPlacementLookup(inputs: PlacementLookupInputs): PlacementLookup {
@@ -78,11 +97,10 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): PlacementL
       const element = inputs.elements.get(elementId);
       if (element === undefined) return null;
       switch (element.type) {
-        case "terminal":
-          return { kind: "terminal", containerId: null };
         case "portal": {
           // A portal places the container it points at, so THAT container's discipline
           // decides the kind — and a portal onto an unknown container places nothing.
+          // A terminal on a canvas IS this case: its portal points at its home.
           const layout = layoutOf(element.containerId);
           if (layout === null) return null;
           return {
@@ -100,34 +118,30 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): PlacementL
         }
       }
     },
+    terminalHome: (sessionId) => inputs.terminalHomes.get(sessionId) ?? null,
+    soloOccupant: (padId) => inputs.soloOccupants.get(padId) ?? null,
   };
 }
 
 /**
  * A refusal in prose, derived from the declared rule and the two nouns involved. There is
  * one sentence per rule and no table of pairs: the rule already says WHY, so growing the
- * vocabulary of items or containers never grows this function.
+ * vocabulary of items or containers never grows this function. The table is keyed by the
+ * exported rule union, so a rule added to the algebra cannot ship without a sentence.
  */
+const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: string) => string> = {
+  not_accepted: (subject, container) => `${subject} does not go in ${container}.`,
+  self_embed: (subject) => `${subject} cannot be placed inside itself.`,
+  discipline: (subject, container) => `${subject} cannot be placed that way in ${container}.`,
+  not_solo: (subject) => `${subject} holds more than one item, so it cannot merge into another.`,
+  unknown_surface: () => "That item no longer exists.",
+  unknown_container: () => "That container no longer exists.",
+};
+
 export function denialMessage(denial: PlacementDenial, lookup: PlacementLookup): string {
   const item = placementItemFor(denial.surface, lookup);
   const subject = item === null ? "That item" : ITEM_NOUN[item.kind];
-  const container = CONTAINER_NOUN[denial.container.kind];
-  switch (denial.rule) {
-    case "not_accepted":
-      return `${subject} does not go in ${container}.`;
-    case "self_embed":
-      return `${subject} cannot be placed inside itself.`;
-    case "discipline":
-      return `${subject} cannot be placed that way in ${container}.`;
-    case "unknown_surface":
-      return "That item no longer exists.";
-    case "unknown_container":
-      return "That container no longer exists.";
-    default: {
-      const exhaustive: never = denial.rule;
-      return exhaustive;
-    }
-  }
+  return DENIAL_PROSE[denial.rule](subject, CONTAINER_NOUN[denial.container.kind]);
 }
 
 /** What the live carry would do at one destination: nothing to say, allowed, or refused. */
