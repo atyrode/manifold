@@ -309,6 +309,16 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     return projectElements(client.elements, remoteGestures);
   }, [client, remoteGestures, sceneRevision]);
 
+  /**
+   * React Flow paints every node with its own `zIndex` inside the viewport's stacking
+   * context, and element bands grow with each creation, so presence has to be lifted
+   * above the highest one — the same thing React Flow does for its node toolbar.
+   */
+  const presenceZIndex = useMemo(
+    () => projected.reduce((highest, element) => Math.max(highest, element.zIndex), 0) + 1,
+    [projected],
+  );
+
   const remoteSelections: RemoteSelectionRect[] = [];
   const projectedById = new Map(projected.map((element) => [element.id, element] as const));
   for (const presence of client.roster.values()) {
@@ -932,74 +942,76 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
             proOptions={PRO_OPTIONS}
           >
             <ViewportPortal>
-              {activeStrokePoints === null ? null : (
-                <svg className="flow-stroke-preview" overflow="visible">
-                  <path
-                    d={pointsToPath(activeStrokePoints)}
-                    stroke={identity.principal.color}
-                    strokeWidth={DEFAULT_STROKE_WIDTH}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-              {[...remoteGestures.values()].map((gesture) => {
-                if (gesture.kind !== "draw" || gesture.points === undefined) return null;
-                const principal =
-                  rosterRows.find((row) => row.principal.id === gesture.principalId)?.principal ??
-                  null;
-                return (
-                  <svg
-                    className="flow-stroke-preview"
-                    data-gesture-element={gesture.elementId}
-                    key={`${gesture.connId}:${gesture.elementId}`}
-                    overflow="visible"
-                  >
+              <div className="flow-presence-layer" style={{ zIndex: presenceZIndex }}>
+                {activeStrokePoints === null ? null : (
+                  <svg className="flow-stroke-preview" overflow="visible">
                     <path
-                      d={pointsToPath(gesture.points)}
-                      stroke={principal?.color ?? "#868e96"}
+                      d={pointsToPath(activeStrokePoints)}
+                      stroke={identity.principal.color}
                       strokeWidth={DEFAULT_STROKE_WIDTH}
                       fill="none"
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
                   </svg>
-                );
-              })}
-              {remoteSelections.map((selection) => (
-                <div
-                  className="flow-remote-selection"
-                  key={selection.key}
-                  style={{
-                    borderColor: selection.color,
-                    height: selection.height,
-                    transform: `translate(${String(selection.x)}px, ${String(selection.y)}px)`,
-                    width: selection.width,
-                  }}
-                />
-              ))}
-              {remoteCursors.map((cursor) => {
-                const principal =
-                  rosterRows.find((row) => row.principal.id === cursor.principalId)?.principal ??
-                  null;
-                return (
-                  <div
-                    className="flow-remote-cursor"
-                    data-cursor-color={principal?.color ?? ""}
-                    key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
-                    style={{
-                      color: principal?.color ?? "#868e96",
-                      transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
+                )}
+                {[...remoteGestures.values()].map((gesture) => {
+                  if (gesture.kind !== "draw" || gesture.points === undefined) return null;
+                  const principal =
+                    rosterRows.find((row) => row.principal.id === gesture.principalId)?.principal ??
+                    null;
+                  return (
+                    <svg
+                      className="flow-stroke-preview"
+                      data-gesture-element={gesture.elementId}
+                      key={`${gesture.connId}:${gesture.elementId}`}
+                      overflow="visible"
+                    >
+                      <path
+                        d={pointsToPath(gesture.points)}
+                        stroke={principal?.color ?? "#868e96"}
+                        strokeWidth={DEFAULT_STROKE_WIDTH}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
                     </svg>
-                    <span>{principal?.name ?? "Collaborator"}</span>
-                  </div>
-                );
-              })}
+                  );
+                })}
+                {remoteSelections.map((selection) => (
+                  <div
+                    className="flow-remote-selection"
+                    key={selection.key}
+                    style={{
+                      borderColor: selection.color,
+                      height: selection.height,
+                      transform: `translate(${String(selection.x)}px, ${String(selection.y)}px)`,
+                      width: selection.width,
+                    }}
+                  />
+                ))}
+                {remoteCursors.map((cursor) => {
+                  const principal =
+                    rosterRows.find((row) => row.principal.id === cursor.principalId)?.principal ??
+                    null;
+                  return (
+                    <div
+                      className="flow-remote-cursor"
+                      data-cursor-color={principal?.color ?? ""}
+                      key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
+                      style={{
+                        color: principal?.color ?? "#868e96",
+                        transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
+                      </svg>
+                      <span>{principal?.name ?? "Collaborator"}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </ViewportPortal>
           </ReactFlow>
         </FlowPadProvider>

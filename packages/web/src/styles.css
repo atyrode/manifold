@@ -2042,6 +2042,17 @@ button.pad-sidebar-session.is-summary > small {
   top: 0.75rem;
   right: 0.75rem;
 }
+
+/* Zero-sized origin box: it only carries the band that keeps presence above nodes. */
+.flow-presence-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
 .flow-remote-cursor {
   position: absolute;
   display: flex;
