@@ -14,6 +14,7 @@ import {
   type SceneElement,
   type ServerMessage,
   type SessionInfo,
+  type TileLayout,
 } from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
@@ -25,10 +26,13 @@ import {
   elementText as sceneElementText,
   elementsMap,
   encodeUpdate,
+  layoutMap,
   nextZIndex,
   patchElement,
   readElement,
+  readTileLayout,
   removeElement,
+  setTileRatios as sceneSetTileRatios,
   writeElement,
   type ScenePatch,
 } from "@manifold/scene";
@@ -115,6 +119,11 @@ export interface SessionEvents {
   scene_reset: () => void;
   /** Validated element projections changed inside the Yjs document. */
   elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
+  /**
+   * A tiled container's layout tree changed. The tree is small and read whole, so
+   * subscribers re-read `layout()` rather than diffing tile ids.
+   */
+  layout_changed: (origin: "local" | "remote" | "undo") => void;
   roster_changed: () => void;
   sessions_changed: () => void;
 }
@@ -187,19 +196,25 @@ export class SessionClient {
         if (element === null) this.elementsState.delete(id);
         else this.elementsState.set(id, element);
       }
-      const origin =
-        transaction.origin === LOCAL_ORIGIN
-          ? "local"
-          : transaction.origin === this.undoManager
-            ? "undo"
-            : "remote";
-      if (ids.length > 0) this.emit("elements_changed", ids, origin);
+      if (ids.length > 0) this.emit("elements_changed", ids, this.classifyOrigin(transaction));
+    });
+    // Canvas containers never write tiles, so this observer stays silent for them and
+    // a tiled container needs no second subscription path.
+    layoutMap(doc).observeDeep((_events, transaction) => {
+      this.emit("layout_changed", this.classifyOrigin(transaction));
     });
     doc.on("update", (update, origin) => {
       if (origin === REMOTE_ORIGIN) return;
       this.hasLocalEdits = true;
       this.send({ type: "doc_update", update: encodeUpdate(update) });
     });
+  }
+
+  /** Both projection observers report provenance the same way. */
+  private classifyOrigin(transaction: Y.Transaction): "local" | "remote" | "undo" {
+    if (transaction.origin === LOCAL_ORIGIN) return "local";
+    if (transaction.origin === this.undoManager) return "undo";
+    return "remote";
   }
 
   private replaceDoc(): void {
@@ -570,6 +585,24 @@ export class SessionClient {
 
   elementText(id: string): Y.Text | null {
     return sceneElementText(this.currentDoc, id);
+  }
+
+  /**
+   * The tiled container's node table, or null for a canvas — and also for a tree that
+   * fails validation, including one that tiles this very container: an unusable tree is
+   * never handed to the renderer. Read whole on every `layout_changed`.
+   */
+  layout(): TileLayout | null {
+    return readTileLayout(this.currentDoc, this.opts.padId);
+  }
+
+  /**
+   * The only layout mutation the SDK owns: a divider drag is high-frequency and purely
+   * geometric. Structural writes (splits, removals, extraction) stay on HTTP so the
+   * server can enforce discipline and the bubble lifecycle.
+   */
+  setTileRatios(splitId: string, ratios: readonly number[]): void {
+    sceneSetTileRatios(this.currentDoc, splitId, ratios, LOCAL_ORIGIN);
   }
 
   sendGesture(gesture: Gesture): void {

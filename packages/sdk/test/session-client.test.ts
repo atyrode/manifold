@@ -1,13 +1,23 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { PROTOCOL_VERSION, type SceneElement, type ServerMessage } from "@manifold/protocol";
+import {
+  PROTOCOL_VERSION,
+  ROOT_TILE_ID,
+  type SceneElement,
+  type ServerMessage,
+  type TileSurface,
+} from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
+  SERVER_PLACE_ORIGIN,
   Y,
   createSceneDoc,
   decodeUpdate,
   encodeUpdate,
+  initTiledLayout,
   readElements,
+  readTileLayout,
   writeElement,
+  writeTileLeaf,
 } from "@manifold/scene";
 import { SessionClient } from "@manifold/sdk";
 import { z } from "zod";
@@ -94,6 +104,25 @@ function element(id: string): SceneElement {
 function encodedDoc(...elements: SceneElement[]): string {
   const doc = createSceneDoc();
   for (const sceneElement of elements) writeElement(doc, sceneElement, LOCAL_ORIGIN);
+  return encodeUpdate(Y.encodeStateAsUpdate(doc));
+}
+
+/**
+ * A tiled container as the server seeds it: the first surface fills the root leaf,
+ * every later one splits it to the right.
+ */
+function encodedTiledDoc(...surfaces: TileSurface[]): string {
+  const doc = createSceneDoc();
+  initTiledLayout(doc, SERVER_PLACE_ORIGIN);
+  for (const [index, surface] of surfaces.entries()) {
+    writeTileLeaf(
+      doc,
+      surface,
+      ROOT_TILE_ID,
+      index === 0 ? "center" : "right",
+      SERVER_PLACE_ORIGIN,
+    );
+  }
   return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
@@ -396,6 +425,124 @@ describe("scene flow", () => {
     });
     expect(sentTypes(socket).at(-1)).toBe("gesture");
     expect(client.elements.get("srv")).toEqual(element("srv"));
+  });
+});
+
+describe("tiled layout", () => {
+  test("a canvas container has no layout tree", () => {
+    const { client } = connected();
+    expect(client.layout()).toBeNull();
+  });
+
+  test("init adopts a tiled room's tree, which the epoch swap replaces", () => {
+    const { client, socket } = dialing();
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+
+    socket.open();
+    socket.receive({ ...INIT, doc: encodedTiledDoc({ kind: "terminal", sessionId: "s1" }) });
+
+    expect(origins).toEqual(["remote"]);
+    expect(client.layout()?.[ROOT_TILE_ID]?.surface).toEqual({
+      kind: "terminal",
+      sessionId: "s1",
+    });
+
+    socket.receive({ ...INIT, type: "resync", epoch: "e2", doc: encodedDoc(element("srv")) });
+    expect(client.layout()).toBeNull();
+  });
+
+  test("a remote layout write projects the tree and reports its provenance", () => {
+    const { client, socket } = connected();
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+
+    socket.receive({
+      type: "doc_update",
+      update: encodedTiledDoc(
+        { kind: "terminal", sessionId: "s1" },
+        { kind: "terminal", sessionId: "s2" },
+      ),
+      by: "peer",
+    });
+
+    expect(origins).toEqual(["remote"]);
+    const layout = client.layout();
+    expect(layout?.[ROOT_TILE_ID]?.dir).toBe("row");
+    expect(layout?.[ROOT_TILE_ID]?.children).toHaveLength(2);
+  });
+
+  test("element traffic never wakes layout subscribers", () => {
+    const { client, socket } = connected();
+    let fired = 0;
+    client.on("layout_changed", () => {
+      fired += 1;
+    });
+
+    socket.receive({ type: "doc_update", update: encodedDoc(element("peer")), by: "peer" });
+    client.transact((tx) => tx.create(element("mine")));
+
+    expect(client.elements.has("peer")).toBe(true);
+    expect(client.elements.has("mine")).toBe(true);
+    expect(fired).toBe(0);
+  });
+
+  test("a ratio drag publishes one local update a replica converges on", () => {
+    const { client, socket } = connected();
+    const base = encodedTiledDoc(
+      { kind: "terminal", sessionId: "s1" },
+      { kind: "terminal", sessionId: "s2" },
+    );
+    socket.receive({ type: "doc_update", update: base, by: "peer" });
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+    const before = docUpdateFrames(socket).length;
+
+    client.setTileRatios(ROOT_TILE_ID, [0.3, 0.7]);
+
+    const updates = docUpdateFrames(socket);
+    expect(updates).toHaveLength(before + 1);
+    expect(origins).toEqual(["local"]);
+    expect(client.layout()?.[ROOT_TILE_ID]?.ratios).toEqual([0.3, 0.7]);
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, decodeUpdate(base));
+    Y.applyUpdate(replica, decodeUpdate(updates.at(-1)?.update ?? ""));
+    expect(readTileLayout(replica)?.[ROOT_TILE_ID]?.ratios).toEqual([0.3, 0.7]);
+  });
+
+  test("a rejected ratio drag touches neither the tree nor the wire", () => {
+    const { client, socket } = connected();
+    socket.receive({
+      type: "doc_update",
+      update: encodedTiledDoc(
+        { kind: "terminal", sessionId: "s1" },
+        { kind: "terminal", sessionId: "s2" },
+      ),
+      by: "peer",
+    });
+    const before = docUpdateFrames(socket).length;
+    let fired = 0;
+    client.on("layout_changed", () => {
+      fired += 1;
+    });
+
+    // Ratios must stay parallel to the split's children, and leaves never carry them.
+    client.setTileRatios(ROOT_TILE_ID, [1]);
+    client.setTileRatios("missing", [0.5, 0.5]);
+
+    expect(docUpdateFrames(socket)).toHaveLength(before);
+    expect(fired).toBe(0);
+    expect(client.layout()?.[ROOT_TILE_ID]?.ratios).toEqual([0.5, 0.5]);
+  });
+
+  test("a container that tiles itself reads as unusable", () => {
+    const { client, socket } = connected();
+    socket.receive({
+      type: "doc_update",
+      update: encodedTiledDoc({ kind: "pad", padId: "pad1" }),
+      by: "peer",
+    });
+    expect(client.layout()).toBeNull();
   });
 });
 
