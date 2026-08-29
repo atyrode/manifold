@@ -74,7 +74,6 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
   const placement = new PlaceExecutor(store, rooms, broker, runtime);
   broker.setPlacement(placement);
-  rooms.setEmptyHandler((padId) => placement.dissolveIfBubble(padId));
   const sessions = new SessionGateway(auth, rooms, broker, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,

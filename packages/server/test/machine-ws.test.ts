@@ -72,12 +72,13 @@ describe("machine hello reconciliation", () => {
     const store = testStore();
     const auth = new AuthService(store, "c".repeat(64), runtime);
     const root = auth.authenticate("c".repeat(64));
+    // A session's `padId` names the composition it LIVES in, and only a composition can
+    // home a terminal, so the durable fixture row needs a tiled container.
     const pad: Pad = {
       id: runtime.newId(),
-      name: "hello pad",
+      name: "hello composition",
       createdAt: runtime.now(),
-      layout: "canvas",
-      transient: false,
+      layout: "tiled",
     };
     store.createPad(pad);
     const enrollment = auth.enrollMachine("agent", root);
@@ -195,10 +196,9 @@ describe("machine hello reconciliation", () => {
     const root = auth.authenticate("f".repeat(64));
     const pad: Pad = {
       id: runtime.newId(),
-      name: "legacy pad",
+      name: "legacy composition",
       createdAt: runtime.now(),
-      layout: "canvas",
-      transient: false,
+      layout: "tiled",
     };
     store.createPad(pad);
     const enrollment = auth.enrollMachine("agent", root);

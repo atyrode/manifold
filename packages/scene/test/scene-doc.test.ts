@@ -17,11 +17,11 @@ import {
   writeElement,
 } from "@manifold/scene";
 
-function terminal(id: string, zIndex = 0): SceneElement {
+function portal(id: string, zIndex = 0): SceneElement {
   return {
     id,
-    type: "terminal",
-    sessionId: `session-${id}`,
+    type: "portal",
+    containerId: `pad-${id}`,
     x: 0,
     y: 0,
     width: 720,
@@ -48,13 +48,13 @@ function text(id: string, value = "hello"): SceneElement {
 describe("scene document", () => {
   test("round-trips validated elements and ignores malformed records", () => {
     const doc = createSceneDoc();
-    writeElement(doc, terminal("one"), LOCAL_ORIGIN);
-    expect(readElement(doc, "one")).toEqual(terminal("one"));
-    expect(readElements(doc)).toEqual(new Map([["one", terminal("one")]]));
+    writeElement(doc, portal("one"), LOCAL_ORIGIN);
+    expect(readElement(doc, "one")).toEqual(portal("one"));
+    expect(readElements(doc)).toEqual(new Map([["one", portal("one")]]));
 
     const invalid = new Y.Map<unknown>();
     invalid.set("id", "invalid");
-    invalid.set("type", "terminal");
+    invalid.set("type", "portal");
     elementsMap(doc).set("invalid", invalid);
     expect(readElement(doc, "invalid")).toBeNull();
   });
@@ -99,8 +99,8 @@ describe("scene document", () => {
   test("removes records and computes the next z-index", () => {
     const doc = createSceneDoc();
     expect(nextZIndex(doc)).toBe(0);
-    writeElement(doc, terminal("low", -2), LOCAL_ORIGIN);
-    writeElement(doc, terminal("high", 7), LOCAL_ORIGIN);
+    writeElement(doc, portal("low", -2), LOCAL_ORIGIN);
+    writeElement(doc, portal("high", 7), LOCAL_ORIGIN);
     expect(nextZIndex(doc)).toBe(8);
     expect(removeElement(doc, "high", LOCAL_ORIGIN)).toBeTrue();
     expect(removeElement(doc, "high", LOCAL_ORIGIN)).toBeFalse();
@@ -108,12 +108,12 @@ describe("scene document", () => {
 
   test("base64-encodes binary document updates", () => {
     const doc = createSceneDoc();
-    writeElement(doc, terminal("one"), LOCAL_ORIGIN);
+    writeElement(doc, portal("one"), LOCAL_ORIGIN);
     const update = Y.encodeStateAsUpdate(doc);
     expect(decodeUpdate(encodeUpdate(update))).toEqual(update);
 
     const replica = createSceneDoc();
     Y.applyUpdate(replica, decodeUpdate(encodeUpdate(update)));
-    expect(readElement(replica, "one")).toEqual(terminal("one"));
+    expect(readElement(replica, "one")).toEqual(portal("one"));
   });
 });

@@ -1,18 +1,19 @@
 import { expect, test } from "bun:test";
 import {
-  ExpandTerminalResponseSchema,
+  ContainersResponseSchema,
   OkResponseSchema,
-  PadPresenceResponseSchema,
-  PadResponseSchema,
   PadsResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  RenamePadRequestSchema,
   RenameTerminalRequestSchema,
+  TerminalsResponseSchema,
+  censusSolo,
+  type CensusItem,
+  type ContainerCensus,
   type Pad,
   type PlaceRequest,
   type PlaceResponse,
-  type SessionInfo,
+  type TerminalSummary,
   type TileLayout,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
@@ -29,32 +30,49 @@ import {
   type TestServer,
 } from "../src/index.ts";
 import {
-  captureTerminal,
+  attachedCapture,
   closeClients,
   e2eFailure,
   nextLayoutChange,
+  openTerminalAt,
+  portalElement,
   stopProcesses,
-  terminalElement,
   waitForTerminalText,
   type TerminalCapture,
 } from "./helpers.ts";
 
-// The typed command never contains the sentinel literally (the format string hides it), so
-// finding it in a REPLAYED SNAPSHOT proves real PTY output survived the expand/dissolve
-// round trip rather than being echoed back live.
-const SENTINEL = "bubble-sentinel-77";
-const SENTINEL_COMMAND = "printf 'bubble-sentinel-%s\\n' 77\n";
+/**
+ * The container lifecycle over REAL processes: every terminal is born into a composition of
+ * its own, and these are the five rules that move it between compositions afterwards —
+ * spawn, merge, extract, unplace, reap. Every assertion here reads durable HTTP state or a
+ * live PTY, never an in-process fake, because the point is that the rules hold end to end.
+ */
+
 const JSON_HEADERS = { "content-type": "application/json" } as const;
+
+/**
+ * A sentinel the typed command never contains literally (the format string hides it), so
+ * finding it in a REPLAYED SNAPSHOT proves real PTY output survived the placement rather
+ * than being echoed back live.
+ */
+function sentinel(tag: string): { readonly text: string; readonly command: string } {
+  return {
+    text: `lifecycle-sentinel-${tag}`,
+    command: `printf 'lifecycle-sentinel-%s\\n' ${tag}\n`,
+  };
+}
 
 interface Workspace {
   readonly server: TestServer;
+  readonly agent: TestAgent;
   readonly token: string;
   readonly pad: Pad;
 }
 
 /**
- * One real server + agent + canvas pad. The token is WORKSPACE-scoped on purpose: a bubble
- * is a pad of its own, so a pad-scoped grant could never follow its occupant into the view.
+ * One real server + agent + canvas pad. The token is WORKSPACE-scoped on purpose: a terminal
+ * lives in a composition the server mints as the PTY lands, so a pad-scoped grant could
+ * never join the room that holds it.
  */
 async function startWorkspace(
   label: string,
@@ -75,22 +93,53 @@ async function startWorkspace(
     principal: { kind: "human", name: "Container Owner", color: "#3fa46b" },
     caps: ["pads:read", "pads:write", "scene:write", "terminal:spawn", "terminal:write"],
   });
-  return { server, token: owner.token, pad };
+  return { server, agent, token: owner.token, pad };
 }
 
-/** Opens a real PTY and authors its canvas element at a known geometry the swaps must preserve. */
-async function openPlaced(
-  client: SessionClient,
-  elementId: string,
-  geometry: { readonly x: number; readonly y: number },
-): Promise<SessionInfo> {
-  const session = await client.openTerminal({ elementId, cols: 80, rows: 24 });
-  expect(session.status).toBe("running");
-  client.transact((tx) => {
-    tx.create(terminalElement(elementId, { sessionId: session.id, ...geometry }));
+/**
+ * The ONE placement call. Every gesture this file exercises — merge, extract, unplace — is
+ * the same envelope with a different destination, and the returned `op` says which placement
+ * the declarations chose, so each caller asserts the op it expected.
+ */
+async function place(server: TestServer, request: PlaceRequest): Promise<PlaceResponse> {
+  return await ownerFetch(server, "/api/place", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(PlaceRequestSchema.parse(request)),
+    responseSchema: PlaceResponseSchema,
   });
-  await waitFor(() => client.elements.has(elementId), 10_000, 20);
-  return session;
+}
+
+async function listPads(server: TestServer): Promise<readonly Pad[]> {
+  const listing = await ownerFetch(server, "/api/pads", { responseSchema: PadsResponseSchema });
+  return listing.pads;
+}
+
+async function listTerminals(server: TestServer): Promise<readonly TerminalSummary[]> {
+  const listing = await ownerFetch(server, "/api/terminals", {
+    responseSchema: TerminalsResponseSchema,
+  });
+  return listing.terminals;
+}
+
+/** The whole containment graph: one census per container, which is the index's only input. */
+async function listContainers(server: TestServer): Promise<readonly ContainerCensus[]> {
+  const listing = await ownerFetch(server, "/api/containers", {
+    responseSchema: ContainersResponseSchema,
+  });
+  return listing.containers;
+}
+
+async function censusOf(server: TestServer, padId: string): Promise<ContainerCensus> {
+  const containers = await listContainers(server);
+  const census = containers.find((candidate) => candidate.padId === padId);
+  if (census === undefined) throw new Error(`no container census for ${padId}`);
+  return census;
+}
+
+/** What a solo composition holds, stated the way the census states it. */
+function soloTerminal(sessionId: string): CensusItem {
+  return { kind: "terminal", containerId: null, sessionId };
 }
 
 /** The leaf a session occupies; its id IS the session's placement inside a tiled container. */
@@ -119,130 +168,379 @@ async function waitForTileCount(client: SessionClient, count: number): Promise<T
   return layout;
 }
 
-/**
- * The ONE placement call. Every gesture this file exercises — park, tile, compose, extract —
- * is the same envelope with a different destination, and the returned `op` says which
- * placement the declarations chose, so each caller asserts the op it expected.
- */
-async function place(server: TestServer, request: PlaceRequest): Promise<PlaceResponse> {
-  return await ownerFetch(server, "/api/place", {
-    method: "POST",
+/** Renames a terminal so a merged composition's auto-name is exact rather than machine-derived. */
+async function renameTerminal(server: TestServer, sessionId: string, name: string): Promise<void> {
+  await ownerFetch(server, `/api/terminals/${sessionId}`, {
+    method: "PATCH",
     headers: JSON_HEADERS,
-    body: JSON.stringify(PlaceRequestSchema.parse(request)),
-    responseSchema: PlaceResponseSchema,
+    body: JSON.stringify(RenameTerminalRequestSchema.parse({ name })),
+    responseSchema: OkResponseSchema,
   });
 }
 
-async function listPads(server: TestServer): Promise<readonly Pad[]> {
-  const listing = await ownerFetch(server, "/api/pads", { responseSchema: PadsResponseSchema });
-  return listing.pads;
-}
+test("a terminal is born into a solo composition, and placing a portal onto it flips unplaced", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  try {
+    const { server, token, pad } = await startWorkspace("solo", servers, agents);
+    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    clients.push(canvas);
+    // No portal yet: the birth invariant is about the COMPOSITION, and authoring the canvas's
+    // reference afterwards is what proves `unplaced` is derived rather than stored.
+    const { session, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "el-solo",
+      token,
+    });
+    clients.push(homeClient);
 
-async function occupiedPads(server: TestServer): Promise<readonly string[]> {
-  const presence = await ownerFetch(server, "/api/pad-presence", {
-    responseSchema: PadPresenceResponseSchema,
-  });
-  return presence.pads.map((pad) => pad.padId);
-}
+    // The index knows exactly one terminal, and the composition it names lives beside the
+    // canvas as a tiled container of its own.
+    const terminals = await listTerminals(server);
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({
+      id: session.id,
+      homeId: session.padId,
+      status: "running",
+      exitCode: null,
+      unplaced: true,
+    });
+    const pads = await listPads(server);
+    expect(pads.map((row) => row.id).sort()).toEqual([pad.id, session.padId].sort());
+    expect(pads.find((row) => row.id === session.padId)?.layout).toBe("tiled");
 
-/**
- * Waits until the server has processed a room's LAST leave. Presence drops the principal in
- * the very call that fires the room-empty hook, so its absence is the marker that the bubble
- * rule has already run — which is what lets a hardened view prove a NON-event.
- */
-async function waitForRoomEmpty(server: TestServer, padId: string): Promise<void> {
-  await waitFor(async () => !(await occupiedPads(server)).includes(padId), 10_000, 50);
-}
+    // Solo means exactly one item, and that item IS the terminal.
+    const home = await censusOf(server, session.padId);
+    expect(home.layout).toBe("tiled");
+    expect(home.items).toEqual([soloTerminal(session.id)]);
+    expect(censusSolo(home)).toEqual(soloTerminal(session.id));
+    expect(home.references).toEqual([]);
+    const born = await waitForTileCount(homeClient, 1);
+    expect(tileForSession(born, session.id)).not.toBeNull();
 
-test("a bubble carries its terminal into a view, replays its buffer, and pops back into the slot", async () => {
+    // Placing it is authoring a REFERENCE. Nothing about the terminal changes, and the index
+    // re-derives `unplaced` from the containment graph on the very next read.
+    canvas.transact((tx) => {
+      tx.create(portalElement("el-solo", session.padId, { x: 320, y: 180 }));
+    });
+    await waitFor(() => canvas.elements.has("el-solo"), 10_000, 20);
+    await waitFor(
+      async () => (await listTerminals(server)).every((terminal) => !terminal.unplaced),
+      10_000,
+      50,
+    );
+    const canvasCensus = await censusOf(server, pad.id);
+    expect(canvasCensus.layout).toBe("canvas");
+    expect(canvasCensus.references).toEqual([session.padId]);
+    // The composition still holds exactly what it held: a reference is not containment.
+    expect((await censusOf(server, session.padId)).items).toEqual([soloTerminal(session.id)]);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 60_000);
+
+test("composing two live terminals merges their homes into one named composition, PTYs intact", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("bubble", servers, agents);
+    const { server, token, pad } = await startWorkspace("merge", servers, agents);
     const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
     clients.push(canvas);
-    const session = await openPlaced(canvas, "el-bubble", { x: 320, y: 180 });
-
-    const canvasCapture = captureTerminal(canvas, session.id);
-    captures.push(canvasCapture);
-    canvas.attachTerminal(session.id);
-    await waitFor(() => canvasCapture.snapshotSeq !== null, 10_000, 20);
-    canvas.sendTerminalInput(session.id, SENTINEL_COMMAND);
-    await waitForTerminalText(canvasCapture, SENTINEL, 10_000);
-
-    // Expand: a view is born around the terminal and starts life as a bubble.
-    const expanded = await ownerFetch(server, `/api/terminals/${session.id}/expand`, {
-      method: "POST",
-      responseSchema: ExpandTerminalResponseSchema,
+    const target = await openTerminalAt(canvas, server, {
+      elementId: "el-target",
+      token,
+      portalAt: { x: 200, y: 150 },
     });
-    const born = await ownerFetch(server, `/api/pads/${expanded.viewId}`, {
-      responseSchema: PadResponseSchema,
+    const dragged = await openTerminalAt(canvas, server, {
+      elementId: "el-dragged",
+      token,
+      portalAt: { x: 980, y: 150 },
     });
-    expect(born.pad).toMatchObject({ id: expanded.viewId, layout: "tiled", transient: true });
+    clients.push(target.homeClient, dragged.homeClient);
+    expect(target.session.padId).not.toBe(dragged.session.padId);
 
-    // Transmutation in place: same element id, same geometry, now a live view widget.
-    await waitFor(() => canvas.elements.get("el-bubble")?.type === "portal", 10_000, 20);
-    const widget = canvas.elements.get("el-bubble");
-    if (widget?.type !== "portal") throw new Error("expand left no portal on the origin canvas");
-    expect(widget).toMatchObject({
-      containerId: expanded.viewId,
-      x: 320,
-      y: 180,
-      width: 720,
-      height: 480,
-    });
-
-    // The expander follows its terminal into the view, where the pre-expand screen replays.
-    const viewer = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(viewer);
-    await waitFor(() => viewer.sessions.get(session.id)?.padId === expanded.viewId, 10_000, 20);
-    const viewLayout = await waitForTileCount(viewer, 1);
-    expect(tileForSession(viewLayout, session.id)).not.toBeNull();
-    const viewCapture = captureTerminal(viewer, session.id);
-    captures.push(viewCapture);
-    viewer.attachTerminal(session.id);
-    await waitFor(() => viewCapture.snapshotSeq !== null, 10_000, 20);
-    // No gap: nothing may precede the snapshot, and the sentinel is IN the snapshot — so it
-    // came from replayed screen state, not from a live write.
-    expect(viewCapture.pendingOutputCount).toBe(0);
-    expect(viewCapture.snapshotText).toContain(SENTINEL);
-    expect(await occupiedPads(server)).toContain(expanded.viewId);
-
-    // Shrink: the last occupant leaving pops the bubble and transmutes the widget back.
-    viewer.close();
-    await waitFor(() => canvas.elements.get("el-bubble")?.type === "terminal", 15_000, 20);
-    const restored = canvas.elements.get("el-bubble");
-    if (restored?.type !== "terminal") throw new Error("the popped bubble left no terminal");
-    expect(restored).toMatchObject({
-      sessionId: session.id,
-      x: 320,
-      y: 180,
-      width: 720,
-      height: 480,
-    });
-    await waitFor(() => canvas.sessions.get(session.id)?.padId === pad.id, 10_000, 20);
-
-    // The transient row is gone: a dissolved bubble leaves no container behind.
+    await renameTerminal(server, target.session.id, "alpha");
+    await renameTerminal(server, dragged.session.id, "beta");
     await waitFor(
-      async () => (await listPads(server)).every((row) => row.id !== expanded.viewId),
+      () => dragged.homeClient.sessions.get(dragged.session.id)?.name === "beta",
+      10_000,
+      20,
+    );
+
+    // Real bytes into both PTYs, so the merge has something to lose.
+    const alpha = sentinel("alpha");
+    const beta = sentinel("beta");
+    const targetCapture = await attachedCapture(target.homeClient, target.session.id);
+    const draggedCapture = await attachedCapture(dragged.homeClient, dragged.session.id);
+    captures.push(targetCapture, draggedCapture);
+    target.homeClient.sendTerminalInput(target.session.id, alpha.command);
+    dragged.homeClient.sendTerminalInput(dragged.session.id, beta.command);
+    await Promise.all([
+      waitForTerminalText(targetCapture, alpha.text, 10_000),
+      waitForTerminalText(draggedCapture, beta.text, 10_000),
+    ]);
+
+    // One widget dropped on another: a composition is born absorbing BOTH items, and the
+    // target's element becomes a reference to it in place.
+    const composed = await place(server, {
+      surface: { kind: "element", padId: pad.id, elementId: "el-dragged" },
+      destination: { kind: "compose", padId: pad.id, targetElementId: "el-target", edge: "right" },
+    });
+    if (composed.op !== "compose") throw new Error(`expected compose, got ${composed.op}`);
+
+    const merged = (await listPads(server)).find((row) => row.id === composed.viewId);
+    expect(merged).toMatchObject({ id: composed.viewId, name: "alpha + beta", layout: "tiled" });
+    // Both homes handed their occupant over and retired: neither row survives.
+    await waitFor(
+      async () => {
+        const ids = (await listPads(server)).map((row) => row.id);
+        return !ids.includes(target.session.padId) && !ids.includes(dragged.session.padId);
+      },
       10_000,
       50,
     );
-    expect((await listPads(server)).map((row) => row.id)).toEqual([pad.id]);
+    expect((await listPads(server)).map((row) => row.id).sort()).toEqual(
+      [pad.id, composed.viewId].sort(),
+    );
 
-    // Round trip complete: a client that joins the canvas only AFTER the pop still gets the
-    // pre-expand buffer, so the PTY survived both rebinds without a reset.
-    const replay = await connect(server, { padId: pad.id, token, reconnect: false });
-    clients.push(replay);
-    await waitFor(() => replay.sessions.get(session.id)?.padId === pad.id, 10_000, 20);
-    const replayCapture = captureTerminal(replay, session.id);
-    captures.push(replayCapture);
-    replay.attachTerminal(session.id);
-    await waitFor(() => replayCapture.snapshotSeq !== null, 10_000, 20);
-    expect(replayCapture.pendingOutputCount).toBe(0);
-    expect(replayCapture.snapshotText).toContain(SENTINEL);
+    // The target's reference kept its id and its geometry; the dragged one was consumed.
+    await waitFor(
+      () =>
+        canvas.elements.get("el-target")?.type === "portal" && !canvas.elements.has("el-dragged"),
+      10_000,
+      20,
+    );
+    expect(canvas.elements.get("el-target")).toMatchObject({
+      type: "portal",
+      containerId: composed.viewId,
+      x: 200,
+      y: 150,
+    });
+
+    // The composition holds both terminals as leaves, and the index says both live there.
+    const inside = await connect(server, {
+      padId: composed.viewId,
+      token,
+      reconnect: false,
+    });
+    clients.push(inside);
+    const layout = await waitForTileCount(inside, 2);
+    expect(tileForSession(layout, target.session.id)).not.toBeNull();
+    expect(tileForSession(layout, dragged.session.id)).toBe(composed.tileId);
+    await waitFor(
+      async () =>
+        (await listTerminals(server)).every((terminal) => terminal.homeId === composed.viewId),
+      10_000,
+      50,
+    );
+    // Containment, not tree order: the census reports the container's own order, and which
+    // leaf a split put first is the layout's business rather than this rule's.
+    const held = (await censusOf(server, composed.viewId)).items;
+    expect(held).toHaveLength(2);
+    expect(held).toContainEqual(soloTerminal(target.session.id));
+    expect(held).toContainEqual(soloTerminal(dragged.session.id));
+
+    // Both PTYs survived the merge: each pre-merge screen replays on attach to the survivor.
+    const survivingTarget = await attachedCapture(inside, target.session.id);
+    const survivingDragged = await attachedCapture(inside, dragged.session.id);
+    captures.push(survivingTarget, survivingDragged);
+    expect(survivingTarget.pendingOutputCount).toBe(0);
+    expect(survivingDragged.pendingOutputCount).toBe(0);
+    expect(survivingTarget.snapshotText).toContain(alpha.text);
+    expect(survivingDragged.snapshotText).toContain(beta.text);
+
+    // Compositions MERGE, never nest: one holding two items is nobody's item, and the rule
+    // that refuses it says exactly that rather than throwing.
+    const other = await createPad(server, "merge refusal target", "tiled");
+    const nested = await canvas.place(
+      { kind: "pad", padId: composed.viewId },
+      { kind: "tile", padId: other.id, targetTileId: null, edge: null },
+    );
+    expect(nested.ok).toBe(false);
+    if (nested.ok) throw new Error("a two-item composition tiled into another must be refused");
+    expect(nested.denial).toEqual({
+      rule: "not_solo",
+      surface: { kind: "pad", padId: composed.viewId },
+      container: { kind: "view", padId: other.id },
+    });
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 90_000);
+
+test("extracting a leaf re-homes its live terminal into a fresh solo composition", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const { server, token, pad } = await startWorkspace("extract", servers, agents);
+    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    clients.push(canvas);
+    const resident = await openTerminalAt(canvas, server, {
+      elementId: "el-resident",
+      token,
+      portalAt: { x: 120, y: 140 },
+    });
+    const guest = await openTerminalAt(canvas, server, {
+      elementId: "el-guest",
+      token,
+      portalAt: { x: 900, y: 140 },
+    });
+    clients.push(resident.homeClient, guest.homeClient);
+
+    const mark = sentinel("guest");
+    const guestCapture = await attachedCapture(guest.homeClient, guest.session.id);
+    captures.push(guestCapture);
+    guest.homeClient.sendTerminalInput(guest.session.id, mark.command);
+    await waitForTerminalText(guestCapture, mark.text, 10_000);
+
+    // A tile drop is the other spelling of the merge: the guest joins the resident's
+    // composition and the home it emptied retires.
+    const bornHome = guest.session.padId;
+    const changed = nextLayoutChange(resident.homeClient);
+    const added = await place(server, {
+      surface: { kind: "element", padId: pad.id, elementId: "el-guest" },
+      destination: {
+        kind: "tile",
+        padId: resident.session.padId,
+        targetTileId: null,
+        edge: "right",
+      },
+    });
+    if (added.op !== "add_tile") throw new Error(`expected add_tile, got ${added.op}`);
+    // The structural write is server-authored, so a joined renderer observes it as a REMOTE
+    // update and re-reads the tree rather than diffing ids it never wrote.
+    expect(await changed).toBe("remote");
+    const shared = await waitForTileCount(resident.homeClient, 2);
+    expect(tileForSession(shared, guest.session.id)).toBe(added.tileId);
+    await waitFor(
+      async () => (await listPads(server)).every((row) => row.id !== bornHome),
+      10_000,
+      50,
+    );
+
+    // Extraction: the leaf leaves a MULTI-tile composition, so its terminal is re-homed into
+    // a composition that did not exist a moment ago, and the canvas gets a portal onto that.
+    const extracted = await place(server, {
+      surface: { kind: "tile", containerId: resident.session.padId, tileId: added.tileId },
+      destination: { kind: "canvas", padId: pad.id, x: 640, y: 700 },
+    });
+    if (extracted.op !== "extract") throw new Error(`expected extract, got ${extracted.op}`);
+    await waitFor(() => canvas.elements.has(extracted.elementId), 10_000, 20);
+    const authored = canvas.elements.get(extracted.elementId);
+    if (authored?.type !== "portal") throw new Error("extract authored no portal element");
+    expect(authored).toMatchObject({ x: 640, y: 700 });
+    const newHome = authored.containerId;
+    expect(newHome).not.toBe(resident.session.padId);
+    expect(newHome).not.toBe(bornHome);
+    expect(newHome).not.toBe(pad.id);
+
+    expect(censusSolo(await censusOf(server, newHome))).toEqual(soloTerminal(guest.session.id));
+    const indexed = (await listTerminals(server)).find(
+      (terminal) => terminal.id === guest.session.id,
+    );
+    expect(indexed).toMatchObject({ homeId: newHome, status: "running", unplaced: false });
+    // The source composition still holds the resident, so it was not emptied and stays.
+    const remaining = await waitForTileCount(resident.homeClient, 1);
+    expect(tileForSession(remaining, resident.session.id)).not.toBeNull();
+    expect((await listPads(server)).map((row) => row.id)).toContain(resident.session.padId);
+
+    // Same PTY, two placements later: the pre-merge screen replays out of the new home.
+    const rehomed = await connect(server, { padId: newHome, token, reconnect: false });
+    clients.push(rehomed);
+    await waitFor(() => rehomed.sessions.get(guest.session.id)?.padId === newHome, 10_000, 20);
+    const rehomedCapture = await attachedCapture(rehomed, guest.session.id);
+    captures.push(rehomedCapture);
+    expect(rehomedCapture.pendingOutputCount).toBe(0);
+    expect(rehomedCapture.snapshotText).toContain(mark.text);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 90_000);
+
+test("unplacing a terminal removes every reference to it and leaves the PTY running", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const { server, token, pad } = await startWorkspace("unplace", servers, agents);
+    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    clients.push(canvas);
+    const { session, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "el-unplace",
+      token,
+      portalAt: { x: 260, y: 200 },
+    });
+    clients.push(homeClient);
+
+    // A second reference to the same composition: naming the ITEM releases all of them, which
+    // is what distinguishes an identity unplace from releasing one widget.
+    canvas.transact((tx) => {
+      tx.create(portalElement("el-mirror", session.padId, { x: 900, y: 200 }));
+    });
+    await waitFor(() => canvas.elements.has("el-mirror"), 10_000, 20);
+
+    const mark = sentinel("unplaced");
+    const capture = await attachedCapture(homeClient, session.id);
+    captures.push(capture);
+    homeClient.sendTerminalInput(session.id, mark.command);
+    await waitForTerminalText(capture, mark.text, 10_000);
+
+    const released = await place(server, {
+      surface: { kind: "terminal", sessionId: session.id },
+      destination: { kind: "unplaced" },
+    });
+    expect(released).toEqual({ op: "unplace", removed: 2 });
+    await waitFor(
+      () => !canvas.elements.has("el-unplace") && !canvas.elements.has("el-mirror"),
+      10_000,
+      20,
+    );
+    expect((await censusOf(server, pad.id)).references).toEqual([]);
+
+    // THIS is the whole difference from the park it replaced: the terminal did not move, did
+    // not die, and is still indexed — it is simply unreferenced.
+    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === session.id);
+    expect(indexed).toMatchObject({
+      id: session.id,
+      homeId: session.padId,
+      status: "running",
+      exitCode: null,
+      unplaced: true,
+    });
+    expect(censusSolo(await censusOf(server, session.padId))).toEqual(soloTerminal(session.id));
+
+    // A client that joins the home only AFTER the unplace still gets the pre-unplace screen.
+    const rejoin = await connect(server, { padId: session.padId, token, reconnect: false });
+    clients.push(rejoin);
+    await waitFor(() => rejoin.sessions.get(session.id)?.status === "running", 10_000, 20);
+    const rejoinCapture = await attachedCapture(rejoin, session.id);
+    captures.push(rejoinCapture);
+    expect(rejoinCapture.pendingOutputCount).toBe(0);
+    expect(rejoinCapture.snapshotText).toContain(mark.text);
+
+    // Zero removed is a legal answer: it says "already unplaced" rather than failing.
+    expect(
+      await place(server, {
+        surface: { kind: "terminal", sessionId: session.id },
+        destination: { kind: "unplaced" },
+      }),
+    ).toEqual({ op: "unplace", removed: 0 });
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -252,283 +550,55 @@ test("a bubble carries its terminal into a view, replays its buffer, and pops ba
   }
 }, 60_000);
 
-test("splitting a bubble hardens it: the view and both tiles survive an empty room", async () => {
+test("removing a terminal's last home leaf reaps the PTY and retires the composition", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("split", servers, agents);
+    const { server, agent, token, pad } = await startWorkspace("reap", servers, agents);
     const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
     clients.push(canvas);
-    const resident = await openPlaced(canvas, "el-split-1", { x: 100, y: 120 });
-    const guest = await openPlaced(canvas, "el-split-2", { x: 900, y: 120 });
-
-    // A tile surface must be pooled or already in the container, so park the second PTY.
-    await place(server, {
-      surface: { kind: "element", padId: pad.id, elementId: "el-split-2" },
-      destination: { kind: "pool" },
+    const { session, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "el-reap",
+      token,
+      portalAt: { x: 200, y: 200 },
     });
-    await waitFor(() => !canvas.elements.has("el-split-2"), 10_000, 20);
+    clients.push(homeClient);
+    const layout = await waitForTileCount(homeClient, 1);
+    const leaf = tileForSession(layout, session.id);
+    if (leaf === null) throw new Error("the newborn composition holds no terminal leaf");
 
-    const expanded = await ownerFetch(server, `/api/terminals/${resident.id}/expand`, {
-      method: "POST",
-      responseSchema: ExpandTerminalResponseSchema,
+    // Closing a terminal's only leaf closes the terminal: there is no pool to fall into, so
+    // the operator who removed its last representation removed the terminal.
+    const removed = await ownerFetch(server, `/api/pads/${session.padId}/tiles/${leaf}`, {
+      method: "DELETE",
+      responseSchema: OkResponseSchema,
     });
-    const viewer = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(viewer);
-    await waitForTileCount(viewer, 1);
+    expect(removed.ok).toBe(true);
 
-    const changed = nextLayoutChange(viewer);
-    const added = await place(server, {
-      surface: { kind: "terminal", sessionId: guest.id },
-      destination: { kind: "tile", padId: expanded.viewId, targetTileId: null, edge: null },
-    });
-    if (added.op !== "add_tile") throw new Error(`expected add_tile, got ${added.op}`);
-    // The structural write lands as a remote doc update, so every joined renderer re-reads.
-    expect(await changed).toBe("remote");
-    const split = await waitForTileCount(viewer, 2);
-    expect(split[added.tileId]?.surface).toEqual({ kind: "terminal", sessionId: guest.id });
-    expect(tileForSession(split, resident.id)).not.toBeNull();
-    await waitFor(() => viewer.sessions.get(guest.id)?.padId === expanded.viewId, 10_000, 20);
-
-    // A second leaf makes this a composition, not a bubble.
-    const hardened = await ownerFetch(server, `/api/pads/${expanded.viewId}`, {
-      responseSchema: PadResponseSchema,
-    });
-    expect(hardened.pad.transient).toBe(false);
-
-    expect(await occupiedPads(server)).toContain(expanded.viewId);
-    viewer.close();
-    await waitForRoomEmpty(server, expanded.viewId);
-    // The room-empty hook has run; a split view is not popped by it.
-    expect((await listPads(server)).map((row) => row.id).sort()).toEqual(
-      [pad.id, expanded.viewId].sort(),
-    );
-    // Both PTYs are still tiled inside it, and the widget still stands on the canvas.
-    const rejoin = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(rejoin);
-    const survived = await waitForTileCount(rejoin, 2);
-    expect(tileForSession(survived, resident.id)).not.toBeNull();
-    expect(tileForSession(survived, guest.id)).not.toBeNull();
-    expect(canvas.elements.get("el-split-1")?.type).toBe("portal");
-  } catch (error) {
-    throw e2eFailure(error, [...servers, ...agents]);
-  } finally {
-    closeClients(clients);
-    await stopProcesses([...servers, ...agents]);
-  }
-}, 60_000);
-
-test("renaming a bubble claims it: the view and its widget survive an empty room", async () => {
-  const servers: TestServer[] = [];
-  const agents: TestAgent[] = [];
-  const clients: SessionClient[] = [];
-  try {
-    const { server, token, pad } = await startWorkspace("claim", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
-    clients.push(canvas);
-    const session = await openPlaced(canvas, "el-claim", { x: 260, y: 340 });
-
-    const expanded = await ownerFetch(server, `/api/terminals/${session.id}/expand`, {
-      method: "POST",
-      responseSchema: ExpandTerminalResponseSchema,
-    });
-    const viewer = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(viewer);
-    await waitForTileCount(viewer, 1);
-
-    // Naming a container claims it: hardened, and the return address is given up.
-    const renamed = await ownerFetch(server, `/api/pads/${expanded.viewId}`, {
-      method: "PATCH",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(RenamePadRequestSchema.parse({ name: "claimed view" })),
-      responseSchema: PadResponseSchema,
-    });
-    expect(renamed.pad).toMatchObject({
-      id: expanded.viewId,
-      name: "claimed view",
-      layout: "tiled",
-      transient: false,
-    });
-
-    expect(await occupiedPads(server)).toContain(expanded.viewId);
-    viewer.close();
-    await waitForRoomEmpty(server, expanded.viewId);
-    // The hook has run and a claimed single-tile view is untouched by it.
-    const listed = await listPads(server);
-    expect(listed.find((row) => row.id === expanded.viewId)).toMatchObject({
-      name: "claimed view",
-      transient: false,
-    });
-    // The widget stays a portal: nothing transmuted back onto the canvas.
-    expect(canvas.elements.get("el-claim")?.type).toBe("portal");
-    await waitFor(() => canvas.sessions.get(session.id) === undefined, 10_000, 20);
-
-    const rejoin = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(rejoin);
-    const survived = await waitForTileCount(rejoin, 1);
-    expect(tileForSession(survived, session.id)).not.toBeNull();
-    expect(rejoin.sessions.get(session.id)?.padId).toBe(expanded.viewId);
-  } catch (error) {
-    throw e2eFailure(error, [...servers, ...agents]);
-  } finally {
-    closeClients(clients);
-    await stopProcesses([...servers, ...agents]);
-  }
-}, 60_000);
-
-test("composing two canvas terminals births a named view that survives extracting a tile", async () => {
-  const servers: TestServer[] = [];
-  const agents: TestAgent[] = [];
-  const clients: SessionClient[] = [];
-  try {
-    const { server, token, pad } = await startWorkspace("compose", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
-    clients.push(canvas);
-    const target = await openPlaced(canvas, "el-target", { x: 200, y: 150 });
-    const dragged = await openPlaced(canvas, "el-dragged", { x: 980, y: 150 });
-
-    // Named sessions make the composed view's auto-name exact rather than machine-derived.
-    for (const [sessionId, name] of [
-      [target.id, "alpha"],
-      [dragged.id, "beta"],
-    ] as const) {
-      await ownerFetch(server, `/api/terminals/${sessionId}`, {
-        method: "PATCH",
-        headers: JSON_HEADERS,
-        body: JSON.stringify(RenameTerminalRequestSchema.parse({ name })),
-        responseSchema: OkResponseSchema,
-      });
-    }
-    await waitFor(() => canvas.sessions.get(dragged.id)?.name === "beta", 10_000, 20);
-
-    // Drop one terminal on the other: the target becomes the widget, both become tiles.
-    const composed = await place(server, {
-      surface: { kind: "terminal", sessionId: dragged.id },
-      destination: { kind: "compose", padId: pad.id, targetElementId: "el-target", edge: "right" },
-    });
-    if (composed.op !== "compose") throw new Error(`expected compose, got ${composed.op}`);
-    const view = await ownerFetch(server, `/api/pads/${composed.viewId}`, {
-      responseSchema: PadResponseSchema,
-    });
-    // Composition IS the hardening moment: durable from birth, named after both surfaces.
-    expect(view.pad).toMatchObject({
-      id: composed.viewId,
-      name: "alpha + beta",
-      layout: "tiled",
-      transient: false,
-    });
-
-    await waitFor(() => canvas.elements.get("el-target")?.type === "portal", 10_000, 20);
-    const widget = canvas.elements.get("el-target");
-    if (widget?.type !== "portal") throw new Error("compose left no portal on the canvas");
-    expect(widget).toMatchObject({
-      containerId: composed.viewId,
-      x: 200,
-      y: 150,
-      width: 720,
-      height: 480,
-    });
-    // The dragged terminal left the canvas for the view.
-    await waitFor(() => !canvas.elements.has("el-dragged"), 10_000, 20);
-
-    const viewer = await connect(server, { padId: composed.viewId, token, reconnect: false });
-    clients.push(viewer);
-    const layout = await waitForTileCount(viewer, 2);
-    expect(tileForSession(layout, target.id)).not.toBeNull();
-    const draggedTile = tileForSession(layout, dragged.id);
-    if (draggedTile === null) throw new Error("compose placed no tile for the dragged terminal");
     await waitFor(
       () =>
-        viewer.sessions.get(target.id)?.padId === composed.viewId &&
-        viewer.sessions.get(dragged.id)?.padId === composed.viewId,
-      10_000,
-      20,
+        agent.output.stdout.some(
+          (line) =>
+            line.includes('"evt":"exited"') &&
+            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+        ),
+      15_000,
+      50,
     );
-
-    // Decomposition: pull one tile back onto the canvas the widget lives on. An occupant is
-    // joined, so the bubble rule cannot pop the leftover single-tile view. The destination is
-    // NAMED now — the retired route derived it from the view's stored return address.
-    const extracted = await place(server, {
-      surface: { kind: "tile", containerId: composed.viewId, tileId: draggedTile },
-      destination: { kind: "canvas", padId: pad.id, x: 640, y: 700 },
-    });
-    if (extracted.op !== "extract") throw new Error(`expected extract, got ${extracted.op}`);
-    await waitFor(() => canvas.elements.has(extracted.elementId), 10_000, 20);
-    const plain = canvas.elements.get(extracted.elementId);
-    if (plain?.type !== "terminal") throw new Error("extract authored no terminal element");
-    expect(plain).toMatchObject({ sessionId: dragged.id, x: 640, y: 700 });
-    await waitFor(() => canvas.sessions.get(dragged.id)?.padId === pad.id, 10_000, 20);
-
-    // The view persists with the remaining tile, and its row is still listed.
-    const remaining = await waitForTileCount(viewer, 1);
-    expect(tileForSession(remaining, target.id)).not.toBeNull();
-    expect((await listPads(server)).map((row) => row.id)).toContain(composed.viewId);
-    expect(canvas.elements.get("el-target")?.type).toBe("portal");
-  } catch (error) {
-    throw e2eFailure(error, [...servers, ...agents]);
-  } finally {
-    closeClients(clients);
-    await stopProcesses([...servers, ...agents]);
-  }
-}, 60_000);
-
-test("a bubble pops while a spectator watches it, and the watcher is fenced not stranded", async () => {
-  const servers: TestServer[] = [];
-  const agents: TestAgent[] = [];
-  const clients: SessionClient[] = [];
-  try {
-    const { server, token, pad } = await startWorkspace("spectator", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
-    clients.push(canvas);
-    const session = await openPlaced(canvas, "el-watched", { x: 260, y: 140 });
-
-    const expanded = await ownerFetch(server, `/api/terminals/${session.id}/expand`, {
-      method: "POST",
-      responseSchema: ExpandTerminalResponseSchema,
-    });
-    await waitFor(() => canvas.elements.get("el-watched")?.type === "portal", 10_000, 20);
-
-    // The collaborator's canvas paints a live view widget, which opens a REAL room socket
-    // into the bubble. It watches: it reads the layout tree like anyone else...
-    const watcher = await connect(server, {
-      padId: expanded.viewId,
-      token,
-      reconnect: false,
-      spectator: true,
-    });
-    clients.push(watcher);
-    expect(tileForSession(await waitForTileCount(watcher, 1), session.id)).not.toBeNull();
-    // ...but it occupies nothing, so the widget shows no phantom avatar and the newborn
-    // bubble is not held open by somebody merely looking at it.
-    expect(await occupiedPads(server)).not.toContain(expanded.viewId);
-
-    const viewer = await connect(server, { padId: expanded.viewId, token, reconnect: false });
-    clients.push(viewer);
-    await waitForTileCount(viewer, 1);
-    expect(await occupiedPads(server)).toContain(expanded.viewId);
-
-    // The one real occupant leaves. Before the spectator distinction this was the deadlock:
-    // the watcher's socket kept the room non-empty, so the bubble could never pop.
-    viewer.close();
-    await waitFor(() => canvas.elements.get("el-watched")?.type === "terminal", 15_000, 20);
-    expect(canvas.elements.get("el-watched")).toMatchObject({
-      sessionId: session.id,
-      x: 260,
-      y: 140,
-    });
+    await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
+    // The composition it emptied retires with it, and the canvas's reference goes with that.
     await waitFor(
-      async () => (await listPads(server)).every((row) => row.id !== expanded.viewId),
+      async () => {
+        const ids = (await listPads(server)).map((row) => row.id);
+        return ids.length === 1 && ids[0] === pad.id;
+      },
       10_000,
       50,
     );
-
-    // The watched container is gone, so its watcher is fenced with the pad-deleted close
-    // rather than left reading a dead room: a terminal close, no redial, no throw.
-    await waitFor(() => watcher.status === "closed", 10_000, 20);
-    // It read the pop as it happened: the session left the container before the fence.
-    expect(watcher.sessions.has(session.id)).toBe(false);
-    expect(watcher.layout()).not.toBeNull();
+    await waitFor(() => !canvas.elements.has("el-reap"), 10_000, 20);
+    expect((await censusOf(server, pad.id)).references).toEqual([]);
+    expect(agent.proc.exitCode).toBeNull();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

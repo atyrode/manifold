@@ -254,7 +254,7 @@ describe("tile layout document", () => {
     const doc = createSceneDoc();
     expect(removeTileLeaf(doc, ROOT_TILE_ID, SERVER_PLACE_ORIGIN)).toBe(false);
     expect(setTileRatios(doc, ROOT_TILE_ID, [1], SERVER_PLACE_ORIGIN)).toBe(false);
-    // A bind must never silently vanish: placement seeds the tree it needs.
+    // A tile placement must never silently vanish: placement seeds the tree it needs.
     expect(writeTileLeaf(doc, terminal("s1"), ROOT_TILE_ID, "center", SERVER_PLACE_ORIGIN)).toBe(
       ROOT_TILE_ID,
     );

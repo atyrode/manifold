@@ -1,9 +1,23 @@
 import { Database } from "bun:sqlite";
+import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
-const MIGRATIONS: Readonly<Record<number, string>> = {
+/**
+ * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
+ * Yjs documents, which no amount of SQL can do. A code migration declares whether the
+ * change it makes is recoverable: `backup: true` takes a consistent snapshot of the
+ * database beside itself first, because a one-way data move is the one kind of migration
+ * whose mistake cannot be undone by running something else afterwards.
+ */
+interface CodeMigration {
+  readonly backup: boolean;
+  apply(db: Database, path: string): void;
+}
+type Migration = string | CodeMigration;
+
+const MIGRATIONS: Readonly<Record<number, Migration>> = {
   1: `
 CREATE TABLE IF NOT EXISTS pads(
   id TEXT PRIMARY KEY,
@@ -204,6 +218,14 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '7');
 ALTER TABLE sessions DROP COLUMN element_id;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '8');
 `,
+  /**
+   * Solo compositions (#59). Every terminal now lives in a composition of its own and a
+   * canvas references it through a portal, so `pads.transient` (the bubble flag),
+   * `pads.origin_pad_id` (the bubble's return address) and `sessions.sort_order` (the pool's
+   * ordering) all describe machinery that no longer exists. The rows and documents move
+   * too, which is why this one is code.
+   */
+  9: { backup: true, apply: migrateToSoloCompositions },
 };
 
 interface TableRow {
@@ -212,6 +234,19 @@ interface TableRow {
 
 interface VersionRow {
   value: string;
+}
+
+/**
+ * SQLite's own consistent snapshot, which is the only safe way to copy a WAL database from
+ * inside the process holding it, and the only one that cannot capture a torn write. Skipped
+ * for a `:memory:` database, which has no file to copy, and for a database that did not
+ * exist yet, which has no pre-migration state to preserve.
+ */
+function backupBeside(db: Database, path: string, version: number, from: number): void {
+  if (from === 0) return;
+  if (path === "" || path === ":memory:" || path.startsWith("file::memory:")) return;
+  const target = `${path}.pre-v${version}.bak`;
+  db.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
 }
 
 /** Opens a Bun SQLite database, enables WAL, and applies numbered migrations atomically. */
@@ -233,13 +268,20 @@ export function openDatabase(path: string): Database {
   }
 
   for (let version = current + 1; version <= SCHEMA_VERSION; version += 1) {
-    const sql = MIGRATIONS[version];
-    if (sql === undefined) {
+    const migration = MIGRATIONS[version];
+    if (migration === undefined) {
       db.close();
       throw new Error(`missing database migration ${version}`);
     }
+    // The snapshot is taken OUTSIDE the transaction because a VACUUM cannot run inside
+    // one — which is also what makes it a true pre-migration image: nothing this migration
+    // does has happened yet.
+    if (typeof migration !== "string" && migration.backup) {
+      backupBeside(db, path, version, current);
+    }
     const migrate = db.transaction(() => {
-      db.exec(sql);
+      if (typeof migration === "string") db.exec(migration);
+      else migration.apply(db, path);
     });
     migrate();
   }

@@ -101,11 +101,12 @@ function docUpdateFrames(socket: FakeSocket): DocUpdateFrame[] {
   return updates;
 }
 
+/** A canvas element the doc tests can move around; a portal is the plainest reference. */
 function element(id: string): SceneElement {
   return {
     id,
-    type: "terminal",
-    sessionId: `session-${id}`,
+    type: "portal",
+    containerId: `pad-${id}`,
     x: 0,
     y: 0,
     width: 720,

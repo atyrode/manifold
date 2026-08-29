@@ -19,13 +19,7 @@ import {
   sessionFrame,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
-import {
-  closeClients,
-  e2eFailure,
-  nextMessage,
-  stopProcesses,
-  terminalElement,
-} from "./helpers.ts";
+import { closeClients, e2eFailure, nextMessage, portalElement, stopProcesses } from "./helpers.ts";
 
 type InitMessage = Extract<ServerMessage, { type: "init" }>;
 
@@ -38,6 +32,8 @@ test("scene survives restart while presence and cursors do not", async () => {
     const firstServer = await startServer();
     servers.push(firstServer);
     const pad = await createPad(firstServer, "presence restart isolation");
+    // Scene content only: a canvas element is a reference to a container these days.
+    const referenced = await createPad(firstServer, "presence restart reference");
     const enrolled = await enrollMachine(firstServer, "presence-restart-agent");
     const agent = await startAgent({
       serverUrl: firstServer.url,
@@ -61,7 +57,7 @@ test("scene survives restart while presence and cursors do not", async () => {
     clients.push(aliceClient, observerClient);
 
     const saved = nextMessage(aliceClient, "saved", 15_000);
-    aliceClient.transact((tx) => tx.create(terminalElement("restart-scene")));
+    aliceClient.transact((tx) => tx.create(portalElement("restart-scene", referenced.id)));
     await saved;
 
     const cursorSeen = nextMessage(

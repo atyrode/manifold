@@ -13,10 +13,10 @@ import {
   closeClients,
   e2eFailure,
   nextMessage,
+  portalElement,
   sceneContentHash,
   sortedScene,
   stopProcesses,
-  terminalElement,
 } from "./helpers.ts";
 
 test("Yjs clients converge through field conflicts, resume, recreate, and restart", async () => {
@@ -27,6 +27,9 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     server = await startServer();
     servers.push(server);
     const pad = await createPad(server, "convergence");
+    // The scene under test is made of REFERENCES: a canvas holds portals onto containers,
+    // never an element carrying a session, so a real container id is what they point at.
+    const referenced = await createPad(server, "convergence reference");
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Alice", color: "#aa3355" },
       caps: ["pads:read", "scene:write"],
@@ -43,7 +46,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     clients.push(clientA, clientB);
 
     const initial: SceneElement[] = Array.from({ length: 40 }, (_, index) =>
-      terminalElement(`el-${index}`, {
+      portalElement(`el-${index}`, referenced.id, {
         zIndex: index,
         x: index * 17,
         y: index * 11,
@@ -97,7 +100,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     clientB.close();
     clientA.transact((tx) => {
       for (let index = 40; index < 50; index += 1) {
-        tx.create(terminalElement(`el-${index}`));
+        tx.create(portalElement(`el-${index}`, referenced.id));
       }
     });
     await waitFor(() => clientA.elements.size === 50, 10_000, 20);
@@ -121,7 +124,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
       20,
     );
     resumedB.transact((tx) => {
-      tx.create(terminalElement("el-0", { x: 512, zIndex: tx.nextZIndex() }));
+      tx.create(portalElement("el-0", referenced.id, { x: 512, zIndex: tx.nextZIndex() }));
     });
     await waitFor(
       () => clientA.elements.get("el-0")?.x === 512 && resumedB.elements.get("el-0")?.x === 512,
@@ -132,7 +135,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     const savedAfterRev = clientA.rev;
     const saved = nextMessage(clientA, "saved", 15_000, (message) => message.rev > savedAfterRev);
     clientA.transact((tx) => {
-      tx.create(terminalElement("el-durable"));
+      tx.create(portalElement("el-durable", referenced.id));
     });
     await waitFor(() => resumedB.elements.has("el-durable"), 10_000, 20);
     await saved;

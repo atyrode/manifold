@@ -1,6 +1,12 @@
-import type { SceneElement, ServerMessageBody } from "@manifold/protocol";
+import type { SceneElement, ServerMessageBody, SessionInfo } from "@manifold/protocol";
 import { base64ToText, type SessionClient } from "@manifold/sdk";
-import { waitFor, type ProcessOutput, type TestAgent, type TestServer } from "../src/index.ts";
+import {
+  connect,
+  waitFor,
+  type ProcessOutput,
+  type TestAgent,
+  type TestServer,
+} from "../src/index.ts";
 
 // The SDK hands subscribers channel-agnostic bodies: a room handle already knows its room.
 type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
@@ -98,17 +104,38 @@ export async function waitForTerminalText(
   await waitFor(() => (capture.snapshotText + capture.outputText).includes(text), timeoutMs, 20);
 }
 
-type TerminalElement = Extract<SceneElement, { type: "terminal" }>;
+/** Attaches one client to a session and returns its capture once the snapshot has landed. */
+export async function attachedCapture(
+  client: SessionClient,
+  sessionId: string,
+  timeoutMs = 10_000,
+): Promise<TerminalCapture> {
+  const capture = captureTerminal(client, sessionId);
+  client.attachTerminal(sessionId);
+  try {
+    await waitFor(() => capture.snapshotSeq !== null, timeoutMs, 20);
+  } catch (error) {
+    capture.stop();
+    throw error;
+  }
+  return capture;
+}
 
-/** Produces a protocol-valid native terminal element with optional test-specific fields. */
-export function terminalElement(
+type PortalElement = Extract<SceneElement, { type: "portal" }>;
+
+/**
+ * The one way a canvas references a container — including the composition a terminal lives
+ * in, which is why no element carries a session id any more.
+ */
+export function portalElement(
   id: string,
-  patch: Partial<Omit<TerminalElement, "id" | "type">> = {},
+  containerId: string,
+  patch: Partial<Omit<PortalElement, "id" | "type" | "containerId">> = {},
 ): SceneElement {
   return {
     id,
-    type: "terminal",
-    sessionId: `session-${id}`,
+    type: "portal",
+    containerId,
     x: 0,
     y: 0,
     width: 720,
@@ -116,6 +143,72 @@ export function terminalElement(
     zIndex: 0,
     ...patch,
   };
+}
+
+/** What a canvas birth needs to say; every field but the element id and grant has a default. */
+export interface OpenTerminalOptions {
+  readonly elementId: string;
+  /**
+   * The grant the HOME client joins with. It has to be workspace-scoped: the composition a
+   * terminal is born into is server-minted, so no pad-scoped token could ever name it.
+   */
+  readonly token: string;
+  readonly cols?: number;
+  readonly rows?: number;
+  readonly machineId?: string;
+  /** Where to author the canvas's own portal onto the new home; omitted authors none. */
+  readonly portalAt?: { readonly x: number; readonly y: number };
+}
+
+export interface OpenedTerminal {
+  readonly session: SessionInfo;
+  /**
+   * A client on the terminal's home composition. Every terminal message is gated on
+   * `session.padId === peer.padId`, so the canvas that spawned the PTY cannot drive it — and
+   * since `SessionClient` pools one socket per (url, token), this second room costs no
+   * second connection, exactly as it costs none in the browser.
+   */
+  readonly homeClient: SessionClient;
+}
+
+/**
+ * The whole canvas spawn gesture, once: open the PTY from the canvas, author the canvas's
+ * portal onto the composition the server gave it, and join that composition so the terminal
+ * can actually be driven.
+ */
+export async function openTerminalAt(
+  canvas: SessionClient,
+  server: TestServer,
+  options: OpenTerminalOptions,
+): Promise<OpenedTerminal> {
+  const session = await canvas.openTerminal({
+    elementId: options.elementId,
+    cols: options.cols ?? 80,
+    rows: options.rows ?? 24,
+    ...(options.machineId === undefined ? {} : { machineId: options.machineId }),
+  });
+  if (session.status !== "running") {
+    throw new Error(`terminal ${session.id} was born ${session.status}`);
+  }
+  const portalAt = options.portalAt;
+  if (portalAt !== undefined) {
+    canvas.transact((tx) => {
+      tx.create(portalElement(options.elementId, session.padId, portalAt));
+    });
+    await waitFor(() => canvas.elements.has(options.elementId), 10_000, 20);
+  }
+  const homeClient = await connect(server, {
+    padId: session.padId,
+    token: options.token,
+    reconnect: false,
+  });
+  try {
+    await waitFor(() => homeClient.sessions.get(session.id)?.status === "running", 10_000, 20);
+  } catch (error) {
+    homeClient.close();
+    throw error;
+  }
+  return { session, homeClient };
 }
 
 export function textElement(id: string, text: string): SceneElement {

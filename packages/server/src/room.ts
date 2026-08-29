@@ -3,7 +3,9 @@ import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   compareElements,
+  type CensusItem,
   type ClientMessageBody,
+  type ContainerCensus,
   type PadPresence,
   type PresencePayload,
   type PresenceState,
@@ -47,6 +49,50 @@ import type { ServerStore } from "./stores.ts";
 
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
+
+/**
+ * The census of one container, derived from its document alone: a tiled container is
+ * counted by its occupied leaves, a canvas by its elements. Free of `Room` so the same
+ * derivation serves a resident room and a pad whose document is only on disk — two
+ * answers to "what does this container hold" would be two answers too many.
+ */
+export function censusFor(
+  padId: string,
+  layout: TileLayout | null,
+  elements: readonly SceneElement[],
+): ContainerCensus {
+  const items: CensusItem[] = [];
+  const references: string[] = [];
+  if (layout === null) {
+    for (const element of elements) {
+      if (element.type !== "portal") {
+        items.push({ kind: element.type, containerId: null, sessionId: null });
+        continue;
+      }
+      references.push(element.containerId);
+      items.push({ kind: "view", containerId: element.containerId, sessionId: null });
+    }
+  } else {
+    for (const node of Object.values(layout)) {
+      const surface = node.surface;
+      if (surface === null) continue;
+      if (surface.kind === "terminal") {
+        // A leaf holding a terminal is the only place a session's home is written down, so
+        // the census carries the session id: the index needs it to join a solo composition
+        // row to the terminal wearing it.
+        items.push({ kind: "terminal", containerId: null, sessionId: surface.sessionId });
+        continue;
+      }
+      if (surface.kind === "pad") {
+        references.push(surface.padId);
+        items.push({ kind: "canvas-pad", containerId: surface.padId, sessionId: null });
+        continue;
+      }
+      items.push({ kind: "text", containerId: null, sessionId: null });
+    }
+  }
+  return { padId, layout: layout === null ? "canvas" : "tiled", items, references };
+}
 
 /**
  * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
@@ -389,6 +435,7 @@ export class Room {
         ...(gesture.width === undefined ? {} : { width: gesture.width }),
         ...(gesture.height === undefined ? {} : { height: gesture.height }),
         ...(gesture.points === undefined ? {} : { points: gesture.points }),
+        ...(gesture.carry === undefined ? {} : { carry: gesture.carry }),
       },
       true,
     );
@@ -492,23 +539,20 @@ export class Room {
   }
 
   /**
-   * Whether any socket actually OCCUPIES this room. The bubble rule reads this, never
-   * `hasConnections`: a widget's live preview must not pin a transient container open,
-   * and a room holding only watchers is empty as far as the lifecycle is concerned.
+   * Whether any socket actually OCCUPIES this room, as opposed to watching it. A portal
+   * widget's live preview holds a real socket without being anybody's presence, so the two
+   * questions have to stay separate even though nothing dissolves on emptiness any more.
    */
   hasOccupants(): boolean {
     return this.connections.size > 0;
   }
 
   /**
-   * Whether a live placement still points at a persisted session: a canvas
-   * terminal element, or a tile leaf in a tiled container. Both disciplines are
-   * scanned unconditionally because one session can be placed in either.
+   * Whether this container HOMES a session — holds a tile leaf for it. Only a composition
+   * can: a canvas references a terminal through a portal onto its home, so a canvas has
+   * nothing to say about where a session lives.
    */
-  referencesSession(sessionId: string): boolean {
-    for (const element of readElements(this.doc).values()) {
-      if (element.type === "terminal" && element.sessionId === sessionId) return true;
-    }
+  homesSession(sessionId: string): boolean {
     const layout = readTileLayout(this.doc);
     if (layout === null) return false;
     for (const node of Object.values(layout)) {
@@ -530,15 +574,20 @@ export class Room {
     return readElement(this.doc, elementId);
   }
 
+  /** Every element in canonical paint order. */
+  elements(): SceneElement[] {
+    return [...readElements(this.doc).values()].sort(compareElements);
+  }
+
   /**
-   * Every element referencing a session, in canonical paint order. A session may be
-   * mirrored several times on one canvas, so releasing the ITEM from this container has
-   * to reach all of them; addressing a single PLACEMENT names its element id instead.
+   * Every portal onto `containerId`, in canonical paint order. A container can be
+   * referenced from one canvas several times, and releasing the ITEM has to reach all of
+   * them; addressing a single REFERENCE names its element id instead.
    */
-  elementIdsForSession(sessionId: string): string[] {
+  portalIdsTo(containerId: string): string[] {
     const ids: string[] = [];
-    for (const element of [...readElements(this.doc).values()].sort(compareElements)) {
-      if (element.type === "terminal" && element.sessionId === sessionId) ids.push(element.id);
+    for (const element of this.elements()) {
+      if (element.type === "portal" && element.containerId === containerId) ids.push(element.id);
     }
     return ids;
   }
@@ -582,100 +631,31 @@ export class Room {
   }
 
   /**
-   * Transmutes a terminal element into a portal onto `containerId`, keeping the
-   * element id and geometry so the widget appears exactly where the terminal was.
-   * Returns the preserved geometry, or null when the element is not a terminal.
+   * Repoints a portal at a different container, keeping the element id and geometry. This
+   * is what a merge does to the references of an absorbed composition: the canvas kept
+   * showing the same item, so the widget must not jump, blink, or be re-authored under a
+   * new id that collaborators' selections would lose.
    */
-  swapElementToPortal(
-    elementId: string,
-    containerId: string,
-  ): { x: number; y: number; width: number; height: number } | null {
+  repointPortal(elementId: string, containerId: string): boolean {
     const element = readElement(this.doc, elementId);
-    if (element === null || element.type !== "terminal") return null;
-    writeElement(
-      this.doc,
-      {
-        id: element.id,
-        type: "portal",
-        containerId,
-        x: element.x,
-        y: element.y,
-        width: element.width,
-        height: element.height,
-        zIndex: element.zIndex,
-      },
-      SERVER_PLACE_ORIGIN,
-    );
-    return { x: element.x, y: element.y, width: element.width, height: element.height };
+    if (element === null || element.type !== "portal") return false;
+    if (element.containerId === containerId) return true;
+    writeElement(this.doc, { ...element, containerId }, SERVER_PLACE_ORIGIN);
+    return true;
   }
 
-  /** First portal onto `containerId`, in canonical paint order; null when none survives. */
-  private firstPortalTo(containerId: string): SceneElement | null {
-    for (const element of [...readElements(this.doc).values()].sort(compareElements)) {
-      if (element.type === "portal" && element.containerId === containerId) return element;
+  /**
+   * Removes every portal onto `containerId`. Called when a container stops existing —
+   * absorbed by a merge, or emptied by extraction — so a reference to a deleted container
+   * is a state the workspace simply cannot reach. This is the general rule that replaced
+   * the bubble's single stored return address.
+   */
+  removePortalsTo(containerId: string): number {
+    let removed = 0;
+    for (const id of this.portalIdsTo(containerId)) {
+      if (removeElement(this.doc, id, SERVER_PLACE_ORIGIN)) removed += 1;
     }
-    return null;
-  }
-
-  /**
-   * Reverses the portal swap when a bubble pops: the first portal onto `containerId`
-   * becomes a terminal element again at the same spot, and its id — unchanged since the
-   * expand — is returned as the session's placement. Null when no such portal survives;
-   * the caller then falls back to the terminal pool.
-   */
-  swapPortalToTerminal(containerId: string, sessionId: string): string | null {
-    const element = this.firstPortalTo(containerId);
-    if (element === null) return null;
-    writeElement(
-      this.doc,
-      {
-        id: element.id,
-        type: "terminal",
-        sessionId,
-        x: element.x,
-        y: element.y,
-        width: element.width,
-        height: element.height,
-        zIndex: element.zIndex,
-      },
-      SERVER_PLACE_ORIGIN,
-    );
-    return element.id;
-  }
-
-  /**
-   * Deletes the widget of a container that dissolved with nothing to transmute back, so a
-   * popped bubble never leaves a portal pointing at a container that no longer exists.
-   */
-  removePortalTo(containerId: string): boolean {
-    const element = this.firstPortalTo(containerId);
-    return element !== null && removeElement(this.doc, element.id, SERVER_PLACE_ORIGIN);
-  }
-
-  /**
-   * Authors a terminal element for a session the server just bound to this pad. The
-   * constructor's `doc.on("update")` hook fans the resulting transaction out to every
-   * joined peer as a `doc_update` and marks the room dirty for snapshotting, so binding
-   * needs no explicit broadcast. `SERVER_PLACE_ORIGIN` keeps client undo managers —
-   * which track only their own local origin — from capturing it.
-   */
-  placeTerminalElement(sessionId: string, x: number, y: number): string {
-    const id = crypto.randomUUID();
-    writeElement(
-      this.doc,
-      {
-        id,
-        type: "terminal",
-        sessionId,
-        x,
-        y,
-        width: DEFAULT_TERMINAL_WIDTH,
-        height: DEFAULT_TERMINAL_HEIGHT,
-        zIndex: nextZIndex(this.doc),
-      },
-      SERVER_PLACE_ORIGIN,
-    );
-    return id;
+    return removed;
   }
 
   /**
@@ -729,6 +709,11 @@ export class Room {
     return removeElement(this.doc, elementId, SERVER_PLACE_ORIGIN);
   }
 
+  /** This container's census, from its live document. */
+  census(): ContainerCensus {
+    return censusFor(this.padId, this.tileLayout(), this.elements());
+  }
+
   /** Returns the principal-level live roster without cursor or viewport payloads. */
   livePrincipals(): Principal[] {
     const principals: Principal[] = [];
@@ -759,9 +744,18 @@ export class Room {
 /** Lazily loads rooms and coordinates snapshot flush/delete across all active pads. */
 export class RoomManager {
   private readonly rooms = new Map<string, Room>();
+  /**
+   * Censuses of pads with no resident room, keyed by pad id and fenced by the document
+   * revision they were derived from. Decoding every stored document on every index poll
+   * would be pure waste: the revision is one cheap SQL read, and a document that has not
+   * moved cannot have changed what it holds.
+   */
+  private readonly censusCache = new Map<
+    string,
+    { readonly rev: number; readonly census: ContainerCensus }
+  >();
   private sessionProvider: (padId: string) => readonly SessionInfo[] = () => [];
   private pendingOpenProvider: (padId: string) => boolean = () => false;
-  private emptyHandler: (padId: string) => void = () => {};
 
   constructor(
     private readonly store: ServerStore,
@@ -781,13 +775,51 @@ export class RoomManager {
   }
 
   /**
-   * Installs the broker's room-empty hook. Eviction alone is not enough for the
-   * bubble lifecycle: a bubble still holds a running session, which pins its room
-   * against eviction, so the pop must fire the moment the last OCCUPANT leaves — and
-   * only then. Watchers hanging up reach `evict` without ever reaching this handler.
+   * Every container's census, which is the whole input to the index. Resident rooms answer
+   * from their live document; the rest are decoded from their newest stored snapshot and
+   * cached against its revision, so an idle workspace costs one query per pad and a busy
+   * one costs only the pads that actually changed.
    */
-  setEmptyHandler(handler: (padId: string) => void): void {
-    this.emptyHandler = handler;
+  censuses(): ContainerCensus[] {
+    const censuses: ContainerCensus[] = [];
+    for (const pad of this.store.listPads()) {
+      const room = this.rooms.get(pad.id);
+      if (room !== undefined) {
+        this.censusCache.delete(pad.id);
+        censuses.push(room.census());
+        continue;
+      }
+      const record = this.store.latestDoc(pad.id);
+      if (record === null) {
+        censuses.push({ padId: pad.id, layout: pad.layout, items: [], references: [] });
+        continue;
+      }
+      const cached = this.censusCache.get(pad.id);
+      if (cached !== undefined && cached.rev === record.rev) {
+        censuses.push(cached.census);
+        continue;
+      }
+      const doc = createSceneDoc();
+      let census: ContainerCensus;
+      try {
+        Y.applyUpdate(doc, record.doc);
+        census = censusFor(
+          pad.id,
+          pad.layout === "tiled" ? readTileLayout(doc, pad.id) : null,
+          [...readElements(doc).values()].sort(compareElements),
+        );
+      } catch {
+        // A document this manager cannot read is reported as holding nothing rather than
+        // omitted: the index still has to show the container, and the room's own fallback
+        // loading is what recovers the contents.
+        census = { padId: pad.id, layout: pad.layout, items: [], references: [] };
+      } finally {
+        doc.destroy();
+      }
+      this.censusCache.set(pad.id, { rev: record.rev, census });
+      censuses.push(census);
+    }
+    return censuses;
   }
 
   /** Returns a canonical room only when its durable pad exists. */
@@ -804,8 +836,7 @@ export class RoomManager {
         () => {
           return this.sessionProvider(padId);
         },
-        (idleRoom, reason) => {
-          if (reason === "occupants") this.emptyHandler(idleRoom.padId);
+        (idleRoom) => {
           this.evict(idleRoom);
         },
       );

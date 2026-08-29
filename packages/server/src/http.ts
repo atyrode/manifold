@@ -5,14 +5,13 @@ import {
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   EnrollMachineRequestSchema,
-  ExpandTerminalResponseSchema,
+  ContainersResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
   MovePadTreeItemRequestSchema,
-  MoveTerminalPoolRequestSchema,
   OkResponseSchema,
   PLACEMENT_DENIED_CODE,
   PROTOCOL_VERSION,
@@ -27,7 +26,7 @@ import {
   RenamePadRequestSchema,
   RenameTerminalRequestSchema,
   RevokeRequestSchema,
-  TerminalPoolResponseSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
   type Cap,
@@ -35,7 +34,7 @@ import {
   type Pad,
   type PadSessionSummary,
   type RuntimeDeps,
-  type TerminalPoolResponse,
+  type TerminalsResponse,
 } from "@manifold/protocol";
 import { ZodError } from "zod";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
@@ -314,8 +313,6 @@ export class HttpApp {
       this.requireCap(context, "pads:read");
       const sessions: PadSessionSummary[] = [];
       for (const session of this.store.listSessions()) {
-        // Parked sessions are bound to no pad; the terminal pool route lists those.
-        if (session.padId === null) continue;
         if (context.padScope !== null && session.padId !== context.padScope) continue;
         sessions.push({
           id: session.id,
@@ -333,26 +330,27 @@ export class HttpApp {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");
       if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot read the terminal pool");
+        throw new RequestError("forbidden", "scoped tokens cannot read workspace terminals");
       }
-      this.broker.pruneExitedParked();
-      return jsonResponse(this.terminalPoolPayload());
+      return jsonResponse(this.terminalsPayload());
     }
 
-    if (request.method === "PUT" && pathname === "/api/terminal-pool") {
+    /*
+      The index's whole input: what every container holds and what it points at. One route
+      rather than a field on each of the pad routes, because the INDEX VISIBILITY RULE needs
+      the containment GRAPH — a row is top-level exactly when no other container references
+      it — and a graph cannot be assembled from rows fetched one at a time.
+     */
+    if (request.method === "GET" && pathname === "/api/containers") {
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
+      this.requireCap(context, "pads:read");
       if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot reorder the terminal pool");
+        throw new RequestError("forbidden", "scoped tokens cannot read the container index");
       }
-      const input = parseRequest(MoveTerminalPoolRequestSchema, await parseJsonBody(request));
-      const moved = this.broker.movePooled(input.sessionId, input.index);
-      if (moved === "not_found") throw new RequestError("not_found", "terminal not found");
-      if (moved === "conflict") throw new RequestError("conflict", "terminal is bound to a pad");
-      return jsonResponse(this.terminalPoolPayload());
+      return jsonResponse(ContainersResponseSchema.parse({ containers: this.rooms.censuses() }));
     }
 
-    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/expand)?$/.exec(pathname);
+    const terminalMatch = /^\/api\/terminals\/([^/]+)$/.exec(pathname);
     if (terminalMatch !== null) {
       const sessionId = decodePathSegment(terminalMatch[1], "terminal id");
       const context = this.authenticate(request);
@@ -360,20 +358,13 @@ export class HttpApp {
       if (context.padScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot act on workspace terminals");
       }
-      const action = terminalMatch[2];
-      if (request.method === "POST" && action === "/expand") {
-        const expanded = this.broker.expand(sessionId);
-        if (expanded === "not_found") throw new RequestError("not_found", "terminal not found");
-        if (expanded === "exited") throw new RequestError("conflict", "terminal has exited");
-        return jsonResponse(ExpandTerminalResponseSchema.parse({ viewId: expanded.viewId }));
-      }
-      if (request.method === "DELETE" && action === undefined) {
+      if (request.method === "DELETE") {
         const killed = this.broker.killById(sessionId);
         if (killed === "not_found") throw new RequestError("not_found", "terminal not found");
         if (killed === "conflict") throw new RequestError("conflict", "terminal has exited");
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
-      if (request.method === "PATCH" && action === undefined) {
+      if (request.method === "PATCH") {
         const input = parseRequest(RenameTerminalRequestSchema, await parseJsonBody(request));
         const name = input.name.trim();
         if (name.length === 0) throw new RequestError("invalid", "name is empty");
@@ -395,9 +386,7 @@ export class HttpApp {
         id: this.runtime.newId(),
         name: input.name,
         createdAt: this.runtime.now(),
-        // An explicit creation is always durable: only an expand births a bubble.
         layout: input.layout ?? "canvas",
-        transient: false,
       };
       this.store.createPad(pad);
       return jsonResponse(PadResponseSchema.parse({ pad }));
@@ -418,48 +407,36 @@ export class HttpApp {
         const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
         const renamed = this.store.renamePad(padId, input.name);
         if (renamed === null) throw new RequestError("not_found", "pad not found");
-        // Naming a container claims it: a named view is never popped by a bubble rule.
-        this.placement.harden(padId);
-        const pad = this.store.getPad(padId);
-        if (pad === null) throw new RequestError("not_found", "pad not found");
-        return jsonResponse(PadResponseSchema.parse({ pad }));
+        return jsonResponse(PadResponseSchema.parse({ pad: renamed }));
       }
       if (request.method === "DELETE") {
         requireRoot(context);
         if (this.store.getPad(padId) === null) {
           throw new RequestError("not_found", "pad not found");
         }
-        this.broker.dropPad(padId);
-        this.rooms.drop(padId);
-        this.store.deletePad(padId);
+        // One path for retiring a container: it also removes every reference to it, which a
+        // route doing its own row deletion would leave behind as widgets onto nothing.
+        this.placement.deleteContainer(padId);
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
     }
 
-    const containerMatch = /^\/api\/pads\/([^/]+)\/pin$/.exec(pathname);
     const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
-    if (containerMatch !== null || tileMatch !== null) {
-      const padId = decodePathSegment((containerMatch ?? tileMatch)?.[1], "pad id");
+    if (tileMatch !== null && request.method === "DELETE") {
+      const padId = decodePathSegment(tileMatch[1], "pad id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot claim containers");
+        throw new RequestError("forbidden", "scoped tokens cannot remove tiles");
       }
-      if (containerMatch !== null && request.method === "POST") {
-        if (this.placement.harden(padId) === "not_found") {
-          throw new RequestError("not_found", "pad not found");
-        }
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
-      // Leaf removal is NOT a placement: nothing accepts "nowhere", so a leaf is addressed
-      // directly here while every MOVE of its occupant goes through `POST /api/place`.
-      if (tileMatch !== null && request.method === "DELETE") {
-        const tileId = decodePathSegment(tileMatch[2], "tile id");
-        const removed = this.placement.removeTile(padId, tileId);
-        if (removed === "not_found") throw new RequestError("not_found", "tile not found");
-        if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
+      // Leaf removal is NOT a placement: nothing accepts "nowhere" as a destination for a
+      // LEAF, so a leaf is addressed directly here while every MOVE of its occupant goes
+      // through `POST /api/place`. Removing a terminal's last leaf closes the terminal.
+      const tileId = decodePathSegment(tileMatch[2], "tile id");
+      const removed = this.placement.removeTile(padId, tileId);
+      if (removed === "not_found") throw new RequestError("not_found", "tile not found");
+      if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
+      return jsonResponse(OkResponseSchema.parse({ ok: true }));
     }
 
     if (request.method === "POST" && pathname === "/api/place") {
@@ -578,21 +555,28 @@ export class HttpApp {
   }
 
   /**
-   * Canonical terminal-pool payload. Positions are reported as the index in the canonical
-   * order rather than the stored value, so a client can move an entry to a returned index
-   * even while some rows still carry the pre-#57 null position.
+   * Every terminal, with the composition it lives in and whether anything references that
+   * composition. `unplaced` is DERIVED from the containment graph on every read rather than
+   * stored: the pool's durable position was the last piece of state describing where a
+   * terminal was NOT, and the whole point of retiring it is that this question now has
+   * exactly one answer and no way to go stale.
    */
-  private terminalPoolPayload(): TerminalPoolResponse {
-    const terminals = this.store.listParkedSessions().map((session, position) => ({
+  private terminalsPayload(): TerminalsResponse {
+    const referenced = new Set<string>();
+    for (const census of this.rooms.censuses()) {
+      for (const reference of census.references) referenced.add(reference);
+    }
+    const terminals = this.store.listSessions().map((session) => ({
       id: session.id,
       machineId: session.machineId,
       name: session.name,
       createdAt: session.createdAt,
       status: session.status,
       exitCode: session.exitCode,
-      sortOrder: position,
+      homeId: session.padId,
+      unplaced: !referenced.has(session.padId),
     }));
-    return TerminalPoolResponseSchema.parse({ terminals });
+    return TerminalsResponseSchema.parse({ terminals });
   }
 
   private staticFile(pathname: string): Response {

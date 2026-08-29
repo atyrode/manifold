@@ -23,7 +23,6 @@ const canvasPad = (id: string, name: string, createdAt: number): Pad => ({
   name,
   createdAt,
   layout: "canvas",
-  transient: false,
 });
 
 describe("ServerStore event retention", () => {
@@ -127,32 +126,93 @@ describe("ServerStore pad tree", () => {
 });
 
 describe("ServerStore container discipline", () => {
-  test("round-trips layout, transient, and the off-wire return address", () => {
+  test("round-trips the layout a container wears, which is all a pad row carries", () => {
     const store = testStore();
     const canvas = canvasPad("pad-a", "Canvas", 10);
-    const bubble: Pad = {
+    const composition: Pad = {
       id: "view-a",
-      name: "Bubble",
+      name: "Composition",
       createdAt: 20,
       layout: "tiled",
-      transient: true,
     };
     store.createPad(canvas);
-    store.createPad(bubble, canvas.id);
+    store.createPad(composition);
 
-    expect(store.getPad(bubble.id)).toEqual(bubble);
-    expect(store.listPads()).toEqual([canvas, bubble]);
-    expect(store.padOriginPadId(bubble.id)).toBe(canvas.id);
-    expect(store.padOriginPadId(canvas.id)).toBeNull();
+    // A pad row IS the container and `layout` selects its discipline; there is no lifecycle
+    // flag or return address beside it any more, so the row round-trips whole.
+    expect(store.getPad(composition.id)).toEqual(composition);
+    expect(store.getPad(canvas.id)).toEqual(canvas);
+    expect(store.listPads()).toEqual([canvas, composition]);
 
-    store.updatePadTransient(bubble.id, false);
-    store.updatePadOriginPad(bubble.id, null);
+    expect(store.renamePad(composition.id, "Renamed")).toEqual({
+      ...composition,
+      name: "Renamed",
+    });
+    expect(store.deletePad(composition.id)).toBeTrue();
+    expect(store.getPad(composition.id)).toBeNull();
+    store.close();
+  });
+});
 
-    expect(store.getPad(bubble.id)).toEqual({ ...bubble, transient: false });
-    expect(store.padOriginPadId(bubble.id)).toBeNull();
-    // A deleted container leaves no return address behind for a stale lookup.
-    expect(store.deletePad(bubble.id)).toBeTrue();
-    expect(store.padOriginPadId(bubble.id)).toBeNull();
+describe("ServerStore terminal homes", () => {
+  test("a row with no home is rejected at the storage boundary", () => {
+    const store = testStore();
+    store.createPad(canvasPad("pad-a", "Canvas", 10));
+    /*
+      Migration 9 gave every terminal a home and nothing since can take it away — a session
+      is deleted, never unbound. So a null `pad_id` is not a state to tolerate on read: it
+      means a write went around the broker, and the boundary says so loudly instead of
+      handing the rest of the server a homeless terminal.
+     */
+    store.db
+      .query<void, [string]>(
+        `INSERT INTO sessions(id, machine_id, pad_id, created_by, agent_principal_id,
+                              status, exit_code, created_at, name)
+         VALUES (?, 'machine', NULL, 'creator', NULL, 'running', NULL, 1, NULL)`,
+      )
+      .run("homeless");
+
+    expect(() => store.getSession("homeless")).toThrow("homeless has no home composition");
+    expect(() => store.listSessions()).toThrow("homeless has no home composition");
+    store.close();
+  });
+
+  test("listSessionsForPad returns only that container's terminals, in creation order", () => {
+    const store = testStore();
+    const home: Pad = { id: "home-a", name: "Home A", createdAt: 1, layout: "tiled" };
+    const other: Pad = { id: "home-b", name: "Home B", createdAt: 2, layout: "tiled" };
+    store.createPad(home);
+    store.createPad(other);
+    const session = (id: string, padId: string, createdAt: number): void => {
+      store.createSession({
+        id,
+        machineId: "machine",
+        padId,
+        createdBy: "creator",
+        agentPrincipalId: `agent-${id}`,
+        createdAt,
+      });
+    };
+    session("later", home.id, 30);
+    session("elsewhere", other.id, 20);
+    session("earlier", home.id, 10);
+
+    // A merged composition homes several terminals, and the order it lists them in is the
+    // order they were born — the only ordering left now that the pool's explicit one is gone.
+    expect(store.listSessionsForPad(home.id).map((row) => row.id)).toEqual(["earlier", "later"]);
+    expect(store.listSessionsForPad(other.id).map((row) => row.id)).toEqual(["elsewhere"]);
+    expect(store.listSessionsForPad("home-never")).toEqual([]);
+    expect(store.listSessionsForPad(home.id)[0]).toEqual({
+      id: "earlier",
+      machineId: "machine",
+      padId: home.id,
+      createdBy: "creator",
+      agentPrincipalId: "agent-earlier",
+      name: null,
+      status: "running",
+      exitCode: null,
+      createdAt: 10,
+    });
     store.close();
   });
 });

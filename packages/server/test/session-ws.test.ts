@@ -42,7 +42,6 @@ function gatewayFixture(): GatewayFixture {
     name: "sync pad",
     createdAt: runtime.now(),
     layout: "canvas",
-    transient: false,
   };
   store.createPad(pad);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
@@ -64,7 +63,6 @@ function gatewayFixture(): GatewayFixture {
       name,
       createdAt: runtime.now(),
       layout: "canvas",
-      transient: false,
     };
     store.createPad(created);
     return created;
@@ -144,15 +142,19 @@ function joinSpectator(
   socket.clear();
 }
 
-/** One Yjs update authoring a single terminal element, as a client would send it. */
+/**
+ * One Yjs update authoring a single canvas element, as a client would send it. A portal is
+ * the reference discipline a canvas uses for anything that lives elsewhere, and these tests
+ * are about the transport, not about what is on the far side of it.
+ */
 function docUpdateFor(elementId: string): string {
   const doc = createSceneDoc();
   writeElement(
     doc,
     {
       id: elementId,
-      type: "terminal",
-      sessionId: `session-${elementId}`,
+      type: "portal",
+      containerId: `container-${elementId}`,
       x: 0,
       y: 0,
       width: 720,

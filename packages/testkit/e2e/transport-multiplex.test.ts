@@ -7,25 +7,28 @@ import {
   mintToken,
   startAgent,
   startServer,
-  waitFor,
   type TestAgent,
   type TestServer,
 } from "../src/index.ts";
 import {
-  captureTerminal,
+  attachedCapture,
   closeClients,
   e2eFailure,
+  openTerminalAt,
   stopProcesses,
-  terminalElement,
   waitForTerminalText,
   type TerminalCapture,
 } from "./helpers.ts";
 
 /**
- * The v12 transport invariant, end to end over real processes: a tab holding two rooms
- * holds ONE TCP connection, and both rooms stream live PTY bytes on it independently.
+ * The v12 transport invariant, end to end over real processes: a tab holding several rooms
+ * holds ONE TCP connection, and the rooms stream live PTY bytes on it independently.
+ *
+ * A terminal lives in a composition of its own, so a tab that spawned two terminals from two
+ * canvases is holding FOUR rooms — which is exactly the arrangement the browser is in, and
+ * exactly why the multiplex matters: it is one socket either way.
  */
-test("two rooms of one tab share a single connection and stream PTYs independently", async () => {
+test("the rooms of one tab share a single connection and stream PTYs independently", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -62,37 +65,49 @@ test("two rooms of one tab share a single connection and stream PTYs independent
     expect(inCanvas.epoch).not.toBe(inOther.epoch);
     expect(inCanvas.selfConnId).not.toBe(inOther.selfConnId);
 
-    const canvasSession = await inCanvas.openTerminal({
+    const canvasTerminal = await openTerminalAt(inCanvas, server, {
       elementId: "el-multiplex-canvas",
-      cols: 80,
-      rows: 24,
+      token: operator.token,
+      portalAt: { x: 40, y: 60 },
     });
-    inCanvas.transact((tx) => {
-      tx.create(terminalElement("el-multiplex-canvas", { sessionId: canvasSession.id }));
-    });
-    const otherSession = await inOther.openTerminal({
+    clients.push(canvasTerminal.homeClient);
+    const otherTerminal = await openTerminalAt(inOther, server, {
       elementId: "el-multiplex-other",
-      cols: 80,
-      rows: 24,
+      token: operator.token,
+      portalAt: { x: 40, y: 60 },
     });
-    inOther.transact((tx) => {
-      tx.create(terminalElement("el-multiplex-other", { sessionId: otherSession.id }));
-    });
-    expect(canvasSession.id).not.toBe(otherSession.id);
+    clients.push(otherTerminal.homeClient);
+    expect(canvasTerminal.session.id).not.toBe(otherTerminal.session.id);
+    expect(canvasTerminal.session.padId).not.toBe(otherTerminal.session.padId);
 
-    const canvasCapture = captureTerminal(inCanvas, canvasSession.id);
-    const otherCapture = captureTerminal(inOther, otherSession.id);
-    captures.push(canvasCapture, otherCapture);
-    inCanvas.attachTerminal(canvasSession.id);
-    inOther.attachTerminal(otherSession.id);
-    await waitFor(
-      () => canvasCapture.snapshotSeq !== null && otherCapture.snapshotSeq !== null,
+    // Four rooms — two canvases and the two compositions their terminals were born into —
+    // one socket, and a channel and an authoritative identity per room.
+    const rooms = [inCanvas, inOther, canvasTerminal.homeClient, otherTerminal.homeClient];
+    for (const room of rooms) expect(room.transportId).toBe(inCanvas.transportId);
+    expect(new Set(rooms.map((room) => room.channelId)).size).toBe(rooms.length);
+    expect(new Set(rooms.map((room) => room.epoch)).size).toBe(rooms.length);
+    expect(new Set(rooms.map((room) => room.selfConnId)).size).toBe(rooms.length);
+
+    const canvasCapture = await attachedCapture(
+      canvasTerminal.homeClient,
+      canvasTerminal.session.id,
       15_000,
-      20,
     );
+    const otherCapture = await attachedCapture(
+      otherTerminal.homeClient,
+      otherTerminal.session.id,
+      15_000,
+    );
+    captures.push(canvasCapture, otherCapture);
 
-    inCanvas.sendTerminalInput(canvasSession.id, "printf 'MX_A_%s\\n' ok\n");
-    inOther.sendTerminalInput(otherSession.id, "printf 'MX_B_%s\\n' ok\n");
+    canvasTerminal.homeClient.sendTerminalInput(
+      canvasTerminal.session.id,
+      "printf 'MX_A_%s\\n' ok\n",
+    );
+    otherTerminal.homeClient.sendTerminalInput(
+      otherTerminal.session.id,
+      "printf 'MX_B_%s\\n' ok\n",
+    );
     await Promise.all([
       waitForTerminalText(canvasCapture, "MX_A_ok", 15_000),
       waitForTerminalText(otherCapture, "MX_B_ok", 15_000),
@@ -105,13 +120,18 @@ test("two rooms of one tab share a single connection and stream PTYs independent
     expect(inCanvas.elements.has("el-multiplex-other")).toBe(false);
     expect(inOther.elements.has("el-multiplex-other")).toBe(true);
     expect(inOther.elements.has("el-multiplex-canvas")).toBe(false);
-    expect(inCanvas.sessions.has(otherSession.id)).toBe(false);
-    expect(inOther.sessions.has(canvasSession.id)).toBe(false);
+    expect(canvasTerminal.homeClient.sessions.has(otherTerminal.session.id)).toBe(false);
+    expect(otherTerminal.homeClient.sessions.has(canvasTerminal.session.id)).toBe(false);
 
-    // One room leaving frees only its channel: the other keeps streaming on the same socket.
+    // Rooms leaving free only their channels: the rest keep streaming on the same socket.
     inCanvas.close();
-    inOther.sendTerminalInput(otherSession.id, "printf 'MX_B2_%s\\n' ok\n");
+    canvasTerminal.homeClient.close();
+    otherTerminal.homeClient.sendTerminalInput(
+      otherTerminal.session.id,
+      "printf 'MX_B2_%s\\n' ok\n",
+    );
     await waitForTerminalText(otherCapture, "MX_B2_ok", 15_000);
+    expect(otherTerminal.homeClient.status).toBe("open");
     expect(inOther.status).toBe("open");
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);

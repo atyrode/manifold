@@ -307,15 +307,15 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     if (welcome.type !== "welcome") throw new Error("machine did not receive welcome");
     expect(welcome.machineId).toBe(enrolled.machineId);
 
+    // Both grants are workspace-scoped: attaching to a terminal means joining the
+    // composition it lives in, and the server mints that container's id with the PTY.
     const openerGrant = await mintToken(server, {
       principal: { kind: "human", name: "Attach Opener", color: "#3c6db0" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const viewerGrant = await mintToken(server, {
       principal: { kind: "human", name: "Attach Revokee", color: "#b84d68" },
       caps: ["pads:read"],
-      padId: pad.id,
     });
     const opener = await connect(server, {
       padId: pad.id,
@@ -338,13 +338,19 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     if (create.type !== "create") throw new Error("machine did not receive create");
     machine.send({ type: "created", sessionId: create.sessionId });
     const session = await opening;
+    const openerHome = await connect(server, {
+      padId: session.padId,
+      token: openerGrant.token,
+      reconnect: false,
+    });
+    clients.push(openerHome);
 
     const viewer = await rawSessionSocket(server);
     rawSockets.push(viewer);
     viewer.sendRaw(
       sessionFrame({
         type: "join",
-        padId: pad.id,
+        padId: session.padId,
         token: viewerGrant.token,
         protocolVersion: PROTOCOL_VERSION,
       }),
@@ -394,7 +400,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       seq: 1,
       data: textToBase64("AFTER_REVOKE_1"),
     });
-    opener.attachTerminal(session.id);
+    openerHome.attachTerminal(session.id);
     const secondSnapshotRequest = await waitFor(
       () =>
         machine.frames
@@ -408,7 +414,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     }
     expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);
     const openerSnapshot = nextMessage(
-      opener,
+      openerHome,
       "terminal_snapshot",
       5_000,
       (message) => message.sessionId === session.id && message.seq === 1,
@@ -422,7 +428,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     expect((await openerSnapshot).seq).toBe(1);
 
     const openerOutput = nextMessage(
-      opener,
+      openerHome,
       "terminal_output",
       5_000,
       (message) => message.sessionId === session.id && message.seq === 2,
@@ -442,7 +448,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     ).toHaveLength(0);
 
     const exited = nextMessage(
-      opener,
+      openerHome,
       "session_event",
       5_000,
       (message) => message.sessionId === session.id && message.kind === "exited",

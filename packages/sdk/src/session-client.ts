@@ -117,8 +117,8 @@ export interface SessionClientOptions {
   /**
    * Joins as a spectator: this channel watches the room (state, doc updates, terminal
    * output) without occupying it. It is absent from the roster and from pad presence,
-   * it never keeps a transient container alive, and the server rejects any write it
-   * sends. Live previews of a container use it; anything a user acts in does not.
+   * and the server rejects any write it sends. Live previews of a container use it;
+   * anything a user acts in does not.
    */
   spectator?: boolean;
   /**
@@ -558,7 +558,8 @@ export class SessionClient {
   /**
    * The only layout mutation the SDK owns: a divider drag is high-frequency and purely
    * geometric. Structural writes (splits, removals, extraction) stay on HTTP so the
-   * server can enforce discipline and the bubble lifecycle.
+   * server can enforce discipline and the composition lifecycle — a leaf that leaves
+   * re-homes its terminal, and a composition emptied by the move is retired.
    */
   setTileRatios(splitId: string, ratios: readonly number[]): void {
     sceneSetTileRatios(this.currentDoc, splitId, ratios, LOCAL_ORIGIN);
@@ -630,12 +631,14 @@ export class SessionClient {
   /**
    * Opens a terminal and resolves with its session once the server confirms.
    *
-   * `elementId` is the correlation token, and under the default element placement it is
-   * also the id the caller authors its canvas element under. `placement: "tile"` is how
-   * a TILED container births one: it has no canvas to author into, so the server writes
-   * the tile leaf itself. The session record carries no placement — read the leaf from
-   * `layout()` (`tileIdForSurface`) once this resolves; the doc update precedes the
-   * confirmation on the same socket.
+   * A terminal is born into a COMPOSITION of its own, and `session.padId` names it. Under
+   * the default placement the caller is a canvas, so `elementId` is both the correlation
+   * token and the id the caller authors its own element under — a `portal` onto
+   * `session.padId`, never a terminal element, because a canvas only ever references the
+   * container a terminal lives in. `placement: "tile"` is how a TILED container births
+   * one: that container IS the home, so the server writes the tile leaf itself and the
+   * caller authors nothing. Read the leaf from `layout()` (`tileIdForSurface`) once this
+   * resolves; the doc update precedes the confirmation on the same socket.
    */
   openTerminal(opts: {
     elementId: string;

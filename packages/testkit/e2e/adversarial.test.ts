@@ -216,10 +216,11 @@ test("a reused machine token fences the old socket before routing later commands
     expect(superseded.initiatedBy).toBe("REMOTE");
 
     const pad = await createPad(server, "machine fence");
+    // Workspace-scoped: killing the terminal is a message to the composition it lives in,
+    // and that composition's id is minted by the server as the PTY lands.
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Fence User", color: "#4777b8" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -240,14 +241,21 @@ test("a reused machine token fences the old socket before routing later commands
     expect(session.machineId).toBe(enrolled.machineId);
     expect(first.frames).toHaveLength(firstFrameCount);
 
+    const home = await connect(server, {
+      padId: session.padId,
+      token: grant.token,
+      reconnect: false,
+    });
+    clients.push(home);
+    await waitFor(() => home.sessions.has(session.id), 5_000, 20);
     const exited = nextMessage(
-      client,
+      home,
       "session_event",
       5_000,
       (message) => message.sessionId === session.id && message.kind === "exited",
     );
     const killStart = second.frames.length;
-    client.killTerminal(session.id);
+    home.killTerminal(session.id);
     const kill = await waitFor(
       () =>
         second.frames

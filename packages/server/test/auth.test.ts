@@ -34,7 +34,6 @@ function authFixture() {
     name: "auth pad",
     createdAt: runtime.now(),
     layout: "canvas",
-    transient: false,
   };
   store.createPad(pad);
   return { runtime, store, auth, root, pad };

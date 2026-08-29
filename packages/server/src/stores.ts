@@ -22,11 +22,6 @@ interface PadRow {
   name: string;
   created_at: number;
   layout: string;
-  transient: number;
-}
-/** The bubble return address alone; deliberately never mapped into a wire `Pad`. */
-interface PadOriginRow {
-  origin_pad_id: string | null;
 }
 interface PadTreeRow {
   kind: "pad" | "folder";
@@ -36,7 +31,6 @@ interface PadTreeRow {
   parent_id: string | null;
   sort_order: number;
   layout: string;
-  transient: number;
 }
 interface TreeRef {
   kind: "pad" | "folder";
@@ -91,7 +85,6 @@ interface SessionDbRow {
   created_by: string;
   agent_principal_id: string | null;
   name: string | null;
-  sort_order: number | null;
   status: string;
   exit_code: number | null;
   created_at: number;
@@ -151,12 +144,11 @@ export interface MachineAuthRecord extends MachineRecord {
 export interface StoredSession {
   id: string;
   machineId: string;
-  padId: string | null;
+  /** The composition this terminal lives in. Never null: a terminal is `homed: "eager"`. */
+  padId: string;
   createdBy: string;
   agentPrincipalId: string | null;
   name: string | null;
-  /** Durable pool position; null until the session is parked or reordered. */
-  sortOrder: number | null;
   status: "running" | "exited";
   exitCode: number | null;
   createdAt: number;
@@ -197,32 +189,30 @@ function toMachine(row: MachineRow): MachineRecord {
 }
 
 /**
- * Pad rows carry the container discipline directly: `layout` selects canvas or
- * tiled, and `transient` marks a bubble. `origin_pad_id` is deliberately absent
- * — it is server-side lifecycle state that never reaches the wire.
+ * A pad row IS the container: `layout` selects which of its two disciplines it wears. There
+ * is no lifecycle flag beside it any more — nothing dissolves under anybody, so there is
+ * nothing to mark as provisional and no return address to remember.
  */
 function toPad(row: {
   readonly id: string;
   readonly name: string;
   readonly created_at: number;
   readonly layout: string;
-  readonly transient: number;
 }): Pad {
   if (row.layout !== "canvas" && row.layout !== "tiled") {
     throw new Error(`invalid persisted pad layout: ${row.layout}`);
   }
-  return {
-    id: row.id,
-    name: row.name,
-    createdAt: row.created_at,
-    layout: row.layout,
-    transient: row.transient !== 0,
-  };
+  return { id: row.id, name: row.name, createdAt: row.created_at, layout: row.layout };
 }
 
 function toSession(row: SessionDbRow): StoredSession {
   if (row.status !== "running" && row.status !== "exited") {
     throw new Error(`invalid persisted session status: ${row.status}`);
+  }
+  if (row.pad_id === null) {
+    // Migration 9 gave every session a home and nothing since can take it away: a session
+    // is deleted, never unbound. A null here means a write went around the broker.
+    throw new Error(`session ${row.id} has no home composition`);
   }
   return {
     id: row.id,
@@ -231,7 +221,6 @@ function toSession(row: SessionDbRow): StoredSession {
     createdBy: row.created_by,
     agentPrincipalId: row.agent_principal_id,
     name: row.name,
-    sortOrder: row.sort_order,
     status: row.status,
     exitCode: row.exit_code,
     createdAt: row.created_at,
@@ -273,14 +262,13 @@ export class ServerStore {
   listPadTree(): PadTreeItem[] {
     return this.db
       .query<PadTreeRow, []>(
-        `SELECT kind, id, name, created_at, parent_id, sort_order, layout, transient
+        `SELECT kind, id, name, created_at, parent_id, sort_order, layout
          FROM (
-           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order,
-                  layout, transient
+           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order, layout
            FROM pads
            UNION ALL
            SELECT 'folder' AS kind, id, name, created_at, parent_folder_id AS parent_id, sort_order,
-                  'canvas' AS layout, 0 AS transient
+                  'canvas' AS layout
            FROM pad_folders
          )
          ORDER BY COALESCE(parent_id, ''), sort_order, created_at, id`,
@@ -313,9 +301,7 @@ export class ServerStore {
 
   getPad(id: string): Pad | null {
     const row = this.db
-      .query<PadRow, [string]>(
-        "SELECT id, name, created_at, layout, transient FROM pads WHERE id = ?",
-      )
+      .query<PadRow, [string]>("SELECT id, name, created_at, layout FROM pads WHERE id = ?")
       .get(id);
     return row === null ? null : PadSchema.parse(toPad(row));
   }
@@ -352,28 +338,15 @@ export class ServerStore {
     siblings.forEach((item, index) => this.setTreePosition(item, parentId, index));
   }
 
-  /**
-   * Persists a container. `originPadId` is the bubble return address — the canvas
-   * whose portal this container was born from — and is intentionally not part of
-   * the wire `Pad`: explicit creations pass null.
-   */
-  createPad(pad: Pad, originPadId: string | null = null): void {
+  /** Persists a container at the top level of the index. */
+  createPad(pad: Pad): void {
     PadSchema.parse(pad);
-    const sortOrder = this.siblingRefs(null).length;
     this.db
-      .query<void, [string, string, number, number, string, number, string | null]>(
-        `INSERT INTO pads(id, name, created_at, sort_order, folder_id, layout, transient, origin_pad_id)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, ?)`,
+      .query<void, [string, string, number, number, string]>(
+        `INSERT INTO pads(id, name, created_at, sort_order, folder_id, layout)
+         VALUES (?, ?, ?, ?, NULL, ?)`,
       )
-      .run(
-        pad.id,
-        pad.name,
-        pad.createdAt,
-        sortOrder,
-        pad.layout,
-        pad.transient ? 1 : 0,
-        originPadId,
-      );
+      .run(pad.id, pad.name, pad.createdAt, this.siblingRefs(null).length, pad.layout);
   }
 
   createPadFolder(
@@ -473,31 +446,6 @@ export class ServerStore {
       .query<void, [string, string]>("UPDATE pads SET name = ? WHERE id = ?")
       .run(name, id);
     return result.changes === 0 ? null : this.getPad(id);
-  }
-
-  /** Hardens or re-bubbles a container; a durable container is never auto-dissolved. */
-  updatePadTransient(id: string, transient: boolean): void {
-    this.db
-      .query<void, [number, string]>("UPDATE pads SET transient = ? WHERE id = ?")
-      .run(transient ? 1 : 0, id);
-  }
-
-  /**
-   * Sets or clears the bubble return address. Clearing it is how an explicitly
-   * claimed container (renamed or pinned) opts out of the auto-dissolve rules.
-   */
-  updatePadOriginPad(id: string, originPadId: string | null): void {
-    this.db
-      .query<void, [string | null, string]>("UPDATE pads SET origin_pad_id = ? WHERE id = ?")
-      .run(originPadId, id);
-  }
-
-  /** The canvas a container was born from, or null once claimed or never born from one. */
-  padOriginPadId(id: string): string | null {
-    return (
-      this.db.query<PadOriginRow, [string]>("SELECT origin_pad_id FROM pads WHERE id = ?").get(id)
-        ?.origin_pad_id ?? null
-    );
   }
 
   deletePad(id: string): boolean {
@@ -816,11 +764,11 @@ export class ServerStore {
 
   createSession(session: NewStoredSession): void {
     this.db
-      .query<void, [string, string, string, string, string, string, null, number, null, null]>(
+      .query<void, [string, string, string, string, string, string, null, number, null]>(
         `INSERT INTO sessions(
            id, machine_id, pad_id, created_by, agent_principal_id,
-           status, exit_code, created_at, name, sort_order
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, exit_code, created_at, name
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -832,7 +780,6 @@ export class ServerStore {
         null,
         session.createdAt,
         null,
-        null,
       );
   }
 
@@ -840,7 +787,7 @@ export class ServerStore {
     const row = this.db
       .query<SessionDbRow, [string]>(
         `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, sort_order
+                status, exit_code, created_at, name
          FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -851,7 +798,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, []>(
         `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, sort_order
+                status, exit_code, created_at, name
          FROM sessions ORDER BY created_at, id`,
       )
       .all()
@@ -862,7 +809,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, [string]>(
         `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, sort_order
+                status, exit_code, created_at, name
          FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
@@ -872,7 +819,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, []>(
         `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, sort_order
+                status, exit_code, created_at, name
          FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
       )
       .all()
@@ -893,10 +840,13 @@ export class ServerStore {
     );
   }
 
-  /** Rebinds or unbinds a session's pad; `null` parks it in the workspace pool. */
-  updateSessionPad(id: string, padId: string | null): void {
+  /**
+   * Moves a session to a different home composition. A session is never unbound: it is
+   * deleted, or it lives somewhere. Which is why this takes no null.
+   */
+  updateSessionPad(id: string, padId: string): void {
     this.db
-      .query<void, [string | null, string]>("UPDATE sessions SET pad_id = ? WHERE id = ?")
+      .query<void, [string, string]>("UPDATE sessions SET pad_id = ? WHERE id = ?")
       .run(padId, id);
   }
 
@@ -907,27 +857,15 @@ export class ServerStore {
       .run(name, id);
   }
 
-  /** Sets or clears a session's durable pool position. */
-  updateSessionSortOrder(id: string, sortOrder: number | null): void {
-    this.db
-      .query<void, [number | null, string]>("UPDATE sessions SET sort_order = ? WHERE id = ?")
-      .run(sortOrder, id);
-  }
-
-  /**
-   * Lists the workspace terminal pool: durable sessions with no pad binding.
-   * Explicit positions first (nulls last), then creation order — the canonical
-   * pool ordering every caller and the HTTP response must agree on.
-   */
-  listParkedSessions(): StoredSession[] {
+  /** Sessions homed in one container, in creation order. */
+  listSessionsForPad(padId: string): StoredSession[] {
     return this.db
-      .query<SessionDbRow, []>(
+      .query<SessionDbRow, [string]>(
         `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, sort_order
-         FROM sessions WHERE pad_id IS NULL
-         ORDER BY sort_order IS NULL, sort_order, created_at, id`,
+                status, exit_code, created_at, name
+         FROM sessions WHERE pad_id = ? ORDER BY created_at, id`,
       )
-      .all()
+      .all(padId)
       .map(toSession);
   }
 }

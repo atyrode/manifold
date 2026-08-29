@@ -1,4 +1,5 @@
 import {
+  ContainersResponseSchema,
   CreatePadRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
@@ -9,6 +10,7 @@ import {
   PadPresenceResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   type HttpError,
   type MintTokenRequest,
@@ -104,6 +106,15 @@ const RESPONSE_SCHEMA_BY_REQUEST: Record<string, ResponseSchema<unknown>> = {
   "GET /api/pads": PadsResponseSchema,
   "GET /api/pad-presence": PadPresenceResponseSchema,
   "POST /api/pads": PadResponseSchema,
+  /*
+    The terminal INDEX: every terminal, each with the composition it lives in. There is no
+    pool route beside it any more, and no per-terminal verb (`expand`, `pin`) either — the
+    gestures that used to be endpoints are destinations of `POST /api/place`, whose response
+    is discriminated by op and so is always passed explicitly by its callers.
+   */
+  "GET /api/terminals": TerminalsResponseSchema,
+  /** The containment graph: what each container holds and what it points at. */
+  "GET /api/containers": ContainersResponseSchema,
   "POST /api/tokens": TokenGrantSchema,
   "POST /api/tokens/revoke": OkResponseSchema,
 };

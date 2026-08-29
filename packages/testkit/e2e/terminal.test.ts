@@ -19,7 +19,7 @@ import {
   closeClients,
   e2eFailure,
   nextMessage,
-  terminalElement,
+  openTerminalAt,
   stopProcesses,
   waitForTerminalText,
   type TerminalCapture,
@@ -48,48 +48,54 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     agents.push(agent);
     expect(agent.machineId).toBe(enrolled.machineId);
 
+    // Workspace-scoped grants: a terminal is born into a composition of its own, and driving
+    // it means joining that composition — an id no pad-scoped token could name.
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Alice", color: "#aa3344" },
       caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const bob = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Bob", color: "#3355cc" },
       caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
-    const clientA = await connect(server, { padId: pad.id, token: alice.token });
-    clients.push(clientA);
-    if (clientA.self === null) throw new Error("terminal opener lacks self");
+    const canvas = await connect(server, { padId: pad.id, token: alice.token });
+    clients.push(canvas);
+    if (canvas.self === null) throw new Error("terminal opener lacks self");
 
-    const session = await clientA.openTerminal({
+    // The canvas owns the spawn gesture; the composition the server births owns the PTY, so
+    // `clientA` and every viewer below are rooms of that composition.
+    const { session, homeClient: clientA } = await openTerminalAt(canvas, server, {
       elementId: "el-term-1",
-      cols: 80,
-      rows: 24,
+      token: alice.token,
+      portalAt: { x: 120, y: 90 },
     });
-    expect(session.status).toBe("running");
+    clients.push(clientA);
     expect(session.controllerId).toBe(alice.principal.id);
+    expect(session.padId).not.toBe(pad.id);
+    // What the canvas got is a REFERENCE to that composition, never the session itself.
+    expect(canvas.elements.get("el-term-1")).toMatchObject({
+      type: "portal",
+      containerId: session.padId,
+      x: 120,
+      y: 90,
+    });
     const inventory = await ownerFetch(server, "/api/pad-sessions", {
       responseSchema: PadSessionsResponseSchema,
     });
     const listedSession = inventory.sessions.find((candidate) => candidate.id === session.id);
     expect(listedSession).toMatchObject({
       id: session.id,
-      padId: pad.id,
+      padId: session.padId,
       machineId: enrolled.machineId,
       status: "running",
       exitCode: null,
     });
     expect(listedSession?.createdAt).toBeNumber();
-    clientA.transact((tx) => {
-      tx.create(terminalElement("el-term-1", { sessionId: session.id }));
-    });
 
-    const clientB = await connect(server, { padId: pad.id, token: bob.token });
+    const clientB = await connect(server, { padId: session.padId, token: bob.token });
     clients.push(clientB);
     if (clientB.self === null) throw new Error("terminal viewer lacks self");
-    await waitFor(() => clientB.elements.has("el-term-1"), 10_000, 20);
-    expect(clientB.sessions.get(session.id)?.status).toBe("running");
+    await waitFor(() => clientB.sessions.get(session.id)?.status === "running", 10_000, 20);
 
     const captureA = captureTerminal(clientA, session.id);
     const captureB = captureTerminal(clientB, session.id);
@@ -109,7 +115,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     const viewers: SessionClient[] = [];
     const viewerCaptures: TerminalCapture[] = [];
     for (let index = 0; index < 10; index += 1) {
-      const viewer = await connect(server, { padId: pad.id, token: bob.token });
+      const viewer = await connect(server, { padId: session.padId, token: bob.token });
       viewers.push(viewer);
       clients.push(viewer);
       const capture = captureTerminal(viewer, session.id);
@@ -273,15 +279,17 @@ test("an exited terminal rejects input, resize, take, and kill with conflict", a
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
-    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
-    clients.push(client);
-    const session = await client.openTerminal({
+    const canvas = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(canvas);
+    // No portal is authored — this grant holds no `scene:write` — because the gates under
+    // test are the terminal's own, and an exited terminal keeps its leaf and its home either
+    // way: the exit stays visible where the terminal lives.
+    const { session, homeClient: client } = await openTerminalAt(canvas, server, {
       elementId: "el-exited-gates",
-      cols: 80,
-      rows: 24,
+      token: grant.token,
     });
+    clients.push(client);
     const exited = nextMessage(
       client,
       "session_event",
@@ -375,7 +383,6 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Picker", color: "#287c69" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -403,24 +410,23 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     expect((await ambiguousError).code).toBe("no_machine");
     expect(await ambiguousOpen).toBe("rejected");
 
-    const session = await client.openTerminal({
+    const { session, homeClient: home } = await openTerminalAt(client, server, {
       elementId: "el-explicit-machine",
-      cols: 80,
-      rows: 24,
+      token: grant.token,
       machineId: secondEnrollment.machineId,
     });
+    clients.push(home);
     expect(session.machineId).toBe(secondEnrollment.machineId);
-    expect(session.status).toBe("running");
 
     const exited = nextMessage(
-      client,
+      home,
       "session_event",
       10_000,
       (message) => message.sessionId === session.id && message.kind === "exited",
     );
-    client.killTerminal(session.id);
+    home.killTerminal(session.id);
     expect((await exited).kind).toBe("exited");
-    await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    await waitFor(() => home.sessions.get(session.id)?.status === "exited", 10_000, 20);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -429,7 +435,7 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
   }
 }, 45_000);
 
-test("deleting a pad with a running terminal kills its agent-owned PTY", async () => {
+test("deleting the composition a terminal lives in kills its agent-owned PTY", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -447,7 +453,6 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Pad Deleter", color: "#a04b39" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -457,8 +462,11 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
       rows: 24,
     });
     expect(session.status).toBe("running");
+    // The terminal lives in the composition born with it, not on the canvas that spawned it,
+    // so THAT is the container whose deletion reaps the PTY.
+    expect(session.padId).not.toBe(pad.id);
 
-    const deleted = await ownerFetch(server, `/api/pads/${pad.id}`, {
+    const deleted = await ownerFetch(server, `/api/pads/${session.padId}`, {
       method: "DELETE",
       responseSchema: OkResponseSchema,
     });

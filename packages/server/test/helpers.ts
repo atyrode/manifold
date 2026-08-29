@@ -1,5 +1,4 @@
 import {
-  DEFAULT_CANVAS_DROP,
   ServerMessageBodySchema,
   ServerMessageSchema,
   type PlaceResponse,
@@ -19,10 +18,10 @@ import { ServerStore } from "../src/stores.ts";
 /**
  * The retired verbs, expressed over `place()`.
  *
- * The executor no longer has a `bind`/`park`/`addTile`/`compose`/`extract` method — one
- * envelope replaced all five — but these are still the gestures the lifecycle tests are
- * ABOUT, so naming them here keeps those tests readable while proving the envelope covers
- * every one. Nothing in `src/` depends on this file: it is test vocabulary, not a shim.
+ * The executor has one envelope, not a method per gesture, but these ARE the gestures the
+ * lifecycle tests are about — so naming them here keeps those tests readable while proving
+ * the envelope covers every one. Nothing in `src/` depends on this file: it is test
+ * vocabulary, not a shim.
  */
 
 function placed(outcome: PlaceOutcome): PlaceResponse | string {
@@ -30,42 +29,38 @@ function placed(outcome: PlaceOutcome): PlaceResponse | string {
   return outcome.status === "denied" ? `denied:${outcome.denial.rule}` : outcome.failure;
 }
 
-/** A session leaves the container it is in and joins the workspace pool. */
-export function parkSession(
+/**
+ * One reference to an item goes; the item stays in the composition it lives in. This is
+ * what park became: there is nowhere to park TO, so releasing is subtractive.
+ */
+export function unplaceElement(
   placement: PlaceExecutor,
   padId: string,
   elementId: string,
-): "ok" | string {
+): { readonly removed: number } | string {
   const result = placed(
     placement.place({
       surface: { kind: "element", padId, elementId },
-      destination: { kind: "pool" },
-    }),
-  );
-  return typeof result === "string" ? result : "ok";
-}
-
-/** A pooled session lands on a canvas at a point, or in a composition as a leaf. */
-export function placeSession(
-  placement: PlaceExecutor,
-  sessionId: string,
-  padId: string,
-  layout: "canvas" | "tiled",
-  at: { readonly x: number; readonly y: number } = DEFAULT_CANVAS_DROP,
-): { readonly placementId: string } | string {
-  const result = placed(
-    placement.place({
-      surface: { kind: "terminal", sessionId },
-      destination:
-        layout === "tiled"
-          ? { kind: "tile", padId, targetTileId: null, edge: null }
-          : { kind: "canvas", padId, x: at.x, y: at.y },
+      destination: { kind: "unplaced" },
     }),
   );
   if (typeof result === "string") return result;
-  if (result.op === "bind") return { placementId: result.elementId };
-  if (result.op === "add_tile") return { placementId: result.tileId };
-  return `unexpected:${result.op}`;
+  return result.op === "unplace" ? { removed: result.removed } : `unexpected:${result.op}`;
+}
+
+/** Every reference to an item goes, named by the item's own identity rather than a copy. */
+export function unplaceTerminal(
+  placement: PlaceExecutor,
+  sessionId: string,
+): { readonly removed: number } | string {
+  const result = placed(
+    placement.place({
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "unplaced" },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "unplace" ? { removed: result.removed } : `unexpected:${result.op}`;
 }
 
 /** A tileable surface joins a composition. */
@@ -86,7 +81,11 @@ export function placeTile(
   return result.op === "add_tile" ? { tileId: result.tileId } : `unexpected:${result.op}`;
 }
 
-/** A leaf's occupant leaves the composition and lands on `destinationPadId` at a point. */
+/**
+ * A leaf's occupant leaves the composition and lands on `destinationPadId`. A terminal is
+ * re-homed into a fresh solo composition and referenced from there, so the returned element
+ * is a portal — never an element carrying a session.
+ */
 export function extractTile(
   placement: PlaceExecutor,
   containerId: string,
@@ -103,6 +102,26 @@ export function extractTile(
   );
   if (typeof result === "string") return result;
   return result.op === "extract" ? { elementId: result.elementId } : `unexpected:${result.op}`;
+}
+
+/** Two references on one canvas merge into a new composition holding both items. */
+export function composeOnCanvas(
+  placement: PlaceExecutor,
+  padId: string,
+  targetElementId: string,
+  surface: PlacementSurface,
+  edge: TileEdge,
+): { readonly viewId: string; readonly tileId: string } | string {
+  const result = placed(
+    placement.place({
+      surface,
+      destination: { kind: "compose", padId, targetElementId, edge },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "compose"
+    ? { viewId: result.viewId, tileId: result.tileId }
+    : `unexpected:${result.op}`;
 }
 
 /**
