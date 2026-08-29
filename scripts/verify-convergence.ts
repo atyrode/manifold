@@ -1084,6 +1084,344 @@ try {
       );
     }
   }
+
+  // Terminals resize from their border like a desktop window: hovering the frame edge
+  // arms the OS resize cursor with no prior selection, and the drag has to reach both
+  // the canonical scene and the other browser.
+  const resizeTarget = sdk.elements.get(second.id);
+  if (resizeTarget === undefined) {
+    failures.push("F10 border resize");
+    console.log("FAIL  F10 terminal resizes from its border — target terminal missing");
+  } else {
+    const edgeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
+    await round(
+      "F10 terminal resizes from its border without selecting first",
+      { adds: 0, changes: [second.id] },
+      async () => {
+        // Clear any selection so the grab zone cannot be credited to selection handles.
+        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+        await sleep(200);
+        const edge = await browserA.evaluate<{
+          readonly x: number;
+          readonly y: number;
+          readonly cursor: string;
+          readonly hit: string;
+          readonly selected: boolean;
+        }>(
+          `(() => {
+            const node = document.querySelector(${edgeSelector});
+            if (!(node instanceof HTMLElement)) throw new Error("terminal node missing");
+            const rect = node.getBoundingClientRect();
+            const point = { x: rect.right - 1, y: rect.top + rect.height / 2 };
+            const hit = document.elementFromPoint(point.x, point.y);
+            return {
+              ...point,
+              cursor: hit === null ? "none" : getComputedStyle(hit).cursor,
+              hit: hit === null ? "none" : hit.tagName + "." + String(hit.className),
+              selected: node.classList.contains("selected"),
+            };
+          })()`,
+        );
+        if (edge.selected) throw new Error("terminal was already selected before the hover");
+        if (edge.cursor !== "ew-resize") {
+          throw new Error(`border hover shows cursor ${edge.cursor}, expected ew-resize`);
+        }
+        // Deselection re-renders the node: wait for the grab zone, then drive the drag
+        // from the control's own centre so the press cannot land a pixel off it.
+        await until(
+          () =>
+            browserA.evaluate<boolean>(
+              `document.querySelector(${edgeSelector})?.querySelector(".flow-terminal-resize-edge.right") !== null`,
+            ),
+          5_000,
+          "right border grab zone",
+        );
+        const grab = await browserA.evaluate<{
+          readonly x: number;
+          readonly y: number;
+          readonly width: number;
+        }>(
+          `(() => {
+            const node = document.querySelector(${edgeSelector});
+            const handle = node.querySelector(".flow-terminal-resize-edge.right");
+            const rect = handle.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width };
+          })()`,
+        );
+        if (grab.width < 4) {
+          throw new Error(`border grab zone is only ${grab.width.toFixed(1)}px wide`);
+        }
+        // Hover first: the press has to land on an element the pointer already occupies.
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: grab.x,
+          y: grab.y,
+        });
+        await sleep(120);
+        await browserA.drag(
+          [
+            { x: grab.x, y: grab.y },
+            { x: grab.x + 20, y: grab.y },
+            { x: grab.x + 60, y: grab.y },
+            { x: grab.x + 100, y: grab.y },
+            { x: grab.x + 130, y: grab.y },
+          ],
+          30,
+        );
+        try {
+          await until(
+            () => (sdk.elements.get(second.id)?.width ?? 0) > resizeTarget.width + 60,
+            5_000,
+            "canonical width after the border drag",
+          );
+        } catch (error) {
+          const rendered = await browserA.evaluate<number>(
+            `(() => {
+              const node = document.querySelector(${edgeSelector});
+              return node instanceof HTMLElement ? node.getBoundingClientRect().width : -1;
+            })()`,
+          );
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)} (canonical=${String(
+              sdk.elements.get(second.id)?.width,
+            )} rendered=${rendered.toFixed(1)} started=${String(resizeTarget.width)})`,
+          );
+        }
+      },
+    );
+  }
+
+  // Text and ink keep the classic contract: no handles until the element is selected,
+  // then the bounding box resizes it. Only terminals grab by their border.
+  const textIdsBefore = new Set(
+    [...sdk.elements.values()].filter((element) => element.type === "text").map((el) => el.id),
+  );
+  // Created through the canvas so the node is guaranteed inside the browser viewport:
+  // an SDK-seeded element can land off-screen, where synthetic clicks hit nothing.
+  await round("F11a double-click seeds a text node on screen", { adds: 1 }, async () => {
+    await clickAt(browserA, await panePoint(browserA, 0.3, 0.62), 2);
+    await until(
+      () =>
+        [...sdk.elements.values()].some(
+          (element) => element.type === "text" && !textIdsBefore.has(element.id),
+        ),
+      5_000,
+      "text element from the double-click",
+    );
+    // Empty text is deleted on blur, so the editor must actually receive the keystrokes.
+    await until(
+      () =>
+        browserA.evaluate<boolean>(
+          `(() => {
+            const editor = document.querySelector(".flow-text__editor");
+            if (!(editor instanceof HTMLTextAreaElement)) return false;
+            editor.focus();
+            return document.activeElement === editor;
+          })()`,
+        ),
+      5_000,
+      "focused text editor",
+    );
+    await browserA.typeText("resize me");
+    await until(
+      () =>
+        browserA.evaluate<boolean>(
+          `document.querySelector(".flow-text__editor")?.value === "resize me"`,
+        ),
+      5_000,
+      "typed text in the editor",
+    );
+    await pressKey(browserA, "Escape", "Escape");
+    await sleep(200);
+  });
+
+  const boxId =
+    [...sdk.elements.values()].find(
+      (element) => element.type === "text" && !textIdsBefore.has(element.id),
+    )?.id ?? "";
+  const boxSelector = JSON.stringify(`.react-flow__node[data-id="${boxId}"]`);
+  const handleSelector = JSON.stringify(
+    `.react-flow__node[data-id="${boxId}"] .react-flow__resize-control.handle.bottom.right`,
+  );
+
+  const textTarget = sdk.elements.get(boxId);
+  if (textTarget === undefined) {
+    failures.push("F11 text bounding-box resize");
+    console.log("FAIL  F11 text resizes from its selection box — seeded element missing");
+  } else {
+    await round(
+      "F11 text resizes from its selection box after selection",
+      { adds: 0, changes: [boxId] },
+      async () => {
+        await until(
+          () => browserA.evaluate<boolean>(`document.querySelector(${boxSelector}) !== null`),
+          5_000,
+          "text node rendered on A",
+        );
+        // Creation leaves the new node selected; the contract under test starts unselected.
+        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+        await sleep(250);
+        const unselectedHandles = await browserA.evaluate<number>(
+          `document.querySelectorAll(${handleSelector}).length`,
+        );
+        if (unselectedHandles !== 0) {
+          throw new Error(
+            `unselected text node already shows ${String(unselectedHandles)} handles`,
+          );
+        }
+        const center = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+          `(() => {
+            const node = document.querySelector(${boxSelector});
+            const rect = node.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          })()`,
+        );
+        await clickAt(browserA, center, 1);
+        try {
+          await until(
+            () => browserA.evaluate<boolean>(`document.querySelector(${handleSelector}) !== null`),
+            5_000,
+            "bounding-box handles after selection",
+          );
+        } catch (error) {
+          const state = await browserA.evaluate<string>(
+            `(() => {
+              const node = document.querySelector(${boxSelector});
+              const rect = node.getBoundingClientRect();
+              return JSON.stringify({
+                selected: node.className,
+                rect: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
+                clicked: [Math.round(${String(center.x)}), Math.round(${String(center.y)})],
+                controls: node.querySelectorAll(".react-flow__resize-control").length,
+                inner: node.innerHTML.slice(0, 120),
+              });
+            })()`,
+          );
+          throw new Error(`${error instanceof Error ? error.message : String(error)} ${state}`);
+        }
+        const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+          `(() => {
+            const control = document.querySelector(${handleSelector});
+            const rect = control.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          })()`,
+        );
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: handle.x,
+          y: handle.y,
+        });
+        await sleep(120);
+        await browserA.drag(
+          [
+            { x: handle.x, y: handle.y },
+            { x: handle.x + 30, y: handle.y + 20 },
+            { x: handle.x + 70, y: handle.y + 45 },
+            { x: handle.x + 110, y: handle.y + 70 },
+          ],
+          30,
+        );
+        await until(
+          () => {
+            const element = sdk.elements.get(boxId);
+            return (
+              element !== undefined &&
+              element.width > textTarget.width + 50 &&
+              element.height > textTarget.height + 30
+            );
+          },
+          5_000,
+          "canonical text geometry after the handle drag",
+        );
+      },
+    );
+  }
+
+  // Freehand ink shares the text contract, and its box carries a viewBox so resizing
+  // scales the stroke instead of growing an empty frame around it.
+  const inkElement = [...sdk.elements.values()].find((element) => element.type === "draw");
+  if (inkElement === undefined) {
+    failures.push("F11b draw bounding-box resize");
+    console.log("FAIL  F11b freehand resizes from its selection box — no stroke on the canvas");
+  } else {
+    const inkSelector = JSON.stringify(`.react-flow__node[data-id="${inkElement.id}"]`);
+    const inkHandle = JSON.stringify(
+      `.react-flow__node[data-id="${inkElement.id}"] .react-flow__resize-control.handle.bottom.right`,
+    );
+    await round(
+      "F11b freehand resizes from its selection box and scales its ink",
+      { adds: 0, changes: [inkElement.id] },
+      async () => {
+        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+        await sleep(250);
+        if (
+          (await browserA.evaluate<number>(`document.querySelectorAll(${inkHandle}).length`)) !== 0
+        ) {
+          throw new Error("unselected stroke already shows bounding-box handles");
+        }
+        // Click the ink itself: the stroke is the only hit target inside its box.
+        const onStroke = await browserA.evaluate<{
+          readonly x: number;
+          readonly y: number;
+          readonly inkWidth: number;
+        }>(
+          `(() => {
+            const path = document.querySelector(${inkSelector}).querySelector("path");
+            const point = path.getPointAtLength(path.getTotalLength() / 2);
+            const ctm = path.getScreenCTM();
+            return {
+              x: ctm.a * point.x + ctm.c * point.y + ctm.e,
+              y: ctm.b * point.x + ctm.d * point.y + ctm.f,
+              inkWidth: path.getBoundingClientRect().width,
+            };
+          })()`,
+        );
+        await clickAt(browserA, { x: onStroke.x, y: onStroke.y }, 1);
+        await until(
+          () => browserA.evaluate<boolean>(`document.querySelector(${inkHandle}) !== null`),
+          5_000,
+          "bounding-box handles on the selected stroke",
+        );
+        const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+          `(() => {
+            const rect = document.querySelector(${inkHandle}).getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          })()`,
+        );
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: handle.x,
+          y: handle.y,
+        });
+        await sleep(120);
+        await browserA.drag(
+          [
+            { x: handle.x, y: handle.y },
+            { x: handle.x + 40, y: handle.y + 30 },
+            { x: handle.x + 90, y: handle.y + 65 },
+            { x: handle.x + 140, y: handle.y + 100 },
+          ],
+          30,
+        );
+        await until(
+          () => {
+            const element = sdk.elements.get(inkElement.id);
+            return element !== undefined && element.width > inkElement.width + 60;
+          },
+          5_000,
+          "canonical stroke geometry after the handle drag",
+        );
+        const inkAfter = await browserA.evaluate<number>(
+          `document.querySelector(${inkSelector}).querySelector("path").getBoundingClientRect().width`,
+        );
+        if (inkAfter < onStroke.inkWidth + 40) {
+          throw new Error(
+            `stroke did not scale with its box: ink ${onStroke.inkWidth.toFixed(1)} -> ${inkAfter.toFixed(1)}`,
+          );
+        }
+      },
+    );
+  }
 } finally {
   // ---------------------------------------------------------------- teardown
   await browserA.close().catch(() => undefined);
