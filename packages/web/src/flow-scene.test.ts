@@ -120,7 +120,7 @@ describe("flow scene", () => {
       zIndex: 1,
       data: { sessionId: "s1" },
       measured: { width: 720, height: 480 },
-      dragging: true,
+      dragging: false,
     };
     const current = [currentA];
     // A fresh projection rebuilds every object; equivalent values must map back to the
@@ -182,5 +182,45 @@ describe("flow scene", () => {
       },
     ];
     expect(reconcileNodes(selected, current)[0]).not.toBe(currentA);
+  });
+
+  test("reuses a node under a live gesture so a trailing projection never stomps it", () => {
+    const dragging = {
+      id: "a",
+      type: "terminal",
+      position: { x: 400, y: 300 },
+      width: 720,
+      height: 480,
+      zIndex: 1,
+      data: { sessionId: "s1" },
+      measured: { width: 720, height: 480 },
+      dragging: true,
+    };
+    // The projection still carries the pre-drag origin: the CRDT only learns the new
+    // position at drag stop. Reuse must win by identity, not by value comparison.
+    const staleNode = {
+      id: "a",
+      type: "terminal",
+      position: { x: 0, y: 0 },
+      width: 720,
+      height: 480,
+      zIndex: 1,
+      data: { sessionId: "s1" },
+    };
+    const stale = [staleNode];
+    expect(reconcileNodes(stale, [dragging])[0]).toBe(dragging);
+
+    const resizing = { ...dragging, dragging: false, resizing: true, width: 900, height: 600 };
+    expect(reconcileNodes(stale, [resizing])[0]).toBe(resizing);
+
+    // An unchanged order with every node under a gesture keeps the current array whole.
+    const current = [dragging];
+    expect(reconcileNodes(stale, current)).toBe(current);
+
+    // Once the gesture ends the flag clears and the projection is authoritative again.
+    const settled = { ...dragging, dragging: false };
+    const reconciled = reconcileNodes(stale, [settled]);
+    expect(reconciled[0]).not.toBe(settled);
+    expect(reconciled[0]).toEqual({ ...staleNode, measured: { width: 720, height: 480 } });
   });
 });

@@ -1,11 +1,12 @@
 import { NodeResizer, type NodeProps } from "@xyflow/react";
+import { memo } from "react";
 import { useFlowPad } from "./flow-terminal-node.tsx";
 import { pointsToPath, strokeViewBox } from "./stroke.ts";
 
 /** Freehand ink stays legible when scaled, so a stroke may shrink to a thumbnail. */
 export const MIN_DRAW_SIZE = 16;
 
-export function DrawNode({ id, data, selected }: NodeProps): React.ReactElement {
+function DrawNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
   const pad = useFlowPad();
   const points = Array.isArray(data["points"])
     ? data["points"].filter((value): value is number => typeof value === "number")
@@ -51,3 +52,9 @@ export function DrawNode({ id, data, selected }: NodeProps): React.ReactElement 
     </>
   );
 }
+
+/**
+ * Memoized for the same reason as `TerminalNode`: React Flow's node wrapper re-invokes its
+ * node component on every drag frame, and none of these props move with the pointer.
+ */
+export const DrawNode = memo(DrawNodeImpl);

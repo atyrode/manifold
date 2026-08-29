@@ -34,7 +34,14 @@ function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>
 /**
  * Reconciles a fresh projection into React Flow's live node state.
  *
- * Two duties:
+ * Three duties:
+ * - Yield to a live gesture: React Flow stamps `dragging`/`resizing` onto every node it is
+ *   moving or sizing (`applyNodeChanges` writes them from the position and dimension
+ *   changes it applies), including every co-dragged node of a multi-selection. While either
+ *   flag is set that node's own entry is the freshest geometry there is, so it is reused
+ *   verbatim and a projection — which trails the gesture by at least a server round trip —
+ *   can never stomp it. Because the flag lives on React Flow's own array there is no
+ *   parallel gesture map left to desynchronize from it.
  * - Carry `measured`: it is React Flow's own record of the painted box and what the
  *   resizer reads for its starting size. Re-projecting builds fresh node objects, and
  *   `adoptUserNodes` copies `measured` straight off the object it is handed — a
@@ -56,6 +63,10 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
     if (previous === undefined) {
       reusedAll = false;
       return node;
+    }
+    if (previous.dragging === true || previous.resizing === true) {
+      if (previous !== current[index]) reusedAll = false;
+      return previous;
     }
     if (
       previous.type === node.type &&

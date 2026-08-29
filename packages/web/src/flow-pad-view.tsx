@@ -103,13 +103,6 @@ interface RemoteSelectionRect {
   readonly color: string;
 }
 
-interface LocalGestureGeometry {
-  readonly x: number;
-  readonly y: number;
-  readonly width?: number;
-  readonly height?: number;
-}
-
 function sessionUrl(): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${window.location.host}/ws/session`;
@@ -137,16 +130,13 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [tool, setTool] = useState<CanvasTool>("select");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<readonly number[] | null>(null);
   const [remoteGestures, setRemoteGestures] = useState<ReadonlyMap<string, GestureOverride>>(
     new Map(),
   );
-  const [localGestures, setLocalGestures] = useState<ReadonlyMap<string, LocalGestureGeometry>>(
-    new Map(),
-  );
-  const mountCountsRef = useRef<Map<string, number>>(new Map());
   const connectStartedRef = useRef(false);
   const remoteCursorsRef = useRef(new Map<string, RemoteCursor>());
   const [remoteCursors, setRemoteCursors] = useState<readonly RemoteCursor[]>([]);
@@ -161,24 +151,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     readonly pointerId: number;
     readonly points: number[];
   } | null>(null);
-  const updateLocalGesture = useCallback(
-    (elementId: string, geometry: LocalGestureGeometry): void => {
-      setLocalGestures((current) => {
-        const next = new Map(current);
-        next.set(elementId, geometry);
-        return next;
-      });
-    },
-    [],
-  );
-  const clearLocalGesture = useCallback((elementId: string): void => {
-    setLocalGestures((current) => {
-      if (!current.has(elementId)) return current;
-      const next = new Map(current);
-      next.delete(elementId);
-      return next;
-    });
-  }, []);
   const initialViewport = useMemo(
     () => loadViewport(window.localStorage, padId) ?? { x: 0, y: 0, zoom: 1 },
     [padId],
@@ -213,6 +185,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         setRemoteGestures(new Map(remoteGesturesRef.current));
       }
     });
+    const offSaved = client.on("saved", (message) => setSavedAt(message.at));
     refreshRoster();
     return () => {
       offScene();
@@ -222,6 +195,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       offRoster();
       offCursor();
       offGesture();
+      offSaved();
     };
   }, [client, identity.principal]);
 
@@ -281,7 +255,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       if (flow === null) return;
       cursorLastSentRef.current = now;
       const position = flow.screenToFlowPosition({ x: clientX, y: clientY });
-      client.sendCursor(position.x, position.y, "pointer");
+      client.sendCursor(position.x, position.y);
     },
     [client],
   );
@@ -319,41 +293,53 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     [projected],
   );
 
-  const remoteSelections: RemoteSelectionRect[] = [];
-  const projectedById = new Map(projected.map((element) => [element.id, element] as const));
-  for (const presence of client.roster.values()) {
-    if (presence.principal.id === client.self?.id) continue;
-    for (const elementId of presence.payload.selection ?? []) {
-      const element = projectedById.get(elementId);
-      if (element === undefined) continue;
-      remoteSelections.push({
-        key: `${presence.principal.id}:${elementId}`,
-        x: element.position.x,
-        y: element.position.y,
-        width: element.width,
-        height: element.height,
-        color: presence.principal.color,
-      });
+  /**
+   * Remote selection outlines are pure presence. `rosterRows` is rebuilt by `refreshRoster`
+   * on every `roster_changed`, which the SDK emits for each `presence` frame — selection
+   * payloads included — so it is the dependency that provably invalidates this, and a purely
+   * local drag frame no longer walks the roster at all.
+   */
+  const remoteSelections = useMemo<readonly RemoteSelectionRect[]>(() => {
+    void rosterRows;
+    const rects: RemoteSelectionRect[] = [];
+    const projectedById = new Map(projected.map((element) => [element.id, element] as const));
+    for (const presence of client.roster.values()) {
+      if (presence.principal.id === client.self?.id) continue;
+      for (const elementId of presence.payload.selection ?? []) {
+        const element = projectedById.get(elementId);
+        if (element === undefined) continue;
+        rects.push({
+          key: `${presence.principal.id}:${elementId}`,
+          x: element.position.x,
+          y: element.position.y,
+          width: element.width,
+          height: element.height,
+          color: presence.principal.color,
+        });
+      }
     }
-  }
+    return rects;
+  }, [client, projected, rosterRows]);
 
+  /**
+   * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
+   * node React Flow is dragging or resizing verbatim, so the pointer is tracked by React
+   * Flow's own array and this memo only rebuilds when the scene or highlight actually moves.
+   */
   const canonicalNodes = useMemo<Node[]>(
     () =>
-      projected.map((element) => {
-        const local = localGestures.get(element.id);
-        return {
-          id: element.id,
-          type: element.type,
-          position: local === undefined ? element.position : { x: local.x, y: local.y },
-          width: local?.width ?? element.width,
-          height: local?.height ?? element.height,
-          zIndex: element.zIndex,
-          selected: element.id === highlightedId,
-          ...(element.type === "terminal" ? { dragHandle: TERMINAL_DRAG_HANDLE } : {}),
-          data: element.data,
-        };
-      }),
-    [highlightedId, localGestures, projected],
+      projected.map((element) => ({
+        id: element.id,
+        type: element.type,
+        position: element.position,
+        width: element.width,
+        height: element.height,
+        zIndex: element.zIndex,
+        selected: element.id === highlightedId,
+        ...(element.type === "terminal" ? { dragHandle: TERMINAL_DRAG_HANDLE } : {}),
+        data: element.data,
+      })),
+    [highlightedId, projected],
   );
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
@@ -361,17 +347,9 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     setNodes((current) => reconcileNodes(canonicalNodes, current));
   }, [canonicalNodes, setNodes]);
 
-  const handleNodeDragStart = useCallback(
-    (_event: unknown, node: Node): void => {
-      updateLocalGesture(node.id, { x: node.position.x, y: node.position.y });
-    },
-    [updateLocalGesture],
-  );
-
   const handleNodeDrag = useCallback(
     (_event: unknown, node: Node): void => {
       if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) return;
-      updateLocalGesture(node.id, { x: node.position.x, y: node.position.y });
       gestureStream.push({
         kind: "move",
         phase: "active",
@@ -380,7 +358,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         y: node.position.y,
       });
     },
-    [gestureStream, updateLocalGesture],
+    [gestureStream],
   );
 
   const handleNodeDragStop = useCallback(
@@ -391,7 +369,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         !Number.isFinite(node.position.x) ||
         !Number.isFinite(node.position.y)
       ) {
-        clearLocalGesture(node.id);
         return;
       }
       if (element.x !== node.position.x || element.y !== node.position.y) {
@@ -406,9 +383,8 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         x: node.position.x,
         y: node.position.y,
       });
-      clearLocalGesture(node.id);
     },
-    [clearLocalGesture, client, gestureStream],
+    [client, gestureStream],
   );
 
   const handleResize = useCallback(
@@ -421,7 +397,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       ) {
         return;
       }
-      updateLocalGesture(elementId, { x, y, width, height });
       gestureStream.push({
         kind: "resize",
         phase: "active",
@@ -432,7 +407,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         height,
       });
     },
-    [client, gestureStream, updateLocalGesture],
+    [client, gestureStream],
   );
 
   const handleResizeEnd = useCallback(
@@ -444,7 +419,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         width <= 0 ||
         height <= 0
       ) {
-        clearLocalGesture(elementId);
         return;
       }
       if (
@@ -464,9 +438,8 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         width,
         height,
       });
-      clearLocalGesture(elementId);
     },
-    [clearLocalGesture, client, gestureStream],
+    [client, gestureStream],
   );
 
   const machineFor = useCallback(
@@ -690,10 +663,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       endTextEditing: (elementId) => {
         setEditingId((current) => (current === elementId ? null : current));
       },
-      noteMount: (elementId: string) => {
-        const counts = mountCountsRef.current;
-        counts.set(elementId, (counts.get(elementId) ?? 0) + 1);
-      },
     }),
     [
       client,
@@ -712,7 +681,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
   useEffect(() => {
     onWorkspaceChange({
       status,
-      savedAt: null,
+      savedAt,
       rev: sceneRevision,
       machines,
       rows: sessionRows,
@@ -740,6 +709,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     machines,
     onWorkspaceChange,
     placeSession,
+    savedAt,
     sceneRevision,
     sessionRows,
     status,
@@ -919,7 +889,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
               reemitCursor();
             }}
             onNodesChange={handleNodesChange}
-            onNodeDragStart={handleNodeDragStart}
             onNodeDrag={handleNodeDrag}
             onSelectionChange={({ nodes: selectedNodes }) => {
               client.sendPresence({ selection: selectedNodes.map((node) => node.id) });

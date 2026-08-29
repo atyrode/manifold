@@ -1,6 +1,6 @@
 import { LOCAL_ORIGIN } from "@manifold/scene";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { useFlowPad } from "./flow-terminal-node.tsx";
 import { textHeightFor } from "./flow-scene.ts";
 import { diffText } from "./text-diff.ts";
@@ -9,7 +9,7 @@ import { diffText } from "./text-diff.ts";
 export const MIN_TEXT_WIDTH = 80;
 export const MIN_TEXT_HEIGHT = 32;
 
-export function TextNode({ id, data, selected }: NodeProps): React.ReactElement {
+function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
   const pad = useFlowPad();
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const text = typeof data["text"] === "string" ? data["text"] : "";
@@ -104,3 +104,9 @@ export function TextNode({ id, data, selected }: NodeProps): React.ReactElement 
     </>
   );
 }
+
+/**
+ * Memoized for the same reason as `TerminalNode`: React Flow's node wrapper re-invokes its
+ * node component on every drag frame, and none of these props move with the pointer.
+ */
+export const TextNode = memo(TextNodeImpl);

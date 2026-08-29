@@ -1,7 +1,7 @@
 import type { MachineSummary } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { createContext, useContext, useEffect, useRef } from "react";
+import { createContext, memo, useContext } from "react";
 import { TerminalView } from "./terminal-view.tsx";
 import type { CanvasTool } from "./canvas-tool.ts";
 import type { SessionMachine } from "./machine-visibility.ts";
@@ -44,11 +44,6 @@ export interface FlowPadContextValue {
   readonly editingId: string | null;
   readonly beginTextEditing: (elementId: string) => void;
   readonly endTextEditing: (elementId: string) => void;
-  /**
-   * Remount telemetry for the spike's acceptance criteria. A terminal that survives
-   * pan/zoom/select must report exactly one mount for the life of the route.
-   */
-  readonly noteMount: (elementId: string) => void;
 }
 
 const FlowPadContext = createContext<FlowPadContextValue | null>(null);
@@ -72,18 +67,9 @@ export const TERMINAL_DRAG_HANDLE = ".terminal-titlebar";
 export const MIN_TERMINAL_WIDTH = 320;
 export const MIN_TERMINAL_HEIGHT = 200;
 
-export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElement {
+function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
   const sessionId = typeof data["sessionId"] === "string" ? data["sessionId"] : "";
   const pad = useFlowPad();
-  const notedRef = useRef(false);
-
-  useEffect(() => {
-    // Counted once per real mount. StrictMode's deliberate double-invoke would otherwise
-    // read as a remount, so the ref keeps this honest per component instance.
-    if (notedRef.current) return;
-    notedRef.current = true;
-    pad.noteMount(id);
-  }, [id, pad]);
 
   if (sessionId === "") return <div className="terminal-placeholder">Opening terminal…</div>;
 
@@ -128,3 +114,10 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
     </div>
   );
 }
+
+/**
+ * React Flow's own `NodeWrapper` re-renders once per pointermove for the node being
+ * dragged, and calls its node component unconditionally. None of the props below change
+ * during a plain move, so memoizing keeps the xterm subtree out of the drag hot path.
+ */
+export const TerminalNode = memo(TerminalNodeImpl);
