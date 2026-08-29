@@ -84,7 +84,7 @@ and produces negative geometry that the commit path then rejects.
 | GET /api/protocol           | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
 | GET /api/pads               | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
 | GET /api/pad-presence       | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected principals; scoped tokens see only their pad                                         |
-| POST /api/pads              | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
+| POST /api/pads              | pads:write            | `{ name, layout? }` → `{ pad }` (explicit creations always durable)                                                                                                                           |
 | GET /api/pads/:id           | pads:read             | → `{ pad }`                                                                                                                                      |
 | PATCH /api/pads/:id         | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
 | DELETE /api/pads/:id        | `*`                   | → `{ ok }`                                                                                                                                       |
@@ -162,6 +162,17 @@ field.
   lineage fence: the SDK drops queued old-lineage document updates, replaces its `Y.Doc`,
   and emits `scene_reset` so held nested types are discarded. `resync_request {}` asks for
   the current full state; convergence does not depend on detecting contiguous revisions.
+- **Container discipline.** A pad row carries `layout: "canvas" | "tiled"`; both disciplines
+  share the room/doc machinery. A tiled container ("view") additionally stores a tile tree
+  in the doc's `layout` map (`LAYOUT_KEY`): nodes are splits (`dir` row/column, parallel
+  `ratios`/`children`) or leaves whose `surface` is `{ kind:"terminal", sessionId }` or
+  `{ kind:"pad", padId }` (embedded canvas; must itself be canvas-discipline, never self).
+  `validateTileLayout` gates every read; ratio drags are CRDT writes (`setTileRatios` via
+  the SDK), all structural mutation is HTTP (`/tiles` endpoints) under `SERVER_PLACE_ORIGIN`.
+- **Portal elements.** Canvas scene records `{ type:"portal", containerId, ...geometry }`
+  render another container in place: live scaled preview at nesting depth ≤ 2, card-only
+  deeper. Cycles are legal — portals navigate on enter, they never recurse live.
+
 
 ### Presence (ephemeral, never persisted)
 
@@ -255,7 +266,29 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 name }`) and the pool a durable order (`sort_order`, contiguous; `PUT
 /api/terminal-pool { sessionId, index }` reorders, park appends). Labels everywhere
   are `name ?? machine name`; the sidebar Terminals section is a headless-tree with
-  the pad row grammar. Session protocol v10.
+  the pad row grammar.
+- **Bubble lifecycle.** `POST /api/terminals/:id/expand` → `{ viewId }` transmutes a
+  terminal in place: the server creates a transient tiled container named after the
+  session (`transient: true`, `origin_pad_id` = the session's pad, off-wire), swaps the
+  first canvas element bound to the session for a portal keeping its geometry, and rebinds
+  the session into the view's tile tree (pooled terminals bind straight in). When a
+  transient view's room empties (last leave — crash-safe) and its layout is a single
+  terminal leaf, `dissolveIfBubble` pops it: the session rebinds to `origin_pad_id`
+  (`swapPortalToTerminal` restores the old slot; portal deleted meanwhile → park to pool)
+  and the row + doc are deleted. Hardening claims a bubble forever: >1 leaf, rename,
+  compose, or `POST /api/pads/:id/pin`; explicit `POST /api/pads` creations are always
+  durable.
+- **Tiles + composition endpoints** (all `pads:write`, scoped tokens rejected):
+  `POST /api/pads/:id/tiles { surface, targetTileId, edge }` → `{ tileId }` (409: non-tiled
+  container, self-embed, tiled pad surface, terminal bound elsewhere, unknown target);
+  `DELETE /api/pads/:id/tiles/:tileId` (terminal leaf → park semantics on last placement);
+  `POST /api/pads/:id/tiles/:tileId/extract { x, y }` → removes the leaf and re-creates a
+  plain terminal element at `(x,y)` in the container the portal lives in;
+  `POST /api/pads/:id/compose { targetElementId, surface, edge }` → `{ viewId }` — the
+  canvas-side composition door: swaps the target terminal element to a portal, rebinds the
+  target's session as root leaf, inserts the dragged surface at `edge`, hardened row named
+  `"<A> + <B>"`. Composing onto an existing portal is a plain tile add, never view nesting.
+  Session protocol v11.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.
