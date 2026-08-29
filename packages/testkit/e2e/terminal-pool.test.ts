@@ -141,6 +141,49 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
     });
     expect(listed?.createdAt).toBeNumber();
 
+    // Rename: the name is session state, not pad state, so a parked terminal is
+    // renameable and the pool listing carries the label.
+    const renamed = await ownerFetch(server, `/api/terminals/${session.id}`, {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: "build box" }),
+      responseSchema: OkResponseSchema,
+    });
+    expect(renamed.ok).toBe(true);
+    expect((await listPool(server)).map((entry) => entry.name)).toEqual(["build box"]);
+
+    // Order: parking appends, and a move rewrites the pool into contiguous positions.
+    const second = await client.openTerminal({ elementId: "el-pool-2", cols: 80, rows: 24 });
+    client.transact((tx) => {
+      tx.create(terminalElement("el-pool-2", { sessionId: second.id }));
+    });
+    await waitFor(() => client.elements.has("el-pool-2"), 10_000, 20);
+    await ownerFetch(server, `/api/terminals/${second.id}/park`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ elementId: "el-pool-2" }),
+      responseSchema: OkResponseSchema,
+    });
+    await waitFor(async () => (await listPool(server)).length === 2, 10_000, 50);
+    expect((await listPool(server)).map((entry) => entry.id)).toEqual([session.id, second.id]);
+
+    const moved = await ownerFetch(server, "/api/terminal-pool", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ sessionId: second.id, index: 0 }),
+      responseSchema: TerminalPoolResponseSchema,
+    });
+    expect(moved.terminals.map((entry) => entry.id)).toEqual([second.id, session.id]);
+    expect(moved.terminals.map((entry) => entry.sortOrder)).toEqual([0, 1]);
+    expect((await listPool(server)).map((entry) => entry.id)).toEqual([second.id, session.id]);
+
+    // Back to a single pool entry so the kill/prune assertions below stay exact.
+    await ownerFetch(server, `/api/terminals/${second.id}`, {
+      method: "DELETE",
+      responseSchema: OkResponseSchema,
+    });
+    await waitFor(async () => (await listPool(server)).length === 1, 15_000, 100);
+
     // Bind: the server authors a fresh element for the same PTY at the requested position.
     const bound = await ownerFetch(server, `/api/terminals/${session.id}/bind`, {
       method: "POST",
@@ -157,6 +200,24 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
     expect(rebound.y).toBe(180);
     await waitFor(() => client.sessions.get(session.id)?.status === "running", 10_000, 20);
     expect(client.sessions.get(session.id)?.padId).toBe(pad.id);
+    // The name survives park/bind and travels inside the rebind's SessionInfo advert.
+    expect(client.sessions.get(session.id)?.name).toBe("build box");
+
+    // A bound rename publishes the new label to every joined client.
+    const renamedEvent = nextMessage(
+      client,
+      "session_event",
+      10_000,
+      (message) => message.sessionId === session.id && message.kind === "renamed",
+    );
+    await ownerFetch(server, `/api/terminals/${session.id}`, {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: "build box 2" }),
+      responseSchema: OkResponseSchema,
+    });
+    expect((await renamedEvent).name).toBe("build box 2");
+    await waitFor(() => client.sessions.get(session.id)?.name === "build box 2", 10_000, 20);
 
     // No-gap invariant across park/bind: a client that attaches only after the rebind
     // must still receive the pre-park screen state, and no output may precede its snapshot.
