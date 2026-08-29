@@ -2107,15 +2107,40 @@ button.pad-sidebar-session.is-summary > small {
 .flow-terminal .terminal-ctl {
   cursor: pointer;
 }
-.flow-pad-canvas .react-flow__resize-control.handle {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: #8ab4f8;
-  border: 1px solid #1b1b1f;
+/*
+ * Terminals resize like desktop windows: the frame border is the grab zone, so the
+ * controls carry no paint of their own and the OS resize cursor (supplied by React
+ * Flow's own `.left`/`.top`/corner rules) is the affordance. The zones are widened
+ * from the library's 1px line because a 1px border is not a pointer target.
+ */
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge,
+.flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
+  /* Above the terminal frame, which is positioned and paints after these controls. */
+  z-index: 2;
+  border-color: transparent;
+  background: transparent;
 }
-.flow-pad-canvas .react-flow__resize-control.line {
-  border-color: #8ab4f8;
+
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.left,
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.right {
+  width: 8px;
+}
+
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.top,
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.bottom {
+  height: 8px;
+}
+
+.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge:hover {
+  background: rgb(138 180 248 / 45%);
+}
+
+.flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .flow-pad-canvas:focus {

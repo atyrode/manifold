@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SceneElement } from "@manifold/protocol";
 import type { GestureOverride } from "./remote-gestures";
 import {
+  carryMeasurements,
   createDrawElement,
   createTerminalElement,
   createTextElement,
@@ -82,5 +83,30 @@ describe("flow scene", () => {
     });
     expect(textHeightFor("one", 20)).toBe(48);
     expect(textHeightFor("one\ntwo", 20)).toBe(72);
+  });
+
+  test("carries runtime measurements across a re-projection without touching geometry", () => {
+    const current = [
+      { id: "a", position: { x: 0, y: 0 }, data: {}, measured: { width: 480, height: 320 } },
+      { id: "gone", position: { x: 0, y: 0 }, data: {}, measured: { width: 10, height: 10 } },
+    ];
+    const next = [
+      { id: "a", position: { x: 5, y: 6 }, width: 500, height: 340, data: {} },
+      { id: "b", position: { x: 1, y: 2 }, width: 100, height: 90, data: {} },
+    ];
+
+    expect(carryMeasurements(next, current)).toEqual([
+      {
+        id: "a",
+        position: { x: 5, y: 6 },
+        width: 500,
+        height: 340,
+        data: {},
+        measured: { width: 480, height: 320 },
+      },
+      { id: "b", position: { x: 1, y: 2 }, width: 100, height: 90, data: {} },
+    ]);
+    // A node React Flow has never measured must not gain a fabricated measurement.
+    expect(carryMeasurements(next, [])).toEqual(next);
   });
 });

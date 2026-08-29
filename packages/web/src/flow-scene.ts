@@ -1,6 +1,7 @@
 import { compareElements, type SceneElement } from "@manifold/protocol";
 import type { GestureOverride } from "./remote-gestures";
 import { strokeBounds, toRelativePoints } from "./stroke";
+import type { Node } from "@xyflow/react";
 
 export const DEFAULT_TERMINAL_WIDTH = 720;
 export const DEFAULT_TERMINAL_HEIGHT = 480;
@@ -8,6 +9,23 @@ export const DEFAULT_TEXT_WIDTH = 240;
 export const DEFAULT_TEXT_HEIGHT = 48;
 export const DEFAULT_FONT_SIZE = 20;
 export const DEFAULT_TEXT_COLOR = "#f8f9fa";
+
+/**
+ * Canonical scene state owns geometry, but `measured` is React Flow's own record of the
+ * painted box, and it is what the resizer reads for its starting size. Re-projecting the
+ * scene builds fresh node objects, and `adoptUserNodes` copies `measured` straight off
+ * the object it is handed — so a re-projection landing between two frames erased the
+ * measurement and a resize begun in that window started from zero and produced negative
+ * geometry. Carry the runtime measurement across; never let it into scene state.
+ */
+export function carryMeasurements(next: readonly Node[], current: readonly Node[]): Node[] {
+  if (current.length === 0) return [...next];
+  const measured = new Map(current.map((node) => [node.id, node.measured] as const));
+  return next.map((node) => {
+    const previous = measured.get(node.id);
+    return previous === undefined ? node : { ...node, measured: previous };
+  });
+}
 
 export interface TerminalNodeData extends Record<string, unknown> {
   readonly sessionId: string;

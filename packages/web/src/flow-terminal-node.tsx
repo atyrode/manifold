@@ -3,6 +3,7 @@ import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { createContext, useContext, useEffect, useRef } from "react";
 import { TerminalView } from "./terminal-view.tsx";
+import type { CanvasTool } from "./canvas-tool.ts";
 import type { SessionMachine } from "./machine-visibility.ts";
 
 /**
@@ -34,6 +35,12 @@ export interface FlowPadContextValue {
     width: number,
     height: number,
   ) => void;
+  /**
+   * The active canvas tool. Terminals only offer their border grab zones under the
+   * select tool, so a draw or text gesture starting on a frame edge stays a draw or
+   * text gesture.
+   */
+  readonly tool: CanvasTool;
   readonly editingId: string | null;
   readonly beginTextEditing: (elementId: string) => void;
   readonly endTextEditing: (elementId: string) => void;
@@ -82,10 +89,17 @@ export function TerminalNode({ id, data, selected }: NodeProps): React.ReactElem
 
   return (
     <div className="flow-terminal">
-      {/* Resize handles commit once on resize end, matching the drag path. */}
+      {/*
+        Desktop-window ergonomics: the frame border is the grab zone, so the pointer
+        turns into a resize cursor on hover and no selection step is needed. The
+        controls stay transparent — the cursor is the affordance — and commit once on
+        resize end, matching the drag path.
+      */}
       <NodeResizer
         nodeId={id}
-        isVisible={selected === true}
+        isVisible={pad.tool === "select"}
+        lineClassName="flow-terminal-resize-edge"
+        handleClassName="flow-terminal-resize-corner"
         minWidth={MIN_TERMINAL_WIDTH}
         minHeight={MIN_TERMINAL_HEIGHT}
         onResize={(_event, params) =>

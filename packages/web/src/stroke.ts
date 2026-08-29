@@ -51,6 +51,17 @@ export function strokeBounds(points: readonly number[], strokeWidth: number): St
   };
 }
 
+/**
+ * Maps the stroke's natural bounds onto whatever box the node currently has, so a
+ * resized element scales its ink instead of growing an empty frame around it. The
+ * origin is carried explicitly: canonical points start at `strokeWidth`, but nothing
+ * in the schema guarantees it.
+ */
+export function strokeViewBox(points: readonly number[], strokeWidth: number): string {
+  const bounds = strokeBounds(points, strokeWidth);
+  return `${String(bounds.x)} ${String(bounds.y)} ${String(bounds.width)} ${String(bounds.height)}`;
+}
+
 export function toRelativePoints(points: readonly number[], origin: PointOrigin): number[] {
   return points.map((value, index) => value - (index % 2 === 0 ? origin.x : origin.y));
 }

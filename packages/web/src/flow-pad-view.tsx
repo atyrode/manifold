@@ -34,6 +34,7 @@ import {
   type FlowPadContextValue,
 } from "./flow-terminal-node.tsx";
 import {
+  carryMeasurements,
   createDrawElement,
   createTerminalElement,
   createTextElement,
@@ -358,7 +359,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
   useEffect(() => {
-    setNodes(canonicalNodes);
+    setNodes((current) => carryMeasurements(canonicalNodes, current));
   }, [canonicalNodes, setNodes]);
 
   const handleNodeDragStart = useCallback(
@@ -684,6 +685,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       sessionShared,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
+      tool,
       editingId,
       beginTextEditing: setEditingId,
       endTextEditing: (elementId) => {
@@ -704,6 +706,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       onClose,
       restartTerminal,
       sessionShared,
+      tool,
     ],
   );
 

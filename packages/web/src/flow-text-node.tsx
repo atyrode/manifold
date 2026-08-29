@@ -1,11 +1,15 @@
 import { LOCAL_ORIGIN } from "@manifold/scene";
-import type { NodeProps } from "@xyflow/react";
+import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { useEffect, useRef } from "react";
 import { useFlowPad } from "./flow-terminal-node.tsx";
 import { textHeightFor } from "./flow-scene.ts";
 import { diffText } from "./text-diff.ts";
 
-export function TextNode({ id, data }: NodeProps): React.ReactElement {
+/** Text stays editable at any size, but must not collapse to an unclickable sliver. */
+export const MIN_TEXT_WIDTH = 80;
+export const MIN_TEXT_HEIGHT = 32;
+
+export function TextNode({ id, data, selected }: NodeProps): React.ReactElement {
   const pad = useFlowPad();
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const text = typeof data["text"] === "string" ? data["text"] : "";
@@ -73,15 +77,30 @@ export function TextNode({ id, data }: NodeProps): React.ReactElement {
   }
 
   return (
-    <div
-      className="flow-text"
-      style={{ color, fontSize }}
-      onDoubleClick={(event) => {
-        event.stopPropagation();
-        pad.beginTextEditing(id);
-      }}
-    >
-      {text}
-    </div>
+    <>
+      {/* Ink and text keep the classic bounding-box handles; only terminals grab by border. */}
+      <NodeResizer
+        nodeId={id}
+        isVisible={pad.tool === "select" && selected === true}
+        minWidth={MIN_TEXT_WIDTH}
+        minHeight={MIN_TEXT_HEIGHT}
+        onResize={(_event, params) =>
+          pad.onResize(id, params.x, params.y, params.width, params.height)
+        }
+        onResizeEnd={(_event, params) =>
+          pad.onResizeEnd(id, params.x, params.y, params.width, params.height)
+        }
+      />
+      <div
+        className="flow-text"
+        style={{ color, fontSize }}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          pad.beginTextEditing(id);
+        }}
+      >
+        {text}
+      </div>
+    </>
   );
 }

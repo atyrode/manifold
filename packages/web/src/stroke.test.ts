@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendPoint, pointsToPath, strokeBounds, toRelativePoints } from "./stroke";
+import { appendPoint, pointsToPath, strokeBounds, strokeViewBox, toRelativePoints } from "./stroke";
 
 describe("stroke", () => {
   test("appendPoint rejects only points below the minimum distance", () => {
@@ -25,5 +25,13 @@ describe("stroke", () => {
     expect(relative).toEqual([3, 3, 8, 8, 11, 4]);
     expect(pointsToPath(relative)).toBe("M 3 3 L 8 8 L 11 4");
     expect(pointsToPath([])).toBe("");
+  });
+
+  test("viewBox carries the stroke origin so a resized element scales its ink", () => {
+    // Canonical stored points are already element-relative: origin lands on 0,0.
+    const relative = toRelativePoints([10, 20, 30, 25], { x: 7, y: 17 });
+    expect(strokeViewBox(relative, 3)).toBe("0 0 26 11");
+    // Points that never went through `toRelativePoints` must not shift the drawing.
+    expect(strokeViewBox([10, 20, 30, 25], 3)).toBe("7 17 26 11");
   });
 });
