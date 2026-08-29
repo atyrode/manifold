@@ -2135,10 +2135,6 @@ button.pad-sidebar-session.is-summary > small {
   height: 8px;
 }
 
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge:hover {
-  background: rgb(138 180 248 / 45%);
-}
-
 .flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
   width: 14px;
   height: 14px;
