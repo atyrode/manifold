@@ -16,6 +16,8 @@ export const SessionInfoSchema = z.strictObject({
   id: z.string().min(1),
   /** Null while the session is parked in the workspace terminal pool (no pad binding). */
   padId: z.string().min(1).nullable(),
+  /** Operator-assigned display name; null means the client renders its default label. */
+  name: z.string().min(1).max(120).nullable(),
   elementId: z.string().min(1),
   machineId: z.string().min(1),
   status: z.enum(["running", "exited"]),
@@ -173,11 +175,12 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("session_event"),
     sessionId: z.string().min(1),
-    kind: z.enum(["opened", "exited", "controller_changed", "resized", "parked"]),
+    kind: z.enum(["opened", "exited", "controller_changed", "resized", "parked", "renamed"]),
     exitCode: z.number().int().nullable().optional(),
     controllerId: z.string().nullable().optional(),
     cols: z.number().int().positive().optional(),
     rows: z.number().int().positive().optional(),
+    name: z.string().min(1).max(120).optional(),
   }),
   z.strictObject({
     type: z.literal("saved"),

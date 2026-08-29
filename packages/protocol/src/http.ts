@@ -134,9 +134,12 @@ export const PadSessionsResponseSchema = z.strictObject({
 export const TerminalPoolEntrySchema = z.strictObject({
   id: z.string().min(1),
   machineId: z.string().min(1),
+  name: z.string().min(1).max(120).nullable(),
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
+  /** Durable pool position; contiguous 0..n-1 in the response order. */
+  sortOrder: z.number().int(),
 });
 export type TerminalPoolEntry = z.infer<typeof TerminalPoolEntrySchema>;
 export const TerminalPoolResponseSchema = z.strictObject({
@@ -161,6 +164,19 @@ export const BindTerminalResponseSchema = z.strictObject({
   elementId: z.string().min(1),
 });
 export type BindTerminalResponse = z.infer<typeof BindTerminalResponseSchema>;
+
+/** Rename: set a terminal's display name (works for bound and parked sessions). */
+export const RenameTerminalRequestSchema = z.strictObject({
+  name: z.string().min(1).max(120),
+});
+export type RenameTerminalRequest = z.infer<typeof RenameTerminalRequestSchema>;
+
+/** Move: reorder a parked terminal within the workspace pool. */
+export const MoveTerminalPoolRequestSchema = z.strictObject({
+  sessionId: z.string().min(1),
+  index: z.number().int().nonnegative(),
+});
+export type MoveTerminalPoolRequest = z.infer<typeof MoveTerminalPoolRequestSchema>;
 
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),

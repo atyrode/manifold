@@ -5,8 +5,10 @@ import {
   ClientMessageSchema,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
+  MoveTerminalPoolRequestSchema,
   PROTOCOL_VERSION,
   ParkTerminalRequestSchema,
+  RenameTerminalRequestSchema,
   ServerMessageSchema,
   SceneElementSchema,
   TerminalPoolResponseSchema,
@@ -41,6 +43,30 @@ describe("session channel schemas", () => {
     expect(
       ServerMessageSchema.safeParse({ type: "session_event", sessionId: "s1", kind: "vanished" })
         .success,
+    ).toBe(false);
+  });
+
+  test("session_event carries the renamed kind and its new label", () => {
+    const msg = {
+      type: "session_event" as const,
+      sessionId: "s1",
+      kind: "renamed" as const,
+      name: "build",
+    };
+    expect(ServerMessageSchema.parse(msg)).toEqual(msg);
+    // A rename with no label is nonsense on the wire, but the field is optional so
+    // every other kind stays parseable; the SDK treats absence as "cleared".
+    expect(
+      ServerMessageSchema.safeParse({ type: "session_event", sessionId: "s1", kind: "renamed" })
+        .success,
+    ).toBe(true);
+    expect(
+      ServerMessageSchema.safeParse({
+        type: "session_event",
+        sessionId: "s1",
+        kind: "renamed",
+        name: "",
+      }).success,
     ).toBe(false);
   });
 
@@ -237,16 +263,43 @@ describe("http schemas", () => {
     const entry = {
       id: "s1",
       machineId: "m1",
+      name: null,
       createdAt: 1,
       status: "running" as const,
       exitCode: null,
+      sortOrder: 0,
     };
     expect(TerminalPoolResponseSchema.parse({ terminals: [entry] }).terminals[0]).toEqual(entry);
+    expect(
+      TerminalPoolResponseSchema.parse({ terminals: [{ ...entry, name: "build", sortOrder: 3 }] })
+        .terminals[0],
+    ).toEqual({ ...entry, name: "build", sortOrder: 3 });
+    expect(
+      TerminalPoolResponseSchema.safeParse({ terminals: [{ ...entry, sortOrder: 1.5 }] }).success,
+    ).toBe(false);
     expect(ParkTerminalRequestSchema.safeParse({ elementId: "e1" }).success).toBe(true);
     expect(ParkTerminalRequestSchema.safeParse({}).success).toBe(false);
     expect(BindTerminalRequestSchema.safeParse({ padId: "p1" }).success).toBe(true);
     expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: 10, y: -4 }).success).toBe(true);
     expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: "10" }).success).toBe(false);
+  });
+
+  test("terminal rename and pool move shapes round-trip", () => {
+    expect(RenameTerminalRequestSchema.parse({ name: "build" })).toEqual({ name: "build" });
+    expect(RenameTerminalRequestSchema.safeParse({ name: "" }).success).toBe(false);
+    expect(RenameTerminalRequestSchema.safeParse({ name: "x".repeat(121) }).success).toBe(false);
+    expect(RenameTerminalRequestSchema.safeParse({}).success).toBe(false);
+    expect(MoveTerminalPoolRequestSchema.parse({ sessionId: "s1", index: 0 })).toEqual({
+      sessionId: "s1",
+      index: 0,
+    });
+    expect(MoveTerminalPoolRequestSchema.safeParse({ sessionId: "s1", index: -1 }).success).toBe(
+      false,
+    );
+    expect(MoveTerminalPoolRequestSchema.safeParse({ sessionId: "s1", index: 1.5 }).success).toBe(
+      false,
+    );
+    expect(MoveTerminalPoolRequestSchema.safeParse({ index: 0 }).success).toBe(false);
   });
 });
 

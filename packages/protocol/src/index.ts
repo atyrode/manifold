@@ -102,9 +102,13 @@ export {
   ParkTerminalRequestSchema,
   BindTerminalRequestSchema,
   BindTerminalResponseSchema,
+  RenameTerminalRequestSchema,
+  MoveTerminalPoolRequestSchema,
   type TerminalPoolEntry,
   type TerminalPoolResponse,
   type ParkTerminalRequest,
   type BindTerminalRequest,
   type BindTerminalResponse,
+  type RenameTerminalRequest,
+  type MoveTerminalPoolRequest,
 } from "./http.ts";
