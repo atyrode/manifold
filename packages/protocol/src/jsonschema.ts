@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
-import { PlaceRequestSchema, PlacementDenialSchema, placementVocabulary } from "./placement.ts";
+import {
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDenialSchema,
+  placementVocabulary,
+} from "./placement.ts";
 import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
 
@@ -26,6 +31,7 @@ export function buildProtocolJsonSchema(): Record<string, unknown> {
     placement: {
       ...placementVocabulary(),
       request: z.toJSONSchema(PlaceRequestSchema),
+      response: z.toJSONSchema(PlaceResponseSchema),
       denial: z.toJSONSchema(PlacementDenialSchema),
     },
   };

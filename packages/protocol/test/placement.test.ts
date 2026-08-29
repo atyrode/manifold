@@ -6,10 +6,13 @@ import {
   DESTINATION_OPS,
   ITEM_KINDS,
   PLACEMENT_DENIAL_RULES,
+  PLACEMENT_DENIED_CODE,
   PLACEMENT_GROUPS,
   PLACEMENT_GUARDS,
   PLACEMENT_OPS,
   PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
   PlacementDenialSchema,
   PlacementDestinationSchema,
   PlacementSurfaceSchema,
@@ -18,6 +21,8 @@ import {
   type ContainerLayout,
   type DestinationKind,
   type ItemKind,
+  type PlaceResponse,
+  type PlacementDeniedResponse,
   type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
@@ -345,6 +350,50 @@ describe("placement wire shapes", () => {
     expect(PlaceRequestSchema.safeParse({ surface: SURFACES.terminal }).success).toBe(false);
   });
 
+  test("every declared op has exactly one response form", () => {
+    const responses: readonly PlaceResponse[] = [
+      { op: "bind", elementId: "e1" },
+      { op: "portal", elementId: "e2" },
+      { op: "extract", elementId: "e3" },
+      { op: "move_element", elementId: "e4" },
+      { op: "park" },
+      { op: "add_tile", tileId: "t1" },
+      { op: "compose", viewId: "v1", tileId: "t2" },
+    ];
+    for (const response of responses) {
+      expect(PlaceResponseSchema.parse(response)).toEqual(response);
+    }
+    // Exhaustive against the declarations: a new op with no response form fails here.
+    expect(responses.map((response) => response.op).sort()).toEqual([...PLACEMENT_OPS].sort());
+    expect(PlaceResponseSchema.safeParse({ op: "park", elementId: "e1" }).success).toBe(false);
+    expect(PlaceResponseSchema.safeParse({ op: "bind" }).success).toBe(false);
+  });
+
+  test("a denied placement carries its code and the denial itself", () => {
+    const body: PlacementDeniedResponse = {
+      error: {
+        code: PLACEMENT_DENIED_CODE,
+        message: "views never nest",
+        denial: {
+          rule: "not_accepted" satisfies PlacementDenialRule,
+          surface: SURFACES.view,
+          container: { kind: "view" as const, padId: "view-1" },
+        },
+      },
+    };
+    expect(PlacementDeniedResponseSchema.parse(body)).toEqual(body);
+    expect(
+      PlacementDeniedResponseSchema.safeParse({
+        error: { code: "conflict", message: "x", denial: body.error.denial },
+      }).success,
+    ).toBe(false);
+    expect(
+      PlacementDeniedResponseSchema.safeParse({
+        error: { code: PLACEMENT_DENIED_CODE, message: "x" },
+      }).success,
+    ).toBe(false);
+  });
+
   test("a denial names a declared rule, the surface offered, and the container refusing", () => {
     for (const rule of PLACEMENT_DENIAL_RULES) {
       const denial = {
@@ -388,6 +437,7 @@ describe("placement introspection", () => {
         "destinationOps",
         "denialRules",
         "request",
+        "response",
         "denial",
       ].sort(),
     );

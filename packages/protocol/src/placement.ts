@@ -267,6 +267,55 @@ export const PlacementDenialSchema = z.strictObject({
 });
 export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
 
+/**
+ * What an executed placement RETURNS, tagged by the op that ran. Each op yields exactly
+ * the id its caller needs to keep rendering: the placement it authored (`elementId` /
+ * `tileId`), the container a composition was born into (`viewId`), or nothing at all for
+ * a release. `POST /api/place` serves this shape verbatim.
+ */
+export const PlaceResponseSchema = z.discriminatedUnion("op", [
+  z.strictObject({ op: z.literal("bind"), elementId: z.string().min(1) }),
+  z.strictObject({ op: z.literal("portal"), elementId: z.string().min(1) }),
+  z.strictObject({ op: z.literal("extract"), elementId: z.string().min(1) }),
+  z.strictObject({ op: z.literal("move_element"), elementId: z.string().min(1) }),
+  z.strictObject({ op: z.literal("park") }),
+  z.strictObject({ op: z.literal("add_tile"), tileId: z.string().min(1) }),
+  z.strictObject({
+    op: z.literal("compose"),
+    /** The view the composition lives in: newly born, or the one a portal pointed at. */
+    viewId: z.string().min(1),
+    /** The leaf the placed surface landed in. */
+    tileId: z.string().min(1),
+  }),
+]);
+export type PlaceResponse = z.infer<typeof PlaceResponseSchema>;
+
+type MissingResponseOp = Exclude<PlacementOp, PlaceResponse["op"]>;
+type ExtraResponseOp = Exclude<PlaceResponse["op"], PlacementOp>;
+const responsesComplete: MissingResponseOp extends never
+  ? ExtraResponseOp extends never
+    ? true
+    : never
+  : never = true;
+void responsesComplete;
+
+/** The HTTP error code a denial travels under; distinct from the generic error codes. */
+export const PLACEMENT_DENIED_CODE = "placement_denied";
+
+/**
+ * A denied placement on the wire: HTTP 409 with the derived denial beside the code, so a
+ * client renders the RULE that refused rather than parsing prose. The message is a
+ * courtesy for logs and toasts; the `denial` is the contract.
+ */
+export const PlacementDeniedResponseSchema = z.strictObject({
+  error: z.strictObject({
+    code: z.literal(PLACEMENT_DENIED_CODE),
+    message: z.string(),
+    denial: PlacementDenialSchema,
+  }),
+});
+export type PlacementDeniedResponse = z.infer<typeof PlacementDeniedResponseSchema>;
+
 // ------------------------------------------------------------------ resolution
 
 /** An item, classified. `containerId` is set when the item IS a container. */
