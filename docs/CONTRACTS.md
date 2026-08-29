@@ -250,6 +250,12 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   writes `sessionId`; park/bind are the two server-authored exceptions. The
   session-scoped agent token stays scoped to the ORIGINAL pad after a rebind (env is
   baked at spawn); the PTY data path is machine-channel and unaffected.
+- Terminals carry a durable nullable `name` (rename via `PATCH /api/terminals/:id
+  { name }`, bound or parked; bound renames broadcast `session_event { kind:"renamed",
+  name }`) and the pool a durable order (`sort_order`, contiguous; `PUT
+  /api/terminal-pool { sessionId, index }` reorders, park appends). Labels everywhere
+  are `name ?? machine name`; the sidebar Terminals section is a headless-tree with
+  the pad row grammar. Session protocol v10.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.

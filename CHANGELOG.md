@@ -9,6 +9,7 @@
 - Remote cursors and gestures now favor accuracy over smoothing: twice the update rate with just enough easing to round the edges. (#15, #57)
 - A user's sibling tabs now render numbered cursor labels ("name (2)") so several tabs of one identity stay tellable apart. (#15, #57)
 - Terminals are now first-class workspace citizens: the titlebar expand button fills the canvas area with a live view (double-click the titlebar to toggle, Esc to shrink), the park button minimizes a terminal into a sidebar "Terminals" pool unbound from any pad, and pool rows drag back onto any canvas or pad. The X button now deliberately kills the terminal, and Backspace parks instead of deleting. (#15, #57)
+- Terminals are presented like pads: renameable, durably ordered sidebar rows with the same menu, inline rename, keyboard, and drag grammar; terminal names show in titlebars and session rows. (#15, #57)
 
 ### Fixed
 
