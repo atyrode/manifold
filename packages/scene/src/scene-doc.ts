@@ -4,7 +4,11 @@ import * as Y from "yjs";
 export const LOCAL_ORIGIN: unique symbol = Symbol("manifold.local");
 export const REMOTE_ORIGIN: unique symbol = Symbol("manifold.remote");
 export const REPAIR_ORIGIN: unique symbol = Symbol("manifold.repair");
+export const SERVER_PLACE_ORIGIN: unique symbol = Symbol("manifold.serverPlace");
 export const ELEMENTS_KEY = "elements";
+
+export const DEFAULT_TERMINAL_WIDTH = 720;
+export const DEFAULT_TERMINAL_HEIGHT = 480;
 
 type PatchOf<T> = T extends SceneElement ? Partial<Omit<T, "id" | "type">> : never;
 export type ScenePatch = PatchOf<SceneElement>;

@@ -1,8 +1,11 @@
 export {
+  DEFAULT_TERMINAL_HEIGHT,
+  DEFAULT_TERMINAL_WIDTH,
   ELEMENTS_KEY,
   LOCAL_ORIGIN,
   REMOTE_ORIGIN,
   REPAIR_ORIGIN,
+  SERVER_PLACE_ORIGIN,
   changedElementIds,
   createSceneDoc,
   decodeUpdate,
