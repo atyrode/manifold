@@ -1,5 +1,9 @@
-export const GESTURE_HALF_LIFE_MS = 60;
-export const CURSOR_HALF_LIFE_MS = 80;
+/**
+ * Truth over beauty: remote motion renders the freshest frame with only enough easing
+ * to round off the send cadence (16ms). Local interaction never interpolates.
+ */
+export const GESTURE_HALF_LIFE_MS = 30;
+export const CURSOR_HALF_LIFE_MS = 30;
 
 export function stepToward(
   current: number,

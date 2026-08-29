@@ -50,9 +50,9 @@ export const PresenceStateSchema = z.strictObject({
 export type PresenceState = z.infer<typeof PresenceStateSchema>;
 
 /** Client-side cursor send throttle; server may additionally drop under backpressure. */
-export const CURSOR_MIN_INTERVAL_MS = 30;
+export const CURSOR_MIN_INTERVAL_MS = 16;
 /** Gesture updates use the same high-frequency cadence as cursor motion. */
-export const GESTURE_MIN_INTERVAL_MS = 30;
+export const GESTURE_MIN_INTERVAL_MS = 16;
 /** Stale gesture overrides must disappear even when an end frame is dropped. */
 export const GESTURE_TTL_MS = 3_000;
 /** Viewport updates are presence metadata, not motion — keep them at or under 1 Hz. */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION, type Pad } from "@manifold/protocol";
+import { CURSOR_MIN_INTERVAL_MS, PROTOCOL_VERSION, type Pad } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
@@ -114,7 +114,7 @@ describe("SessionGateway high-rate request cadence", () => {
 
     expect(fixture.clock.pendingJobs).toBe(1);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
-    fixture.clock.advance(19);
+    fixture.clock.advance(CURSOR_MIN_INTERVAL_MS - 10 - 1);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
     fixture.clock.advance(1);
 

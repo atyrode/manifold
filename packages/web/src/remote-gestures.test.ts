@@ -7,6 +7,8 @@ import {
   type GestureOverride,
 } from "./remote-gestures";
 
+import { GESTURE_HALF_LIFE_MS } from "./interpolate.ts";
+
 function frame(x: number, phase: "active" | "end" = "active"): ServerGesture {
   return {
     type: "gesture",
@@ -45,7 +47,7 @@ describe("remote gestures", () => {
     expect(state.get("element")?.current.x).toBe(0);
     expect(state.get("element")?.target.x).toBe(100);
 
-    expect(stepGestures(state, 60)).toBe(true);
+    expect(stepGestures(state, GESTURE_HALF_LIFE_MS)).toBe(true);
     expect(state.get("element")?.current.x).toBe(50);
     expect(applyGestureFrame(state, frame(100, "end"), null, 90)).toBe(true);
     expect(state.size).toBe(0);
