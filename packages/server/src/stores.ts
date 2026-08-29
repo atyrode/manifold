@@ -79,7 +79,7 @@ interface MachineAuthRow extends MachineRow {
 interface SessionDbRow {
   id: string;
   machine_id: string;
-  pad_id: string;
+  pad_id: string | null;
   element_id: string;
   created_by: string;
   agent_principal_id: string | null;
@@ -142,7 +142,7 @@ export interface MachineAuthRecord extends MachineRecord {
 export interface StoredSession {
   id: string;
   machineId: string;
-  padId: string;
+  padId: string | null;
   elementId: string;
   createdBy: string;
   agentPrincipalId: string | null;
@@ -814,5 +814,24 @@ export class ServerStore {
         )
         .run(exitCode, id).changes > 0
     );
+  }
+
+  /** Rebinds or unbinds a session's pad; `null` parks it in the workspace pool. */
+  updateSessionPad(id: string, padId: string | null): void {
+    this.db
+      .query<void, [string | null, string]>("UPDATE sessions SET pad_id = ? WHERE id = ?")
+      .run(padId, id);
+  }
+
+  /** Lists the workspace terminal pool: durable sessions with no pad binding. */
+  listParkedSessions(): StoredSession[] {
+    return this.db
+      .query<SessionDbRow, []>(
+        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+                status, exit_code, created_at
+         FROM sessions WHERE pad_id IS NULL ORDER BY created_at, id`,
+      )
+      .all()
+      .map(toSession);
   }
 }

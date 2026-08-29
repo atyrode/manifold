@@ -269,12 +269,15 @@ export class TerminalBroker {
       rows: advertised.rows,
     };
     session.snapshotRequestOutstanding = false;
-    this.rooms.live(session.info.padId)?.broadcast({
-      type: "session_event",
-      sessionId: session.info.id,
-      kind: "controller_changed",
-      controllerId: session.info.controllerId,
-    });
+    const adoptedPadId = session.info.padId;
+    if (adoptedPadId !== null) {
+      this.rooms.live(adoptedPadId)?.broadcast({
+        type: "session_event",
+        sessionId: session.info.id,
+        kind: "controller_changed",
+        controllerId: session.info.controllerId,
+      });
+    }
     if (session.viewers.size > 0) {
       for (const [peer, viewer] of session.viewers) {
         viewer.state = "PENDING";
@@ -771,16 +774,29 @@ export class TerminalBroker {
       });
       return;
     }
+    this.requestKill(session);
+  }
+
+  /**
+   * Owner-authorized kill for HTTP callers (`DELETE /api/terminals/:id`), which hold no
+   * session peer and therefore no controller lease to win. Parked sessions have no pad
+   * room at all, so this is the only way to destroy one.
+   */
+  killById(sessionId: string): "ok" | "not_found" | "conflict" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    if (session.info.status !== "running") return "conflict";
+    this.requestKill(session);
+    return "ok";
+  }
+
+  private requestKill(session: RuntimeSession): void {
     const machine = this.machines.get(session.info.machineId);
-    if (machine === undefined) {
-      // A kill is durable even while the machine is offline. Persisting the exit
-      // prevents this stale row from surviving forever; if the PTY later reconnects,
-      // hello reconciliation sees the exited record and explicitly kills it.
-      this.onExited(session.info.machineId, message.sessionId, null);
-      return;
-    }
-    if (!machine.send({ type: "kill", sessionId: message.sessionId })) {
-      this.onExited(session.info.machineId, message.sessionId, null);
+    // A kill is durable even while the machine is offline or its socket refuses the frame.
+    // Persisting the exit prevents this stale row from surviving forever; if the PTY later
+    // reconnects, hello reconciliation sees the exited record and explicitly kills it.
+    if (machine === undefined || !machine.send({ type: "kill", sessionId: session.info.id })) {
+      this.onExited(session.info.machineId, session.info.id, null);
     }
   }
 
@@ -793,24 +809,100 @@ export class TerminalBroker {
     session.viewers.clear();
     session.info = { ...session.info, status: "exited", exitCode, controllerId: null };
     this.store.markSessionExited(sessionId, exitCode);
-    this.rooms.live(session.info.padId)?.broadcast({
-      type: "session_event",
-      sessionId,
-      kind: "exited",
-      exitCode,
-    });
+    // A parked session is bound to no pad: there is no room to notify and no pad whose
+    // residency its exit could release. The pool janitor collects it instead.
+    const padId = session.info.padId;
+    if (padId !== null) {
+      this.rooms.live(padId)?.broadcast({
+        type: "session_event",
+        sessionId,
+        kind: "exited",
+        exitCode,
+      });
+    }
     const stored = this.store.getSession(sessionId);
     if (stored !== null && stored.agentPrincipalId !== null) {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
     }
-    this.store.addEvent(
-      session.info.padId,
-      this.runtime.now(),
-      session.info.createdBy,
-      "session_exited",
-      { sessionId, machineId, exitCode },
-    );
-    this.rooms.evictIfIdle(session.info.padId);
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_exited", {
+      sessionId,
+      machineId,
+      exitCode,
+    });
+    if (padId !== null) this.rooms.evictIfIdle(padId);
+  }
+
+  /**
+   * Removes one canvas element referencing a session. When it was the last reference the
+   * session unbinds (`padId := null`) and joins the workspace pool; otherwise the copy is
+   * simply gone and the session stays bound. Both running and exited sessions are parkable.
+   *
+   * The element removal must land durably even when the pad is not resident, so the room is
+   * loaded rather than merely probed for liveness.
+   */
+  park(sessionId: string, elementId: string): "ok" | "not_found" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    const padId = session.info.padId;
+    if (padId === null) return "not_found";
+    const room = this.rooms.get(padId);
+    if (room === null) return "not_found";
+    room.removeTerminalElement(elementId);
+    if (room.referencesSession(sessionId)) return "ok";
+
+    session.info = { ...session.info, padId: null };
+    this.store.updateSessionPad(sessionId, null);
+    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    session.viewers.clear();
+    room.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_parked", {
+      sessionId,
+      elementId,
+    });
+    this.rooms.evictIfIdle(padId);
+    return "ok";
+  }
+
+  /**
+   * Attaches a parked session to a pad by authoring its canvas element server-side, which
+   * is why the client sends no scene update for a bind.
+   */
+  bind(
+    sessionId: string,
+    padId: string,
+    x?: number,
+    y?: number,
+  ): { elementId: string } | "not_found" | "already_bound" | "pad_not_found" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    if (session.info.padId !== null) return "already_bound";
+    const room = this.rooms.get(padId);
+    if (room === null) return "pad_not_found";
+
+    const elementId = room.placeTerminalElement(sessionId, x, y);
+    session.info = { ...session.info, padId };
+    this.store.updateSessionPad(sessionId, padId);
+    room.broadcast({ type: "terminal_opened", elementId, session: session.info });
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_bound", {
+      sessionId,
+      elementId,
+    });
+    this.rooms.evictIfIdle(padId);
+    return { elementId };
+  }
+
+  /**
+   * Pool janitor: a parked session has no pad room to prove its canvas element is gone, so
+   * exited pool entries are collected when the pool is listed.
+   */
+  pruneExitedParked(): void {
+    for (const [sessionId, session] of this.sessions) {
+      if (session.info.padId !== null || session.info.status !== "exited") continue;
+      for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+      session.viewers.clear();
+      this.sessions.delete(sessionId);
+      this.store.deleteSession(sessionId);
+    }
   }
 
   /**

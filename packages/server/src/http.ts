@@ -1,6 +1,8 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
+  BindTerminalRequestSchema,
+  BindTerminalResponseSchema,
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
@@ -18,13 +20,16 @@ import {
   PadSessionsResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
+  ParkTerminalRequestSchema,
   RenamePadRequestSchema,
   RevokeRequestSchema,
+  TerminalPoolResponseSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
   type Cap,
   type HttpError,
   type Pad,
+  type PadSessionSummary,
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { ZodError } from "zod";
@@ -297,10 +302,12 @@ export class HttpApp {
     if (request.method === "GET" && pathname === "/api/pad-sessions") {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");
-      const sessions = this.store
-        .listSessions()
-        .filter((session) => context.padScope === null || session.padId === context.padScope)
-        .map((session) => ({
+      const sessions: PadSessionSummary[] = [];
+      for (const session of this.store.listSessions()) {
+        // Parked sessions are bound to no pad; the terminal pool route lists those.
+        if (session.padId === null) continue;
+        if (context.padScope !== null && session.padId !== context.padScope) continue;
+        sessions.push({
           id: session.id,
           padId: session.padId,
           machineId: session.machineId,
@@ -308,8 +315,67 @@ export class HttpApp {
           createdAt: session.createdAt,
           status: session.status,
           exitCode: session.exitCode,
-        }));
+        });
+      }
       return jsonResponse(PadSessionsResponseSchema.parse({ sessions }));
+    }
+
+    if (request.method === "GET" && pathname === "/api/terminals") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot read the terminal pool");
+      }
+      this.broker.pruneExitedParked();
+      const terminals = this.store.listParkedSessions().map((session) => ({
+        id: session.id,
+        machineId: session.machineId,
+        createdAt: session.createdAt,
+        status: session.status,
+        exitCode: session.exitCode,
+      }));
+      return jsonResponse(TerminalPoolResponseSchema.parse({ terminals }));
+    }
+
+    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/park|\/bind)?$/.exec(pathname);
+    if (terminalMatch !== null) {
+      const encodedId = terminalMatch[1];
+      if (encodedId === undefined) throw new RequestError("invalid", "terminal id is missing");
+      let sessionId: string;
+      try {
+        sessionId = decodeURIComponent(encodedId);
+      } catch {
+        throw new RequestError("invalid", "terminal id is invalid");
+      }
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot move terminals between pads");
+      }
+      const action = terminalMatch[2];
+      if (request.method === "POST" && action === "/park") {
+        const input = parseRequest(ParkTerminalRequestSchema, await parseJsonBody(request));
+        if (this.broker.park(sessionId, input.elementId) === "not_found") {
+          throw new RequestError("not_found", "terminal not found");
+        }
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
+      if (request.method === "POST" && action === "/bind") {
+        const input = parseRequest(BindTerminalRequestSchema, await parseJsonBody(request));
+        const bound = this.broker.bind(sessionId, input.padId, input.x, input.y);
+        if (bound === "not_found") throw new RequestError("not_found", "terminal not found");
+        if (bound === "pad_not_found") throw new RequestError("not_found", "pad not found");
+        if (bound === "already_bound") {
+          throw new RequestError("conflict", "terminal is already bound to a pad");
+        }
+        return jsonResponse(BindTerminalResponseSchema.parse({ elementId: bound.elementId }));
+      }
+      if (request.method === "DELETE" && action === undefined) {
+        const killed = this.broker.killById(sessionId);
+        if (killed === "not_found") throw new RequestError("not_found", "terminal not found");
+        if (killed === "conflict") throw new RequestError("conflict", "terminal has exited");
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
     }
 
     if (request.method === "POST" && pathname === "/api/pads") {

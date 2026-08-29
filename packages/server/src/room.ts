@@ -11,16 +11,21 @@ import {
   type SessionInfo,
 } from "@manifold/protocol";
 import {
+  DEFAULT_TERMINAL_HEIGHT,
+  DEFAULT_TERMINAL_WIDTH,
   REPAIR_ORIGIN,
+  SERVER_PLACE_ORIGIN,
   Y,
   changedElementIds,
   createSceneDoc,
   decodeUpdate,
   elementsMap,
   encodeUpdate,
+  nextZIndex,
   readElement,
   readElements,
   removeElement,
+  writeElement,
 } from "@manifold/scene";
 import type { Logger } from "./log.ts";
 import {
@@ -32,6 +37,10 @@ import type { ServerStore } from "./stores.ts";
 
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
+
+/** Canvas placement used when a bind request carries no explicit drop coordinates. */
+const DEFAULT_TERMINAL_X = 160;
+const DEFAULT_TERMINAL_Y = 120;
 
 /**
  * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
@@ -416,6 +425,37 @@ export class Room {
       if (element.type === "terminal" && element.sessionId === sessionId) return true;
     }
     return false;
+  }
+
+  /**
+   * Authors a terminal element for a session the server just bound to this pad. The
+   * constructor's `doc.on("update")` hook fans the resulting transaction out to every
+   * joined peer as a `doc_update` and marks the room dirty for snapshotting, so binding
+   * needs no explicit broadcast. `SERVER_PLACE_ORIGIN` keeps client undo managers —
+   * which track only their own local origin — from capturing it.
+   */
+  placeTerminalElement(sessionId: string, x?: number, y?: number): string {
+    const id = crypto.randomUUID();
+    writeElement(
+      this.doc,
+      {
+        id,
+        type: "terminal",
+        sessionId,
+        x: x ?? DEFAULT_TERMINAL_X,
+        y: y ?? DEFAULT_TERMINAL_Y,
+        width: DEFAULT_TERMINAL_WIDTH,
+        height: DEFAULT_TERMINAL_HEIGHT,
+        zIndex: nextZIndex(this.doc),
+      },
+      SERVER_PLACE_ORIGIN,
+    );
+    return id;
+  }
+
+  /** Removes one server-parked terminal element; the doc update hook broadcasts it. */
+  removeTerminalElement(elementId: string): boolean {
+    return removeElement(this.doc, elementId, SERVER_PLACE_ORIGIN);
   }
 
   /** Returns the principal-level live roster without cursor or viewport payloads. */
