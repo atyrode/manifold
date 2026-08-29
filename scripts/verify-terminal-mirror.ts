@@ -11,7 +11,10 @@
  *   1. the clone renders screen state that existed BEFORE it was created;
  *   2. live output mirrors to both views;
  *   3. after a reload both views render (no mount-race zombie);
- *   4. closing one mirror leaves the other live and typeable (PTY survives).
+ *   4. expand is a pure view flip: same xterm host node (no remount), screen
+ *      state intact, box confined to the canvas area, dblclick shrinks back;
+ *   5. parking one mirror removes only that copy: the other view stays live and
+ *      typeable (PTY survives) and the non-last copy never enters the pool.
  *
  * The second mirror is created through the production SDK. Canvas gesture policy
  * is separate from the attach/refcount contract under test.
@@ -213,20 +216,194 @@ try {
     `views showing marker: [${reloaded.join(", ")}]`,
   );
 
-  // 4. Closing one mirror leaves the other live and typeable.
-  const cloneClosed = await browser.evaluate<boolean>(
+  // 4. Expand is a pure VIEW flip: the same xterm host node is promoted to fill the
+  //    canvas area (no remount, no re-snapshot), and a titlebar double-click shrinks it
+  //    back to the exact canvas rect it came from.
+  const sourceNode = `.react-flow__node[data-id="${source.id}"]`;
+  const sourceFrame = JSON.stringify(`${sourceNode} .manifold-terminal`);
+  const sourceCenter = await browser.evaluate<{ x: number; y: number }>(
+    `(() => { const b = document.querySelector(${sourceFrame}).getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`,
+  );
+  await browser.drag([sourceCenter], 30);
+  await sleep(500);
+  await browser.typeText("echo EXPAND_VIEW_OK");
+  await browser.typeText("\r");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(document.querySelector(${sourceFrame}).querySelector('.xterm-rows')?.textContent || '')
+          .includes('EXPAND_VIEW_OK')`,
+      ),
+    8_000,
+    "expand sentinel rendered",
+  );
+
+  // Stamp the live xterm host and keep a page-scoped reference: a remount would swap the
+  // node identity even if the stamped attribute were reproduced.
+  const canvasRect = await browser.evaluate<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }>(
+    `(() => {
+      const frame = document.querySelector(${sourceFrame});
+      const host = frame.querySelector('.xterm-host');
+      host.dataset.probe = 'alive';
+      window.__expandProbe = host;
+      const b = frame.getBoundingClientRect();
+      return { left: b.left, top: b.top, width: b.width, height: b.height };
+    })()`,
+  );
+  const expandClicked = await browser.evaluate<boolean>(
     `(() => {
       const button = document.querySelector(
-        ${JSON.stringify(`.react-flow__node[data-id="${clone.id}"] .terminal-ctl--close`)},
+        ${JSON.stringify(`${sourceNode} [aria-label="Expand terminal to full view"]`)},
+      );
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+      button.click();
+      return true;
+    })()`,
+  );
+  if (!expandClicked) throw new Error("terminal titlebar has no enabled expand button");
+  await until(
+    () =>
+      browser!.evaluate<boolean>("document.querySelector('.manifold-terminal--expanded') !== null"),
+    8_000,
+    "terminal expanded",
+  );
+  await sleep(800);
+
+  const expanded = await browser.evaluate<{
+    sameNode: boolean;
+    probed: boolean;
+    marker: boolean;
+    left: number;
+    sidebarRight: number;
+    shrinkLabel: boolean;
+  }>(
+    `(() => {
+      const frame = document.querySelector(${sourceFrame});
+      const host = frame.querySelector('.xterm-host');
+      const sidebar = document.querySelector('aside.pad-sidebar');
+      const box = frame.getBoundingClientRect();
+      return {
+        sameNode: host === window.__expandProbe && host.isConnected,
+        probed: host.dataset.probe === 'alive',
+        marker: (host.querySelector('.xterm-rows')?.textContent || '').includes('EXPAND_VIEW_OK'),
+        left: box.left,
+        sidebarRight: sidebar === null ? -1 : sidebar.getBoundingClientRect().right,
+        shrinkLabel:
+          frame.querySelector('[aria-label="Shrink terminal to canvas"]') !== null,
+      };
+    })()`,
+  );
+  check(
+    "expand reuses the same xterm host node",
+    expanded.sameNode && expanded.probed,
+    `sameNode=${String(expanded.sameNode)} probe=${String(expanded.probed)}`,
+  );
+  check(
+    "expanded view keeps its rendered screen state",
+    expanded.marker,
+    `marker visible after expand: ${String(expanded.marker)}`,
+  );
+  check(
+    "expanded box starts at the canvas area, not the sidebar",
+    expanded.sidebarRight >= 0 && expanded.left >= expanded.sidebarRight - 1,
+    `expanded left=${expanded.left.toFixed(1)} sidebar right=${expanded.sidebarRight.toFixed(1)}`,
+  );
+  check(
+    "expand control flips to shrink",
+    expanded.shrinkLabel,
+    `shrink control present: ${String(expanded.shrinkLabel)}`,
+  );
+
+  const dblClicked = await browser.evaluate<boolean>(
+    `(() => {
+      const bar = document.querySelector(${JSON.stringify(`${sourceNode} .terminal-titlebar`)});
+      if (bar === null) return false;
+      const b = bar.getBoundingClientRect();
+      bar.dispatchEvent(
+        new MouseEvent('dblclick', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          detail: 2,
+          clientX: b.left + b.width / 2,
+          clientY: b.top + b.height / 2,
+        }),
+      );
+      return true;
+    })()`,
+  );
+  if (!dblClicked) throw new Error("expanded terminal has no titlebar to double-click");
+  await until(
+    () =>
+      browser!.evaluate<boolean>("document.querySelector('.manifold-terminal--expanded') === null"),
+    8_000,
+    "double-click shrank the terminal",
+  );
+  await sleep(800);
+  const shrunk = await browser.evaluate<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    sameNode: boolean;
+  }>(
+    `(() => {
+      const frame = document.querySelector(${sourceFrame});
+      const host = frame.querySelector('.xterm-host');
+      const b = frame.getBoundingClientRect();
+      return {
+        left: b.left,
+        top: b.top,
+        width: b.width,
+        height: b.height,
+        sameNode: host === window.__expandProbe && host.isConnected,
+      };
+    })()`,
+  );
+  const drift = Math.max(
+    Math.abs(shrunk.left - canvasRect.left),
+    Math.abs(shrunk.top - canvasRect.top),
+    Math.abs(shrunk.width - canvasRect.width),
+    Math.abs(shrunk.height - canvasRect.height),
+  );
+  check(
+    "titlebar double-click restores the canvas rect",
+    drift <= 2 && shrunk.sameNode,
+    `drift=${drift.toFixed(1)}px sameNode=${String(shrunk.sameNode)}`,
+  );
+
+  // 5. Parking one mirror removes only that copy; the other view stays live and typeable.
+  //    The close button now deliberately KILLS the shared PTY, so copy removal is the Park
+  //    affordance. Parking a non-last copy must NOT enter the workspace pool: the session
+  //    stays bound to this pad through the surviving element.
+  const cloneParked = await browser.evaluate<boolean>(
+    `(() => {
+      const button = document.querySelector(
+        ${JSON.stringify(`.react-flow__node[data-id="${clone.id}"] [aria-label="Park terminal to sidebar"]`)},
       );
       if (!(button instanceof HTMLButtonElement)) return false;
       button.click();
       return true;
     })()`,
   );
-  if (!cloneClosed) throw new Error("clone node has no close button");
-  await until(async () => (await termCount()) === 1, 10_000, "mirror closed");
+  if (!cloneParked) throw new Error("clone node has no park button");
+  await until(async () => (await termCount()) === 1, 10_000, "mirror parked");
   await sleep(600);
+  const cloneGone = await browser.evaluate<boolean>(
+    `document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${clone.id}"]`)}) === null`,
+  );
+  const survivingViews = await termCount();
+  check(
+    "parking one mirror removes only that copy",
+    cloneGone && survivingViews === 1,
+    `cloneNodePresent=${String(!cloneGone)} views=${String(survivingViews)}`,
+  );
   const survivorState = await browser.evaluate<boolean>(
     "(document.querySelector('.xterm-rows')?.textContent || '').includes('LIVE_MIRROR_OK')",
   );
@@ -243,9 +420,19 @@ try {
     "document.querySelector('.terminal-exited') !== null",
   );
   check(
-    "closing one mirror leaves the other live",
+    "parking one mirror leaves the other live",
     survivorState && survivorTypes && !exitedStrip,
     `state=${String(survivorState)} typeable=${String(survivorTypes)} exitedStrip=${String(exitedStrip)}`,
+  );
+  // The sidebar pool refetches on sessions_changed as well as on its poll, and the park round
+  // trip plus the typing above is well past both, so an empty pool here is a real negative.
+  const pooledRow = await browser.evaluate<boolean>(
+    "document.querySelector('.terminal-pool-row') !== null",
+  );
+  check(
+    "parking a non-last copy never enters the pool",
+    !pooledRow,
+    `sidebar pool rows present: ${String(pooledRow)}`,
   );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
