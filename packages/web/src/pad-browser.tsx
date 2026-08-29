@@ -8,6 +8,7 @@ import {
   type TreeInstance,
 } from "@headless-tree/core";
 import type {
+  MachineSummary,
   Pad,
   PadPresence,
   PadSessionSummary,
@@ -33,6 +34,7 @@ import {
   deletePad,
   deletePadFolder,
   getPad,
+  getMachines,
   getPadPresence,
   getPadSessions,
   killPooledTerminal,
@@ -239,6 +241,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
+  // The Machines section must outlive the canvas that used to feed it: on tiled routes
+  // and at the workspace root no FlowPadView is mounted, so the list falls back to HTTP.
+  const [fallbackMachines, setFallbackMachines] = useState<readonly MachineSummary[] | null>(
+    null,
+  );
   const [collapsedPresence, setCollapsedPresence] = useState<CollapsedPresencePopover | null>(null);
   const [actionPadId, setActionPadId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
@@ -509,6 +516,28 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       window.clearInterval(interval);
     };
   }, [identity.token, requestedPadId]);
+
+  useEffect(() => {
+    // Only while no canvas feeds the sidebar (tiled routes, workspace root); a mounted
+    // FlowPadView supplies live machine state through onWorkspaceChange instead.
+    if (workspace !== null) return;
+    let active = true;
+    const refresh = (): void => {
+      void getMachines(identity.token)
+        .then((machines) => {
+          if (active) setFallbackMachines(machines);
+        })
+        .catch(() => {
+          // Inventory keeps its last successful snapshot across transient failures.
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 5_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [identity.token, workspace]);
 
   useEffect(() => {
     if (pads === null) return;
@@ -1322,8 +1351,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
    */
   const renderSidebarSection = (section: SidebarSectionId): ReactNode => {
     if (section === "machines") {
-      if (workspace === null) return null;
-      const machines = workspace.machines;
+      // A canvas feeds live machine state; tiled routes and the root use the HTTP poll.
+      const machines = workspace?.machines ?? fallbackMachines;
       const online = machines?.filter((machine) => machine.online).length ?? 0;
       return (
         <SidebarSection
@@ -1337,7 +1366,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           key="machines"
         >
           <div className="workspace-sidebar workspace-machines">
-            <MachinesSection machines={machines} onCreateTerminal={workspace.onCreateTerminal} />
+            <MachinesSection machines={machines} onCreateTerminal={workspace?.onCreateTerminal} />
           </div>
         </SidebarSection>
       );

@@ -283,7 +283,10 @@ export function WorkspaceSessionRow({
 export function MachinesSection({
   machines,
   onCreateTerminal,
-}: Pick<WorkspaceSidebarState, "machines" | "onCreateTerminal">) {
+}: Pick<WorkspaceSidebarState, "machines"> & {
+  /** Absent on surfaces without a canvas to author into (tiled routes, workspace root). */
+  readonly onCreateTerminal?: WorkspaceSidebarState["onCreateTerminal"] | undefined;
+}) {
   return (
     <div className="workspace-list" data-testid="machines-rail">
       {machines === null ? (
@@ -302,7 +305,7 @@ export function MachinesSection({
             />
             <strong>{machine.name}</strong>
             <span>{machine.online ? "Online" : "Offline"}</span>
-            {machine.online ? (
+            {machine.online && onCreateTerminal !== undefined ? (
               <button
                 className="workspace-machine-create"
                 aria-label={`New terminal on ${machine.name}`}

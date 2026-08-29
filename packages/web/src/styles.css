@@ -432,8 +432,9 @@ input:focus {
   background: #1d2025;
 }
 
-/* The pad tree absorbs leftover height so a short stack stays top-aligned. */
-.sidebar-section--grow {
+/* The pad tree absorbs leftover height so a short stack stays top-aligned — but only
+   while open: a collapsed section must shrink to its header instead of holding its slot. */
+.sidebar-section--grow[open] {
   flex: 1 1 auto;
 }
 

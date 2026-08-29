@@ -14,7 +14,8 @@
 - Sidebar sections (Machines, Pads, Terminals) are uniform, collapsible, and reorderable by dragging their headers; row drag handles are gone — the cursor is the cue. Freehand drawings are now selected by clicking the ink itself, not their bounding box. (#15, #57)
 
 ### Fixed
-
+- The Machines sidebar section no longer disappears on view routes or the workspace root; without a canvas to author into it lists machines read-only. (#15, #57)
+- Collapsing the Pads sidebar section now releases its height instead of leaving a blank gap. (#15, #57)
 - Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)
 - The workspace status now shows real autosave times instead of permanently reading "Not saved". (#15, #57)
 
