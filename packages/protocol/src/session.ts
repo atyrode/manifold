@@ -67,6 +67,14 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     padId: z.string().min(1),
     token: z.string().min(1),
     protocolVersion: z.number().int().positive(),
+    /**
+     * A spectator watches without occupying: a portal widget's live preview opens a real
+     * room socket, and counting it as an occupant would both fake an avatar and pin a
+     * bubble open forever. Spectators receive state and terminal output but may never
+     * write, and they appear in neither the roster nor `/api/pad-presence`. Absent ≡
+     * occupant, so every pre-flag client keeps its exact semantics.
+     */
+    spectator: z.boolean().optional(),
     /** Resume hints; a mismatch simply yields a full init. */
     lastEpoch: z.string().optional(),
     lastRev: z.number().int().nonnegative().optional(),

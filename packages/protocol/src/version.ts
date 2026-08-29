@@ -38,8 +38,10 @@ export const PROTOCOL_VERSION = 11;
  * gained "renamed". The machine wire is byte-identical, so existing agents stay
  * accepted.
  * v10 -> v11: pads gained layout/transient and tiled containers store a layout
- * tree; scene elements gained portal. The machine wire is byte-identical, so
- * existing agents stay accepted.
+ * tree; scene elements gained portal; the session `join` frame gained an OPTIONAL
+ * `spectator` flag so a portal widget's preview socket can watch a room without
+ * occupying it (absent ≡ occupant, the pre-flag semantics). The machine wire is
+ * byte-identical, so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
