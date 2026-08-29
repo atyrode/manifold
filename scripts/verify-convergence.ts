@@ -26,7 +26,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
-import type { SceneElement } from "../packages/protocol/src/index.ts";
+import { PadResponseSchema, type SceneElement } from "../packages/protocol/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 function debugPortIsAvailable(port: number): boolean {
@@ -139,6 +139,22 @@ interface PaintProbe {
   readonly state: string;
   readonly presenceZ?: number;
   readonly nodeZ?: number;
+}
+
+/** Measured state of a remote cursor inside a tiled view's presence overlay. */
+interface ViewCursorProbe {
+  readonly state: "no-body" | "no-layer" | "no-cursor" | "measured";
+  /** Every cursor painted in the overlay, whichever principal owns it. */
+  readonly count?: number;
+  /** Arrow tip as a fraction of the tile area — the tiled wire coordinate space. */
+  readonly fx?: number;
+  readonly fy?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly inside?: boolean;
+  readonly visible?: boolean;
+  /** The overlay covers the whole tile area, so a fraction means the same tile for all. */
+  readonly layerFills?: boolean;
 }
 
 try {
@@ -1466,6 +1482,218 @@ try {
           );
         }
       },
+    );
+  }
+
+  // Presence is a renderer-level contract, not a canvas feature. A tiled view has no
+  // React Flow viewport to ride, so its cursors paint on an absolutely-positioned
+  // `.tiled-presence-layer` over the tile area and travel the wire as view-root
+  // FRACTIONS: tile ratios are shared CRDT state, so a fraction resolves to the same
+  // tile for every viewer. This round runs LAST — it navigates both browsers off the
+  // canvas pad, then kills browser B to prove a departed tab's cursor is pruned.
+  //
+  // convB sends and convA receives, not the other way round: F5 froze convB's tab, and
+  // a page thawed out of `Page.setWebLifecycleState("frozen")` stays
+  // `visibilityState: "hidden"` for the rest of the session, so its
+  // requestAnimationFrame never fires again (measured; `Page.bringToFront` does not
+  // revive it). Sending is event-driven and works in a hidden page, but a receiver
+  // needs the animation frame to ease a cursor toward each new position, so the
+  // live-motion assertions have to watch the browser that was never frozen.
+  try {
+    const viewResponse = await fetch(`${origin}/api/pads`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: JSON.stringify({ name: "convergence-view", layout: "tiled" }),
+    });
+    if (!viewResponse.ok) {
+      throw new Error(`tiled view creation failed with ${String(viewResponse.status)}`);
+    }
+    const viewId = PadResponseSchema.parse(await viewResponse.json()).pad.id;
+
+    // Parked on the sidebar, outside the tile area: the receiver must not emit cursors
+    // of its own, or the sender's own overlay could no longer prove the absence of a
+    // self-echo. Layout-driven synthetic pointer moves never reach `.tiled-body`.
+    await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 40, y: 420 });
+
+    const openView = async (browser: Browser, label: string): Promise<void> => {
+      await browser.goto(`${origin}/p/${viewId}`);
+      // A tiled route mounts no canvas, so neither the debug seam nor the sidebar
+      // connection chip exists here: the rendered root leaf is the readiness signal.
+      await until(
+        () =>
+          browser.evaluate<boolean>(
+            "document.querySelector('.tiled-pad-view .tiled-body .tiled-leaf') !== null",
+          ),
+        20_000,
+        `${label}: tiled view rendered`,
+      );
+    };
+    await openView(browserA, "convA");
+    await openView(browserB, "convB");
+
+    // The paint resolves its color from the roster, so the round asserts the sender's
+    // own stored identity color rather than a hard-coded one.
+    const senderColor = await browserB.evaluate<string>(
+      `(() => {
+        const raw = localStorage.getItem("manifold.identity");
+        if (raw === null) throw new Error("convB has no stored identity");
+        const color = JSON.parse(raw).principal.color;
+        if (typeof color !== "string" || color === "") {
+          throw new Error("convB identity carries no color");
+        }
+        return color;
+      })()`,
+    );
+
+    /** A pointer position at a fraction of the browser's own tile area. */
+    const tileAreaPoint = async (
+      browser: Browser,
+      fx: number,
+      fy: number,
+    ): Promise<{ readonly x: number; readonly y: number }> =>
+      await browser.evaluate(
+        `(() => {
+          const body = document.querySelector(".tiled-body");
+          if (!(body instanceof HTMLElement)) throw new Error("tile area missing");
+          const box = body.getBoundingClientRect();
+          return {
+            x: box.left + box.width * ${String(fx)},
+            y: box.top + box.height * ${String(fy)},
+          };
+        })()`,
+      );
+
+    /** Sweeps a real pointer across the tile area, ending on the target fraction. */
+    const sweepTileArea = async (
+      browser: Browser,
+      from: readonly [number, number],
+      to: readonly [number, number],
+    ): Promise<void> => {
+      const steps = 12;
+      for (let index = 0; index <= steps; index += 1) {
+        const point = await tileAreaPoint(
+          browser,
+          from[0] + ((to[0] - from[0]) * index) / steps,
+          from[1] + ((to[1] - from[1]) * index) / steps,
+        );
+        await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+        await sleep(20);
+      }
+    };
+
+    // One expression serves both browsers: on convA it proves the remote cursor arrived,
+    // on convB that the sender never paints its own echo.
+    const viewCursor = `(() => {
+      const body = document.querySelector(".tiled-body");
+      if (!(body instanceof HTMLElement)) return { state: "no-body" };
+      const box = body.getBoundingClientRect();
+      const layer = document.querySelector(".tiled-presence-layer");
+      if (!(layer instanceof HTMLElement)) return { state: "no-layer" };
+      const painted = [...layer.querySelectorAll(".flow-remote-cursor")];
+      const count = painted.length;
+      const cursor = painted.find(
+        (node) => node.getAttribute("data-cursor-color") === ${JSON.stringify(senderColor)},
+      );
+      if (!(cursor instanceof HTMLElement)) return { state: "no-cursor", count };
+      const rect = cursor.getBoundingClientRect();
+      const style = getComputedStyle(cursor);
+      const layerBox = layer.getBoundingClientRect();
+      return {
+        state: "measured",
+        count,
+        // The label span trails the arrow, so only the tip locates the pointer.
+        fx: (rect.left - box.left) / box.width,
+        fy: (rect.top - box.top) / box.height,
+        width: rect.width,
+        height: rect.height,
+        // Containment is asserted on the tip alone: the overlay is deliberately
+        // unclipped, so a label near the right edge spills past the tile area.
+        inside:
+          rect.left >= box.left - 2 &&
+          rect.left <= box.right + 2 &&
+          rect.top >= box.top - 2 &&
+          rect.top <= box.bottom + 2,
+        visible: style.display !== "none" && style.visibility !== "hidden",
+        layerFills:
+          Math.abs(layerBox.left - box.left) <= 2 &&
+          Math.abs(layerBox.top - box.top) <= 2 &&
+          Math.abs(layerBox.width - box.width) <= 2 &&
+          Math.abs(layerBox.height - box.height) <= 2,
+      };
+    })()`;
+
+    const firstTarget: readonly [number, number] = [0.34, 0.4];
+    const secondTarget: readonly [number, number] = [0.74, 0.72];
+    // A wrong coordinate space is what this tolerance catches: raw client pixels clamp
+    // to [0,1] and pin the arrow in a corner, flow coordinates land it out of bounds.
+    const tolerance = 0.12;
+
+    await sweepTileArea(browserB, [0.16, 0.24], firstTarget);
+    await until(
+      async () => {
+        const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+        return (
+          probe.state === "measured" &&
+          probe.inside === true &&
+          probe.visible === true &&
+          (probe.width ?? 0) > 0 &&
+          (probe.height ?? 0) > 0 &&
+          Math.abs((probe.fx ?? -1) - firstTarget[0]) <= tolerance &&
+          Math.abs((probe.fy ?? -1) - firstTarget[1]) <= tolerance
+        );
+      },
+      8_000,
+      "convA: convB's cursor painted at its pointer fraction in the tiled overlay",
+    );
+    const arrived = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+    if (arrived.layerFills !== true) {
+      throw new Error("the tiled presence overlay does not cover its view root");
+    }
+
+    await sweepTileArea(browserB, firstTarget, secondTarget);
+    await until(
+      async () => {
+        const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+        if (probe.state !== "measured" || probe.inside !== true) return false;
+        return (
+          Math.abs((probe.fx ?? -1) - secondTarget[0]) <= tolerance &&
+          Math.abs((probe.fy ?? -1) - secondTarget[1]) <= tolerance
+        );
+      },
+      8_000,
+      "convA: tiled cursor tracks convB's pointer across the tile area",
+    );
+    const tracked = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+
+    // convA's pointer never entered the tile area, so convB's overlay must be empty:
+    // anything painted there is convB's own frame echoed back into its own paint.
+    const selfEcho = await browserB.evaluate<ViewCursorProbe>(viewCursor);
+    if (selfEcho.state === "measured") {
+      throw new Error(
+        `convB paints its own cursor back at fraction ${(selfEcho.fx ?? -1).toFixed(3)},${(selfEcho.fy ?? -1).toFixed(3)}`,
+      );
+    }
+    if ((selfEcho.count ?? 0) !== 0) {
+      throw new Error(
+        `convB overlay shows ${String(selfEcho.count)} cursors though only convB moved its pointer`,
+      );
+    }
+
+    // Killing the tab is the abrupt departure the roster prune has to survive; the
+    // remaining viewer must retire the cursor instead of keeping a ghost arrow.
+    await browserB.close();
+    await until(
+      async () => (await browserA.evaluate<ViewCursorProbe>(viewCursor)).state !== "measured",
+      15_000,
+      "convA: the departed tab's cursor retired from the overlay",
+    );
+    console.log(
+      `PASS  F12 tiled view cursors converge on the presence overlay — tracked from ${(arrived.fx ?? -1).toFixed(3)},${(arrived.fy ?? -1).toFixed(3)} to ${(tracked.fx ?? -1).toFixed(3)},${(tracked.fy ?? -1).toFixed(3)}, no self-echo, pruned on tab close`,
+    );
+  } catch (error) {
+    failures.push("F12 tiled view cursor convergence");
+    console.log(
+      `FAIL  F12 tiled view cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 } finally {

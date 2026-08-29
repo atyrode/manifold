@@ -195,6 +195,12 @@ height?, points? }` carries ephemeral move, resize, and freehand previews at the
   cadence; the server stamps `principalId`/`connId`, relays it, and never persists it.
   `phase:"end"` hands rendering back to the durable Yjs element. All other presence fields
   send on change only; viewport ≤1Hz.
+- **Cursor coordinate space is the room's discipline.** Cursors are container-scoped
+  (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; tiled
+  rooms carry fractions of the view's tile area in `[0,1]²` (ratios are shared CRDT
+  state, so a fraction resolves to the same tile for every viewer regardless of window
+  size). Receivers clamp to the unit square. The sidebar is personal chrome — device-local
+  order/collapse/scroll — so it never carries cursors; there is no workspace-level cursor.
 - Roster: `init.roster` lists connected principals; server broadcasts
   `roster { joined?, left? }` deltas. Presence for a principal dies with its last socket.
 - Multiple sockets per principal are legal (tabs); roster entries are per principal with

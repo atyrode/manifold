@@ -12,8 +12,11 @@
 - Terminals are presented like pads: renameable, durably ordered sidebar rows with the same menu, inline rename, keyboard, and drag grammar; terminal names show in titlebars and session rows. (#15, #57)
 - Terminals and pads compose into views: drag one terminal over another and release on a snap zone to build a tiled split, expand a terminal to transmute it into a shared view in place (its canvas slot becomes a live widget with occupant avatars), drag tiles back out onto the canvas, and pin, rename, or split a view to keep it forever — unsplit ephemeral views pop back to a plain terminal when everyone leaves. Views tile terminals and live pad canvases side by side with draggable dividers, and portal elements embed any container on any canvas. (#15, #57)
 - Sidebar sections (Machines, Pads, Terminals) are uniform, collapsible, and reorderable by dragging their headers; row drag handles are gone — the cursor is the cue. Freehand drawings are now selected by clicking the ink itself, not their bounding box. (#15, #57)
+- Live cursors now render in composed views too: presence moved up to the renderer, so canvases and tiled views both show collaborators' pointers (view cursors track tiles across any window size). The sidebar stays personal — no cursors over it. (#15, #57)
+- Every node carries one standardized titlebar — icon, name (double-click to rename in place), origin, then minimize / maximize / close — on terminals, view widgets, and the view renderer alike; view widgets on a canvas gained real minimize (back to the sidebar) and close, and views now live in their own sidebar "Views" section while Pads lists only canvases. (#15, #57)
 
 ### Fixed
+
 - The Machines sidebar section no longer disappears on view routes or the workspace root; without a canvas to author into it lists machines read-only. (#15, #57)
 - Collapsing the Pads sidebar section now releases its height instead of leaving a blank gap. (#15, #57)
 - Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)

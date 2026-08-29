@@ -175,7 +175,9 @@ try {
   // Baseline at zoom 1: must always pass.
   for (const rowIndex of [2, 12, 24]) await assertRow(`zoom 1 selects the dragged row`, rowIndex);
 
-  // Zoom through the active canvas's real wheel interaction.
+  // Zoom through the canvas's real pinch interaction: trackpad pinches arrive as
+  // ctrl+wheel (modifiers bit 2), which is the only wheel gesture that zooms now —
+  // plain two-finger scroll pans (Excalidraw convention).
   const zoomPoint = await browser.evaluate<{ readonly x: number; readonly y: number }>(
     `(() => {
       const rect = document.querySelector('.flow-pad-canvas').getBoundingClientRect();
@@ -188,6 +190,7 @@ try {
     await browser.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       ...zoomPoint,
+      modifiers: 2,
       deltaX: 0,
       deltaY: z > 1.3 ? 80 : -80,
     });
