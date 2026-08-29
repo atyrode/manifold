@@ -47,14 +47,16 @@
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
-          # cache: `@excalidraw/excalidraw` is a URL-tarball dependency and bun
-          # re-contacts its origin on every install even with a warm cache,
-          # which hangs forever inside the netless build sandbox.
-          # `--ignore-scripts` keeps the output deterministic (no lifecycle
-          # script output lands in the tree; nothing in this workspace needs
-          # lifecycle scripts). Workspace symlinks (@manifold/* -> ../packages/*)
-          # are relative, so they dangle in $out and resolve again once the
-          # tree is copied back into a checkout.
+          # cache — every later derivation runs in the netless build sandbox and
+          # cannot resolve anything bun has not already materialized. Its input
+          # is the full workspace source because @manifold/protocol,
+          # @manifold/scene and @manifold/sdk are consumed from source through
+          # `workspace:*`, so bun links them only with the real package tree
+          # present. `--ignore-scripts` keeps the output deterministic (no
+          # lifecycle script output lands in the tree; nothing in this workspace
+          # needs lifecycle scripts). Workspace symlinks (@manifold/* ->
+          # ../packages/*) are relative, so they dangle in $out and resolve
+          # again once the tree is copied back into a checkout.
           bunDeps = pkgs.stdenvNoCC.mkDerivation {
             pname = "manifold-bun-deps";
             inherit version;

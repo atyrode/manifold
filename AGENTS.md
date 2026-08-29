@@ -1,6 +1,6 @@
 # manifold — agent operating contract
 
-manifold is an agent-native shared spatial workspace: an infinite canvas (Excalidraw) with
+manifold is an agent-native shared spatial workspace: an infinite canvas (React Flow) with
 terminals in it, multiplayer with first-class presence, where AI agents are principals just
 like humans. This repo is built BY agents as much as FOR them — you are expected to operate
 it end to end.
@@ -23,7 +23,7 @@ bun run dev:web        # vite on :5173, proxying to :7777
 bun run verify:convergence              # TWO real browsers, real pointer gestures, local
                        # throwaway server: asserts canvasA = sdkA = canonical = sdkB =
                        # canvasB (stamps AND geometry) with per-round effect assertions.
-                       # The Excalidraw<->SDK projection layer shipped two divergence
+                       # The React Flow<->SDK projection layer shipped two divergence
                        # bugs no SDK-level test could see; this is the gate that sees.
 bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw + canvas
                        # + embedded terminal), public WebSockets, two viewers on one
@@ -66,7 +66,7 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
 | `packages/sdk`      | THE typed client (session + machine channels). Web, tests, tools all use it.                                             |
 | `packages/server`   | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                 |
 | `packages/agent`    | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                    |
-| `packages/web`      | Vite + React 19 + Excalidraw canvas + xterm terminals + presence UI.                                                     |
+| `packages/web`      | Vite + React 19 + React Flow canvas + xterm terminals + presence UI.                                                     |
 | `packages/testkit`  | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                          |
 
 `docs/CONTRACTS.md` is the integration authority (endpoints, envs, state machines,
@@ -92,10 +92,11 @@ technology verdicts with evidence.
    may spawn real shells — this machine supports them), no fixed ports.
 8. **No new runtime dependencies** without a dated entry in `docs/decisions/` justifying
    against "boring, small, pinned".
-9. **Projection ownership**: never hand Excalidraw an object owned by `client.scene` —
-   it mutates painted elements in place and desynchronizes reconcile. Clone at the paint
-   boundary (CONTRACTS.md §Testability). User-visible interaction boundaries get tests AT
-   that boundary: wire-level green is not evidence the UI layer works.
+9. **Projection ownership**: never hand React Flow an object owned by `client.elements` —
+   React Flow mutates the nodes it is handed (`measured`, `selected`) in place. Project into
+   fresh node objects at the paint boundary (CONTRACTS.md §Testability), and reconcile them
+   into live node state so equivalent nodes keep their identity. User-visible interaction
+   boundaries get tests AT that boundary: wire-level green is not evidence the UI layer works.
 10. **Protocol version discipline**: `PROTOCOL_VERSION` bumps ship as dedicated
     `protocol:` commits — never buried inside feature commits. Agents are long-lived:
     a bump that leaves the agent wire identical — or extends it with strictly

@@ -12,6 +12,7 @@
 ### Fixed
 
 - Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)
+- The workspace status now shows real autosave times instead of permanently reading "Not saved". (#15, #57)
 
 ## [0.4.4] - 2026-08-27
 
