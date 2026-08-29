@@ -31,9 +31,14 @@ interface TerminalViewProps {
   /** Resolved machine of this session; null before the first machines fetch. */
   readonly machine: SessionMachine | null;
   /**
-   * `preview` is the read-only chrome a portal widget paints inside a canvas: the
-   * titlebar keeps the name and the machine badge, while the control cluster and
-   * the idle veil are gone because nothing in a preview is actionable.
+   * `preview` is the read-only chrome a WATCHED portal widget paints inside a canvas:
+   * the titlebar keeps the name and the machine badge, while the control cluster and
+   * the idle veil are gone because nothing anyone is only watching is actionable.
+   *
+   * It tracks the socket, not the surface: engaging a widget's tile swaps its spectator
+   * socket for an occupant one and the same tile switches to `full`, because at that
+   * point every write this view makes is a write the server accepts. Which controls
+   * appear stays a question of which callbacks the host passes.
    */
   readonly chrome?: "full" | "preview";
   /** Parks this element: the PTY keeps running in the workspace terminal pool. */
@@ -108,8 +113,10 @@ export function TerminalView({
 
   /**
    * Preview chrome paints a widget's read-only body over a SPECTATOR socket, so nothing
-   * in it may write. Held in a ref for the same reason `isController` is: the xterm
-   * lifecycle effect must not tear a live terminal down to observe a prop.
+   * in it may write; an engaged widget hands the same tile an occupant socket and `full`
+   * chrome, and every guard below lifts together with the prop. Held in a ref for the
+   * same reason `isController` is: the xterm lifecycle effect must not tear a live
+   * terminal down to observe a prop.
    */
   const readOnly = chrome === "preview";
   const readOnlyRef = useRef(readOnly);
@@ -317,8 +324,9 @@ export function TerminalView({
       }
     });
 
-    // Previews are read-only: the widget's shield keeps focus out, and this keeps a
-    // stray keystroke from ever reaching a spectator socket the server would refuse.
+    // A WATCHED widget is read-only: its shield keeps focus out, and this keeps a stray
+    // keystroke from ever reaching a spectator socket the server would refuse. Engaging
+    // the tile re-renders with `full` chrome, and the very next keystroke is legal.
     const inputDisposable = terminal.onData((data) => {
       if (readOnlyRef.current) return;
       client.sendTerminalInput(sessionId, data);

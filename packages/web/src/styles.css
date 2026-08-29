@@ -2610,9 +2610,8 @@ button.pad-sidebar-session.is-summary > small {
   min-height: 0;
 }
 
-/* A preview is a preview: the shield keeps input out of a terminal nobody
-   navigated into, and it is the grab zone that extracts the tile back onto the
-   canvas as a plain element. */
+/* WATCHING: the shield keeps input out of a terminal nobody engaged, and it is the
+   grab zone that extracts the tile back onto the canvas as a plain element. */
 .flow-portal__shield {
   position: absolute;
   /* Above the previewed terminal's own bands (titlebar 3, overlays 5): the frame
@@ -2622,8 +2621,52 @@ button.pad-sidebar-session.is-summary > small {
   cursor: grab;
 }
 
+/* ENGAGED: the shield collapses onto its grip so the terminal underneath is reachable
+   — plain clicks, xterm selection and mouse-mode TUIs all need the real surface — while
+   extraction stays exactly the same drag, now on a visible handle. */
+.flow-portal__shield--grip {
+  inset: auto 0 0 auto;
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.flow-portal__grip {
+  display: grid;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  color: #868e96;
+  font-size: 0.9rem;
+  line-height: 1;
+  place-items: center;
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+
+.flow-portal__shield:hover .flow-portal__grip {
+  color: #dee2e6;
+  opacity: 1;
+}
+
 .flow-portal__shield:active {
   cursor: grabbing;
+}
+
+/* A widget being worked in is a first-class terminal host, not a preview: the frame
+   says so, and the engaging state says the occupant socket is still coming up. */
+.flow-portal--engaged {
+  outline: 1px solid #4c6ef5;
+  outline-offset: 1px;
+}
+
+.flow-portal--engaging {
+  cursor: progress;
+}
+
+.flow-portal--engaging .flow-portal__shield {
+  cursor: progress;
 }
 
 .flow-portal__empty,

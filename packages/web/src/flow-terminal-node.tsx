@@ -5,6 +5,7 @@ import { createContext, memo, useContext } from "react";
 import { TerminalView } from "./terminal-view.tsx";
 import type { CanvasTool } from "./canvas-tool.ts";
 import type { SessionMachine } from "./machine-visibility.ts";
+import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
  * The one node type this spike registers. Declared in its own module so the `nodeTypes`
@@ -73,12 +74,17 @@ export interface FlowPadContextValue {
   /** Bearer token for the REST calls canvas nodes make on their own (portal reads). */
   readonly token: string;
   /**
-   * Opens a SPECTATOR room socket for another container — the portal widget's live
-   * preview. The canvas owns the session URL and identity, so nodes never rebuild
-   * either. Spectator sockets watch without occupying: no avatar, no vote in the
-   * bubble rule, and the server refuses every write they attempt.
+   * Opens a room socket for another container — what a portal widget paints from.
+   * The canvas owns the session URL and identity, so nodes never rebuild either.
+   *
+   * The role is the widget's whole discipline. A `spectator` socket watches without
+   * occupying: no avatar, no vote in the bubble rule, and the server refuses every
+   * write it attempts — that is the resting state of every widget on a canvas. An
+   * `occupant` socket is an ordinary member of the room, opened only once someone
+   * engages a widget's tile (see `widget-engagement.ts`), because occupancy is what
+   * makes keystrokes legal and what keeps a transient view from dissolving.
    */
-  readonly openClient: (padId: string) => SessionClient;
+  readonly openClient: (padId: string, role: WidgetRole) => SessionClient;
   /** Polled principal-level presence; portal widgets show their container's occupants. */
   readonly presence: readonly PadPresence[];
   /** Pushes a route; portals navigate into the container they point at. */

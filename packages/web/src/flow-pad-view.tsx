@@ -75,6 +75,7 @@ import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
 import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 import { CONTAINER_DRAG_MIME, previewRect, snapZone } from "./tile-snap.ts";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
+import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
  * React Flow is manifold's pad renderer. Native terminal scene records project directly
@@ -989,20 +990,24 @@ export function FlowPadView({
   );
 
   /**
-   * Room sockets for the containers portal widgets preview. The canvas owns the
-   * session URL and the token so a widget never rebuilds either.
+   * Room sockets for the containers portal widgets paint. The canvas owns the session
+   * URL and the token so a widget never rebuilds either.
    *
-   * `spectator` is what keeps watching from participating: a preview socket must not
-   * fake an occupant avatar, and it must not hold a transient view open — a bubble
-   * everyone can see would otherwise be a bubble nobody can pop.
+   * The role is the difference between watching and working. `spectator` is what keeps
+   * watching from participating: a resting widget must not fake an occupant avatar, and
+   * it must not hold a transient view open — a bubble everyone can see would otherwise
+   * be a bubble nobody can pop. Engaging a widget's tile swaps in an `occupant` socket,
+   * which is an ordinary room member: writes are accepted, the roster shows the
+   * principal, and the view legitimately stays alive while somebody is typing in it.
    */
   const openClient = useCallback(
-    (containerId: string) =>
+    (containerId: string, role: WidgetRole) =>
       new SessionClient({
         url: sessionUrl(),
         padId: containerId,
         token: identity.token,
-        spectator: true,
+        // Omitted for an occupant: the flag's absence IS the occupant case on the wire.
+        ...(role === "spectator" ? { spectator: true } : {}),
       }),
     [identity.token],
   );

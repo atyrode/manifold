@@ -1,4 +1,4 @@
-import { ROOT_TILE_ID, type TileLayout } from "@manifold/protocol";
+import { ROOT_TILE_ID, type Principal, type TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import type { NodeProps } from "@xyflow/react";
 import { memo, useEffect, useRef, useState } from "react";
@@ -7,12 +7,37 @@ import { COMPOSE_TARGET_CLASS, useFlowPad } from "./flow-terminal-node.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
+import {
+  createWidgetSocketSwitch,
+  type WidgetRole,
+  type WidgetSlot,
+  type WidgetSocketSwitch,
+} from "./widget-engagement.ts";
 
 /**
  * The canvas face of a tiled container. A view and a pad are one object, so a
  * container sitting inside a canvas is a plain scene element (`type: "portal"`)
  * that renders as a live widget: the container's own tiles, its occupants, and a
  * double-click that navigates into it.
+ *
+ * A widget has two states, and the difference between them is a socket discipline
+ * rather than a mode switch anyone has to learn:
+ *
+ *   WATCHING (resting) — a spectator socket. The tiles are live pixels, but nothing
+ *     in them is writable, the container's occupant list does not include this
+ *     browser, and a transient view is free to dissolve while the widget watches.
+ *   ENGAGED — an occupant socket to the same container. The tiles are ordinary
+ *     terminals: typing, selection, resize and focus presence all flow, the roster
+ *     (and therefore every avatar strip) shows this principal, and the bubble rule
+ *     correctly refuses to pop a view somebody is working in.
+ *
+ * ENGAGEMENT RULE — one gesture each way, no timers:
+ *   engage    a plain CLICK on a tile. Click, not pointerdown: a press that becomes a
+ *             drag has to extract the tile, so escalating on the press would make
+ *             every decompose drag an occupancy claim.
+ *   disengage a POINTERDOWN anywhere outside this widget (document capture). Same rule
+ *             a window manager uses for focus, so it needs no teaching, and it means
+ *             an abandoned widget drops back to spectator instead of pinning a bubble.
  */
 
 /** Payload a tile dragged out of a widget carries: `{"containerId":…,"tileId":…}`. */
@@ -41,6 +66,8 @@ const PREVIEW_SCALE = 0.5;
 
 const MAX_PRESENCE_AVATARS = 3;
 
+const NO_PRINCIPALS: readonly Principal[] = [];
+
 /** Container names live in the pad row, not the room, so the widget reads its own. */
 function usePadName(token: string, padId: string): string | null {
   const [name, setName] = useState<string | null>(null);
@@ -62,34 +89,46 @@ function usePadName(token: string, padId: string): string | null {
 }
 
 /**
- * One room socket per live widget, opened through the canvas's factory so the
- * session URL and identity stay in one place. The factory is held in a ref: the
- * context value is rebuilt whenever the canvas's tool or selection changes, and a
- * dependency on it would tear the socket down mid-preview.
+ * One room socket per live widget, opened through the canvas's factory so the session
+ * URL and identity stay in one place. The factory is held in a ref: the context value
+ * is rebuilt whenever the canvas's tool or selection changes, and a dependency on it
+ * would tear the socket down mid-preview.
+ *
+ * Ownership follows the CONTAINER, never the role. Escalating to an occupant is a
+ * gapless swap (`createWidgetSocketSwitch`), and an effect keyed on the role would
+ * defeat it by running its cleanup — closing the socket being painted — before the
+ * replacement exists.
  */
-function usePreviewClient(
+function useWidgetSocket(
   containerId: string,
   live: boolean,
-  open: (padId: string) => SessionClient,
-): SessionClient | null {
+  role: WidgetRole,
+  open: (padId: string, role: WidgetRole) => SessionClient,
+): WidgetSlot<SessionClient> | null {
   const openRef = useRef(open);
   useEffect(() => {
     openRef.current = open;
   });
-  const [client, setClient] = useState<SessionClient | null>(null);
+  const [slot, setSlot] = useState<WidgetSlot<SessionClient> | null>(null);
+  const switchRef = useRef<WidgetSocketSwitch | null>(null);
   useEffect(() => {
     if (!live) return;
-    const preview = openRef.current(containerId);
-    setClient(preview);
-    void preview.connect().catch((reason: unknown) => {
-      console.error("evt=portal_preview_failed", reason);
-    });
+    const sockets = createWidgetSocketSwitch(
+      (nextRole) => openRef.current(containerId, nextRole),
+      setSlot,
+    );
+    switchRef.current = sockets;
     return () => {
-      setClient(null);
-      preview.close();
+      switchRef.current = null;
+      sockets.dispose();
     };
   }, [containerId, live]);
-  return client;
+  // Ordered after the effect above within the same commit, so the first request always
+  // finds a switch; afterwards this is the only thing a role flip has to do.
+  useEffect(() => {
+    switchRef.current?.request(role);
+  }, [containerId, live, role]);
+  return slot;
 }
 
 /**
@@ -122,7 +161,55 @@ function usePreviewLayout(client: SessionClient | null): TileLayout | null {
       offStatus();
     };
   }, [client]);
-  return state !== null && state.owner === client ? state.layout : null;
+  if (client === null) return null;
+  if (state !== null && state.owner === client) return state.layout;
+  // A socket promoted this commit has no cached tree yet, and its effect runs after
+  // paint: reading through keeps an engagement from flashing the placeholder card.
+  return client.layout();
+}
+
+/**
+ * Who is IN the container this widget points at, straight off the widget's own socket.
+ * A spectator receives the room's roster without joining it, so this is live in both
+ * states AND includes this browser the moment engagement makes it an occupant — which
+ * the polled pad presence cannot do, since it relocates the local principal to whatever
+ * route the browser is on.
+ *
+ * Roster frames also carry cursors, so the principal set is compared before re-rendering
+ * a widget that owns live terminals.
+ */
+function useRoomOccupants(client: SessionClient | null): readonly Principal[] {
+  const [occupants, setOccupants] = useState<readonly Principal[]>(NO_PRINCIPALS);
+  useEffect(() => {
+    if (client === null) return;
+    let signature = "";
+    const refresh = (): void => {
+      // A principal with two connections in the room is one avatar.
+      const seen = new Set<string>();
+      const next: Principal[] = [];
+      let nextSignature = "";
+      for (const state of client.roster.values()) {
+        const principal = state.principal;
+        if (seen.has(principal.id)) continue;
+        seen.add(principal.id);
+        next.push(principal);
+        nextSignature += ` ${principal.id}`;
+      }
+      if (nextSignature === signature) return;
+      signature = nextSignature;
+      setOccupants(next);
+    };
+    const offRoster = client.on("roster_changed", refresh);
+    const offStatus = client.on("status", (status) => {
+      if (status === "open") refresh();
+    });
+    refresh();
+    return () => {
+      offRoster();
+      offStatus();
+    };
+  }, [client]);
+  return occupants;
 }
 
 interface PortalTerminalTileProps {
@@ -130,6 +217,11 @@ interface PortalTerminalTileProps {
   readonly containerId: string;
   readonly tileId: string;
   readonly sessionId: string;
+  /** True once the widget paints from an occupant socket: this terminal is real. */
+  readonly interactive: boolean;
+  /** True for the engaged tile — the one holding the keyboard. */
+  readonly active: boolean;
+  readonly onEngage: (tileId: string) => void;
 }
 
 function PortalTerminalTile({
@@ -137,30 +229,59 @@ function PortalTerminalTile({
   containerId,
   tileId,
   sessionId,
+  interactive,
+  active,
+  onEngage,
 }: PortalTerminalTileProps): React.ReactElement {
   const pad = useFlowPad();
   const machineId = client.sessions.get(sessionId)?.machineId;
   return (
-    <div className="flow-portal__tile">
+    <div
+      className={interactive ? "flow-portal__tile flow-portal__tile--live" : "flow-portal__tile"}
+      /*
+        Engagement, in capture phase so the terminal frame's own pointer handling cannot
+        swallow it, and on CLICK so a decompose drag never escalates a socket. In the
+        engaged state the same handler moves the keyboard between tiles.
+      */
+      onClickCapture={() => onEngage(tileId)}
+      onDoubleClick={(event) => {
+        // A live terminal owns double-click (word selection), so it must not also reach
+        // the widget root's navigate-into handler. Watching keeps the old gesture: the
+        // shield below still navigates, and it runs before this.
+        if (interactive) event.stopPropagation();
+      }}
+    >
       <TerminalView
         client={client}
         sessionId={sessionId}
         elementId={tileId}
-        active={false}
+        active={active}
         panelHighlighted={false}
         machine={machineId === undefined ? null : sessionMachine(pad.machines, machineId)}
-        chrome="preview"
+        chrome={interactive ? "full" : "preview"}
       />
       {/*
-        The preview is a preview: this shield keeps clicks and keystrokes out of a
-        terminal nobody navigated into, and it is the decompose grab zone —
+        Watching: a full-bleed shield keeps clicks and keystrokes out of a terminal
+        nobody engaged, navigates on double-click, and is the decompose grab zone —
         dragging it onto empty canvas extracts the tile back into an element.
-        pointerdown is stopped so React Flow does not start moving the node
-        instead (the widget moves by its name strip, PORTAL_DRAG_HANDLE).
+
+        Engaged: the SAME element shrinks to the corner grip (`--grip`), which is the
+        pointer-events surgery that lets plain clicks, selection and mouse-mode TUIs
+        reach the terminal while extraction stays a drag on a visible handle. Disabling
+        pointer events instead would have cost the decompose gesture in this state.
+
+        pointerdown is stopped in both so React Flow does not move the node instead
+        (the widget moves by its name strip, PORTAL_DRAG_HANDLE).
       */}
       <div
-        className="flow-portal__shield"
-        title="Drag onto the canvas to pull this terminal out of the view"
+        className={
+          interactive ? "flow-portal__shield flow-portal__shield--grip" : "flow-portal__shield"
+        }
+        title={
+          interactive
+            ? "Drag onto the canvas to pull this terminal out of the view"
+            : "Click to work in this terminal — drag onto the canvas to pull it out of the view"
+        }
         draggable
         onPointerDown={(event) => event.stopPropagation()}
         onDragStart={(event) => {
@@ -168,7 +289,11 @@ function PortalTerminalTile({
           event.dataTransfer.effectAllowed = "move";
         }}
         onDoubleClick={() => pad.navigate(`/p/${encodeURIComponent(containerId)}`)}
-      />
+      >
+        <span className="flow-portal__grip" aria-hidden="true">
+          ⠿
+        </span>
+      </div>
     </div>
   );
 }
@@ -205,6 +330,9 @@ interface PortalTileProps {
   readonly containerId: string;
   readonly layout: TileLayout;
   readonly tileId: string;
+  readonly interactive: boolean;
+  readonly engagedTileId: string | null;
+  readonly onEngage: (tileId: string) => void;
 }
 
 function PortalTile({
@@ -212,6 +340,9 @@ function PortalTile({
   containerId,
   layout,
   tileId,
+  interactive,
+  engagedTileId,
+  onEngage,
 }: PortalTileProps): React.ReactElement | null {
   const node = layout[tileId];
   if (node === undefined) return null;
@@ -229,6 +360,9 @@ function PortalTile({
               containerId={containerId}
               layout={layout}
               tileId={childId}
+              interactive={interactive}
+              engagedTileId={engagedTileId}
+              onEngage={onEngage}
             />
           </div>
         ))}
@@ -245,6 +379,9 @@ function PortalTile({
           containerId={containerId}
           tileId={tileId}
           sessionId={surface.sessionId}
+          interactive={interactive}
+          active={interactive && engagedTileId === tileId}
+          onEngage={onEngage}
         />
       );
     case "pad":
@@ -263,21 +400,72 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const composeTarget = typeof data["composeZone"] === "string";
   const pad = useFlowPad();
   const live = pad.depth < MAX_LIVE_DEPTH && containerId !== "";
-  const client = usePreviewClient(containerId, live, pad.openClient);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The engagement remembers WHICH container it was made in: a widget that stops
+   * being live or starts pointing elsewhere derives back to spectator instead of
+   * being reset by an effect (the socket it engaged through is gone either way).
+   */
+  const [engagement, setEngagement] = useState<{
+    readonly containerId: string;
+    readonly tileId: string;
+  } | null>(null);
+  const engagedTileId =
+    engagement !== null && engagement.containerId === containerId && live
+      ? engagement.tileId
+      : null;
+  const engaged = engagedTileId !== null;
+  const slot = useWidgetSocket(
+    containerId,
+    live,
+    engaged ? "occupant" : "spectator",
+    pad.openClient,
+  );
+  const client = slot?.client ?? null;
+  /** Engagement is only real once the occupant socket is the one being painted. */
+  const interactive = slot !== null && slot.role === "occupant";
   const layout = usePreviewLayout(client);
   const name = usePadName(pad.token, containerId);
-  const occupants = pad.presence.find((entry) => entry.padId === containerId)?.principals ?? [];
+  const roomOccupants = useRoomOccupants(client);
+  const polledOccupants =
+    pad.presence.find((entry) => entry.padId === containerId)?.principals ?? NO_PRINCIPALS;
+  // The card form owns no socket, so the sidebar's poll is all it has.
+  const occupants = client === null ? polledOccupants : roomOccupants;
+  const selfId = client?.self?.id ?? null;
+
+  useEffect(() => {
+    if (!engaged) return;
+    const disengage = (event: PointerEvent): void => {
+      const root = rootRef.current;
+      if (root === null) return;
+      const target = event.target;
+      if (target instanceof Node && root.contains(target)) return;
+      setEngagement(null);
+    };
+    // Capture on the document: a press a canvas handler stops must still end
+    // engagement, and only the document sees every press on the page.
+    document.addEventListener("pointerdown", disengage, true);
+    return () => {
+      document.removeEventListener("pointerdown", disengage, true);
+    };
+  }, [engaged]);
 
   const enter = (): void => {
     if (containerId === "") return;
     pad.navigate(`/p/${encodeURIComponent(containerId)}`);
   };
 
+  const rootClass = [
+    "flow-portal",
+    interactive ? "flow-portal--engaged" : "",
+    engaged && !interactive ? "flow-portal--engaging" : "",
+    composeTarget ? COMPOSE_TARGET_CLASS : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div
-      className={composeTarget ? `flow-portal ${COMPOSE_TARGET_CLASS}` : "flow-portal"}
-      onDoubleClick={enter}
-    >
+    <div className={rootClass} ref={rootRef} onDoubleClick={enter}>
       <NodeTitleBar
         className="flow-portal__strip"
         icon="▤"
@@ -294,7 +482,11 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                   key={principal.id}
                   className="flow-portal__avatar"
                   style={{ backgroundColor: principal.color }}
-                  title={`${principal.name} is in this view`}
+                  title={
+                    principal.id === selfId
+                      ? "you are in this view"
+                      : `${principal.name} is in this view`
+                  }
                 >
                   {principal.name.slice(0, 1).toUpperCase()}
                 </span>
@@ -333,6 +525,9 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
               containerId={containerId}
               layout={layout}
               tileId={ROOT_TILE_ID}
+              interactive={interactive}
+              engagedTileId={engagedTileId}
+              onEngage={(tileId) => setEngagement({ containerId, tileId })}
             />
           </div>
         ) : (
