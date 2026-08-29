@@ -83,6 +83,8 @@ export interface ConnectOptions {
   readonly lastEpoch?: string;
   readonly lastRev?: number;
   readonly reconnect?: boolean;
+  /** Joins as a read-only watcher: no roster entry, no presence, no vote in the bubble rule. */
+  readonly spectator?: boolean;
 }
 
 /** A protocol parser is supplied per endpoint so ownerFetch never returns unchecked JSON. */
@@ -474,6 +476,7 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
     padId: options.padId,
     token: options.token,
     ...(options.reconnect !== undefined ? { reconnect: options.reconnect } : {}),
+    ...(options.spectator === true ? { spectator: true } : {}),
   });
   if (options.lastEpoch !== undefined || options.lastRev !== undefined) {
     if (options.lastEpoch === undefined || options.lastRev === undefined) {

@@ -37,6 +37,27 @@ export function nextMessage<T extends ServerMessage["type"]>(
   return promise;
 }
 
+/**
+ * Waits for the next tiled-container layout change, resolving with its provenance. Structural
+ * tile writes are server-authored, so a joined renderer must observe them as remote updates.
+ */
+export function nextLayoutChange(
+  client: SessionClient,
+  timeoutMs = 10_000,
+): Promise<"local" | "remote" | "undo"> {
+  const { promise, resolve, reject } = Promise.withResolvers<"local" | "remote" | "undo">();
+  const off = client.on("layout_changed", (origin) => {
+    clearTimeout(timer);
+    off();
+    resolve(origin);
+  });
+  const timer = setTimeout(() => {
+    off();
+    reject(new Error(`timed out waiting for layout_changed after ${timeoutMs}ms`));
+  }, timeoutMs);
+  return promise;
+}
+
 /** Records exactly one session's terminal stream, preserving raw emission sequence numbers. */
 export function captureTerminal(client: SessionClient, sessionId: string): TerminalCapture {
   const capture: TerminalCapture = {
