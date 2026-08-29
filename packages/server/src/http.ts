@@ -13,6 +13,7 @@ import {
   MachinesResponseSchema,
   MintTokenRequestSchema,
   MovePadTreeItemRequestSchema,
+  MoveTerminalPoolRequestSchema,
   OkResponseSchema,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
@@ -22,6 +23,7 @@ import {
   PadsResponseSchema,
   ParkTerminalRequestSchema,
   RenamePadRequestSchema,
+  RenameTerminalRequestSchema,
   RevokeRequestSchema,
   TerminalPoolResponseSchema,
   TokenGrantSchema,
@@ -31,6 +33,7 @@ import {
   type Pad,
   type PadSessionSummary,
   type RuntimeDeps,
+  type TerminalPoolResponse,
 } from "@manifold/protocol";
 import { ZodError } from "zod";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
@@ -327,14 +330,20 @@ export class HttpApp {
         throw new RequestError("forbidden", "scoped tokens cannot read the terminal pool");
       }
       this.broker.pruneExitedParked();
-      const terminals = this.store.listParkedSessions().map((session) => ({
-        id: session.id,
-        machineId: session.machineId,
-        createdAt: session.createdAt,
-        status: session.status,
-        exitCode: session.exitCode,
-      }));
-      return jsonResponse(TerminalPoolResponseSchema.parse({ terminals }));
+      return jsonResponse(this.terminalPoolPayload());
+    }
+
+    if (request.method === "PUT" && pathname === "/api/terminal-pool") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot reorder the terminal pool");
+      }
+      const input = parseRequest(MoveTerminalPoolRequestSchema, await parseJsonBody(request));
+      const moved = this.broker.movePooled(input.sessionId, input.index);
+      if (moved === "not_found") throw new RequestError("not_found", "terminal not found");
+      if (moved === "conflict") throw new RequestError("conflict", "terminal is bound to a pad");
+      return jsonResponse(this.terminalPoolPayload());
     }
 
     const terminalMatch = /^\/api\/terminals\/([^/]+)(\/park|\/bind)?$/.exec(pathname);
@@ -374,6 +383,15 @@ export class HttpApp {
         const killed = this.broker.killById(sessionId);
         if (killed === "not_found") throw new RequestError("not_found", "terminal not found");
         if (killed === "conflict") throw new RequestError("conflict", "terminal has exited");
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
+      if (request.method === "PATCH" && action === undefined) {
+        const input = parseRequest(RenameTerminalRequestSchema, await parseJsonBody(request));
+        const name = input.name.trim();
+        if (name.length === 0) throw new RequestError("invalid", "name is empty");
+        if (this.broker.rename(sessionId, name) === "not_found") {
+          throw new RequestError("not_found", "terminal not found");
+        }
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
     }
@@ -508,6 +526,24 @@ export class HttpApp {
     }
 
     throw new RequestError("not_found", "route not found");
+  }
+
+  /**
+   * Canonical terminal-pool payload. Positions are reported as the index in the canonical
+   * order rather than the stored value, so a client can move an entry to a returned index
+   * even while some rows still carry the pre-#57 null position.
+   */
+  private terminalPoolPayload(): TerminalPoolResponse {
+    const terminals = this.store.listParkedSessions().map((session, position) => ({
+      id: session.id,
+      machineId: session.machineId,
+      name: session.name,
+      createdAt: session.createdAt,
+      status: session.status,
+      exitCode: session.exitCode,
+      sortOrder: position,
+    }));
+    return TerminalPoolResponseSchema.parse({ terminals });
   }
 
   private staticFile(pathname: string): Response {

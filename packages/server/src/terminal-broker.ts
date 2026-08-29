@@ -88,6 +88,7 @@ export class TerminalBroker {
       const info: SessionInfo = {
         id: row.id,
         padId: row.padId,
+        name: row.name,
         elementId: row.elementId,
         machineId: row.machineId,
         status: row.status,
@@ -236,6 +237,7 @@ export class TerminalBroker {
       const info: SessionInfo = {
         id: stored.id,
         padId: stored.padId,
+        name: stored.name,
         elementId: stored.elementId,
         machineId: stored.machineId,
         status: stored.status,
@@ -417,6 +419,7 @@ export class TerminalBroker {
     const info: SessionInfo = {
       id: sessionId,
       padId: pending.padId,
+      name: null,
       elementId: pending.elementId,
       machineId,
       status: "running",
@@ -852,6 +855,7 @@ export class TerminalBroker {
 
     session.info = { ...session.info, padId: null };
     this.store.updateSessionPad(sessionId, null);
+    this.store.updateSessionSortOrder(sessionId, this.nextPoolSortOrder(sessionId));
     for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
     session.viewers.clear();
     room.broadcast({ type: "session_event", sessionId, kind: "parked" });
@@ -860,6 +864,61 @@ export class TerminalBroker {
       elementId,
     });
     this.rooms.evictIfIdle(padId);
+    return "ok";
+  }
+
+  /** Appends to the pool: one past the highest explicit position any other entry holds. */
+  private nextPoolSortOrder(exceptSessionId: string): number {
+    let highest = -1;
+    for (const parked of this.store.listParkedSessions()) {
+      if (parked.id === exceptSessionId || parked.sortOrder === null) continue;
+      if (parked.sortOrder > highest) highest = parked.sortOrder;
+    }
+    return highest + 1;
+  }
+
+  /**
+   * Renames a terminal. Names are session state, not pad state, so this works while the
+   * session is parked; bound sessions additionally publish the new label to their room so
+   * every viewer's titlebar and session row re-render without a refetch.
+   */
+  rename(sessionId: string, name: string): "ok" | "not_found" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    session.info = { ...session.info, name };
+    this.store.updateSessionName(sessionId, name);
+    const padId = session.info.padId;
+    if (padId !== null) {
+      this.rooms
+        .live(padId)
+        ?.broadcast({ type: "session_event", sessionId, kind: "renamed", name });
+    }
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_renamed", {
+      sessionId,
+      name,
+    });
+    return "ok";
+  }
+
+  /**
+   * Reorders a parked terminal inside the workspace pool. Positions are rewritten
+   * contiguously (0..n-1) over the canonical pool ordering, so the pool never depends on
+   * sparse historical values. Bound sessions have no pool position to move.
+   */
+  movePooled(sessionId: string, index: number): "ok" | "not_found" | "conflict" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    if (session.info.padId !== null) return "conflict";
+    const pool = this.store.listParkedSessions();
+    const from = pool.findIndex((entry) => entry.id === sessionId);
+    if (from === -1) return "not_found";
+    const [moved] = pool.splice(from, 1);
+    if (moved === undefined) return "not_found";
+    pool.splice(Math.min(Math.max(index, 0), pool.length), 0, moved);
+    for (const [position, entry] of pool.entries()) {
+      if (entry.sortOrder === position) continue;
+      this.store.updateSessionSortOrder(entry.id, position);
+    }
     return "ok";
   }
 

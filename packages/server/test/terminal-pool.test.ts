@@ -361,6 +361,144 @@ describe("TerminalBroker pool lifecycle", () => {
   });
 });
 
+describe("TerminalBroker rename", () => {
+  test("renaming a bound session persists the name and publishes it to the room", () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+    fixture.socket.clear();
+
+    expect(fixture.broker.rename(sessionId, "build")).toBe("ok");
+
+    expect(fixture.store.getSession(sessionId)?.name).toBe("build");
+    expect(fixture.broker.listForPad(fixture.pad.id).map((session) => session.name)).toEqual([
+      "build",
+    ]);
+    expect(
+      fixture.socket
+        .messages()
+        .filter((message) => message.type === "session_event")
+        .at(-1),
+    ).toEqual({ type: "session_event", sessionId, kind: "renamed", name: "build" });
+  });
+
+  test("renaming a parked session persists without any room broadcast", () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+    fixture.broker.park(sessionId, "terminal-1");
+    fixture.socket.clear();
+
+    expect(fixture.broker.rename(sessionId, "notes")).toBe("ok");
+
+    expect(fixture.store.getSession(sessionId)?.name).toBe("notes");
+    expect(fixture.store.listParkedSessions().map((session) => session.name)).toEqual(["notes"]);
+    expect(fixture.socket.messages().some((message) => message.type === "session_event")).toBe(
+      false,
+    );
+  });
+
+  test("renaming an unknown session reports not_found", () => {
+    const fixture = poolFixture();
+
+    expect(fixture.broker.rename("missing-session", "build")).toBe("not_found");
+  });
+
+  test("a rename survives into the session advert a rebind publishes", () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+    fixture.broker.park(sessionId, "terminal-1");
+    fixture.broker.rename(sessionId, "build");
+    fixture.socket.clear();
+
+    const bound = fixture.broker.bind(sessionId, fixture.pad.id);
+    if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
+
+    expect(
+      fixture.socket
+        .messages()
+        .filter((message) => message.type === "terminal_opened")
+        .at(-1),
+    ).toMatchObject({ session: { id: sessionId, name: "build" } });
+  });
+});
+
+describe("TerminalBroker pool ordering", () => {
+  test("parking appends to the end of the pool", () => {
+    const fixture = poolFixture();
+    const first = openTerminal(fixture, "terminal-1");
+    const second = openTerminal(fixture, "terminal-2");
+    const third = openTerminal(fixture, "terminal-3");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
+    writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
+    writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
+
+    fixture.broker.park(second, "terminal-2");
+    fixture.broker.park(third, "terminal-3");
+    fixture.broker.park(first, "terminal-1");
+
+    expect(fixture.store.listParkedSessions().map((session) => session.sortOrder)).toEqual([
+      0, 1, 2,
+    ]);
+    expect(fixture.store.listParkedSessions().map((session) => session.id)).toEqual([
+      second,
+      third,
+      first,
+    ]);
+  });
+
+  test("moving a pooled terminal rewrites contiguous positions", () => {
+    const fixture = poolFixture();
+    const first = openTerminal(fixture, "terminal-1");
+    const second = openTerminal(fixture, "terminal-2");
+    const third = openTerminal(fixture, "terminal-3");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
+    writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
+    writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
+    fixture.broker.park(first, "terminal-1");
+    fixture.broker.park(second, "terminal-2");
+    fixture.broker.park(third, "terminal-3");
+
+    expect(fixture.broker.movePooled(third, 0)).toBe("ok");
+
+    expect(fixture.store.listParkedSessions().map((session) => session.id)).toEqual([
+      third,
+      first,
+      second,
+    ]);
+    expect(fixture.store.listParkedSessions().map((session) => session.sortOrder)).toEqual([
+      0, 1, 2,
+    ]);
+
+    // An index past the end clamps to the tail instead of leaving a sparse hole.
+    expect(fixture.broker.movePooled(third, 99)).toBe("ok");
+    expect(fixture.store.listParkedSessions().map((session) => session.id)).toEqual([
+      first,
+      second,
+      third,
+    ]);
+    expect(fixture.store.listParkedSessions().map((session) => session.sortOrder)).toEqual([
+      0, 1, 2,
+    ]);
+  });
+
+  test("moving a bound or unknown terminal reports conflict and not_found", () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+
+    expect(fixture.broker.movePooled(sessionId, 0)).toBe("conflict");
+    expect(fixture.broker.movePooled("missing-session", 0)).toBe("not_found");
+  });
+});
+
 describe("terminal pool HTTP routes", () => {
   test("a pad-scoped token cannot read the terminal pool", async () => {
     const fixture = poolFixture();
@@ -407,9 +545,11 @@ describe("terminal pool HTTP routes", () => {
         {
           id: runningId,
           machineId: fixture.machine.machineId,
+          name: null,
           createdAt: 0,
           status: "running",
           exitCode: null,
+          sortOrder: 0,
         },
       ],
     });
@@ -513,5 +653,92 @@ describe("terminal pool HTTP routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.payload).toMatchObject({ sessions: [{ id: boundId, padId: fixture.pad.id }] });
+  });
+
+  test("renaming through HTTP trims the name and maps a missing terminal to 404", async () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+
+    const renamed = await call(fixture, "PATCH", `/api/terminals/${sessionId}`, OWNER_KEY, {
+      name: "  build  ",
+    });
+    const blank = await call(fixture, "PATCH", `/api/terminals/${sessionId}`, OWNER_KEY, {
+      name: "   ",
+    });
+    const missing = await call(fixture, "PATCH", "/api/terminals/missing", OWNER_KEY, {
+      name: "build",
+    });
+
+    expect(renamed.status).toBe(200);
+    expect(renamed.payload).toEqual({ ok: true });
+    expect(fixture.store.getSession(sessionId)?.name).toBe("build");
+    expect(blank.status).toBe(400);
+    expect(blank.payload).toMatchObject({ error: { code: "invalid" } });
+    expect(missing.status).toBe(404);
+    expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("a pad-scoped token cannot rename or reorder terminals", async () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const token = padScopedToken(fixture);
+
+    const renamed = await call(fixture, "PATCH", `/api/terminals/${sessionId}`, token, {
+      name: "build",
+    });
+    const moved = await call(fixture, "PUT", "/api/terminal-pool", token, { sessionId, index: 0 });
+
+    expect([renamed.status, moved.status]).toEqual([403, 403]);
+    expect(fixture.store.getSession(sessionId)?.name).toBeNull();
+  });
+
+  test("the pool response carries names and answers a move with the new order", async () => {
+    const fixture = poolFixture();
+    const first = openTerminal(fixture, "terminal-1");
+    const second = openTerminal(fixture, "terminal-2");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
+    writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
+    fixture.broker.park(first, "terminal-1");
+    fixture.broker.park(second, "terminal-2");
+    await call(fixture, "PATCH", `/api/terminals/${second}`, OWNER_KEY, { name: "notes" });
+
+    const moved = await call(fixture, "PUT", "/api/terminal-pool", OWNER_KEY, {
+      sessionId: second,
+      index: 0,
+    });
+    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
+
+    expect(moved.status).toBe(200);
+    expect(moved.payload).toMatchObject({
+      terminals: [
+        { id: second, name: "notes", sortOrder: 0 },
+        { id: first, name: null, sortOrder: 1 },
+      ],
+    });
+    expect(listed.payload).toEqual(moved.payload);
+  });
+
+  test("moving a bound terminal is a 409 and an unknown one a 404", async () => {
+    const fixture = poolFixture();
+    const sessionId = openTerminal(fixture, "terminal-1");
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
+
+    const conflict = await call(fixture, "PUT", "/api/terminal-pool", OWNER_KEY, {
+      sessionId,
+      index: 0,
+    });
+    const missing = await call(fixture, "PUT", "/api/terminal-pool", OWNER_KEY, {
+      sessionId: "missing-session",
+      index: 0,
+    });
+
+    expect(conflict.status).toBe(409);
+    expect(conflict.payload).toMatchObject({ error: { code: "conflict" } });
+    expect(missing.status).toBe(404);
+    expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
   });
 });

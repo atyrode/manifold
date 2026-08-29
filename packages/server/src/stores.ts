@@ -83,6 +83,8 @@ interface SessionDbRow {
   element_id: string;
   created_by: string;
   agent_principal_id: string | null;
+  name: string | null;
+  sort_order: number | null;
   status: string;
   exit_code: number | null;
   created_at: number;
@@ -146,6 +148,9 @@ export interface StoredSession {
   elementId: string;
   createdBy: string;
   agentPrincipalId: string | null;
+  name: string | null;
+  /** Durable pool position; null until the session is parked or reordered. */
+  sortOrder: number | null;
   status: "running" | "exited";
   exitCode: number | null;
   createdAt: number;
@@ -197,6 +202,8 @@ function toSession(row: SessionDbRow): StoredSession {
     elementId: row.element_id,
     createdBy: row.created_by,
     agentPrincipalId: row.agent_principal_id,
+    name: row.name,
+    sortOrder: row.sort_order,
     status: row.status,
     exitCode: row.exit_code,
     createdAt: row.created_at,
@@ -740,11 +747,14 @@ export class ServerStore {
 
   createSession(session: NewStoredSession): void {
     this.db
-      .query<void, [string, string, string, string, string, string, string, null, number]>(
+      .query<
+        void,
+        [string, string, string, string, string, string, string, null, number, null, null]
+      >(
         `INSERT INTO sessions(
            id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-           status, exit_code, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, exit_code, created_at, name, sort_order
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -756,6 +766,8 @@ export class ServerStore {
         "running",
         null,
         session.createdAt,
+        null,
+        null,
       );
   }
 
@@ -763,7 +775,7 @@ export class ServerStore {
     const row = this.db
       .query<SessionDbRow, [string]>(
         `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+                status, exit_code, created_at, name, sort_order
          FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -774,7 +786,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, []>(
         `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+                status, exit_code, created_at, name, sort_order
          FROM sessions ORDER BY created_at, id`,
       )
       .all()
@@ -785,7 +797,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, [string]>(
         `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+                status, exit_code, created_at, name, sort_order
          FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
@@ -795,7 +807,7 @@ export class ServerStore {
     return this.db
       .query<SessionDbRow, []>(
         `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+                status, exit_code, created_at, name, sort_order
          FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
       )
       .all()
@@ -823,13 +835,32 @@ export class ServerStore {
       .run(padId, id);
   }
 
-  /** Lists the workspace terminal pool: durable sessions with no pad binding. */
+  /** Sets or clears a session's operator-assigned display name. */
+  updateSessionName(id: string, name: string | null): void {
+    this.db
+      .query<void, [string | null, string]>("UPDATE sessions SET name = ? WHERE id = ?")
+      .run(name, id);
+  }
+
+  /** Sets or clears a session's durable pool position. */
+  updateSessionSortOrder(id: string, sortOrder: number | null): void {
+    this.db
+      .query<void, [number | null, string]>("UPDATE sessions SET sort_order = ? WHERE id = ?")
+      .run(sortOrder, id);
+  }
+
+  /**
+   * Lists the workspace terminal pool: durable sessions with no pad binding.
+   * Explicit positions first (nulls last), then creation order — the canonical
+   * pool ordering every caller and the HTTP response must agree on.
+   */
   listParkedSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
         `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
-         FROM sessions WHERE pad_id IS NULL ORDER BY created_at, id`,
+                status, exit_code, created_at, name, sort_order
+         FROM sessions WHERE pad_id IS NULL
+         ORDER BY sort_order IS NULL, sort_order, created_at, id`,
       )
       .all()
       .map(toSession);

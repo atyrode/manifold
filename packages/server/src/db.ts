@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -173,6 +173,15 @@ CREATE TABLE scene_docs(
 );
 DROP TABLE snapshots;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '5');
+`,
+  6: `
+-- Terminals became renameable, durably ordered pool rows (#15, #57): the
+-- session row carries the operator-assigned name and its pool position. Both
+-- are nullable — pre-#57 sessions have no name and no explicit order, and the
+-- pool listing sorts NULL sort_order last so they keep their creation order.
+ALTER TABLE sessions ADD COLUMN name TEXT;
+ALTER TABLE sessions ADD COLUMN sort_order INTEGER;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '6');
 `,
 };
 
