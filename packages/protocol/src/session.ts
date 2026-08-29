@@ -6,11 +6,57 @@ import { PrincipalSchema } from "./principal.ts";
 
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
- * Handshake: the first client frame MUST be `join`; the server answers `init` or closes
- * (4401 bad token · 4403 forbidden/revoked · 4404 unknown pad · 4409 protocol mismatch).
+ *
+ * FRAME GRAMMAR (v12) — one socket per tab, many rooms. Every frame is either
+ * connection-level or channel-level:
+ *
+ *   connection-level   client → server  {"type":"ping"}
+ *                      server → client  {"type":"pong"}
+ *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
+ *
+ * A CHANNEL is one client-chosen handle onto one room. `ch` is opaque to the server,
+ * unique per connection, and deliberately NOT a pad id: two channels on one socket may
+ * address the SAME pad with different roles (an occupant view and a widget's watching
+ * preview), so a pad-keyed channel would be an id pun that collides. `join` binds a
+ * fresh `ch` to a pad, `leave` frees it, and every other channel frame routes by it.
+ * Liveness is a property of the socket, not of a room, so ping/pong carry no `ch`.
+ *
+ * Handshake: the FIRST client frame on a connection MUST be `join` (ten-second
+ * deadline, re-armed whenever the last channel leaves); the server answers `init` on
+ * that channel. Per-channel epoch/rev resume hints ride each channel's own `join`, so a
+ * reconnect redials ONE socket and rejoins every channel on it.
+ *
+ * REFUSAL SCOPE (CONTRACTS-ready). A refusal closes the whole SOCKET when it invalidates
+ * the credential or the framing itself: 4401 bad token · 4403 forbidden/revoked · 4409
+ * protocol mismatch · 4002 malformed frame, non-join first frame, duplicate `ch`, or an
+ * idle connection holding no channels. It closes ONE CHANNEL — a `channel_closed` frame,
+ * socket untouched — when it concerns one room: 4404 unknown or deleted pad · 4429
+ * channel cap reached · 1009 that room's state exceeding the transport ceiling · 1013
+ * that channel's outbound queue overflowing. Killing a whole tab because one widget
+ * pointed at a deleted pad is precisely the blast radius multiplexing exists to remove.
  */
 
 const base64 = z.base64().max(700_000); // ~512KiB decoded per terminal frame
+
+/**
+ * Channel ids are tokens, never arbitrary strings: both halves splice one into a frame
+ * prefix (`{"ch":"c7",` + body) to tag a shared serialization for many peers, so an id
+ * needing JSON escaping would be a correctness hole rather than a slow path.
+ */
+export const CHANNEL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const ChannelIdSchema = z.string().regex(CHANNEL_ID_PATTERN);
+
+/**
+ * Server-side bound on channels per connection. A tab holds one channel per room it
+ * renders (canvas + one per portal widget or tile), so the cap is generous for real
+ * scenes while keeping a single socket's fan-out finite. Per-channel outbound queues are
+ * unchanged by multiplexing, so this cap reproduces exactly the worst-case app-side
+ * buffering that the same rooms held on separate sockets before v12.
+ */
+export const MAX_SESSION_CHANNELS_PER_CONNECTION = 64;
+
+/** Channel-scoped close code for a connection that asked for one channel too many. */
+export const CHANNEL_LIMIT_CLOSE_CODE = 4429;
 
 /**
  * A live PTY session as the wire describes it. Placement is deliberately ABSENT: a
@@ -64,36 +110,57 @@ export const GestureFields = {
 export const GestureSchema = z.strictObject(GestureFields);
 export type Gesture = z.infer<typeof GestureSchema>;
 
+/**
+ * Adds the routing field to one frame body. Each variant is channelized by an explicit
+ * call so the discriminated unions below stay fully inferred — a body union and a wire
+ * union built from the SAME shapes, never two hand-maintained copies.
+ */
+function channelized<T extends z.ZodObject>(
+  body: T,
+): z.ZodObject<T["shape"] & { ch: typeof ChannelIdSchema }> {
+  return body.extend({ ch: ChannelIdSchema });
+}
+
 // ---------------------------------------------------------------------------- client → server
 
-export const ClientMessageSchema = z.discriminatedUnion("type", [
-  z.strictObject({
+const CLIENT_BODIES = {
+  join: z.strictObject({
     type: z.literal("join"),
     padId: z.string().min(1),
     token: z.string().min(1),
     protocolVersion: z.number().int().positive(),
     /**
-     * A spectator watches without occupying: a portal widget's live preview opens a real
-     * room socket, and counting it as an occupant would both fake an avatar and pin a
+     * A spectator watches without occupying: a portal widget's live preview joins a real
+     * room channel, and counting it as an occupant would both fake an avatar and pin a
      * bubble open forever. Spectators receive state and terminal output but may never
      * write, and they appear in neither the roster nor `/api/pad-presence`. Absent ≡
-     * occupant, so every pre-flag client keeps its exact semantics.
+     * occupant. A role change is a `leave`+`join` on the same socket, never TCP churn.
      */
     spectator: z.boolean().optional(),
-    /** Resume hints; a mismatch simply yields a full init. */
+    /** Resume hints for THIS channel; a mismatch simply yields a full init. */
     lastEpoch: z.string().optional(),
     lastRev: z.number().int().nonnegative().optional(),
   }),
-  z.strictObject({ type: z.literal("doc_update"), update: z.base64().max(700_000) }),
-  z.strictObject({ type: z.literal("gesture"), ...GestureFields }),
-  z.strictObject({ type: z.literal("presence"), payload: PresencePayloadSchema }),
-  z.strictObject({
+  /**
+   * Frees one channel: the room loses this peer (roster, presence, terminal viewers)
+   * while every other channel on the socket keeps streaming. A client that is closing
+   * its LAST channel closes the socket instead — the close already means "leave
+   * everything", so a redundant frame would be pure ceremony.
+   */
+  leave: z.strictObject({ type: z.literal("leave") }),
+  doc_update: z.strictObject({
+    type: z.literal("doc_update"),
+    update: z.base64().max(700_000),
+  }),
+  gesture: z.strictObject({ type: z.literal("gesture"), ...GestureFields }),
+  presence: z.strictObject({ type: z.literal("presence"), payload: PresencePayloadSchema }),
+  cursor: z.strictObject({
     type: z.literal("cursor"),
     x: z.number().finite(),
     y: z.number().finite(),
   }),
-  z.strictObject({ type: z.literal("resync_request") }),
-  z.strictObject({
+  resync_request: z.strictObject({ type: z.literal("resync_request") }),
+  terminal_open: z.strictObject({
     type: z.literal("terminal_open"),
     /**
      * Correlation token, and under the default element placement also the id of the
@@ -112,21 +179,72 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
      */
     placement: z.literal("tile").optional(),
   }),
-  z.strictObject({ type: z.literal("terminal_attach"), sessionId: z.string().min(1) }),
-  z.strictObject({ type: z.literal("terminal_detach"), sessionId: z.string().min(1) }),
-  z.strictObject({
+  terminal_attach: z.strictObject({
+    type: z.literal("terminal_attach"),
+    sessionId: z.string().min(1),
+  }),
+  terminal_detach: z.strictObject({
+    type: z.literal("terminal_detach"),
+    sessionId: z.string().min(1),
+  }),
+  terminal_input: z.strictObject({
     type: z.literal("terminal_input"),
     sessionId: z.string().min(1),
     data: base64,
   }),
-  z.strictObject({
+  terminal_resize: z.strictObject({
     type: z.literal("terminal_resize"),
     sessionId: z.string().min(1),
     ...terminalGeometry,
   }),
-  z.strictObject({ type: z.literal("terminal_take"), sessionId: z.string().min(1) }),
-  z.strictObject({ type: z.literal("terminal_kill"), sessionId: z.string().min(1) }),
-  z.strictObject({ type: z.literal("ping") }),
+  terminal_take: z.strictObject({ type: z.literal("terminal_take"), sessionId: z.string().min(1) }),
+  terminal_kill: z.strictObject({ type: z.literal("terminal_kill"), sessionId: z.string().min(1) }),
+} as const;
+
+/** Connection-level: liveness belongs to the socket, so it carries no channel. */
+const ClientPingSchema = z.strictObject({ type: z.literal("ping") });
+
+/**
+ * One frame's payload, independent of routing. The server constructs and validates
+ * bodies (a broadcast serializes ONE body and tags it per peer), and an SDK channel
+ * handle hands bodies to its subscribers — the channel is implicit in the handle.
+ */
+export const ClientMessageBodySchema = z.discriminatedUnion("type", [
+  CLIENT_BODIES.join,
+  CLIENT_BODIES.leave,
+  CLIENT_BODIES.doc_update,
+  CLIENT_BODIES.gesture,
+  CLIENT_BODIES.presence,
+  CLIENT_BODIES.cursor,
+  CLIENT_BODIES.resync_request,
+  CLIENT_BODIES.terminal_open,
+  CLIENT_BODIES.terminal_attach,
+  CLIENT_BODIES.terminal_detach,
+  CLIENT_BODIES.terminal_input,
+  CLIENT_BODIES.terminal_resize,
+  CLIENT_BODIES.terminal_take,
+  CLIENT_BODIES.terminal_kill,
+  ClientPingSchema,
+]);
+export type ClientMessageBody = z.infer<typeof ClientMessageBodySchema>;
+
+/** The wire frame: a body plus its routing field, exactly as it appears on the socket. */
+export const ClientMessageSchema = z.discriminatedUnion("type", [
+  channelized(CLIENT_BODIES.join),
+  channelized(CLIENT_BODIES.leave),
+  channelized(CLIENT_BODIES.doc_update),
+  channelized(CLIENT_BODIES.gesture),
+  channelized(CLIENT_BODIES.presence),
+  channelized(CLIENT_BODIES.cursor),
+  channelized(CLIENT_BODIES.resync_request),
+  channelized(CLIENT_BODIES.terminal_open),
+  channelized(CLIENT_BODIES.terminal_attach),
+  channelized(CLIENT_BODIES.terminal_detach),
+  channelized(CLIENT_BODIES.terminal_input),
+  channelized(CLIENT_BODIES.terminal_resize),
+  channelized(CLIENT_BODIES.terminal_take),
+  channelized(CLIENT_BODIES.terminal_kill),
+  ClientPingSchema,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 
@@ -141,45 +259,49 @@ const stateFields = {
   self: PrincipalSchema,
   /** The joining principal's granted capabilities; drives client-side affordances. */
   selfCaps: z.array(CapSchema).min(1),
-  /** Server-assigned identity for this socket; changes on every connection. */
+  /**
+   * Server-assigned identity for this CHANNEL; changes on every join. Two channels of
+   * one tab are two room memberships, exactly as two sockets were before v12, so the
+   * roster, cursor echo-suppression, and presence keying are untouched.
+   */
   selfConnId: z.string().min(1),
   roster: z.array(PresenceStateSchema),
   sessions: z.array(SessionInfoSchema),
 };
 
-export const ServerMessageSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("init"), ...stateFields }),
-  z.strictObject({ type: z.literal("resync"), ...stateFields }),
-  z.strictObject({
+const SERVER_BODIES = {
+  init: z.strictObject({ type: z.literal("init"), ...stateFields }),
+  resync: z.strictObject({ type: z.literal("resync"), ...stateFields }),
+  doc_update: z.strictObject({
     type: z.literal("doc_update"),
     update: z.base64().max(700_000),
     by: z.string().min(1),
   }),
-  z.strictObject({
+  gesture: z.strictObject({
     type: z.literal("gesture"),
     principalId: z.string().min(1),
     connId: z.string().min(1),
     ...GestureFields,
   }),
-  z.strictObject({
+  roster: z.strictObject({
     type: z.literal("roster"),
     joined: PresenceStateSchema.optional(),
     left: z.strictObject({ principalId: z.string().min(1) }).optional(),
   }),
-  z.strictObject({
+  presence: z.strictObject({
     type: z.literal("presence"),
     principalId: z.string().min(1),
     connId: z.string().min(1),
     payload: PresencePayloadSchema,
   }),
-  z.strictObject({
+  cursor: z.strictObject({
     type: z.literal("cursor"),
     principalId: z.string().min(1),
     connId: z.string().min(1),
     x: z.number().finite(),
     y: z.number().finite(),
   }),
-  z.strictObject({
+  terminal_opened: z.strictObject({
     type: z.literal("terminal_opened"),
     /** The placement: a canvas element id, or the tile id of a server-authored leaf. */
     elementId: z.string().min(1),
@@ -187,25 +309,25 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     /**
      * Echoes `terminal_open.elementId` when the SERVER authored the placement, so the
      * opener can correlate a reply whose `elementId` it never chose. Sent ONLY to an
-     * opener that asked for `placement: "tile"`: pre-v11 peers strict-parse this union,
-     * so an unsolicited extra key would break their socket.
+     * opener that asked for `placement: "tile"`: peers strict-parse this union, so an
+     * unsolicited extra key would break their socket.
      */
     ref: z.string().min(1).optional(),
   }),
-  z.strictObject({
+  terminal_snapshot: z.strictObject({
     type: z.literal("terminal_snapshot"),
     sessionId: z.string().min(1),
     /** Byte-sequence watermark: outputs with seq > this follow with no gap. */
     seq: z.number().int().nonnegative(),
     data: base64,
   }),
-  z.strictObject({
+  terminal_output: z.strictObject({
     type: z.literal("terminal_output"),
     sessionId: z.string().min(1),
     seq: z.number().int().positive(),
     data: base64,
   }),
-  z.strictObject({
+  session_event: z.strictObject({
     type: z.literal("session_event"),
     sessionId: z.string().min(1),
     kind: z.enum(["opened", "exited", "controller_changed", "resized", "parked", "renamed"]),
@@ -215,22 +337,77 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     rows: z.number().int().positive().optional(),
     name: z.string().min(1).max(120).optional(),
   }),
-  z.strictObject({
+  saved: z.strictObject({
     type: z.literal("saved"),
     rev: z.number().int().nonnegative(),
     at: z.number().int().nonnegative(),
   }),
-  z.strictObject({
+  error: z.strictObject({
     type: z.literal("error"),
     code: ErrorCodeSchema,
     message: z.string().optional(),
     /** Correlates to updateId / sessionId when applicable. */
     ref: z.string().optional(),
   }),
-  z.strictObject({ type: z.literal("pong") }),
+  /**
+   * This channel is over, the socket is not. It carries the same close-code vocabulary a
+   * socket close would (4404 pad gone, 4429 channel cap, 1009/1013 transport bounds), so
+   * a client reports and heals a dead room exactly as it did when a room WAS a socket.
+   */
+  channel_closed: z.strictObject({
+    type: z.literal("channel_closed"),
+    code: z.number().int().positive(),
+    reason: z.string(),
+  }),
+} as const;
+
+/** Connection-level: the answer to a socket-level keepalive. */
+const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
+
+export const ServerMessageBodySchema = z.discriminatedUnion("type", [
+  SERVER_BODIES.init,
+  SERVER_BODIES.resync,
+  SERVER_BODIES.doc_update,
+  SERVER_BODIES.gesture,
+  SERVER_BODIES.roster,
+  SERVER_BODIES.presence,
+  SERVER_BODIES.cursor,
+  SERVER_BODIES.terminal_opened,
+  SERVER_BODIES.terminal_snapshot,
+  SERVER_BODIES.terminal_output,
+  SERVER_BODIES.session_event,
+  SERVER_BODIES.saved,
+  SERVER_BODIES.error,
+  SERVER_BODIES.channel_closed,
+  ServerPongSchema,
+]);
+export type ServerMessageBody = z.infer<typeof ServerMessageBodySchema>;
+
+export const ServerMessageSchema = z.discriminatedUnion("type", [
+  channelized(SERVER_BODIES.init),
+  channelized(SERVER_BODIES.resync),
+  channelized(SERVER_BODIES.doc_update),
+  channelized(SERVER_BODIES.gesture),
+  channelized(SERVER_BODIES.roster),
+  channelized(SERVER_BODIES.presence),
+  channelized(SERVER_BODIES.cursor),
+  channelized(SERVER_BODIES.terminal_opened),
+  channelized(SERVER_BODIES.terminal_snapshot),
+  channelized(SERVER_BODIES.terminal_output),
+  channelized(SERVER_BODIES.session_event),
+  channelized(SERVER_BODIES.saved),
+  channelized(SERVER_BODIES.error),
+  channelized(SERVER_BODIES.channel_closed),
+  ServerPongSchema,
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
-export type ServerGesture = Extract<ServerMessage, { type: "gesture" }>;
+
+/**
+ * Gesture frames as CONSUMERS see them: channel-agnostic. A wire frame satisfies this
+ * type structurally (its `ch` is one extra key), so remote-gesture projection code is
+ * written once against the body and works for any channel.
+ */
+export type ServerGesture = Extract<ServerMessageBody, { type: "gesture" }>;
 
 // ---------------------------------------------------------------------------- type inventories
 
@@ -254,11 +431,13 @@ export const SERVER_MESSAGE_TYPES = [
   "session_event",
   "saved",
   "error",
+  "channel_closed",
   "pong",
 ] as const satisfies readonly ServerMessage["type"][];
 
 export const CLIENT_MESSAGE_TYPES = [
   "join",
+  "leave",
   "doc_update",
   "gesture",
   "presence",
@@ -274,9 +453,30 @@ export const CLIENT_MESSAGE_TYPES = [
   "ping",
 ] as const satisfies readonly ClientMessage["type"][];
 
+/**
+ * Frames that carry no `ch`: the socket's own liveness pair. Routing reads this to tell
+ * a connection-level frame from a channel-level one without a second discriminator.
+ */
+export const CONNECTION_LEVEL_MESSAGE_TYPES = ["ping", "pong"] as const;
+
 type MissingServerType = Exclude<ServerMessage["type"], (typeof SERVER_MESSAGE_TYPES)[number]>;
 type MissingClientType = Exclude<ClientMessage["type"], (typeof CLIENT_MESSAGE_TYPES)[number]>;
 const serverInventoryComplete: MissingServerType extends never ? true : never = true;
 const clientInventoryComplete: MissingClientType extends never ? true : never = true;
 void serverInventoryComplete;
 void clientInventoryComplete;
+
+/** Body and wire unions must stay the same frame set: only routing separates them. */
+type BodyWithoutFrame = Exclude<ServerMessageBody["type"], ServerMessage["type"]>;
+type FrameWithoutBody = Exclude<ServerMessage["type"], ServerMessageBody["type"]>;
+type ClientBodyWithoutFrame = Exclude<ClientMessageBody["type"], ClientMessage["type"]>;
+type ClientFrameWithoutBody = Exclude<ClientMessage["type"], ClientMessageBody["type"]>;
+const unionsAligned: [
+  BodyWithoutFrame,
+  FrameWithoutBody,
+  ClientBodyWithoutFrame,
+  ClientFrameWithoutBody,
+] extends [never, never, never, never]
+  ? true
+  : never = true;
+void unionsAligned;

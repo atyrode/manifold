@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -48,9 +48,15 @@ export const PROTOCOL_VERSION = 11;
  * tile leaves) and consumers read placement from the doc's elements and layout
  * tree instead. The machine wire is byte-identical, so existing agents stay
  * accepted.
+ * v11 -> v12: session-channel frames became MULTIPLEXED — every channel-level frame
+ * carries a `ch` routing id, `join`/`leave` are per-channel ops on one socket, and
+ * per-channel epoch/resume hints ride each channel's own join, so one tab holds exactly
+ * one TCP connection no matter how many rooms it renders. ping/pong stay
+ * connection-level. The machine wire is byte-identical, so existing agents stay
+ * accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 ]);
 
 /**
