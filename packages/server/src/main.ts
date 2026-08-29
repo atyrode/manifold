@@ -71,6 +71,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setEmptyHandler((padId) => broker.dissolveIfBubble(padId));
   const sessions = new SessionGateway(auth, rooms, broker, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,

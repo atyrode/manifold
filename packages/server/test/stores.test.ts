@@ -126,6 +126,37 @@ describe("ServerStore pad tree", () => {
   });
 });
 
+describe("ServerStore container discipline", () => {
+  test("round-trips layout, transient, and the off-wire return address", () => {
+    const store = testStore();
+    const canvas = canvasPad("pad-a", "Canvas", 10);
+    const bubble: Pad = {
+      id: "view-a",
+      name: "Bubble",
+      createdAt: 20,
+      layout: "tiled",
+      transient: true,
+    };
+    store.createPad(canvas);
+    store.createPad(bubble, canvas.id);
+
+    expect(store.getPad(bubble.id)).toEqual(bubble);
+    expect(store.listPads()).toEqual([canvas, bubble]);
+    expect(store.padOriginPadId(bubble.id)).toBe(canvas.id);
+    expect(store.padOriginPadId(canvas.id)).toBeNull();
+
+    store.updatePadTransient(bubble.id, false);
+    store.updatePadOriginPad(bubble.id, null);
+
+    expect(store.getPad(bubble.id)).toEqual({ ...bubble, transient: false });
+    expect(store.padOriginPadId(bubble.id)).toBeNull();
+    // A deleted container leaves no return address behind for a stale lookup.
+    expect(store.deletePad(bubble.id)).toBeTrue();
+    expect(store.padOriginPadId(bubble.id)).toBeNull();
+    store.close();
+  });
+});
+
 describe("ServerStore scene documents", () => {
   test("keeps the newest thirty revisions per pad", () => {
     const store = testStore();

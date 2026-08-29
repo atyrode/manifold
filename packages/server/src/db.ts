@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -182,6 +182,18 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '5');
 ALTER TABLE sessions ADD COLUMN name TEXT;
 ALTER TABLE sessions ADD COLUMN sort_order INTEGER;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '6');
+`,
+  7: `
+-- Container discipline (#15, #57): a View and a Pad are ONE object differing only
+-- in their layout. A transient pad is a bubble — an unsplit, unpinned view that
+-- dissolves when its last occupant leaves — and origin_pad_id is that bubble's
+-- return address, the canvas whose portal element it was born from. The return
+-- address never appears on the wire: it is server-side lifecycle state, and
+-- clearing it (rename or pin) is what makes a container explicitly claimed.
+ALTER TABLE pads ADD COLUMN layout TEXT NOT NULL DEFAULT 'canvas';
+ALTER TABLE pads ADD COLUMN transient INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pads ADD COLUMN origin_pad_id TEXT;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '7');
 `,
 };
 

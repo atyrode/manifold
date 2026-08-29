@@ -3,13 +3,18 @@ import {
   type AdvertisedSession,
   type AgentMessage,
   type ClientMessage,
+  type Pad,
   type RuntimeDeps,
   type ServerToAgentMessage,
   type SessionInfo,
+  type TileEdge,
+  type TileLayout,
+  type TileSurface,
 } from "@manifold/protocol";
+import { tileLeafIds } from "@manifold/scene";
 import type { AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
-import type { RoomManager, RoomTimers } from "./room.ts";
+import type { Room, RoomManager, RoomTimers } from "./room.ts";
 import {
   serializeServerMessage,
   type SerializedServerMessage,
@@ -31,6 +36,8 @@ const PENDING_OUTPUT_FRAMES = 256;
 const PENDING_OUTPUT_BYTES = 1_048_576;
 const CREATE_DEADLINE_MS = 10_000;
 const SNAPSHOT_DEADLINE_MS = 10_000;
+/** `PadSchema` name ceiling; auto-composed view names are clamped to it. */
+const MAX_CONTAINER_NAME = 120;
 
 /** Online agent connection used by the broker without depending on Bun WebSocket types. */
 export interface MachineChannel {
@@ -67,6 +74,18 @@ interface PendingOpen {
   opener: SessionPeer;
   agentPrincipalId: string;
   cancelDeadline: (() => void) | null;
+}
+
+/** Tile id of the first leaf showing `sessionId`, in tree order; null when it shows nowhere. */
+function tileForSession(layout: TileLayout | null, sessionId: string): string | null {
+  if (layout === null) return null;
+  for (const tileId of tileLeafIds(layout)) {
+    const surface = layout[tileId]?.surface;
+    if (surface !== undefined && surface !== null && surface.kind === "terminal") {
+      if (surface.sessionId === sessionId) return tileId;
+    }
+  }
+  return null;
 }
 
 /** Routes terminal lifecycle/control while preserving the snapshot-plus-tail attach invariant. */
@@ -836,11 +855,14 @@ export class TerminalBroker {
   }
 
   /**
-   * Removes one canvas element referencing a session. When it was the last reference the
-   * session unbinds (`padId := null`) and joins the workspace pool; otherwise the copy is
-   * simply gone and the session stays bound. Both running and exited sessions are parkable.
+   * Removes one placement referencing a session: a canvas element, or a tile leaf in a
+   * tiled container — `elementId` carries whichever id the discipline uses, because the
+   * placement id IS the element id on a canvas and the tile id in a view. When it was the
+   * last reference the session unbinds (`padId := null`) and joins the workspace pool;
+   * otherwise the copy is simply gone and the session stays bound. Both running and exited
+   * sessions are parkable.
    *
-   * The element removal must land durably even when the pad is not resident, so the room is
+   * The removal must land durably even when the pad is not resident, so the room is
    * loaded rather than merely probed for liveness.
    */
   park(sessionId: string, elementId: string): "ok" | "not_found" {
@@ -850,19 +872,14 @@ export class TerminalBroker {
     if (padId === null) return "not_found";
     const room = this.rooms.get(padId);
     if (room === null) return "not_found";
-    room.removeTerminalElement(elementId);
+    if (this.store.getPad(padId)?.layout === "tiled") {
+      room.removeTileLeafById(elementId);
+    } else {
+      room.removeTerminalElement(elementId);
+    }
     if (room.referencesSession(sessionId)) return "ok";
 
-    session.info = { ...session.info, padId: null };
-    this.store.updateSessionPad(sessionId, null);
-    this.store.updateSessionSortOrder(sessionId, this.nextPoolSortOrder(sessionId));
-    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
-    session.viewers.clear();
-    room.broadcast({ type: "session_event", sessionId, kind: "parked" });
-    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_parked", {
-      sessionId,
-      elementId,
-    });
+    this.parkToPool(session, padId, elementId);
     this.rooms.evictIfIdle(padId);
     return "ok";
   }
@@ -923,22 +940,30 @@ export class TerminalBroker {
   }
 
   /**
-   * Attaches a parked session to a pad by authoring its canvas element server-side, which
-   * is why the client sends no scene update for a bind.
+   * Attaches a parked session to a container by authoring its placement server-side, which
+   * is why the client sends no scene update for a bind. A canvas gets a terminal element at
+   * the requested coordinates; a tiled container gets a tile leaf instead, and the returned
+   * `elementId` is that tile id — coordinates are meaningless in a layout tree.
    */
   bind(
     sessionId: string,
     padId: string,
     x?: number,
     y?: number,
-  ): { elementId: string } | "not_found" | "already_bound" | "pad_not_found" {
+  ): { elementId: string } | "not_found" | "already_bound" | "pad_not_found" | "conflict" {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return "not_found";
     if (session.info.padId !== null) return "already_bound";
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "pad_not_found";
     const room = this.rooms.get(padId);
     if (room === null) return "pad_not_found";
 
-    const elementId = room.placeTerminalElement(sessionId, x, y);
+    const elementId =
+      pad.layout === "tiled"
+        ? room.placeTerminalTile(sessionId, null, null)
+        : room.placeTerminalElement(sessionId, x, y);
+    if (elementId === null) return "conflict";
     session.info = { ...session.info, padId };
     this.store.updateSessionPad(sessionId, padId);
     room.broadcast({ type: "terminal_opened", elementId, session: session.info });
@@ -947,6 +972,386 @@ export class TerminalBroker {
       elementId,
     });
     this.rooms.evictIfIdle(padId);
+    return { elementId };
+  }
+
+  /**
+   * Moves a session's binding between containers. The caller has already authored the new
+   * placement and disposed of the old one; this publishes the move exactly as park and bind
+   * do — the old room hears `parked` because the session left it, the new room hears
+   * `terminal_opened` with the new placement id.
+   */
+  private rebind(
+    session: RuntimeSession,
+    fromPadId: string | null,
+    toPadId: string,
+    placementId: string,
+  ): void {
+    const sessionId = session.info.id;
+    session.info = { ...session.info, padId: toPadId };
+    this.store.updateSessionPad(sessionId, toPadId);
+    if (fromPadId !== null && fromPadId !== toPadId) {
+      // Viewers attached through the old room can no longer reach the session: the
+      // broker gates every session message on the peer's pad.
+      for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+      session.viewers.clear();
+      this.rooms.live(fromPadId)?.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    }
+    this.rooms
+      .live(toPadId)
+      ?.broadcast({ type: "terminal_opened", elementId: placementId, session: session.info });
+    this.store.addEvent(toPadId, this.runtime.now(), session.info.createdBy, "session_bound", {
+      sessionId,
+      elementId: placementId,
+    });
+  }
+
+  /** Unbinds a session into the workspace pool; its placement is already gone. */
+  private parkToPool(session: RuntimeSession, fromPadId: string, placementId: string): void {
+    const sessionId = session.info.id;
+    session.info = { ...session.info, padId: null };
+    this.store.updateSessionPad(sessionId, null);
+    this.store.updateSessionSortOrder(sessionId, this.nextPoolSortOrder(sessionId));
+    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    session.viewers.clear();
+    this.rooms.live(fromPadId)?.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    this.store.addEvent(fromPadId, this.runtime.now(), session.info.createdBy, "session_parked", {
+      sessionId,
+      elementId: placementId,
+    });
+  }
+
+  /** A terminal's operator-visible label: its own name, else its machine's, else `fallback`. */
+  private terminalLabel(session: RuntimeSession, fallback: string): string {
+    return session.info.name ?? this.store.getMachine(session.info.machineId)?.name ?? fallback;
+  }
+
+  /** The label a composed view borrows from one of the surfaces it was built from. */
+  private surfaceLabel(surface: TileSurface): string {
+    if (surface.kind === "pad") return this.store.getPad(surface.padId)?.name ?? "pad";
+    const session = this.sessions.get(surface.sessionId);
+    return session === undefined ? "terminal" : this.terminalLabel(session, "terminal");
+  }
+
+  /**
+   * Transmutes a terminal into a tiled view born around it. The session rebinds into the
+   * view and its canvas element becomes a portal at the same spot, so collaborators watch
+   * the terminal turn into a live view widget in place. The view starts transient: it is a
+   * bubble until somebody splits, renames, or pins it.
+   */
+  expand(sessionId: string): { viewId: string } | "not_found" | "exited" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    if (session.info.status !== "running") return "exited";
+    const originPadId = session.info.padId;
+    const viewId = this.runtime.newId();
+    const view: Pad = {
+      id: viewId,
+      name: this.terminalLabel(session, "view"),
+      createdAt: this.runtime.now(),
+      layout: "tiled",
+      transient: true,
+    };
+    this.store.createPad(view, originPadId);
+    const room = this.rooms.get(viewId);
+    const tileId = room?.placeTerminalTile(sessionId, null, null) ?? null;
+    if (room === null || tileId === null) {
+      // A freshly seeded tree always has an empty root leaf, so this is unreachable in
+      // practice; rolling the row back keeps a failed expand from leaving a stray view.
+      this.rooms.drop(viewId);
+      this.store.deletePad(viewId);
+      return "not_found";
+    }
+    const originRoom = originPadId === null ? null : this.rooms.get(originPadId);
+    if (originRoom !== null) {
+      // Multi-mirror sessions: the FIRST placement becomes the portal and the remaining
+      // mirrors keep rendering; the session is view-bound and they read through its room.
+      const elementId = originRoom.firstElementForSession(sessionId);
+      if (elementId !== null) {
+        originRoom.swapElementToPortal(elementId, viewId);
+      } else {
+        // Expanding a tile: there is no canvas element to transmute, so the leaf it left
+        // behind is removed rather than pointing at a session that now lives elsewhere.
+        const leafId = tileForSession(originRoom.tileLayout(), sessionId);
+        if (leafId !== null) originRoom.removeTileLeafById(leafId);
+      }
+    }
+    this.rebind(session, originPadId, viewId, tileId);
+    if (originPadId !== null) this.rooms.evictIfIdle(originPadId);
+    return { viewId };
+  }
+
+  /**
+   * Pops a bubble: a tiled container down to a single leaf that nobody ever claimed
+   * dissolves, and its occupant goes home.
+   *
+   * Two kinds of row qualify. A `transient` view is the bubble an expand created. A
+   * HARDENED view that still carries a return address qualifies too — the Phase 3b
+   * relaxation: a view composed by drag is durable from birth, yet until its row is
+   * explicitly claimed (rename or pin, both of which clear the return address) extracting
+   * a tile back onto the canvas must be able to collapse the leftover single-widget view
+   * instead of stranding it.
+   *
+   * A room with occupants is never dissolved under them: the empty hook fires when the
+   * last one leaves and the pop happens then, which also makes a dead browser crash-safe.
+   */
+  dissolveIfBubble(padId: string): void {
+    const pad = this.store.getPad(padId);
+    if (pad === null || pad.layout !== "tiled") return;
+    const originPadId = this.store.padOriginPadId(padId);
+    if (!pad.transient && originPadId === null) return;
+    const room = this.rooms.get(padId);
+    if (room === null || room.hasConnections()) return;
+    const layout = room.tileLayout();
+    if (layout === null) return;
+    const leaves = tileLeafIds(layout);
+    if (leaves.length !== 1) return;
+    const leafId = leaves[0];
+    const surface = leafId === undefined ? null : (layout[leafId]?.surface ?? null);
+    if (leafId !== undefined && surface !== null && surface.kind === "terminal") {
+      this.returnOccupant(surface.sessionId, padId, leafId, originPadId);
+    } else if (originPadId !== null) {
+      // Nothing to transmute back — the bubble was emptied or only ever held a canvas — so
+      // its widget goes with it instead of becoming a portal onto a deleted container.
+      this.rooms.get(originPadId)?.removePortalTo(padId);
+    }
+    // Reuse the pad-deletion path. The occupant is already rebound, so no session is left
+    // bound to this container for `dropPad` to kill.
+    this.dropPad(padId);
+    this.rooms.drop(padId);
+    this.store.deletePad(padId);
+  }
+
+  /** Sends a popped bubble's occupant home: the origin canvas slot, else the pool. */
+  private returnOccupant(
+    sessionId: string,
+    viewId: string,
+    tileId: string,
+    originPadId: string | null,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    if (originPadId !== null) {
+      const originRoom = this.rooms.get(originPadId);
+      const elementId = originRoom?.swapPortalToTerminal(viewId, sessionId) ?? null;
+      if (elementId !== null) {
+        this.rebind(session, viewId, originPadId, elementId);
+        this.rooms.evictIfIdle(originPadId);
+        return;
+      }
+    }
+    // Born from the pool, or the portal was deleted while the view had focus: there is no
+    // canvas slot to transmute back, so the terminal joins the workspace pool.
+    this.parkToPool(session, viewId, tileId);
+  }
+
+  /**
+   * Claims a container so no bubble rule can dissolve it: `POST /api/pads/:id/pin` and the
+   * rename handler both land here. Clearing the return address is what "claimed" means — a
+   * renamed or pinned view survives even when a single tile is left.
+   */
+  harden(padId: string): "ok" | "not_found" {
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "not_found";
+    if (pad.layout !== "tiled") return "ok";
+    if (pad.transient) this.store.updatePadTransient(padId, false);
+    this.store.updatePadOriginPad(padId, null);
+    return "ok";
+  }
+
+  /**
+   * A container holding more than one leaf is a composition, not a bubble. The return
+   * address deliberately survives: splitting hardens the row, but only an explicit claim
+   * gives up the ability to collapse back onto the origin canvas.
+   */
+  private hardenIfComposed(padId: string, room: Room): void {
+    const layout = room.tileLayout();
+    if (layout === null || tileLeafIds(layout).length <= 1) return;
+    if (this.store.getPad(padId)?.transient === true) this.store.updatePadTransient(padId, false);
+  }
+
+  /** Shared tile/compose admission rule; null when `surface` may join `padId`. */
+  private rejectSurface(padId: string, surface: TileSurface): "not_found" | "conflict" | null {
+    if (surface.kind === "pad") {
+      if (surface.padId === padId) return "conflict";
+      const embedded = this.store.getPad(surface.padId);
+      if (embedded === null) return "not_found";
+      // Tiling a tiled container would nest views; portals navigate into them instead.
+      return embedded.layout === "canvas" ? null : "conflict";
+    }
+    const session = this.sessions.get(surface.sessionId);
+    if (session === undefined) return "not_found";
+    const bound = session.info.padId;
+    return bound === null || bound === padId ? null : "conflict";
+  }
+
+  /**
+   * Adds a surface to a tiled container (`POST /api/pads/:id/tiles`). A terminal surface
+   * must be pooled or already placed in this same container; a pad surface must be a canvas
+   * and not the container itself. Anything else conflicts before a single write lands.
+   */
+  addTile(
+    padId: string,
+    surface: TileSurface,
+    targetTileId: string | null,
+    edge: TileEdge | null,
+  ): { tileId: string } | "not_found" | "conflict" {
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "not_found";
+    if (pad.layout !== "tiled") return "conflict";
+    const rejection = this.rejectSurface(padId, surface);
+    if (rejection !== null) return rejection;
+    const room = this.rooms.get(padId);
+    if (room === null) return "not_found";
+    const tileId = room.placeTile(surface, targetTileId, edge);
+    if (tileId === null) return "conflict";
+    if (surface.kind === "terminal") {
+      const session = this.sessions.get(surface.sessionId);
+      if (session !== undefined && session.info.padId !== padId) {
+        this.rebind(session, session.info.padId, padId, tileId);
+      }
+    }
+    this.hardenIfComposed(padId, room);
+    return { tileId };
+  }
+
+  /**
+   * Removes one tile (`DELETE /api/pads/:id/tiles/:tileId`). A terminal leaf goes through
+   * park, so losing its last placement pools the session exactly as a canvas park does.
+   */
+  removeTile(padId: string, tileId: string): "ok" | "not_found" | "conflict" {
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "not_found";
+    if (pad.layout !== "tiled") return "conflict";
+    const room = this.rooms.get(padId);
+    if (room === null) return "not_found";
+    const layout = room.tileLayout();
+    const node = layout === null ? undefined : layout[tileId];
+    if (node === undefined) return "not_found";
+    if (node.dir !== null) return "conflict";
+    const surface = node.surface;
+    if (surface !== null && surface.kind === "terminal") {
+      const session = this.sessions.get(surface.sessionId);
+      if (session?.info.padId === padId) {
+        return this.park(surface.sessionId, tileId) === "ok" ? "ok" : "conflict";
+      }
+    }
+    return room.removeTileLeafById(tileId) ? "ok" : "conflict";
+  }
+
+  /**
+   * Births a view around a canvas terminal (`POST /api/pads/:id/compose`): the target
+   * element becomes a portal keeping its exact geometry, the target's session becomes the
+   * root leaf, and the dragged surface lands beside it per `edge`. Composition IS the
+   * hardening moment, so the view is durable from birth; it keeps its return address only
+   * so extraction can still collapse it back onto this canvas.
+   *
+   * Dropping onto a portal is not a composition: the widget already is a view, so the
+   * surface joins it as a plain tile — views never nest.
+   */
+  composeOnCanvas(
+    padId: string,
+    targetElementId: string,
+    surface: TileSurface,
+    edge: TileEdge,
+  ): { viewId: string } | "not_found" | "conflict" {
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "not_found";
+    if (pad.layout !== "canvas") return "conflict";
+    const room = this.rooms.get(padId);
+    if (room === null) return "not_found";
+    const target = room.element(targetElementId);
+    if (target === null) return "not_found";
+    if (target.type === "portal") {
+      const added = this.addTile(target.containerId, surface, null, edge);
+      return typeof added === "string" ? added : { viewId: target.containerId };
+    }
+    if (target.type !== "terminal") return "conflict";
+    const targetSession = this.sessions.get(target.sessionId);
+    if (targetSession === undefined) return "not_found";
+    if (surface.kind === "terminal" && surface.sessionId === target.sessionId) return "conflict";
+    // The dragged surface is judged against the canvas it is leaving, so a rejected drag
+    // mutates nothing: a pad must be a canvas other than this one, a terminal must be
+    // pooled or already live on this canvas.
+    const rejection = this.rejectSurface(padId, surface);
+    if (rejection !== null) return rejection;
+
+    const viewId = this.runtime.newId();
+    const name = `${this.terminalLabel(targetSession, "terminal")} + ${this.surfaceLabel(surface)}`;
+    this.store.createPad(
+      {
+        id: viewId,
+        name: name.slice(0, MAX_CONTAINER_NAME),
+        createdAt: this.runtime.now(),
+        layout: "tiled",
+        transient: false,
+      },
+      padId,
+    );
+    const view = this.rooms.get(viewId);
+    const rootTileId = view?.placeTerminalTile(target.sessionId, null, null) ?? null;
+    const addedTileId =
+      view === null || rootTileId === null ? null : view.placeTile(surface, rootTileId, edge);
+    if (view === null || rootTileId === null || addedTileId === null) {
+      this.rooms.drop(viewId);
+      this.store.deletePad(viewId);
+      return "conflict";
+    }
+
+    room.swapElementToPortal(targetElementId, viewId);
+    this.rebind(targetSession, padId, viewId, rootTileId);
+    if (surface.kind === "terminal") {
+      const dragged = this.sessions.get(surface.sessionId);
+      if (dragged !== undefined) {
+        const draggedFrom = dragged.info.padId;
+        if (draggedFrom === padId) {
+          const elementId = room.firstElementForSession(surface.sessionId);
+          if (elementId !== null) room.removeTerminalElement(elementId);
+        }
+        this.rebind(dragged, draggedFrom, viewId, addedTileId);
+      }
+    }
+    this.rooms.evictIfIdle(padId);
+    return { viewId };
+  }
+
+  /**
+   * Pulls one tile out of a view and back onto the canvas that view lives on
+   * (`POST /api/pads/:id/tiles/:tileId/extract`): the leaf is removed and the session
+   * rebinds to a plain terminal element at (x, y). The destination is the view's return
+   * address, so a claimed view — renamed or pinned, which clears it — can no longer be
+   * decomposed this way.
+   *
+   * When a single leaf is left the bubble-pop rule runs; `dissolveIfBubble` carries the
+   * Phase 3b relaxation that lets a hardened but unclaimed single-widget view collapse too.
+   */
+  extractTile(
+    padId: string,
+    tileId: string,
+    x: number,
+    y: number,
+  ): { elementId: string } | "not_found" | "conflict" {
+    const pad = this.store.getPad(padId);
+    if (pad === null) return "not_found";
+    if (pad.layout !== "tiled") return "conflict";
+    const room = this.rooms.get(padId);
+    if (room === null) return "not_found";
+    const layout = room.tileLayout();
+    const node = layout === null ? undefined : layout[tileId];
+    if (node === undefined) return "not_found";
+    const surface = node.surface;
+    if (node.dir !== null || surface === null || surface.kind !== "terminal") return "conflict";
+    const session = this.sessions.get(surface.sessionId);
+    if (session === undefined) return "not_found";
+    const destinationPadId = this.store.padOriginPadId(padId);
+    if (destinationPadId === null) return "conflict";
+    const destination = this.rooms.get(destinationPadId);
+    if (destination === null) return "conflict";
+    if (!room.removeTileLeafById(tileId)) return "conflict";
+
+    const elementId = destination.placeTerminalElement(surface.sessionId, x, y);
+    this.rebind(session, padId, destinationPadId, elementId);
+    this.dissolveIfBubble(padId);
     return { elementId };
   }
 

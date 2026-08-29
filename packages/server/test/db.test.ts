@@ -16,8 +16,17 @@ CREATE TABLE sessions(id TEXT PRIMARY KEY, machine_id TEXT, pad_id TEXT, element
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT);
 CREATE TABLE snapshots(pad_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, blob TEXT,
   PRIMARY KEY(pad_id, epoch, rev));
+CREATE TABLE pads(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER, sort_order INTEGER,
+  folder_id TEXT);
+CREATE TABLE pad_folders(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER,
+  parent_folder_id TEXT, sort_order INTEGER);
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 INSERT INTO meta(key, value) VALUES ('schema_version', '3');
+
+-- A legacy pad predates the container discipline entirely: migration 7 must give it
+-- the canvas defaults rather than leaving nulls behind.
+INSERT INTO pads(id, name, created_at, sort_order, folder_id)
+VALUES ('p', 'legacy pad', 1, 0, NULL);
 
 INSERT INTO tokens(id, hash, principal_id, created_at, revoked_at)
 VALUES ('t-old', 'h-old', 'm-old', 1, NULL),
@@ -94,6 +103,15 @@ describe("migration 4: machines.name uniqueness", () => {
           1,
         );
       }).toThrow();
+
+      // Migration 7: every pre-existing pad becomes a durable canvas with no return
+      // address, so the container discipline is total from the first upgraded boot.
+      const pads = db
+        .query<{ id: string; layout: string; transient: number; origin_pad_id: string | null }, []>(
+          "SELECT id, layout, transient, origin_pad_id FROM pads ORDER BY id",
+        )
+        .all();
+      expect(pads).toEqual([{ id: "p", layout: "canvas", transient: 0, origin_pad_id: null }]);
 
       db.close();
     } finally {

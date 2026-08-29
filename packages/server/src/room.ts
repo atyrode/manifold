@@ -1,14 +1,20 @@
 import {
   MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
+  ROOT_TILE_ID,
+  compareElements,
   type ClientMessage,
   type PadPresence,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type RuntimeDeps,
+  type SceneElement,
   type ServerMessage,
   type SessionInfo,
+  type TileEdge,
+  type TileLayout,
+  type TileSurface,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -21,11 +27,15 @@ import {
   decodeUpdate,
   elementsMap,
   encodeUpdate,
+  initTiledLayout,
   nextZIndex,
   readElement,
   readElements,
+  readTileLayout,
   removeElement,
+  removeTileLeaf,
   writeElement,
+  writeTileLeaf,
 } from "@manifold/scene";
 import type { Logger } from "./log.ts";
 import {
@@ -123,6 +133,13 @@ export class Room {
       });
       this.scheduleSnapshot();
     });
+
+    // A tiled container renders its layout tree, so the tree must exist before the
+    // first peer joins. The discipline lives on the pad row, and seeding is
+    // idempotent, so a container loaded from a snapshot keeps its stored tree.
+    if (store.getPad(padId)?.layout === "tiled") {
+      initTiledLayout(this.doc, SERVER_PLACE_ORIGIN);
+    }
   }
 
   private roster(): PresenceState[] {
@@ -419,12 +436,151 @@ export class Room {
     return this.connections.size > 0;
   }
 
-  /** Whether a live terminal element still points at a persisted session. */
+  /**
+   * Whether a live placement still points at a persisted session: a canvas
+   * terminal element, or a tile leaf in a tiled container. Both disciplines are
+   * scanned unconditionally because one session can be placed in either.
+   */
   referencesSession(sessionId: string): boolean {
     for (const element of readElements(this.doc).values()) {
       if (element.type === "terminal" && element.sessionId === sessionId) return true;
     }
+    const layout = readTileLayout(this.doc);
+    if (layout === null) return false;
+    for (const node of Object.values(layout)) {
+      const surface = node.surface;
+      if (surface !== null && surface.kind === "terminal" && surface.sessionId === sessionId) {
+        return true;
+      }
+    }
     return false;
+  }
+
+  /** The tiled layout tree, or null for a canvas (and for a tree that fails validation). */
+  tileLayout(): TileLayout | null {
+    return readTileLayout(this.doc, this.padId);
+  }
+
+  /** One element projection, or null when it is absent or schema-invalid. */
+  element(elementId: string): SceneElement | null {
+    return readElement(this.doc, elementId);
+  }
+
+  /** First element referencing a session, in canonical paint order; null when unplaced. */
+  firstElementForSession(sessionId: string): string | null {
+    for (const element of [...readElements(this.doc).values()].sort(compareElements)) {
+      if (element.type === "terminal" && element.sessionId === sessionId) return element.id;
+    }
+    return null;
+  }
+
+  /**
+   * Places a surface in this container's layout tree under `SERVER_PLACE_ORIGIN`, so
+   * the doc-update hook fans it out and client undo managers never capture it.
+   * A null target fills the first empty leaf, else splits the root to the right;
+   * a null edge fills an empty target leaf, else splits that leaf to the right.
+   * Returns the placement's tile id, or null when the tree rejects the write.
+   */
+  placeTile(
+    surface: TileSurface,
+    targetTileId: string | null,
+    edge: TileEdge | null,
+  ): string | null {
+    const layout = this.tileLayout();
+    if (layout === null) return null;
+    const target =
+      targetTileId ??
+      Object.values(layout).find((node) => node.dir === null && node.surface === null)?.id ??
+      ROOT_TILE_ID;
+    const node = layout[target];
+    if (node === undefined) return null;
+    const resolved = edge ?? (node.dir === null && node.surface === null ? "center" : "right");
+    return writeTileLeaf(this.doc, surface, target, resolved, SERVER_PLACE_ORIGIN);
+  }
+
+  /** Places a terminal surface; the returned tile id IS the session's placement id. */
+  placeTerminalTile(
+    sessionId: string,
+    targetTileId: string | null,
+    edge: TileEdge | null,
+  ): string | null {
+    return this.placeTile({ kind: "terminal", sessionId }, targetTileId, edge);
+  }
+
+  /** Removes one tile leaf, collapsing the split it leaves behind. */
+  removeTileLeafById(tileId: string): boolean {
+    return removeTileLeaf(this.doc, tileId, SERVER_PLACE_ORIGIN);
+  }
+
+  /**
+   * Transmutes a terminal element into a portal onto `containerId`, keeping the
+   * element id and geometry so the widget appears exactly where the terminal was.
+   * Returns the preserved geometry, or null when the element is not a terminal.
+   */
+  swapElementToPortal(
+    elementId: string,
+    containerId: string,
+  ): { x: number; y: number; width: number; height: number } | null {
+    const element = readElement(this.doc, elementId);
+    if (element === null || element.type !== "terminal") return null;
+    writeElement(
+      this.doc,
+      {
+        id: element.id,
+        type: "portal",
+        containerId,
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        zIndex: element.zIndex,
+      },
+      SERVER_PLACE_ORIGIN,
+    );
+    return { x: element.x, y: element.y, width: element.width, height: element.height };
+  }
+
+  /** First portal onto `containerId`, in canonical paint order; null when none survives. */
+  private firstPortalTo(containerId: string): SceneElement | null {
+    for (const element of [...readElements(this.doc).values()].sort(compareElements)) {
+      if (element.type === "portal" && element.containerId === containerId) return element;
+    }
+    return null;
+  }
+
+  /**
+   * Reverses the portal swap when a bubble pops: the first portal onto `containerId`
+   * becomes a terminal element again at the same spot, and its id — unchanged since the
+   * expand — is returned as the session's placement. Null when no such portal survives;
+   * the caller then falls back to the terminal pool.
+   */
+  swapPortalToTerminal(containerId: string, sessionId: string): string | null {
+    const element = this.firstPortalTo(containerId);
+    if (element === null) return null;
+    writeElement(
+      this.doc,
+      {
+        id: element.id,
+        type: "terminal",
+        sessionId,
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        zIndex: element.zIndex,
+      },
+      SERVER_PLACE_ORIGIN,
+    );
+    return element.id;
+  }
+
+  /**
+   * Deletes the widget of a container that dissolved with nothing to transmute back, so a
+   * popped bubble never leaves a portal pointing at a container that no longer exists.
+   */
+  removePortalTo(containerId: string): boolean {
+    const element = this.firstPortalTo(containerId);
+    return element !== null && removeElement(this.doc, element.id, SERVER_PLACE_ORIGIN);
   }
 
   /**
@@ -489,6 +645,7 @@ export class RoomManager {
   private readonly rooms = new Map<string, Room>();
   private sessionProvider: (padId: string) => readonly SessionInfo[] = () => [];
   private pendingOpenProvider: (padId: string) => boolean = () => false;
+  private emptyHandler: (padId: string) => void = () => {};
 
   constructor(
     private readonly store: ServerStore,
@@ -507,6 +664,15 @@ export class RoomManager {
     this.pendingOpenProvider = provider;
   }
 
+  /**
+   * Installs the broker's room-empty hook. Eviction alone is not enough for the
+   * bubble lifecycle: a bubble still holds a running session, which pins its room
+   * against eviction, so the pop must fire the moment the last occupant leaves.
+   */
+  setEmptyHandler(handler: (padId: string) => void): void {
+    this.emptyHandler = handler;
+  }
+
   /** Returns a canonical room only when its durable pad exists. */
   get(padId: string): Room | null {
     if (this.store.getPad(padId) === null) return null;
@@ -522,6 +688,7 @@ export class RoomManager {
           return this.sessionProvider(padId);
         },
         (idleRoom) => {
+          this.emptyHandler(idleRoom.padId);
           this.evict(idleRoom);
         },
       );

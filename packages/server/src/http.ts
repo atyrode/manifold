@@ -1,12 +1,19 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
+  AddPadTileRequestSchema,
+  AddPadTileResponseSchema,
   BindTerminalRequestSchema,
   BindTerminalResponseSchema,
   BootstrapPrincipalRequestSchema,
+  ComposePadTileRequestSchema,
+  ComposePadTileResponseSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   EnrollMachineRequestSchema,
+  ExpandTerminalResponseSchema,
+  ExtractPadTileRequestSchema,
+  ExtractPadTileResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
@@ -123,6 +130,16 @@ export async function parseJsonBody(request: Request): Promise<unknown> {
 
 function requireRoot(context: AuthContext): void {
   if (!context.isRoot) throw new RequestError("forbidden", "root capability required");
+}
+
+/** Decodes one path segment, mapping a missing or malformed escape to a 400. */
+function decodePathSegment(encoded: string | undefined, label: string): string {
+  if (encoded === undefined) throw new RequestError("invalid", `${label} is missing`);
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    throw new RequestError("invalid", `${label} is invalid`);
+  }
 }
 
 /** Bun fetch handler implementing the complete JSON API and SPA fallback contract. */
@@ -266,14 +283,7 @@ export class HttpApp {
 
     const folderMatch = /^\/api\/pad-folders\/([^/]+)$/.exec(pathname);
     if (folderMatch !== null) {
-      const encodedId = folderMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "folder id is missing");
-      let folderId: string;
-      try {
-        folderId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "folder id is invalid");
-      }
+      const folderId = decodePathSegment(folderMatch[1], "folder id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
@@ -346,16 +356,9 @@ export class HttpApp {
       return jsonResponse(this.terminalPoolPayload());
     }
 
-    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/park|\/bind)?$/.exec(pathname);
+    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/park|\/bind|\/expand)?$/.exec(pathname);
     if (terminalMatch !== null) {
-      const encodedId = terminalMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "terminal id is missing");
-      let sessionId: string;
-      try {
-        sessionId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "terminal id is invalid");
-      }
+      const sessionId = decodePathSegment(terminalMatch[1], "terminal id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
@@ -377,7 +380,16 @@ export class HttpApp {
         if (bound === "already_bound") {
           throw new RequestError("conflict", "terminal is already bound to a pad");
         }
+        if (bound === "conflict") {
+          throw new RequestError("conflict", "container rejected the terminal placement");
+        }
         return jsonResponse(BindTerminalResponseSchema.parse({ elementId: bound.elementId }));
+      }
+      if (request.method === "POST" && action === "/expand") {
+        const expanded = this.broker.expand(sessionId);
+        if (expanded === "not_found") throw new RequestError("not_found", "terminal not found");
+        if (expanded === "exited") throw new RequestError("conflict", "terminal has exited");
+        return jsonResponse(ExpandTerminalResponseSchema.parse({ viewId: expanded.viewId }));
       }
       if (request.method === "DELETE" && action === undefined) {
         const killed = this.broker.killById(sessionId);
@@ -407,9 +419,8 @@ export class HttpApp {
         id: this.runtime.newId(),
         name: input.name,
         createdAt: this.runtime.now(),
-        // The requested discipline is not persisted yet: the pads migration adds
-        // the columns, so every explicit creation is a durable canvas for now.
-        layout: "canvas",
+        // An explicit creation is always durable: only an expand births a bubble.
+        layout: input.layout ?? "canvas",
         transient: false,
       };
       this.store.createPad(pad);
@@ -418,14 +429,7 @@ export class HttpApp {
 
     const padMatch = /^\/api\/pads\/([^/]+)$/.exec(pathname);
     if (padMatch !== null) {
-      const encodedId = padMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "pad id is missing");
-      let padId: string;
-      try {
-        padId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "pad id is invalid");
-      }
+      const padId = decodePathSegment(padMatch[1], "pad id");
       const context = this.authenticate(request);
       if (request.method === "GET") {
         this.requireCap(context, "pads:read", padId);
@@ -436,7 +440,11 @@ export class HttpApp {
       if (request.method === "PATCH") {
         this.requireCap(context, "pads:write", padId);
         const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
-        const pad = this.store.renamePad(padId, input.name);
+        const renamed = this.store.renamePad(padId, input.name);
+        if (renamed === null) throw new RequestError("not_found", "pad not found");
+        // Naming a container claims it: a named view is never popped by a bubble rule.
+        this.broker.harden(padId);
+        const pad = this.store.getPad(padId);
         if (pad === null) throw new RequestError("not_found", "pad not found");
         return jsonResponse(PadResponseSchema.parse({ pad }));
       }
@@ -449,6 +457,67 @@ export class HttpApp {
         this.rooms.drop(padId);
         this.store.deletePad(padId);
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
+    }
+
+    const containerMatch = /^\/api\/pads\/([^/]+)\/(pin|tiles|compose)$/.exec(pathname);
+    const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)(\/extract)?$/.exec(pathname);
+    if (containerMatch !== null || tileMatch !== null) {
+      const padId = decodePathSegment((containerMatch ?? tileMatch)?.[1], "pad id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot recompose containers");
+      }
+      if (containerMatch !== null && request.method === "POST") {
+        const action = containerMatch[2];
+        if (action === "pin") {
+          if (this.broker.harden(padId) === "not_found") {
+            throw new RequestError("not_found", "pad not found");
+          }
+          return jsonResponse(OkResponseSchema.parse({ ok: true }));
+        }
+        if (action === "tiles") {
+          const input = parseRequest(AddPadTileRequestSchema, await parseJsonBody(request));
+          const added = this.broker.addTile(padId, input.surface, input.targetTileId, input.edge);
+          if (added === "not_found") throw new RequestError("not_found", "surface not found");
+          if (added === "conflict") {
+            throw new RequestError("conflict", "surface cannot be tiled into this container");
+          }
+          return jsonResponse(AddPadTileResponseSchema.parse({ tileId: added.tileId }));
+        }
+        const input = parseRequest(ComposePadTileRequestSchema, await parseJsonBody(request));
+        const composed = this.broker.composeOnCanvas(
+          padId,
+          input.targetElementId,
+          input.surface,
+          input.edge,
+        );
+        if (composed === "not_found") throw new RequestError("not_found", "surface not found");
+        if (composed === "conflict") {
+          throw new RequestError("conflict", "surfaces cannot be composed on this canvas");
+        }
+        return jsonResponse(ComposePadTileResponseSchema.parse({ viewId: composed.viewId }));
+      }
+      if (tileMatch !== null) {
+        const tileId = decodePathSegment(tileMatch[2], "tile id");
+        if (request.method === "DELETE" && tileMatch[3] === undefined) {
+          const removed = this.broker.removeTile(padId, tileId);
+          if (removed === "not_found") throw new RequestError("not_found", "tile not found");
+          if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
+          return jsonResponse(OkResponseSchema.parse({ ok: true }));
+        }
+        if (request.method === "POST" && tileMatch[3] === "/extract") {
+          const input = parseRequest(ExtractPadTileRequestSchema, await parseJsonBody(request));
+          const extracted = this.broker.extractTile(padId, tileId, input.x, input.y);
+          if (extracted === "not_found") throw new RequestError("not_found", "tile not found");
+          if (extracted === "conflict") {
+            throw new RequestError("conflict", "tile cannot be extracted onto a canvas");
+          }
+          return jsonResponse(
+            ExtractPadTileResponseSchema.parse({ elementId: extracted.elementId }),
+          );
+        }
       }
     }
 
