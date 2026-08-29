@@ -29,6 +29,7 @@
 - Double-clicking a titlebar only renames when you double-click the name itself; anywhere else on the bar triggers the bar's action. The sidebar updates live when others create or delete things, and navigation mounts the right renderer instantly instead of showing loading text. (#59)
 - One icon language across the app, drawn from Lucide: items (terminal, canvas, composition, note, machine, folder), titlebar controls, sidebar chrome, carry ghosts, and remote cursors all share it — the unicode glyphs, hand-drawn SVGs, and CSS shapes are gone. (#59)
 - Destruction is direct: no more two-step confirmations on delete or kill anywhere, killing a terminal removes it everywhere instantly (no lingering "exited" husk — a naturally-exited shell still shows its real code), and creating a canvas or composition is one click with an "Untitled" name you rename in place. (#59)
+- A composition widget on a canvas is now literally the composition renderer at a smaller scale: engage it and its tile dividers drag exactly like fullscreen; watching leaves them visibly inert. Composition and canvas icons refined (LayoutDashboard / dashed surface). (#59)
 
 ### Fixed
 

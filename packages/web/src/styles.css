@@ -2448,7 +2448,16 @@ button.pad-sidebar-session.is-summary > small {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  gap: 2px;
+}
+
+/* The direction comes from a class, not an inline style: a widget's tree and the route's
+   tree are ONE component (`tile-tree.tsx`), and it speaks in is-row / is-column. */
+.flow-portal__split.is-row {
+  flex-direction: row;
+}
+
+.flow-portal__split.is-column {
+  flex-direction: column;
 }
 
 /* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
@@ -2463,6 +2472,45 @@ button.pad-sidebar-session.is-summary > small {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+/* A widget wears the route's dividers, because it IS the route's tree: an engaged widget
+   resizes its composition through the same drag and the same doc write. Wider than the
+   route's band since a preview is drawn at PORTAL_PREVIEW_SCALE — the transform shrinks
+   the hit area with the paint. */
+.flow-portal__divider {
+  flex: 0 0 0.5rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.flow-portal__divider:hover,
+.flow-portal__divider:active {
+  background: #4c6ef5;
+}
+
+.flow-portal__split.is-row > .flow-portal__divider {
+  cursor: col-resize;
+}
+
+.flow-portal__split.is-column > .flow-portal__divider {
+  cursor: row-resize;
+}
+
+/* A WATCHING widget's dividers are structure, not controls: the composition's shape is
+   information, but the socket painting it is a spectator whose writes the server
+   refuses, so there is no grab affordance to offer. This is the shared tree's
+   `interactive: false` state, hence both skins. */
+.tiled-split > .tiled-divider.is-inert,
+.flow-portal__split > .flow-portal__divider.is-inert {
+  cursor: default;
+}
+
+.tiled-divider.is-inert:hover,
+.tiled-divider.is-inert:active,
+.flow-portal__divider.is-inert:hover,
+.flow-portal__divider.is-inert:active {
+  background: #23272e;
 }
 
 .flow-portal__tile {

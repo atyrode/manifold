@@ -7,9 +7,8 @@ import {
   Eye,
   Folder,
   FolderOpen,
-  Frame,
   GripVertical,
-  LayoutGrid,
+  LayoutDashboard,
   ListTree,
   Maximize2,
   Minimize2,
@@ -20,6 +19,7 @@ import {
   Power,
   RotateCw,
   Server,
+  SquareDashed,
   SquareTerminal,
   StickyNote,
   Trash2,
@@ -103,10 +103,10 @@ export type ItemKind =
 const ITEM_GLYPHS: Record<ItemKind, LucideIcon> = {
   /** A framed prompt — the bare `Terminal` chevron loses its frame beside the other species. */
   terminal: SquareTerminal,
-  /** A freeform bordered surface; named for what a canvas is rather than for a drawing tool. */
-  canvas: Frame,
+  /** A dashed, unbounded surface: freeform space, deliberately soft against the composition's structure. */
+  canvas: SquareDashed,
   /** A surface subdivided into tiles: the discipline itself, drawn. */
-  composition: LayoutGrid,
+  composition: LayoutDashboard,
   note: StickyNote,
   machine: Server,
   folder: Folder,

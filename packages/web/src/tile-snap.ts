@@ -185,3 +185,33 @@ export function resizeRatios(
   next[index + 1] = nextBefore === upper ? min : pair - nextBefore;
   return next;
 }
+
+/**
+ * A divider drag, snapshotted when the pointer went down. `originPx` and `sizePx` are
+ * client pixels — the pointer's coordinate and the split box's measured extent along
+ * the drag axis — and `ratios` is the split's ratio array as it stood at that moment,
+ * so a stream of moves resolves against one fixed origin instead of accumulating
+ * rounding.
+ */
+export interface DividerDrag {
+  /** The divider between children `index` and `index + 1`. */
+  readonly index: number;
+  readonly originPx: number;
+  readonly sizePx: number;
+  /** The split's ratio total, which is the unit `resizeRatios` works in. */
+  readonly total: number;
+  readonly ratios: readonly number[];
+}
+
+/**
+ * Where a divider drag has moved to: the pointer's travel as a fraction of the split,
+ * scaled into ratio units. Both terms are client pixels — the caller measures the box
+ * with `getBoundingClientRect()`, which reports it already transformed — so the same
+ * math holds for a tree drawn 1:1 and one drawn inside a scaled, zoomed canvas widget.
+ * Returns `drag.ratios` itself when the drag is pinned, so callers can skip the write.
+ */
+export function dividerRatios(drag: DividerDrag, pointerPx: number): readonly number[] {
+  if (drag.sizePx <= 0) return drag.ratios;
+  const delta = ((pointerPx - drag.originPx) / drag.sizePx) * drag.total;
+  return resizeRatios(drag.ratios, drag.index, delta);
+}

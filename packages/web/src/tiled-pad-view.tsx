@@ -1,6 +1,5 @@
 import {
   CURSOR_MIN_INTERVAL_MS,
-  ROOT_TILE_ID,
   type MachineSummary,
   type Pad,
   type PadPresence,
@@ -14,7 +13,6 @@ import {
 import { tileIdForSurface } from "@manifold/scene";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -53,7 +51,8 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { previewRect, resizeRatios, snapZone } from "./tile-snap.ts";
+import { previewRect, snapZone } from "./tile-snap.ts";
+import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { useToast } from "./toast.tsx";
 import { carryGhosts } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
@@ -882,20 +881,24 @@ export function TiledPadView({
     );
   };
 
-  const renderTile = (tileId: string): ReactNode => {
-    const node = layout?.[tileId];
-    if (node === undefined) return null;
-    if (node.dir === null) return renderLeaf(node);
-    return <TileSplit node={node} renderChild={renderTile} onRatios={setRatios} />;
-  };
-
   const body =
     layout === null ? (
       <div className="tiled-placeholder">
         {status === "open" ? "Preparing this view…" : "Connecting to this view…"}
       </div>
     ) : (
-      renderTile(ROOT_TILE_ID)
+      /*
+        THE tile tree — the same component a container widget draws on a canvas. Here it
+        is always interactive: this route is an occupant socket by construction, so a
+        divider drag writes the ratios straight into the doc.
+      */
+      <TileTree
+        layout={layout}
+        classes={TILED_TREE_CLASSES}
+        interactive
+        onRatios={setRatios}
+        renderLeaf={renderLeaf}
+      />
     );
 
   return (
@@ -978,94 +981,6 @@ export function TiledPadView({
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-interface TileSplitProps {
-  readonly node: TileNode;
-  readonly renderChild: (tileId: string) => ReactNode;
-  readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
-}
-
-/** Live divider state; kept in a ref so a drag never re-renders the terminals it moves. */
-interface DividerDrag {
-  readonly index: number;
-  readonly originPx: number;
-  readonly sizePx: number;
-  readonly total: number;
-  readonly ratios: readonly number[];
-}
-
-/**
- * One split. Children are laid out with `flex-grow`, so a ratio change is a style
- * mutation on boxes React already owns: no child unmounts, no xterm is reparented.
- */
-function TileSplit({ node, renderChild, onRatios }: TileSplitProps) {
-  const boxRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<DividerDrag | null>(null);
-  const row = node.dir === "row";
-
-  const beginDrag = (index: number, event: ReactPointerEvent<HTMLDivElement>): void => {
-    const box = boxRef.current;
-    if (box === null) return;
-    const bounds = box.getBoundingClientRect();
-    const sizePx = row ? bounds.width : bounds.height;
-    if (sizePx <= 0) return;
-    let total = 0;
-    for (const ratio of node.ratios) total += ratio;
-    dragRef.current = {
-      index,
-      originPx: row ? event.clientX : event.clientY,
-      sizePx,
-      total,
-      ratios: node.ratios,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
-
-  const moveDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    const drag = dragRef.current;
-    if (drag === null) return;
-    const deltaPx = (row ? event.clientX : event.clientY) - drag.originPx;
-    const next = resizeRatios(drag.ratios, drag.index, (deltaPx / drag.sizePx) * drag.total);
-    // resizeRatios hands back the same array when the drag is pinned; skipping the
-    // write there keeps a stalled drag from spamming the doc with no-op updates.
-    if (next !== drag.ratios) onRatios(node.id, next);
-  };
-
-  const endDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current === null) return;
-    dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  return (
-    <div className={`tiled-split is-${node.dir ?? "leaf"}`} ref={boxRef}>
-      {node.children.map((childId, index) => (
-        // Keyed by tile id, never by position: removing a leaf must not shift its
-        // siblings onto each other's keys, which would tear down live terminals.
-        <Fragment key={childId}>
-          {index === 0 ? null : (
-            <div
-              className="tiled-divider"
-              role="separator"
-              aria-orientation={row ? "vertical" : "horizontal"}
-              aria-label="Resize tiles"
-              onPointerDown={(event) => beginDrag(index - 1, event)}
-              onPointerMove={moveDrag}
-              onPointerUp={endDrag}
-              onPointerCancel={endDrag}
-            />
-          )}
-          <div className="tiled-pane" style={{ flexGrow: node.ratios[index] ?? 1 }}>
-            {renderChild(childId)}
-          </div>
-        </Fragment>
-      ))}
     </div>
   );
 }

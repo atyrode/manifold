@@ -5,11 +5,13 @@ import { ROOT_TILE_ID, validateTileLayout } from "@manifold/protocol";
 import {
   asTileTree,
   composeTargetAt,
+  dividerRatios,
   MIN_TILE_FRACTION,
   previewRect,
   resizeRatios,
   snapZone,
   SNAP_EDGE_BAND,
+  type DividerDrag,
   type SnapNode,
 } from "./tile-snap.ts";
 
@@ -182,5 +184,35 @@ describe("resizeRatios", () => {
   test("the stop is the documented fraction of the whole split", () => {
     const next = resizeRatios([1, 1, 8], 0, -5);
     expect(next[0]).toBeCloseTo(10 * MIN_TILE_FRACTION, 10);
+  });
+});
+
+describe("dividerRatios", () => {
+  /** A 400px-wide split of two equal panes, grabbed at its divider (x = 200). */
+  const drag: DividerDrag = { index: 0, originPx: 200, sizePx: 400, total: 2, ratios: [1, 1] };
+
+  test("the pointer's travel is a fraction of the split, in ratio units", () => {
+    // A quarter of the box moves a quarter of the total onto the left pane.
+    expect(dividerRatios(drag, 300)).toEqual([1.5, 0.5]);
+    expect(dividerRatios(drag, 100)).toEqual([0.5, 1.5]);
+  });
+
+  test("the fraction is scale-invariant, so a scaled widget drags like the route", () => {
+    // The same split drawn at 0.5: the box measures half, and so does the travel.
+    const scaled: DividerDrag = { ...drag, originPx: 100, sizePx: 200 };
+    expect(dividerRatios(scaled, 150)).toEqual(dividerRatios(drag, 300));
+  });
+
+  test("resting on the grab point writes nothing", () => {
+    expect(dividerRatios(drag, 200)).toBe(drag.ratios);
+  });
+
+  test("a split measured at zero cannot be resized", () => {
+    const collapsed: DividerDrag = { ...drag, sizePx: 0 };
+    expect(dividerRatios(collapsed, 320)).toBe(collapsed.ratios);
+  });
+
+  test("the stops hold, so a pane never drags away to nothing", () => {
+    expect(dividerRatios(drag, 4000)).toEqual([2 - 2 * MIN_TILE_FRACTION, 2 * MIN_TILE_FRACTION]);
   });
 });

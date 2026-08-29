@@ -1,7 +1,7 @@
-import { ROOT_TILE_ID, type Principal, type TileLayout } from "@manifold/protocol";
+import type { Principal, TileLayout, TileNode } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { getPad } from "./api.ts";
 import { countRender } from "./debug-seam.ts";
 import {
@@ -15,6 +15,7 @@ import { ControlIcon, ItemIcon } from "./icons.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
+import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import {
   createWidgetSocketSwitch,
   type WidgetRole,
@@ -452,53 +453,32 @@ export function soloTerminalLeaf(
   return found;
 }
 
-interface PortalTileProps {
+interface PortalLeafProps {
   readonly client: SessionClient;
   readonly containerId: string;
-  readonly layout: TileLayout;
-  readonly tileId: string;
+  readonly node: TileNode;
   readonly interactive: boolean;
   readonly engagedTileId: string | null;
   readonly onEngage: (tileId: string) => void;
   /** Non-null only for the ONE leaf of a mono container — see {@link soloTerminalLeaf}. */
-  readonly mono?: PortalMonoChrome | null;
+  readonly mono: PortalMonoChrome | null;
 }
 
-function PortalTile({
+/**
+ * ONE leaf of a widget's tree. The recursion above it — splits, ratio dividers, panes —
+ * is `TileTree`, the same component the fullscreen route draws, so this is the whole of
+ * what a canvas widget still renders for itself: the species switch plus the engagement
+ * shield that makes a previewed terminal watchable and extractable.
+ */
+function PortalLeaf({
   client,
   containerId,
-  layout,
-  tileId,
+  node,
   interactive,
   engagedTileId,
   onEngage,
-  mono = null,
-}: PortalTileProps): React.ReactElement | null {
-  const node = layout[tileId];
-  if (node === undefined) return null;
-  if (node.dir !== null) {
-    return (
-      <div className="flow-portal__split" style={{ flexDirection: node.dir }}>
-        {node.children.map((childId, index) => (
-          <div
-            className="flow-portal__slot"
-            key={childId}
-            style={{ flexGrow: node.ratios[index] ?? 1 }}
-          >
-            <PortalTile
-              client={client}
-              containerId={containerId}
-              layout={layout}
-              tileId={childId}
-              interactive={interactive}
-              engagedTileId={engagedTileId}
-              onEngage={onEngage}
-            />
-          </div>
-        ))}
-      </div>
-    );
-  }
+  mono,
+}: PortalLeafProps): React.ReactElement {
   const surface = node.surface;
   if (surface === null) return <div className="flow-portal__empty">empty tile</div>;
   switch (surface.kind) {
@@ -507,10 +487,10 @@ function PortalTile({
         <PortalTerminalTile
           client={client}
           containerId={containerId}
-          tileId={tileId}
+          tileId={node.id}
           sessionId={surface.sessionId}
           interactive={interactive}
-          active={interactive && engagedTileId === tileId}
+          active={interactive && engagedTileId === node.id}
           onEngage={onEngage}
           // Only a mono container hands this down; inside a multi-tile preview the
           // widget keeps its own bar and each tile keeps its preview chrome.
@@ -652,6 +632,26 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           onRenameTitle: (name: string) => pad.onRenameTerminal(solo.sessionId, name),
         };
 
+  /**
+   * The leaf half of the shared tree, bound to the socket being painted. Everything
+   * above a leaf is `TileTree`; a widget contributes its leaves' chrome and nothing else.
+   */
+  const renderLeaf =
+    (socket: SessionClient) =>
+    (node: TileNode): ReactNode => (
+      <PortalLeaf
+        client={socket}
+        containerId={containerId}
+        node={node}
+        interactive={interactive}
+        engagedTileId={engagedTileId}
+        onEngage={(tileId) => setEngagement({ containerId, tileId })}
+        // The arity rule reaches exactly ONE leaf: a mono container's single terminal
+        // wears this element's verbs, and no leaf of a real composition ever does.
+        mono={solo !== null && node.id === solo.tileId ? mono : null}
+      />
+    );
+
   const rootClass = [
     "flow-portal",
     mono === null ? "" : MONO_PORTAL_CLASS,
@@ -715,15 +715,17 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         <div className="flow-portal__viewport">
           {mono !== null && solo !== null && client !== null ? (
             // 1:1, not the half-scale preview: this IS the terminal, not a picture of one.
-            <PortalTile
-              client={client}
-              containerId={containerId}
+            <TileTree
               layout={layout ?? {}}
-              tileId={ROOT_TILE_ID}
+              classes={PORTAL_TREE_CLASSES}
               interactive={interactive}
-              engagedTileId={engagedTileId}
-              onEngage={(tileId) => setEngagement({ containerId, tileId })}
-              mono={mono}
+              /*
+                A divider only drags in the ENGAGED state, and the socket being painted
+                then IS the occupant one — so this is the very write the fullscreen route
+                makes, over the channel this widget already holds.
+              */
+              onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
+              renderLeaf={renderLeaf(client)}
             />
           ) : client !== null && layout !== null ? (
             <div
@@ -734,14 +736,12 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                 transform: `scale(${String(PREVIEW_SCALE)})`,
               }}
             >
-              <PortalTile
-                client={client}
-                containerId={containerId}
+              <TileTree
                 layout={layout}
-                tileId={ROOT_TILE_ID}
+                classes={PORTAL_TREE_CLASSES}
                 interactive={interactive}
-                engagedTileId={engagedTileId}
-                onEngage={(tileId) => setEngagement({ containerId, tileId })}
+                onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
+                renderLeaf={renderLeaf(client)}
               />
             </div>
           ) : (
