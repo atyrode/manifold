@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -37,9 +37,12 @@ export const PROTOCOL_VERSION = 10;
  * v9 -> v10: session-channel SessionInfo gained a nullable name and session_event
  * gained "renamed". The machine wire is byte-identical, so existing agents stay
  * accepted.
+ * v10 -> v11: pads gained layout/transient and tiled containers store a layout
+ * tree; scene elements gained portal. The machine wire is byte-identical, so
+ * existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10,
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
 ]);
 
 /**

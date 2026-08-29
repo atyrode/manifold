@@ -19,6 +19,21 @@ export {
   type SceneElement,
 } from "./elements.ts";
 export {
+  MAX_TILE_CHILDREN,
+  ROOT_TILE_ID,
+  TileDirSchema,
+  TileEdgeSchema,
+  TileLayoutSchema,
+  TileNodeSchema,
+  TileSurfaceSchema,
+  validateTileLayout,
+  type TileDir,
+  type TileEdge,
+  type TileLayout,
+  type TileNode,
+  type TileSurface,
+} from "./layout.ts";
+export {
   CURSOR_MIN_INTERVAL_MS,
   GESTURE_MIN_INTERVAL_MS,
   GESTURE_TTL_MS,

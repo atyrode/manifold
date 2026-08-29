@@ -22,6 +22,15 @@ export const SceneElementSchema = z.discriminatedUnion("type", [
     type: z.literal("terminal"),
     sessionId: z.string().min(1).max(128),
   }),
+  /**
+   * A container rendered inside a canvas: live at depth <= 2, a navigable card
+   * deeper. Reference cycles are legal because portals navigate, never recurse.
+   */
+  z.strictObject({
+    ...baseFields,
+    type: z.literal("portal"),
+    containerId: z.string().min(1),
+  }),
   z.strictObject({
     ...baseFields,
     type: z.literal("text"),

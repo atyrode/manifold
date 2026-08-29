@@ -20,4 +20,23 @@ export {
   writeElement,
   type ScenePatch,
 } from "./scene-doc.ts";
+export {
+  LAYOUT_KEY,
+  applyTileLayout,
+  emptyTileLayout,
+  initTiledLayout,
+  layoutMap,
+  nextTileId,
+  readTileLayout,
+  removeTileLeaf,
+  setTileRatios,
+  tileLeaf,
+  tileLeafIds,
+  tileParentId,
+  withTileLeaf,
+  withTileRatios,
+  withoutTileLeaf,
+  writeTileLeaf,
+  type TileInsert,
+} from "./tile-layout.ts";
 export * as Y from "yjs";

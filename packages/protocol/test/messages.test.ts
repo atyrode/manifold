@@ -3,17 +3,26 @@ import {
   AgentMessageSchema,
   BindTerminalRequestSchema,
   ClientMessageSchema,
+  CreatePadRequestSchema,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   MoveTerminalPoolRequestSchema,
   PROTOCOL_VERSION,
+  PadSchema,
   ParkTerminalRequestSchema,
+  ROOT_TILE_ID,
   RenameTerminalRequestSchema,
   ServerMessageSchema,
   SceneElementSchema,
   TerminalPoolResponseSchema,
+  TileLayoutSchema,
+  TileNodeSchema,
+  TileSurfaceSchema,
   buildProtocolJsonSchema,
   hasCap,
+  validateTileLayout,
+  type TileNode,
+  type TileSurface,
 } from "@manifold/protocol";
 
 const element = (id: string) => ({
@@ -214,6 +223,26 @@ describe("session channel schemas", () => {
       false,
     );
   });
+
+  test("scene records validate the portal container variant", () => {
+    const portal = {
+      id: "portal-1",
+      type: "portal" as const,
+      containerId: "view-1",
+      x: 8,
+      y: 16,
+      width: 720,
+      height: 480,
+      zIndex: 3,
+    };
+    expect(SceneElementSchema.parse(portal)).toEqual(portal);
+    // A portal is not a terminal: the discriminant owns the payload shape.
+    expect(SceneElementSchema.safeParse({ ...portal, containerId: "" }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...portal, sessionId: "s1" }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...element("portal-2"), type: "portal" }).success).toBe(
+      false,
+    );
+  });
 });
 
 describe("machine channel schemas", () => {
@@ -300,6 +329,150 @@ describe("http schemas", () => {
       false,
     );
     expect(MoveTerminalPoolRequestSchema.safeParse({ index: 0 }).success).toBe(false);
+  });
+
+  test("pads carry a container discipline and a bubble flag", () => {
+    const pad = {
+      id: "p1",
+      name: "Pad",
+      createdAt: 5,
+      layout: "canvas" as const,
+      transient: false,
+    };
+    expect(PadSchema.parse(pad)).toEqual(pad);
+    expect(PadSchema.parse({ ...pad, layout: "tiled", transient: true })).toEqual({
+      ...pad,
+      layout: "tiled",
+      transient: true,
+    });
+    // Both fields are required on the wire: a pad without a discipline is unrenderable.
+    expect(PadSchema.safeParse({ id: "p1", name: "Pad", createdAt: 5 }).success).toBe(false);
+    expect(PadSchema.safeParse({ ...pad, layout: "grid" }).success).toBe(false);
+    expect(PadSchema.safeParse({ ...pad, transient: 0 }).success).toBe(false);
+  });
+
+  test("pad creation takes an optional discipline and never a bubble flag", () => {
+    expect(CreatePadRequestSchema.parse({ name: "Pad" })).toEqual({ name: "Pad" });
+    expect(CreatePadRequestSchema.parse({ name: "View", layout: "tiled" })).toEqual({
+      name: "View",
+      layout: "tiled",
+    });
+    expect(CreatePadRequestSchema.safeParse({ name: "Pad", layout: "grid" }).success).toBe(false);
+    expect(CreatePadRequestSchema.safeParse({ name: "Pad", transient: true }).success).toBe(false);
+  });
+});
+
+describe("tile layout schemas", () => {
+  const leaf = (id: string, surface: TileSurface | null = null): TileNode => ({
+    id,
+    dir: null,
+    ratios: [],
+    children: [],
+    surface,
+  });
+  const split = (id: string, children: readonly string[]): TileNode => ({
+    id,
+    dir: "row",
+    ratios: children.map(() => 1 / children.length),
+    children: [...children],
+    surface: null,
+  });
+  const terminal = (sessionId: string): TileSurface => ({ kind: "terminal", sessionId });
+
+  test("surfaces discriminate terminals from embedded canvases", () => {
+    expect(TileSurfaceSchema.parse(terminal("s1"))).toEqual({ kind: "terminal", sessionId: "s1" });
+    expect(TileSurfaceSchema.parse({ kind: "pad", padId: "p1" })).toEqual({
+      kind: "pad",
+      padId: "p1",
+    });
+    expect(TileSurfaceSchema.safeParse({ kind: "pad", padId: "" }).success).toBe(false);
+    expect(TileSurfaceSchema.safeParse({ kind: "browser", url: "https://x" }).success).toBe(false);
+    expect(
+      TileSurfaceSchema.safeParse({ kind: "terminal", sessionId: "s1", padId: "p1" }).success,
+    ).toBe(false);
+  });
+
+  test("nodes accept both shapes and reject malformed geometry", () => {
+    expect(TileNodeSchema.parse(leaf(ROOT_TILE_ID))).toEqual(leaf(ROOT_TILE_ID));
+    expect(TileNodeSchema.parse(split("s", ["a", "b"]))).toEqual(split("s", ["a", "b"]));
+    expect(TileNodeSchema.safeParse({ ...leaf("t1"), dir: "diagonal" }).success).toBe(false);
+    expect(TileNodeSchema.safeParse({ ...split("s", ["a", "b"]), ratios: [0, 1] }).success).toBe(
+      false,
+    );
+    expect(TileNodeSchema.safeParse({ ...leaf("t1"), extra: 1 }).success).toBe(false);
+    expect(TileNodeSchema.safeParse({ ...leaf("t1"), id: "" }).success).toBe(false);
+    expect(TileLayoutSchema.parse({ root: leaf(ROOT_TILE_ID) })).toEqual({
+      root: leaf(ROOT_TILE_ID),
+    });
+    expect(TileLayoutSchema.safeParse({ "": leaf("t1") }).success).toBe(false);
+  });
+
+  test("validate accepts a well-formed tree", () => {
+    expect(validateTileLayout({ root: leaf(ROOT_TILE_ID) })).toBe(true);
+    expect(
+      validateTileLayout({
+        root: split(ROOT_TILE_ID, ["t1", "t2"]),
+        t1: leaf("t1", terminal("s1")),
+        t2: leaf("t2", { kind: "pad", padId: "p1" }),
+      }),
+    ).toBe(true);
+    // Unreachable garbage is inert: rejecting it would strand a live room.
+    expect(validateTileLayout({ root: leaf(ROOT_TILE_ID), orphan: leaf("orphan") })).toBe(true);
+    // A one-child split still renders; the ops collapse it on the next write.
+    expect(
+      validateTileLayout({ root: split(ROOT_TILE_ID, ["t1"]), t1: leaf("t1", terminal("s1")) }),
+    ).toBe(true);
+  });
+
+  test("validate rejects every structural break", () => {
+    expect(validateTileLayout({ t1: leaf("t1") })).toBe(false);
+    expect(validateTileLayout({ root: split(ROOT_TILE_ID, ["t1", "gone"]), t1: leaf("t1") })).toBe(
+      false,
+    );
+    // Reachable twice: one shared child under two parents.
+    expect(
+      validateTileLayout({
+        root: split(ROOT_TILE_ID, ["s1", "s2"]),
+        s1: split("s1", ["t1"]),
+        s2: split("s2", ["t1"]),
+        t1: leaf("t1", terminal("s1")),
+      }),
+    ).toBe(false);
+    // A cycle back to the root is reachable twice as well.
+    expect(
+      validateTileLayout({
+        root: split(ROOT_TILE_ID, ["s1"]),
+        s1: split("s1", [ROOT_TILE_ID]),
+      }),
+    ).toBe(false);
+    expect(
+      validateTileLayout({
+        root: { ...split(ROOT_TILE_ID, ["t1", "t2"]), ratios: [1] },
+        t1: leaf("t1"),
+        t2: leaf("t2"),
+      }),
+    ).toBe(false);
+    // Surfaces live on leaves; splits carry structure only.
+    expect(
+      validateTileLayout({
+        root: { ...split(ROOT_TILE_ID, ["t1"]), surface: terminal("s1") },
+        t1: leaf("t1"),
+      }),
+    ).toBe(false);
+    expect(validateTileLayout({ root: { ...leaf(ROOT_TILE_ID), children: ["t1"] } })).toBe(false);
+    // Key and node id must agree, or lookups and writes disagree.
+    expect(validateTileLayout({ root: leaf("other") })).toBe(false);
+  });
+
+  test("validate rejects a container tiling itself", () => {
+    const layout = {
+      root: split(ROOT_TILE_ID, ["t1", "t2"]),
+      t1: leaf("t1", { kind: "pad" as const, padId: "view-1" }),
+      t2: leaf("t2", terminal("s1")),
+    };
+    expect(validateTileLayout(layout, "view-1")).toBe(false);
+    expect(validateTileLayout(layout, "view-2")).toBe(true);
+    expect(validateTileLayout(layout)).toBe(true);
   });
 });
 

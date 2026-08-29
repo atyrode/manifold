@@ -8,6 +8,10 @@ export const PadSchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1).max(120),
   createdAt: z.number().int().nonnegative(),
+  /** Container discipline: a free canvas of elements, or a tiled view of surfaces. */
+  layout: z.enum(["canvas", "tiled"]),
+  /** A bubble: unsplit, unpinned, and dissolved when its last occupant leaves. */
+  transient: z.boolean(),
 });
 export type Pad = z.infer<typeof PadSchema>;
 
@@ -21,6 +25,8 @@ export type HttpError = z.infer<typeof HttpErrorSchema>;
 
 export const CreatePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
+  /** Omitted means `"canvas"`; explicit creations are never transient. */
+  layout: z.enum(["canvas", "tiled"]).optional(),
 });
 export const RenamePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
