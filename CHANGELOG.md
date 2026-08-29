@@ -5,6 +5,13 @@
 ### Changed
 
 - Replaced the terminal-only canvas with a React Flow collaborative canvas backed by Yjs, adding smooth live terminal moves and resizes, text editing, freehand drawing, selection presence, and undo. Terminals resize from their frame border like a desktop window, with no selection step. (#15, #57)
+- Dragging follows the pointer without trailing: only the moved element re-renders per drag frame instead of the whole canvas. (#15, #57)
+- Remote cursors and gestures now favor accuracy over smoothing: twice the update rate with just enough easing to round the edges. (#15, #57)
+- A user's sibling tabs now render numbered cursor labels ("name (2)") so several tabs of one identity stay tellable apart. (#15, #57)
+
+### Fixed
+
+- Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)
 
 ## [0.4.4] - 2026-08-27
 

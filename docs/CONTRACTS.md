@@ -177,7 +177,10 @@ height?, points? }` carries ephemeral move, resize, and freehand previews at the
 - Roster: `init.roster` lists connected principals; server broadcasts
   `roster { joined?, left? }` deltas. Presence for a principal dies with its last socket.
 - Multiple sockets per principal are legal (tabs); roster entries are per principal with
-  a connection count.
+  a connection count and the exact live `connIds`. Cursor and gesture frames are stamped
+  per-connection, so viewers retire a closed tab's cursor from `connIds` — pruning by
+  principal alone strands ghost cursors while sibling tabs remain — and disambiguate
+  sibling-tab cursor labels ("name (2)") from the same shared order.
 
 ### Terminals over the session channel
 
