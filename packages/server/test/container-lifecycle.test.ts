@@ -552,7 +552,6 @@ describe("terminal_open into a tiled container", () => {
     expect(opened.session).toMatchObject({
       id: create.sessionId,
       padId: viewId,
-      elementId: opened.elementId,
       cols: 100,
       rows: 30,
       // Opening earns the lease exactly as it does on a canvas.

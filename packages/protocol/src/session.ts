@@ -12,13 +12,18 @@ import { PrincipalSchema } from "./principal.ts";
 
 const base64 = z.base64().max(700_000); // ~512KiB decoded per terminal frame
 
+/**
+ * A live PTY session as the wire describes it. Placement is deliberately ABSENT: a
+ * session can hold several placements at once (canvas mirrors, tile leaves), so any
+ * single `elementId` here would be a lie. Consumers read placement from live state —
+ * the scene doc's elements and the container's layout tree.
+ */
 export const SessionInfoSchema = z.strictObject({
   id: z.string().min(1),
   /** Null while the session is parked in the workspace terminal pool (no pad binding). */
   padId: z.string().min(1).nullable(),
   /** Operator-assigned display name; null means the client renders its default label. */
   name: z.string().min(1).max(120).nullable(),
-  elementId: z.string().min(1),
   machineId: z.string().min(1),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),

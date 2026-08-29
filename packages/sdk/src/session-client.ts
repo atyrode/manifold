@@ -638,10 +638,12 @@ export class SessionClient {
   /**
    * Opens a terminal and resolves with its session once the server confirms.
    *
-   * `placement: "tile"` is how a TILED container births one: it has no canvas to author
-   * into, so the server writes the tile leaf and the resolved `session.elementId` is that
-   * tile id. `elementId` stays the correlation token either way — under the default
-   * element placement it is also the id the caller authors its element under.
+   * `elementId` is the correlation token, and under the default element placement it is
+   * also the id the caller authors its canvas element under. `placement: "tile"` is how
+   * a TILED container births one: it has no canvas to author into, so the server writes
+   * the tile leaf itself. The session record carries no placement — read the leaf from
+   * `layout()` (`tileIdForSurface`) once this resolves; the doc update precedes the
+   * confirmation on the same socket.
    */
   openTerminal(opts: {
     elementId: string;

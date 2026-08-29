@@ -12,6 +12,13 @@ export const ROOT_TILE_ID = "root";
 /** Fan-out bound per split, keeping node payloads small on the wire. */
 export const MAX_TILE_CHILDREN = 16;
 
+/**
+ * Container discipline: the one field that separates the two renderers of the same
+ * object. Every placement rule that mentions "canvas" or "view" resolves through this.
+ */
+export const ContainerLayoutSchema = z.enum(["canvas", "tiled"]);
+export type ContainerLayout = z.infer<typeof ContainerLayoutSchema>;
+
 /** What a leaf shows. Terminals and canvases are both tileable surfaces. */
 export const TileSurfaceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),

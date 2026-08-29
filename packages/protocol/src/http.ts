@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
-import { TileEdgeSchema, TileSurfaceSchema } from "./layout.ts";
+import { ContainerLayoutSchema, TileEdgeSchema, TileSurfaceSchema } from "./layout.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /** REST surface schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
@@ -10,7 +10,7 @@ export const PadSchema = z.strictObject({
   name: z.string().min(1).max(120),
   createdAt: z.number().int().nonnegative(),
   /** Container discipline: a free canvas of elements, or a tiled view of surfaces. */
-  layout: z.enum(["canvas", "tiled"]),
+  layout: ContainerLayoutSchema,
   /** A bubble: unsplit, unpinned, and dissolved when its last occupant leaves. */
   transient: z.boolean(),
 });
@@ -27,7 +27,7 @@ export type HttpError = z.infer<typeof HttpErrorSchema>;
 export const CreatePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
   /** Omitted means `"canvas"`; explicit creations are never transient. */
-  layout: z.enum(["canvas", "tiled"]).optional(),
+  layout: ContainerLayoutSchema.optional(),
 });
 export const RenamePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
@@ -127,7 +127,6 @@ export const PadSessionSummarySchema = z.strictObject({
   id: z.string().min(1),
   padId: z.string().min(1),
   machineId: z.string().min(1),
-  elementId: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),

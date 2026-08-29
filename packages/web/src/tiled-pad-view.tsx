@@ -9,6 +9,7 @@ import {
   type TileNode,
   type TileSurface,
 } from "@manifold/protocol";
+import { tileIdForSurface } from "@manifold/scene";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
   Fragment,
@@ -311,8 +312,9 @@ export function TiledPadView({
   /**
    * The sidebar's Machines "+" inside a view. There is no canvas to author an element on,
    * so the open frame hands placement to the container and the SERVER writes the leaf —
-   * the first empty one, else a split of the root. The resolved `session.elementId` IS
-   * that tile id, so the tile the click created is the one that takes focus.
+   * the first empty one, else a split of the root. Placement is not on the session
+   * record, so the tile that takes focus is read back out of the live layout: the doc
+   * update carrying the leaf precedes the open confirmation on this same socket.
    */
   const createTerminal = useCallback(
     async (machine?: MachineSummary): Promise<void> => {
@@ -334,7 +336,11 @@ export function TiledPadView({
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
         });
-        setFocusedTileId(session.elementId);
+        const placed = tileIdForSurface(client.layout(), {
+          kind: "terminal",
+          sessionId: session.id,
+        });
+        if (placed !== null) setFocusedTileId(placed);
       } catch (reason: unknown) {
         failed(reason, "Could not open a terminal in this view");
       }

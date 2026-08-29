@@ -7,7 +7,6 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
     id: "s1",
     name: null,
     padId: "pad1",
-    elementId: "el1",
     machineId: "m1",
     status: "running",
     exitCode: null,

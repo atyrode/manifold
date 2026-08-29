@@ -61,6 +61,27 @@ export function tileLeafIds(layout: TileLayout): string[] {
   return leaves;
 }
 
+/**
+ * Leaf id showing `surface`, in tree order; null when the container does not show it.
+ * Placement truth for a session lives HERE and in the element table — never on a
+ * session record, which one id could only ever describe partially.
+ */
+export function tileIdForSurface(layout: TileLayout | null, surface: TileSurface): string | null {
+  if (layout === null) return null;
+  for (const tileId of tileLeafIds(layout)) {
+    const found = layout[tileId]?.surface;
+    if (found === undefined || found === null || found.kind !== surface.kind) continue;
+    if (found.kind === "terminal" && surface.kind === "terminal") {
+      if (found.sessionId === surface.sessionId) return tileId;
+      continue;
+    }
+    if (found.kind === "pad" && surface.kind === "pad" && found.padId === surface.padId) {
+      return tileId;
+    }
+  }
+  return null;
+}
+
 /** Smallest unused `t<n>` id, so ids stay stable and readable across writes. */
 export function nextTileId(layout: TileLayout, taken: ReadonlySet<string> = new Set()): string {
   for (let index = 1; ; index += 1) {

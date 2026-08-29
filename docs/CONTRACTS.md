@@ -93,7 +93,7 @@ and produces negative geometry that the commit path then rejects.
 | POST /api/pad-folders       | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                              |
 | PATCH /api/pad-folders/:id  | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                          |
 | DELETE /api/pad-folders/:id | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                     |
-| GET /api/pad-sessions       | pads:read             | → `{ sessions: [{id,padId,machineId,elementId,createdAt,status,exitCode}] }`; scoped tokens see only their pad                                   |
+| GET /api/pad-sessions       | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`; scoped tokens see only their pad                                             |
 | POST /api/principals        | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                               |
 | POST /api/tokens            | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                        |
 | POST /api/tokens/revoke     | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                     |

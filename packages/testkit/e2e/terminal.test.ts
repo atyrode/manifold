@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { OkResponseSchema, PadSessionsResponseSchema } from "@manifold/protocol";
+import { tileIdForSurface } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -76,7 +77,6 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       id: session.id,
       padId: pad.id,
       machineId: enrolled.machineId,
-      elementId: "el-term-1",
       status: "running",
       exitCode: null,
     });
@@ -510,7 +510,8 @@ test("the Machines + on a view births a terminal the server places as a tile, an
     if (client.self === null) throw new Error("terminal opener lacks self");
 
     // A view has no canvas to author an element on: the "+" hands placement to the
-    // container, and the server's reply carries the tile id it authored as elementId.
+    // container, and the leaf the server wrote is read back out of the layout tree —
+    // the session record carries no placement id to trust.
     const session = await client.openTerminal({
       elementId: "correlation-only",
       placement: "tile",
@@ -520,13 +521,13 @@ test("the Machines + on a view births a terminal the server places as a tile, an
     expect(session.status).toBe("running");
     expect(session.padId).toBe(view.id);
     expect(session.controllerId).toBe(grant.principal.id);
-    expect(session.elementId).not.toBe("correlation-only");
 
-    await waitFor(() => client.layout()?.[session.elementId]?.surface !== undefined, 10_000, 20);
-    expect(client.layout()?.[session.elementId]?.surface).toEqual({
-      kind: "terminal",
-      sessionId: session.id,
-    });
+    const surface = { kind: "terminal" as const, sessionId: session.id };
+    await waitFor(() => tileIdForSurface(client.layout(), surface) !== null, 10_000, 20);
+    const tileId = tileIdForSurface(client.layout(), surface);
+    // The opener never chose this id: the container did.
+    expect(tileId).not.toBe("correlation-only");
+    expect(client.layout()?.[tileId ?? ""]?.surface).toEqual(surface);
 
     const capture = captureTerminal(client, session.id);
     captures.push(capture);

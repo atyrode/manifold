@@ -30,6 +30,7 @@ export {
   readTileLayout,
   removeTileLeaf,
   setTileRatios,
+  tileIdForSurface,
   tileLeaf,
   tileLeafIds,
   tileParentId,

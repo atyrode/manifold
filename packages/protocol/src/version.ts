@@ -43,8 +43,11 @@ export const PROTOCOL_VERSION = 11;
  * occupying it (absent ≡ occupant, the pre-flag semantics); `terminal_open` gained
  * an OPTIONAL `placement: "tile"` (absent ≡ the opener authors a canvas element)
  * and `terminal_opened` an OPTIONAL `ref` echoing it, so a view can birth a
- * terminal the server places as a tile. The machine wire is byte-identical, so
- * existing agents stay accepted.
+ * terminal the server places as a tile; SessionInfo and PadSessionSummary DROPPED
+ * `elementId`, because a session holds many placements at once (canvas mirrors,
+ * tile leaves) and consumers read placement from the doc's elements and layout
+ * tree instead. The machine wire is byte-identical, so existing agents stay
+ * accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   2, 3, 4, 5, 6, 7, 8, 9, 10, 11,

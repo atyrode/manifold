@@ -324,7 +324,6 @@ export class HttpApp {
           id: session.id,
           padId: session.padId,
           machineId: session.machineId,
-          elementId: session.elementId,
           createdAt: session.createdAt,
           status: session.status,
           exitCode: session.exitCode,

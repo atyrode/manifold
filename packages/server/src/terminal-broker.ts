@@ -8,10 +8,9 @@ import {
   type ServerToAgentMessage,
   type SessionInfo,
   type TileEdge,
-  type TileLayout,
   type TileSurface,
 } from "@manifold/protocol";
-import { tileLeafIds } from "@manifold/scene";
+import { tileIdForSurface, tileLeafIds } from "@manifold/scene";
 import type { AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
@@ -87,18 +86,6 @@ interface PendingOpen {
   cancelDeadline: (() => void) | null;
 }
 
-/** Tile id of the first leaf showing `sessionId`, in tree order; null when it shows nowhere. */
-function tileForSession(layout: TileLayout | null, sessionId: string): string | null {
-  if (layout === null) return null;
-  for (const tileId of tileLeafIds(layout)) {
-    const surface = layout[tileId]?.surface;
-    if (surface !== undefined && surface !== null && surface.kind === "terminal") {
-      if (surface.sessionId === sessionId) return tileId;
-    }
-  }
-  return null;
-}
-
 /** Routes terminal lifecycle/control while preserving the snapshot-plus-tail attach invariant. */
 export class TerminalBroker {
   private readonly machines = new Map<string, MachineChannel>();
@@ -119,7 +106,6 @@ export class TerminalBroker {
         id: row.id,
         padId: row.padId,
         name: row.name,
-        elementId: row.elementId,
         machineId: row.machineId,
         status: row.status,
         exitCode: row.exitCode,
@@ -258,7 +244,7 @@ export class TerminalBroker {
     }
   }
 
-  /** Re-registers a surviving PTY only against its persisted pad/element binding. */
+  /** Re-registers a surviving PTY only against its persisted pad binding. */
   adoptSession(machineId: string, advertised: AdvertisedSession): boolean {
     const stored = this.store.getSession(advertised.sessionId);
     if (stored === null || stored.machineId !== machineId) return false;
@@ -268,7 +254,6 @@ export class TerminalBroker {
         id: stored.id,
         padId: stored.padId,
         name: stored.name,
-        elementId: stored.elementId,
         machineId: stored.machineId,
         status: stored.status,
         exitCode: stored.exitCode,
@@ -497,7 +482,6 @@ export class TerminalBroker {
       id: sessionId,
       padId: pending.padId,
       name: null,
-      elementId,
       machineId,
       status: "running",
       exitCode: null,
@@ -1135,7 +1119,10 @@ export class TerminalBroker {
       } else {
         // Expanding a tile: there is no canvas element to transmute, so the leaf it left
         // behind is removed rather than pointing at a session that now lives elsewhere.
-        const leafId = tileForSession(originRoom.tileLayout(), sessionId);
+        const leafId = tileIdForSurface(originRoom.tileLayout(), {
+          kind: "terminal",
+          sessionId,
+        });
         if (leafId !== null) originRoom.removeTileLeafById(leafId);
       }
     }
