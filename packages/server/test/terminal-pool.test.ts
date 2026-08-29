@@ -91,7 +91,13 @@ function poolFixture(): PoolFixture {
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
-  const pad: Pad = { id: runtime.newId(), name: "pool pad", createdAt: runtime.now() };
+  const pad: Pad = {
+    id: runtime.newId(),
+    name: "pool pad",
+    createdAt: runtime.now(),
+    layout: "canvas",
+    transient: false,
+  };
   store.createPad(pad);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(

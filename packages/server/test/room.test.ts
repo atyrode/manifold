@@ -66,7 +66,13 @@ function encodedElements(...elements: SceneElement[]): string {
 function roomFixture(store: ServerStore = testStore()) {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
-  const pad: Pad = { id: runtime.newId(), name: "test pad", createdAt: runtime.now() };
+  const pad: Pad = {
+    id: runtime.newId(),
+    name: "test pad",
+    createdAt: runtime.now(),
+    layout: "canvas",
+    transient: false,
+  };
   store.createPad(pad);
   const principal: Principal = {
     id: runtime.newId(),
@@ -102,7 +108,13 @@ describe("Room Yjs document consistency", () => {
   test("init carries a complete encoded document", () => {
     const store = testStore();
     const runtime = new FakeRuntime();
-    const pad: Pad = { id: runtime.newId(), name: "persisted", createdAt: 0 };
+    const pad: Pad = {
+      id: runtime.newId(),
+      name: "persisted",
+      createdAt: 0,
+      layout: "canvas",
+      transient: false,
+    };
     store.createPad(pad);
     const saved = createSceneDoc();
     writeElement(saved, terminal("persisted"), LOCAL_ORIGIN);
@@ -269,7 +281,13 @@ describe("Room document persistence", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);
     const store = testStore();
-    const pad: Pad = { id: runtime.newId(), name: "evict", createdAt: 0 };
+    const pad: Pad = {
+      id: runtime.newId(),
+      name: "evict",
+      createdAt: 0,
+      layout: "canvas",
+      transient: false,
+    };
     store.createPad(pad);
     const principal: Principal = {
       id: runtime.newId(),

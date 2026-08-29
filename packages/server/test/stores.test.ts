@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { Pad } from "@manifold/protocol";
 import { Y, createSceneDoc } from "@manifold/scene";
 import { sha256Hex } from "../src/stores.ts";
 import { testStore } from "./helpers.ts";
@@ -16,6 +17,14 @@ function documentUpdate(value: number): Uint8Array {
   doc.getMap<number>("values").set("value", value);
   return Y.encodeStateAsUpdate(doc);
 }
+
+const canvasPad = (id: string, name: string, createdAt: number): Pad => ({
+  id,
+  name,
+  createdAt,
+  layout: "canvas",
+  transient: false,
+});
 
 describe("ServerStore event retention", () => {
   test("addEvent prunes rows older than 30 days using the caller timestamp", () => {
@@ -58,9 +67,9 @@ describe("ServerStore event retention", () => {
 describe("ServerStore pad tree", () => {
   test("orders mixed siblings, nests folders, rejects cycles, and promotes children on delete", () => {
     const store = testStore();
-    const alpha = { id: "pad-a", name: "Alpha", createdAt: 10 };
-    const beta = { id: "pad-b", name: "Beta", createdAt: 20 };
-    const gamma = { id: "pad-c", name: "Gamma", createdAt: 30 };
+    const alpha = canvasPad("pad-a", "Alpha", 10);
+    const beta = canvasPad("pad-b", "Beta", 20);
+    const gamma = canvasPad("pad-c", "Gamma", 30);
     store.createPad(alpha);
     store.createPad(beta);
     store.createPad(gamma);

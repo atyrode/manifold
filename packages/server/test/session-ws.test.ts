@@ -13,7 +13,13 @@ function gatewayFixture() {
   const store = testStore();
   const ownerKey = "e".repeat(64);
   const auth = new AuthService(store, ownerKey, runtime);
-  const pad: Pad = { id: runtime.newId(), name: "sync pad", createdAt: runtime.now() };
+  const pad: Pad = {
+    id: runtime.newId(),
+    name: "sync pad",
+    createdAt: runtime.now(),
+    layout: "canvas",
+    transient: false,
+  };
   store.createPad(pad);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(

@@ -407,6 +407,10 @@ export class HttpApp {
         id: this.runtime.newId(),
         name: input.name,
         createdAt: this.runtime.now(),
+        // The requested discipline is not persisted yet: the pads migration adds
+        // the columns, so every explicit creation is a durable canvas for now.
+        layout: "canvas",
+        transient: false,
       };
       this.store.createPad(pad);
       return jsonResponse(PadResponseSchema.parse({ pad }));

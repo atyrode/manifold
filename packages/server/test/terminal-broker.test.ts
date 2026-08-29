@@ -32,7 +32,13 @@ function openingFixture() {
   const store = testStore();
   const auth = new AuthService(store, "b".repeat(64), runtime);
   const root = auth.authenticate("b".repeat(64));
-  const pad: Pad = { id: runtime.newId(), name: "terminal pad", createdAt: runtime.now() };
+  const pad: Pad = {
+    id: runtime.newId(),
+    name: "terminal pad",
+    createdAt: runtime.now(),
+    layout: "canvas",
+    transient: false,
+  };
   store.createPad(pad);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(

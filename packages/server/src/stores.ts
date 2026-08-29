@@ -191,6 +191,25 @@ function toMachine(row: MachineRow): MachineRecord {
   return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
 }
 
+/**
+ * Pad rows still carry only the pre-v11 columns: the `layout`/`transient`
+ * columns land with the container-discipline migration, so every persisted pad
+ * reads back as a plain, durable canvas until then.
+ */
+function toPad(row: {
+  readonly id: string;
+  readonly name: string;
+  readonly created_at: number;
+}): Pad {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    layout: "canvas",
+    transient: false,
+  };
+}
+
 function toSession(row: SessionDbRow): StoredSession {
   if (row.status !== "running" && row.status !== "exited") {
     throw new Error(`invalid persisted session status: ${row.status}`);
@@ -260,7 +279,7 @@ export class ServerStore {
         row.kind === "pad"
           ? PadTreeItemSchema.parse({
               kind: "pad",
-              pad: { id: row.id, name: row.name, createdAt: row.created_at },
+              pad: toPad(row),
               parentId: row.parent_id,
               sortOrder: row.sort_order,
             })
@@ -285,9 +304,7 @@ export class ServerStore {
     const row = this.db
       .query<PadRow, [string]>("SELECT id, name, created_at FROM pads WHERE id = ?")
       .get(id);
-    return row === null
-      ? null
-      : PadSchema.parse({ id: row.id, name: row.name, createdAt: row.created_at });
+    return row === null ? null : PadSchema.parse(toPad(row));
   }
 
   private siblingRefs(parentId: string | null): TreeRef[] {
@@ -322,6 +339,7 @@ export class ServerStore {
     siblings.forEach((item, index) => this.setTreePosition(item, parentId, index));
   }
 
+  /** `layout`/`transient` are not persisted yet — the columns arrive with the pads migration. */
   createPad(pad: Pad): void {
     PadSchema.parse(pad);
     const sortOrder = this.siblingRefs(null).length;
