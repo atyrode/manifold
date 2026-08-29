@@ -1,15 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentMessageSchema,
-  BindTerminalRequestSchema,
   ClientMessageSchema,
+  ClientMessageBodySchema,
   CreatePadRequestSchema,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   MoveTerminalPoolRequestSchema,
   PROTOCOL_VERSION,
   PadSchema,
-  ParkTerminalRequestSchema,
   ROOT_TILE_ID,
   RenameTerminalRequestSchema,
   ServerMessageSchema,
@@ -36,28 +35,94 @@ const element = (id: string) => ({
   zIndex: 0,
 });
 describe("session channel schemas", () => {
-  test("join round-trips", () => {
-    const msg = {
+  test("join round-trips as a channel frame, and its body without routing", () => {
+    const body = {
       type: "join" as const,
       padId: "p1",
       token: "t",
       protocolVersion: PROTOCOL_VERSION,
     };
-    expect(ClientMessageSchema.parse(msg)).toEqual(msg);
+    const frame = { ...body, ch: "c1" };
+    expect(ClientMessageSchema.parse(frame)).toEqual(frame);
+    expect(ClientMessageBodySchema.parse(body)).toEqual(body);
+    // Routing is not optional on the wire: an untagged channel frame has no room.
+    expect(ClientMessageSchema.safeParse(body).success).toBe(false);
+  });
+
+  test("channel ids are tokens, so a tagged frame never needs JSON escaping", () => {
+    const join = {
+      type: "join" as const,
+      padId: "p1",
+      token: "t",
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    for (const ch of ["c1", "C-7_x", "a".repeat(64)]) {
+      expect(ClientMessageSchema.safeParse({ ...join, ch }).success).toBe(true);
+    }
+    for (const ch of ["", 'c"1', "pad/1", "a".repeat(65), "c 1"]) {
+      expect(ClientMessageSchema.safeParse({ ...join, ch }).success).toBe(false);
+    }
+  });
+
+  test("leave frees one channel; ping/pong stay connection-level", () => {
+    expect(ClientMessageSchema.parse({ type: "leave", ch: "c2" })).toEqual({
+      type: "leave",
+      ch: "c2",
+    });
+    expect(ClientMessageSchema.safeParse({ type: "leave" }).success).toBe(false);
+    // Liveness belongs to the socket: a channel id on ping/pong would be a lie.
+    expect(ClientMessageSchema.parse({ type: "ping" })).toEqual({ type: "ping" });
+    expect(ServerMessageSchema.parse({ type: "pong" })).toEqual({ type: "pong" });
+    expect(ClientMessageSchema.safeParse({ type: "ping", ch: "c1" }).success).toBe(false);
+    expect(ServerMessageSchema.safeParse({ type: "pong", ch: "c1" }).success).toBe(false);
+  });
+
+  test("channel_closed carries the close vocabulary a socket close used to carry", () => {
+    const frame = { type: "channel_closed" as const, ch: "c3", code: 4404, reason: "pad deleted" };
+    expect(ServerMessageSchema.parse(frame)).toEqual(frame);
+    expect(ServerMessageSchema.safeParse({ ...frame, code: 0 }).success).toBe(false);
+    expect(ServerMessageSchema.safeParse({ type: "channel_closed", ch: "c3" }).success).toBe(false);
+  });
+
+  test("every channel-level frame type round-trips through body and wire unions", () => {
+    const bodies = [
+      { type: "resync_request" as const },
+      { type: "terminal_attach" as const, sessionId: "s1" },
+      { type: "terminal_detach" as const, sessionId: "s1" },
+      { type: "terminal_resize" as const, sessionId: "s1", cols: 80, rows: 24 },
+      { type: "terminal_take" as const, sessionId: "s1" },
+      { type: "terminal_kill" as const, sessionId: "s1" },
+      { type: "terminal_open" as const, elementId: "el1", cols: 80, rows: 24 },
+    ];
+    for (const body of bodies) {
+      expect(ClientMessageBodySchema.parse(body)).toEqual(body);
+      expect(ClientMessageSchema.parse({ ...body, ch: "c9" })).toEqual({ ...body, ch: "c9" });
+      expect(ClientMessageSchema.safeParse(body).success).toBe(false);
+    }
   });
 
   test("session_event carries the parked kind", () => {
-    const msg = { type: "session_event" as const, sessionId: "s1", kind: "parked" as const };
+    const msg = {
+      type: "session_event" as const,
+      ch: "c1",
+      sessionId: "s1",
+      kind: "parked" as const,
+    };
     expect(ServerMessageSchema.parse(msg)).toEqual(msg);
     expect(
-      ServerMessageSchema.safeParse({ type: "session_event", sessionId: "s1", kind: "vanished" })
-        .success,
+      ServerMessageSchema.safeParse({
+        type: "session_event",
+        ch: "c1",
+        sessionId: "s1",
+        kind: "vanished",
+      }).success,
     ).toBe(false);
   });
 
   test("session_event carries the renamed kind and its new label", () => {
     const msg = {
       type: "session_event" as const,
+      ch: "c1",
       sessionId: "s1",
       kind: "renamed" as const,
       name: "build",
@@ -66,12 +131,17 @@ describe("session channel schemas", () => {
     // A rename with no label is nonsense on the wire, but the field is optional so
     // every other kind stays parseable; the SDK treats absence as "cleared".
     expect(
-      ServerMessageSchema.safeParse({ type: "session_event", sessionId: "s1", kind: "renamed" })
-        .success,
+      ServerMessageSchema.safeParse({
+        type: "session_event",
+        ch: "c1",
+        sessionId: "s1",
+        kind: "renamed",
+      }).success,
     ).toBe(true);
     expect(
       ServerMessageSchema.safeParse({
         type: "session_event",
+        ch: "c1",
         sessionId: "s1",
         kind: "renamed",
         name: "",
@@ -81,19 +151,23 @@ describe("session channel schemas", () => {
 
   test("doc updates require bounded base64 payloads", () => {
     expect(
-      ClientMessageSchema.safeParse({ type: "doc_update", update: btoa("yjs update") }).success,
+      ClientMessageSchema.safeParse({ type: "doc_update", ch: "c1", update: btoa("yjs update") })
+        .success,
     ).toBe(true);
     expect(
-      ClientMessageSchema.safeParse({ type: "doc_update", update: "not base64!!" }).success,
+      ClientMessageSchema.safeParse({ type: "doc_update", ch: "c1", update: "not base64!!" })
+        .success,
     ).toBe(false);
     expect(
-      ClientMessageSchema.safeParse({ type: "doc_update", update: "a".repeat(700_004) }).success,
+      ClientMessageSchema.safeParse({ type: "doc_update", ch: "c1", update: "a".repeat(700_004) })
+        .success,
     ).toBe(false);
   });
 
   test("gesture frames are bounded and server identity is stamped", () => {
     const gesture = {
       type: "gesture" as const,
+      ch: "c1",
       kind: "draw" as const,
       phase: "active" as const,
       elementId: "stroke-1",
@@ -119,18 +193,19 @@ describe("session channel schemas", () => {
   });
 
   test("unknown message types are rejected (caller logs and ignores)", () => {
-    expect(ClientMessageSchema.safeParse({ type: "mystery" }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({ type: "mystery", ch: "c1" }).success).toBe(false);
   });
 
   test("terminal_input requires base64 payload", () => {
-    const bad = { type: "terminal_input", sessionId: "s", data: "not base64!!" };
+    const bad = { type: "terminal_input", ch: "c1", sessionId: "s", data: "not base64!!" };
     expect(ClientMessageSchema.safeParse(bad).success).toBe(false);
-    const good = { type: "terminal_input", sessionId: "s", data: btoa("ls -la\n") };
+    const good = { type: "terminal_input", ch: "c1", sessionId: "s", data: btoa("ls -la\n") };
     expect(ClientMessageSchema.safeParse(good).success).toBe(true);
   });
 
   test("init/resync require the server-assigned connection id", () => {
     const state = {
+      ch: "c1",
       protocolVersion: PROTOCOL_VERSION,
       epoch: "e1",
       rev: 7,
@@ -155,6 +230,7 @@ describe("session channel schemas", () => {
     expect(
       ServerMessageSchema.safeParse({
         type: "cursor",
+        ch: "c1",
         principalId: "pr1",
         connId: "conn-1",
         x: 12,
@@ -164,25 +240,38 @@ describe("session channel schemas", () => {
     expect(
       ServerMessageSchema.safeParse({
         type: "presence",
+        ch: "c1",
         principalId: "pr1",
         connId: "conn-1",
         payload: { status: "active" },
       }).success,
     ).toBe(true);
     expect(
-      ServerMessageSchema.safeParse({ type: "cursor", principalId: "pr1", x: 12, y: 34 }).success,
+      ServerMessageSchema.safeParse({
+        type: "cursor",
+        ch: "c1",
+        principalId: "pr1",
+        x: 12,
+        y: 34,
+      }).success,
     ).toBe(false);
     expect(
       ServerMessageSchema.safeParse({
         type: "presence",
+        ch: "c1",
         principalId: "pr1",
         payload: {},
       }).success,
     ).toBe(false);
-    expect(ClientMessageSchema.safeParse({ type: "cursor", x: 12, y: 34 }).success).toBe(true);
-    expect(ClientMessageSchema.safeParse({ type: "presence", payload: {} }).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({ type: "cursor", ch: "c1", x: 12, y: 34 }).success).toBe(
+      true,
+    );
+    expect(ClientMessageSchema.safeParse({ type: "presence", ch: "c1", payload: {} }).success).toBe(
+      true,
+    );
     expect(
-      ClientMessageSchema.safeParse({ type: "cursor", connId: "spoof", x: 12, y: 34 }).success,
+      ClientMessageSchema.safeParse({ type: "cursor", ch: "c1", connId: "spoof", x: 12, y: 34 })
+        .success,
     ).toBe(false);
   });
 
@@ -288,7 +377,7 @@ describe("http schemas", () => {
     expect(MintTokenRequestSchema.safeParse({ caps: ["scene:write"] }).success).toBe(false);
   });
 
-  test("terminal pool and park/bind shapes round-trip", () => {
+  test("terminal pool shapes round-trip", () => {
     const entry = {
       id: "s1",
       machineId: "m1",
@@ -306,11 +395,6 @@ describe("http schemas", () => {
     expect(
       TerminalPoolResponseSchema.safeParse({ terminals: [{ ...entry, sortOrder: 1.5 }] }).success,
     ).toBe(false);
-    expect(ParkTerminalRequestSchema.safeParse({ elementId: "e1" }).success).toBe(true);
-    expect(ParkTerminalRequestSchema.safeParse({}).success).toBe(false);
-    expect(BindTerminalRequestSchema.safeParse({ padId: "p1" }).success).toBe(true);
-    expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: 10, y: -4 }).success).toBe(true);
-    expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: "10" }).success).toBe(false);
   });
 
   test("terminal rename and pool move shapes round-trip", () => {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
-import { ContainerLayoutSchema, TileEdgeSchema, TileSurfaceSchema } from "./layout.ts";
+import { ContainerLayoutSchema } from "./layout.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /** REST surface schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
@@ -153,24 +153,6 @@ export const TerminalPoolResponseSchema = z.strictObject({
 });
 export type TerminalPoolResponse = z.infer<typeof TerminalPoolResponseSchema>;
 
-/** Park: remove one canvas element; unbinds the session when it was the last reference. */
-export const ParkTerminalRequestSchema = z.strictObject({
-  elementId: z.string().min(1),
-});
-export type ParkTerminalRequest = z.infer<typeof ParkTerminalRequestSchema>;
-
-/** Bind: attach a parked session to a pad; the server authors the canvas element. */
-export const BindTerminalRequestSchema = z.strictObject({
-  padId: z.string().min(1),
-  x: z.number().finite().optional(),
-  y: z.number().finite().optional(),
-});
-export type BindTerminalRequest = z.infer<typeof BindTerminalRequestSchema>;
-export const BindTerminalResponseSchema = z.strictObject({
-  elementId: z.string().min(1),
-});
-export type BindTerminalResponse = z.infer<typeof BindTerminalResponseSchema>;
-
 /** Rename: set a terminal's display name (works for bound and parked sessions). */
 export const RenameTerminalRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
@@ -195,46 +177,12 @@ export const ExpandTerminalResponseSchema = z.strictObject({
 export type ExpandTerminalResponse = z.infer<typeof ExpandTerminalResponseSchema>;
 
 /**
- * Add a tile to a tiled container. A null `targetTileId` fills the first empty leaf,
- * else splits the root; a null `edge` fills an empty target leaf, else splits it.
+ * Everything that used to be a verb here — bind, park, add-tile, compose, extract — is now
+ * `POST /api/place` carrying `PlaceRequest`, whose legality comes from the placement
+ * declarations rather than from a schema per gesture. Only leaf REMOVAL kept its own route
+ * (`DELETE /api/pads/:id/tiles/:tileId`), because removal is not a placement: nothing
+ * accepts "nowhere", so there is no destination to name.
  */
-export const AddPadTileRequestSchema = z.strictObject({
-  surface: TileSurfaceSchema,
-  targetTileId: z.string().min(1).nullable(),
-  edge: TileEdgeSchema.nullable(),
-});
-export type AddPadTileRequest = z.infer<typeof AddPadTileRequestSchema>;
-export const AddPadTileResponseSchema = z.strictObject({
-  tileId: z.string().min(1),
-});
-export type AddPadTileResponse = z.infer<typeof AddPadTileResponseSchema>;
-
-/**
- * Compose: drop a surface onto a canvas terminal, birthing a durable view around it.
- * Dropping onto a portal adds a tile to the container it points at instead.
- */
-export const ComposePadTileRequestSchema = z.strictObject({
-  targetElementId: z.string().min(1),
-  surface: TileSurfaceSchema,
-  edge: TileEdgeSchema,
-});
-export type ComposePadTileRequest = z.infer<typeof ComposePadTileRequestSchema>;
-export const ComposePadTileResponseSchema = z.strictObject({
-  viewId: z.string().min(1),
-});
-export type ComposePadTileResponse = z.infer<typeof ComposePadTileResponseSchema>;
-
-/** Extract: pull one tile out of a view back onto its canvas as a plain element. */
-export const ExtractPadTileRequestSchema = z.strictObject({
-  x: z.number().finite(),
-  y: z.number().finite(),
-});
-export type ExtractPadTileRequest = z.infer<typeof ExtractPadTileRequestSchema>;
-export const ExtractPadTileResponseSchema = z.strictObject({
-  elementId: z.string().min(1),
-});
-export type ExtractPadTileResponse = z.infer<typeof ExtractPadTileResponseSchema>;
-
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),

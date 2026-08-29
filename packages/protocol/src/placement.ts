@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TileEdgeSchema, TileSurfaceSchema, type ContainerLayout } from "./layout.ts";
+import { TileEdgeSchema, type ContainerLayout } from "./layout.ts";
 
 /**
  * The placement algebra: what composes with what, stated as DATA.
@@ -67,9 +67,9 @@ interface ItemDeclaration {
 }
 
 /**
- * Every placeable item kind. A pad is two kinds because its discipline decides what it
- * can be: a canvas pad tiles and embeds live, a tiled container (a view) only ever
- * appears elsewhere as a portal — the absence of `tileable` IS the no-nesting rule.
+ * Every placeable item kind. A container is two kinds because its discipline decides what
+ * it can be: a canvas tiles and embeds live, a composition only ever appears elsewhere as
+ * a portal — the absence of `tileable` IS the no-nesting rule.
  */
 export const ITEM_KINDS = {
   terminal: { groups: ["tileable", "parkable", "canvas-item"], guards: [] },
@@ -78,7 +78,13 @@ export const ITEM_KINDS = {
     guards: ["no-self-embed"],
   },
   view: { groups: ["canvas-item-as-portal"], guards: ["no-self-embed"] },
-  text: { groups: ["canvas-item"], guards: [] },
+  /**
+   * A note tiles: a composition owns the note's element in its own document, which is
+   * what makes `TileSurface`'s `text` form an element id rather than a cross-document
+   * reference. Ink stays canvas-only — a stroke is positioned in canvas coordinates,
+   * and a tile has none to give it.
+   */
+  text: { groups: ["tileable", "canvas-item"], guards: [] },
   draw: { groups: ["canvas-item"], guards: [] },
   /** A leaf of a tiled container, addressed for extraction back onto a canvas. */
   tile: { groups: ["extractable"], guards: [] },
@@ -113,6 +119,14 @@ export const DESTINATION_KINDS = {
   pool: { container: "pool", requires: null },
 } as const satisfies Record<string, { container: ContainerKind; requires: ContainerLayout | null }>;
 export type DestinationKind = keyof typeof DESTINATION_KINDS;
+
+/**
+ * Where a canvas placement lands when the gesture named no point — a drop on a sidebar
+ * row, or any other door that indexes a container rather than pointing into it. The
+ * canvas destination always carries coordinates, so this is the one place that decides
+ * what "no coordinates" means, rather than each caller inventing a pair.
+ */
+export const DEFAULT_CANVAS_DROP = { x: 160, y: 120 } as const;
 
 /** The operations a legal placement classifies into; P2's executor dispatches on these. */
 export const PLACEMENT_OPS = [
@@ -174,12 +188,18 @@ void guardRulesComplete;
 // ------------------------------------------------------------------ wire shapes
 
 /**
- * What is being placed. The two tile surfaces name an ITEM by identity; `tile` and
+ * What is being placed. `terminal` and `pad` name an ITEM by identity; `tile` and
  * `element` name an existing PLACEMENT of one, which is how a single mirror of a
- * multi-placed session, or a plain text element, becomes addressable.
+ * multi-placed session becomes addressable.
+ *
+ * These are ADDRESSING forms, deliberately not `TileSurface`'s STORAGE forms. A note has
+ * no identity outside the document that holds it, so it is addressed as an `element` of
+ * that container and stored as a tile's `text` surface — the executor translates between
+ * the two, and no caller can name a note it cannot say the location of.
  */
 export const PlacementSurfaceSchema = z.discriminatedUnion("kind", [
-  ...TileSurfaceSchema.options,
+  z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("pad"), padId: z.string().min(1) }),
   z.strictObject({
     kind: z.literal("tile"),
     containerId: z.string().min(1),
@@ -365,7 +385,15 @@ function containerFor(destination: PlacementDestination): PlacementContainer {
   }
 }
 
-function itemFor(surface: PlacementSurface, lookup: PlacementLookup): PlacementItem | null {
+/**
+ * What a surface PLACES, classified. Exported because a refusal names a surface, not an
+ * item — so anything rendering a denial (a drag preview, a log line) needs the same
+ * classification `resolvePlacement` used, and deriving it twice is how the two drift.
+ */
+export function placementItemFor(
+  surface: PlacementSurface,
+  lookup: PlacementLookup,
+): PlacementItem | null {
   switch (surface.kind) {
     case "terminal":
       return { kind: "terminal", containerId: null };
@@ -422,7 +450,7 @@ export function resolvePlacement(
     if (layout !== declaration.requires) return deny(PLACEMENT_GUARDS["discipline-match"].rule);
   }
 
-  const item = itemFor(surface, lookup);
+  const item = placementItemFor(surface, lookup);
   if (item === null) return deny("unknown_surface");
 
   const itemDeclaration = ITEM_KINDS[item.kind];

@@ -19,10 +19,17 @@ export const MAX_TILE_CHILDREN = 16;
 export const ContainerLayoutSchema = z.enum(["canvas", "tiled"]);
 export type ContainerLayout = z.infer<typeof ContainerLayoutSchema>;
 
-/** What a leaf shows. Terminals and canvases are both tileable surfaces. */
+/**
+ * What a leaf shows. Every tileable item kind has one form here, and each form names its
+ * item by identity: a session, a container, or — for a note, which has no identity outside
+ * the document holding it — the element the composition's own scene doc stores it under. A
+ * composition therefore OWNS its notes the way a canvas does; placing a note into one moves
+ * the element into its document rather than referencing it across two.
+ */
 export const TileSurfaceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("pad"), padId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("text"), elementId: z.string().min(1) }),
 ]);
 export type TileSurface = z.infer<typeof TileSurfaceSchema>;
 

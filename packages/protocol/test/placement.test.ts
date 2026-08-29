@@ -98,12 +98,16 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
     compose: "not_accepted",
     pool: "not_accepted",
   },
+  // A note tiles as of this wave: a composition owns the element in its own document,
+  // which is why the surface form names an element id and not a cross-container pair.
   text: {
     canvas: "move_element",
-    tile: "not_accepted",
-    compose: "not_accepted",
+    tile: "add_tile",
+    compose: "compose",
     pool: "not_accepted",
   },
+  // Ink stays canvas-only: a stroke is positioned in canvas coordinates, and a tile has
+  // none to give it.
   draw: {
     canvas: "move_element",
     tile: "not_accepted",
