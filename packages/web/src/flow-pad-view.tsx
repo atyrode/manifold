@@ -22,23 +22,18 @@ import {
   addPadTile,
   bindTerminal,
   composePadTile,
+  deletePad,
   expandTerminal,
   extractPadTile,
   getMachines,
   parkTerminal,
+  renameTerminal,
 } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
-import {
-  cursorLabel,
-  pruneRemoteCursors,
-  recordRemoteCursor,
-  remoteCursorSocketId,
-  stepRemoteCursors,
-  type RemoteCursor,
-} from "./cursor-identity.ts";
+import { remoteCursorSocketId } from "./cursor-identity.ts";
 import { DrawNode } from "./flow-draw-node.tsx";
 import { PORTAL_DRAG_HANDLE, PortalNode, TILE_DRAG_MIME } from "./flow-portal-node.tsx";
 import {
@@ -79,6 +74,7 @@ import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
 import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 import { CONTAINER_DRAG_MIME, previewRect, snapZone } from "./tile-snap.ts";
+import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 
 /**
  * React Flow is manifold's pad renderer. Native terminal scene records project directly
@@ -265,8 +261,7 @@ export function FlowPadView({
     new Map(),
   );
   const connectStartedRef = useRef(false);
-  const remoteCursorsRef = useRef(new Map<string, RemoteCursor>());
-  const [remoteCursors, setRemoteCursors] = useState<readonly RemoteCursor[]>([]);
+  const remoteCursors = useRemoteCursors(client, "flow");
   const remoteGesturesRef = useRef(new Map<string, GestureOverride>());
   const lastClientRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const cursorLastSentRef = useRef(0);
@@ -310,16 +305,9 @@ export function FlowPadView({
     const offSessions = client.on("sessions_changed", invalidate);
     const offStatus = client.on("status", setStatus);
     const refreshRoster = (): void => {
-      pruneRemoteCursors(remoteCursorsRef.current, client.roster.values());
-      setRemoteCursors([...remoteCursorsRef.current.values()]);
       setRosterRows(deriveRosterRows(client.roster.values(), client.self ?? identity.principal));
     };
     const offRoster = client.on("roster_changed", refreshRoster);
-    const offCursor = client.on("cursor", (message) => {
-      if (recordRemoteCursor(remoteCursorsRef.current, message, client.selfConnId)) {
-        setRemoteCursors([...remoteCursorsRef.current.values()]);
-      }
-    });
     const offGesture = client.on("gesture", (message) => {
       if (
         applyGestureFrame(remoteGesturesRef.current, message, client.selfConnId, performance.now())
@@ -335,7 +323,6 @@ export function FlowPadView({
       offSessions();
       offStatus();
       offRoster();
-      offCursor();
       offGesture();
       offSaved();
     };
@@ -351,9 +338,6 @@ export function FlowPadView({
       const gesturesExpired = expireGestures(remoteGesturesRef.current, now);
       if (gesturesChanged || gesturesExpired) {
         setRemoteGestures(new Map(remoteGesturesRef.current));
-      }
-      if (stepRemoteCursors(remoteCursorsRef.current, elapsed)) {
-        setRemoteCursors([...remoteCursorsRef.current.values()]);
       }
       animationFrame = requestAnimationFrame(tick);
     };
@@ -962,6 +946,49 @@ export function FlowPadView({
   );
 
   /**
+   * Titlebar rename. The server broadcasts `session_event kind:"renamed"` into the
+   * room, so every viewer's titlebar follows without a refetch here.
+   */
+  const onRenameTerminal = useCallback(
+    (sessionId: string, name: string): void => {
+      void renameTerminal(identity.token, sessionId, name).catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : "Could not rename terminal");
+      });
+    },
+    [identity.token],
+  );
+
+  /**
+   * A view widget's minimize: the WIDGET leaves this canvas and the container it
+   * points at is untouched — a shared view is not this canvas's to end, and its
+   * sidebar row is how everyone else still reaches it.
+   */
+  const removeElement = useCallback(
+    (elementId: string): void => {
+      tombstone([elementId]);
+    },
+    [tombstone],
+  );
+
+  /**
+   * A view widget's close: the container itself is deleted (the server frees its
+   * occupants) and the widget goes with it, because a portal onto a deleted
+   * container is a door into nothing.
+   */
+  const onDeleteContainer = useCallback(
+    (containerId: string, elementId: string): void => {
+      void deletePad(identity.token, containerId)
+        .then(() => {
+          tombstone([elementId]);
+        })
+        .catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : "Could not delete view");
+        });
+    },
+    [identity.token, tombstone],
+  );
+
+  /**
    * Room sockets for the containers portal widgets preview. The canvas owns the
    * session URL and the token so a widget never rebuilds either.
    *
@@ -1059,6 +1086,9 @@ export function FlowPadView({
       onPark,
       onClose,
       onExpand,
+      onRenameTerminal,
+      removeElement,
+      onDeleteContainer,
       onRestart: restartTerminal,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
@@ -1085,10 +1115,13 @@ export function FlowPadView({
       machines,
       navigate,
       onClose,
+      onDeleteContainer,
       onExpand,
       onPark,
+      onRenameTerminal,
       openClient,
       presence,
+      removeElement,
       restartTerminal,
       tool,
     ],
@@ -1372,6 +1405,9 @@ export function FlowPadView({
         </div>
         <CanvasToolbar tool={tool} onChange={setTool} />
         <FlowPadProvider value={context}>
+          {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
+              pinch zooms (browsers report trackpad pinch as ctrl+wheel), and plain
+              wheel-zoom is off so panning never zooms by surprise. */}
           <ReactFlow
             nodes={nodes}
             edges={NO_EDGES as never[]}
@@ -1410,6 +1446,9 @@ export function FlowPadView({
             panActivationKeyCode={null}
             zoomActivationKeyCode={null}
             zoomOnDoubleClick={false}
+            panOnScroll
+            zoomOnScroll={false}
+            zoomOnPinch
             nodeDragThreshold={2}
             minZoom={MIN_ZOOM}
             maxZoom={MAX_ZOOM}
@@ -1474,26 +1513,22 @@ export function FlowPadView({
                     }}
                   />
                 ))}
-                {remoteCursors.map((cursor) => {
-                  const state = client.roster.get(cursor.principalId);
-                  const principal = state?.principal ?? null;
-                  const label = principal
-                    ? cursorLabel(principal.name, cursor.connId, state?.connIds ?? [])
-                    : "Collaborator";
+                {remoteCursors.cursors.map((cursor) => {
+                  const color = remoteCursors.colorFor(cursor);
                   return (
                     <div
                       className="flow-remote-cursor"
-                      data-cursor-color={principal?.color ?? ""}
+                      data-cursor-color={color ?? ""}
                       key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
                       style={{
-                        color: principal?.color ?? "#868e96",
+                        color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
                         transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
                       }}
                     >
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
                       </svg>
-                      <span>{label}</span>
+                      <span>{remoteCursors.labelFor(cursor)}</span>
                     </div>
                   );
                 })}

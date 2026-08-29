@@ -27,6 +27,18 @@ export interface FlowPadContextValue {
    * The server finds the placement from the session, so the id is enough.
    */
   readonly onExpand: (sessionId: string) => void;
+  /** Renames the session behind an element from its titlebar title. */
+  readonly onRenameTerminal: (sessionId: string, name: string) => void;
+  /**
+   * Drops an element from this canvas without touching what it points at: the
+   * portal widget's minimize, which puts a shared view away rather than ending it.
+   */
+  readonly removeElement: (elementId: string) => void;
+  /**
+   * Deletes the container a portal points at AND the widget onto it — the view is
+   * gone, so a widget left behind would point at nothing.
+   */
+  readonly onDeleteContainer: (containerId: string, elementId: string) => void;
   readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
   /** Streams live resize geometry and commits its final frame. */
   readonly onResize: (
@@ -147,6 +159,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement
         onClose={() => pad.onClose(id, sessionId)}
         onRestart={() => pad.onRestart(id, sessionId)}
         onExpand={() => pad.onExpand(sessionId)}
+        onRenameTitle={(name) => pad.onRenameTerminal(sessionId, name)}
         machine={pad.machineFor(sessionId)}
       />
     </div>

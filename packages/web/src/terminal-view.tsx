@@ -10,9 +10,11 @@ import {
   useState,
   type FocusEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type WheelEvent,
 } from "react";
 import type { SessionMachine } from "./machine-visibility.ts";
+import { NodeTitleBar, TITLEBAR_ACTIONS_CLASS } from "./node-titlebar.tsx";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
@@ -46,6 +48,23 @@ interface TerminalViewProps {
    * already lives in one.
    */
   readonly onExpand?: () => void;
+  /**
+   * Renames this session (`PATCH /api/terminals/:id`) from the titlebar title.
+   * Omitted in preview chrome and wherever the caller holds no token.
+   */
+  readonly onRenameTitle?: (name: string) => void;
+  /**
+   * A BUBBLE's terminal is a terminal in temporary view mode: it is the only leaf
+   * of a transient container, so it already fills the screen and its maximize slot
+   * becomes Shrink — the way back out of the view born around it. Wins over
+   * `onExpand`, which is the canvas-side half of the same slot.
+   */
+  readonly onShrink?: () => void;
+  /**
+   * Titlebar extras next to minimize/maximize/close: a bubble's Pin, which claims
+   * the container the terminal is temporarily wearing.
+   */
+  readonly titlebarExtras?: ReactNode;
 }
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
@@ -61,6 +80,9 @@ export function TerminalView({
   onClose,
   onRestart,
   onExpand,
+  onShrink,
+  titlebarExtras,
+  onRenameTitle,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -380,18 +402,40 @@ export function TerminalView({
    * Double-clicking the titlebar expands, exactly like the button — except on the
    * controls themselves, where a fast double click on Park or Close must not also
    * expand (dblclick fires independently of the pointerdown those buttons stop).
+   * A bubble's terminal has no expand at all, so the gesture stays inert there:
+   * leaving a view is a deliberate click on Shrink.
    */
   const handleTitlebarDoubleClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
     if (onExpand === undefined) return;
     const target = event.target;
     if (
       target instanceof Element &&
-      (target.closest("button") !== null || target.closest(".terminal-titlebar__controls") !== null)
+      (target.closest("button") !== null || target.closest(`.${TITLEBAR_ACTIONS_CLASS}`) !== null)
     ) {
       return;
     }
     onExpand();
   };
+
+  /**
+   * One slot, two meanings. On a canvas the terminal can still grow, so it offers
+   * Expand; as the lone leaf of a bubble it is already as big as it gets, so the
+   * same corner is how you leave the view that was born around it.
+   */
+  const maximize =
+    onShrink === undefined
+      ? {
+          onActivate: onExpand,
+          glyph: "maximize" as const,
+          label: "Expand terminal to full view",
+          tooltip: "Expand to full view",
+        }
+      : {
+          onActivate: onShrink,
+          glyph: "shrink" as const,
+          label: "Shrink view",
+          tooltip: "Leave this view (Esc)",
+        };
 
   const frameClass = [
     "manifold-terminal",
@@ -436,60 +480,34 @@ export function TerminalView({
           ))}
         </div>
       )}
-      <div className="terminal-titlebar" onDoubleClick={handleTitlebarDoubleClick}>
-        <span className="terminal-titlebar__title">
-          <span className="terminal-titlebar__glyph" aria-hidden="true">
-            {">_"}
-          </span>
-          {session?.name ?? "terminal"}
-          {machine === null ? null : (
+      <NodeTitleBar
+        className="terminal-titlebar"
+        icon="▣"
+        title={session?.name ?? null}
+        defaultTitle="terminal"
+        onRenameTitle={readOnly ? undefined : onRenameTitle}
+        onDoubleClick={readOnly ? undefined : handleTitlebarDoubleClick}
+        middle={
+          machine === null ? null : (
             <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
               <span className="machine-dot" style={{ backgroundColor: machine.color }} />
               {machine.name}
             </span>
-          )}
-        </span>
-        {chrome === "preview" ? null : (
-          <div className="terminal-titlebar__controls">
-            {onPark === undefined ? null : (
-              <button
-                type="button"
-                className="terminal-ctl"
-                title="Park terminal to sidebar (keeps the shell running)"
-                aria-label="Park terminal to sidebar"
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={onPark}
-              >
-                –
-              </button>
-            )}
-            {onExpand === undefined ? null : (
-              <button
-                type="button"
-                className="terminal-ctl"
-                title="Expand to full view"
-                aria-label="Expand terminal to full view"
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={onExpand}
-              >
-                ⛶
-              </button>
-            )}
-            {onClose === undefined ? null : (
-              <button
-                type="button"
-                className="terminal-ctl terminal-ctl--close"
-                title="Kill terminal (ends the session)"
-                aria-label="Kill terminal"
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={onClose}
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+          )
+        }
+        onMinimize={readOnly ? undefined : onPark}
+        minimizeLabel="Park terminal to sidebar"
+        minimizeTooltip="Park terminal to sidebar (keeps the shell running)"
+        onMaximize={readOnly ? undefined : maximize.onActivate}
+        maximizeGlyph={maximize.glyph}
+        maximizeLabel={maximize.label}
+        maximizeTooltip={maximize.tooltip}
+        onClose={readOnly ? undefined : onClose}
+        closeLabel="Kill terminal"
+        closeTooltip="Kill terminal (ends the session)"
+        closeClassName="terminal-ctl--close"
+        extraActions={readOnly ? null : titlebarExtras}
+      />
       <div className="xterm-host" ref={containerRef} />
       {chrome === "preview" ? null : (
         <div

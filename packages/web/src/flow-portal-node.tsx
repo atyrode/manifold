@@ -5,6 +5,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { getPad } from "./api.ts";
 import { COMPOSE_TARGET_CLASS, useFlowPad } from "./flow-terminal-node.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
+import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 
 /**
@@ -255,7 +256,7 @@ function PortalTile({
   }
 }
 
-function PortalNodeImpl({ data }: NodeProps): React.ReactElement {
+function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
   // The canvas stamps the armed compose zone onto this node's data; dropping a
   // surface on a widget adds a tile to the container it points at.
@@ -277,44 +278,46 @@ function PortalNodeImpl({ data }: NodeProps): React.ReactElement {
       className={composeTarget ? `flow-portal ${COMPOSE_TARGET_CLASS}` : "flow-portal"}
       onDoubleClick={enter}
     >
-      <div className="flow-portal__strip">
-        <span className="flow-portal__glyph" aria-hidden="true">
-          ▤
-        </span>
-        <span className="flow-portal__name">{name ?? "view"}</span>
-        {occupants.length === 0 ? null : (
-          <span
-            className="flow-portal__presence"
-            aria-label={`${String(occupants.length)} in this view`}
-          >
-            {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
-              <span
-                key={principal.id}
-                className="flow-portal__avatar"
-                style={{ backgroundColor: principal.color }}
-                title={`${principal.name} is in this view`}
-              >
-                {principal.name.slice(0, 1).toUpperCase()}
-              </span>
-            ))}
-            {occupants.length > MAX_PRESENCE_AVATARS ? (
-              <span className="flow-portal__avatar flow-portal__avatar--more">
-                +{occupants.length - MAX_PRESENCE_AVATARS}
-              </span>
-            ) : null}
-          </span>
-        )}
-        <button
-          type="button"
-          className="flow-portal__enter"
-          title="Open this view"
-          aria-label={`Open view ${name ?? containerId}`}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={enter}
-        >
-          Enter
-        </button>
-      </div>
+      <NodeTitleBar
+        className="flow-portal__strip"
+        icon="▤"
+        title={name}
+        defaultTitle="view"
+        middle={
+          occupants.length === 0 ? null : (
+            <span
+              className="flow-portal__presence"
+              aria-label={`${String(occupants.length)} in this view`}
+            >
+              {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
+                <span
+                  key={principal.id}
+                  className="flow-portal__avatar"
+                  style={{ backgroundColor: principal.color }}
+                  title={`${principal.name} is in this view`}
+                >
+                  {principal.name.slice(0, 1).toUpperCase()}
+                </span>
+              ))}
+              {occupants.length > MAX_PRESENCE_AVATARS ? (
+                <span className="flow-portal__avatar flow-portal__avatar--more">
+                  +{occupants.length - MAX_PRESENCE_AVATARS}
+                </span>
+              ) : null}
+            </span>
+          )
+        }
+        onMinimize={() => pad.removeElement(id)}
+        minimizeLabel={`Put away view ${name ?? containerId}`}
+        minimizeTooltip="Remove this widget from the canvas (the view keeps running)"
+        onMaximize={enter}
+        maximizeLabel={`Open view ${name ?? containerId}`}
+        maximizeTooltip="Open this view"
+        onClose={() => pad.onDeleteContainer(containerId, id)}
+        closeLabel={`Delete view ${name ?? containerId}`}
+        closeTooltip="Delete this view for everyone"
+        closeConfirm={`Delete “${name ?? "this view"}”?`}
+      />
       <div className="flow-portal__viewport">
         {client !== null && layout !== null ? (
           <div

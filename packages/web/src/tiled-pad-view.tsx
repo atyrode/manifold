@@ -1,4 +1,5 @@
 import {
+  CURSOR_MIN_INTERVAL_MS,
   ROOT_TILE_ID,
   type MachineSummary,
   type Pad,
@@ -22,17 +23,24 @@ import {
 
 import {
   addPadTile,
+  deletePad,
+  expandTerminal,
   getMachines,
   killPooledTerminal,
   pinPad,
   removePadTile,
+  renamePad,
+  renameTerminal,
   type StoredIdentity,
 } from "./api.ts";
+import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
+import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 import { CONTAINER_DRAG_MIME, previewRect, resizeRatios, snapZone } from "./tile-snap.ts";
+import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 
 /**
  * The tiled discipline's renderer. A View and a Pad are one container object; this
@@ -94,6 +102,12 @@ export function TiledPadView({
   const [notice, setNotice] = useState<string | null>(null);
   const [pinning, setPinning] = useState(false);
   const connectStartedRef = useRef(false);
+  /** One delete per view: the confirmed click navigates away, a second would 404. */
+  const deletingRef = useRef(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  /** Send-cadence gate, the same shape the canvas renderer uses for its own emit. */
+  const cursorLastSentRef = useRef(0);
+  const remoteCursors = useRemoteCursors(client, "fraction");
 
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
@@ -191,6 +205,64 @@ export function TiledPadView({
       .finally(() => setPinning(false));
   }, [failed, identity.token, onPadChanged, padId]);
 
+  /**
+   * Renaming a view claims it: the server clears `transient`, so the refetched row
+   * loses its bubble italics with the same round trip that changes the name.
+   */
+  const rename = useCallback(
+    (name: string): void => {
+      void renamePad(identity.token, padId, name)
+        .then(onPadChanged)
+        .catch((reason: unknown) => failed(reason, "Could not rename this view"));
+    },
+    [failed, identity.token, onPadChanged, padId],
+  );
+
+  /**
+   * Deleting the container everyone is inside: the viewer leaves the way Shrink
+   * leaves, and the sidebar refetch drops the row. Guarded by the titlebar's
+   * two-step confirm and by the ref, because the second call would 404.
+   */
+  const removeView = useCallback((): void => {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    void deletePad(identity.token, padId)
+      .then(() => {
+        shrink();
+        onPadChanged();
+      })
+      .catch((reason: unknown) => {
+        deletingRef.current = false;
+        failed(reason, "Could not delete this view");
+      });
+  }, [failed, identity.token, onPadChanged, padId, shrink]);
+
+  /** Titlebar rename of a tiled terminal; the room broadcast updates every viewer. */
+  const renameTile = useCallback(
+    (sessionId: string, name: string): void => {
+      void renameTerminal(identity.token, sessionId, name).catch((reason: unknown) =>
+        failed(reason, "Could not rename this terminal"),
+      );
+    },
+    [failed, identity.token],
+  );
+
+  /**
+   * Full parity with a pad: a tile's terminal keeps the bar it would wear anywhere,
+   * expand included. The server handles the tiled origin — it removes the leaf this
+   * session left behind instead of swapping a canvas element for a portal.
+   */
+  const expandTile = useCallback(
+    (sessionId: string): void => {
+      void expandTerminal(identity.token, sessionId)
+        .then((viewId) => {
+          navigate(`/p/${encodeURIComponent(viewId)}`);
+        })
+        .catch((reason: unknown) => failed(reason, "Could not expand this terminal"));
+    },
+    [failed, identity.token, navigate],
+  );
+
   /** Park semantics: the server unbinds the session back to the pool when it was the last placement. */
   const parkTile = useCallback(
     (tileId: string): void => {
@@ -224,6 +296,25 @@ export function TiledPadView({
 
   const setRatios = useCallback(
     (splitId: string, ratios: readonly number[]): void => client.setTileRatios(splitId, ratios),
+    [client],
+  );
+
+  /**
+   * Tiled rooms carry view-root FRACTIONS rather than pixels — see `cursorFraction`.
+   * The reference box is the tile area, so a fraction resolves to the same tile for
+   * every viewer (the ratios that decide the tiles are shared CRDT state) and the
+   * header strip never carries a remote cursor.
+   */
+  const emitCursor = useCallback(
+    (clientX: number, clientY: number): void => {
+      const body = bodyRef.current;
+      if (body === null) return;
+      const now = performance.now();
+      if (now - cursorLastSentRef.current < CURSOR_MIN_INTERVAL_MS) return;
+      cursorLastSentRef.current = now;
+      const fraction = cursorFraction(body.getBoundingClientRect(), { x: clientX, y: clientY });
+      client.sendCursor(fraction.x, fraction.y);
+    },
     [client],
   );
 
@@ -289,6 +380,39 @@ export function TiledPadView({
     },
   });
 
+  /**
+   * A BUBBLE is a transient container whose whole layout is one terminal: an
+   * expanded terminal, not a view yet. It wears NO view header — the terminal's own
+   * titlebar is the only top bar, and it carries the two view-level controls that
+   * still make sense there (Pin claims the container, the maximize slot shrinks out
+   * of it). Pinning or splitting transmutes the header in place: the container
+   * becomes a real view and grows the dedicated bar below.
+   */
+  const leaves = layout === null ? [] : Object.values(layout).filter((node) => node.dir === null);
+  const onlyLeaf = leaves.length === 1 ? leaves[0] : undefined;
+  const bubbleLeaf =
+    pad.transient && onlyLeaf !== undefined && onlyLeaf.surface?.kind === "terminal"
+      ? onlyLeaf
+      : null;
+
+  /**
+   * One Pin control for both headers — a bubble wears it in its terminal's bar, a
+   * still-unclaimed view in its own — with the accessible name the gate looks for.
+   */
+  const pinControl = (
+    <button
+      className="node-titlebar__ctl tiled-pin"
+      type="button"
+      disabled={pinning}
+      title="Keep this view after everyone leaves"
+      aria-label={`Pin view ${pad.name}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={pin}
+    >
+      ⚑
+    </button>
+  );
+
   const renderLeaf = (node: TileNode): ReactNode => {
     const surface = node.surface;
     const zone = dropTarget?.tileId === node.id ? dropTarget.zone : null;
@@ -317,6 +441,16 @@ export function TiledPadView({
             machine={machineFor(surface.sessionId)}
             onPark={() => parkTile(node.id)}
             onClose={() => closeTile(node.id, surface.sessionId)}
+            onRenameTitle={(name) => renameTile(surface.sessionId, name)}
+            {...(bubbleLeaf?.id === node.id
+              ? // Bubble: the terminal's bar IS the view's bar. Its maximize slot
+                // shrinks (it is already as big as it gets) and Pin claims the
+                // container the terminal is temporarily wearing.
+                { onShrink: shrink, titlebarExtras: pinControl }
+              : // A real view's tile wears the bar it would wear in a pad, expand
+                // included: the server turns a tile expand into a new view and drops
+                // the leaf this session leaves behind.
+                { onExpand: () => expandTile(surface.sessionId) })}
           />
         ) : (
           <FlowPadView
@@ -365,44 +499,93 @@ export function TiledPadView({
 
   return (
     <div className="tiled-pad-view">
-      <header className="tiled-header">
-        <span className="tiled-title" title={pad.name}>
-          {pad.name}
-        </span>
-        {pad.transient ? (
-          <span className="tiled-bubble-chip" title="Dissolves when its last occupant leaves">
-            bubble
-          </span>
-        ) : null}
-        {notice === null ? null : (
+      {bubbleLeaf === null ? (
+        <NodeTitleBar
+          className="tiled-header"
+          icon="▤"
+          title={pad.name}
+          defaultTitle="view"
+          onRenameTitle={rename}
+          middle={
+            pad.transient ? (
+              <span className="tiled-bubble-chip" title="Dissolves when its last occupant leaves">
+                bubble
+              </span>
+            ) : null
+          }
+          extraActions={
+            <>
+              {notice === null ? null : (
+                <span className="tiled-notice" role="status">
+                  {notice}
+                </span>
+              )}
+              <span className={`tiled-status is-${status}`}>{status}</span>
+              {pad.transient ? pinControl : null}
+            </>
+          }
+          onMaximize={shrink}
+          maximizeGlyph="shrink"
+          maximizeLabel="Shrink view"
+          maximizeTooltip="Leave this view (Esc)"
+          onClose={removeView}
+          closeLabel={`Delete view ${pad.name}`}
+          closeTooltip="Delete this view for everyone"
+          closeConfirm={`Delete “${pad.name}”?`}
+        />
+      ) : notice === null ? null : (
+        /*
+          Headerless bubble: the notice keeps the mechanism it has today (same state,
+          same 5s timer, same `.tiled-notice` span) and only borrows a strip of its
+          own, because there is no view bar to sit in. A follow-up slice turns every
+          notice in the app into a toast.
+        */
+        <div className="tiled-notice-strip">
           <span className="tiled-notice" role="status">
             {notice}
           </span>
-        )}
-        <span className={`tiled-status is-${status}`}>{status}</span>
-        {pad.transient ? (
-          <button
-            className="tiled-action"
-            type="button"
-            disabled={pinning}
-            title="Keep this view after everyone leaves"
-            aria-label={`Pin view ${pad.name}`}
-            onClick={pin}
-          >
-            {pinning ? "Pinning…" : "Pin"}
-          </button>
-        ) : null}
-        <button
-          className="tiled-action"
-          type="button"
-          title="Leave this view (Esc)"
-          aria-label="Shrink view"
-          onClick={shrink}
-        >
-          Shrink
-        </button>
-      </header>
-      <div className="tiled-body">{body}</div>
+        </div>
+      )}
+      {/*
+        Capture phase, wired on the tile area rather than on each leaf: xterm owns the
+        pointer inside a terminal, and with mouse tracking on (DECSET 1003) it handles
+        motion itself. A capture-phase listener on an ancestor runs before the target's
+        own handlers, so every move over a live terminal still reaches us — measured, not
+        assumed: a probe sweeping a tracking-enabled xterm delivered 11 of 11 moves here,
+        each targeting `.xterm-screen`. A canvas embedded as a tile keeps its own capture
+        handler and emits React-Flow coordinates to its own room; the two disciplines
+        share this DOM subtree, never a coordinate space.
+      */}
+      <div
+        className="tiled-body"
+        ref={bodyRef}
+        onPointerMoveCapture={(event) => emitCursor(event.clientX, event.clientY)}
+      >
+        {body}
+        <div className="tiled-presence-layer" aria-hidden="true">
+          {remoteCursors.cursors.map((cursor) => {
+            const color = remoteCursors.colorFor(cursor);
+            const fraction = clampCursorFraction(cursor);
+            return (
+              <div
+                className="flow-remote-cursor"
+                data-cursor-color={color ?? ""}
+                key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
+                style={{
+                  color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
+                  left: `${String(fraction.x * 100)}%`,
+                  top: `${String(fraction.y * 100)}%`,
+                }}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
+                </svg>
+                <span>{remoteCursors.labelFor(cursor)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

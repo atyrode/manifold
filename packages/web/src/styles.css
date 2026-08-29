@@ -1448,64 +1448,17 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 1;
 }
 
+/* Geometry, rhythm and controls come from the shared `.node-titlebar` block at the
+   end of this file; what stays here is what makes this bar a TERMINAL's bar: it
+   floats over the xterm surface and lets the pointer through to it. */
 .terminal-titlebar {
   position: absolute;
   z-index: 3;
   inset: 0 0 auto 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 1.5rem;
-  padding: 0 0.15rem 0 0.5rem;
   background: #14181e;
   border-bottom: 1px solid #23272e;
   pointer-events: none;
   user-select: none;
-}
-
-.terminal-titlebar__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: #adb5bd;
-  font-size: 0.66rem;
-  letter-spacing: 0.02em;
-}
-
-.terminal-titlebar__glyph {
-  color: #5c6370;
-  font-family: ui-monospace, "SFMono-Regular", monospace;
-}
-
-.terminal-titlebar__controls {
-  display: inline-flex;
-  gap: 0.1rem;
-}
-
-.terminal-ctl {
-  display: grid;
-  place-items: center;
-  width: 1.15rem;
-  height: 1.15rem;
-  border: none;
-  border-radius: 0.25rem;
-  padding: 0;
-  color: #868e96;
-  background: transparent;
-  font-size: 0.72rem;
-  line-height: 1;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.terminal-ctl:hover {
-  color: #e6e9ef;
-  background: #2a2f37;
-}
-
-.terminal-ctl--close:hover {
-  color: #fff;
-  background: #e03131;
 }
 
 /* Focus-presence chips: who (other than you) is on this terminal right now. */
@@ -1552,7 +1505,7 @@ button.pad-sidebar-session.is-summary > small {
 
 .xterm-host {
   position: absolute;
-  inset: 1.5rem 0.35rem 0.35rem;
+  inset: 1.75rem 0.35rem 0.35rem;
 }
 
 .xterm-host .xterm {
@@ -1601,7 +1554,7 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
-/* Clickable even while the embed is idle (same mechanism as .terminal-ctl). */
+/* Clickable even while the embed is idle (same mechanism as .node-titlebar__ctl). */
 .terminal-restart {
   border: 1px solid #495057;
   border-radius: 999px;
@@ -2107,8 +2060,8 @@ button.pad-sidebar-session.is-summary > small {
   cursor: grabbing;
 }
 /* Buttons inside the titlebar must not look draggable. */
-.flow-terminal .terminal-titlebar__controls,
-.flow-terminal .terminal-ctl {
+.flow-terminal .node-titlebar__actions,
+.flow-terminal .node-titlebar__ctl {
   cursor: pointer;
 }
 /*
@@ -2373,23 +2326,13 @@ button.pad-sidebar-session.is-summary > small {
   background: #101216;
 }
 
+/* Page-level chrome of the composed renderer: taller than a node's bar, but the same
+   bar (grid, title, controls) — see `.node-titlebar`. */
 .tiled-header {
-  display: flex;
   min-height: 2.35rem;
-  align-items: center;
-  gap: 0.5rem;
   border-bottom: 1px solid #23272e;
   padding: 0.35rem 0.6rem;
   background: #16191f;
-}
-
-.tiled-title {
-  overflow: hidden;
-  color: #f1f3f5;
-  font-size: 0.85rem;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .tiled-bubble-chip {
@@ -2403,13 +2346,24 @@ button.pad-sidebar-session.is-summary > small {
   letter-spacing: 0.02em;
 }
 
+/* Same span in both header states — inside the view bar's control cluster, or in a
+   headerless bubble's own strip. Bounded so a long message cannot push the controls
+   off the bar. */
 .tiled-notice {
   overflow: hidden;
-  flex: 1 1 auto;
+  max-width: 22rem;
   color: #ffc9c9;
   font-size: 0.72rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tiled-notice-strip {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #23272e;
+  padding: 0.25rem 0.6rem;
+  background: #16191f;
 }
 
 .tiled-status {
@@ -2422,25 +2376,10 @@ button.pad-sidebar-session.is-summary > small {
   color: #69db7c;
 }
 
-.tiled-action {
-  flex: 0 0 auto;
-  border: 1px solid #343a40;
-  border-radius: 0.5rem;
-  padding: 0.25rem 0.6rem;
-  color: #dee2e6;
-  font-size: 0.75rem;
-  background: #202329;
-  cursor: pointer;
-}
-
-.tiled-action:hover:not(:disabled) {
-  border-color: #4c6ef5;
-  background: #252932;
-}
-
-.tiled-action:disabled {
-  color: #868e96;
-  cursor: default;
+/* The bubble's claim button: a pin glyph in the titlebar cluster rather than a
+   labelled button, because in that state it sits beside minimize/maximize/close. */
+.tiled-pin {
+  font-size: 0.8rem;
 }
 
 .tiled-body {
@@ -2576,11 +2515,6 @@ button.pad-sidebar-session.is-summary > small {
 /* The strip IS the React Flow drag handle (PORTAL_DRAG_HANDLE): the preview body
    below it belongs to the tile drags that decompose a view. */
 .flow-portal__strip {
-  display: flex;
-  min-height: 1.85rem;
-  align-items: center;
-  gap: 0.4rem;
-  padding-inline: 0.5rem;
   border-bottom: 1px solid #23272e;
   background: #15181d;
   cursor: grab;
@@ -2588,21 +2522,6 @@ button.pad-sidebar-session.is-summary > small {
 
 .flow-portal__strip:active {
   cursor: grabbing;
-}
-
-.flow-portal__glyph {
-  color: #748ffc;
-  font-size: 0.8rem;
-}
-
-.flow-portal__name {
-  overflow: hidden;
-  flex: 1 1 auto;
-  color: #f1f3f5;
-  font-size: 0.78rem;
-  font-weight: 650;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .flow-portal__presence {
@@ -2772,4 +2691,196 @@ button.pad-sidebar-session.is-summary > small {
   50% {
     opacity: 1;
   }
+}
+
+/* ── Remote cursors in the tiled discipline ───────────────────────────────────
+   Cursors are a renderer-level concern, so `.flow-remote-cursor` is shared verbatim
+   between the two renderers and nothing above is restyled. Only the containing block
+   differs: the canvas paints inside React Flow's pannable viewport, while a view paints
+   into this layer, which fills the TILE AREA (`.tiled-body`) and therefore excludes the
+   header strip. Positions are `left`/`top` percentages, so the wire fractions are
+   resolved by layout and a window resize needs no measurement. */
+.tiled-presence-layer {
+  position: absolute;
+  z-index: 60;
+  inset: 0;
+  /* Unclipped, exactly as on the canvas: a cursor pinned to an edge keeps its whole
+     name strip rather than having it sliced by the view boundary. */
+  pointer-events: none;
+}
+
+/* ── The one node titlebar ────────────────────────────────────────────────────
+   Every container node wears the same bar (`node-titlebar.tsx`): a type icon, the
+   editable title, a modular middle slot, and a right-justified control cluster.
+   Adopters keep their own class on the same element for drag handles and proof
+   hooks, and override only what is genuinely theirs (the terminal bar floats, the
+   composed renderer's header is page chrome). */
+.node-titlebar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 0.5rem 0.2rem;
+}
+
+.node-titlebar__icon {
+  color: #5c6370;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.node-titlebar__title {
+  overflow: hidden;
+  color: #adb5bd;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Renaming happens in place, at the title's own size, so the bar never reflows. */
+.node-titlebar__title-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.25rem;
+  color: #f1f3f5;
+  background: #0b0d10;
+  font-size: 0.7rem;
+  font-family: inherit;
+  pointer-events: auto;
+}
+
+.node-titlebar__middle {
+  display: inline-flex;
+  overflow: hidden;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.node-titlebar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  justify-self: end;
+}
+
+/* Reachable without first activating the node — clicking minimize/maximize/close is
+   not a reason to focus a terminal — so the controls opt back into pointer events
+   even where the bar itself lets them through. */
+.node-titlebar__ctl {
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.node-titlebar__ctl:hover:not(:disabled) {
+  color: #e6e9ef;
+  background: #2a2f37;
+}
+
+.node-titlebar__ctl:disabled {
+  color: #5c6370;
+  cursor: default;
+}
+
+.node-titlebar__ctl--close:hover {
+  color: #fff;
+  background: #e03131;
+}
+
+/* Two-step close: destroying something other people are inside asks first, in the
+   bar, with the same danger palette the sidebar's delete rows use. */
+.node-titlebar__confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid rgb(250 82 82 / 32%);
+  border-radius: 0.4rem;
+  padding: 0.05rem 0.25rem;
+  background: rgb(250 82 82 / 7%);
+  pointer-events: auto;
+}
+
+.node-titlebar__confirm-label {
+  overflow: hidden;
+  max-width: 12rem;
+  color: #ffc9c9;
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-titlebar__confirm-yes,
+.node-titlebar__confirm-no {
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.node-titlebar__confirm-yes {
+  color: #fff;
+  background: #c92a2a;
+}
+
+.node-titlebar__confirm-yes:hover {
+  background: #e03131;
+}
+
+.node-titlebar__confirm-no {
+  color: #adb5bd;
+  background: transparent;
+}
+
+.node-titlebar__confirm-no:hover {
+  color: #f1f3f5;
+  background: #2b2e34;
+}
+
+/* Adopter tuning: a view reads as an object with a name, a terminal as a strip. */
+.flow-portal__strip .node-titlebar__icon {
+  color: #748ffc;
+  font-size: 0.8rem;
+}
+
+.flow-portal__strip .node-titlebar__title {
+  color: #f1f3f5;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.tiled-header .node-titlebar__icon {
+  color: #748ffc;
+  font-size: 0.9rem;
+}
+
+.tiled-header .node-titlebar__title {
+  color: #f1f3f5;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.tiled-header .node-titlebar__title-input,
+.tiled-header .node-titlebar__ctl {
+  font-size: 0.85rem;
+}
+
+.tiled-header .node-titlebar__ctl {
+  width: 1.5rem;
+  height: 1.5rem;
 }

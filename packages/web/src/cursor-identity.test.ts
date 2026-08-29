@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_HALF_LIFE_MS } from "./interpolate.ts";
+import { CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON, FRACTION_SNAP_EPSILON } from "./interpolate.ts";
 import {
+  clampCursorFraction,
+  cursorFraction,
   cursorLabel,
   pruneRemoteCursors,
   recordRemoteCursor,
@@ -46,8 +48,37 @@ describe("connection-scoped cursor identity", () => {
       targetX: 100,
       targetY: 50,
     });
-    expect(stepRemoteCursors(cursors, CURSOR_HALF_LIFE_MS)).toBe(true);
+    expect(stepRemoteCursors(cursors, CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON)).toBe(true);
     expect(cursors.get("peer:socket")).toMatchObject({ x: 50, y: 25 });
+  });
+
+  test("eases fractional cursors instead of snapping them to every frame", () => {
+    const snapped = new Map<string, RemoteCursor>();
+    // View-root fractions: the whole span of motion is smaller than the flow epsilon, so
+    // easing at scene scale teleports the cursor on the very first frame — the defect
+    // that made tiled cursors jump while canvas cursors glided.
+    recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null);
+    recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null);
+    expect(stepRemoteCursors(snapped, CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON)).toBe(true);
+    expect(snapped.get("peer:socket")).toMatchObject({ x: 0.4, y: 0.8 });
+
+    const eased = new Map<string, RemoteCursor>();
+    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null);
+    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null);
+    expect(stepRemoteCursors(eased, CURSOR_HALF_LIFE_MS, FRACTION_SNAP_EPSILON)).toBe(true);
+    const halfway = eased.get("peer:socket");
+    expect(halfway?.x).toBeCloseTo(0.3, 10);
+    expect(halfway?.y).toBeCloseTo(0.6, 10);
+
+    // Termination still holds: a remainder under half a pixel of a 1000px view root
+    // lands on the target instead of creeping toward it forever.
+    recordRemoteCursor(
+      eased,
+      { principalId: "peer", connId: "socket", x: 0.3001, y: 0.6001 },
+      null,
+    );
+    expect(stepRemoteCursors(eased, CURSOR_HALF_LIFE_MS, FRACTION_SNAP_EPSILON)).toBe(true);
+    expect(eased.get("peer:socket")).toMatchObject({ x: 0.3001, y: 0.6001 });
   });
 
   test("connection ids produce distinct remote cursor ids for one principal", () => {
@@ -95,5 +126,38 @@ describe("connection-scoped cursor identity", () => {
     expect(cursorLabel("alex-dev", "c", ["b", "a", "c"])).toBe("alex-dev (3)");
     // A connId missing from the roster keeps the bare name rather than guessing.
     expect(cursorLabel("alex-dev", "zz", ["b", "a"])).toBe("alex-dev");
+  });
+});
+
+describe("view-root cursor fractions", () => {
+  const box = { left: 100, top: 40, width: 400, height: 200 } as const;
+
+  test("projects a client point into fractions of the box, origin included", () => {
+    expect(cursorFraction(box, { x: 100, y: 40 })).toEqual({ x: 0, y: 0 });
+    expect(cursorFraction(box, { x: 300, y: 140 })).toEqual({ x: 0.5, y: 0.5 });
+    expect(cursorFraction(box, { x: 500, y: 240 })).toEqual({ x: 1, y: 1 });
+    // Fractions are box-size independent: the same tile for every viewer.
+    expect(cursorFraction({ left: 0, top: 0, width: 40, height: 20 }, { x: 20, y: 10 })).toEqual(
+      cursorFraction(box, { x: 300, y: 140 }),
+    );
+  });
+
+  test("clamps a point outside the box to the unit square", () => {
+    expect(cursorFraction(box, { x: -50, y: 39 })).toEqual({ x: 0, y: 0 });
+    expect(cursorFraction(box, { x: 9_000, y: 9_000 })).toEqual({ x: 1, y: 1 });
+  });
+
+  test("a view that has not laid out yet reports the origin instead of dividing by zero", () => {
+    expect(cursorFraction({ left: 0, top: 0, width: 0, height: 0 }, { x: 12, y: 12 })).toEqual({
+      x: 0,
+      y: 0,
+    });
+  });
+
+  test("clamps received fractions so no frame can paint outside the view root", () => {
+    expect(clampCursorFraction({ x: 0.25, y: 0.75 })).toEqual({ x: 0.25, y: 0.75 });
+    // A canvas-space frame reaching a tiled renderer lands on the border, never off it.
+    expect(clampCursorFraction({ x: 1_284, y: -12 })).toEqual({ x: 1, y: 0 });
+    expect(clampCursorFraction({ x: Number.NaN, y: Number.NaN })).toEqual({ x: 0, y: 0 });
   });
 });
