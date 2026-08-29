@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { TileEdgeSchema, TileSurfaceSchema } from "./layout.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /** REST surface schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
@@ -183,6 +184,57 @@ export const MoveTerminalPoolRequestSchema = z.strictObject({
   index: z.number().int().nonnegative(),
 });
 export type MoveTerminalPoolRequest = z.infer<typeof MoveTerminalPoolRequestSchema>;
+
+/**
+ * Expand: transmute a terminal into a tiled view born around it. The response is the
+ * new container's id — the client navigates into it, and its canvas element becomes a
+ * portal onto the same container.
+ */
+export const ExpandTerminalResponseSchema = z.strictObject({
+  viewId: z.string().min(1),
+});
+export type ExpandTerminalResponse = z.infer<typeof ExpandTerminalResponseSchema>;
+
+/**
+ * Add a tile to a tiled container. A null `targetTileId` fills the first empty leaf,
+ * else splits the root; a null `edge` fills an empty target leaf, else splits it.
+ */
+export const AddPadTileRequestSchema = z.strictObject({
+  surface: TileSurfaceSchema,
+  targetTileId: z.string().min(1).nullable(),
+  edge: TileEdgeSchema.nullable(),
+});
+export type AddPadTileRequest = z.infer<typeof AddPadTileRequestSchema>;
+export const AddPadTileResponseSchema = z.strictObject({
+  tileId: z.string().min(1),
+});
+export type AddPadTileResponse = z.infer<typeof AddPadTileResponseSchema>;
+
+/**
+ * Compose: drop a surface onto a canvas terminal, birthing a durable view around it.
+ * Dropping onto a portal adds a tile to the container it points at instead.
+ */
+export const ComposePadTileRequestSchema = z.strictObject({
+  targetElementId: z.string().min(1),
+  surface: TileSurfaceSchema,
+  edge: TileEdgeSchema,
+});
+export type ComposePadTileRequest = z.infer<typeof ComposePadTileRequestSchema>;
+export const ComposePadTileResponseSchema = z.strictObject({
+  viewId: z.string().min(1),
+});
+export type ComposePadTileResponse = z.infer<typeof ComposePadTileResponseSchema>;
+
+/** Extract: pull one tile out of a view back onto its canvas as a plain element. */
+export const ExtractPadTileRequestSchema = z.strictObject({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+export type ExtractPadTileRequest = z.infer<typeof ExtractPadTileRequestSchema>;
+export const ExtractPadTileResponseSchema = z.strictObject({
+  elementId: z.string().min(1),
+});
+export type ExtractPadTileResponse = z.infer<typeof ExtractPadTileResponseSchema>;
 
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
