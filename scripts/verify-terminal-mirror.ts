@@ -280,6 +280,11 @@ try {
     probed: boolean;
     marker: boolean;
     left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    viewportWidth: number;
+    viewportHeight: number;
     sidebarRight: number;
     shrinkLabel: boolean;
   }>(
@@ -293,6 +298,11 @@ try {
         probed: host.dataset.probe === 'alive',
         marker: (host.querySelector('.xterm-rows')?.textContent || '').includes('EXPAND_VIEW_OK'),
         left: box.left,
+        right: box.right,
+        top: box.top,
+        bottom: box.bottom,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
         sidebarRight: sidebar === null ? -1 : sidebar.getBoundingClientRect().right,
         shrinkLabel:
           frame.querySelector('[aria-label="Shrink terminal to canvas"]') !== null,
@@ -313,6 +323,14 @@ try {
     "expanded box starts at the canvas area, not the sidebar",
     expanded.sidebarRight >= 0 && expanded.left >= expanded.sidebarRight - 1,
     `expanded left=${expanded.left.toFixed(1)} sidebar right=${expanded.sidebarRight.toFixed(1)}`,
+  );
+  check(
+    "expanded box fills exactly the canvas column",
+    expanded.right <= expanded.viewportWidth + 1 &&
+      expanded.right >= expanded.viewportWidth - 1 &&
+      expanded.top <= 1 &&
+      expanded.bottom >= expanded.viewportHeight - 1,
+    `right=${expanded.right.toFixed(1)} viewport=${String(expanded.viewportWidth)} top=${expanded.top.toFixed(1)} bottom=${expanded.bottom.toFixed(1)}/${String(expanded.viewportHeight)}`,
   );
   check(
     "expand control flips to shrink",

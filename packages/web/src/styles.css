@@ -2072,6 +2072,16 @@ button.pad-sidebar-session.is-summary > small {
   width: 100%;
   height: 100%;
 }
+/*
+ * Expanded wins over the node-fill rule above: with `width: 100%` the fixed box is
+ * over-constrained and `left + width` beats `right: 0`, spilling a full viewport
+ * width past the right edge. Same specificity, later in the file, so auto wins and
+ * the top/right/bottom/left constraints govern the box.
+ */
+.flow-terminal > .manifold-terminal--expanded {
+  width: auto;
+  height: auto;
+}
 /* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
 .flow-terminal .terminal-titlebar {
   pointer-events: auto;
