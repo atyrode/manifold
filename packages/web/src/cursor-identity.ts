@@ -7,7 +7,6 @@ export interface RemoteCursor {
   readonly y: number;
   readonly targetX: number;
   readonly targetY: number;
-  readonly tool: "pointer" | "laser";
 }
 
 interface CursorFrame {
@@ -15,7 +14,6 @@ interface CursorFrame {
   readonly connId: string;
   readonly x: number;
   readonly y: number;
-  readonly tool?: "pointer" | "laser" | undefined;
 }
 
 /** A socket id remains unique when one principal has several live browser connections. */
@@ -39,7 +37,6 @@ export function recordRemoteCursor(
     y: previous?.y ?? frame.y,
     targetX: frame.x,
     targetY: frame.y,
-    tool: frame.tool ?? "pointer",
   });
   return true;
 }

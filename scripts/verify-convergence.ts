@@ -772,7 +772,7 @@ try {
     })()`;
     // Cursors are ephemeral and interpolated: keep the frame alive across the probe.
     const cursorBeat = setInterval(() => {
-      sdk.sendCursor(center.x, center.y, "pointer");
+      sdk.sendCursor(center.x, center.y);
     }, 100);
     try {
       await until(

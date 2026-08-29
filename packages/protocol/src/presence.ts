@@ -19,7 +19,6 @@ export type PresenceStatus = z.infer<typeof PresenceStatusSchema>;
 export const CursorSchema = z.strictObject({
   x: z.number().finite(),
   y: z.number().finite(),
-  tool: z.enum(["pointer", "laser"]).optional(),
 });
 export type Cursor = z.infer<typeof CursorSchema>;
 

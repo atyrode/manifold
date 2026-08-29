@@ -67,10 +67,10 @@ test("scene survives restart while presence and cursors do not", async () => {
       (message) => message.principalId === alice.principal.id && message.x === 41,
     );
     aliceClient.sendPresence({
-      cursor: { x: 41, y: 82, tool: "pointer" },
+      cursor: { x: 41, y: 82 },
       selection: ["restart-scene"],
     });
-    aliceClient.sendCursor(41, 82, "pointer");
+    aliceClient.sendCursor(41, 82);
     await cursorSeen;
     await waitFor(
       () => {

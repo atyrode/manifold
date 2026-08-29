@@ -30,7 +30,6 @@ describe("connection-scoped cursor identity", () => {
           y: 4,
           targetX: 3,
           targetY: 4,
-          tool: "pointer",
         },
       ],
     ]);

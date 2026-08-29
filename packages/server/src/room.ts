@@ -308,7 +308,6 @@ export class Room {
         connId: peer.id,
         x: cursor.x,
         y: cursor.y,
-        ...(cursor.tool === undefined ? {} : { tool: cursor.tool }),
       },
       true,
     );

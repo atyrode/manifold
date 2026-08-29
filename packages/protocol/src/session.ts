@@ -75,7 +75,6 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("cursor"),
     x: z.number().finite(),
     y: z.number().finite(),
-    tool: z.enum(["pointer", "laser"]).optional(),
   }),
   z.strictObject({ type: z.literal("resync_request") }),
   z.strictObject({
@@ -151,7 +150,6 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     connId: z.string().min(1),
     x: z.number().finite(),
     y: z.number().finite(),
-    tool: z.enum(["pointer", "laser"]).optional(),
   }),
   z.strictObject({
     type: z.literal("terminal_opened"),

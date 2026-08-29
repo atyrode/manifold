@@ -174,10 +174,6 @@ export class SessionClient {
     this.installDoc(this.currentDoc);
   }
 
-  get doc(): Y.Doc {
-    return this.currentDoc;
-  }
-
   private installDoc(doc: Y.Doc): void {
     const map = elementsMap(doc);
     this.undoManager = new Y.UndoManager(map, {
@@ -563,14 +559,6 @@ export class SessionClient {
     this.undoManager.redo();
   }
 
-  canUndo(): boolean {
-    return this.undoManager.undoStack.length > 0;
-  }
-
-  canRedo(): boolean {
-    return this.undoManager.redoStack.length > 0;
-  }
-
   elementText(id: string): Y.Text | null {
     return sceneElementText(this.currentDoc, id);
   }
@@ -587,8 +575,8 @@ export class SessionClient {
     this.send({ type: "presence", payload });
   }
 
-  sendCursor(x: number, y: number, tool?: "pointer" | "laser"): void {
-    this.send({ type: "cursor", x, y, ...(tool !== undefined ? { tool } : {}) });
+  sendCursor(x: number, y: number): void {
+    this.send({ type: "cursor", x, y });
   }
 
   requestResync(): void {

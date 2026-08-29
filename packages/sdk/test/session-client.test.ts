@@ -353,13 +353,11 @@ describe("scene flow", () => {
 
   test("undo and redo track local edits without tracking remote state", () => {
     const { client } = connected();
-    expect(client.canUndo()).toBe(false);
     client.transact((tx) => tx.create(element("mine")));
-    expect(client.canUndo()).toBe(true);
+    expect(client.elements.has("mine")).toBe(true);
 
     client.undo();
     expect(client.elements.has("mine")).toBe(false);
-    expect(client.canRedo()).toBe(true);
 
     client.redo();
     expect(client.elements.get("mine")).toEqual(element("mine"));
