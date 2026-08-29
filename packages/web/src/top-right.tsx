@@ -276,54 +276,46 @@ export function WorkspaceSessionRow({
   );
 }
 
-/** First-class machine inventory, positioned beside pad navigation. */
+/**
+ * Machine inventory body. The collapsible section shell around it is supplied by the sidebar's
+ * uniform `SidebarSection`, so this renders rows only.
+ */
 export function MachinesSection({
   machines,
   onCreateTerminal,
 }: Pick<WorkspaceSidebarState, "machines" | "onCreateTerminal">) {
-  const availableMachines = machines?.filter((machine) => machine.online).length ?? 0;
   return (
-    <details className="workspace-sidebar-section" data-testid="machines-section" open>
-      <summary>
-        <span>Machines</span>
-        <span>
-          {availableMachines}/{machines?.length ?? 0} online
-        </span>
-      </summary>
-      <div className="workspace-sidebar-section-content">
-        <div className="workspace-list" data-testid="machines-rail">
-          {machines === null ? (
-            <span className="workspace-empty">Loading machines…</span>
-          ) : machines.length === 0 ? (
-            <span className="workspace-empty">No machines enrolled</span>
-          ) : (
-            machines.map((machine) => (
-              <div
-                className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
-                key={machine.id}
+    <div className="workspace-list" data-testid="machines-rail">
+      {machines === null ? (
+        <span className="workspace-empty">Loading machines…</span>
+      ) : machines.length === 0 ? (
+        <span className="workspace-empty">No machines enrolled</span>
+      ) : (
+        machines.map((machine) => (
+          <div
+            className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
+            key={machine.id}
+          >
+            <span
+              className={`machine-dot${machine.online ? "" : " is-offline"}`}
+              style={{ backgroundColor: machineColor(machine.id) }}
+            />
+            <strong>{machine.name}</strong>
+            <span>{machine.online ? "Online" : "Offline"}</span>
+            {machine.online ? (
+              <button
+                className="workspace-machine-create"
+                aria-label={`New terminal on ${machine.name}`}
+                title={`New terminal on ${machine.name}`}
+                onClick={() => onCreateTerminal(machine)}
               >
-                <span
-                  className={`machine-dot${machine.online ? "" : " is-offline"}`}
-                  style={{ backgroundColor: machineColor(machine.id) }}
-                />
-                <strong>{machine.name}</strong>
-                <span>{machine.online ? "Online" : "Offline"}</span>
-                {machine.online ? (
-                  <button
-                    className="workspace-machine-create"
-                    aria-label={`New terminal on ${machine.name}`}
-                    title={`New terminal on ${machine.name}`}
-                    onClick={() => onCreateTerminal(machine)}
-                  >
-                    <span aria-hidden="true">+</span>
-                  </button>
-                ) : null}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </details>
+                <span aria-hidden="true">+</span>
+              </button>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 

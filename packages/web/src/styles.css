@@ -407,21 +407,137 @@ input:focus {
   cursor: default;
 }
 
-.pad-sidebar-section-heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 0.25rem;
-  min-height: 1.8rem;
-  padding: 0.2rem 0.35rem 0;
-  color: #868e96;
-  font-size: 0.67rem;
-  text-transform: uppercase;
-  letter-spacing: 0.045em;
+/*
+ * Sidebar section stack: Machines, Pads, and Terminals share one header grammar and reorder by
+ * dragging their headers. The native summary stays the collapse control.
+ */
+.pad-sidebar-sections {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.4rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
-.pad-sidebar-section-heading > span {
+.sidebar-section {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #30343b;
+  border-radius: 0.65rem;
+  background: #1d2025;
+}
+
+/* The pad tree absorbs leftover height so a short stack stays top-aligned. */
+.sidebar-section--grow {
+  flex: 1 1 auto;
+}
+
+.sidebar-section.is-dragging {
+  opacity: 0.6;
+}
+
+.sidebar-section.is-drop-target {
+  border-color: #748ffc;
+  box-shadow: inset 0 0 0 1px #748ffc;
+}
+
+.sidebar-section-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.15rem;
+  padding: 0.4rem 0.5rem;
+  color: #adb5bd;
+  cursor: grab;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.sidebar-section-header::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-section-header:hover,
+.sidebar-section-header:focus-visible {
+  color: #f1f3f5;
+}
+
+.sidebar-section-header:active {
+  cursor: grabbing;
+}
+
+.sidebar-section[open] > .sidebar-section-header {
+  border-bottom: 1px solid #30343b;
+}
+
+.sidebar-section-chevron {
+  width: 0.35rem;
+  height: 0.35rem;
+  margin-inline: 0.15rem 0.1rem;
+  transform: rotate(-45deg);
+  border-right: 1.5px solid #868e96;
+  border-bottom: 1.5px solid #868e96;
+  transition: transform 120ms ease;
+}
+
+.sidebar-section[open] > .sidebar-section-header > .sidebar-section-chevron {
+  transform: rotate(45deg) translate(-0.08rem, -0.08rem);
+}
+
+.sidebar-section-title {
+  overflow: hidden;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-section-count {
+  color: #868e96;
+  font-size: 0.64rem;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sidebar-section-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.sidebar-section-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.3rem;
+}
+
+/* Inside a section the stack owns scrolling; the tree grows with its content. */
+.sidebar-section-body .pad-sidebar-list {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+.pad-browser.is-collapsed .sidebar-section {
+  border: 0;
+  background: transparent;
+}
+
+.pad-browser.is-collapsed .sidebar-section-header {
+  display: none;
+}
+
+.pad-browser.is-collapsed .sidebar-section-body {
+  padding: 0;
 }
 
 .pad-sidebar-section-action {
@@ -480,49 +596,33 @@ input:focus {
   pointer-events: none;
 }
 
-.pad-drag-handle {
-  position: absolute;
-  z-index: 4;
-  top: 1.125rem;
-  left: 0.12rem;
-  display: grid;
-  place-items: center;
-  width: 1rem;
-  height: 1.65rem;
-  transform: translateY(-50%);
-  border: 0;
-  border-radius: 0.3rem;
-  padding: 0;
-  opacity: 0;
-  color: #868e96;
-  background: #22252b;
+/* No handle glyph: a draggable row advertises itself with the grab cursor alone. */
+.pad-tree-item > .pad-sidebar-row,
+.pad-tree-item > .pad-sidebar-row .pad-sidebar-link,
+.pad-tree-item .pad-sidebar-folder-row,
+.pad-tree-item .pad-sidebar-folder-toggle {
   cursor: grab;
 }
 
-.pad-tree-item:hover > .pad-drag-handle,
-.pad-tree-item:has(> .pad-drag-handle:focus-visible) > .pad-drag-handle {
-  opacity: 1;
-}
-
-.pad-drag-handle:active {
+.pad-tree-item:active > .pad-sidebar-row,
+.pad-tree-item:active > .pad-sidebar-row .pad-sidebar-link,
+.pad-tree-item:active .pad-sidebar-folder-row,
+.pad-tree-item:active .pad-sidebar-folder-toggle {
   cursor: grabbing;
 }
 
-.pad-tree-item:has(.is-editing, .is-confirming) > .pad-drag-handle {
-  display: none;
-}
-
-.pad-tree-item > .pad-sidebar-row .pad-sidebar-link,
-.pad-tree-item > .pad-sidebar-folder-row .pad-sidebar-folder-toggle {
-  padding-left: 1.3rem;
+.pad-tree-item:has(.is-editing, .is-confirming) > .pad-sidebar-row,
+.pad-tree-item:has(.is-editing, .is-confirming) > .pad-sidebar-row .pad-sidebar-link {
+  cursor: default;
 }
 
 .pad-sidebar-row {
+  position: relative;
   display: flex;
   min-width: 0;
+  min-height: 2.25rem;
   align-items: center;
   border-radius: 0.55rem;
-  position: relative;
 }
 
 .pad-sidebar-row:hover {
@@ -536,11 +636,12 @@ input:focus {
 .pad-sidebar-link {
   display: flex;
   min-width: 0;
+  min-height: 2.25rem;
   flex: 1;
   align-items: center;
   gap: 0.6rem;
   border-radius: 0.55rem;
-  padding: 0.52rem 0.55rem;
+  padding: 0.42rem 0.55rem;
   overflow: hidden;
   color: #ced4da;
   font-size: 0.82rem;
@@ -548,7 +649,6 @@ input:focus {
 }
 
 .pad-browser.is-collapsed .pad-sidebar-link {
-  min-height: 2.25rem;
   justify-content: center;
   gap: 0;
   padding-inline: 0;
@@ -1045,73 +1145,6 @@ button.pad-sidebar-session.is-summary > small {
   flex: 0 0 auto;
 }
 
-.workspace-sidebar-section {
-  overflow: hidden;
-  border: 1px solid #30343b;
-  border-radius: 0.65rem;
-  background: #1d2025;
-}
-
-.workspace-sidebar-section.has-orphans {
-  border-color: rgb(240 140 0 / 55%);
-}
-
-.workspace-sidebar-section > summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 2.15rem;
-  padding: 0.45rem 0.55rem;
-  color: #dee2e6;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 650;
-  list-style: none;
-}
-
-.workspace-sidebar-section > summary::-webkit-details-marker {
-  display: none;
-}
-
-.workspace-sidebar-section > summary::before {
-  content: "";
-  width: 0.35rem;
-  height: 0.35rem;
-  grid-column: 1;
-  grid-row: 1;
-  transform: rotate(-45deg);
-  border-right: 1.5px solid #868e96;
-  border-bottom: 1.5px solid #868e96;
-  transition: transform 120ms ease;
-}
-
-.workspace-sidebar-section > summary > span:first-child {
-  grid-column: 1;
-  grid-row: 1;
-  padding-left: 0.75rem;
-}
-
-.workspace-sidebar-section > summary > span:last-child {
-  grid-column: 2;
-  color: #868e96;
-  font-size: 0.64rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
-.workspace-sidebar-section[open] > summary::before {
-  transform: rotate(45deg) translate(-0.1rem, -0.1rem);
-}
-
-.workspace-sidebar-section[open] > summary {
-  border-bottom: 1px solid #30343b;
-}
-
-.workspace-sidebar-section-content {
-  padding: 0.35rem;
-}
-
 .workspace-status {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1170,6 +1203,7 @@ button.pad-sidebar-session.is-summary > small {
 .pad-sidebar-row.is-confirming {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
   gap: 0.3rem;
   padding: 0.32rem 0.35rem;
 }
@@ -1814,6 +1848,7 @@ button.pad-sidebar-session.is-summary > small {
 .workspace-empty {
   padding: 0.45rem 0.2rem;
   color: var(--text-secondary-color, #868e96);
+  font-size: 0.76rem;
 }
 
 .workspace-machine-row,
@@ -1823,11 +1858,15 @@ button.pad-sidebar-session.is-summary > small {
   padding: 0.4rem 0.45rem;
 }
 
+/* Machine rows share the pad-row rhythm: same leading inset, height, and label size. */
 .workspace-machine-row {
   display: grid;
+  min-height: 2.1rem;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.45rem;
+  padding-inline: 0.5rem;
+  font-size: 0.82rem;
 }
 
 .workspace-machine-row:hover,
@@ -1849,6 +1888,7 @@ button.pad-sidebar-session.is-summary > small {
 
 .workspace-machine-row > span:not(.machine-dot) {
   color: var(--text-secondary-color, #868e96);
+  font-size: 0.7rem;
 }
 
 .workspace-session-row {
@@ -2250,15 +2290,19 @@ button.pad-sidebar-session.is-summary > small {
 .pad-sidebar-row > .session-state {
   flex: 0 0 auto;
   align-self: center;
-  padding-inline-start: 0.5rem;
+  padding-inline-start: 0.55rem;
   font-size: 0.6rem;
+  line-height: 1;
 }
 
+/* Two stacked lines, kept on the pad-row height rhythm by a tighter block padding. */
 .terminal-pool-label {
   flex-direction: column;
   align-items: flex-start;
+  justify-content: center;
   gap: 0.05rem;
-  padding-inline-start: 0.45rem;
+  padding-block: 0.28rem;
+  padding-inline-start: 0.55rem;
 }
 
 .terminal-pool-name,
@@ -2269,9 +2313,14 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
+.terminal-pool-name {
+  line-height: 1.15;
+}
+
 .terminal-pool-machine {
   color: var(--text-secondary-color, #868e96);
   font-size: 0.66rem;
+  line-height: 1.1;
 }
 
 .terminal-pool-empty {
@@ -2284,4 +2333,22 @@ button.pad-sidebar-session.is-summary > small {
   outline: 1px solid #748ffc;
   outline-offset: -1px;
   background: rgb(92 124 250 / 12%);
+}
+
+/* Freehand hit-testing: ink selects, the bounding box never does (Excalidraw-style).
+   The unselected draw node is pointer-transparent; only the widened invisible twin
+   path catches clicks and bubbles them to React Flow. Selection re-enables the box
+   so drag/resize behave normally. */
+.react-flow__node-draw {
+  pointer-events: none !important;
+}
+.react-flow__node-draw.selected {
+  pointer-events: all !important;
+}
+.react-flow__node-draw .flow-draw path {
+  pointer-events: none;
+}
+.react-flow__node-draw .flow-draw path.flow-draw__hit {
+  pointer-events: stroke;
+  cursor: pointer;
 }

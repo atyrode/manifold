@@ -44,6 +44,7 @@ interface PoolTreeData {
  * Workspace-global pool of pad-less terminal sessions, rendered as a second headless-tree
  * instance so parked terminals carry the exact pad-row grammar: menu rename, two-step kill,
  * keyboard navigation, and durable drag ordering. Rows also drag out onto pads and the canvas.
+ * The collapsible header around this body comes from the sidebar's uniform `SidebarSection`.
  */
 export function TerminalPoolSection({
   terminals,
@@ -375,11 +376,7 @@ export function TerminalPoolSection({
   };
 
   return (
-    <div className="pad-sidebar-terminal-pool" data-testid="terminals-section">
-      <div className="pad-sidebar-section-heading">
-        <strong>Terminals</strong>
-        <span>{treeData.order.length}</span>
-      </div>
+    <div className="pad-sidebar-terminal-pool">
       <div
         {...tree.getContainerProps()}
         className="pad-sidebar-list pad-sidebar-tree"
@@ -399,9 +396,7 @@ export function TerminalPoolSection({
               data-tree-id={item.getId()}
               key={item.getId()}
             >
-              <span className="pad-drag-handle" aria-hidden="true">
-                ⋮⋮
-              </span>
+              {/* No drag affordance glyph: the row itself is the handle (cursor: grab). */}
               {renderRow(item.getItemData())}
             </div>
           ))}

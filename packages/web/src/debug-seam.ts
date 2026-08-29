@@ -81,8 +81,10 @@ export function toElementSnapshot(element: SceneElement): DebugElementSnapshot {
     extra:
       element.type === "terminal"
         ? element.sessionId
-        : element.type === "text"
-          ? element.text
-          : element.points.length,
+        : element.type === "portal"
+          ? element.containerId
+          : element.type === "text"
+            ? element.text
+            : element.points.length,
   };
 }

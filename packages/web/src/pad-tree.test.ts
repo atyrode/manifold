@@ -8,7 +8,7 @@ const pad = (
   sortOrder: number,
 ): Extract<PadTreeItem, { kind: "pad" }> => ({
   kind: "pad",
-  pad: { id, name: id, createdAt: sortOrder },
+  pad: { id, name: id, createdAt: sortOrder, layout: "canvas", transient: false },
   parentId,
   sortOrder,
 });

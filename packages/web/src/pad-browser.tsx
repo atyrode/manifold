@@ -57,6 +57,16 @@ import {
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
 import { TerminalPoolSection, TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
+import {
+  initialCollapsedSections,
+  initialSectionOrder,
+  rememberCollapsedSections,
+  rememberSectionOrder,
+  reorderSections,
+  SidebarSection,
+  type CollapsedSections,
+  type SidebarSectionId,
+} from "./sidebar-section.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
 
@@ -132,6 +142,9 @@ const SIDEBAR_ROOT_ITEM: PadTreeItem = {
   sortOrder: -1,
 };
 
+/** Icon rail: only the pad tree survives, so its container never leaves the pad section. */
+const COLLAPSED_RAIL_SECTIONS: readonly SidebarSectionId[] = ["pads"];
+
 function initialSidebarWidth(): number {
   try {
     const raw = window.localStorage.getItem("manifold:sidebar-width");
@@ -188,6 +201,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [confirmFolderDeleteId, setConfirmFolderDeleteId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(initialSessionTree);
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
+  const [sectionOrder, setSectionOrder] =
+    useState<readonly SidebarSectionId[]>(initialSectionOrder);
+  const [collapsedSections, setCollapsedSections] =
+    useState<CollapsedSections>(initialCollapsedSections);
   const reorderingRef = useRef(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [, renderTreeState] = useState(0);
@@ -476,6 +493,25 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     } catch {
       // Sidebar memory is optional.
     }
+  };
+
+  const toggleSection = (id: SidebarSectionId, collapsed: boolean): void => {
+    // The icon rail force-opens the pad section; that is layout, not a user collapse choice.
+    if (!sidebarOpen) return;
+    setCollapsedSections((current) => {
+      if (current[id] === collapsed) return current;
+      const next = { ...current, [id]: collapsed };
+      rememberCollapsedSections(next);
+      return next;
+    });
+  };
+
+  const moveSection = (draggedId: string, targetId: SidebarSectionId): void => {
+    setSectionOrder((current) => {
+      const next = reorderSections(current, draggedId, targetId);
+      if (next !== current) rememberSectionOrder(next);
+      return next;
+    });
   };
 
   const submit = async (): Promise<void> => {
@@ -1144,6 +1180,135 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     );
   };
 
+  const padTreeBody = (
+    <div
+      {...tree.getContainerProps()}
+      className="pad-sidebar-list pad-sidebar-tree"
+      data-testid="pad-sidebar-list"
+    >
+      {sidebarOpen && treeItems === null ? (
+        <p className="pad-sidebar-muted">Loading pads…</p>
+      ) : null}
+      {sidebarOpen && treeItems?.length === 0 ? (
+        <p className="pad-sidebar-muted">No pads yet</p>
+      ) : null}
+      {treeItems === null
+        ? null
+        : tree.getItems().map((item) => {
+            const data = item.getItemData();
+            const itemProps = item.getProps();
+            return (
+              <div
+                {...itemProps}
+                className="pad-tree-item"
+                data-tree-kind={data.kind}
+                data-tree-id={treeItemId(data)}
+                style={
+                  sidebarOpen
+                    ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
+                    : undefined
+                }
+                key={item.getId()}
+              >
+                {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
+              </div>
+            );
+          })}
+      <div style={{ display: "none" }} className="pad-tree-drag-line" />
+    </div>
+  );
+
+  /**
+   * One shell per section, ordered by the user's stack. Collapsing the sidebar keeps only the
+   * pad section mounted (header hidden by CSS) so the tree container never reparents.
+   */
+  const renderSidebarSection = (section: SidebarSectionId): ReactNode => {
+    if (section === "machines") {
+      if (workspace === null) return null;
+      const machines = workspace.machines;
+      const online = machines?.filter((machine) => machine.online).length ?? 0;
+      return (
+        <SidebarSection
+          id="machines"
+          title="Machines"
+          testId="machines-section"
+          count={`${online}/${machines?.length ?? 0} online`}
+          collapsed={collapsedSections.machines === true}
+          onCollapsedChange={toggleSection}
+          onReorder={moveSection}
+          key="machines"
+        >
+          <div className="workspace-sidebar workspace-machines">
+            <MachinesSection machines={machines} onCreateTerminal={workspace.onCreateTerminal} />
+          </div>
+        </SidebarSection>
+      );
+    }
+    if (section === "pads") {
+      return (
+        <SidebarSection
+          id="pads"
+          title="Pads"
+          testId="pads-section"
+          count={pads?.length ?? 0}
+          collapsed={sidebarOpen && collapsedSections.pads === true}
+          grow
+          actions={
+            sidebarOpen ? (
+              <button
+                className="pad-sidebar-section-action"
+                aria-pressed={showSessions}
+                title={showSessions ? "Hide sessions under pads" : "Show sessions under pads"}
+                aria-label={showSessions ? "Hide pad session tree" : "Show pad session tree"}
+                onClick={(event) => {
+                  // Inside the disclosure header: never toggle the section on an action click.
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setShowSessions((current) => {
+                    try {
+                      window.localStorage.setItem("manifold:show-pad-sessions", String(!current));
+                    } catch {
+                      // Session tree memory is optional.
+                    }
+                    return !current;
+                  });
+                }}
+              >
+                <span aria-hidden="true">⌘</span>
+              </button>
+            ) : undefined
+          }
+          onCollapsedChange={toggleSection}
+          onReorder={moveSection}
+          key="pads"
+        >
+          {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
+          {padTreeBody}
+        </SidebarSection>
+      );
+    }
+    return (
+      <SidebarSection
+        id="terminals"
+        title="Terminals"
+        testId="terminals-section"
+        count={poolTerminals.length}
+        collapsed={collapsedSections.terminals === true}
+        onCollapsedChange={toggleSection}
+        onReorder={moveSection}
+        key="terminals"
+      >
+        <TerminalPoolSection
+          terminals={poolTerminals}
+          machines={workspace?.machines ?? []}
+          onKill={killPooled}
+          onRename={renamePooled}
+          onMove={movePooled}
+        />
+      </SidebarSection>
+    );
+  };
+
   const collapsedPresencePrincipals =
     collapsedPresence === null
       ? []
@@ -1248,90 +1413,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             </form>
           ) : null}
 
-          {sidebarOpen && workspace !== null ? (
-            <div className="workspace-sidebar workspace-machines">
-              <MachinesSection
-                machines={workspace.machines}
-                onCreateTerminal={workspace.onCreateTerminal}
-              />
-            </div>
-          ) : null}
-
-          {sidebarOpen ? (
-            <div className="pad-sidebar-section-heading">
-              <strong>Pads</strong>
-              <span>{pads?.length ?? 0}</span>
-              <button
-                className="pad-sidebar-section-action"
-                aria-pressed={showSessions}
-                title={showSessions ? "Hide sessions under pads" : "Show sessions under pads"}
-                aria-label={showSessions ? "Hide pad session tree" : "Show pad session tree"}
-                onClick={() => {
-                  setShowSessions((current) => {
-                    try {
-                      window.localStorage.setItem("manifold:show-pad-sessions", String(!current));
-                    } catch {
-                      // Session tree memory is optional.
-                    }
-                    return !current;
-                  });
-                }}
-              >
-                <span aria-hidden="true">⌘</span>
-              </button>
-            </div>
-          ) : null}
-
-          {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
-
-          <div
-            {...tree.getContainerProps()}
-            className="pad-sidebar-list pad-sidebar-tree"
-            data-testid="pad-sidebar-list"
-          >
-            {sidebarOpen && treeItems === null ? (
-              <p className="pad-sidebar-muted">Loading pads…</p>
-            ) : null}
-            {sidebarOpen && treeItems?.length === 0 ? (
-              <p className="pad-sidebar-muted">No pads yet</p>
-            ) : null}
-            {treeItems === null
-              ? null
-              : tree.getItems().map((item) => {
-                  const data = item.getItemData();
-                  const itemProps = item.getProps();
-                  return (
-                    <div
-                      {...itemProps}
-                      className="pad-tree-item"
-                      data-tree-kind={data.kind}
-                      data-tree-id={treeItemId(data)}
-                      style={
-                        sidebarOpen
-                          ? { marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }
-                          : undefined
-                      }
-                      key={item.getId()}
-                    >
-                      <span className="pad-drag-handle" aria-hidden="true">
-                        ⋮⋮
-                      </span>
-                      {data.kind === "pad" ? renderPad(data.pad) : renderFolder(data, item)}
-                    </div>
-                  );
-                })}
-            <div style={{ display: "none" }} className="pad-tree-drag-line" />
+          <div className="pad-sidebar-sections">
+            {(sidebarOpen ? sectionOrder : COLLAPSED_RAIL_SECTIONS).map(renderSidebarSection)}
           </div>
-
-          {sidebarOpen ? (
-            <TerminalPoolSection
-              terminals={poolTerminals}
-              machines={workspace?.machines ?? []}
-              onKill={killPooled}
-              onRename={renamePooled}
-              onMove={movePooled}
-            />
-          ) : null}
 
           {sidebarOpen && workspace !== null ? (
             <WorkspaceStatus

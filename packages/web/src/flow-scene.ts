@@ -94,6 +94,10 @@ export interface TerminalNodeData extends Record<string, unknown> {
   readonly sessionId: string;
 }
 
+export interface PortalNodeData extends Record<string, unknown> {
+  readonly containerId: string;
+}
+
 export interface TextNodeData extends Record<string, unknown> {
   readonly text: string;
   readonly fontSize: number;
@@ -129,7 +133,13 @@ export interface ProjectedDrawNode extends ProjectedNodeBase {
   readonly data: DrawNodeData;
 }
 
-export type ProjectedNode = ProjectedTerminalNode | ProjectedTextNode | ProjectedDrawNode;
+export interface ProjectedPortalNode extends ProjectedNodeBase {
+  readonly type: "portal";
+  readonly data: PortalNodeData;
+}
+
+export type ProjectedNode =
+  ProjectedTerminalNode | ProjectedPortalNode | ProjectedTextNode | ProjectedDrawNode;
 
 export function projectElements(
   elements: ReadonlyMap<string, SceneElement>,
@@ -153,6 +163,14 @@ export function projectElements(
           ...geometry,
           zIndex: element.zIndex,
           data: { sessionId: element.sessionId },
+        };
+      case "portal":
+        return {
+          id: element.id,
+          type: "portal",
+          ...geometry,
+          zIndex: element.zIndex,
+          data: { containerId: element.containerId },
         };
       case "text":
         return {

@@ -40,6 +40,17 @@ function DrawNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
         preserveAspectRatio="none"
         overflow="visible"
       >
+        {/* Wide invisible twin: the INK is the hit surface (Excalidraw-style), never the
+            bounding box — the node wrapper is pointer-transparent until selected (CSS). */}
+        <path
+          className="flow-draw__hit"
+          d={pointsToPath(points)}
+          stroke="transparent"
+          strokeWidth={Math.max(strokeWidth * 3, 12)}
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
         <path
           d={pointsToPath(points)}
           stroke={color}
