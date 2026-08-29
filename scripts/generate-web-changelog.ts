@@ -4,8 +4,14 @@ import { format, resolveConfig } from "prettier";
 
 const sourcePath = "CHANGELOG.md";
 const outputPath = "packages/web/src/generated-changelog.ts";
+// Dev builds surface the Unreleased section as a leading "in progress" entry so the
+// deployed app's history tracks the branch; release versions never take this path
+// (finalizeChangelog empties Unreleased before regeneration).
+const webVersion = ((await Bun.file("packages/web/package.json").json()) as { version: string })
+  .version;
+const devVersion = webVersion.includes("-dev") ? webVersion : undefined;
 const prettierConfig = await resolveConfig(outputPath);
-const expected = await format(renderWebChangelog(await Bun.file(sourcePath).text()), {
+const expected = await format(renderWebChangelog(await Bun.file(sourcePath).text(), devVersion), {
   ...prettierConfig,
   parser: "typescript",
 });
