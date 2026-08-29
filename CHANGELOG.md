@@ -14,6 +14,8 @@
 - Sidebar sections (Machines, Pads, Terminals) are uniform, collapsible, and reorderable by dragging their headers; row drag handles are gone — the cursor is the cue. Freehand drawings are now selected by clicking the ink itself, not their bounding box. (#15, #57)
 - Live cursors now render in composed views too: presence moved up to the renderer, so canvases and tiled views both show collaborators' pointers (view cursors track tiles across any window size). The sidebar stays personal — no cursors over it. (#15, #57)
 - Every node carries one standardized titlebar — icon, name (double-click to rename in place), origin, then minimize / maximize / close — on terminals, view widgets, and the view renderer alike; view widgets on a canvas gained real minimize (back to the sidebar) and close, and views now live in their own sidebar "Views" section while Pads lists only canvases. (#15, #57)
+- View widgets on a canvas are now fully interactive: click a tile to engage — your keystrokes reach the terminal and your avatar appears inside the view; click elsewhere to disengage back to watching. Watching alone never occupies a view. (#15, #57)
+- The Machines "+" works inside composed views too: the new terminal is born straight into the view as a tile. (#15, #57)
 
 ### Fixed
 

@@ -35,6 +35,12 @@ import {
 } from "./api.ts";
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
+import {
+  browserMachineStorage,
+  chooseDefaultMachine,
+  recallMachine,
+  rememberMachine,
+} from "./machine-choice.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
@@ -79,6 +85,13 @@ interface TiledPadViewProps {
   readonly presence: readonly PadPresence[];
   /** Pin and splits harden a bubble; the sidebar refetches the row to drop the italics. */
   readonly onPadChanged: () => void;
+  /**
+   * Publishes this view's "new terminal" action to the sidebar's Machines section, the
+   * way a canvas publishes its whole workspace state — a view has no canvas to author
+   * into, so the action must come from the room that will hold the tile. Cleared on
+   * unmount so the "+" never outlives the client it would open through.
+   */
+  readonly onCreateTerminalChange: (create: ((machine?: MachineSummary) => void) | null) => void;
 }
 
 export function TiledPadView({
@@ -89,6 +102,7 @@ export function TiledPadView({
   navigate,
   presence,
   onPadChanged,
+  onCreateTerminalChange,
 }: TiledPadViewProps) {
   const padId = pad.id;
   const [client] = useState(
@@ -293,6 +307,45 @@ export function TiledPadView({
     },
     [failed, identity.token, onPadChanged, padId],
   );
+
+  /**
+   * The sidebar's Machines "+" inside a view. There is no canvas to author an element on,
+   * so the open frame hands placement to the container and the SERVER writes the leaf —
+   * the first empty one, else a split of the root. The resolved `session.elementId` IS
+   * that tile id, so the tile the click created is the one that takes focus.
+   */
+  const createTerminal = useCallback(
+    async (machine?: MachineSummary): Promise<void> => {
+      if (client.epoch === "") {
+        setNotice("Waiting for the view connection");
+        return;
+      }
+      const target =
+        machine ??
+        (machines === null
+          ? null
+          : chooseDefaultMachine(machines, recallMachine(browserMachineStorage(), padId)));
+      if (target !== null) rememberMachine(browserMachineStorage(), padId, target.id);
+      try {
+        const session = await client.openTerminal({
+          elementId: crypto.randomUUID(),
+          placement: "tile",
+          cols: 80,
+          rows: 24,
+          ...(target === null ? {} : { machineId: target.id }),
+        });
+        setFocusedTileId(session.elementId);
+      } catch (reason: unknown) {
+        failed(reason, "Could not open a terminal in this view");
+      }
+    },
+    [client, failed, machines, padId],
+  );
+
+  useEffect(() => {
+    onCreateTerminalChange((machine) => void createTerminal(machine));
+    return () => onCreateTerminalChange(null);
+  }, [createTerminal, onCreateTerminalChange]);
 
   const setRatios = useCallback(
     (splitId: string, ratios: readonly number[]): void => client.setTileRatios(splitId, ratios),

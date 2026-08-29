@@ -264,6 +264,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
+  /**
+   * A view publishes only one thing to the sidebar: how to birth a terminal inside it.
+   * The wrapper object keeps that function out of the setState updater slot, where React
+   * would call it instead of storing it.
+   */
+  const [tiledCreate, setTiledCreate] = useState<{
+    readonly create: (machine?: MachineSummary) => void;
+  } | null>(null);
   // The Machines section must outlive the canvas that used to feed it: on tiled routes
   // and at the workspace root no FlowPadView is mounted, so the list falls back to HTTP.
   const [fallbackMachines, setFallbackMachines] = useState<readonly MachineSummary[] | null>(null);
@@ -302,6 +310,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const directPadFetchRef = useRef<string | null>(null);
   /** Shrink's return address: the last canvas the viewer was on, else the workspace root. */
   const [originPadId, setOriginPadId] = useState<string | null>(null);
+
+  /** Stable identity: the publishing effect inside the view must not re-run per render. */
+  const publishTiledCreate = useCallback(
+    (create: ((machine?: MachineSummary) => void) | null): void => {
+      setTiledCreate(create === null ? null : { create });
+    },
+    [],
+  );
 
   const scheduleDndPresentation = useCallback((): void => {
     if (dndFrameRef.current !== null) return;
@@ -1498,7 +1514,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           key="machines"
         >
           <div className="workspace-sidebar workspace-machines">
-            <MachinesSection machines={machines} onCreateTerminal={workspace?.onCreateTerminal} />
+            {/* Whichever renderer is mounted owns the "+": a canvas authors an element,
+                a view lets the server place a tile. */}
+            <MachinesSection
+              machines={machines}
+              onCreateTerminal={workspace?.onCreateTerminal ?? tiledCreate?.create}
+            />
           </div>
         </SidebarSection>
       );
@@ -1817,6 +1838,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 navigate={navigate}
                 presence={displayedPresence}
                 onPadChanged={refreshActivePad}
+                onCreateTerminalChange={publishTiledCreate}
               />
             </PadErrorBoundary>
           ) : (
