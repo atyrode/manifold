@@ -606,3 +606,138 @@ test("removing a terminal's last home leaf reaps the PTY and retires the composi
     await stopProcesses([...servers, ...agents]);
   }
 }, 60_000);
+
+test("killing a terminal by id removes it, its home, and every portal onto it", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const { server, agent, token, pad } = await startWorkspace("kill", servers, agents);
+    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    clients.push(canvas);
+    const { session, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "el-kill",
+      token,
+      portalAt: { x: 200, y: 200 },
+    });
+    clients.push(homeClient);
+    // A second widget onto the same terminal, because "gone" has to mean gone from every
+    // canvas rather than from the one the killer happened to be looking at.
+    canvas.transact((tx) => {
+      tx.create(portalElement("el-kill-mirror", session.padId, { x: 980, y: 200 }));
+    });
+    await waitFor(() => canvas.elements.has("el-kill-mirror"), 10_000, 20);
+
+    // Prove the PTY is real and answering before it is destroyed.
+    const mark = sentinel("killed");
+    const capture = await attachedCapture(homeClient, session.id);
+    captures.push(capture);
+    homeClient.sendTerminalInput(session.id, mark.command);
+    await waitForTerminalText(capture, mark.text, 10_000);
+
+    const killed = await ownerFetch(server, `/api/terminals/${session.id}`, {
+      method: "DELETE",
+      responseSchema: OkResponseSchema,
+    });
+    expect(killed.ok).toBe(true);
+
+    // The PTY really stopped: the agent, not the server, says so.
+    await waitFor(
+      () =>
+        agent.output.stdout.some(
+          (line) =>
+            line.includes('"evt":"exited"') &&
+            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+        ),
+      15_000,
+      50,
+    );
+    // No exited row is left behind for anybody to dismiss — the index is simply empty. The
+    // agent's own exit report has already been observed above, so the frame that could have
+    // resurrected the terminal as a tombstone has been sent and cannot: the kill deleted the
+    // row, and reporting an exit only ever UPDATES one.
+    await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
+    // Its home was solo, so it went with it, and only the canvas remains.
+    const pads = (await listPads(server)).map((row) => row.id);
+    expect(pads).toEqual([pad.id]);
+    // Both widgets vanish through the document, which is how live viewers learn about it.
+    await waitFor(
+      () => !canvas.elements.has("el-kill") && !canvas.elements.has("el-kill-mirror"),
+      10_000,
+      20,
+    );
+    expect((await censusOf(server, pad.id)).references).toEqual([]);
+    expect(agent.proc.exitCode).toBeNull();
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 60_000);
+
+test("a terminal that exits on its own keeps its real code, its home and its portals", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const { server, token, pad } = await startWorkspace("natural-exit", servers, agents);
+    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    clients.push(canvas);
+    const { session, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "el-exit",
+      token,
+      portalAt: { x: 240, y: 180 },
+    });
+    clients.push(homeClient);
+    const mark = sentinel("alive");
+    const capture = await attachedCapture(homeClient, session.id);
+    captures.push(capture);
+    homeClient.sendTerminalInput(session.id, mark.command);
+    await waitForTerminalText(capture, mark.text, 10_000);
+
+    // Nobody asked for this. The shell decides to stop, and it names its own code.
+    homeClient.sendTerminalInput(session.id, "exit 7\n");
+    await waitFor(() => homeClient.sessions.get(session.id)?.status === "exited", 15_000, 20);
+    expect(homeClient.sessions.get(session.id)?.exitCode).toBe(7);
+
+    // A dead terminal is information the operator may want, so nothing is deleted: the row
+    // keeps the REAL code, its home keeps its leaf, and the canvas keeps its widget.
+    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === session.id);
+    expect(indexed).toMatchObject({
+      id: session.id,
+      homeId: session.padId,
+      status: "exited",
+      exitCode: 7,
+      unplaced: false,
+    });
+    expect(censusSolo(await censusOf(server, session.padId))).toEqual(soloTerminal(session.id));
+    expect(canvas.elements.has("el-exit")).toBe(true);
+    expect((await censusOf(server, pad.id)).references).toEqual([session.padId]);
+    // Rejoining the home still finds the exit on screen, which is the whole point of keeping it.
+    const rejoin = await connect(server, { padId: session.padId, token, reconnect: false });
+    clients.push(rejoin);
+    await waitFor(() => rejoin.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    expect(rejoin.sessions.get(session.id)?.exitCode).toBe(7);
+
+    // And only a deliberate kill destroys it: the same terminal, dismissed, poofs like any
+    // other — which is the contrast this test exists to draw.
+    const dismissed = await ownerFetch(server, `/api/terminals/${session.id}`, {
+      method: "DELETE",
+      responseSchema: OkResponseSchema,
+    });
+    expect(dismissed.ok).toBe(true);
+    await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
+    await waitFor(() => !canvas.elements.has("el-exit"), 10_000, 20);
+    expect((await listPads(server)).map((row) => row.id)).toEqual([pad.id]);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 90_000);

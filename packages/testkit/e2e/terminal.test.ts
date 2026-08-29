@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { OkResponseSchema, PadSessionsResponseSchema } from "@manifold/protocol";
+import {
+  OkResponseSchema,
+  PadSessionsResponseSchema,
+  TerminalsResponseSchema,
+} from "@manifold/protocol";
 import { tileIdForSurface } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
@@ -235,23 +239,29 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       throw new Error("resized PTY did not report the requested geometry", { cause: error });
     });
 
-    const exited = nextMessage(
+    // A kill is DESTRUCTION, so the home hears a departure rather than an exit: the terminal
+    // is gone, not dead, and every viewer drops the row at once instead of keeping a corpse.
+    const departed = nextMessage(
       clientA,
       "session_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     clientB.killTerminal(session.id);
-    const exitEvent = await exited;
-    expect(exitEvent.kind).toBe("exited");
+    expect((await departed).kind).toBe("parked");
     await waitFor(
       () =>
-        clientA.sessions.get(session.id)?.status === "exited" &&
-        clientB.sessions.get(session.id)?.status === "exited",
+        clientA.sessions.get(session.id) === undefined &&
+        clientB.sessions.get(session.id) === undefined,
       10_000,
       20,
     );
-    expect(clientA.sessions.get(session.id)?.status).toBe("exited");
+    // The canvas's widget goes with it: a reference never outlives what it references.
+    await waitFor(() => !canvas.elements.has("el-term-1"), 10_000, 20);
+    const afterKill = await ownerFetch(server, "/api/pad-sessions", {
+      responseSchema: PadSessionsResponseSchema,
+    });
+    expect(afterKill.sessions.find((candidate) => candidate.id === session.id)).toBeUndefined();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -261,7 +271,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   }
 }, 90_000);
 
-test("an exited terminal rejects input, resize, take, and kill with conflict", async () => {
+test("an exited terminal refuses to be driven, but dismissing it destroys it", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -290,15 +300,22 @@ test("an exited terminal rejects input, resize, take, and kill with conflict", a
       token: grant.token,
     });
     clients.push(client);
+    // The PTY stops ON ITS OWN, which is the only way to REACH the exited state: asking for
+    // it would destroy the terminal, and then there would be nothing left to gate.
     const exited = nextMessage(
       client,
       "session_event",
       10_000,
       (message) => message.sessionId === session.id && message.kind === "exited",
     );
-    client.killTerminal(session.id);
-    expect((await exited).kind).toBe("exited");
+    client.sendTerminalInput(session.id, "exit 3\n");
+    const exitEvent = await exited;
+    expect(exitEvent.kind).toBe("exited");
+    if (exitEvent.kind !== "exited") throw new Error("unreachable");
+    // The REAL code the shell named, carried end to end from the PTY.
+    expect(exitEvent.exitCode).toBe(3);
     await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    expect(client.sessions.get(session.id)?.exitCode).toBe(3);
 
     const inputConflict = nextMessage(
       client,
@@ -336,17 +353,22 @@ test("an exited terminal rejects input, resize, take, and kill with conflict", a
     client.takeTerminal(session.id);
     expect((await takeConflict).code).toBe("conflict");
 
-    const killConflict = nextMessage(
+    // Dismissing it is not a conflict. A lease is a claim on a LIVE PTY, so an exited
+    // terminal has no controller to win, and clearing it is the same verb as killing a
+    // running one: the home hears a departure and the terminal leaves the world.
+    const departed = nextMessage(
       client,
-      "error",
-      5_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === session.id &&
-        message.message === "session has exited",
+      "session_event",
+      10_000,
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     client.killTerminal(session.id);
-    expect((await killConflict).code).toBe("conflict");
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => client.sessions.get(session.id) === undefined, 10_000, 20);
+    const remaining = await ownerFetch(server, "/api/terminals", {
+      responseSchema: TerminalsResponseSchema,
+    });
+    expect(remaining.terminals).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -418,15 +440,16 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     clients.push(home);
     expect(session.machineId).toBe(secondEnrollment.machineId);
 
-    const exited = nextMessage(
+    // Killing it destroys it, so the home hears a departure and the row disappears.
+    const departed = nextMessage(
       home,
       "session_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     home.killTerminal(session.id);
-    expect((await exited).kind).toBe("exited");
-    await waitFor(() => home.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => home.sessions.get(session.id) === undefined, 10_000, 20);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

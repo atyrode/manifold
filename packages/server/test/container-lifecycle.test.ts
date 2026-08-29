@@ -54,8 +54,11 @@ import {
  *
  *   L1 BIRTH      a terminal and its home are created together; a canvas opener authors its
  *                 own portal and the server authors nothing on the canvas.
- *   L2 EXIT       an exited terminal keeps its leaf and its home, so the exit stays visible.
- *   L3 REAP       removing a terminal's last home leaf kills the PTY and forgets the row.
+ *   L2 EXIT       a terminal that exited ON ITS OWN keeps its leaf, its home and every portal
+ *                 onto that home, so the real exit code stays visible.
+ *   L3 REAP       removing a terminal's last home leaf kills the PTY and forgets the row —
+ *                 the leaf addressed as a tile, or the terminal addressed by identity, which
+ *                 is what a DELIBERATE kill is. Killing is the only thing that destroys.
  *   L4 EMPTIED    a composition that just LOST its last item is deleted; one that never held
  *                 anything is not.
  *   L5 MERGE      a terminal joining another composition moves, and every reference to its
@@ -479,11 +482,20 @@ describe("L1 birth: a terminal and its home are created together", () => {
 });
 
 describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
-  test("an exit deletes nothing, so the exit code stays visible where the terminal lives", () => {
+  test("a natural exit deletes nothing, so the real code stays visible where the terminal lives", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
+    // Two canvases point at the home, because "an exit deletes nothing" has to hold for
+    // EVERY reference and not merely for the one the opener happened to author.
+    const board = canvasPad(fixture, "board");
+    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 40, 40), LOCAL_ORIGIN);
+    writeElement(
+      room(fixture, board.id).doc,
+      portalElement("widget-b", born.homeId, 10, 10),
+      LOCAL_ORIGIN,
+    );
 
-    expect(fixture.broker.killById(born.sessionId)).toBe("ok");
+    // The PTY stopped on its own. Nobody asked for it, so this is information, not a request.
     fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 3);
 
     expect(fixture.store.getPad(born.homeId)).not.toBeNull();
@@ -493,8 +505,44 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     });
     const stored = fixture.store.getSession(born.sessionId);
     expect(stored?.status).toBe("exited");
+    // The REAL code. A natural exit never invents one and never loses one.
     expect(stored?.exitCode).toBe(3);
     expect(stored?.padId).toBe(born.homeId);
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["widget-a"]);
+    expect(room(fixture, board.id).portalIdsTo(born.homeId)).toEqual(["widget-b"]);
+  });
+
+  test("an agent-disconnected exit keeps a null code internally and still deletes nothing", () => {
+    const fixture = lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+
+    // No code was observed, so none is reported. Null is the honest answer and it is not a
+    // third lifecycle state: the terminal exited, and what it exited with is unknown.
+    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, null);
+
+    expect(fixture.store.getSession(born.sessionId)).toMatchObject({
+      status: "exited",
+      exitCode: null,
+      padId: born.homeId,
+    });
+    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
+  });
+
+  test("the prune that collects unhomed exits never fires on a natural exit", () => {
+    const fixture = lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 40, 40), LOCAL_ORIGIN);
+
+    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 7);
+    // The reaper's whole predicate is "exited AND its home holds no leaf for it". A natural
+    // exit touches no leaf, so running the prune on both the home and the canvas that
+    // references it must be a no-op — otherwise dying would quietly mean being deleted.
+    fixture.broker.pruneExitedUnhomedForPad(born.homeId);
+    fixture.broker.pruneExitedUnhomedForPad(fixture.canvas.id);
+
+    expect(fixture.store.getSession(born.sessionId)?.exitCode).toBe(7);
+    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["widget-a"]);
   });
 });
 
@@ -537,6 +585,156 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     expect(removed.status).toBe(200);
     expect(fixture.machine.sent).toEqual([]);
     expect(fixture.store.getSession(born.sessionId)?.padId).toBe(born.homeId);
+  });
+
+  test("killing a terminal by identity removes its home and every portal onto it at once", async () => {
+    const fixture = lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+    // Three mirrors across two canvases, one of which is not resident when the kill lands:
+    // "kill means poof" is a claim about the whole workspace, not about the open tab.
+    const board = canvasPad(fixture, "board");
+    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("widget-b", born.homeId, 20, 20), LOCAL_ORIGIN);
+    writeElement(
+      room(fixture, board.id).doc,
+      portalElement("widget-c", born.homeId, 30, 30),
+      LOCAL_ORIGIN,
+    );
+    fixture.rooms.evictIfIdle(board.id);
+    fixture.machine.clear();
+
+    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+
+    expect(killed.status).toBe(200);
+    expect(killed.payload).toEqual({ ok: true });
+    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
+    // The session, its home, and every reference to that home. No exited row survives the
+    // request, so there is nothing left for anybody to dismiss.
+    expect(fixture.store.getSession(born.sessionId)).toBeNull();
+    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.broker.introspect()).toEqual([]);
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(room(fixture, board.id).portalIdsTo(born.homeId)).toEqual([]);
+    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
+    expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
+  });
+
+  test("an exit frame arriving after a kill finds nothing, so no exited row comes back", async () => {
+    const fixture = lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+
+    await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    // The machine answers the kill the only way it can: by reporting the exit. That frame is
+    // how the two halves of the lifecycle predicate could quietly become one, and the whole
+    // reason the predicate is structural — a killed session is gone before it can arrive.
+    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
+
+    expect(fixture.store.getSession(born.sessionId)).toBeNull();
+    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.broker.introspect()).toEqual([]);
+  });
+
+  test("killing a terminal that already exited on its own sweeps it the same way", async () => {
+    const fixture = lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 5);
+    fixture.machine.clear();
+
+    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const again = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+
+    // Dismissing a dead terminal and killing a live one are ONE verb, so an exited terminal
+    // is no conflict — and there is no PTY left to ask anything of.
+    expect(killed.status).toBe(200);
+    expect(fixture.machine.sent).toEqual([]);
+    expect(fixture.store.getSession(born.sessionId)).toBeNull();
+    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
+    // Gone is gone: the second request finds no terminal rather than a tombstone.
+    expect(again.status).toBe(404);
+  });
+
+  test("killing one occupant of a composition takes its tile and leaves the composition", async () => {
+    const fixture = lifecycleFixture();
+    const composition = tiledPad(fixture, "composition");
+    const inside = joinPeer(fixture, composition.id);
+    const first = bornInComposition(fixture, inside, "ref-1");
+    const second = bornInComposition(fixture, inside, "ref-2");
+    writeElement(
+      canvasDoc(fixture),
+      portalElement("widget-composition", composition.id, 40, 40),
+      LOCAL_ORIGIN,
+    );
+    fixture.machine.clear();
+
+    const killed = await call(fixture, "DELETE", `/api/terminals/${first.sessionId}`, OWNER_KEY);
+
+    expect(killed.status).toBe(200);
+    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: first.sessionId }]);
+    expect(fixture.store.getSession(first.sessionId)).toBeNull();
+    // The composition is shared with whatever else lives in it, so killing an occupant is
+    // never permission to delete the place — nor the widget the workspace shows it through.
+    expect(fixture.store.getPad(composition.id)).not.toBeNull();
+    expect(soleSurface(fixture, composition.id)).toEqual({
+      kind: "terminal",
+      sessionId: second.sessionId,
+    });
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(composition.id)).toEqual([
+      "widget-composition",
+    ]);
+  });
+
+  test("closing a terminal's last tile and killing it by identity are the same write", async () => {
+    const byTile = lifecycleFixture();
+    const tileBorn = bornOnCanvas(byTile, "ref-1");
+    writeElement(
+      canvasDoc(byTile),
+      portalElement("widget-a", tileBorn.homeId, 10, 10),
+      LOCAL_ORIGIN,
+    );
+    byTile.machine.clear();
+    const byIdentity = lifecycleFixture();
+    const identityBorn = bornOnCanvas(byIdentity, "ref-1");
+    writeElement(
+      canvasDoc(byIdentity),
+      portalElement("widget-a", identityBorn.homeId, 10, 10),
+      LOCAL_ORIGIN,
+    );
+    byIdentity.machine.clear();
+
+    const closed = await call(
+      byTile,
+      "DELETE",
+      `/api/pads/${tileBorn.homeId}/tiles/${tileBorn.leafId}`,
+      OWNER_KEY,
+    );
+    const identityKilled = await call(
+      byIdentity,
+      "DELETE",
+      `/api/terminals/${identityBorn.sessionId}`,
+      OWNER_KEY,
+    );
+
+    // Two doors, one rule. If these ever diverge, closing a tile and pressing X stop meaning
+    // the same thing, which is exactly the friction the one-rule model exists to remove.
+    const observed = (
+      fixture: LifecycleFixture,
+      born: Born,
+      response: { status: number; payload: unknown },
+    ): unknown => ({
+      status: response.status,
+      kills: fixture.machine.sent,
+      session: fixture.store.getSession(born.sessionId),
+      home: fixture.store.getPad(born.homeId),
+      portals: room(fixture, fixture.canvas.id).portalIdsTo(born.homeId),
+      live: fixture.broker.introspect(),
+    });
+    expect(observed(byTile, tileBorn, closed)).toEqual(
+      observed(byIdentity, identityBorn, identityKilled),
+    );
+    expect(byTile.store.getPad(tileBorn.homeId)).toBeNull();
+    expect(byTile.machine.sent).toEqual([{ type: "kill", sessionId: tileBorn.sessionId }]);
   });
 });
 

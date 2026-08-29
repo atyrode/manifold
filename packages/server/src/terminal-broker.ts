@@ -854,24 +854,33 @@ export class TerminalBroker implements SessionPlacementPort {
   }
 
   /**
-   * Requests PTY termination from the current controller principal, or from any
-   * holder of the wildcard capability (owner janitor: pruning an orphaned session
-   * whose canvas element is gone must not require winning the controller lease).
+   * A terminal stops in exactly one of two ways, and the whole difference is INTENT.
+   *
+   *   KILLED — somebody ASKED for it to stop: `terminal_kill`, `DELETE /api/terminals/:id`,
+   *     or closing its last tile. The request is the intent, so the terminal leaves the
+   *     world: the PTY, the session row, its home composition and every portal onto that
+   *     home go together and at once. Afterwards there is no exited row to find and no exit
+   *     code to report, because nothing is left to report it on.
+   *   EXITED — the PTY stopped on its own (`onExited`). That is INFORMATION the operator may
+   *     want, so NOTHING is deleted: the row keeps its real exit code, its home keeps its
+   *     leaf, and every portal onto that home keeps rendering it until somebody kills it.
+   *
+   * The predicate is structural rather than a flag: a killed session is out of
+   * `this.sessions` before the machine's `exit` frame can arrive, so `onExited` finds nothing
+   * and is a no-op for it. Nothing has to remember which door was used, and no third status
+   * exists to propagate — a terminal is running, exited on its own, or gone.
+   *
+   * This door additionally needs the controller principal, or any holder of the wildcard
+   * capability (owner janitor: sweeping a terminal whose widget is already gone must not
+   * require winning the lease).
    */
   kill(peer: SessionPeer, message: TerminalKill): void {
     const session = this.sessionFor(peer, message.sessionId);
     if (session === null) return;
-    if (session.info.status !== "running") {
-      peer.send({
-        type: "error",
-        code: "conflict",
-        message: "session has exited",
-        ref: message.sessionId,
-      });
-      return;
-    }
+    // A lease is a claim on a LIVE PTY. An exited terminal has no controller, so there is
+    // nothing to win and no reason to make dismissing it harder than closing its tile.
     const isController = session.info.controllerId === peer.auth.principal.id;
-    if (!isController && !peer.auth.isRoot) {
+    if (session.info.status === "running" && !isController && !peer.auth.isRoot) {
       peer.send({
         type: "error",
         code: "forbidden",
@@ -889,32 +898,50 @@ export class TerminalBroker implements SessionPlacementPort {
       });
       return;
     }
-    this.requestKill(session);
+    this.destroyTerminal(message.sessionId);
   }
 
   /**
    * Owner-authorized kill for HTTP callers (`DELETE /api/terminals/:id`), which hold no
-   * session peer and therefore no controller lease to win.
+   * session peer and therefore no controller lease to win. An already-exited terminal is no
+   * conflict here: sweeping it is precisely what the caller asked for.
    */
-  killById(sessionId: string): "ok" | "not_found" | "conflict" {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) return "not_found";
-    if (session.info.status !== "running") return "conflict";
-    this.requestKill(session);
+  killById(sessionId: string): "ok" | "not_found" {
+    if (!this.sessions.has(sessionId)) return "not_found";
+    this.destroyTerminal(sessionId);
     return "ok";
   }
 
-  private requestKill(session: RuntimeSession): void {
-    const machine = this.machines.get(session.info.machineId);
-    // A kill is durable even while the machine is offline or its socket refuses the frame.
-    // Persisting the exit prevents this stale row from surviving forever; if the PTY later
-    // reconnects, hello reconciliation sees the exited record and explicitly kills it.
-    if (machine === undefined || !machine.send({ type: "kill", sessionId: session.info.id })) {
-      this.onExited(session.info.machineId, session.info.id, null);
+  /**
+   * The KILLED half of the predicate above. Containers are `placement.ts`'s business and a
+   * home IS a container, so the removal is authored there: pulling the terminal's leaves is
+   * what empties its home, and an emptied home takes every portal onto it along. The PTY and
+   * the row come back through `reapSession`, so the two halves cannot drift apart.
+   */
+  private destroyTerminal(sessionId: string): void {
+    if (this.placement !== null) {
+      this.placement.killTerminal(sessionId);
+      return;
     }
+    // Only reachable before startup wiring completes. A kill must still not leave the
+    // session behind, even if its home outlives it by a moment.
+    this.reapSession(sessionId);
   }
 
-  /** Persists and broadcasts terminal exit without storing terminal bytes. */
+  /**
+   * Asks a machine to stop a PTY. Best effort by design: every kill deletes the session row,
+   * so a PTY that outlives the request is killed by hello reconciliation the moment its
+   * machine reconnects and finds no row for it. Persisting an exit to keep a stale row
+   * honest is the OTHER path's business, and this path has no row left to keep honest.
+   */
+  private sendPtyStop(session: RuntimeSession): void {
+    this.machines.get(session.info.machineId)?.send({ type: "kill", sessionId: session.info.id });
+  }
+
+  /**
+   * The EXITED half of the predicate: a PTY that stopped on its own. Persists and broadcasts
+   * it without storing terminal bytes, and deletes nothing.
+   */
   onExited(machineId: string, sessionId: string, exitCode: number | null): void {
     const session = this.sessions.get(sessionId);
     if (session === undefined || session.info.machineId !== machineId) return;
@@ -924,8 +951,8 @@ export class TerminalBroker implements SessionPlacementPort {
     session.info = { ...session.info, status: "exited", exitCode, controllerId: null };
     this.store.markSessionExited(sessionId, exitCode);
     // The exit is announced in the terminal's HOME, the room every viewer of it is joined
-    // to. Nothing is deleted: the leaf stays, so the exit code stays visible until somebody
-    // dismisses it, and dismissing the last leaf is what retires the terminal and its home.
+    // to. Nothing is deleted: the leaf stays, the portals onto the home stay, and the exit
+    // code stays visible until somebody deliberately kills the terminal.
     const padId = session.info.padId;
     this.rooms.live(padId)?.broadcast({
       type: "session_event",
@@ -1000,17 +1027,35 @@ export class TerminalBroker implements SessionPlacementPort {
   }
 
   /**
-   * `SessionPlacementPort`: a terminal whose last home leaf is gone. There is no pool to
-   * fall into and no second place it lives, so removing its only representation closes it:
-   * the PTY is killed if it is still running and the row is forgotten.
+   * `SessionPlacementPort`: the session half of a deliberate kill — the PTY is asked to stop
+   * and the row is forgotten. Called for a terminal whose last home leaf is gone, which is
+   * the same event however it was addressed: closing its tile, killing it by id, or deleting
+   * the composition it lived in.
+   *
+   * No exit is persisted on the way out. The row is being deleted, so an exit record would
+   * exist for the length of one statement and, worse, would broadcast an `exited` event for
+   * a terminal the operator asked to be RID of — the one thing the killed half of the
+   * lifecycle predicate promises never to show. What the home hears instead is `parked`,
+   * which already means exactly "this session left THIS room" and is what makes every
+   * viewer's session listing drop the row at once instead of at its next resync.
    */
   reapSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return;
-    if (session.info.status === "running") this.requestKill(session);
+    if (session.info.status === "running") this.sendPtyStop(session);
     for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
     session.viewers.clear();
     this.sessions.delete(sessionId);
+    this.rooms
+      .live(session.info.padId)
+      ?.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    // The injected agent token is scoped to this session, so it dies with it. A natural exit
+    // revokes in `onExited`; a kill never goes through there, and a live token for a terminal
+    // that no longer exists would be the one piece of it left in the world.
+    const stored = this.store.getSession(sessionId);
+    if (stored !== null && stored.agentPrincipalId !== null) {
+      this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
+    }
     this.store.deleteSession(sessionId);
   }
 

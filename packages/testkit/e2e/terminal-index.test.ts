@@ -154,32 +154,25 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
     );
     expect((await terminalRow(server, loose.session.id))?.name).toBe("build box");
 
-    // Kill through the index: the PTY dies, and the row STAYS — its home still holds a leaf
-    // for it, and an exit is meant to remain visible where the terminal lived.
-    const exited = nextMessage(
+    // Kill through the index: the PTY dies AND the row goes, because a kill is a request to
+    // be rid of the terminal. The home hears a departure, never an exit.
+    const departed = nextMessage(
       loose.homeClient,
       "session_event",
       15_000,
-      (message) => message.sessionId === loose.session.id && message.kind === "exited",
+      (message) => message.sessionId === loose.session.id && message.kind === "parked",
     );
     const killed = await ownerFetch(server, `/api/terminals/${loose.session.id}`, {
       method: "DELETE",
       responseSchema: OkResponseSchema,
     });
     expect(killed.ok).toBe(true);
-    expect((await exited).kind).toBe("exited");
+    expect((await departed).kind).toBe("parked");
     await waitFor(
-      async () => (await terminalRow(server, loose.session.id))?.status === "exited",
+      async () => (await terminalRow(server, loose.session.id)) === undefined,
       15_000,
       100,
     );
-    expect(await terminalRow(server, loose.session.id)).toMatchObject({
-      id: loose.session.id,
-      name: "build box",
-      status: "exited",
-      homeId: loose.session.padId,
-      unplaced: true,
-    });
     await waitFor(
       () =>
         agent.output.stdout.some(
@@ -190,10 +183,13 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
       15_000,
       50,
     );
+    // No exited row is left behind: the index simply has one terminal fewer, and its home
+    // went with it because the terminal was the only thing living there.
+    expect(await terminalRow(server, loose.session.id)).toBeUndefined();
     // The other terminal is untouched by its neighbour's death.
     expect((await terminalRow(server, placed.session.id))?.status).toBe("running");
 
-    // Killing an already-exited terminal is a named conflict, never a silent success.
+    // Gone is gone: a second kill finds no terminal rather than a tombstone to conflict with.
     const secondKill = await ownerFetch(server, `/api/terminals/${loose.session.id}`, {
       method: "DELETE",
       responseSchema: OkResponseSchema,
@@ -202,9 +198,9 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
       (error: unknown) => error,
     );
     if (!(secondKill instanceof HttpResponseError)) {
-      throw new Error("killing an exited terminal must fail with a protocol error");
+      throw new Error("killing a terminal that no longer exists must fail with a protocol error");
     }
-    expect(secondKill.code).toBe("conflict");
+    expect(secondKill.code).toBe("not_found");
 
     // Pad-scoped tokens are refused before any surface lookup: reading the index or placing
     // anything crosses containers, and a token scoped to one container cannot authorize that.

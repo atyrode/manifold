@@ -865,6 +865,44 @@ export class PlaceExecutor {
   }
 
   /**
+   * Removes a terminal from the world. `DELETE /api/terminals/:id`, `terminal_kill` and a
+   * titlebar close all land here, and all three mean the same thing: a DELIBERATE kill is
+   * total and it is one step — every leaf its home holds for it, the session and its PTY,
+   * and, when the terminal was the last thing its home held, the home itself along with
+   * every portal onto that home, on every canvas, whether or not anybody has it open.
+   *
+   * This is `removeTile`'s rule addressed by IDENTITY rather than by one placement, which is
+   * why closing a tile and killing from the sidebar are the same write instead of two writes
+   * that have to agree. Deleting a terminal's home is deliberately NOT the door: that would
+   * make "close this terminal" mean "delete a container", and a composed terminal's home is
+   * shared with whatever else lives there.
+   *
+   * Status is not consulted. Killing a terminal that already exited on its own sweeps it
+   * identically — dismissing a dead terminal is the same verb as killing a live one, not a
+   * second lookalike path.
+   */
+  killTerminal(sessionId: string): "ok" | "not_found" {
+    const placed = this.sessions.placedSession(sessionId);
+    if (placed === null) return "not_found";
+    const room = this.rooms.get(placed.padId);
+    if (room === null) {
+      // A home whose row is already gone cannot be asked what it still holds; the session
+      // has nowhere left to live either way, so it dies rather than becoming an orphan.
+      this.sessions.reapSession(sessionId);
+      return "ok";
+    }
+    for (const tileId of terminalLeafIds(room.tileLayout(), sessionId)) {
+      room.removeTileLeafById(tileId);
+    }
+    // The row goes before the home is judged: `deleteIfEmptied` asks what the container
+    // holds NOW, and a composition still listing the terminal it just lost would survive.
+    this.sessions.reapSession(sessionId);
+    this.deleteIfEmptied(placed.padId);
+    this.afterLeaving(placed.padId);
+    return "ok";
+  }
+
+  /**
    * A terminal's home, seeded at birth: the row plus the one leaf that makes it solo. The
    * broker calls this the instant a PTY lands, which is what `homed: "eager"` means — there
    * is no window in which a live terminal has nowhere to live.

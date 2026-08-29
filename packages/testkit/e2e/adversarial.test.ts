@@ -248,11 +248,13 @@ test("a reused machine token fences the old socket before routing later commands
     });
     clients.push(home);
     await waitFor(() => home.sessions.has(session.id), 5_000, 20);
-    const exited = nextMessage(
+    // A kill destroys the terminal, so the home hears a departure rather than an exit; what
+    // this test is about is WHICH socket the kill frame reaches.
+    const departed = nextMessage(
       home,
       "session_event",
       5_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     const killStart = second.frames.length;
     home.killTerminal(session.id);
@@ -265,8 +267,11 @@ test("a reused machine token fences the old socket before routing later commands
       20,
     );
     if (kill.type !== "kill") throw new Error("active machine did not receive kill");
+    expect((await departed).kind).toBe("parked");
+    // The machine answers the kill the only way it can. The session is already gone, so the
+    // frame changes nothing — and must not resurrect it as an exited row.
     second.send({ type: "exited", sessionId: session.id, exitCode: 0 });
-    expect((await exited).kind).toBe("exited");
+    await waitFor(() => home.sessions.get(session.id) === undefined, 5_000, 20);
     expect(first.frames).toHaveLength(firstFrameCount);
   } catch (error) {
     throw e2eFailure(error, servers);

@@ -209,15 +209,7 @@ describe("TerminalBroker controller lease", () => {
       cols: 120,
       rows: 40,
     });
-    fixture.broker.kill(second, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
-    expect(fixture.machine.sent.map((message) => message.type)).toEqual([
-      "input",
-      "resize",
-      "kill",
-    ]);
+    expect(fixture.machine.sent.map((message) => message.type)).toEqual(["input", "resize"]);
 
     fixture.socket.clear();
     fixture.broker.input(fixture.opener, {
@@ -229,6 +221,20 @@ describe("TerminalBroker controller lease", () => {
       type: "error",
       code: "not_controller",
     });
+
+    // Kill comes last because it is DESTRUCTION: it needs the lease the take just moved, and
+    // once it lands there is no session left for anything else to be gated on.
+    fixture.broker.kill(second, {
+      type: "terminal_kill",
+      sessionId: fixture.create.sessionId,
+    });
+    expect(fixture.machine.sent.map((message) => message.type)).toEqual([
+      "input",
+      "resize",
+      "kill",
+    ]);
+    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
+    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
     fixture.store.close();
   });
 
@@ -255,7 +261,7 @@ describe("TerminalBroker controller lease", () => {
     fixture.store.close();
   });
 
-  test("offline kill persists exit and kills the PTY if its machine reconnects", () => {
+  test("an offline kill removes the terminal anyway and kills the PTY if its machine returns", () => {
     const fixture = brokerFixture();
     const room = fixture.rooms.get(fixture.pad.id);
     if (room === null) throw new Error("missing room");
@@ -268,24 +274,22 @@ describe("TerminalBroker controller lease", () => {
       sessionId: fixture.create.sessionId,
     });
 
-    expect(fixture.broker.listForPad(fixture.pad.id)).toMatchObject([
-      { id: fixture.create.sessionId, status: "exited", exitCode: null },
-    ]);
-    // L2: the exit is durable and STAYS visible — the home leaf is untouched, so the prune
-    // that collects unhomed exits has nothing to collect here.
-    fixture.broker.pruneExitedUnhomedForPad(fixture.pad.id);
-    expect(fixture.broker.listForPad(fixture.pad.id)).toHaveLength(1);
-    expect(fixture.store.getSession(fixture.create.sessionId)).toMatchObject({
-      status: "exited",
-      exitCode: null,
-    });
-    expect(fixture.socket.messages()).toContainEqual({
-      type: "session_event",
-      sessionId: fixture.create.sessionId,
-      kind: "exited",
-      exitCode: null,
-    });
+    // Undeliverable is not a reason to keep the terminal. The request was the whole intent,
+    // so the session, its row and the home it was the last occupant of all go, and nobody is
+    // left staring at an entry that outlived what it described.
+    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
+    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    expect(fixture.store.getPad(fixture.pad.id)).toBeNull();
+    // And no EXIT is announced: an exit is what a terminal that stopped ON ITS OWN reports,
+    // and inventing one here is exactly the state this rule exists to forbid. What the home
+    // hears is the departure notice, which is what drops the row from every session listing.
+    expect(fixture.socket.messages().filter((message) => message.type === "session_event")).toEqual(
+      [{ type: "session_event", sessionId: fixture.create.sessionId, kind: "parked" }],
+    );
 
+    // The durability the persisted exit used to buy now comes from the ABSENCE of a row: a
+    // PTY that outlived an undeliverable kill has nothing to be adopted against, so hello
+    // reconciliation kills it outright.
     fixture.broker.setMachineOnline(fixture.machine);
     fixture.broker.reconcileMachineHello(fixture.machine.machineId, [
       {
@@ -610,7 +614,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
 });
 
 describe("TerminalBroker live stream and control contracts", () => {
-  test("control operations on an exited session all return conflict", () => {
+  test("driving an exited session conflicts, but dismissing it is the kill it asked for", () => {
     const fixture = brokerFixture();
     fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
     fixture.socket.clear();
@@ -631,17 +635,32 @@ describe("TerminalBroker live stream and control contracts", () => {
       type: "terminal_take",
       sessionId: fixture.create.sessionId,
     });
-    fixture.broker.kill(fixture.opener, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
 
+    // Driving a dead PTY is a conflict: there is nothing on the other end to drive.
     expect(
       fixture.socket
         .messages()
         .filter((message) => message.type === "error")
         .map((message) => message.code),
-    ).toEqual(["conflict", "conflict", "conflict", "conflict"]);
+    ).toEqual(["conflict", "conflict", "conflict"]);
+
+    fixture.broker.kill(fixture.opener, {
+      type: "terminal_kill",
+      sessionId: fixture.create.sessionId,
+    });
+
+    // Killing one is not. A lease is a claim on a LIVE PTY, so an exited terminal has no
+    // controller to win and dismissing it is the same verb as killing a running one — which
+    // is why "kill" refusing here would leave dead terminals nobody could clear.
+    expect(
+      fixture.socket
+        .messages()
+        .filter((message) => message.type === "error")
+        .map((message) => message.code),
+    ).toEqual(["conflict", "conflict", "conflict"]);
+    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    expect(fixture.store.getPad(fixture.pad.id)).toBeNull();
+    // No PTY was asked to stop: it already had.
     expect(fixture.machine.sent).toEqual([]);
     fixture.store.close();
   });

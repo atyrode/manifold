@@ -473,7 +473,7 @@ describe("PATCH /api/terminals/:id", () => {
 });
 
 describe("DELETE /api/terminals/:id", () => {
-  test("killing an unreferenced terminal sends one kill, then reports 409 and 404", async () => {
+  test("killing a terminal drops its row and its home from the index at once", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
     // Nothing on any canvas points at this terminal, and it is still reachable: the index
@@ -482,20 +482,24 @@ describe("DELETE /api/terminals/:id", () => {
     fixture.machine.clear();
 
     const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    // The machine answers a kill by reporting the exit; the row it would have updated is
+    // already gone, so this cannot resurrect it as an exited entry.
     fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
+    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
     const again = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
     const missing = await call(fixture, "DELETE", "/api/terminals/missing", OWNER_KEY);
 
     expect(killed.status).toBe(200);
     expect(killed.payload).toEqual({ ok: true });
     expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
-    expect(again.status).toBe(409);
-    expect(again.payload).toMatchObject({ error: { code: "conflict" } });
-    expect(missing.status).toBe(404);
+    // A kill removes the terminal from the world, so the index has no row to show and the
+    // home it lived in is gone with it. There is no tombstone state between the two.
+    expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
+    expect(fixture.store.getSession(born.sessionId)).toBeNull();
+    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect([again.status, missing.status]).toEqual([404, 404]);
+    expect(again.payload).toMatchObject({ error: { code: "not_found" } });
     expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
-    // An exit deletes nothing: the home and its leaf keep the exit visible.
-    expect(fixture.store.getSession(born.sessionId)?.status).toBe("exited");
-    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
   });
 
   test("a pad-scoped token cannot kill a terminal", async () => {

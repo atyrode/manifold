@@ -359,9 +359,12 @@ export class HttpApp {
         throw new RequestError("forbidden", "scoped tokens cannot act on workspace terminals");
       }
       if (request.method === "DELETE") {
-        const killed = this.broker.killById(sessionId);
-        if (killed === "not_found") throw new RequestError("not_found", "terminal not found");
-        if (killed === "conflict") throw new RequestError("conflict", "terminal has exited");
+        // Kill means gone: the session, its home composition and every portal onto that home
+        // in one write. An already-exited terminal is swept the same way — dismissing a dead
+        // terminal and killing a live one are one verb, so there is no conflict to report.
+        if (this.broker.killById(sessionId) === "not_found") {
+          throw new RequestError("not_found", "terminal not found");
+        }
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
       if (request.method === "PATCH") {

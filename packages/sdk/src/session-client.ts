@@ -447,8 +447,9 @@ export class SessionClient {
       }
       case "session_event": {
         if (msg.kind === "parked") {
-          // The session left this pad for the workspace pool; it is no longer
-          // reachable over this connection.
+          // A departure notice: the session is no longer in THIS room, so it is no longer
+          // reachable over this channel. It either re-homed into another composition (a
+          // merge or an extraction) or it was killed and left every room.
           this.sessions.delete(msg.sessionId);
           this.emit(msg.type, msg);
           this.emit("sessions_changed");
