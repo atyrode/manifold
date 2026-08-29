@@ -478,6 +478,7 @@ describe("roster and presence", () => {
     const peer = {
       principal: { id: "p2", kind: "agent" as const, name: "pi", color: "#00ff00" },
       connections: 1,
+      connIds: ["peer-connection"],
       payload: {},
     };
     const observedConnIds: string[] = [];

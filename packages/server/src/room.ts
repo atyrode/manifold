@@ -124,6 +124,7 @@ export class Room {
       result.push({
         principal: first.auth.principal,
         connections: peers.size,
+        connIds: [...peers].map((connected) => connected.id),
         payload: this.presences.get(principalId) ?? {},
       });
     }
@@ -187,6 +188,7 @@ export class Room {
     const joined: PresenceState = {
       principal: peer.auth.principal,
       connections: peers.size,
+      connIds: [...peers].map((connected) => connected.id),
       payload: this.presences.get(principalId) ?? {},
     };
     this.broadcast({ type: "roster", joined }, false, peer);
@@ -217,6 +219,7 @@ export class Room {
         joined: {
           principal: first.auth.principal,
           connections: peers.size,
+          connIds: [...peers].map((connected) => connected.id),
           payload: this.presences.get(principalId) ?? {},
         },
       });

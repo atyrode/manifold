@@ -11,7 +11,12 @@ function entry(
   connections = 1,
   payload: PresenceState["payload"] = {},
 ): PresenceState {
-  return { principal: p, connections, payload };
+  return {
+    principal: p,
+    connections,
+    connIds: Array.from({ length: connections }, (_v, index) => `${p.id}-conn-${index + 1}`),
+    payload,
+  };
 }
 
 describe("deriveRosterRows", () => {

@@ -39,6 +39,12 @@ export type PresencePayload = z.infer<typeof PresencePayloadSchema>;
 export const PresenceStateSchema = z.strictObject({
   principal: PrincipalSchema,
   connections: z.number().int().positive(),
+  /**
+   * Live session-socket connection ids for this principal, one per open tab. Cursor
+   * and gesture traffic is stamped per-connection, so viewers need the exact live set
+   * to retire a closed tab's cursor while sibling tabs of the same principal remain.
+   */
+  connIds: z.array(z.string().min(1)).min(1).max(64),
   payload: PresencePayloadSchema,
 });
 export type PresenceState = z.infer<typeof PresenceStateSchema>;
