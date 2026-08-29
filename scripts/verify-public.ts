@@ -161,9 +161,11 @@ try {
       30_000,
       "xterm mount",
     );
-    // Focus xterm's hidden textarea: that is where keystrokes actually land.
+    // Focus = engage: a real user's click both focuses xterm and escalates the mono
+    // portal to an occupant channel on the terminal's home composition. Synthetic
+    // pointer events alone never produce a click, so dispatch one explicitly.
     await browser.evaluate(
-      "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); t?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); t?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); document.querySelector('.xterm-helper-textarea')?.focus(); })()",
+      "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); for (const type of ['pointerdown', 'pointerup', 'click']) t?.dispatchEvent(new (type === 'click' ? MouseEvent : PointerEvent)(type, { bubbles: true })); document.querySelector('.xterm-helper-textarea')?.focus(); })()",
     );
     await sleep(400);
     await browser.typeText(`printf '${marker}_BROWSER\\n'\n`);
@@ -179,13 +181,22 @@ try {
   });
 
   await step("two simultaneous public WebSocket viewers share one terminal", async () => {
-    const viewerA = newViewer(padId);
-    const viewerB = newViewer(padId);
-    await viewerA.connect();
-    await viewerB.connect();
-    const running = [...viewerA.sessions.values()].find((s) => s.status === "running");
+    // Sessions live in their HOME composition, never in a canvas: find the home over
+    // HTTP, then both viewers hold a channel on it — the same thing the widget does.
+    const res = await fetch(`${origin}/api/terminals`, {
+      headers: { authorization: `Bearer ${ownerKey}` },
+    });
+    if (!res.ok) throw new Error(`terminal listing failed: ${res.status}`);
+    const listed = (await res.json()) as {
+      terminals: readonly { id: string; homeId: string; status: string }[];
+    };
+    const running = listed.terminals.find((t) => t.status === "running");
     if (running === undefined) throw new Error("no running session visible over the public origin");
     sessionId = running.id;
+    const viewerA = newViewer(running.homeId);
+    const viewerB = newViewer(running.homeId);
+    await viewerA.connect();
+    await viewerB.connect();
     const seenA: string[] = [];
     const seenB: string[] = [];
     for (const [viewer, sink] of [
@@ -210,7 +221,17 @@ try {
 
   await step("terminal session survives all viewers disconnecting", async () => {
     await sleep(2500);
-    const rejoin = newViewer(padId);
+    const res = await fetch(`${origin}/api/terminals`, {
+      headers: { authorization: `Bearer ${ownerKey}` },
+    });
+    const listed = (await res.json()) as {
+      terminals: readonly { id: string; homeId: string; status: string }[];
+    };
+    const survivor = listed.terminals.find((t) => t.id === sessionId);
+    if (survivor === undefined || survivor.status !== "running") {
+      throw new Error("session did not survive viewer disconnect");
+    }
+    const rejoin = newViewer(survivor.homeId);
     await rejoin.connect();
     const session = rejoin.sessions.get(sessionId);
     if (session === undefined || session.status !== "running") {
