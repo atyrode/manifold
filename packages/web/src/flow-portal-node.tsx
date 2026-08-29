@@ -1,10 +1,16 @@
 import { ROOT_TILE_ID, type Principal, type TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { getPad } from "./api.ts";
-import { COMPOSE_TARGET_CLASS, useFlowPad } from "./flow-terminal-node.tsx";
-import { endCarry, startItemDrag } from "./item-envelope.ts";
+import { countRender } from "./debug-seam.ts";
+import {
+  COMPOSE_TARGET_CLASS,
+  MIN_TERMINAL_HEIGHT,
+  MIN_TERMINAL_WIDTH,
+  useFlowPad,
+  useFlowPadPresence,
+} from "./flow-terminal-node.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
@@ -46,6 +52,15 @@ import {
  * body stays free for the tile drags that decompose a composition.
  */
 export const PORTAL_DRAG_HANDLE = ".flow-portal__strip";
+
+/**
+ * A widget rendering its container's ONE terminal as itself (the arity rule). The class
+ * is load-bearing beyond paint: it scopes the canvas's drag-handle selector, so only a
+ * mono widget is moved by the terminal titlebar inside it — inside a multi-tile widget
+ * that same titlebar belongs to a tile, whose drag extracts rather than moves.
+ */
+export const MONO_PORTAL_CLASS = "flow-portal--mono";
+export const MONO_PORTAL_CLASS_SELECTOR = `.${MONO_PORTAL_CLASS}`;
 
 /**
  * Resize is canvas-item chrome, not terminal chrome: a widget's frame border is a
@@ -100,9 +115,10 @@ function usePadName(token: string, padId: string): string | null {
 
 /**
  * One room socket per live widget, opened through the canvas's factory so the session
- * URL and identity stay in one place. The factory is held in a ref: the context value
- * is rebuilt whenever the canvas's tool or selection changes, and a dependency on it
- * would tear the socket down mid-preview.
+ * URL and identity stay in one place. Both callbacks are plain dependencies: the canvas
+ * hands down a context whose callbacks are stable by construction (presence, the one
+ * thing that churned, is a context of its own now), so the socket can be tied to them
+ * honestly instead of smuggled past the dependency array in a ref.
  *
  * Ownership follows the CONTAINER, never the role. Escalating to an occupant is a
  * gapless swap (`createWidgetSocketSwitch`), and an effect keyed on the role would
@@ -116,27 +132,21 @@ function useWidgetSocket(
   open: (padId: string, role: WidgetRole) => SessionClient,
   onFailure: (role: WidgetRole, reason: unknown) => void,
 ): WidgetSlot<SessionClient> | null {
-  const openRef = useRef(open);
-  const failureRef = useRef(onFailure);
-  useEffect(() => {
-    openRef.current = open;
-    failureRef.current = onFailure;
-  });
   const [slot, setSlot] = useState<WidgetSlot<SessionClient> | null>(null);
   const switchRef = useRef<WidgetSocketSwitch | null>(null);
   useEffect(() => {
     if (!live) return;
     const sockets = createWidgetSocketSwitch(
-      (nextRole) => openRef.current(containerId, nextRole),
+      (nextRole) => open(containerId, nextRole),
       setSlot,
-      (failedRole, reason) => failureRef.current(failedRole, reason),
+      onFailure,
     );
     switchRef.current = sockets;
     return () => {
       switchRef.current = null;
       sockets.dispose();
     };
-  }, [containerId, live]);
+  }, [containerId, live, onFailure, open]);
   // Ordered after the effect above within the same commit, so the first request always
   // finds a switch; afterwards this is the only thing a role flip has to do.
   useEffect(() => {
@@ -226,6 +236,59 @@ function useRoomOccupants(client: SessionClient | null): readonly Principal[] {
   return occupants;
 }
 
+interface OccupantAvatarsProps {
+  readonly occupants: readonly Principal[];
+  readonly selfId: string | null;
+}
+
+/** The name strip's avatar cluster: who is in the container this widget points at. */
+function OccupantAvatars({ occupants, selfId }: OccupantAvatarsProps): React.ReactElement | null {
+  if (occupants.length === 0) return null;
+  return (
+    <span
+      className="flow-portal__presence"
+      aria-label={`${String(occupants.length)} in this composition`}
+    >
+      {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
+        <span
+          key={principal.id}
+          className="flow-portal__avatar"
+          style={{ backgroundColor: principal.color }}
+          title={
+            principal.id === selfId
+              ? "you are in this composition"
+              : `${principal.name} is in this composition`
+          }
+        >
+          {principal.name.slice(0, 1).toUpperCase()}
+        </span>
+      ))}
+      {occupants.length > MAX_PRESENCE_AVATARS ? (
+        <span className="flow-portal__avatar flow-portal__avatar--more">
+          +{occupants.length - MAX_PRESENCE_AVATARS}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The card form's avatars, and the ONLY subscriber to polled presence on a canvas. A
+ * card owns no room socket, so the sidebar's poll is all it has — and isolating that
+ * read in a leaf is what keeps the 1.5s tick from re-rendering live widgets and the
+ * terminals inside them, which is all any of them ever wanted from it.
+ */
+function PolledOccupantAvatars({
+  containerId,
+}: {
+  readonly containerId: string;
+}): React.ReactElement | null {
+  const presence = useFlowPadPresence();
+  const occupants =
+    presence.find((entry) => entry.padId === containerId)?.principals ?? NO_PRINCIPALS;
+  return <OccupantAvatars occupants={occupants} selfId={null} />;
+}
+
 interface PortalTerminalTileProps {
   readonly client: SessionClient;
   readonly containerId: string;
@@ -236,6 +299,21 @@ interface PortalTerminalTileProps {
   /** True for the engaged tile — the one holding the keyboard. */
   readonly active: boolean;
   readonly onEngage: (tileId: string) => void;
+  /**
+   * The ARITY rule. A composition holding exactly this one terminal is not "a
+   * composition containing a terminal" to anybody looking at it — it IS the terminal.
+   * So the widget drops its own name strip and the terminal's titlebar becomes the
+   * node's chrome, carrying the widget-level verbs: minimize puts the representation
+   * away, close deletes the composition (which reaps the shell), maximize walks into it.
+   */
+  readonly mono: PortalMonoChrome | null;
+}
+
+export interface PortalMonoChrome {
+  readonly onPark: () => void;
+  readonly onClose: () => void;
+  readonly onExpand: () => void;
+  readonly onRenameTitle: (name: string) => void;
 }
 
 function PortalTerminalTile({
@@ -246,6 +324,7 @@ function PortalTerminalTile({
   interactive,
   active,
   onEngage,
+  mono,
 }: PortalTerminalTileProps): React.ReactElement {
   const pad = useFlowPad();
   const machineId = client.sessions.get(sessionId)?.machineId;
@@ -272,7 +351,10 @@ function PortalTerminalTile({
         active={active}
         panelHighlighted={false}
         machine={machineId === undefined ? null : sessionMachine(pad.machines, machineId)}
-        chrome={interactive ? "full" : "preview"}
+        // A mono widget's bar is the NODE's chrome, so it stays full even while
+        // watching: it is the only titlebar this element has.
+        chrome={interactive || mono !== null ? "full" : "preview"}
+        {...(mono ?? {})}
       />
       {/*
         Watching: a full-bleed shield keeps clicks and keystrokes out of a terminal
@@ -298,8 +380,22 @@ function PortalTerminalTile({
         }
         draggable
         onPointerDown={(event) => event.stopPropagation()}
-        onDragStart={(event) => startItemDrag(event, { kind: "tile", containerId, tileId })}
-        onDragEnd={() => endCarry()}
+        /*
+          One carry, like every other grab: the envelope is sealed into the drag AND
+          the gesture opens, so collaborators watch the tile travel across the canvas
+          instead of seeing it teleport on release. The label rides along because the
+          viewer has not joined the composition this tile belongs to.
+        */
+        onDragStart={(event) => {
+          pad.carry.begin(
+            { kind: "tile", containerId, tileId },
+            {
+              transfer: event.dataTransfer,
+              label: client.sessions.get(sessionId)?.name ?? null,
+            },
+          );
+        }}
+        onDragEnd={() => pad.carry.end()}
         onDoubleClick={() => pad.navigate(`/p/${encodeURIComponent(containerId)}`)}
       >
         <span className="flow-portal__grip" aria-hidden="true">
@@ -337,6 +433,24 @@ function PortalPadTile({ padId }: { readonly padId: string }): React.ReactElemen
   );
 }
 
+/**
+ * The one terminal a composition holds, or null when it holds anything else. This is
+ * the whole arity rule: a container of exactly one terminal renders AS that terminal.
+ */
+export function soloTerminalLeaf(
+  layout: TileLayout,
+): { readonly tileId: string; readonly sessionId: string } | null {
+  let found: { readonly tileId: string; readonly sessionId: string } | null = null;
+  for (const node of Object.values(layout)) {
+    if (node.dir !== null) continue;
+    // A second leaf ends it even when that leaf is EMPTY: splitting a container is how
+    // someone says "this is a composition now", and the empty half is the invitation.
+    if (found !== null || node.surface?.kind !== "terminal") return null;
+    found = { tileId: node.id, sessionId: node.surface.sessionId };
+  }
+  return found;
+}
+
 interface PortalTileProps {
   readonly client: SessionClient;
   readonly containerId: string;
@@ -345,6 +459,8 @@ interface PortalTileProps {
   readonly interactive: boolean;
   readonly engagedTileId: string | null;
   readonly onEngage: (tileId: string) => void;
+  /** Non-null only for the ONE leaf of a mono container — see {@link soloTerminalLeaf}. */
+  readonly mono?: PortalMonoChrome | null;
 }
 
 function PortalTile({
@@ -355,6 +471,7 @@ function PortalTile({
   interactive,
   engagedTileId,
   onEngage,
+  mono = null,
 }: PortalTileProps): React.ReactElement | null {
   const node = layout[tileId];
   if (node === undefined) return null;
@@ -394,6 +511,9 @@ function PortalTile({
           interactive={interactive}
           active={interactive && engagedTileId === tileId}
           onEngage={onEngage}
+          // Only a mono container hands this down; inside a multi-tile preview the
+          // widget keeps its own bar and each tile keeps its preview chrome.
+          mono={mono}
         />
       );
     case "pad":
@@ -420,6 +540,7 @@ function PortalTile({
 }
 
 function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
+  countRender("portal-node");
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
   // The canvas stamps the armed compose zone onto this node's data; dropping a
   // surface on a widget adds a tile to the container it points at.
@@ -441,21 +562,29 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       ? engagement.tileId
       : null;
   const engaged = engagedTileId !== null;
-  const slot = useWidgetSocket(
-    containerId,
-    live,
-    engaged ? "occupant" : "spectator",
-    pad.openClient,
-    (failedRole) => {
-      // Engaging is a direct action, so its failure has to be visible: without this the
-      // viewer is left clicking into a tile that will never accept a keystroke.
+  const notify = pad.notify;
+  /**
+   * Stable, because the socket effect now depends on it honestly: engaging is a direct
+   * action, so its failure has to be visible — without this the viewer is left clicking
+   * into a tile that will never accept a keystroke.
+   */
+  const onSocketFailure = useCallback(
+    (failedRole: WidgetRole) => {
       setEngagement(null);
-      pad.notify(
+      notify(
         failedRole === "occupant"
           ? "Could not open this composition for editing."
           : "Could not open this composition.",
       );
     },
+    [notify],
+  );
+  const slot = useWidgetSocket(
+    containerId,
+    live,
+    engaged ? "occupant" : "spectator",
+    pad.openClient,
+    onSocketFailure,
   );
   const client = slot?.client ?? null;
   /** Engagement is only real once the occupant socket is the one being painted. */
@@ -463,10 +592,6 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const layout = usePreviewLayout(client);
   const name = usePadName(pad.token, containerId);
   const roomOccupants = useRoomOccupants(client);
-  const polledOccupants =
-    pad.presence.find((entry) => entry.padId === containerId)?.principals ?? NO_PRINCIPALS;
-  // The card form owns no socket, so the sidebar's poll is all it has.
-  const occupants = client === null ? polledOccupants : roomOccupants;
   const selfId = client?.self?.id ?? null;
 
   useEffect(() => {
@@ -506,8 +631,29 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     pad.navigate(`/p/${encodeURIComponent(containerId)}`);
   };
 
+  /**
+   * The arity rule, resolved. A composition holding exactly one terminal renders AS
+   * that terminal: no widget name strip, no half-scale preview, the terminal's own
+   * titlebar carrying this element's verbs. Everything else — an empty container, two
+   * tiles, a canvas, a note — is a composition and wears composition chrome.
+   */
+  const solo = client === null || layout === null ? null : soloTerminalLeaf(layout);
+  const mono: PortalMonoChrome | null =
+    solo === null
+      ? null
+      : {
+          // Minimize: the representation leaves this canvas. Nothing else references the
+          // terminal's home afterwards, which is exactly what "unplaced" means now.
+          onPark: () => pad.removeElement(id),
+          // Close: the composition goes, and the shell it holds goes with it.
+          onClose: () => pad.onDeleteContainer(containerId, id),
+          onExpand: enter,
+          onRenameTitle: (name: string) => pad.onRenameTerminal(solo.sessionId, name),
+        };
+
   const rootClass = [
     "flow-portal",
+    mono === null ? "" : MONO_PORTAL_CLASS,
     interactive ? "flow-portal--engaged" : "",
     engaged && !interactive ? "flow-portal--engaging" : "",
     composeTarget ? COMPOSE_TARGET_CLASS : "",
@@ -531,8 +677,8 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         isVisible={pad.tool === "select"}
         lineClassName="flow-portal-resize-edge"
         handleClassName="flow-portal-resize-corner"
-        minWidth={MIN_PORTAL_WIDTH}
-        minHeight={MIN_PORTAL_HEIGHT}
+        minWidth={mono === null ? MIN_PORTAL_WIDTH : MIN_TERMINAL_WIDTH}
+        minHeight={mono === null ? MIN_PORTAL_HEIGHT : MIN_TERMINAL_HEIGHT}
         onResize={(_event, params) =>
           pad.onResize(id, params.x, params.y, params.width, params.height)
         }
@@ -541,52 +687,45 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         }
       />
       <div className={rootClass} ref={rootRef} onDoubleClick={enter}>
-        <NodeTitleBar
-          className="flow-portal__strip"
-          icon="▤"
-          title={name}
-          defaultTitle="composition"
-          middle={
-            occupants.length === 0 ? null : (
-              <span
-                className="flow-portal__presence"
-                aria-label={`${String(occupants.length)} in this composition`}
-              >
-                {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
-                  <span
-                    key={principal.id}
-                    className="flow-portal__avatar"
-                    style={{ backgroundColor: principal.color }}
-                    title={
-                      principal.id === selfId
-                        ? "you are in this composition"
-                        : `${principal.name} is in this composition`
-                    }
-                  >
-                    {principal.name.slice(0, 1).toUpperCase()}
-                  </span>
-                ))}
-                {occupants.length > MAX_PRESENCE_AVATARS ? (
-                  <span className="flow-portal__avatar flow-portal__avatar--more">
-                    +{occupants.length - MAX_PRESENCE_AVATARS}
-                  </span>
-                ) : null}
-              </span>
-            )
-          }
-          onMinimize={() => pad.removeElement(id)}
-          minimizeLabel={`Put away composition ${name ?? containerId}`}
-          minimizeTooltip="Remove this widget from the canvas (the composition keeps running)"
-          onMaximize={enter}
-          maximizeLabel={`Open composition ${name ?? containerId}`}
-          maximizeTooltip="Open this composition"
-          onClose={() => pad.onDeleteContainer(containerId, id)}
-          closeLabel={`Delete composition ${name ?? containerId}`}
-          closeTooltip="Delete this composition for everyone"
-          closeConfirm={`Delete “${name ?? "this composition"}”?`}
-        />
+        {mono !== null ? null : (
+          <NodeTitleBar
+            className="flow-portal__strip"
+            icon="▤"
+            title={name}
+            defaultTitle="composition"
+            middle={
+              client === null ? (
+                <PolledOccupantAvatars containerId={containerId} />
+              ) : (
+                <OccupantAvatars occupants={roomOccupants} selfId={selfId} />
+              )
+            }
+            onMinimize={() => pad.removeElement(id)}
+            minimizeLabel={`Put away composition ${name ?? containerId}`}
+            minimizeTooltip="Remove this widget from the canvas (the composition keeps running)"
+            onMaximize={enter}
+            maximizeLabel={`Open composition ${name ?? containerId}`}
+            maximizeTooltip="Open this composition"
+            onClose={() => pad.onDeleteContainer(containerId, id)}
+            closeLabel={`Delete composition ${name ?? containerId}`}
+            closeTooltip="Delete this composition for everyone"
+            closeConfirm={`Delete “${name ?? "this composition"}”?`}
+          />
+        )}
         <div className="flow-portal__viewport">
-          {client !== null && layout !== null ? (
+          {mono !== null && solo !== null && client !== null ? (
+            // 1:1, not the half-scale preview: this IS the terminal, not a picture of one.
+            <PortalTile
+              client={client}
+              containerId={containerId}
+              layout={layout ?? {}}
+              tileId={ROOT_TILE_ID}
+              interactive={interactive}
+              engagedTileId={engagedTileId}
+              onEngage={(tileId) => setEngagement({ containerId, tileId })}
+              mono={mono}
+            />
+          ) : client !== null && layout !== null ? (
             <div
               className="flow-portal__preview"
               style={{

@@ -1,4 +1,9 @@
-import { GESTURE_TTL_MS, type ServerGesture } from "@manifold/protocol";
+import {
+  GESTURE_TTL_MS,
+  type Carry,
+  type GestureKind,
+  type ServerGesture,
+} from "@manifold/protocol";
 import { GESTURE_HALF_LIFE_MS, stepToward } from "./interpolate";
 
 export interface GestureGeometry {
@@ -12,9 +17,15 @@ export interface GestureOverride {
   readonly connId: string;
   readonly principalId: string;
   readonly elementId: string;
-  readonly kind: "move" | "resize" | "draw";
+  readonly kind: GestureKind;
   readonly target: GestureGeometry;
   readonly current: GestureGeometry;
+  /**
+   * Set on `carry` frames: the item in flight. Its presence is what lets a viewer paint
+   * a ghost for something this room does not render — the geometry above is only ever
+   * WHERE, never WHAT.
+   */
+  readonly carry?: Carry;
   readonly points?: readonly number[];
   readonly updatedAt: number;
 }
@@ -47,6 +58,7 @@ export function applyGestureFrame(
     target,
     current: sameSender && previous !== undefined ? previous.current : target,
     ...(frame.points === undefined ? {} : { points: frame.points }),
+    ...(frame.carry === undefined ? {} : { carry: frame.carry }),
     updatedAt: now,
   });
   return true;

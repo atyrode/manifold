@@ -1,33 +1,33 @@
 import type { MachineSummary, PadPresence } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
-import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { createContext, memo, useContext } from "react";
-import { TerminalView } from "./terminal-view.tsx";
+import { createContext, useContext } from "react";
+import type { CarryController } from "./use-carry.ts";
 import type { CanvasTool } from "./canvas-tool.ts";
-import type { SessionMachine } from "./machine-visibility.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
- * The one node type this spike registers. Declared in its own module so the `nodeTypes`
- * map in the container can be a module-scope constant: an inline object literal would give
- * React Flow a new component identity on every render, remounting every node — which for
- * manifold means destroying every PTY. React Flow only warns about this in development.
+ * The canvas's node contexts and terminal chrome constants.
+ *
+ * There is no terminal NODE any more: a terminal on a canvas is a portal onto its solo
+ * home composition, and the widget's mono form wears the terminal's own titlebar (the
+ * arity rule). What survives here is what that chrome is addressed by — the drag handle
+ * selector and the size floor — plus the two contexts every canvas node reads.
+ *
+ * They live in their own module so the `nodeTypes` map in the container can be a
+ * module-scope constant: an inline object literal would give React Flow a new component
+ * identity on every render, remounting every node — which for manifold means destroying
+ * every PTY. React Flow only warns about this in development.
  */
 
 export interface FlowPadContextValue {
   readonly client: SessionClient;
-  readonly machines: readonly MachineSummary[] | null;
-  readonly machineFor: (sessionId: string) => SessionMachine | null;
-  /** Parks the element's terminal into the workspace pool (server removes the element). */
-  readonly onPark: (elementId: string) => void;
-  /** Kills the PTY and tombstones the element. */
-  readonly onClose: (elementId: string, sessionId: string) => void;
   /**
-   * Transmutes a canvas terminal into a tiled view born around it: the element
-   * becomes a portal onto the new container and the expander navigates into it.
-   * The server finds the placement from the session, so the id is enough.
+   * The canvas's carry. Any chrome a node offers as a grab handle starts one through
+   * this, so a widget's tile grip and a node drag are the same gesture to everyone
+   * watching — the node never opens a gesture channel of its own.
    */
-  readonly onExpand: (sessionId: string) => void;
+  readonly carry: CarryController;
+  readonly machines: readonly MachineSummary[] | null;
   /** Renames the session behind an element from its titlebar title. */
   readonly onRenameTerminal: (sessionId: string, name: string) => void;
   /**
@@ -40,7 +40,6 @@ export interface FlowPadContextValue {
    * gone, so a widget left behind would point at nothing.
    */
   readonly onDeleteContainer: (containerId: string, elementId: string) => void;
-  readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
   /** Streams live resize geometry and commits its final frame. */
   readonly onResize: (
     elementId: string,
@@ -85,8 +84,6 @@ export interface FlowPadContextValue {
    * makes keystrokes legal and what keeps a transient view from dissolving.
    */
   readonly openClient: (padId: string, role: WidgetRole) => SessionClient;
-  /** Polled principal-level presence; portal widgets show their container's occupants. */
-  readonly presence: readonly PadPresence[];
   /** Pushes a route; portals navigate into the container they point at. */
   readonly navigate: (path: string) => void;
   /**
@@ -97,13 +94,55 @@ export interface FlowPadContextValue {
   readonly notify: (message: string) => void;
 }
 
+/**
+ * TWO contexts, split by CADENCE rather than by topic.
+ *
+ * Everything a node calls is stable for the life of the canvas, so it belongs in a value
+ * that changes only when the canvas's own mode does. Polled presence is not: a new array
+ * arrives every poll tick, and while it lived here every live terminal and every widget
+ * re-rendered on a timer, for data all but one of them never read. The split is what
+ * lets a node subscribe to the frequency it actually consumes — and what let the widget
+ * socket drop its `openClient` ref indirection, since a stable callback can simply be an
+ * effect dependency.
+ */
 const FlowPadContext = createContext<FlowPadContextValue | null>(null);
+const FlowPadPresenceContext = createContext<readonly PadPresence[] | null>(null);
 
-export const FlowPadProvider = FlowPadContext.Provider;
+/**
+ * One element for both providers. The canvas hands down two values with two very
+ * different lifetimes, and nesting the raw providers at the call site would bury that
+ * distinction in JSX indentation instead of stating it here.
+ */
+export function FlowPadProviders({
+  value,
+  presence,
+  children,
+}: {
+  readonly value: FlowPadContextValue;
+  readonly presence: readonly PadPresence[];
+  readonly children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <FlowPadContext.Provider value={value}>
+      <FlowPadPresenceContext.Provider value={presence}>{children}</FlowPadPresenceContext.Provider>
+    </FlowPadContext.Provider>
+  );
+}
 
 export function useFlowPad(): FlowPadContextValue {
   const value = useContext(FlowPadContext);
   if (value === null) throw new Error("FlowPadContext is missing above a canvas node");
+  return value;
+}
+
+/**
+ * Polled principal-level presence. Read ONLY where nothing better exists: a live widget
+ * has its own room socket and reads the roster from it, so this is the card form's
+ * fallback, and subscribing to it anywhere else re-imposes the poll on the whole canvas.
+ */
+export function useFlowPadPresence(): readonly PadPresence[] {
+  const value = useContext(FlowPadPresenceContext);
+  if (value === null) throw new Error("FlowPadPresenceContext is missing above a canvas node");
   return value;
 }
 
@@ -124,63 +163,3 @@ export const MIN_TERMINAL_HEIGHT = 200;
  * "these two become one view", not as a move that happens to end on top.
  */
 export const COMPOSE_TARGET_CLASS = "flow-node--compose-target";
-
-function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
-  const sessionId = typeof data["sessionId"] === "string" ? data["sessionId"] : "";
-  const pad = useFlowPad();
-  // The canvas stamps the armed compose zone onto this node's data, so only the
-  // hovered node re-renders (see `reconcileNodes`) instead of the whole tree.
-  const composeTarget = typeof data["composeZone"] === "string";
-
-  if (sessionId === "") return <div className="terminal-placeholder">Opening terminal…</div>;
-
-  return (
-    <div className={composeTarget ? `flow-terminal ${COMPOSE_TARGET_CLASS}` : "flow-terminal"}>
-      {/*
-        Desktop-window ergonomics: the frame border is the grab zone, so the pointer
-        turns into a resize cursor on hover and no selection step is needed. The
-        controls stay transparent — the cursor is the affordance — and commit once on
-        resize end, matching the drag path.
-      */}
-      <NodeResizer
-        nodeId={id}
-        isVisible={pad.tool === "select"}
-        lineClassName="flow-terminal-resize-edge"
-        handleClassName="flow-terminal-resize-corner"
-        minWidth={MIN_TERMINAL_WIDTH}
-        minHeight={MIN_TERMINAL_HEIGHT}
-        onResize={(_event, params) =>
-          pad.onResize(id, params.x, params.y, params.width, params.height)
-        }
-        onResizeEnd={(_event, params) =>
-          pad.onResizeEnd(id, params.x, params.y, params.width, params.height)
-        }
-      />
-      {/*
-        The titlebar is the drag handle (see TERMINAL_DRAG_HANDLE). `nowheel` is deliberately
-        NOT set: TerminalView stops wheel only while focused, preserving today's behaviour
-        where scrolling over an idle terminal still zooms the canvas.
-      */}
-      <TerminalView
-        client={pad.client}
-        sessionId={sessionId}
-        elementId={id}
-        active={selected === true}
-        onPark={() => pad.onPark(id)}
-        panelHighlighted={false}
-        onClose={() => pad.onClose(id, sessionId)}
-        onRestart={() => pad.onRestart(id, sessionId)}
-        onExpand={() => pad.onExpand(sessionId)}
-        onRenameTitle={(name) => pad.onRenameTerminal(sessionId, name)}
-        machine={pad.machineFor(sessionId)}
-      />
-    </div>
-  );
-}
-
-/**
- * React Flow's own `NodeWrapper` re-renders once per pointermove for the node being
- * dragged, and calls its node component unconditionally. None of the props below change
- * during a plain move, so memoizing keeps the xterm subtree out of the drag hot path.
- */
-export const TerminalNode = memo(TerminalNodeImpl);

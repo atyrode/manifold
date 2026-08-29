@@ -14,6 +14,16 @@ export interface GestureStream {
   cancel(): void;
 }
 
+/**
+ * Dev cadence override (`VITE_GESTURE_SEND_MS`). Null means the wire default; a proof
+ * harness slows the rate down so it can sample individual frames deterministically.
+ * Read here rather than per renderer so both disciplines stream at one rate.
+ */
+export function gestureSendIntervalOverride(): number | null {
+  const value = Number(import.meta.env["VITE_GESTURE_SEND_MS"]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 export function createGestureStream({
   intervalMs = GESTURE_MIN_INTERVAL_MS,
   now = () => performance.now(),

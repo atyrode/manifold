@@ -5,6 +5,7 @@ import {
   type Pad,
   type PadPresence,
   type PlacementDestination,
+  type PlacementItem,
   type TileEdge,
   type TileLayout,
   type TileNode,
@@ -26,10 +27,7 @@ import {
 
 import {
   deletePad,
-  expandTerminal,
   getMachines,
-  killPooledTerminal,
-  pinPad,
   removePadTile,
   renamePad,
   renameTerminal,
@@ -38,8 +36,13 @@ import {
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { TextSurface } from "./flow-text-node.tsx";
-import { createPlacementLookup, useItemDrop, type ItemDropAssessment } from "./item-drop.ts";
-import { carriesItem } from "./item-envelope.ts";
+import {
+  createPlacementLookup,
+  denialMessage,
+  useItemDrop,
+  type ItemDropAssessment,
+} from "./item-drop.ts";
+import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import {
   browserMachineStorage,
   chooseDefaultMachine,
@@ -51,6 +54,8 @@ import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 import { previewRect, resizeRatios, snapZone } from "./tile-snap.ts";
 import { useToast } from "./toast.tsx";
+import { carryGhosts } from "./carry.ts";
+import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 
 /**
@@ -98,6 +103,31 @@ function noteTitle(text: string): string | null {
     ? firstLine
     : `${firstLine.slice(0, NOTE_TITLE_LENGTH - 1)}…`;
 }
+
+/**
+ * What this composition holds when it holds exactly ONE thing — the arity fact the
+ * placement algebra looks through. An empty second leaf still counts as a second leaf:
+ * splitting is how someone declares a container to be a composition.
+ */
+function soloOccupancy(
+  padId: string,
+  layout: TileLayout | null,
+): ReadonlyMap<string, PlacementItem> {
+  if (layout === null) return NO_SOLO_OCCUPANTS;
+  let only: TileSurface | null = null;
+  let leaves = 0;
+  for (const node of Object.values(layout)) {
+    if (node.dir !== null) continue;
+    leaves += 1;
+    if (leaves > 1 || node.surface === null) return NO_SOLO_OCCUPANTS;
+    only = node.surface;
+  }
+  if (only === null) return NO_SOLO_OCCUPANTS;
+  const kind = only.kind === "terminal" ? "terminal" : only.kind === "text" ? "text" : "canvas-pad";
+  return new Map<string, PlacementItem>([[padId, { kind, containerId: padId }]]);
+}
+
+const NO_SOLO_OCCUPANTS: ReadonlyMap<string, PlacementItem> = new Map();
 
 interface TiledPadViewProps {
   readonly pad: Pad;
@@ -150,7 +180,8 @@ export function TiledPadView({
   const [sceneRevision, setSceneRevision] = useState(0);
   /** Which note tile is in its editor; a note carries no selection model of its own. */
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [pinning, setPinning] = useState(false);
+  /** The tile this browser is carrying, so its leaf can show that it is in flight. */
+  const [carriedTileId, setCarriedTileId] = useState<string | null>(null);
   const connectStartedRef = useRef(false);
   /** One delete per view: the confirmed click navigates away, a second would 404. */
   const deletingRef = useRef(false);
@@ -158,6 +189,17 @@ export function TiledPadView({
   /** Send-cadence gate, the same shape the canvas renderer uses for its own emit. */
   const cursorLastSentRef = useRef(0);
   const remoteCursors = useRemoteCursors(client, "fraction");
+  /**
+   * The other half of motion. A composition streams and reads carries in the SAME
+   * fraction space its cursors use, so a tile crossing this view is drawn where its
+   * carrier is holding it whatever window size each viewer has.
+   */
+  const remoteGestures = useRemoteGestures(client);
+  const carry = useCarry({
+    client,
+    describe: (envelope: ItemEnvelope): string | null =>
+      envelope.kind === "terminal" ? (client.sessions.get(envelope.sessionId)?.name ?? null) : null,
+  });
   const { notify } = useToast();
 
   useEffect(() => {
@@ -279,18 +321,7 @@ export function TiledPadView({
     [notify],
   );
 
-  const pin = useCallback((): void => {
-    setPinning(true);
-    void pinPad(identity.token, padId)
-      .then(onPadChanged)
-      .catch((reason: unknown) => failed(reason, "Could not pin this composition", "pin-view"))
-      .finally(() => setPinning(false));
-  }, [failed, identity.token, onPadChanged, padId]);
-
-  /**
-   * Renaming a view claims it: the server clears `transient`, so the refetched row
-   * loses its bubble italics with the same round trip that changes the name.
-   */
+  /** Renaming a composition; the refetched row carries the new name to the index. */
   const rename = useCallback(
     (name: string): void => {
       void renamePad(identity.token, padId, name)
@@ -332,40 +363,13 @@ export function TiledPadView({
   );
 
   /**
-   * Full parity with a pad: a tile's terminal keeps the bar it would wear anywhere,
-   * expand included. The server handles the tiled origin — it removes the leaf this
-   * session left behind instead of swapping a canvas element for a portal.
+   * Kill: removing a terminal's last leaf IS its destruction — there is no pool to fall
+   * back into, so the server reaps the shell with the placement and deletes the
+   * composition when this emptied it.
    */
-  const expandTile = useCallback(
-    (sessionId: string): void => {
-      void expandTerminal(identity.token, sessionId)
-        .then((viewId) => {
-          navigate(`/p/${encodeURIComponent(viewId)}`);
-        })
-        .catch((reason: unknown) =>
-          failed(reason, "Could not expand this terminal", "expand-terminal"),
-        );
-    },
-    [failed, identity.token, navigate],
-  );
-
-  /** Park semantics: the server unbinds the session back to the pool when it was the last placement. */
-  const parkTile = useCallback(
+  const closeTile = useCallback(
     (tileId: string): void => {
       void removePadTile(identity.token, padId, tileId)
-        .then(onPadChanged)
-        .catch((reason: unknown) =>
-          failed(reason, "Could not park this terminal", "park-terminal"),
-        );
-    },
-    [failed, identity.token, onPadChanged, padId],
-  );
-
-  /** Kill: drop the leaf first, then end the PTY the removal parked into the pool. */
-  const closeTile = useCallback(
-    (tileId: string, sessionId: string): void => {
-      void removePadTile(identity.token, padId, tileId)
-        .then(() => killPooledTerminal(identity.token, sessionId))
         .then(onPadChanged)
         .catch((reason: unknown) =>
           failed(reason, "Could not close this terminal", "close-terminal"),
@@ -502,6 +506,16 @@ export function TiledPadView({
         pads,
         self: { padId, layout: "tiled" },
         elements: client.elements,
+        // A terminal's home composition rides on its session record, so this room can
+        // answer for every terminal it holds without asking the server.
+        terminalHomes: new Map(
+          [...client.sessions.values()].map((session) => [session.id, session.padId] as const),
+        ),
+        // This composition can answer the arity question about ITSELF and nothing else:
+        // a foreign container's layout belongs to a room this browser has not joined, and
+        // absent is the honest answer — resolution then denies `not_solo` rather than
+        // merging something invisible.
+        soloOccupants: soloOccupancy(padId, client.layout()),
       }),
     // `sceneRevision` is the element table's version: the lookup reads it live, and this
     // dependency is what makes a preview see a note that arrived a moment ago.
@@ -517,6 +531,27 @@ export function TiledPadView({
     onPlaced: () => onPadChanged(),
   });
 
+  /**
+   * A tile's minimize: the terminal leaves this composition WITHOUT dying. "Nowhere" is
+   * a destination like any other now — the server re-homes the shell into a container of
+   * its own, which is exactly what an unplaced terminal is — so this is one placement,
+   * not a leaf removal plus a rescue.
+   */
+  const unplaceTile = useCallback(
+    (tileId: string): void => {
+      void client
+        .place({ kind: "tile", containerId: padId, tileId }, { kind: "unplaced" })
+        .then((outcome) => {
+          if (!outcome.ok) throw new Error(denialMessage(outcome.denial, lookup));
+          onPadChanged();
+        })
+        .catch((reason: unknown) =>
+          failed(reason, "Could not remove this terminal from the composition", "unplace-terminal"),
+        );
+    },
+    [client, failed, lookup, onPadChanged, padId],
+  );
+
   const zoneAt = (
     target: HTMLDivElement,
     pointer: { readonly clientX: number; readonly clientY: number },
@@ -527,6 +562,56 @@ export function TiledPadView({
       { x: pointer.clientX, y: pointer.clientY },
     );
   };
+
+  /**
+   * Every carry crossing this view gets a ghost: unlike a canvas, a composition cannot
+   * move a leaf to show the motion — tiles have no free geometry — so the chip under the
+   * carrier's pointer IS the live representation here.
+   */
+  const remoteCarries = useMemo(
+    () => carryGhosts(remoteGestures.values(), () => false),
+    [remoteGestures],
+  );
+
+  /**
+   * A client point in this view's own space. Fractions, like the cursors: the tile area
+   * is the reference box, so a carry lands on the same tile for every viewer whatever
+   * their window size.
+   */
+  const bodyFraction = useCallback((clientX: number, clientY: number) => {
+    const body = bodyRef.current;
+    if (body === null) return null;
+    return cursorFraction(body.getBoundingClientRect(), { x: clientX, y: clientY });
+  }, []);
+
+  /**
+   * A leaf's grab handle. The chrome IS the grip: pressing it starts the one carry, so
+   * dragging a tile out of a composition looks to collaborators exactly like dragging a
+   * node across a canvas, and the same envelope decides where it may land.
+   */
+  const gripProps = (tileId: string, label: string | null) => ({
+    draggable: true,
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => event.stopPropagation(),
+    onDragStart: (event: ReactDragEvent<HTMLElement>): void => {
+      event.stopPropagation();
+      setCarriedTileId(tileId);
+      carry.begin(
+        { kind: "tile", containerId: padId, tileId },
+        {
+          transfer: event.dataTransfer,
+          label,
+          ...(() => {
+            const at = bodyFraction(event.clientX, event.clientY);
+            return at === null ? {} : { at };
+          })(),
+        },
+      );
+    },
+    onDragEnd: (): void => {
+      setCarriedTileId(null);
+      carry.end();
+    },
+  });
 
   /**
    * The destination one leaf means. Geometry is all this renderer contributes: the zone
@@ -549,6 +634,10 @@ export function TiledPadView({
       event.preventDefault();
       event.stopPropagation();
       const zone = zoneAt(event.currentTarget, event);
+      // The carry streams from every frame that crosses this view, whether it began on
+      // a leaf here or on a row in the sidebar — motion is the same concept either way.
+      const at = bodyFraction(event.clientX, event.clientY);
+      if (at !== null) carry.track(at);
       if (zone === null) {
         event.dataTransfer.dropEffect = "none";
         setDropTarget((current) => (current?.tileId === tileId ? null : current));
@@ -581,45 +670,16 @@ export function TiledPadView({
       // would race the render that painted it, and a drop is a one-shot event.
       const zone = zoneAt(event.currentTarget, event);
       setDropTarget(null);
+      const at = bodyFraction(event.clientX, event.clientY);
+      // The ghost is retired before the write: the payload is in the transfer, so
+      // ending the carry here cannot cost the drop its envelope.
+      carry.end(at ?? undefined);
+      setCarriedTileId(null);
       // Released between zones: aborting with no mutation is the documented escape.
       if (zone === null) return;
       drop.commit(event.dataTransfer, destinationFor(tileId, zone));
     },
   });
-
-  /**
-   * A BUBBLE is a transient container whose whole layout is one terminal: an
-   * expanded terminal, not a view yet. It wears NO view header — the terminal's own
-   * titlebar is the only top bar, and it carries the two view-level controls that
-   * still make sense there (Pin claims the container, the maximize slot shrinks out
-   * of it). Pinning or splitting transmutes the header in place: the container
-   * becomes a real view and grows the dedicated bar below.
-   */
-  const leaves = layout === null ? [] : Object.values(layout).filter((node) => node.dir === null);
-  const onlyLeaf = leaves.length === 1 ? leaves[0] : undefined;
-  const bubbleLeaf =
-    // Notes are tileable now, so "one leaf" stopped being a synonym for "one terminal":
-    // a transient container holding a single NOTE is a composition with a note in it,
-    // never a bubble, because there is no terminal titlebar to hang the view chrome on.
-    pad.transient && onlyLeaf?.surface?.kind === "terminal" ? onlyLeaf : null;
-
-  /**
-   * One Pin control for both headers — a bubble wears it in its terminal's bar, a
-   * still-unclaimed view in its own — with the accessible name the gate looks for.
-   */
-  const pinControl = (
-    <button
-      className="node-titlebar__ctl tiled-pin"
-      type="button"
-      disabled={pinning}
-      title="Keep this view after everyone leaves"
-      aria-label={`Pin view ${pad.name}`}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={pin}
-    >
-      ⚑
-    </button>
-  );
 
   /**
    * A leaf's occupant. One arm per tileable species, and the switch is exhaustive on
@@ -646,18 +706,12 @@ export function TiledPadView({
             active={focusedTileId === node.id}
             panelHighlighted={false}
             machine={machineFor(surface.sessionId)}
-            onPark={() => parkTile(node.id)}
-            onClose={() => closeTile(node.id, surface.sessionId)}
+            // Minimize takes the terminal OUT of the composition (it lives on, unplaced);
+            // close ends it. There is no expand: a terminal inside a composition is
+            // already where it lives, and the composition's own bar is one row up.
+            onPark={() => unplaceTile(node.id)}
+            onClose={() => closeTile(node.id)}
             onRenameTitle={(name) => renameTile(surface.sessionId, name)}
-            {...(bubbleLeaf?.id === node.id
-              ? // Bubble: the terminal's bar IS the view's bar. Its maximize slot
-                // shrinks (it is already as big as it gets) and Pin claims the
-                // container the terminal is temporarily wearing.
-                { onShrink: shrink, titlebarExtras: pinControl }
-              : // A real composition's tile wears the bar it would wear on a canvas,
-                // expand included: the server turns a tile expand into a new view and
-                // drops the leaf this session leaves behind.
-                { onExpand: () => expandTile(surface.sessionId) })}
           />
         );
       case "pad":
@@ -759,6 +813,22 @@ export function TiledPadView({
     }
   };
 
+  /** What a carried leaf is called for the people watching it move. */
+  const surfaceLabel = (surface: TileSurface | null): string | null => {
+    switch (surface?.kind) {
+      case "terminal":
+        return client.sessions.get(surface.sessionId)?.name ?? null;
+      case "pad":
+        return padNameFor(surface.padId);
+      case "text": {
+        const element = client.elements.get(surface.elementId);
+        return element?.type === "text" ? noteTitle(element.text) : null;
+      }
+      default:
+        return null;
+    }
+  };
+
   const renderLeaf = (node: TileNode): ReactNode => {
     const highlight = dropTarget?.tileId === node.id ? dropTarget : null;
     const zone = highlight?.zone ?? null;
@@ -769,13 +839,28 @@ export function TiledPadView({
       <div
         className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
           zone === null || denied ? "" : " is-drop-target"
-        }`}
+        }${carriedTileId === node.id ? " is-carried" : ""}`}
         onPointerDownCapture={() => setFocusedTileId(node.id)}
         {...dropProps(node.id)}
         // Empty while the drop is legal, so the refusal cue exists only when refusing.
         {...drop.refusalProps(assessment)}
       >
         {renderSurface(node, node.surface)}
+        {node.surface === null ? null : (
+          /*
+            The grip is this leaf's chrome-as-handle. A terminal tile's own titlebar
+            cannot be it — xterm needs the bar for rename and the frame swallows
+            pointerdown — so every species wears the same corner handle the widget's
+            tiles wear on a canvas, and the gesture behind it is the same carry.
+          */
+          <div
+            className="tiled-leaf__grip"
+            title="Drag to move this tile — onto a canvas to pull it out"
+            {...gripProps(node.id, surfaceLabel(node.surface))}
+          >
+            <span aria-hidden="true">⠿</span>
+          </div>
+        )}
         {preview === null ? null : (
           <div
             className={`tiled-snap-preview${denied ? " is-denied" : ""}`}
@@ -814,36 +899,22 @@ export function TiledPadView({
 
   return (
     <div className="tiled-pad-view">
-      {bubbleLeaf === null ? (
-        <NodeTitleBar
-          className="tiled-header"
-          icon="▤"
-          title={pad.name}
-          defaultTitle="view"
-          onRenameTitle={rename}
-          middle={
-            pad.transient ? (
-              <span className="tiled-bubble-chip" title="Dissolves when its last occupant leaves">
-                bubble
-              </span>
-            ) : null
-          }
-          extraActions={
-            <>
-              <span className={`tiled-status is-${status}`}>{status}</span>
-              {pad.transient ? pinControl : null}
-            </>
-          }
-          onMaximize={shrink}
-          maximizeGlyph="shrink"
-          maximizeLabel="Shrink view"
-          maximizeTooltip="Leave this view (Esc)"
-          onClose={removeView}
-          closeLabel={`Delete view ${pad.name}`}
-          closeTooltip="Delete this view for everyone"
-          closeConfirm={`Delete “${pad.name}”?`}
-        />
-      ) : null}
+      <NodeTitleBar
+        className="tiled-header"
+        icon="▤"
+        title={pad.name}
+        defaultTitle="view"
+        onRenameTitle={rename}
+        extraActions={<span className={`tiled-status is-${status}`}>{status}</span>}
+        onMaximize={shrink}
+        maximizeGlyph="shrink"
+        maximizeLabel="Shrink view"
+        maximizeTooltip="Leave this view (Esc)"
+        onClose={removeView}
+        closeLabel={`Delete view ${pad.name}`}
+        closeTooltip="Delete this view for everyone"
+        closeConfirm={`Delete “${pad.name}”?`}
+      />
       {/*
         Capture phase, wired on the tile area rather than on each leaf: xterm owns the
         pointer inside a terminal, and with mouse tracking on (DECSET 1003) it handles
@@ -882,6 +953,31 @@ export function TiledPadView({
               </div>
             );
           })}
+          {/*
+            A collaborator's carry. Every carry gets a ghost here: a composition has no
+            free geometry to move a leaf through, so the chip under their pointer is the
+            only way the motion is visible — while the source leaf wears `is-carried`
+            for the person holding it.
+          */}
+          {remoteCarries.map((ghost) => (
+            <div
+              className="carry-ghost"
+              data-carry-kind={ghost.kind}
+              key={ghost.key}
+              style={{
+                borderColor:
+                  client.roster.get(ghost.principalId)?.principal.color ??
+                  REMOTE_CURSOR_FALLBACK_COLOR,
+                left: `${String(ghost.x * 100)}%`,
+                top: `${String(ghost.y * 100)}%`,
+              }}
+            >
+              <span className="carry-ghost__glyph" aria-hidden="true">
+                {ghost.glyph}
+              </span>
+              <span className="carry-ghost__label">{ghost.label}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>

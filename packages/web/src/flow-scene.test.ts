@@ -4,13 +4,15 @@ import type { GestureOverride } from "./remote-gestures";
 import {
   reconcileNodes,
   createDrawElement,
-  createTerminalElement,
+  createPortalElement,
   createTextElement,
   projectElements,
   textHeightFor,
 } from "./flow-scene";
 
-const terminal = createTerminalElement("terminal", "session", { x: 10, y: 20 }, 2);
+// A terminal on a canvas IS a portal onto its home composition, so the terminal-shaped
+// element under test is a portal with terminal geometry.
+const terminal = createPortalElement("terminal", "home-composition", { x: 10, y: 20 }, 2);
 const text = createTextElement("text", { x: 30, y: 40 }, 1, "#123456");
 const draw = createDrawElement("draw", [10, 20, 30, 25], "#abcdef", 3, 3);
 
@@ -33,12 +35,12 @@ describe("flow scene", () => {
       },
       {
         id: "terminal",
-        type: "terminal",
+        type: "portal",
         position: { x: 10, y: 20 },
         width: 720,
         height: 480,
         zIndex: 2,
-        data: { sessionId: "session" },
+        data: { containerId: "home-composition" },
       },
       {
         id: "draw",

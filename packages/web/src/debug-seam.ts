@@ -37,6 +37,8 @@ export interface DebugGestureSnapshot {
   readonly connId: string;
   readonly x: number;
   readonly y: number;
+  /** Species of the item in flight, on a carry frame; absent on plain geometry. */
+  readonly carry?: string;
 }
 
 export interface ManifoldDebugSeam {
@@ -52,6 +54,12 @@ export interface ManifoldDebugSeam {
   /** Current remote geometry overrides, excluding self echoes. */
   readonly gestures: () => readonly DebugGestureSnapshot[];
   readonly viewport: () => DebugViewport | null;
+  /**
+   * Renders per node species since load. A context that churns is invisible in the DOM
+   * — the pixels are identical — so the only way to hold "presence polling must not
+   * re-render live terminals" to account is to count the renders it causes.
+   */
+  readonly renders: () => Readonly<Record<string, number>>;
 }
 
 declare global {
@@ -68,6 +76,20 @@ export function debugSeamEnabled(): boolean {
   }
 }
 
+const renders = new Map<string, number>();
+
+/**
+ * One render of one node species. Called unconditionally (the counter is three
+ * instructions and a Map write); {@link renderCounts} is what stays behind the seam.
+ */
+export function countRender(kind: string): void {
+  renders.set(kind, (renders.get(kind) ?? 0) + 1);
+}
+
+export function renderCounts(): Readonly<Record<string, number>> {
+  return Object.fromEntries(renders);
+}
+
 /** Coerces a scene record into a geometry snapshot. */
 export function toElementSnapshot(element: SceneElement): DebugElementSnapshot {
   return {
@@ -79,12 +101,10 @@ export function toElementSnapshot(element: SceneElement): DebugElementSnapshot {
     height: element.height,
     zIndex: element.zIndex,
     extra:
-      element.type === "terminal"
-        ? element.sessionId
-        : element.type === "portal"
-          ? element.containerId
-          : element.type === "text"
-            ? element.text
-            : element.points.length,
+      element.type === "portal"
+        ? element.containerId
+        : element.type === "text"
+          ? element.text
+          : element.points.length,
   };
 }

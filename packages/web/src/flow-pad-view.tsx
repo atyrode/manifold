@@ -6,6 +6,7 @@ import {
   type Pad,
   type PadPresence,
   type PlacementDestination,
+  type PlacementItem,
   type TileEdge,
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
@@ -19,37 +20,36 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deletePad, expandTerminal, getMachines, renameTerminal } from "./api.ts";
+import { deletePad, getMachines, renameTerminal } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
-import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
+import { debugSeamEnabled, renderCounts, toElementSnapshot } from "./debug-seam.ts";
 import { remoteCursorSocketId } from "./cursor-identity.ts";
 import { DrawNode } from "./flow-draw-node.tsx";
-import { PORTAL_DRAG_HANDLE, PortalNode } from "./flow-portal-node.tsx";
+import { MONO_PORTAL_CLASS_SELECTOR, PORTAL_DRAG_HANDLE, PortalNode } from "./flow-portal-node.tsx";
 import {
-  FlowPadProvider,
+  FlowPadProviders,
   TERMINAL_DRAG_HANDLE,
-  TerminalNode,
   type FlowPadContextValue,
 } from "./flow-terminal-node.tsx";
 import {
   reconcileNodes,
   createDrawElement,
-  createTerminalElement,
+  createPortalElement,
   createTextElement,
   projectElements,
   type ProjectedNode,
 } from "./flow-scene.ts";
 import { TextNode } from "./flow-text-node.tsx";
-import { createGestureStream } from "./gesture-stream.ts";
+import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
 import {
   createPlacementLookup,
   denialMessage,
   useItemDrop,
   type ItemDropAssessment,
 } from "./item-drop.ts";
-import { beginCarry, carriesItem, endCarry } from "./item-envelope.ts";
+import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import {
   browserMachineStorage,
@@ -58,12 +58,8 @@ import {
   rememberMachine,
 } from "./machine-choice.ts";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
-import {
-  applyGestureFrame,
-  expireGestures,
-  stepGestures,
-  type GestureOverride,
-} from "./remote-gestures.ts";
+import { carryGhosts } from "./carry.ts";
+import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
@@ -80,11 +76,17 @@ import type { WidgetRole } from "./widget-engagement.ts";
 
 /** Stable module-scope identity prevents React Flow from remounting live PTYs. */
 const NODE_TYPES: NodeTypes = {
-  terminal: TerminalNode,
   text: TextNode,
   draw: DrawNode,
   portal: PortalNode,
 };
+/**
+ * A canvas cannot DERIVE solo occupancy: it holds elements, not tile layouts, and the
+ * containers its portals point at belong to rooms it has not joined. Its host supplies
+ * the answer instead ({@link FlowPadViewProps.soloOccupants}); this is the fallback for
+ * a canvas mounted without one — an embedded board inside a composition tile.
+ */
+const NO_SOLO_OCCUPANTS: ReadonlyMap<string, PlacementItem> = new Map();
 const NO_EDGES: readonly never[] = Object.freeze([]);
 const ROUND_GESTURE_COORDINATE = 10;
 const PRO_OPTIONS = Object.freeze({ hideAttribution: true });
@@ -96,6 +98,12 @@ const MAX_ZOOM = 30;
  * never arms; short enough that deliberately holding it there feels immediate.
  */
 const COMPOSE_ARM_MS = 150;
+
+/**
+ * "Nowhere", the destination a release over the sidebar means. One frozen literal: the
+ * unplaced destination carries no fields, so every door into it is the same door.
+ */
+const UNPLACED_DESTINATION: PlacementDestination = Object.freeze({ kind: "unplaced" });
 
 function isTypingTarget(target: EventTarget | null): boolean {
   return (
@@ -143,6 +151,14 @@ interface FlowPadViewProps {
    */
   readonly pads: readonly Pad[];
   /**
+   * What each container holds when it holds exactly ONE item — the index's own solo-comp
+   * fold, handed down because the canvas cannot compute it (see {@link NO_SOLO_OCCUPANTS}).
+   * This is what makes "compositions merge, never nest" resolve the same way here as on
+   * the server: without it every portal reads as a real composition and terminal-onto-
+   * terminal compose is refused `not_solo` — the canvas-side door into a composition.
+   */
+  readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
+  /**
    * True when a client point lands on the workspace sidebar. Supplied by the sidebar
    * host so dropping a terminal there parks it instead of committing the drag.
    */
@@ -168,11 +184,6 @@ export function sessionUrl(): string {
   return `${scheme}//${window.location.host}/ws/session`;
 }
 
-function gestureIntervalOverride(): number | null {
-  const value = Number(import.meta.env["VITE_GESTURE_SEND_MS"]);
-  return Number.isFinite(value) && value > 0 ? value : null;
-}
-
 export function FlowPadView({
   padId,
   identity,
@@ -181,6 +192,7 @@ export function FlowPadView({
   presence,
   pads,
   isOverSidebar,
+  soloOccupants = NO_SOLO_OCCUPANTS,
   depth = 1,
 }: FlowPadViewProps) {
   const { notify } = useToast();
@@ -188,11 +200,45 @@ export function FlowPadView({
     () => new SessionClient({ url: sessionUrl(), padId, token: identity.token }),
   );
   const [gestureStream] = useState(() => {
-    const intervalMs = gestureIntervalOverride();
+    const intervalMs = gestureSendIntervalOverride();
     return createGestureStream({
       ...(intervalMs === null ? {} : { intervalMs }),
       send: (gesture) => client.sendGesture(gesture),
     });
+  });
+  /**
+   * Peers' live geometry AND their carries: one override map, because a carry of an
+   * element in this room IS that element's live geometry — the source container mutates
+   * under the carrier's pointer rather than waiting for the drop.
+   */
+  const remoteGestures = useRemoteGestures(client);
+  /**
+   * The one grab, whatever started it. A node drag opens it directly; a drag that began
+   * on a sidebar row or a widget's tile is ADOPTED as it crosses this canvas, because
+   * the item register is process-wide and entering a room is the whole invitation.
+   *
+   * `describe` is what a viewer will read under the carrier's pointer. This canvas can
+   * name things the frame itself cannot — its own sessions, the containers the sidebar
+   * indexed — and the name has to travel, since the viewer may share neither.
+   */
+  const carry = useCarry({
+    client,
+    describe: (envelope: ItemEnvelope): string | null => {
+      switch (envelope.kind) {
+        case "terminal":
+          return client.sessions.get(envelope.sessionId)?.name ?? null;
+        case "canvas":
+        case "composition":
+          return pads.find((candidate) => candidate.id === envelope.padId)?.name ?? null;
+        case "tile":
+        case "element":
+          return null;
+        default: {
+          const exhaustive: never = envelope;
+          return exhaustive;
+        }
+      }
+    },
   });
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [sceneRevision, setSceneRevision] = useState(0);
@@ -203,12 +249,8 @@ export function FlowPadView({
   const [tool, setTool] = useState<CanvasTool>("select");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<readonly number[] | null>(null);
-  const [remoteGestures, setRemoteGestures] = useState<ReadonlyMap<string, GestureOverride>>(
-    new Map(),
-  );
   const connectStartedRef = useRef(false);
   const remoteCursors = useRemoteCursors(client, "flow");
-  const remoteGesturesRef = useRef(new Map<string, GestureOverride>());
   const lastClientRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const cursorLastSentRef = useRef(0);
   const viewportLastSentRef = useRef(0);
@@ -244,8 +286,6 @@ export function FlowPadView({
     const offScene = client.on("elements_changed", invalidate);
     const offReset = client.on("scene_reset", () => {
       setEditingId(null);
-      remoteGesturesRef.current.clear();
-      setRemoteGestures(new Map());
       invalidate();
     });
     const offSessions = client.on("sessions_changed", invalidate);
@@ -254,13 +294,6 @@ export function FlowPadView({
       setRosterRows(deriveRosterRows(client.roster.values(), client.self ?? identity.principal));
     };
     const offRoster = client.on("roster_changed", refreshRoster);
-    const offGesture = client.on("gesture", (message) => {
-      if (
-        applyGestureFrame(remoteGesturesRef.current, message, client.selfConnId, performance.now())
-      ) {
-        setRemoteGestures(new Map(remoteGesturesRef.current));
-      }
-    });
     const offSaved = client.on("saved", (message) => setSavedAt(message.at));
     refreshRoster();
     return () => {
@@ -269,27 +302,9 @@ export function FlowPadView({
       offSessions();
       offStatus();
       offRoster();
-      offGesture();
       offSaved();
     };
   }, [client, identity.principal]);
-
-  useEffect(() => {
-    let animationFrame = 0;
-    let previous = performance.now();
-    const tick = (now: number): void => {
-      const elapsed = Math.max(0, now - previous);
-      previous = now;
-      const gesturesChanged = stepGestures(remoteGesturesRef.current, elapsed);
-      const gesturesExpired = expireGestures(remoteGesturesRef.current, now);
-      if (gesturesChanged || gesturesExpired) {
-        setRemoteGestures(new Map(remoteGesturesRef.current));
-      }
-      animationFrame = requestAnimationFrame(tick);
-    };
-    animationFrame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrame);
-  }, []);
 
   useEffect(() => () => gestureStream.cancel(), [gestureStream]);
 
@@ -408,6 +423,30 @@ export function FlowPadView({
   }, [client, projected, rosterRows]);
 
   /**
+   * The carries this canvas owes a ghost. An element of THIS pad is excluded on purpose:
+   * its override already moves the element itself, so the source container mutates live
+   * under the carrier's pointer and a chip on top would draw the same object twice.
+   */
+  const remoteCarries = useMemo(
+    () =>
+      carryGhosts(
+        remoteGestures.values(),
+        (surface) =>
+          surface.kind === "element" &&
+          surface.padId === padId &&
+          client.elements.has(surface.elementId),
+      ),
+    [client, padId, remoteGestures],
+  );
+
+  /** A carrier's chosen color, so a ghost belongs to the same person as their cursor. */
+  const carrierColor = useCallback(
+    (principalId: string): string =>
+      client.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR,
+    [client],
+  );
+
+  /**
    * The half the dropped surface would take over on the armed target, drawn in flow
    * coordinates beside the other presence overlays so it tracks pan and zoom for free.
    * A REFUSED arm paints the same box in the refusal style with the rule's prose in it,
@@ -439,10 +478,18 @@ export function FlowPadView({
         height: element.height,
         zIndex: element.zIndex,
         selected: element.id === highlightedId,
-        ...(element.type === "terminal" ? { dragHandle: TERMINAL_DRAG_HANDLE } : {}),
-        // A widget moves by its name strip: the preview body belongs to the tile
-        // drags that decompose the view.
-        ...(element.type === "portal" ? { dragHandle: PORTAL_DRAG_HANDLE } : {}),
+        /*
+          A widget moves by its name strip, and its MONO form has no name strip: a solo
+          composition wears the terminal's own titlebar instead (the arity rule), so the
+          handle is a selector list and the widget's `--mono` class scopes the second arm.
+          Without that scope, dragging a tile's titlebar inside a multi-tile widget would
+          move the whole node instead of extracting the tile.
+        */
+        ...(element.type === "portal"
+          ? {
+              dragHandle: `${PORTAL_DRAG_HANDLE}, ${MONO_PORTAL_CLASS_SELECTOR} ${TERMINAL_DRAG_HANDLE}`,
+            }
+          : {}),
         // The armed compose zone rides in node data so only the hovered node
         // re-renders into view chrome (`reconcileNodes` reuses every other object).
         data:
@@ -469,10 +516,19 @@ export function FlowPadView({
         pads,
         self: { padId, layout: "canvas" },
         elements: client.elements,
+        // A terminal's home composition is on its session record now, so the canvas can
+        // answer "where does this terminal live" without joining anything.
+        terminalHomes: new Map(
+          [...client.sessions.values()].map((session) => [session.id, session.padId] as const),
+        ),
+        // Supplied by the index, which is the only party that can see the arity of a
+        // container this canvas merely points at. Handing it down is what lets a canvas
+        // drag preview agree with the write the server performs.
+        soloOccupants,
       }),
     // `sceneRevision` is the element table's version: the lookup reads it live, and this
     // dependency is what makes a preview see an element authored a moment ago.
-    [client, pads, padId, sceneRevision],
+    [client, pads, padId, sceneRevision, soloOccupants],
   );
 
   const drop = useItemDrop({
@@ -482,17 +538,19 @@ export function FlowPadView({
   });
 
   /**
-   * Parking is a placement into the pool, so it is entirely server-side: the element
-   * removal (and the session's unbinding when this was its last reference) arrives as a
-   * normal doc update under a non-local origin, which is also why park is not undoable.
+   * Unplacing is entirely server-side: the element removal (and the terminal's return to
+   * unplaced when this was its last reference) arrives as a normal doc update under a
+   * non-local origin, which is also why it is not undoable.
    */
   const parkElement = useCallback(
     async (elementId: string): Promise<void> => {
-      const element = client.elements.get(elementId);
-      if (element?.type !== "terminal") return;
-      // Addressing the ELEMENT, not the session: a mirrored terminal parks the copy the
-      // gesture named and stays bound through its siblings.
-      const outcome = await client.place({ kind: "element", padId, elementId }, { kind: "pool" });
+      if (!client.elements.has(elementId)) return;
+      // Addressing the ELEMENT, not the item behind it: a mirrored terminal loses the
+      // copy the gesture named and stays placed through its siblings.
+      const outcome = await client.place(
+        { kind: "element", padId, elementId },
+        UNPLACED_DESTINATION,
+      );
       if (!outcome.ok) throw new Error(denialMessage(outcome.denial, lookup));
     },
     [client, lookup, padId],
@@ -631,14 +689,29 @@ export function FlowPadView({
    * envelope an HTML5 drag seals, minus the DataTransfer (React Flow has none), so the
    * pipeline judges a node-over-node drop with exactly the rules a sidebar drop gets —
    * which is how the compose target stopped disagreeing with the tile target.
+   *
+   * The frames it streams ARE the old move gesture and more: a carry names what is being
+   * moved, and its geometry is the element's own box, so a viewer keeps animating the
+   * element exactly as before while now knowing what is in flight.
    */
   const handleNodeDragStart = useCallback(
     (_event: MouseEvent | TouchEvent, node: Node): void => {
-      if (!client.elements.has(node.id)) return;
+      const element = client.elements.get(node.id);
+      if (element === undefined) return;
       carryingRef.current = true;
-      beginCarry({ kind: "element", padId, elementId: node.id });
+      carry.begin(
+        { kind: "element", padId, elementId: node.id },
+        {
+          at: {
+            x: node.position.x,
+            y: node.position.y,
+            width: element.width,
+            height: element.height,
+          },
+        },
+      );
     },
-    [client, padId],
+    [carry, client, padId],
   );
 
   const handleNodeDrag = useCallback(
@@ -646,15 +719,9 @@ export function FlowPadView({
       if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) return;
       const point = dragPoint(event);
       if (point !== null) trackCompose(point.x, point.y, node.id);
-      gestureStream.push({
-        kind: "move",
-        phase: "active",
-        elementId: node.id,
-        x: node.position.x,
-        y: node.position.y,
-      });
+      carry.track({ x: node.position.x, y: node.position.y });
     },
-    [gestureStream, trackCompose],
+    [carry, trackCompose],
   );
 
   const handleNodeDragStop = useCallback(
@@ -670,44 +737,37 @@ export function FlowPadView({
         return;
       }
       const point = dragPoint(event);
+      const release = { x: node.position.x, y: node.position.y };
       // Composed: the server rewrites both placements (the target becomes a portal, this
       // element is consumed), so the geometry this drag produced is dropped. A REFUSED arm
       // reports its rule and mutates nothing — the pipeline decides, not this handler.
       if (armed !== null) {
         drop.commit(null, composeDestination(armed.elementId, armed.zone));
         clearCompose();
-        endCarry();
-        gestureStream.end({
-          kind: "move",
-          phase: "end",
-          elementId: node.id,
-          x: node.position.x,
-          y: node.position.y,
-        });
+        carry.end(release);
         return;
       }
-      endCarry();
       clearCompose();
-      // Released over the sidebar: the gesture asked for the pool, not a canvas
-      // position, so the geometry is dropped and the terminal parks instead.
-      const parked =
-        element.type === "terminal" && point !== null && isOverSidebar?.(point.x, point.y) === true;
-      if (parked) {
-        onPark(node.id);
-      } else if (element.x !== node.position.x || element.y !== node.position.y) {
+      /*
+        Released over the sidebar: the gesture asked for nowhere, not for a canvas
+        position. Whether "nowhere" is a legal destination for THIS item is the algebra's
+        question, never this handler's — an item the pool refuses simply lands where it
+        was dropped instead of raising a rule nobody invoked on purpose.
+      */
+      const unplaced =
+        point !== null &&
+        isOverSidebar?.(point.x, point.y) === true &&
+        drop.assess(UNPLACED_DESTINATION)?.denial == null;
+      if (unplaced) {
+        drop.commit(null, UNPLACED_DESTINATION);
+      } else if (element.x !== release.x || element.y !== release.y) {
         client.transact((tx) => {
-          tx.patch(node.id, { x: node.position.x, y: node.position.y });
+          tx.patch(node.id, release);
         });
       }
-      gestureStream.end({
-        kind: "move",
-        phase: "end",
-        elementId: node.id,
-        x: node.position.x,
-        y: node.position.y,
-      });
+      carry.end(release);
     },
-    [clearCompose, client, composeDestination, drop, gestureStream, isOverSidebar, onPark],
+    [carry, clearCompose, client, composeDestination, drop, isOverSidebar],
   );
 
   const handleResize = useCallback(
@@ -830,8 +890,11 @@ export function FlowPadView({
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
         });
+        // The server created the terminal's home composition with its PTY, so the
+        // element this canvas authors is a portal onto that home: on a canvas a
+        // terminal IS a solo composition wearing its own chrome.
         client.transact((tx) => {
-          tx.create(createTerminalElement(elementId, session.id, canvasCenter(), tx.nextZIndex()));
+          tx.create(createPortalElement(elementId, session.padId, canvasCenter(), tx.nextZIndex()));
         });
       } catch (reason: unknown) {
         notify(reason instanceof Error ? reason.message : "Could not open a terminal", {
@@ -840,29 +903,6 @@ export function FlowPadView({
       }
     },
     [canvasCenter, client, machines, notify, padId],
-  );
-
-  /**
-   * Restart is deliberately UNCAUGHT: the titlebar button that asked for it is the only
-   * place that knows a restart was attempted, so it owns the report. Swallowing it here
-   * would put the notice on the wrong side of the action.
-   */
-  const restartTerminal = useCallback(
-    async (elementId: string, sessionId: string): Promise<void> => {
-      const element = client.elements.get(elementId);
-      if (element?.type !== "terminal") return;
-      const machineId = client.sessions.get(sessionId)?.machineId;
-      const session = await client.openTerminal({
-        elementId,
-        cols: 80,
-        rows: 24,
-        ...(machineId === undefined ? {} : { machineId }),
-      });
-      client.transact((tx) => {
-        tx.patch(elementId, { sessionId: session.id });
-      });
-    },
-    [client],
   );
 
   const focusElement = useCallback(
@@ -878,26 +918,6 @@ export function FlowPadView({
       });
     },
     [client],
-  );
-
-  /**
-   * Expand transmutes a terminal into a tiled view born around it: the server swaps
-   * the element for a portal onto the new container and rebinds the session into it,
-   * so all the expander has to do is walk into the container it just created.
-   */
-  const onExpand = useCallback(
-    (sessionId: string): void => {
-      void expandTerminal(identity.token, sessionId)
-        .then((viewId) => {
-          navigate(`/p/${encodeURIComponent(viewId)}`);
-        })
-        .catch((reason: unknown) => {
-          notify(reason instanceof Error ? reason.message : "Could not expand this terminal", {
-            key: "expand",
-          });
-        });
-    },
-    [identity.token, navigate, notify],
   );
 
   /**
@@ -970,16 +990,25 @@ export function FlowPadView({
     [identity.token],
   );
 
+  /**
+   * Which elements represent which terminal. A canvas references a terminal THROUGH its
+   * home composition now, so the chain is portal → home → session; a session whose home
+   * this canvas has never heard of simply has no representation to report.
+   */
   const liveBindings = useMemo(() => {
+    const sessionByHome = new Map<string, string>();
+    for (const session of client.sessions.values()) sessionByHome.set(session.padId, session.id);
     const bindings = new Map<string, string[]>();
     for (const element of projected) {
-      if (element.type !== "terminal") continue;
-      const ids = bindings.get(element.data.sessionId) ?? [];
+      if (element.type !== "portal") continue;
+      const sessionId = sessionByHome.get(element.data.containerId);
+      if (sessionId === undefined) continue;
+      const ids = bindings.get(sessionId) ?? [];
       ids.push(element.id);
-      bindings.set(element.data.sessionId, ids);
+      bindings.set(sessionId, ids);
     }
     return bindings;
-  }, [projected]);
+  }, [client, projected]);
 
   const sessionRows = useMemo(
     () =>
@@ -1041,18 +1070,22 @@ export function FlowPadView({
 
   const flags = toolFlags(tool);
 
+  /**
+   * The canvas's API, and deliberately NOT its polled data: presence rides its own
+   * context (see `FlowPadPresenceProvider` below), so a poll tick no longer rebuilds
+   * this object and re-renders every live terminal on the board for it.
+   */
   const context = useMemo<FlowPadContextValue>(
     () => ({
+      carry,
       client,
       machines,
       machineFor,
       onPark,
       onClose,
-      onExpand,
       onRenameTerminal,
       removeElement,
       onDeleteContainer,
-      onRestart: restartTerminal,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
       tool,
@@ -1064,11 +1097,11 @@ export function FlowPadView({
       depth,
       token: identity.token,
       openClient,
-      presence,
       navigate,
       notify,
     }),
     [
+      carry,
       client,
       notify,
       depth,
@@ -1079,15 +1112,10 @@ export function FlowPadView({
       machineFor,
       machines,
       navigate,
-      onClose,
       onDeleteContainer,
-      onExpand,
-      onPark,
       onRenameTerminal,
       openClient,
-      presence,
       removeElement,
-      restartTerminal,
       tool,
     ],
   );
@@ -1156,7 +1184,9 @@ export function FlowPadView({
           connId: gesture.connId,
           x: gesture.current.x,
           y: gesture.current.y,
+          ...(gesture.carry === undefined ? {} : { carry: gesture.carry.surface.kind }),
         })),
+      renders: renderCounts,
       viewport: () => {
         const flow = flowRef.current;
         const bounds = canvasRef.current?.getBoundingClientRect();
@@ -1212,34 +1242,15 @@ export function FlowPadView({
           const selected = flowRef.current?.getNodes().filter((node) => node.selected) ?? [];
           if (selected.length === 0) return;
           event.preventDefault();
-          // Terminals park (the shell survives in the pool); everything else is a
-          // plain scene delete, and a mixed selection does both.
-          const terminals: string[] = [];
-          const others: string[] = [];
-          for (const node of selected) {
-            const target = client.elements.get(node.id)?.type === "terminal" ? terminals : others;
-            target.push(node.id);
-          }
-          if (others.length > 0) {
-            client.transact((tx) => {
-              for (const elementId of others) tx.remove(elementId);
-            });
-          }
-          if (terminals.length > 0) {
-            void Promise.allSettled(terminals.map((elementId) => parkElement(elementId))).then(
-              (results) => {
-                for (const result of results) {
-                  if (result.status !== "rejected") continue;
-                  const reason: unknown = result.reason;
-                  // Same key as the single park, so a multi-select failure is one row.
-                  notify(
-                    reason instanceof Error ? reason.message : "Could not park this terminal",
-                    { key: "park" },
-                  );
-                }
-              },
-            );
-          }
+          /*
+            One verb for every species now: Delete removes the REPRESENTATION. A note or
+            a stroke exists nowhere else, so that ends it; a widget's portal is only a
+            reference, so the composition behind it lives on — and a terminal whose last
+            reference goes with it is simply unplaced, since "unplaced" is derived from
+            nothing pointing at its home rather than stored anywhere. That is why this is
+            an ordinary undoable scene edit and no longer a server round trip.
+          */
+          tombstone(selected.map((node) => node.id));
         }}
         onDragOver={(event) => {
           if (!carriesItem(event.dataTransfer)) return;
@@ -1254,6 +1265,10 @@ export function FlowPadView({
               : flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
           const pane =
             at === null ? null : drop.assess({ kind: "canvas", padId, x: at.x, y: at.y });
+          // The carry streams from wherever the pointer IS, so a drag that began on a
+          // sidebar row or a widget's tile becomes visible to collaborators the moment
+          // it enters this canvas — the same motion a node drag broadcasts.
+          if (at !== null) carry.track(at);
           trackCompose(event.clientX, event.clientY, null);
           const armed = composeArmedRef.current;
           const verdict = armed?.assessment ?? pane;
@@ -1272,15 +1287,19 @@ export function FlowPadView({
           const armed = composeArmedRef.current;
           const transfer = event.dataTransfer;
           clearCompose();
+          const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          // Released: the ghost is retired before the write, so nobody watches a carried
+          // item hover over a canvas it has already landed on. The payload lives in the
+          // transfer, so ending the carry cannot cost the drop its envelope.
+          carry.end(at);
           if (armed !== null) {
             drop.commit(transfer, composeDestination(armed.elementId, armed.zone));
             return;
           }
-          // Bare canvas is the one POLYMORPHIC door: a terminal binds, a container becomes
-          // a portal, a tile is extracted, a note or a stroke moves. Which of those it is
-          // comes from the declarations, not from a branch here — which is exactly the gap
-          // that used to swallow a container dropped on empty canvas.
-          const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          // Bare canvas is the one POLYMORPHIC door: a terminal portals, a container
+          // becomes a portal, a tile is extracted, a note or a stroke moves. Which of
+          // those it is comes from the declarations, not from a branch here — which is
+          // exactly the gap that used to swallow a container dropped on empty canvas.
           drop.commit(transfer, { kind: "canvas", padId, x: at.x, y: at.y });
         }}
         onPointerDownCapture={(event) => {
@@ -1341,7 +1360,7 @@ export function FlowPadView({
           <PresenceIsland rows={rosterRows} />
         </div>
         <CanvasToolbar tool={tool} onChange={setTool} />
-        <FlowPadProvider value={context}>
+        <FlowPadProviders value={context} presence={presence}>
           {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
               pinch zooms (browsers report trackpad pinch as ctrl+wheel), and plain
               wheel-zoom is off so panning never zooms by surprise. */}
@@ -1454,6 +1473,27 @@ export function FlowPadView({
                     }}
                   />
                 ))}
+                {/*
+                  A collaborator's carry, drawn where their pointer holds it. Only for
+                  items this canvas does NOT already draw: an element carried across it
+                  IS its own ghost, moving live under their cursor.
+                */}
+                {remoteCarries.map((ghost) => (
+                  <div
+                    className="carry-ghost"
+                    data-carry-kind={ghost.kind}
+                    key={ghost.key}
+                    style={{
+                      borderColor: carrierColor(ghost.principalId),
+                      transform: `translate(${String(ghost.x)}px, ${String(ghost.y)}px)`,
+                    }}
+                  >
+                    <span className="carry-ghost__glyph" aria-hidden="true">
+                      {ghost.glyph}
+                    </span>
+                    <span className="carry-ghost__label">{ghost.label}</span>
+                  </div>
+                ))}
                 {remoteCursors.cursors.map((cursor) => {
                   const color = remoteCursors.colorFor(cursor);
                   return (
@@ -1476,7 +1516,7 @@ export function FlowPadView({
               </div>
             </ViewportPortal>
           </ReactFlow>
-        </FlowPadProvider>
+        </FlowPadProviders>
       </div>
     </div>
   );

@@ -84,4 +84,31 @@ describe("remote gestures", () => {
     expect(expireGestures(state, 3_011)).toBe(true);
     expect(state.size).toBe(0);
   });
+
+  test("a carry keeps the item it names while its geometry eases", () => {
+    const state = new Map<string, GestureOverride>();
+    const carried: ServerGesture = {
+      type: "gesture",
+      connId: "peer-connection",
+      principalId: "peer",
+      kind: "carry",
+      phase: "active",
+      elementId: "leaf",
+      x: 0,
+      y: 0,
+      carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" }, label: "build" },
+    };
+    applyGestureFrame(state, carried, null, 0);
+    applyGestureFrame(state, { ...carried, x: 100, y: 0 }, null, 10);
+    stepGestures(state, GESTURE_HALF_LIFE_MS);
+
+    // The WHAT survives every frame of the WHERE: a ghost must not blink out mid-motion.
+    expect(state.get("leaf")).toMatchObject({
+      kind: "carry",
+      carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" }, label: "build" },
+      current: { x: 50, y: 0 },
+    });
+    expect(applyGestureFrame(state, { ...carried, phase: "end" }, null, 20)).toBe(true);
+    expect(state.size).toBe(0);
+  });
 });

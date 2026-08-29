@@ -4,8 +4,8 @@ import type { GestureOverride } from "./remote-gestures";
 import { strokeBounds, toRelativePoints } from "./stroke";
 import type { Node } from "@xyflow/react";
 
-// Terminal element defaults live in @manifold/scene: the server authors terminal
-// elements too (bind), so both sides must size them identically.
+// Terminal element defaults live in @manifold/scene: the server authors portals onto
+// solo compositions too, so both sides must size them identically.
 export { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH };
 export const DEFAULT_TEXT_WIDTH = 240;
 export const DEFAULT_TEXT_HEIGHT = 48;
@@ -90,10 +90,6 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
   return reusedAll ? current : out;
 }
 
-export interface TerminalNodeData extends Record<string, unknown> {
-  readonly sessionId: string;
-}
-
 export interface PortalNodeData extends Record<string, unknown> {
   readonly containerId: string;
 }
@@ -118,11 +114,6 @@ interface ProjectedNodeBase {
   readonly zIndex: number;
 }
 
-export interface ProjectedTerminalNode extends ProjectedNodeBase {
-  readonly type: "terminal";
-  readonly data: TerminalNodeData;
-}
-
 export interface ProjectedTextNode extends ProjectedNodeBase {
   readonly type: "text";
   readonly data: TextNodeData;
@@ -138,8 +129,7 @@ export interface ProjectedPortalNode extends ProjectedNodeBase {
   readonly data: PortalNodeData;
 }
 
-export type ProjectedNode =
-  ProjectedTerminalNode | ProjectedPortalNode | ProjectedTextNode | ProjectedDrawNode;
+export type ProjectedNode = ProjectedPortalNode | ProjectedTextNode | ProjectedDrawNode;
 
 export function projectElements(
   elements: ReadonlyMap<string, SceneElement>,
@@ -156,14 +146,6 @@ export function projectElements(
       height: override?.height ?? element.height,
     };
     switch (element.type) {
-      case "terminal":
-        return {
-          id: element.id,
-          type: "terminal",
-          ...geometry,
-          zIndex: element.zIndex,
-          data: { sessionId: element.sessionId },
-        };
       case "portal":
         return {
           id: element.id,
@@ -196,16 +178,22 @@ export function projectElements(
   });
 }
 
-export function createTerminalElement(
+/**
+ * A terminal on a canvas IS a portal onto its home composition: the terminal element
+ * kind is retired, so the one factory authors the portal and the widget's mono form
+ * paints the terminal's own chrome inside it. Default geometry is still a terminal's,
+ * because that is what a solo composition contains.
+ */
+export function createPortalElement(
   id: string,
-  sessionId: string,
+  containerId: string,
   position: { readonly x: number; readonly y: number },
   zIndex: number,
-): Extract<SceneElement, { type: "terminal" }> {
+): Extract<SceneElement, { type: "portal" }> {
   return {
     id,
-    type: "terminal",
-    sessionId,
+    type: "portal",
+    containerId,
     x: position.x,
     y: position.y,
     width: DEFAULT_TERMINAL_WIDTH,
