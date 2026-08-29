@@ -14,6 +14,8 @@ import {
   BindTerminalRequestSchema,
   BindTerminalResponseSchema,
   ParkTerminalRequestSchema,
+  MoveTerminalPoolRequestSchema,
+  RenameTerminalRequestSchema,
   TerminalPoolResponseSchema,
   type TerminalPoolEntry,
   type MachineSummary,
@@ -236,6 +238,35 @@ export async function bindTerminal(
     body: JSON.stringify(request),
   });
   return BindTerminalResponseSchema.parse(body).elementId;
+}
+
+/** Renames a terminal session (`PATCH /api/terminals/:id`); works bound or parked. */
+export async function renameTerminal(
+  token: string,
+  sessionId: string,
+  name: string,
+): Promise<void> {
+  const request = RenameTerminalRequestSchema.parse({ name });
+  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+}
+
+/** Reorders a parked terminal within the workspace pool (`PUT /api/terminal-pool`). */
+export async function moveTerminalPool(
+  token: string,
+  sessionId: string,
+  index: number,
+): Promise<readonly TerminalPoolEntry[]> {
+  const request = MoveTerminalPoolRequestSchema.parse({ sessionId, index });
+  const body = await requestJson("/api/terminal-pool", {
+    method: "PUT",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return TerminalPoolResponseSchema.parse(body).terminals;
 }
 
 /** Kills a pooled terminal's PTY (`DELETE /api/terminals/:id`). */

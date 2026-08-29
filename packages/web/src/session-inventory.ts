@@ -3,6 +3,8 @@ import type { MachineSummary, SessionInfo } from "@manifold/protocol";
 /** One row of the sessions janitor panel: a PTY session and how it is bound. */
 export interface SessionRow {
   readonly id: string;
+  /** Durable user-given terminal name; null falls back to machine labeling. */
+  readonly name: string | null;
   readonly machineName: string | null;
   readonly machineOnline: boolean | null;
   readonly status: SessionInfo["status"];
@@ -41,6 +43,7 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
       const isController = input.selfId !== null && session.controllerId === input.selfId;
       return {
         id: session.id,
+        name: session.name,
         machineName: machine?.name ?? null,
         machineOnline: machine === undefined ? null : machine.online,
         status: session.status,

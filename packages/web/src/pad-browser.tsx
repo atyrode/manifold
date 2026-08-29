@@ -38,8 +38,10 @@ import {
   listPadTree,
   listTerminals,
   movePadTreeItem,
+  moveTerminalPool,
   renamePad,
   renamePadFolder,
+  renameTerminal,
   type StoredIdentity,
 } from "./api.ts";
 import { parseChangelogReferences } from "./changelog-references.ts";
@@ -331,6 +333,35 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           console.error("evt=pool_terminal_kill_failed", reason);
         })
         .finally(refreshPool);
+    },
+    [identity.token, refreshPool],
+  );
+
+  const renamePooled = useCallback(
+    async (sessionId: string, name: string): Promise<void> => {
+      try {
+        await renameTerminal(identity.token, sessionId, name);
+        setError(null);
+      } catch (reason: unknown) {
+        setError(reason instanceof Error ? reason.message : "Could not rename the terminal");
+        throw reason;
+      } finally {
+        refreshPool();
+      }
+    },
+    [identity.token, refreshPool],
+  );
+
+  const movePooled = useCallback(
+    async (sessionId: string, index: number): Promise<void> => {
+      try {
+        setPoolTerminals(await moveTerminalPool(identity.token, sessionId, index));
+        setError(null);
+      } catch (reason: unknown) {
+        setError(reason instanceof Error ? reason.message : "Could not reorder the terminal");
+        refreshPool();
+        throw reason;
+      }
     },
     [identity.token, refreshPool],
   );
@@ -1293,13 +1324,13 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           </div>
 
           {sidebarOpen ? (
-            <div className="workspace-sidebar workspace-terminal-pool">
-              <TerminalPoolSection
-                terminals={poolTerminals}
-                machines={workspace?.machines ?? []}
-                onKill={killPooled}
-              />
-            </div>
+            <TerminalPoolSection
+              terminals={poolTerminals}
+              machines={workspace?.machines ?? []}
+              onKill={killPooled}
+              onRename={renamePooled}
+              onMove={movePooled}
+            />
           ) : null}
 
           {sidebarOpen && workspace !== null ? (

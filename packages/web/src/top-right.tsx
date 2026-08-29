@@ -167,7 +167,7 @@ export function WorkspaceSessionRow({
           {row.status === "running" ? "●" : "○"}
         </span>
         <span className="workspace-session-label">
-          <strong>{row.machineName ?? "Unknown machine"}</strong>
+          <strong>{row.name ?? row.machineName ?? "Unknown machine"}</strong>
           <span>{detailLabel}</span>
         </span>
         <span className="workspace-session-actions">

@@ -2227,22 +2227,18 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Terminal pool (sidebar) */
 
-.terminal-pool-row {
+.pad-sidebar-terminal-pool {
   display: grid;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  border-radius: var(--border-radius-md);
-  padding: 0.4rem 0.45rem;
+  align-content: start;
+}
+
+.terminal-pool-row,
+.terminal-pool-row .terminal-pool-label {
   cursor: grab;
 }
 
-.terminal-pool-row:hover {
-  background: rgb(134 142 150 / 8%);
-}
-
-.terminal-pool-row:active {
+.terminal-pool-row:active,
+.terminal-pool-row:active .terminal-pool-label {
   cursor: grabbing;
 }
 
@@ -2250,31 +2246,36 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0.55;
 }
 
-.terminal-pool-label {
-  display: grid;
-  min-width: 0;
-  gap: 0.1rem;
+/* Status dot sits outside the label, so it carries the row's leading inset itself. */
+.pad-sidebar-row > .session-state {
+  flex: 0 0 auto;
+  align-self: center;
+  padding-inline-start: 0.5rem;
+  font-size: 0.6rem;
 }
 
-.terminal-pool-label strong,
-.terminal-pool-label span {
+.terminal-pool-label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  padding-inline-start: 0.45rem;
+}
+
+.terminal-pool-name,
+.terminal-pool-machine {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.terminal-pool-label strong {
-  font-weight: 600;
-}
-
-.terminal-pool-label span {
+.terminal-pool-machine {
   color: var(--text-secondary-color, #868e96);
   font-size: 0.66rem;
-  font-variant-numeric: tabular-nums;
 }
 
 .terminal-pool-empty {
-  padding: 0.45rem 0.2rem;
+  padding: 0.45rem 0.55rem;
   color: var(--text-secondary-color, #868e96);
   font-size: 0.7rem;
 }

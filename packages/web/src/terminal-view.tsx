@@ -487,7 +487,7 @@ export function TerminalView({
           <span className="terminal-titlebar__glyph" aria-hidden="true">
             {">_"}
           </span>
-          terminal
+          {session?.name ?? "terminal"}
           {machine === null ? null : (
             <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
               <span className="machine-dot" style={{ backgroundColor: machine.color }} />

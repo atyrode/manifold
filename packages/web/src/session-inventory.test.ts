@@ -5,6 +5,7 @@ import { buildSessionRows } from "./session-inventory.ts";
 function session(overrides: Partial<SessionInfo>): SessionInfo {
   return {
     id: "s1",
+    name: null,
     padId: "pad1",
     elementId: "el1",
     machineId: "m1",
