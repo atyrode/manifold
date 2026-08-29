@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -26,8 +26,11 @@ export const PROTOCOL_VERSION = 6;
  * records. The machine wire is identical, so v2/v3/v4 agents stay accepted.
  * v5 -> v6: session-channel scene frames became Yjs document updates. The
  * machine wire is byte-identical, so existing agents stay accepted.
+ * v6 -> v7: session-channel roster states gained required `connIds` so viewers
+ * can retire a closed tab's cursor. The machine wire is byte-identical, so
+ * existing agents stay accepted.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4, 5, 6]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4, 5, 6, 7]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this
