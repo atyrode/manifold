@@ -2,38 +2,33 @@ import {
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
+  ExpandTerminalResponseSchema,
   HttpErrorSchema,
   MachinesResponseSchema,
   MovePadTreeItemRequestSchema,
-  PadTreeResponseSchema,
-  PadPresenceResponseSchema,
-  PadSessionsResponseSchema,
-  PadSchema,
-  RenamePadRequestSchema,
-  TokenGrantSchema,
-  BindTerminalRequestSchema,
-  BindTerminalResponseSchema,
-  ParkTerminalRequestSchema,
   MoveTerminalPoolRequestSchema,
+  PadPresenceResponseSchema,
+  PadSchema,
+  PadSessionsResponseSchema,
+  PadTreeResponseSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
+  RenamePadRequestSchema,
   RenameTerminalRequestSchema,
-  AddPadTileRequestSchema,
-  AddPadTileResponseSchema,
-  ComposePadTileRequestSchema,
-  ComposePadTileResponseSchema,
-  ExpandTerminalResponseSchema,
-  ExtractPadTileRequestSchema,
-  ExtractPadTileResponseSchema,
-  type TileEdge,
-  type TileSurface,
   TerminalPoolResponseSchema,
-  type TerminalPoolEntry,
+  TokenGrantSchema,
   type MachineSummary,
   type Pad,
   type PadPresence,
-  type PadTreeItem,
   type PadSessionSummary,
+  type PadTreeItem,
+  type PlacementDestination,
+  type PlacementSurface,
   type Principal,
+  type TerminalPoolEntry,
 } from "@manifold/protocol";
+import type { PlaceOutcome } from "@manifold/sdk";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
 export interface StoredIdentity {
@@ -218,35 +213,32 @@ export async function listTerminals(token: string): Promise<readonly TerminalPoo
   return TerminalPoolResponseSchema.parse(body).terminals;
 }
 
-/** Parks one canvas element; unbinds the session when it was the last reference. */
-export async function parkTerminal(
+/**
+ * THE placement call for anything outside a room: put an item in a container
+ * (`POST /api/place`). One envelope replaces bind, park, add-tile, compose and extract,
+ * and a refusal comes back as DATA — the declared rule that refused it — because a client
+ * renders the rule rather than parsing prose.
+ *
+ * The sidebar has no room socket (it indexes containers, it does not join them), so this
+ * token-bound path exists beside `SessionClient.place`, which is the same request made from
+ * inside a room. Both hit the one endpoint.
+ */
+export async function placeItem(
   token: string,
-  sessionId: string,
-  elementId: string,
-): Promise<void> {
-  const request = ParkTerminalRequestSchema.parse({ elementId });
-  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/park`, {
+  surface: PlacementSurface,
+  destination: PlacementDestination,
+): Promise<PlaceOutcome> {
+  const request = PlaceRequestSchema.parse({ surface, destination });
+  const response = await fetch("/api/place", {
     method: "POST",
     headers: authHeaders(token, true),
     body: JSON.stringify(request),
   });
-}
-
-/** Binds a parked session to a pad; the server authors the canvas element. */
-export async function bindTerminal(
-  token: string,
-  sessionId: string,
-  padId: string,
-  x?: number,
-  y?: number,
-): Promise<string> {
-  const request = BindTerminalRequestSchema.parse({ padId, x, y });
-  const body = await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/bind`, {
-    method: "POST",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return BindTerminalResponseSchema.parse(body).elementId;
+  const body = await readBody(response);
+  if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(body) };
+  const denied = PlacementDeniedResponseSchema.safeParse(body);
+  if (denied.success) return { ok: false, denial: denied.data.error.denial };
+  throw errorFromBody(response.status, body);
 }
 
 /** Renames a terminal session (`PATCH /api/terminals/:id`); works bound or parked. */
@@ -323,69 +315,13 @@ export async function pinPad(token: string, padId: string): Promise<void> {
 }
 
 /**
- * Adds a surface to a tiled container (`POST /api/pads/:id/tiles`). A null target
- * fills the first empty leaf; otherwise `edge` splits the target tile. Returns the
- * new leaf's tile id.
+ * Removes one leaf from a composition (`DELETE /api/pads/:id/tiles/:tileId`). Removal is
+ * the one tile gesture that is NOT a placement — nothing accepts "nowhere" — so it keeps
+ * its own route while every MOVE of a leaf's occupant goes through `placeItem`.
  */
-export async function addPadTile(
-  token: string,
-  padId: string,
-  surface: TileSurface,
-  targetTileId: string | null,
-  edge: TileEdge | null,
-): Promise<string> {
-  const request = AddPadTileRequestSchema.parse({ surface, targetTileId, edge });
-  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles`, {
-    method: "POST",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return AddPadTileResponseSchema.parse(body).tileId;
-}
-
-/** Removes one leaf from a tiled container (`DELETE /api/pads/:id/tiles/:tileId`). */
 export async function removePadTile(token: string, padId: string, tileId: string): Promise<void> {
   await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}`, {
     method: "DELETE",
     headers: authHeaders(token, false),
   });
-}
-
-/**
- * Composes a dragged surface onto a canvas terminal (`POST /api/pads/:id/compose`),
- * birthing a durable view around the target. Returns the new container id.
- */
-export async function composePadTile(
-  token: string,
-  padId: string,
-  targetElementId: string,
-  surface: TileSurface,
-  edge: TileEdge,
-): Promise<string> {
-  const request = ComposePadTileRequestSchema.parse({ targetElementId, surface, edge });
-  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/compose`, {
-    method: "POST",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return ComposePadTileResponseSchema.parse(body).viewId;
-}
-
-/**
- * Pulls one tile out of a view back onto the canvas it lives on
- * (`POST /api/pads/:id/tiles/:tileId/extract`). Returns the new element's id.
- */
-export async function extractPadTile(
-  token: string,
-  padId: string,
-  tileId: string,
-  x: number,
-  y: number,
-): Promise<string> {
-  const request = ExtractPadTileRequestSchema.parse({ x, y });
-  const body = await requestJson(
-    `/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}/extract`,
-    { method: "POST", headers: authHeaders(token, true), body: JSON.stringify(request) },
-  );
-  return ExtractPadTileResponseSchema.parse(body).elementId;
 }

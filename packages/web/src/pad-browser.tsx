@@ -7,12 +7,14 @@ import {
   type ItemInstance,
   type TreeInstance,
 } from "@headless-tree/core";
+import { DEFAULT_CANVAS_DROP } from "@manifold/protocol";
 import type {
   MachineSummary,
   Pad,
   PadPresence,
   PadSessionSummary,
   PadTreeItem,
+  PlacementDestination,
   TerminalPoolEntry,
 } from "@manifold/protocol";
 import {
@@ -28,7 +30,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  bindTerminal,
   createPad,
   createPadFolder,
   deletePad,
@@ -42,6 +43,7 @@ import {
   listTerminals,
   movePadTreeItem,
   moveTerminalPool,
+  placeItem,
   renamePad,
   renamePadFolder,
   renameTerminal,
@@ -52,7 +54,8 @@ import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { FlowPadView } from "./flow-pad-view.tsx";
 import { TiledPadView } from "./tiled-pad-view.tsx";
-import { CONTAINER_DRAG_MIME } from "./tile-snap.ts";
+import { createPlacementLookup, useItemDrop, type ItemDropAssessment } from "./item-drop.ts";
+import { carriesItem, containerEnvelope, sealEnvelope, ITEM_MIME } from "./item-envelope.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
 import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
@@ -61,7 +64,7 @@ import {
   WorkspaceStatus,
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
-import { TerminalPoolSection, TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
+import { TerminalPoolSection } from "./terminal-pool.tsx";
 import {
   initialCollapsedSections,
   initialSectionOrder,
@@ -72,6 +75,7 @@ import {
   type CollapsedSections,
   type SidebarSectionId,
 } from "./sidebar-section.tsx";
+import { useToast } from "./toast.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
 
@@ -160,6 +164,9 @@ const SIDEBAR_ROOT_ITEM: PadTreeItem = {
 /** Icon rail: only the container index survives, so its tree container never reparents. */
 const COLLAPSED_RAIL_SECTIONS: readonly SidebarSectionId[] = ["views"];
 
+/** The parked pool as a destination; it has no coordinates, only a body to release over. */
+const POOL_DESTINATION: PlacementDestination = { kind: "pool" };
+
 function initialSidebarWidth(): number {
   try {
     const raw = window.localStorage.getItem("manifold:sidebar-width");
@@ -207,8 +214,18 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   );
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
-  const [terminalDropPadId, setTerminalDropPadId] = useState<string | null>(null);
-  /** Which discipline the open create form will author: a freeform pad or a tiled composition. */
+  /**
+   * The container row under the cursor and what the carried item would do there. Any item can
+   * be released on a row, so this is not a terminals-only hover: the assessment decides
+   * whether the row paints as a target or as a refusal.
+   */
+  const [dropRow, setDropRow] = useState<{
+    readonly padId: string;
+    readonly assessment: ItemDropAssessment | null;
+  } | null>(null);
+  /** The same question for the pool, which is one target rather than one per row. */
+  const [poolDrop, setPoolDrop] = useState<ItemDropAssessment | null>(null);
+  /** Which discipline the open create form will author: a freeform canvas or a tiled composition. */
   const [createLayout, setCreateLayout] = useState<Pad["layout"]>("canvas");
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
@@ -243,7 +260,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [, renderTreeState] = useState(0);
   const dndFrameRef = useRef<number | null>(null);
   const treeInstanceRef = useRef<TreeInstance<PadTreeItem> | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { notify } = useToast();
   const [presence, setPresence] = useState<readonly PadPresence[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceSidebarState | null>(null);
   /**
@@ -357,12 +374,16 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         if (active) setTreeItems(items);
       })
       .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : "Could not load pads");
+        if (active) {
+          notify(reason instanceof Error ? reason.message : "Could not load views", {
+            key: "tree-load",
+          });
+        }
       });
     return () => {
       active = false;
     };
-  }, [identity.token]);
+  }, [identity.token, notify]);
 
   /** Refetches the routed container and the tree; pin and splits change both. */
   const refreshActivePad = useCallback((): void => {
@@ -450,70 +471,125 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         .catch((reason: unknown) => {
           // A 409 means the session already died; the refetch below settles the row either way.
           console.error("evt=pool_terminal_kill_failed", reason);
+          notify("Could not kill the terminal", { key: "pool-kill" });
         })
         .finally(refreshPool);
     },
-    [identity.token, refreshPool],
+    [identity.token, notify, refreshPool],
   );
 
   const renamePooled = useCallback(
     async (sessionId: string, name: string): Promise<void> => {
       try {
         await renameTerminal(identity.token, sessionId, name);
-        setError(null);
       } catch (reason: unknown) {
-        setError(reason instanceof Error ? reason.message : "Could not rename the terminal");
+        notify(reason instanceof Error ? reason.message : "Could not rename the terminal", {
+          key: "pool-rename",
+        });
         throw reason;
       } finally {
         refreshPool();
       }
     },
-    [identity.token, refreshPool],
+    [identity.token, notify, refreshPool],
   );
 
   const movePooled = useCallback(
     async (sessionId: string, index: number): Promise<void> => {
       try {
         setPoolTerminals(await moveTerminalPool(identity.token, sessionId, index));
-        setError(null);
       } catch (reason: unknown) {
-        setError(reason instanceof Error ? reason.message : "Could not reorder the terminal");
+        notify(reason instanceof Error ? reason.message : "Could not reorder the terminal", {
+          key: "pool-reorder",
+        });
         refreshPool();
         throw reason;
       }
     },
-    [identity.token, refreshPool],
+    [identity.token, notify, refreshPool],
   );
 
-  const acceptsTerminalDrag = (transfer: DataTransfer): boolean =>
-    transfer.types.includes(TERMINAL_DRAG_MIME);
-
-  /** Pad rows accept pooled terminals only; every other drag falls through to headless-tree. */
-  const terminalDropProps = (padId: string) => ({
-    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!acceptsTerminalDrag(event.dataTransfer)) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      setTerminalDropPadId(padId);
-    },
-    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!acceptsTerminalDrag(event.dataTransfer)) return;
-      setTerminalDropPadId((current) => (current === padId ? null : current));
-    },
-    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!acceptsTerminalDrag(event.dataTransfer)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      setTerminalDropPadId(null);
-      const sessionId = event.dataTransfer.getData(TERMINAL_DRAG_MIME);
-      if (sessionId === "") return;
-      void bindTerminal(identity.token, sessionId, padId)
-        .catch((reason: unknown) => {
-          console.error("evt=terminal_bind_failed", reason);
-        })
-        .finally(refreshPool);
+  /**
+   * The sidebar's placement pipeline. It joins no room, so it holds no elements and is not
+   * itself a container: every legality question it asks is answered from the container index
+   * alone, and every write goes over HTTP because there is no socket here to carry it.
+   */
+  const lookup = useMemo(
+    () => createPlacementLookup({ pads: pads ?? [], self: null, elements: new Map() }),
+    [pads],
+  );
+  const drop = useItemDrop({
+    lookup,
+    place: (surface, destination) => placeItem(identity.token, surface, destination),
+    notify,
+    onPlaced: () => {
+      refreshPool();
+      refreshActivePad();
     },
   });
+
+  /** Where a release on a container's row lands, decided by that row's own discipline. */
+  const rowDestination = (pad: Pad): PlacementDestination =>
+    pad.layout === "tiled"
+      ? { kind: "tile", padId: pad.id, targetTileId: null, edge: null }
+      : { kind: "canvas", padId: pad.id, x: DEFAULT_CANVAS_DROP.x, y: DEFAULT_CANVAS_DROP.y };
+
+  /**
+   * A drag the container tree owns is a sibling reorder, not a placement: the tree only holds
+   * `dnd` state for its own gesture, so this is the one question that tells the two apart.
+   */
+  const treeOwnsDrag = (): boolean => treeInstanceRef.current?.getState().dnd != null;
+
+  /**
+   * A container row accepts ANY carried item. The row's discipline picks the destination and the
+   * pipeline decides legality, so an item that cannot land there says so instead of doing nothing.
+   */
+  const containerDropProps = (pad: Pad) => ({
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      // Claimed either way: a refusal has to be shown here, not handed back to the browser.
+      event.preventDefault();
+      const assessment = drop.assess(rowDestination(pad));
+      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
+      setDropRow({ padId: pad.id, assessment });
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      setDropRow((current) => (current?.padId === pad.id ? null : current));
+    },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropRow(null);
+      drop.commit(event.dataTransfer, rowDestination(pad));
+    },
+  });
+
+  /**
+   * The pool is a container like any other — `pool accepts parkable` — so releasing a terminal
+   * anywhere over its body parks it, whichever canvas or composition it came out of.
+   */
+  const poolDropProps = {
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer)) return;
+      event.preventDefault();
+      const assessment = drop.assess(POOL_DESTINATION);
+      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
+      setPoolDrop(assessment);
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer)) return;
+      setPoolDrop(null);
+    },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPoolDrop(null);
+      drop.commit(event.dataTransfer, POOL_DESTINATION);
+    },
+  };
 
   useEffect(() => {
     let active = true;
@@ -634,7 +710,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const trimmedName = name.trim();
     if (trimmedName.length === 0) return;
     setCreating(true);
-    setError(null);
     try {
       const pad = await createPad(identity.token, trimmedName, createLayout);
       setTreeItems(await listPadTree(identity.token));
@@ -643,10 +718,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       rememberPad(memory, identity.principal.id, pad.id);
       navigate(`/p/${encodeURIComponent(pad.id)}`);
     } catch (reason: unknown) {
-      setError(
+      notify(
         reason instanceof Error
           ? reason.message
-          : `Could not create the ${createLayout === "tiled" ? "composition" : "pad"}`,
+          : `Could not create the ${createLayout === "tiled" ? "composition" : "canvas"}`,
+        { key: "container-create" },
       );
     } finally {
       setCreating(false);
@@ -655,7 +731,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   const remove = async (pad: Pad): Promise<void> => {
     setDeletingId(pad.id);
-    setError(null);
     try {
       await deletePad(identity.token, pad.id);
       const nextTree = await listPadTree(identity.token);
@@ -676,7 +751,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       }
       setConfirmDeleteId(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not delete the pad");
+      notify(
+        reason instanceof Error
+          ? reason.message
+          : `Could not delete the ${pad.layout === "tiled" ? "composition" : "canvas"}`,
+        { key: "container-delete" },
+      );
     } finally {
       setDeletingId(null);
     }
@@ -696,7 +776,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       return;
     }
     setRenaming(true);
-    setError(null);
     try {
       const renamed = await renamePad(identity.token, renameTarget.id, trimmedName);
       setTreeItems(
@@ -707,7 +786,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       );
       setRenameTarget(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not rename the pad");
+      notify(
+        reason instanceof Error
+          ? reason.message
+          : `Could not rename the ${renameTarget.layout === "tiled" ? "composition" : "canvas"}`,
+        { key: "container-rename" },
+      );
     } finally {
       setRenaming(false);
     }
@@ -717,7 +801,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     const trimmedName = folderName.trim();
     if (trimmedName.length === 0 || folderCreateParentId === undefined) return;
     setCreatingFolder(true);
-    setError(null);
     try {
       const nextTree = await createPadFolder(identity.token, trimmedName, folderCreateParentId);
       setTreeItems(nextTree);
@@ -728,7 +811,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       setFolderName("");
       setFolderCreateParentId(undefined);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not create the folder");
+      notify(reason instanceof Error ? reason.message : "Could not create the folder", {
+        key: "folder-create",
+      });
     } finally {
       setCreatingFolder(false);
     }
@@ -742,24 +827,26 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       setRenamingFolderId(null);
       return;
     }
-    setError(null);
     try {
       setTreeItems(await renamePadFolder(identity.token, folder.id, trimmedName));
       setRenamingFolderId(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not rename the folder");
+      notify(reason instanceof Error ? reason.message : "Could not rename the folder", {
+        key: "folder-rename",
+      });
     }
   };
 
   const removeFolder = async (folder: Extract<PadTreeItem, { kind: "folder" }>): Promise<void> => {
     setDeletingFolderId(folder.id);
-    setError(null);
     try {
       setTreeItems(await deletePadFolder(identity.token, folder.id));
       setConfirmFolderDeleteId(null);
       setRenamingFolderId(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not delete the folder");
+      notify(reason instanceof Error ? reason.message : "Could not delete the folder", {
+        key: "folder-delete",
+      });
     } finally {
       setDeletingFolderId(null);
     }
@@ -843,14 +930,16 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
-    // A container row drag also advertises the container mime, so the same gesture that
-    // reorders the tree drops a pad into a tile or onto another canvas.
-    // Folders carry an empty payload: every drop target ignores it.
+    // A container row drag also carries the one item envelope, so the same gesture that
+    // reorders the tree drops that container into a tile or onto another canvas.
     createForeignDragObject: (items) => {
       const data = items[0]?.getItemData();
       return {
-        format: CONTAINER_DRAG_MIME,
-        data: data?.kind === "pad" ? data.pad.id : "",
+        format: ITEM_MIME,
+        // A folder carries an empty payload: `carriesItem` is true but the envelope parser
+        // rejects it, so every target reads it as "not one of our drags" and stays silent.
+        data:
+          data?.kind === "pad" ? sealEnvelope(containerEnvelope(data.pad.id, data.pad.layout)) : "",
         effectAllowed: "move",
       };
     },
@@ -882,17 +971,17 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       // Headless Tree clears native DnD state after onDrop returns. Paint the local
       // projection in the following task, then reconcile with the server response.
       window.setTimeout(() => {
-        setError(null);
         setTreeItems(optimisticTreeItems);
         void request.then((outcome) => {
           if (outcome.ok) {
             setTreeItems(outcome.nextTreeItems);
           } else {
             setTreeItems(previousTreeItems);
-            setError(
+            notify(
               outcome.reason instanceof Error
                 ? outcome.reason.message
                 : "Could not move the sidebar item",
+              { key: "tree-move" },
             );
           }
           reorderingRef.current = false;
@@ -926,7 +1015,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       <span className="pad-sidebar-pad-mark" aria-hidden="true" />
     );
 
-  /** A composition renames exactly like a pad — one container object — so both share the editor. */
+  /** A composition renames exactly like a canvas — one container object — so both share the editor. */
   const renderContainerRenameRow = (pad: Pad, active: boolean): ReactNode => (
     <div className={`pad-sidebar-row is-editing${active ? " is-active" : ""}`}>
       {containerMark(pad)}
@@ -989,7 +1078,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
 
   /** The ••• row menu: rename inline, delete behind the confirmation step. */
   const renderContainerActions = (pad: Pad): ReactNode => {
-    const kind = pad.layout === "tiled" ? "Composition" : "Pad";
+    const kind = pad.layout === "tiled" ? "Composition" : "Canvas";
     return (
       <div className="pad-sidebar-actions">
         <button
@@ -1049,16 +1138,18 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     } else if (sidebarOpen && confirmDeleteId === pad.id) {
       row = renderContainerConfirmRow(pad, active);
     } else {
+      const rowDrop = dropRow?.padId === pad.id ? dropRow.assessment : null;
       row = (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
-          {...terminalDropProps(pad.id)}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}${rowDrop !== null && rowDrop.denial === null ? " pad-sidebar-row--terminal-target" : ""}`}
+          {...drop.refusalProps(rowDrop)}
+          {...containerDropProps(pad)}
         >
           <button
             className="pad-sidebar-link"
             type="button"
             title={pad.name}
-            aria-label={`Open ${pad.layout === "tiled" ? "composition" : "pad"} ${pad.name}`}
+            aria-label={`Open ${pad.layout === "tiled" ? "composition" : "canvas"} ${pad.name}`}
             aria-current={active ? "page" : undefined}
             onClick={() => selectPad(pad)}
             onKeyDown={(event) => {
@@ -1493,6 +1584,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             onKill={killPooled}
             onRename={renamePooled}
             onMove={movePooled}
+            dropProps={poolDropProps}
+            dropTarget={poolDrop !== null && poolDrop.denial === null}
+            refusal={{ ...drop.refusalProps(poolDrop) }}
           />
         </SidebarSection>
       );
@@ -1550,8 +1644,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <button
               className="pad-sidebar-new"
               type="button"
-              title="New pad"
-              aria-label="New pad"
+              title="New canvas"
+              aria-label="New canvas"
               onClick={() => {
                 if (!sidebarOpen) setOpen(true);
                 setCreateLayout("canvas");
@@ -1559,7 +1653,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               }}
             >
               <SidebarIcon kind="plus" />
-              {sidebarOpen ? <span>New pad</span> : null}
+              {sidebarOpen ? <span>New canvas</span> : null}
             </button>
             <button
               className="pad-sidebar-new pad-sidebar-new-view"
@@ -1604,8 +1698,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 maxLength={120}
                 value={name}
                 onChange={(event) => setName(event.currentTarget.value)}
-                placeholder={createLayout === "tiled" ? "Composition name" : "Pad name"}
-                aria-label={createLayout === "tiled" ? "Composition name" : "Pad name"}
+                placeholder={createLayout === "tiled" ? "Composition name" : "Canvas name"}
+                aria-label={createLayout === "tiled" ? "Composition name" : "Canvas name"}
                 disabled={creating}
               />
               <div>
@@ -1635,7 +1729,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             />
           ) : null}
 
-          {sidebarOpen && error !== null ? <p className="pad-sidebar-error">{error}</p> : null}
           <footer className="pad-sidebar-identity" title={identity.principal.name}>
             <span className="identity-dot" style={{ backgroundColor: identity.principal.color }} />
             {sidebarOpen ? <span>{identity.principal.name}</span> : null}
@@ -1672,7 +1765,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           />
         ) : null}
 
-        <section className="pad-browser-canvas" aria-label="Active pad">
+        <section className="pad-browser-canvas" aria-label="Active view">
           {requestedPadId === null ? (
             <div className="pad-browser-empty">
               {pads === null ? (
@@ -1681,7 +1774,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 <>
                   <span className="pad-browser-empty-mark">M</span>
                   <h1>Your canvas starts here</h1>
-                  <p>Create a pad from the sidebar to begin.</p>
+                  <p>Create a canvas from the sidebar to begin.</p>
                   <button
                     className="primary-button"
                     type="button"
@@ -1691,7 +1784,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                       setCreateOpen(true);
                     }}
                   >
-                    Create your first pad
+                    Create your first canvas
                   </button>
                 </>
               ) : null}
@@ -1719,6 +1812,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <PadErrorBoundary key={requestedPadId}>
               <FlowPadView
                 padId={requestedPadId}
+                pads={pads ?? []}
                 identity={identity}
                 navigate={navigate}
                 presence={displayedPresence}

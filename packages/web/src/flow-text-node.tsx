@@ -1,6 +1,7 @@
 import { LOCAL_ORIGIN } from "@manifold/scene";
+import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, type ReactElement } from "react";
 import { useFlowPad } from "./flow-terminal-node.tsx";
 import { textHeightFor } from "./flow-scene.ts";
 import { diffText } from "./text-diff.ts";
@@ -9,14 +10,44 @@ import { diffText } from "./text-diff.ts";
 export const MIN_TEXT_WIDTH = 80;
 export const MIN_TEXT_HEIGHT = 32;
 
-function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
-  const pad = useFlowPad();
+export interface TextSurfaceProps {
+  /** The room owning the element: a canvas, or the composition a note was tiled into. */
+  readonly client: SessionClient;
+  readonly elementId: string;
+  readonly text: string;
+  readonly fontSize: number;
+  readonly color: string;
+  readonly editing: boolean;
+  readonly onBeginEditing: () => void;
+  readonly onEndEditing: () => void;
+  /**
+   * Whether emptying the note deletes it. True on a canvas, where an empty note is
+   * invisible litter; false in a tile, where the element is the leaf's occupant and
+   * deleting it would strand the leaf.
+   */
+  readonly removeWhenEmpty: boolean;
+}
+
+/**
+ * A note, wherever it is placed. Notes are `tileable` as of this wave, so this component
+ * is deliberately independent of React Flow: a canvas wraps it in a node (with resize
+ * handles), a composition renders it straight into a tile leaf, and both edit the SAME
+ * `Y.Text` through the room they are joined to — so a note tiled into a composition is
+ * collaborative there for exactly the same reason it was on the canvas.
+ */
+export function TextSurface({
+  client,
+  elementId,
+  text,
+  fontSize,
+  color,
+  editing,
+  onBeginEditing,
+  onEndEditing,
+  removeWhenEmpty,
+}: TextSurfaceProps): ReactElement {
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const text = typeof data["text"] === "string" ? data["text"] : "";
-  const fontSize = typeof data["fontSize"] === "number" ? data["fontSize"] : 20;
-  const color = typeof data["color"] === "string" ? data["color"] : "#f8f9fa";
-  const ytext = pad.client.elementText(id);
-  const editing = pad.editingId === id;
+  const ytext = client.elementText(elementId);
 
   useEffect(() => {
     if (!editing || ytext === null) return;
@@ -38,9 +69,10 @@ function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
   }, [editing, ytext]);
 
   const finishEditing = (): void => {
-    pad.endTextEditing(id);
-    if (pad.client.elementText(id)?.toString() === "") {
-      pad.client.transact((tx) => tx.remove(id));
+    onEndEditing();
+    if (!removeWhenEmpty) return;
+    if (client.elementText(elementId)?.toString() === "") {
+      client.transact((tx) => tx.remove(elementId));
     }
   };
 
@@ -58,12 +90,12 @@ function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
           const next = event.currentTarget.value;
           const cursor = event.currentTarget.selectionStart ?? next.length;
           const diff = diffText(ytext.toString(), next, cursor);
-          pad.client.transact((tx) => {
-            const current = tx.text(id);
+          client.transact((tx) => {
+            const current = tx.text(elementId);
             if (current === null) return;
             if (diff.remove > 0) current.delete(diff.index, diff.remove);
             if (diff.insert !== "") current.insert(diff.index, diff.insert);
-            tx.patch(id, { height: textHeightFor(next, fontSize) });
+            tx.patch(elementId, { height: textHeightFor(next, fontSize) });
           });
         }}
         onKeyDown={(event) => {
@@ -72,6 +104,43 @@ function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
           event.stopPropagation();
           finishEditing();
         }}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="flow-text"
+      style={{ color, fontSize }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onBeginEditing();
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+function TextNodeImpl({ id, data, selected }: NodeProps): ReactElement {
+  const pad = useFlowPad();
+  const text = typeof data["text"] === "string" ? data["text"] : "";
+  const fontSize = typeof data["fontSize"] === "number" ? data["fontSize"] : 20;
+  const color = typeof data["color"] === "string" ? data["color"] : "#f8f9fa";
+  const editing = pad.editingId === id;
+
+  if (editing) {
+    return (
+      <TextSurface
+        client={pad.client}
+        elementId={id}
+        text={text}
+        fontSize={fontSize}
+        color={color}
+        editing
+        onBeginEditing={() => pad.beginTextEditing(id)}
+        onEndEditing={() => pad.endTextEditing(id)}
+        removeWhenEmpty
       />
     );
   }
@@ -91,16 +160,17 @@ function TextNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
           pad.onResizeEnd(id, params.x, params.y, params.width, params.height)
         }
       />
-      <div
-        className="flow-text"
-        style={{ color, fontSize }}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          pad.beginTextEditing(id);
-        }}
-      >
-        {text}
-      </div>
+      <TextSurface
+        client={pad.client}
+        elementId={id}
+        text={text}
+        fontSize={fontSize}
+        color={color}
+        editing={false}
+        onBeginEditing={() => pad.beginTextEditing(id)}
+        onEndEditing={() => pad.endTextEditing(id)}
+        removeWhenEmpty
+      />
     </>
   );
 }

@@ -7,11 +7,9 @@ import {
   type TreeInstance,
 } from "@headless-tree/core";
 import type { MachineSummary, TerminalPoolEntry } from "@manifold/protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { ITEM_MIME, sealEnvelope } from "./item-envelope.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
-
-/** Drag payload carrying a parked session id between the sidebar pool, pads, and the canvas. */
-export const TERMINAL_DRAG_MIME = "application/x-manifold-terminal";
 
 const POOL_ROOT_ID = "__terminal_pool_root__";
 const POOL_ROOT_ENTRY: TerminalPoolEntry = {
@@ -24,6 +22,13 @@ const POOL_ROOT_ENTRY: TerminalPoolEntry = {
   sortOrder: -1,
 };
 
+/** Native drag handlers the sidebar's drop pipeline supplies for the pool as a whole. */
+export interface PoolDropProps {
+  readonly onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  readonly onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
+  readonly onDrop: (event: DragEvent<HTMLDivElement>) => void;
+}
+
 interface TerminalPoolSectionProps {
   readonly terminals: readonly TerminalPoolEntry[];
   readonly machines: readonly MachineSummary[];
@@ -32,6 +37,16 @@ interface TerminalPoolSectionProps {
   readonly onRename: (sessionId: string, name: string) => Promise<void>;
   /** Resolves once the canonical pool order is applied by the caller. */
   readonly onMove: (sessionId: string, index: number) => Promise<void>;
+  /**
+   * The pool as a placement DESTINATION. It is a container like any other — `pool accepts
+   * parkable` — so releasing a terminal anywhere over this body parks it, and the section
+   * shows the same legality cues every other target does.
+   */
+  readonly dropProps: PoolDropProps;
+  /** True while the carried item would legally land here. */
+  readonly dropTarget: boolean;
+  /** Refusal attributes when it would not; empty otherwise. */
+  readonly refusal: Readonly<Record<string, string | undefined>>;
 }
 
 interface PoolTreeData {
@@ -41,9 +56,10 @@ interface PoolTreeData {
 }
 
 /**
- * Workspace-global pool of pad-less terminal sessions, rendered as a second headless-tree
- * instance so parked terminals carry the exact pad-row grammar: menu rename, two-step kill,
- * keyboard navigation, and durable drag ordering. Rows also drag out onto pads and the canvas.
+ * Workspace-global pool of container-less terminal sessions, rendered as a second
+ * headless-tree instance so parked terminals carry the exact container-row grammar: menu
+ * rename, two-step kill, keyboard navigation, and durable drag ordering. Rows also drag out
+ * onto container rows and into both renderers, and the body itself accepts drops.
  * The collapsible header around this body comes from the sidebar's uniform `SidebarSection`.
  */
 export function TerminalPoolSection({
@@ -52,6 +68,9 @@ export function TerminalPoolSection({
   onKill,
   onRename,
   onMove,
+  dropProps,
+  dropTarget,
+  refusal,
 }: TerminalPoolSectionProps) {
   const [optimisticOrder, setOptimisticOrder] = useState<readonly string[] | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -142,11 +161,13 @@ export function TerminalPoolSection({
     },
     canDrop: (_items, target) =>
       isOrderedDragTarget(target) || target.item.getId() === POOL_ROOT_ID,
-    // A tree-managed row drag still advertises the pool mime, so the same gesture drops
-    // onto pad rows and the canvas as well as reordering inside the pool.
+    // A tree-managed row drag also seals the ONE item envelope, so the same gesture that
+    // reorders inside the pool drops onto container rows, either renderer, or a tile.
+    // `createForeignDragObject` is the only source shape with no handler to run, which is
+    // why sealing and beginning the carry are one call.
     createForeignDragObject: (items) => ({
-      format: TERMINAL_DRAG_MIME,
-      data: items[0]?.getId() ?? "",
+      format: ITEM_MIME,
+      data: sealEnvelope({ kind: "terminal", sessionId: items[0]?.getId() ?? "" }),
       effectAllowed: "move",
     }),
     onDrop: (items, target) => {
@@ -376,7 +397,11 @@ export function TerminalPoolSection({
   };
 
   return (
-    <div className="pad-sidebar-terminal-pool">
+    <div
+      className={`pad-sidebar-terminal-pool${dropTarget ? " is-drop-target" : ""}`}
+      {...refusal}
+      {...dropProps}
+    >
       <div
         {...tree.getContainerProps()}
         className="pad-sidebar-list pad-sidebar-tree"

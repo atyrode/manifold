@@ -4,6 +4,7 @@ import {
   type MachineSummary,
   type Pad,
   type PadPresence,
+  type PlacementDestination,
   type TileEdge,
   type TileLayout,
   type TileNode,
@@ -15,6 +16,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -23,7 +25,6 @@ import {
 } from "react";
 
 import {
-  addPadTile,
   deletePad,
   expandTerminal,
   getMachines,
@@ -36,6 +37,9 @@ import {
 } from "./api.ts";
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
+import { TextSurface } from "./flow-text-node.tsx";
+import { createPlacementLookup, useItemDrop, type ItemDropAssessment } from "./item-drop.ts";
+import { carriesItem } from "./item-envelope.ts";
 import {
   browserMachineStorage,
   chooseDefaultMachine,
@@ -44,9 +48,9 @@ import {
 } from "./machine-choice.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
-import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { CONTAINER_DRAG_MIME, previewRect, resizeRatios, snapZone } from "./tile-snap.ts";
+import { previewRect, resizeRatios, snapZone } from "./tile-snap.ts";
+import { useToast } from "./toast.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 
 /**
@@ -66,17 +70,42 @@ import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cur
 interface TileDropTarget {
   readonly tileId: string;
   readonly zone: TileEdge;
+  /**
+   * What the placement pipeline says about the live carry at this zone: null when
+   * nothing is being carried, `denial: null` when the drop is legal. The leaf paints
+   * itself from this and from nothing else — no rule is decided here.
+   */
+  readonly assessment: ItemDropAssessment | null;
 }
 
 /** Percent-space rect for the snap overlay: the leaf box is its own coordinate system. */
 const LEAF_BOX = { x: 0, y: 0, width: 100, height: 100 } as const;
 
+/** The fallbacks the canvas's note node uses, for the frame between a leaf and its element. */
+const NOTE_FALLBACK_FONT_SIZE = 20;
+const NOTE_FALLBACK_COLOR = "#f8f9fa";
+/** Past this a note's first line stops being a name and starts being the note. */
+const NOTE_TITLE_LENGTH = 40;
+
+/**
+ * A note has no name, so its bar borrows its first line — the only handle a note has.
+ * Null while the note is empty, which is what makes the bar fall back to "note".
+ */
+function noteTitle(text: string): string | null {
+  const firstLine = text.split("\n", 1)[0]?.trim() ?? "";
+  if (firstLine === "") return null;
+  return firstLine.length <= NOTE_TITLE_LENGTH
+    ? firstLine
+    : `${firstLine.slice(0, NOTE_TITLE_LENGTH - 1)}…`;
+}
+
 interface TiledPadViewProps {
   readonly pad: Pad;
   readonly identity: StoredIdentity;
   /**
-   * Every pad the sidebar knows, used to reject a tiled container dropped into a
-   * tile before the round trip. Views never nest; only canvases tile.
+   * Every container the sidebar indexes. It is what lets the placement pipeline answer
+   * the algebra's discipline question locally — a drag preview has to tell a canvas from
+   * a composition without a round trip — and this renderer decides nothing with it.
    */
   readonly pads: readonly Pad[];
   /** Where Shrink returns to: the pad the viewer came from, else the workspace root. */
@@ -114,7 +143,13 @@ export function TiledPadView({
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   const [focusedTileId, setFocusedTileId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<TileDropTarget | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * The element table's version. A note tiled here is an ELEMENT of this room, so its
+   * text (and the placement lookup that reads it) needs a reason to re-render.
+   */
+  const [sceneRevision, setSceneRevision] = useState(0);
+  /** Which note tile is in its editor; a note carries no selection model of its own. */
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [pinning, setPinning] = useState(false);
   const connectStartedRef = useRef(false);
   /** One delete per view: the confirmed click navigates away, a second would 404. */
@@ -123,10 +158,14 @@ export function TiledPadView({
   /** Send-cadence gate, the same shape the canvas renderer uses for its own emit. */
   const cursorLastSentRef = useRef(0);
   const remoteCursors = useRemoteCursors(client, "fraction");
+  const { notify } = useToast();
 
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
-    const readLayout = (): void => setLayout(client.layout());
+    const readLayout = (): void => {
+      setLayout(client.layout());
+      setSceneRevision((revision) => revision + 1);
+    };
     // A structural change may have hardened the container (a split claims a bubble), so
     // the row is refetched whenever the LEAF COUNT moves — never on ratio drags, which
     // fire layout_changed per pointer frame. Local pin/rename/tile calls refetch directly.
@@ -142,12 +181,18 @@ export function TiledPadView({
       }
     };
     const offLayout = client.on("layout_changed", readLayoutAndRow);
+    // Notes live in the element table, not the layout tree, so a tiled note's text
+    // arrives here and nowhere else.
+    const offElements = client.on("elements_changed", () =>
+      setSceneRevision((revision) => revision + 1),
+    );
     const offInit = client.on("init", readLayout);
     const offReset = client.on("scene_reset", readLayout);
     const offStatus = client.on("status", setStatus);
     readLayout();
     return () => {
       offLayout();
+      offElements();
       offInit();
       offReset();
       offStatus();
@@ -158,7 +203,12 @@ export function TiledPadView({
     if (connectStartedRef.current) return;
     connectStartedRef.current = true;
     void client.connect().catch((reason: unknown) => {
-      setNotice(reason instanceof Error ? reason.message : "Could not connect to this view");
+      // Sticky: a composition that never connected is a degraded surface, not a passing
+      // refusal, so the notice stays until it is dismissed or a later attempt supersedes it.
+      notify(reason instanceof Error ? reason.message : "Could not connect to this composition", {
+        lifetime: "sticky",
+        key: "composition-connect",
+      });
     });
     return () => client.close();
   }, [client]);
@@ -176,12 +226,6 @@ export function TiledPadView({
       cancelled = true;
     };
   }, [identity.token]);
-
-  useEffect(() => {
-    if (notice === null) return;
-    const timer = window.setTimeout(() => setNotice(null), 5_000);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
 
   const shrink = useCallback((): void => {
     navigate(originPadId === null ? "/" : `/p/${encodeURIComponent(originPadId)}`);
@@ -224,15 +268,22 @@ export function TiledPadView({
     [padNameFor],
   );
 
-  const failed = useCallback((reason: unknown, fallback: string): void => {
-    setNotice(reason instanceof Error ? reason.message : fallback);
-  }, []);
+  /**
+   * The one failure path. Every notice in the application lands in the toast layer now,
+   * and the key is the verb, so a repeated failure replaces its own row in place.
+   */
+  const failed = useCallback(
+    (reason: unknown, fallback: string, key: string): void => {
+      notify(reason instanceof Error ? reason.message : fallback, { key });
+    },
+    [notify],
+  );
 
   const pin = useCallback((): void => {
     setPinning(true);
     void pinPad(identity.token, padId)
       .then(onPadChanged)
-      .catch((reason: unknown) => failed(reason, "Could not pin this view"))
+      .catch((reason: unknown) => failed(reason, "Could not pin this composition", "pin-view"))
       .finally(() => setPinning(false));
   }, [failed, identity.token, onPadChanged, padId]);
 
@@ -244,7 +295,9 @@ export function TiledPadView({
     (name: string): void => {
       void renamePad(identity.token, padId, name)
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not rename this view"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not rename this composition", "rename-view"),
+        );
     },
     [failed, identity.token, onPadChanged, padId],
   );
@@ -264,7 +317,7 @@ export function TiledPadView({
       })
       .catch((reason: unknown) => {
         deletingRef.current = false;
-        failed(reason, "Could not delete this view");
+        failed(reason, "Could not delete this composition", "delete-view");
       });
   }, [failed, identity.token, onPadChanged, padId, shrink]);
 
@@ -272,7 +325,7 @@ export function TiledPadView({
   const renameTile = useCallback(
     (sessionId: string, name: string): void => {
       void renameTerminal(identity.token, sessionId, name).catch((reason: unknown) =>
-        failed(reason, "Could not rename this terminal"),
+        failed(reason, "Could not rename this terminal", "rename-terminal"),
       );
     },
     [failed, identity.token],
@@ -289,7 +342,9 @@ export function TiledPadView({
         .then((viewId) => {
           navigate(`/p/${encodeURIComponent(viewId)}`);
         })
-        .catch((reason: unknown) => failed(reason, "Could not expand this terminal"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not expand this terminal", "expand-terminal"),
+        );
     },
     [failed, identity.token, navigate],
   );
@@ -299,7 +354,9 @@ export function TiledPadView({
     (tileId: string): void => {
       void removePadTile(identity.token, padId, tileId)
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not park this terminal"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not park this terminal", "park-terminal"),
+        );
     },
     [failed, identity.token, onPadChanged, padId],
   );
@@ -310,48 +367,58 @@ export function TiledPadView({
       void removePadTile(identity.token, padId, tileId)
         .then(() => killPooledTerminal(identity.token, sessionId))
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not close this terminal"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not close this terminal", "close-terminal"),
+        );
     },
     [failed, identity.token, onPadChanged, padId],
   );
 
   /**
-   * A PAD tile's minimize: the leaf goes away and the pad itself is untouched — a
+   * A CANVAS tile's minimize: the leaf goes away and the canvas itself is untouched — a
    * canvas is a shared object indexed in the sidebar, so removing its representation
    * from this composition is not ending it. Same endpoint as a terminal's park; the
-   * server's park semantics only apply to a session, and a pad surface has none.
+   * server's park semantics only apply to a session, and a canvas surface has none.
    */
   const detachPadTile = useCallback(
     (tileId: string): void => {
       void removePadTile(identity.token, padId, tileId)
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not remove this pad from the view"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not remove this canvas from the composition", "remove-canvas"),
+        );
     },
     [failed, identity.token, onPadChanged, padId],
   );
 
   /**
-   * A PAD tile's close: the pad is deleted for everyone and its leaf goes with it,
-   * because a tile onto a deleted container is a hole. The same order the canvas's
-   * view widget uses (delete, then drop the representation), so a failed delete
-   * leaves the tile in place rather than silently emptying it.
+   * A CANVAS tile's close: the canvas is deleted for everyone and its leaf goes with it,
+   * because a tile onto a deleted container is a hole. The same order the canvas's own
+   * portal widget uses (delete, then drop the representation), so a failed delete leaves
+   * the tile in place rather than silently emptying it.
    */
   const deletePadTile = useCallback(
     (tileId: string, embeddedPadId: string): void => {
       void deletePad(identity.token, embeddedPadId)
         .then(() => removePadTile(identity.token, padId, tileId))
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not delete this pad"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not delete this canvas", "delete-canvas"),
+        );
     },
     [failed, identity.token, onPadChanged, padId],
   );
 
-  const addTile = useCallback(
-    (surface: TileSurface, targetTileId: string, edge: TileEdge): void => {
-      void addPadTile(identity.token, padId, surface, targetTileId, edge)
-        // A second leaf hardens a bubble, so the sidebar row changes with the drop.
+  /**
+   * A NOTE tile's close. Removal addresses the LEAF, and the server deletes the note
+   * element with it, because a note's leaf is its only placement — there is nowhere else
+   * for a note to be, so an orphaned element would be invisible garbage.
+   */
+  const removeNoteTile = useCallback(
+    (tileId: string): void => {
+      void removePadTile(identity.token, padId, tileId)
         .then(onPadChanged)
-        .catch((reason: unknown) => failed(reason, "Could not add that tile"));
+        .catch((reason: unknown) => failed(reason, "Could not delete this note", "delete-note"));
     },
     [failed, identity.token, onPadChanged, padId],
   );
@@ -366,7 +433,7 @@ export function TiledPadView({
   const createTerminal = useCallback(
     async (machine?: MachineSummary): Promise<void> => {
       if (client.epoch === "") {
-        setNotice("Waiting for the view connection");
+        notify("Waiting for the composition connection", { key: "open-terminal" });
         return;
       }
       const target =
@@ -389,10 +456,10 @@ export function TiledPadView({
         });
         if (placed !== null) setFocusedTileId(placed);
       } catch (reason: unknown) {
-        failed(reason, "Could not open a terminal in this view");
+        failed(reason, "Could not open a terminal in this composition", "open-terminal");
       }
     },
-    [client, failed, machines, padId],
+    [client, failed, machines, notify, padId],
   );
 
   useEffect(() => {
@@ -424,8 +491,31 @@ export function TiledPadView({
     [client],
   );
 
-  const acceptsDrag = (transfer: DataTransfer): boolean =>
-    transfer.types.includes(TERMINAL_DRAG_MIME) || transfer.types.includes(CONTAINER_DRAG_MIME);
+  /**
+   * The state the algebra asks about, answered from this composition's own props and
+   * document. The server answers the same two questions from its rows and rooms, so a
+   * preview painted here can never disagree with the write that follows it.
+   */
+  const lookup = useMemo(
+    () =>
+      createPlacementLookup({
+        pads,
+        self: { padId, layout: "tiled" },
+        elements: client.elements,
+      }),
+    // `sceneRevision` is the element table's version: the lookup reads it live, and this
+    // dependency is what makes a preview see a note that arrived a moment ago.
+    [client, pads, padId, sceneRevision],
+  );
+
+  const drop = useItemDrop({
+    lookup,
+    place: (surface, destination) => client.place(surface, destination),
+    notify,
+    // A landed placement may have hardened a bubble (a second leaf claims the container),
+    // so the sidebar row is refetched with the drop.
+    onPlaced: () => onPadChanged(),
+  });
 
   const zoneAt = (
     target: HTMLDivElement,
@@ -438,17 +528,45 @@ export function TiledPadView({
     );
   };
 
+  /**
+   * The destination one leaf means. Geometry is all this renderer contributes: the zone
+   * comes from the pointer, and every question about what may land there belongs to the
+   * pipeline — which is why there is no rule in either handler below.
+   */
+  const destinationFor = (tileId: string, zone: TileEdge): PlacementDestination => ({
+    kind: "tile",
+    padId,
+    targetTileId: tileId,
+    edge: zone,
+  });
+
   const dropProps = (tileId: string) => ({
     onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!acceptsDrag(event.dataTransfer)) return;
+      if (!carriesItem(event.dataTransfer)) return;
+      // Claimed even when refused: keeping the gesture is what lets the leaf paint the
+      // declared RULE, instead of the browser showing a bare no-drop cursor that explains
+      // nothing. The `dropEffect` still says "none", so the cursor stays honest.
       event.preventDefault();
       event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
       const zone = zoneAt(event.currentTarget, event);
+      if (zone === null) {
+        event.dataTransfer.dropEffect = "none";
+        setDropTarget((current) => (current?.tileId === tileId ? null : current));
+        return;
+      }
+      const assessment = drop.assess(destinationFor(tileId, zone));
+      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
       setDropTarget((current) => {
-        if (zone === null) return current?.tileId === tileId ? null : current;
-        if (current?.tileId === tileId && current.zone === zone) return current;
-        return { tileId, zone };
+        // Compared by RULE rather than by assessment identity: `assess` hands back a fresh
+        // object every frame, and a drag fires this handler per pointer move.
+        if (
+          current?.tileId === tileId &&
+          current.zone === zone &&
+          (current.assessment?.denial?.rule ?? null) === (assessment?.denial?.rule ?? null)
+        ) {
+          return current;
+        }
+        return { tileId, zone, assessment };
       });
     },
     onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
@@ -456,7 +574,7 @@ export function TiledPadView({
       setDropTarget((current) => (current?.tileId === tileId ? null : current));
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
-      if (!acceptsDrag(event.dataTransfer)) return;
+      if (!carriesItem(event.dataTransfer)) return;
       event.preventDefault();
       event.stopPropagation();
       // The drop's own pointer decides the edge. Reading the highlight state instead
@@ -465,24 +583,7 @@ export function TiledPadView({
       setDropTarget(null);
       // Released between zones: aborting with no mutation is the documented escape.
       if (zone === null) return;
-
-      const sessionId = event.dataTransfer.getData(TERMINAL_DRAG_MIME);
-      if (sessionId !== "") {
-        addTile({ kind: "terminal", sessionId }, tileId, zone);
-        return;
-      }
-      const containerId = event.dataTransfer.getData(CONTAINER_DRAG_MIME);
-      if (containerId === "") return;
-      if (containerId === padId) {
-        setNotice("A view cannot tile itself.");
-        return;
-      }
-      const dragged = pads.find((candidate) => candidate.id === containerId);
-      if (dragged?.layout === "tiled") {
-        setNotice(`“${dragged.name}” is a view — views never nest.`);
-        return;
-      }
-      addTile({ kind: "pad", padId: containerId }, tileId, zone);
+      drop.commit(event.dataTransfer, destinationFor(tileId, zone));
     },
   });
 
@@ -497,9 +598,10 @@ export function TiledPadView({
   const leaves = layout === null ? [] : Object.values(layout).filter((node) => node.dir === null);
   const onlyLeaf = leaves.length === 1 ? leaves[0] : undefined;
   const bubbleLeaf =
-    pad.transient && onlyLeaf !== undefined && onlyLeaf.surface?.kind === "terminal"
-      ? onlyLeaf
-      : null;
+    // Notes are tileable now, so "one leaf" stopped being a synonym for "one terminal":
+    // a transient container holding a single NOTE is a composition with a note in it,
+    // never a bubble, because there is no terminal titlebar to hang the view chrome on.
+    pad.transient && onlyLeaf?.surface?.kind === "terminal" ? onlyLeaf : null;
 
   /**
    * One Pin control for both headers — a bubble wears it in its terminal's bar, a
@@ -519,24 +621,23 @@ export function TiledPadView({
     </button>
   );
 
-  const renderLeaf = (node: TileNode): ReactNode => {
-    const surface = node.surface;
-    const zone = dropTarget?.tileId === node.id ? dropTarget.zone : null;
-    const preview = zone === null ? null : previewRect(LEAF_BOX, zone);
-    return (
-      <div
-        className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
-          zone === null ? "" : " is-drop-target"
-        }`}
-        onPointerDownCapture={() => setFocusedTileId(node.id)}
-        {...dropProps(node.id)}
-      >
-        {surface === null ? (
-          <div className="tiled-empty">
-            <span className="tiled-empty-glyph" aria-hidden="true" />
-            <span>Drop a terminal or a pad here</span>
-          </div>
-        ) : surface.kind === "terminal" ? (
+  /**
+   * A leaf's occupant. One arm per tileable species, and the switch is exhaustive on
+   * purpose: the protocol cannot grow a fourth surface without this frame growing a way
+   * to draw it.
+   */
+  const renderSurface = (node: TileNode, surface: TileSurface | null): ReactNode => {
+    if (surface === null) {
+      return (
+        <div className="tiled-empty">
+          <span className="tiled-empty-glyph" aria-hidden="true" />
+          <span>Drop a terminal, a canvas or a note here</span>
+        </div>
+      );
+    }
+    switch (surface.kind) {
+      case "terminal":
+        return (
           <TerminalView
             key={`${node.id}:${surface.sessionId}`}
             client={client}
@@ -553,17 +654,19 @@ export function TiledPadView({
                 // shrinks (it is already as big as it gets) and Pin claims the
                 // container the terminal is temporarily wearing.
                 { onShrink: shrink, titlebarExtras: pinControl }
-              : // A real view's tile wears the bar it would wear in a pad, expand
-                // included: the server turns a tile expand into a new view and drops
-                // the leaf this session leaves behind.
+              : // A real composition's tile wears the bar it would wear on a canvas,
+                // expand included: the server turns a tile expand into a new view and
+                // drops the leaf this session leaves behind.
                 { onExpand: () => expandTile(surface.sessionId) })}
           />
-        ) : (
+        );
+      case "pad":
+        return (
           /*
-            A pad tile wears the same bar as every other placed object. Maximize is the
+            A canvas tile wears the same bar as every other placed object. Maximize is the
             load-bearing control: an embedded board is a BOARD — its interior belongs to
-            React Flow, panning and all — so the titlebar is the only door INTO the pad
-            from here. Minimize drops just this representation; close deletes the pad
+            React Flow, panning and all — so the titlebar is the only door INTO the canvas
+            from here. Minimize drops just this representation; close deletes the canvas
             for everyone behind the bar's own two-step confirm.
 
             The bar sits ABOVE the board rather than over it, so nothing about the
@@ -574,17 +677,17 @@ export function TiledPadView({
               className="tiled-pad-tile__bar"
               icon="▦"
               title={padNameFor(surface.padId)}
-              defaultTitle="pad"
+              defaultTitle="canvas"
               onMinimize={() => detachPadTile(node.id)}
-              minimizeLabel={`Remove pad ${padLabelFor(surface.padId)} from this composition`}
-              minimizeTooltip="Remove this pad from the composition (the pad keeps existing)"
+              minimizeLabel={`Remove canvas ${padLabelFor(surface.padId)} from this composition`}
+              minimizeTooltip="Remove this canvas from the composition (the canvas keeps existing)"
               onMaximize={() => navigate(`/p/${encodeURIComponent(surface.padId)}`)}
-              maximizeLabel={`Open pad ${padLabelFor(surface.padId)}`}
-              maximizeTooltip="Open this pad"
+              maximizeLabel={`Open canvas ${padLabelFor(surface.padId)}`}
+              maximizeTooltip="Open this canvas"
               onClose={() => deletePadTile(node.id, surface.padId)}
-              closeLabel={`Delete pad ${padLabelFor(surface.padId)}`}
-              closeTooltip="Delete this pad for everyone"
-              closeConfirm={`Delete “${padNameFor(surface.padId) ?? "this pad"}”?`}
+              closeLabel={`Delete canvas ${padLabelFor(surface.padId)}`}
+              closeTooltip="Delete this canvas for everyone"
+              closeConfirm={`Delete “${padNameFor(surface.padId) ?? "this canvas"}”?`}
             />
             <div className="tiled-pad-tile__body">
               <FlowPadView
@@ -594,16 +697,88 @@ export function TiledPadView({
                 depth={2}
                 navigate={navigate}
                 presence={presence}
+                // The embedded canvas answers the algebra from the same container index
+                // this composition was handed; without it its own previews would be blind.
+                pads={pads}
                 // The sidebar's session panel belongs to the route-level container, not
                 // to a canvas embedded three levels down inside it.
                 onWorkspaceChange={() => undefined}
               />
             </div>
           </div>
-        )}
+        );
+      case "text": {
+        // A note has no identity outside the container holding it, so the element is
+        // always in THIS room's document. It is missing only for the frame between a
+        // placement landing in the layout and the element arriving with it.
+        const element = client.elements.get(surface.elementId);
+        const note = element?.type === "text" ? element : null;
+        const text = note?.text ?? "";
+        return (
+          /*
+            A note tile borrows the canvas tile's frame — `.tiled-pad-tile` is the bar/body
+            rhythm every embedded object wears — and edits the SAME `Y.Text` it would edit
+            on a canvas, through the room this composition is joined to.
+          */
+          <div className="tiled-pad-tile">
+            <NodeTitleBar
+              className="tiled-pad-tile__bar"
+              icon="✎"
+              title={noteTitle(text)}
+              defaultTitle="note"
+              // Close, not minimize: a note's leaf is its ONLY placement, so the server
+              // deletes the note element together with the leaf. There is no "remove the
+              // representation" for an object that exists nowhere else.
+              onClose={() => removeNoteTile(node.id)}
+              closeLabel="Delete note"
+              closeTooltip="Delete this note"
+              closeConfirm="Delete this note?"
+            />
+            <div className="tiled-pad-tile__body">
+              <TextSurface
+                client={client}
+                elementId={surface.elementId}
+                text={text}
+                fontSize={note?.fontSize ?? NOTE_FALLBACK_FONT_SIZE}
+                color={note?.color ?? NOTE_FALLBACK_COLOR}
+                editing={editingNoteId === surface.elementId}
+                onBeginEditing={() => setEditingNoteId(surface.elementId)}
+                onEndEditing={() => setEditingNoteId(null)}
+                // The element IS the leaf's occupant: emptying the note must not delete
+                // it, or the leaf would be left with nothing to render.
+                removeWhenEmpty={false}
+              />
+            </div>
+          </div>
+        );
+      }
+      default: {
+        const exhaustive: never = surface;
+        return exhaustive;
+      }
+    }
+  };
+
+  const renderLeaf = (node: TileNode): ReactNode => {
+    const highlight = dropTarget?.tileId === node.id ? dropTarget : null;
+    const zone = highlight?.zone ?? null;
+    const assessment = highlight?.assessment ?? null;
+    const denied = assessment?.denial != null;
+    const preview = zone === null ? null : previewRect(LEAF_BOX, zone);
+    return (
+      <div
+        className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
+          zone === null || denied ? "" : " is-drop-target"
+        }`}
+        onPointerDownCapture={() => setFocusedTileId(node.id)}
+        {...dropProps(node.id)}
+        // Empty while the drop is legal, so the refusal cue exists only when refusing.
+        {...drop.refusalProps(assessment)}
+      >
+        {renderSurface(node, node.surface)}
         {preview === null ? null : (
           <div
-            className="tiled-snap-preview"
+            className={`tiled-snap-preview${denied ? " is-denied" : ""}`}
             aria-hidden="true"
             style={{
               left: `${preview.x}%`,
@@ -611,7 +786,11 @@ export function TiledPadView({
               width: `${preview.width}%`,
               height: `${preview.height}%`,
             }}
-          />
+          >
+            {assessment?.message == null ? null : (
+              <span className="drop-denial-note">{assessment.message}</span>
+            )}
+          </div>
         )}
       </div>
     );
@@ -651,11 +830,6 @@ export function TiledPadView({
           }
           extraActions={
             <>
-              {notice === null ? null : (
-                <span className="tiled-notice" role="status">
-                  {notice}
-                </span>
-              )}
               <span className={`tiled-status is-${status}`}>{status}</span>
               {pad.transient ? pinControl : null}
             </>
@@ -669,19 +843,7 @@ export function TiledPadView({
           closeTooltip="Delete this view for everyone"
           closeConfirm={`Delete “${pad.name}”?`}
         />
-      ) : notice === null ? null : (
-        /*
-          Headerless bubble: the notice keeps the mechanism it has today (same state,
-          same 5s timer, same `.tiled-notice` span) and only borrows a strip of its
-          own, because there is no view bar to sit in. A follow-up slice turns every
-          notice in the app into a toast.
-        */
-        <div className="tiled-notice-strip">
-          <span className="tiled-notice" role="status">
-            {notice}
-          </span>
-        </div>
-      )}
+      ) : null}
       {/*
         Capture phase, wired on the tile area rather than on each leaf: xterm owns the
         pointer inside a terminal, and with mouse tracking on (DECSET 1003) it handles

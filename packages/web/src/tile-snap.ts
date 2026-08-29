@@ -1,22 +1,19 @@
 import { ROOT_TILE_ID, type TileEdge, type TileLayout, type TileSurface } from "@manifold/protocol";
 
 /**
- * Pure snap geometry shared by the tiled renderer and the canvas compose gesture.
+ * Pure snap geometry and hit-testing, shared by the composition renderer and the canvas
+ * compose gesture.
  *
- * MODEL RULE (see the container-primitives plan): uniformity lives in the
- * composition layer, not storage. Every tileable surface — a canvas terminal
- * element, a pad canvas, later a browser pane — is treated by drag, preview and
- * compose logic as a one-leaf tile tree via `asTileTree`, while the stored object
- * stays a plain element until composition actually happens.
+ * MODEL RULE (see the container-primitives plan): uniformity lives in the composition
+ * layer, not storage. Every tileable surface — a canvas terminal element, a canvas, a note,
+ * later a browser pane — is treated by drag, preview and compose logic as a one-leaf tile
+ * tree via `asTileTree`, while the stored object stays a plain element until composition
+ * actually happens.
+ *
+ * Nothing here knows about drag payloads: the transfer format lives in `item-envelope.ts`
+ * and legality in `item-drop.ts`, so this module stays geometry and is unit-testable
+ * without a DOM.
  */
-
-/**
- * Drag payload carrying a container id from a sidebar pad row onto a canvas or a
- * view tile. The terminal counterpart lives in `terminal-pool.tsx`; this one sits
- * here so the sidebar, the tiled renderer and the canvas compose gesture share one
- * definition without importing each other.
- */
-export const CONTAINER_DRAG_MIME = "application/x-manifold-container";
 
 /** No divider drag may shrink a pane below this fraction of its split. */
 export const MIN_TILE_FRACTION = 0.1;
@@ -33,6 +30,55 @@ export interface SnapRect {
 export interface SnapPoint {
   readonly x: number;
   readonly y: number;
+}
+
+/**
+ * The shape of a projected canvas node this module needs to hit-test. Structural rather
+ * than the renderer's own node type, so the geometry stays independent of React Flow —
+ * and the caller gets its own node type back, because only it knows what to do with one.
+ */
+export interface SnapNode {
+  readonly id: string;
+  readonly type: string;
+  readonly position: SnapPoint;
+  readonly width: number;
+  readonly height: number;
+  readonly zIndex: number;
+}
+
+/**
+ * Element types a canvas drop can compose ONTO: a terminal (a composition is born around
+ * it) or a widget (the surface joins the composition it points at). Text and ink are not
+ * targets — there is nothing to birth a container around — and the executor refuses them
+ * anyway, so offering the gesture would be a lie.
+ */
+const COMPOSE_TARGET_TYPES: Readonly<Record<string, true>> = { terminal: true, portal: true };
+
+/**
+ * Topmost composable node under a flow-space point. React Flow gives no node-over-node
+ * hit-testing, so the pointer is tested against the projected rects — the same rect test
+ * the drag-stop park check runs against the sidebar.
+ */
+export function composeTargetAt<T extends SnapNode>(
+  nodes: readonly T[],
+  point: SnapPoint,
+  excludeId: string | null,
+): T | null {
+  let hit: T | null = null;
+  for (const node of nodes) {
+    if (node.id === excludeId) continue;
+    if (COMPOSE_TARGET_TYPES[node.type] !== true) continue;
+    if (
+      point.x < node.position.x ||
+      point.x > node.position.x + node.width ||
+      point.y < node.position.y ||
+      point.y > node.position.y + node.height
+    ) {
+      continue;
+    }
+    if (hit === null || node.zIndex >= hit.zIndex) hit = node;
+  }
+  return hit;
 }
 
 /** Fraction of each side claimed by its edge band; the remainder is `center`. */
