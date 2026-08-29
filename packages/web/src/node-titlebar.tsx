@@ -5,6 +5,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { ControlIcon } from "./icons.tsx";
 
 /**
  * The one titlebar every container node wears. A terminal on a canvas, a view
@@ -30,25 +31,12 @@ export const TITLEBAR_ACTIONS_CLASS = "node-titlebar__actions";
  * `shrink` is the composed renderer's maximize slot: inside a view the same corner
  * that would blow a node up is the way back out of it.
  */
-export type MaximizeGlyph = "maximize" | "shrink";
-
-/**
- * The desktop-window pair — hollow square grows, shadowed square restores — chosen
- * over U+26F6 (⛶) because that codepoint is missing from common Linux symbol fonts
- * and rendered as tofu in a headless Chromium here; both of these paint everywhere.
- */
-const MAXIMIZE_GLYPHS: Record<MaximizeGlyph, string> = {
-  maximize: "□",
-  shrink: "❐",
-};
-
-/** An armed confirm disarms itself rather than sitting there looking clickable. */
-const CONFIRM_TIMEOUT_MS = 6_000;
+export type MaximizeControl = "maximize" | "shrink";
 
 const MAX_TITLE_LENGTH = 120;
 
 export interface NodeTitleBarProps {
-  /** Type glyph: ▣ for a terminal, ▤ for a container. */
+  /** The object's identity mark — an `ItemIcon`, never a hand-picked drawing. */
   readonly icon: ReactNode;
   /** The object's custom name; null falls back to `defaultTitle`. */
   readonly title: string | null;
@@ -74,20 +62,18 @@ export interface NodeTitleBarProps {
   readonly minimizeLabel?: string;
   readonly minimizeTooltip?: string;
   readonly onMaximize?: (() => void) | undefined;
-  readonly maximizeGlyph?: MaximizeGlyph;
+  readonly maximizeControl?: MaximizeControl;
   readonly maximizeLabel?: string;
   readonly maximizeTooltip?: string;
+  /**
+   * Destruction is ONE click, everywhere. An armed second step in a titlebar bought
+   * hesitation at the price of a control that lied about what a click does.
+   */
   readonly onClose?: (() => void) | undefined;
   readonly closeLabel?: string;
   readonly closeTooltip?: string;
   /** Extra classes on the close control, so adopters keep proof-coupled hooks. */
   readonly closeClassName?: string;
-  /**
-   * Two-step confirm prompt for close: the first click arms the bar, the second
-   * commits. Absent means close fires immediately (killing your own terminal is
-   * a decision; deleting a view everyone shares is not).
-   */
-  readonly closeConfirm?: string;
   /** Node-specific controls (Pin), rendered ahead of the standard cluster. */
   readonly extraActions?: ReactNode;
 }
@@ -104,18 +90,16 @@ export function NodeTitleBar({
   minimizeLabel = "Minimize",
   minimizeTooltip,
   onMaximize,
-  maximizeGlyph = "maximize",
+  maximizeControl = "maximize",
   maximizeLabel,
   maximizeTooltip,
   onClose,
   closeLabel = "Close",
   closeTooltip,
   closeClassName,
-  closeConfirm,
   extraActions,
 }: NodeTitleBarProps): React.ReactElement {
   const [draft, setDraft] = useState<string | null>(null);
-  const [armed, setArmed] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const editing = draft !== null && onRenameTitle !== undefined;
   const display = title ?? defaultTitle;
@@ -124,12 +108,6 @@ export function NodeTitleBar({
     if (!editing) return;
     inputRef.current?.select();
   }, [editing]);
-
-  useEffect(() => {
-    if (!armed) return;
-    const timer = window.setTimeout(() => setArmed(false), CONFIRM_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [armed]);
 
   /**
    * Double-click ZONES. Three of them, and every pixel of the bar belongs to exactly one:
@@ -171,7 +149,7 @@ export function NodeTitleBar({
     event.stopPropagation();
   };
 
-  const maximizeName = maximizeLabel ?? (maximizeGlyph === "shrink" ? "Shrink" : "Maximize");
+  const maximizeName = maximizeLabel ?? (maximizeControl === "shrink" ? "Shrink" : "Maximize");
 
   return (
     <div
@@ -224,7 +202,7 @@ export function NodeTitleBar({
             onPointerDown={stopDrag}
             onClick={onMinimize}
           >
-            –
+            <ControlIcon kind="park" size={12} />
           </button>
         )}
         {onMaximize === undefined ? null : (
@@ -236,35 +214,10 @@ export function NodeTitleBar({
             onPointerDown={stopDrag}
             onClick={onMaximize}
           >
-            {MAXIMIZE_GLYPHS[maximizeGlyph]}
+            <ControlIcon kind={maximizeControl} size={12} />
           </button>
         )}
-        {onClose === undefined ? null : armed ? (
-          <span className="node-titlebar__confirm">
-            <span className="node-titlebar__confirm-label">{closeConfirm}</span>
-            <button
-              type="button"
-              className="node-titlebar__confirm-yes"
-              aria-label={`Confirm ${closeLabel}`}
-              onPointerDown={stopDrag}
-              onClick={() => {
-                setArmed(false);
-                onClose();
-              }}
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              className="node-titlebar__confirm-no"
-              aria-label={`Cancel ${closeLabel}`}
-              onPointerDown={stopDrag}
-              onClick={() => setArmed(false)}
-            >
-              Cancel
-            </button>
-          </span>
-        ) : (
+        {onClose === undefined ? null : (
           <button
             type="button"
             className={
@@ -275,15 +228,9 @@ export function NodeTitleBar({
             title={closeTooltip ?? closeLabel}
             aria-label={closeLabel}
             onPointerDown={stopDrag}
-            onClick={() => {
-              if (closeConfirm === undefined) {
-                onClose();
-                return;
-              }
-              setArmed(true);
-            }}
+            onClick={onClose}
           >
-            ✕
+            <ControlIcon kind="close" size={12} />
           </button>
         )}
       </span>

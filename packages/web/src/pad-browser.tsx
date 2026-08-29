@@ -58,6 +58,7 @@ import { TiledPadView } from "./tiled-pad-view.tsx";
 import { createPlacementLookup, useItemDrop, type ItemDropAssessment } from "./item-drop.ts";
 import { carriesItem, containerEnvelope, sealEnvelope, ITEM_MIME } from "./item-envelope.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import {
   buildPadTree,
   projectPadTreeMove,
@@ -119,32 +120,9 @@ interface CollapsedPresencePopover {
   readonly left: number;
 }
 
-function SidebarIcon({ kind }: { readonly kind: "collapse" | "expand" | "plus" }) {
-  if (kind === "plus") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M9 4v16" />
-      <path d={kind === "collapse" ? "m15 9-3 3 3 3" : "m13 9 3 3-3 3"} />
-    </svg>
-  );
-}
+/** The name every container is born with; the operator renames it in place, or never. */
+const DEFAULT_CONTAINER_NAME = "Untitled";
 
-/** A container's discipline at a glance: a split frame marks the tiled ones. */
-function TilesGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M12 4v16M12 12h9" />
-    </svg>
-  );
-}
 function initials(name: string): string {
   return [...name][0]?.toUpperCase() ?? "?";
 }
@@ -261,19 +239,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   } | null>(null);
   /** The same question for the index's own body, which is one target rather than one per row. */
   const [unplaceDrop, setUnplaceDrop] = useState<ItemDropAssessment | null>(null);
-  /** Which discipline the open create form will author: a freeform canvas or a tiled composition. */
-  const [createLayout, setCreateLayout] = useState<Pad["layout"]>("canvas");
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [name, setName] = useState("");
   const [folderCreateParentId, setFolderCreateParentId] = useState<string | null | undefined>();
   const [folderName, setFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [folderRenameName, setFolderRenameName] = useState("");
-  const [confirmFolderDeleteId, setConfirmFolderDeleteId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(initialSessionTree);
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const [sectionOrder, setSectionOrder] =
@@ -439,7 +412,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [collapsedPresence, setCollapsedPresence] = useState<CollapsedPresencePopover | null>(null);
   const [actionPadId, setActionPadId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Pad | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
   const [initialExpandedItems] = useState<string[]>(() => {
     try {
@@ -455,8 +427,17 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   });
   const [renaming, setRenaming] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
-  const nameInputRef = useRef<HTMLInputElement | null>(null);
-  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * Focus follows the ROW, not a render pass. A just-created container opens its rename
+   * before the index tick carrying its row has landed, so an effect keyed on the rename
+   * target fires while there is nothing to focus; the node claims focus as it attaches
+   * instead — and never steals a selection back from an input already being typed in.
+   */
+  const renameInputRef = useCallback((input: HTMLInputElement | null): void => {
+    if (input === null || input === document.activeElement) return;
+    input.focus();
+    input.select();
+  }, []);
   const versionButtonRef = useRef<HTMLButtonElement | null>(null);
   const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -609,7 +590,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     (sessionId: string): void => {
       void killTerminal(identity.token, sessionId)
         .catch((reason: unknown) => {
-          // A 409 means the session already died; the refetch below settles the row either way.
+          // Kill and dismiss are one verb server-side (no conflict for exited rows), so
+          // any rejection is a real failure worth reporting.
           console.error("evt=terminal_kill_failed", reason);
           notify("Could not kill the terminal", { key: "terminal-kill" });
         })
@@ -744,9 +726,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   }, [identity.principal.id, memory, navigate, pads, requestedPadId]);
 
   useEffect(() => {
-    if (createOpen) nameInputRef.current?.focus();
-  }, [createOpen]);
-  useEffect(() => {
     if (actionPadId === null) return;
     const closeMenu = (event: PointerEvent): void => {
       if (
@@ -774,12 +753,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     if (dialog !== null && !dialog.open) dialog.showModal();
   }, [changelogOpen]);
 
-  useEffect(() => {
-    if (renameTarget === null) return;
-    renameInputRef.current?.focus();
-    renameInputRef.current?.select();
-  }, [renameTarget]);
-
   const setOpen = (open: boolean): void => {
     setSidebarOpen(open);
     if (open) setCollapsedPresence(null);
@@ -801,26 +774,29 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     });
   };
 
-  const submit = async (): Promise<void> => {
-    const trimmedName = name.trim();
-    if (trimmedName.length === 0) return;
+  /**
+   * Creation is ONE click. A container is born as "Untitled", the operator lands inside it,
+   * and its index row opens its inline rename — a name form in front of the object asked for
+   * a name before there was anything to look at, and stood between the button and the work.
+   */
+  const createContainer = async (layout: Pad["layout"]): Promise<void> => {
+    if (creating) return;
     setCreating(true);
     try {
-      const pad = await createPad(identity.token, trimmedName, createLayout);
+      const pad = await createPad(identity.token, DEFAULT_CONTAINER_NAME, layout);
       // The new container's record is right here, so navigation has everything the renderer
       // needs: seed the memory and go. The index catches up on its own tick rather than making
       // a creation wait for a second round trip before it paints.
       rememberPads([pad]);
       refreshTree();
-      setName("");
-      setCreateOpen(false);
       rememberPad(memory, identity.principal.id, pad.id);
       navigate(`/p/${encodeURIComponent(pad.id)}`);
+      openRename(pad);
     } catch (reason: unknown) {
       notify(
         reason instanceof Error
           ? reason.message
-          : `Could not create the ${createLayout === "tiled" ? "composition" : "canvas"}`,
+          : `Could not create the ${layout === "tiled" ? "composition" : "canvas"}`,
         { key: "container-create" },
       );
     } finally {
@@ -849,7 +825,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           navigate(`/p/${encodeURIComponent(fallback.id)}`, { replace: true });
         }
       }
-      setConfirmDeleteId(null);
     } catch (reason: unknown) {
       notify(
         reason instanceof Error
@@ -953,7 +928,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setDeletingFolderId(folder.id);
     try {
       setTreeItems(await deletePadFolder(identity.token, folder.id));
-      setConfirmFolderDeleteId(null);
       setRenamingFolderId(null);
     } catch (reason: unknown) {
       notify(reason instanceof Error ? reason.message : "Could not delete the folder", {
@@ -1066,9 +1040,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       if (reorderingRef.current || items.length !== 1) return false;
       const data = items[0]?.getItemData();
       if (data === undefined || data === null) return false;
-      return data.kind === "pad"
-        ? renameTarget?.id !== data.pad.id && confirmDeleteId !== data.pad.id
-        : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
+      return data.kind === "pad" ? renameTarget?.id !== data.pad.id : renamingFolderId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
     // A container row drag also carries the one item envelope, so the same gesture that
@@ -1147,27 +1119,28 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   }, [tree, treeData]);
 
   /**
-   * A row's mark, one vocabulary for the one index: a live/dead dot for a terminal, a split
-   * frame for a composition, a dot for a freeform canvas. A solo composition wears the
-   * TERMINAL's mark, because a composition of one is the item it holds and showing it as a
-   * container would be telling the operator about bookkeeping they never asked for.
+   * A row's mark, one vocabulary for the one index: the object's own species icon, the same
+   * one it wears in its titlebar. A solo composition wears the TERMINAL's mark, because a
+   * composition of one is the item it holds and showing it as a container would be telling
+   * the operator about bookkeeping they never asked for. Liveness rides ON that mark for a
+   * terminal (`session-state` tints it) rather than beside it: one row, one glyph.
    */
   const containerMark = (pad: Pad): ReactNode => {
     const terminal = terminalByHome.get(pad.id);
     if (terminal !== undefined) {
       return (
         <span
-          className={`session-state ${terminal.status === "running" ? "is-running" : ""}`}
+          className={`pad-sidebar-item-mark session-state ${terminal.status === "running" ? "is-running" : ""}`}
           aria-hidden="true"
-        />
+        >
+          <ItemIcon kind="terminal" />
+        </span>
       );
     }
-    return pad.layout === "tiled" ? (
-      <span className="pad-sidebar-tiles-mark" aria-hidden="true">
-        <TilesGlyph />
+    return (
+      <span className="pad-sidebar-item-mark" aria-hidden="true">
+        <ItemIcon kind={pad.layout === "tiled" ? "composition" : "canvas"} />
       </span>
-    ) : (
-      <span className="pad-sidebar-pad-mark" aria-hidden="true" />
     );
   };
 
@@ -1212,7 +1185,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           disabled={renaming || renameName.trim() === "" || renameName.trim() === label}
           onClick={() => void submitRename()}
         >
-          <span aria-hidden="true">✓</span>
+          <ControlIcon kind="confirm" />
         </button>
         <button
           className="pad-sidebar-inline-action"
@@ -1221,54 +1194,29 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           disabled={renaming}
           onClick={() => setRenameTarget(null)}
         >
-          <span aria-hidden="true">×</span>
+          <ControlIcon kind="cancel" />
         </button>
       </div>
     );
   };
 
   /**
-   * Destroying an index row is two-step whatever the row is — and for a terminal it really is
-   * destruction: there is no pool to fall back into, so the PTY dies and the composition it
-   * lived in goes with it. The verb says so.
+   * Destroying an index row is ONE action, whatever the row is — and for a terminal it really
+   * is destruction: there is no pool to fall back into, so the PTY dies and the composition it
+   * lived in goes with it. The verb on the menu item says so, which is the whole warning an
+   * operator who chose "Kill" needs.
    */
-  const renderContainerConfirmRow = (pad: Pad, active: boolean): ReactNode => {
+  const destroyRow = (pad: Pad): void => {
+    setActionPadId(null);
     const terminal = terminalByHome.get(pad.id);
-    const label = rowName(pad);
-    const verb = terminal === undefined ? "Delete" : "Kill";
-    return (
-      <div className={`pad-sidebar-row is-confirming${active ? " is-active" : ""}`}>
-        <span className="pad-sidebar-confirm-label">
-          {verb} “{label}”?
-        </span>
-        <button
-          className="pad-sidebar-confirm-delete"
-          aria-label={`Confirm ${verb.toLowerCase()} ${label}`}
-          disabled={deletingId !== null}
-          onClick={() => {
-            if (terminal === undefined) {
-              void remove(pad);
-              return;
-            }
-            setConfirmDeleteId(null);
-            killTerminalRow(terminal.id);
-          }}
-        >
-          {deletingId === pad.id ? "Deleting…" : verb}
-        </button>
-        <button
-          className="pad-sidebar-confirm-cancel"
-          aria-label={`Cancel ${verb.toLowerCase()} ${label}`}
-          disabled={deletingId !== null}
-          onClick={() => setConfirmDeleteId(null)}
-        >
-          Cancel
-        </button>
-      </div>
-    );
+    if (terminal === undefined) {
+      void remove(pad);
+      return;
+    }
+    killTerminalRow(terminal.id);
   };
 
-  /** The ••• row menu: rename inline, destroy behind the confirmation step. */
+  /** The row menu: rename inline, destroy on the click. */
   const renderContainerActions = (pad: Pad): ReactNode => {
     const label = rowName(pad);
     const kind = rowNoun(pad);
@@ -1282,7 +1230,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           aria-pressed={actionPadId === pad.id}
           onClick={() => setActionPadId((current) => (current === pad.id ? null : pad.id))}
         >
-          <span aria-hidden="true">•••</span>
+          <ControlIcon kind="more" />
         </button>
         {actionPadId === pad.id ? (
           <div className="pad-sidebar-action-menu" role="menu">
@@ -1293,10 +1241,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               className="is-danger"
               role="menuitem"
               disabled={deletingId !== null}
-              onClick={() => {
-                setActionPadId(null);
-                setConfirmDeleteId(pad.id);
-              }}
+              onClick={() => destroyRow(pad)}
             >
               {terminalByHome.has(pad.id) ? "Kill" : "Delete"}
             </button>
@@ -1329,8 +1274,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     let row: ReactNode;
     if (sidebarOpen && renameTarget?.id === pad.id) {
       row = renderContainerRenameRow(pad, active);
-    } else if (sidebarOpen && confirmDeleteId === pad.id) {
-      row = renderContainerConfirmRow(pad, active);
     } else {
       const rowDrop = dropRow?.padId === pad.id ? dropRow.assessment : null;
       row = (
@@ -1354,8 +1297,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               }
               if (event.key === "Delete") {
                 event.preventDefault();
-                setActionPadId(null);
-                setConfirmDeleteId(pad.id);
+                destroyRow(pad);
               }
             }}
           >
@@ -1448,7 +1390,12 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                   onClick={() => selectPad(pad)}
                   key={session.id}
                 >
-                  <span aria-hidden="true">{session.status === "running" ? "●" : "○"}</span>
+                  <span
+                    className={`session-state ${session.status === "running" ? "is-running" : ""}`}
+                    aria-hidden="true"
+                  >
+                    <ItemIcon kind="terminal" />
+                  </span>
                   <span>{machine?.name ?? session.machineId}</span>
                   <small>{session.status}</small>
                 </button>
@@ -1511,7 +1458,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               renderSettledTreeState();
             }}
           >
-            <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+            <span className="pad-sidebar-folder-icon" aria-hidden="true">
+              <ItemIcon kind={item.isExpanded() ? "folderOpen" : "folder"} />
+            </span>
           </button>
         </div>
       );
@@ -1519,7 +1468,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     if (renamingFolderId === folder.id) {
       return (
         <div className="pad-sidebar-row is-editing">
-          <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+          <span className="pad-sidebar-folder-icon" aria-hidden="true">
+            <ItemIcon kind="folder" />
+          </span>
           <input
             className="pad-sidebar-rename-input"
             value={folderRenameName}
@@ -1539,41 +1490,19 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             disabled={folderRenameName.trim() === ""}
             onClick={() => void submitFolderRename(folder)}
           >
-            <span aria-hidden="true">✓</span>
+            <ControlIcon kind="confirm" />
           </button>
           <button
             className="pad-sidebar-inline-action"
             aria-label={`Cancel renaming ${folder.name}`}
             onClick={() => setRenamingFolderId(null)}
           >
-            <span aria-hidden="true">×</span>
+            <ControlIcon kind="cancel" />
           </button>
         </div>
       );
     }
-    if (confirmFolderDeleteId === folder.id) {
-      return (
-        <div className="pad-sidebar-row is-confirming">
-          <span className="pad-sidebar-confirm-label">Delete folder? Children move up.</span>
-          <button
-            className="pad-sidebar-confirm-delete"
-            aria-label={`Confirm deleting folder ${folder.name}`}
-            disabled={deletingFolderId === folder.id}
-            onClick={() => void removeFolder(folder)}
-          >
-            {deletingFolderId === folder.id ? "Deleting…" : "Delete"}
-          </button>
-          <button
-            className="pad-sidebar-confirm-cancel"
-            aria-label={`Cancel deleting folder ${folder.name}`}
-            disabled={deletingFolderId === folder.id}
-            onClick={() => setConfirmFolderDeleteId(null)}
-          >
-            Cancel
-          </button>
-        </div>
-      );
-    }
+    /* No confirmation step: the menu item already said Delete, and children move up. */
     return (
       <>
         <div className="pad-sidebar-row pad-sidebar-folder-row">
@@ -1590,9 +1519,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             }}
           >
             <span className="pad-sidebar-folder-chevron" aria-hidden="true">
-              {item.isExpanded() ? "⌄" : "›"}
+              <ControlIcon kind={item.isExpanded() ? "disclosed" : "collapsed"} size={12} />
             </span>
-            <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+            <span className="pad-sidebar-folder-icon" aria-hidden="true">
+              <ItemIcon kind={item.isExpanded() ? "folderOpen" : "folder"} />
+            </span>
             <strong>{folder.name}</strong>
           </button>
           <div className="pad-sidebar-actions" onClick={(event) => event.stopPropagation()}>
@@ -1614,7 +1545,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               aria-pressed={actionPadId === actionId}
               onClick={() => setActionPadId((current) => (current === actionId ? null : actionId))}
             >
-              <span aria-hidden="true">•••</span>
+              <ControlIcon kind="more" />
             </button>
             {actionPadId === actionId ? (
               <div className="pad-sidebar-action-menu" role="menu">
@@ -1631,9 +1562,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 <button
                   className="is-danger"
                   role="menuitem"
+                  disabled={deletingFolderId === folder.id}
                   onClick={() => {
                     setActionPadId(null);
-                    setConfirmFolderDeleteId(folder.id);
+                    void removeFolder(folder);
                   }}
                 >
                   Delete
@@ -1754,7 +1686,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                   });
                 }}
               >
-                <span aria-hidden="true">⌘</span>
+                <ControlIcon kind="sessionTree" />
               </button>
             ) : undefined
           }
@@ -1812,7 +1744,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
               onClick={() => setOpen(!sidebarOpen)}
             >
-              <SidebarIcon kind={sidebarOpen ? "collapse" : "expand"} />
+              <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />
             </button>
           </header>
 
@@ -1824,11 +1756,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               aria-label="New canvas"
               onClick={() => {
                 if (!sidebarOpen) setOpen(true);
-                setCreateLayout("canvas");
-                setCreateOpen(true);
+                void createContainer("canvas");
               }}
+              disabled={creating}
             >
-              <SidebarIcon kind="plus" />
+              <ControlIcon kind="add" />
               {sidebarOpen ? <span>New canvas</span> : null}
             </button>
             <button
@@ -1838,11 +1770,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               aria-label="New composition"
               onClick={() => {
                 if (!sidebarOpen) setOpen(true);
-                setCreateLayout("tiled");
-                setCreateOpen(true);
+                void createContainer("tiled");
               }}
+              disabled={creating}
             >
-              <TilesGlyph />
+              <ItemIcon kind="composition" />
               {sidebarOpen ? <span>New composition</span> : null}
             </button>
             <button
@@ -1856,38 +1788,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 setFolderCreateParentId(null);
               }}
             >
-              <span className="pad-sidebar-folder-icon" aria-hidden="true" />
+              <ItemIcon kind="folder" />
               {sidebarOpen ? <span>New folder</span> : null}
             </button>
           </div>
-
-          {sidebarOpen && createOpen ? (
-            <form
-              className="pad-sidebar-create"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submit();
-              }}
-            >
-              <input
-                ref={nameInputRef}
-                maxLength={120}
-                value={name}
-                onChange={(event) => setName(event.currentTarget.value)}
-                placeholder={createLayout === "tiled" ? "Composition name" : "Canvas name"}
-                aria-label={createLayout === "tiled" ? "Composition name" : "Canvas name"}
-                disabled={creating}
-              />
-              <div>
-                <button type="button" onClick={() => setCreateOpen(false)} disabled={creating}>
-                  Cancel
-                </button>
-                <button type="submit" disabled={creating || name.trim() === ""}>
-                  {creating ? "Creating…" : "Create"}
-                </button>
-              </div>
-            </form>
-          ) : null}
 
           <div
             ref={sectionStackRef}
@@ -1955,10 +1859,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                     <button
                       className="primary-button"
                       type="button"
+                      disabled={creating}
                       onClick={() => {
                         setOpen(true);
-                        setCreateLayout("canvas");
-                        setCreateOpen(true);
+                        void createContainer("canvas");
                       }}
                     >
                       Create your first canvas
@@ -2042,7 +1946,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                       window.requestAnimationFrame(() => versionButtonRef.current?.focus());
                     }}
                   >
-                    ×
+                    <ControlIcon kind="close" />
                   </button>
                 </header>
                 <div className="web-changelog-releases">

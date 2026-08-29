@@ -50,9 +50,14 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
         exitCode: session.exitCode,
         boundElementIds,
         isController,
+        // A running session is killable by its controller, a root, or (unbound) any
+        // terminal writer; an EXITED session is dismissable by anyone who can write —
+        // the server sweeps it totally either way, and a lease on a dead PTY is not
+        // a thing (kill and dismiss are one verb).
         canKill:
-          session.status === "running" &&
-          (isController || isRoot || (boundElementIds.length === 0 && canWriteTerminals)),
+          session.status === "running"
+            ? isController || isRoot || (boundElementIds.length === 0 && canWriteTerminals)
+            : canWriteTerminals || isRoot,
       } satisfies SessionRow;
     })
     .filter(

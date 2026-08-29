@@ -3,6 +3,7 @@ import type { ConnectionStatus } from "@manifold/sdk";
 import type { MachineSummary } from "@manifold/protocol";
 import type { RosterRow } from "./roster-model.ts";
 import type { SessionRow } from "./session-inventory.ts";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import { machineColor } from "./machine-visibility.ts";
 
 const MAX_AVATARS = 4;
@@ -12,33 +13,12 @@ function initials(name: string): string {
   return first === undefined ? "?" : first.toUpperCase();
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2.1 12s3.6-7 9.9-7 9.9 7 9.9 7-3.6 7-9.9 7-9.9-7-9.9-7Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function PowerIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2v10" />
-      <path d="M6.4 5.6a8 8 0 1 0 11.2 0" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="m19 6-1 14H6L5 6" />
-      <path d="M10 11v5M14 11v5" />
-    </svg>
-  );
+/**
+ * A dead terminal reports the code it died with, or nothing. "Code unknown" was noise
+ * dressed as information: the absence of a number already says the shell never gave one.
+ */
+function exitedLabel(exitCode: number | null): string {
+  return exitCode === null ? "Exited" : `Exited ${String(exitCode)}`;
 }
 
 /** One presence surface: avatar stack collapsing into a roster popover. */
@@ -150,7 +130,7 @@ export function WorkspaceSessionRow({
   const hasMultipleCopies = copyCount > 1;
   const locationLabel =
     row.status === "exited"
-      ? `Exited${row.exitCode === null ? "" : ` ${row.exitCode}`}`
+      ? exitedLabel(row.exitCode)
       : row.machineOnline === false
         ? "Machine offline"
         : "Bound to canvas";
@@ -164,7 +144,7 @@ export function WorkspaceSessionRow({
           className={`session-state ${row.status === "running" ? "is-running" : ""}`}
           title={row.status}
         >
-          {row.status === "running" ? "●" : "○"}
+          <ItemIcon kind="terminal" size={13} />
         </span>
         <span className="workspace-session-label">
           <strong>{row.name ?? row.machineName ?? "Unknown machine"}</strong>
@@ -195,7 +175,7 @@ export function WorkspaceSessionRow({
               title="Reveal terminal on canvas"
               aria-label="Reveal terminal on canvas"
             >
-              <EyeIcon />
+              <ControlIcon kind="reveal" size={13} />
             </button>
           ) : null}
           {hasMultipleCopies && row.status === "exited" ? (
@@ -209,7 +189,7 @@ export function WorkspaceSessionRow({
               title={removeAllLabel}
               aria-label={removeAllLabel}
             >
-              <TrashIcon />
+              <ControlIcon kind="discard" size={13} />
             </button>
           ) : !hasMultipleCopies && row.status === "exited" && boundElementId !== null ? (
             <button
@@ -218,7 +198,7 @@ export function WorkspaceSessionRow({
               title="Remove exited terminal"
               aria-label="Remove exited terminal"
             >
-              <TrashIcon />
+              <ControlIcon kind="discard" size={13} />
             </button>
           ) : null}
           {row.canKill ? (
@@ -228,7 +208,7 @@ export function WorkspaceSessionRow({
               title="End shared session — all terminal copies will exit"
               aria-label="End shared terminal session"
             >
-              <PowerIcon />
+              <ControlIcon kind="endSession" size={13} />
             </button>
           ) : null}
         </span>
@@ -255,7 +235,7 @@ export function WorkspaceSessionRow({
                     title={`Reveal ${copyLabel.toLowerCase()} on canvas`}
                     aria-label={`Reveal ${copyLabel.toLowerCase()} on canvas`}
                   >
-                    <EyeIcon />
+                    <ControlIcon kind="reveal" size={13} />
                   </button>
                   <button
                     className="workspace-action is-remove"
@@ -264,7 +244,7 @@ export function WorkspaceSessionRow({
                     title={`Remove ${copyLabel.toLowerCase()} from canvas`}
                     aria-label={`Remove ${copyLabel.toLowerCase()} from canvas`}
                   >
-                    <TrashIcon />
+                    <ControlIcon kind="discard" size={13} />
                   </button>
                 </span>
               </div>
@@ -299,10 +279,16 @@ export function MachinesSection({
             className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
             key={machine.id}
           >
+            {/* Two marks, two jobs: the coloured pip is STATUS (and the machine's identity
+                colour, which an icon cannot carry), the icon says what kind of thing this
+                row is — the same `machine` mark the rest of the app uses. */}
             <span
               className={`machine-dot${machine.online ? "" : " is-offline"}`}
               style={{ backgroundColor: machineColor(machine.id) }}
             />
+            <span className="workspace-machine-mark" aria-hidden="true">
+              <ItemIcon kind="machine" size={14} />
+            </span>
             <strong>{machine.name}</strong>
             <span>{machine.online ? "Online" : "Offline"}</span>
             {machine.online && onCreateTerminal !== undefined ? (
@@ -312,7 +298,7 @@ export function MachinesSection({
                 title={`New terminal on ${machine.name}`}
                 onClick={() => onCreateTerminal(machine)}
               >
-                <span aria-hidden="true">+</span>
+                <ControlIcon kind="add" size={13} />
               </button>
             ) : null}
           </div>

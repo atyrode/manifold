@@ -20,7 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deletePad, getMachines, renameTerminal } from "./api.ts";
+import { deletePad, getMachines, killTerminal, renameTerminal } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
@@ -43,6 +43,7 @@ import {
 } from "./flow-scene.ts";
 import { TextNode } from "./flow-text-node.tsx";
 import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
+import { RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
 import {
   createPlacementLookup,
   denialMessage,
@@ -843,19 +844,22 @@ export function FlowPadView({
   );
 
   /**
-   * X is the deliberate destroy — park is the non-destructive exit — so it always
-   * kills the PTY, claiming the controller lease first because a viewer may not hold
-   * it. Only this element is tombstoned; other mirrors of the session render exited.
+   * X is the deliberate destroy — park is the non-destructive exit. Kill goes over
+   * HTTP: the wire's terminal_kill is gated on the session's HOME channel, which a
+   * canvas peer does not hold. The server sweeps session + home + every portal
+   * atomically; the local tombstone is optimism so the element vanishes this frame
+   * rather than a round-trip later (the doc sweep makes it idempotent).
    */
   const onClose = useCallback(
-    (elementId: string, sessionId: string): void => {
-      if (client.sessions.get(sessionId)?.status === "running") {
-        client.takeTerminal(sessionId);
-        client.killTerminal(sessionId);
-      }
-      tombstone([elementId]);
+    (elementId: string | null, sessionId: string): void => {
+      if (elementId !== null) tombstone([elementId]);
+      void killTerminal(identity.token, sessionId).catch((reason: unknown) => {
+        notify(reason instanceof Error ? reason.message : "Could not kill the terminal", {
+          key: `terminal-kill:${sessionId}`,
+        });
+      });
     },
-    [client, tombstone],
+    [identity.token, notify, tombstone],
   );
 
   const canvasCenter = useCallback((): { x: number; y: number } => {
@@ -1129,7 +1133,7 @@ export function FlowPadView({
       rows: sessionRows,
       onCreateTerminal: (machine) => void createTerminal(machine),
       onFocus: focusElement,
-      onKill: (sessionId) => client.killTerminal(sessionId),
+      onKill: (sessionId) => onClose(null, sessionId),
       onRemoveCopy: (_sessionId, elementId) => tombstone([elementId]),
       onRemoveAllCopies: (sessionId) => {
         const row = sessionRows.find((candidate) => candidate.id === sessionId);
@@ -1489,7 +1493,7 @@ export function FlowPadView({
                     }}
                   >
                     <span className="carry-ghost__glyph" aria-hidden="true">
-                      {ghost.glyph}
+                      <SurfaceIcon kind={ghost.kind} size={12} />
                     </span>
                     <span className="carry-ghost__label">{ghost.label}</span>
                   </div>
@@ -1506,9 +1510,7 @@ export function FlowPadView({
                         transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
                       }}
                     >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
-                      </svg>
+                      <RemoteCursorIcon />
                       <span>{remoteCursors.labelFor(cursor)}</span>
                     </div>
                   );

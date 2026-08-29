@@ -86,15 +86,11 @@ export function carryFrame(source: CarrySource, at: CarryPoint, phase: Gesture["
   };
 }
 
-/** Species glyphs, borrowed from the titlebars so a ghost reads as the thing it is. */
-const SURFACE_GLYPHS: Record<PlacementSurface["kind"], string> = {
-  terminal: "▣",
-  pad: "▦",
-  tile: "▤",
-  element: "▤",
-};
-
-/** Fallback names for a carry whose sender sent none. */
+/**
+ * Fallback names for a carry whose sender sent none. The MARK a ghost wears is not here:
+ * a renderer looks it up from the surface kind (`SurfaceIcon`), so the object's picture
+ * comes from the one icon vocabulary instead of travelling as a glyph over the wire.
+ */
 const SURFACE_NAMES: Record<PlacementSurface["kind"], string> = {
   terminal: "terminal",
   pad: "view",
@@ -107,7 +103,6 @@ export interface CarryGhost {
   readonly key: string;
   readonly principalId: string;
   readonly kind: PlacementSurface["kind"];
-  readonly glyph: string;
   readonly label: string;
   readonly x: number;
   readonly y: number;
@@ -134,7 +129,6 @@ export function carryGhosts(
       key: `${override.connId}:${override.elementId}`,
       principalId: override.principalId,
       kind: carry.surface.kind,
-      glyph: SURFACE_GLYPHS[carry.surface.kind],
       label: carry.label ?? SURFACE_NAMES[carry.surface.kind],
       x: override.current.x,
       y: override.current.y,

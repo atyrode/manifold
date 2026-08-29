@@ -91,7 +91,6 @@ describe("carry", () => {
         key: "peer-connection:carry-uuid",
         principalId: "peer",
         kind: "terminal",
-        glyph: "▣",
         label: "build",
         x: 7,
         y: 8,
@@ -108,6 +107,6 @@ describe("carry", () => {
       elementId: "leaf",
       carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" } },
     });
-    expect(carryGhosts([unnamed], () => false)[0]).toMatchObject({ label: "tile", glyph: "▤" });
+    expect(carryGhosts([unnamed], () => false)[0]).toMatchObject({ label: "tile" });
   });
 });

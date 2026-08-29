@@ -13,6 +13,7 @@ import {
   type ReactNode,
   type WheelEvent,
 } from "react";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import type { SessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar, TITLEBAR_ACTIONS_CLASS } from "./node-titlebar.tsx";
 import { useToast } from "./toast.tsx";
@@ -490,13 +491,13 @@ export function TerminalView({
     onShrink === undefined
       ? {
           onActivate: onExpand,
-          glyph: "maximize" as const,
+          control: "maximize" as const,
           label: "Expand terminal to full view",
           tooltip: "Expand to full view",
         }
       : {
           onActivate: onShrink,
-          glyph: "shrink" as const,
+          control: "shrink" as const,
           label: "Shrink view",
           tooltip: "Leave this view (Esc)",
         };
@@ -546,7 +547,7 @@ export function TerminalView({
       )}
       <NodeTitleBar
         className="terminal-titlebar"
-        icon="▣"
+        icon={<ItemIcon kind="terminal" size={13} />}
         title={session?.name ?? null}
         defaultTitle="terminal"
         onRenameTitle={readOnly ? undefined : onRenameTitle}
@@ -563,7 +564,7 @@ export function TerminalView({
         minimizeLabel="Park terminal to sidebar"
         minimizeTooltip="Park terminal to sidebar (keeps the shell running)"
         onMaximize={readOnly ? undefined : maximize.onActivate}
-        maximizeGlyph={maximize.glyph}
+        maximizeControl={maximize.control}
         maximizeLabel={maximize.label}
         maximizeTooltip={maximize.tooltip}
         onClose={readOnly ? undefined : onClose}
@@ -612,7 +613,13 @@ export function TerminalView({
           {offlineMachine !== null ? (
             <span>machine offline — {offlineMachine.name}</span>
           ) : (
-            <span>exited (code {session?.exitCode ?? "unknown"})</span>
+            // A null code is a shell that never reported one; "unknown" told the
+            // operator nothing the missing number did not already say.
+            <span>
+              {typeof session?.exitCode === "number"
+                ? `exited (${String(session.exitCode)})`
+                : "exited"}
+            </span>
           )}
           {session?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
             <button
@@ -636,7 +643,8 @@ export function TerminalView({
                   .finally(() => setIsRestarting(false));
               }}
             >
-              {isRestarting ? "⟳ restarting…" : "⟳ restart"}
+              <ControlIcon kind="restart" />
+              <span>{isRestarting ? "restarting…" : "restart"}</span>
             </button>
           ) : null}
         </div>

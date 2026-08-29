@@ -36,6 +36,7 @@ import {
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { TextSurface } from "./flow-text-node.tsx";
+import { ControlIcon, ItemIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
 import {
   createPlacementLookup,
   denialMessage,
@@ -335,8 +336,8 @@ export function TiledPadView({
 
   /**
    * Deleting the container everyone is inside: the viewer leaves the way Shrink
-   * leaves, and the sidebar refetch drops the row. Guarded by the titlebar's
-   * two-step confirm and by the ref, because the second call would 404.
+   * leaves, and the sidebar refetch drops the row. Guarded by the ref alone: the
+   * click deletes on the spot, and a second call would 404.
    */
   const removeView = useCallback((): void => {
     if (deletingRef.current) return;
@@ -690,7 +691,9 @@ export function TiledPadView({
     if (surface === null) {
       return (
         <div className="tiled-empty">
-          <span className="tiled-empty-glyph" aria-hidden="true" />
+          <span className="tiled-empty-glyph" aria-hidden="true">
+            <ItemIcon kind="composition" size={22} />
+          </span>
           <span>Drop a terminal, a canvas or a note here</span>
         </div>
       );
@@ -721,7 +724,7 @@ export function TiledPadView({
             load-bearing control: an embedded board is a BOARD — its interior belongs to
             React Flow, panning and all — so the titlebar is the only door INTO the canvas
             from here. Minimize drops just this representation; close deletes the canvas
-            for everyone behind the bar's own two-step confirm.
+            for everyone, on the click.
 
             The bar sits ABOVE the board rather than over it, so nothing about the
             embedded canvas's own pointer handling changes.
@@ -729,7 +732,7 @@ export function TiledPadView({
           <div className="tiled-pad-tile">
             <NodeTitleBar
               className="tiled-pad-tile__bar"
-              icon="▦"
+              icon={<ItemIcon kind="canvas" size={13} />}
               title={padNameFor(surface.padId)}
               defaultTitle="canvas"
               onMinimize={() => detachPadTile(node.id)}
@@ -741,7 +744,6 @@ export function TiledPadView({
               onClose={() => deletePadTile(node.id, surface.padId)}
               closeLabel={`Delete canvas ${padLabelFor(surface.padId)}`}
               closeTooltip="Delete this canvas for everyone"
-              closeConfirm={`Delete “${padNameFor(surface.padId) ?? "this canvas"}”?`}
             />
             <div className="tiled-pad-tile__body">
               <FlowPadView
@@ -777,7 +779,7 @@ export function TiledPadView({
           <div className="tiled-pad-tile">
             <NodeTitleBar
               className="tiled-pad-tile__bar"
-              icon="✎"
+              icon={<ItemIcon kind="note" size={13} />}
               title={noteTitle(text)}
               defaultTitle="note"
               // Close, not minimize: a note's leaf is its ONLY placement, so the server
@@ -786,7 +788,6 @@ export function TiledPadView({
               onClose={() => removeNoteTile(node.id)}
               closeLabel="Delete note"
               closeTooltip="Delete this note"
-              closeConfirm="Delete this note?"
             />
             <div className="tiled-pad-tile__body">
               <TextSurface
@@ -858,7 +859,7 @@ export function TiledPadView({
             title="Drag to move this tile — onto a canvas to pull it out"
             {...gripProps(node.id, surfaceLabel(node.surface))}
           >
-            <span aria-hidden="true">⠿</span>
+            <ControlIcon kind="grip" size={12} />
           </div>
         )}
         {preview === null ? null : (
@@ -901,19 +902,18 @@ export function TiledPadView({
     <div className="tiled-pad-view">
       <NodeTitleBar
         className="tiled-header"
-        icon="▤"
+        icon={<ItemIcon kind="composition" size={15} />}
         title={pad.name}
         defaultTitle="view"
         onRenameTitle={rename}
         extraActions={<span className={`tiled-status is-${status}`}>{status}</span>}
         onMaximize={shrink}
-        maximizeGlyph="shrink"
+        maximizeControl="shrink"
         maximizeLabel="Shrink view"
         maximizeTooltip="Leave this view (Esc)"
         onClose={removeView}
         closeLabel={`Delete view ${pad.name}`}
         closeTooltip="Delete this view for everyone"
-        closeConfirm={`Delete “${pad.name}”?`}
       />
       {/*
         Capture phase, wired on the tile area rather than on each leaf: xterm owns the
@@ -946,9 +946,7 @@ export function TiledPadView({
                   top: `${String(fraction.y * 100)}%`,
                 }}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
-                </svg>
+                <RemoteCursorIcon />
                 <span>{remoteCursors.labelFor(cursor)}</span>
               </div>
             );
@@ -973,7 +971,7 @@ export function TiledPadView({
               }}
             >
               <span className="carry-ghost__glyph" aria-hidden="true">
-                {ghost.glyph}
+                <SurfaceIcon kind={ghost.kind} size={12} />
               </span>
               <span className="carry-ghost__label">{ghost.label}</span>
             </div>

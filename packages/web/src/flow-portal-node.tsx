@@ -11,6 +11,7 @@ import {
   useFlowPad,
   useFlowPadPresence,
 } from "./flow-terminal-node.tsx";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
@@ -399,7 +400,7 @@ function PortalTerminalTile({
         onDoubleClick={() => pad.navigate(`/p/${encodeURIComponent(containerId)}`)}
       >
         <span className="flow-portal__grip" aria-hidden="true">
-          ⠿
+          <ControlIcon kind="grip" size={12} />
         </span>
       </div>
     </div>
@@ -418,7 +419,7 @@ function PortalPadTile({ padId }: { readonly padId: string }): React.ReactElemen
   return (
     <div className="flow-portal__pad-card">
       <span className="flow-portal__card-glyph" aria-hidden="true">
-        ▦
+        <ItemIcon kind="canvas" size={22} />
       </span>
       <strong>{name ?? "canvas"}</strong>
       <button
@@ -690,7 +691,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         {mono !== null ? null : (
           <NodeTitleBar
             className="flow-portal__strip"
-            icon="▤"
+            icon={<ItemIcon kind="composition" size={13} />}
             title={name}
             defaultTitle="composition"
             middle={
@@ -709,7 +710,6 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
             onClose={() => pad.onDeleteContainer(containerId, id)}
             closeLabel={`Delete composition ${name ?? containerId}`}
             closeTooltip="Delete this composition for everyone"
-            closeConfirm={`Delete “${name ?? "this composition"}”?`}
           />
         )}
         <div className="flow-portal__viewport">
@@ -747,7 +747,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           ) : (
             <div className="flow-portal__card">
               <span className="flow-portal__card-glyph" aria-hidden="true">
-                ▤
+                <ItemIcon kind="composition" size={22} />
               </span>
               <span className="flow-portal__card-hint">
                 {live ? "opening composition…" : "nested composition — open it to work inside"}

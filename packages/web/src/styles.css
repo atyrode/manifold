@@ -312,15 +312,7 @@ input:focus {
   background: #2b2e34;
 }
 
-.pad-sidebar svg {
-  width: 1rem;
-  height: 1rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
+/* Icons describe themselves (size, stroke, currentColor) — see `.mf-icon`. */
 
 .pad-sidebar-create-buttons {
   display: grid;
@@ -485,17 +477,16 @@ input:focus {
 }
 
 .sidebar-section-chevron {
-  width: 0.35rem;
-  height: 0.35rem;
-  margin-inline: 0.15rem 0.1rem;
-  transform: rotate(-45deg);
-  border-right: 1.5px solid #868e96;
-  border-bottom: 1.5px solid #868e96;
+  display: inline-grid;
+  flex: 0 0 auto;
+  margin-inline: 0 0.05rem;
+  place-items: center;
+  color: #868e96;
   transition: transform 120ms ease;
 }
 
 .sidebar-section[open] > .sidebar-section-header > .sidebar-section-chevron {
-  transform: rotate(45deg) translate(-0.08rem, -0.08rem);
+  transform: rotate(90deg);
 }
 
 .sidebar-section-title {
@@ -618,8 +609,8 @@ input:focus {
   cursor: grabbing;
 }
 
-.pad-tree-item:has(.is-editing, .is-confirming) > .pad-sidebar-row,
-.pad-tree-item:has(.is-editing, .is-confirming) > .pad-sidebar-row .pad-sidebar-link {
+.pad-tree-item:has(.is-editing) > .pad-sidebar-row,
+.pad-tree-item:has(.is-editing) > .pad-sidebar-row .pad-sidebar-link {
   cursor: default;
 }
 
@@ -754,19 +745,7 @@ input:focus {
   font-weight: 650;
 }
 
-.pad-sidebar-pad-mark {
-  flex: 0 0 auto;
-  width: 0.55rem;
-  height: 0.55rem;
-  border: 1px solid #5c6370;
-  border-radius: 0.2rem;
-  background: #343a40;
-}
-
-.pad-sidebar-row.is-active .pad-sidebar-pad-mark {
-  border-color: #91a7ff;
-  background: #5c7cfa;
-}
+/* The index mark is the object's own species icon; see `.pad-sidebar-item-mark` below. */
 
 .pad-sidebar-actions {
   position: relative;
@@ -812,26 +791,10 @@ input:focus {
 }
 
 .pad-sidebar-folder-icon {
-  position: relative;
-  width: 0.82rem;
-  height: 0.6rem;
+  display: inline-grid;
   flex: 0 0 auto;
-  border: 1px solid #5c6370;
-  border-radius: 0.15rem;
-  background: #343a40;
-}
-
-.pad-sidebar-folder-icon::before {
-  position: absolute;
-  top: -0.24rem;
-  left: 0.04rem;
-  width: 0.38rem;
-  height: 0.2rem;
-  border: 1px solid #5c6370;
-  border-bottom: 0;
-  border-radius: 0.12rem 0.12rem 0 0;
-  background: #343a40;
-  content: "";
+  place-items: center;
+  color: #868e96;
 }
 
 .pad-sidebar-folder-toggle {
@@ -858,11 +821,10 @@ input:focus {
 }
 
 .pad-sidebar-folder-chevron {
-  width: 0.55rem;
+  display: inline-grid;
   flex: 0 0 auto;
+  place-items: center;
   color: #868e96;
-  font-size: 0.9rem;
-  text-align: center;
 }
 
 .pad-sidebar-folder-add {
@@ -1201,8 +1163,7 @@ button.pad-sidebar-session.is-summary > small {
   background: #292d35;
 }
 
-.pad-sidebar-row.is-editing,
-.pad-sidebar-row.is-confirming {
+.pad-sidebar-row.is-editing {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
@@ -1245,53 +1206,6 @@ button.pad-sidebar-session.is-summary > small {
 
 .pad-sidebar-inline-action:disabled {
   opacity: 0.4;
-}
-
-.pad-sidebar-row.is-confirming {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  border: 1px solid rgb(250 82 82 / 32%);
-  background: rgb(250 82 82 / 7%);
-}
-
-.pad-sidebar-confirm-label {
-  align-self: center;
-  overflow: hidden;
-  color: #ffc9c9;
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pad-sidebar-confirm-delete,
-.pad-sidebar-confirm-cancel {
-  width: auto;
-  min-height: 1.8rem;
-  border-color: transparent;
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding-inline: 0.45rem;
-  font-size: 0.68rem;
-}
-
-.pad-sidebar-confirm-delete {
-  color: #fff;
-  background: #c92a2a;
-}
-
-.pad-sidebar-confirm-delete:hover,
-.pad-sidebar-confirm-delete:focus-visible {
-  background: #e03131;
-}
-
-.pad-sidebar-confirm-cancel {
-  color: var(--text-secondary-color, #adb5bd);
-  background: transparent;
-}
-
-.pad-sidebar-confirm-cancel:hover,
-.pad-sidebar-confirm-cancel:focus-visible {
-  color: var(--text-primary-color, #f1f3f5);
-  background: #2b2e34;
 }
 
 .pad-browser-canvas {
@@ -1551,6 +1465,9 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Clickable even while the embed is idle (same mechanism as .node-titlebar__ctl). */
 .terminal-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   border: 1px solid #495057;
   border-radius: 999px;
   padding: 0.3rem 0.9rem;
@@ -1796,7 +1713,7 @@ button.pad-sidebar-session.is-summary > small {
 .workspace-machine-row {
   display: grid;
   min-height: 2.1rem;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.45rem;
   padding-inline: 0.5rem;
@@ -1945,16 +1862,6 @@ button.pad-sidebar-session.is-summary > small {
   border-radius: var(--border-radius-md);
 }
 
-.workspace-action svg {
-  width: 0.78rem;
-  height: 0.78rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .workspace-action.is-reveal {
   color: #a5d8ff;
 }
@@ -2018,8 +1925,6 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .flow-remote-cursor svg {
-  width: 1.35rem;
-  height: 1.35rem;
   filter: drop-shadow(0 1px 1px rgb(0 0 0 / 55%));
 }
 
@@ -2211,12 +2116,11 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0.55;
 }
 
-/* Status dot sits outside the label, so it carries the row's leading inset itself. */
+/* The row's mark sits outside the label, so it carries the row's leading inset itself. */
 .pad-sidebar-row > .session-state {
   flex: 0 0 auto;
   align-self: center;
   padding-inline-start: 0.55rem;
-  font-size: 0.6rem;
   line-height: 1;
 }
 
@@ -2290,22 +2194,6 @@ button.pad-sidebar-session.is-summary > small {
 
 .pad-browser.is-collapsed .pad-sidebar-new-folder {
   grid-column: auto;
-}
-
-.pad-sidebar-tiles-mark {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  color: #868e96;
-}
-
-.pad-sidebar-tiles-mark svg {
-  width: 0.8rem;
-  height: 0.8rem;
-}
-
-.pad-sidebar-row.is-active .pad-sidebar-tiles-mark {
-  color: #91a7ff;
 }
 
 /* A bubble: alive only while someone is inside it. */
@@ -2451,10 +2339,9 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .tiled-empty-glyph {
-  width: 1.5rem;
-  height: 1.5rem;
-  border: 1px solid #495057;
-  border-radius: 0.3rem;
+  display: inline-grid;
+  place-items: center;
+  color: #495057;
 }
 
 /* The snap preview is painted in the leaf's own percentage space (see LEAF_BOX). */
@@ -2671,8 +2558,9 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .flow-portal__card-glyph {
+  display: inline-grid;
+  place-items: center;
   color: #748ffc;
-  font-size: 1.5rem;
 }
 
 .flow-portal__card-hint {
@@ -2744,9 +2632,9 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .node-titlebar__icon {
+  display: inline-grid;
+  place-items: center;
   color: #5c6370;
-  font-size: 0.72rem;
-  line-height: 1;
 }
 
 /* Sized to its text, never to its column. The title is the rename zone and the rest of the bar
@@ -2806,7 +2694,6 @@ button.pad-sidebar-session.is-summary > small {
   padding: 0;
   color: #868e96;
   background: transparent;
-  font-size: 0.72rem;
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -2827,60 +2714,9 @@ button.pad-sidebar-session.is-summary > small {
   background: #e03131;
 }
 
-/* Two-step close: destroying something other people are inside asks first, in the
-   bar, with the same danger palette the sidebar's delete rows use. */
-.node-titlebar__confirm {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: 1px solid rgb(250 82 82 / 32%);
-  border-radius: 0.4rem;
-  padding: 0.05rem 0.25rem;
-  background: rgb(250 82 82 / 7%);
-  pointer-events: auto;
-}
-
-.node-titlebar__confirm-label {
-  overflow: hidden;
-  max-width: 12rem;
-  color: #ffc9c9;
-  font-size: 0.66rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.node-titlebar__confirm-yes,
-.node-titlebar__confirm-no {
-  border: none;
-  border-radius: 0.25rem;
-  padding: 0.05rem 0.35rem;
-  font-size: 0.66rem;
-  cursor: pointer;
-}
-
-.node-titlebar__confirm-yes {
-  color: #fff;
-  background: #c92a2a;
-}
-
-.node-titlebar__confirm-yes:hover {
-  background: #e03131;
-}
-
-.node-titlebar__confirm-no {
-  color: #adb5bd;
-  background: transparent;
-}
-
-.node-titlebar__confirm-no:hover {
-  color: #f1f3f5;
-  background: #2b2e34;
-}
-
 /* Adopter tuning: a view reads as an object with a name, a terminal as a strip. */
 .flow-portal__strip .node-titlebar__icon {
   color: #748ffc;
-  font-size: 0.8rem;
 }
 
 .flow-portal__strip .node-titlebar__title {
@@ -2891,7 +2727,6 @@ button.pad-sidebar-session.is-summary > small {
 
 .tiled-header .node-titlebar__icon {
   color: #748ffc;
-  font-size: 0.9rem;
 }
 
 .tiled-header .node-titlebar__title {
@@ -2900,8 +2735,7 @@ button.pad-sidebar-session.is-summary > small {
   font-weight: 650;
 }
 
-.tiled-header .node-titlebar__title-input,
-.tiled-header .node-titlebar__ctl {
+.tiled-header .node-titlebar__title-input {
   font-size: 0.85rem;
 }
 
@@ -3231,8 +3065,9 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .carry-ghost__glyph {
+  display: inline-grid;
+  place-items: center;
   color: #868e96;
-  font-size: 0.7rem;
 }
 
 .carry-ghost__label {
@@ -3289,4 +3124,52 @@ button.pad-sidebar-session.is-summary > small {
    reachable, so the shield starts below the bar. */
 .flow-portal--mono .flow-portal__shield {
   top: 1.75rem;
+}
+
+/* ── The icon vocabulary ──────────────────────────────────────────────────────
+   Every glyph in the application is one lucide drawing rendered by `src/icons.tsx`
+   (see docs/decisions/0009-lucide-icons.md), which owns size and stroke weight per
+   call site. This block owns only PLACEMENT — the boxes icons sit in — and the rule
+   that they inherit `currentColor`, which is what keeps every hover, focus, active
+   and disabled state working through the colour their button already sets. */
+.mf-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: inherit;
+}
+
+/* One mark per index row, whatever the row is: terminal, canvas or composition. */
+.pad-sidebar-item-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+.pad-sidebar-item-mark .mf-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.pad-sidebar-row.is-active .pad-sidebar-item-mark {
+  color: #91a7ff;
+}
+
+/* Status still reads through the mark: `is-running` tints the terminal's own icon
+   green instead of adding a second dot beside it. */
+.pad-sidebar-item-mark.session-state.is-running {
+  color: #51cf66;
+}
+
+/* The machine row keeps its colour pip (status + identity colour) and adds the
+   species mark beside it; both are quiet enough to share the row's leading inset. */
+.workspace-machine-mark {
+  display: inline-grid;
+  place-items: center;
+  color: #868e96;
+}
+
+.workspace-session-row > .session-state {
+  display: inline-grid;
+  place-items: center;
 }

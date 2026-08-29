@@ -62,7 +62,7 @@ describe("buildSessionRows", () => {
     expect(rows.map((row) => row.id)).toEqual(["s1"]);
   });
 
-  test("bound exited sessions remain revealable and cannot be killed", () => {
+  test("bound exited sessions remain revealable and dismissable", () => {
     const rows = buildSessionRows({
       ...BASE,
       liveBindings: new Map([["s2", ["el-exited"]]]),
@@ -72,7 +72,9 @@ describe("buildSessionRows", () => {
       id: "s2",
       status: "exited",
       boundElementIds: ["el-exited"],
-      canKill: false,
+      // Kill and dismiss are one verb: the server sweeps a dead terminal for any
+      // writer, so the row's action stays available after exit.
+      canKill: true,
     });
   });
 

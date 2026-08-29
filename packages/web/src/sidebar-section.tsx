@@ -1,4 +1,5 @@
 import { useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
+import { ControlIcon } from "./icons.tsx";
 
 /** Drag payload reordering the sidebar's section stack; scoped so row drags stay untouched. */
 export const SECTION_DRAG_MIME = "application/x-manifold-section";
@@ -359,7 +360,9 @@ export function SidebarSection({
         }}
         onDragEnd={onDragFinish}
       >
-        <span className="sidebar-section-chevron" aria-hidden="true" />
+        <span className="sidebar-section-chevron" aria-hidden="true">
+          <ControlIcon kind="collapsed" size={13} />
+        </span>
         <strong className="sidebar-section-title">{title}</strong>
         <span className="sidebar-section-count">{count}</span>
         {actions === undefined ? null : <span className="sidebar-section-actions">{actions}</span>}

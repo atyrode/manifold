@@ -9,6 +9,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { ControlIcon } from "./icons.tsx";
 
 /**
  * The one notice surface. Before this module the app had four independent notice
@@ -210,7 +211,7 @@ export function ToastProvider({ children }: ToastProviderProps): ReactElement {
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => retire(entry.id)}
             >
-              ✕
+              <ControlIcon kind="close" />
             </button>
           </div>
         ))}
