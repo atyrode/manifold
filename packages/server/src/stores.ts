@@ -88,7 +88,6 @@ interface SessionDbRow {
   id: string;
   machine_id: string;
   pad_id: string | null;
-  element_id: string;
   created_by: string;
   agent_principal_id: string | null;
   name: string | null;
@@ -153,7 +152,6 @@ export interface StoredSession {
   id: string;
   machineId: string;
   padId: string | null;
-  elementId: string;
   createdBy: string;
   agentPrincipalId: string | null;
   name: string | null;
@@ -169,7 +167,6 @@ export interface NewStoredSession {
   id: string;
   machineId: string;
   padId: string;
-  elementId: string;
   createdBy: string;
   agentPrincipalId: string;
   createdAt: number;
@@ -231,7 +228,6 @@ function toSession(row: SessionDbRow): StoredSession {
     id: row.id,
     machineId: row.machine_id,
     padId: row.pad_id,
-    elementId: row.element_id,
     createdBy: row.created_by,
     agentPrincipalId: row.agent_principal_id,
     name: row.name,
@@ -820,20 +816,16 @@ export class ServerStore {
 
   createSession(session: NewStoredSession): void {
     this.db
-      .query<
-        void,
-        [string, string, string, string, string, string, string, null, number, null, null]
-      >(
+      .query<void, [string, string, string, string, string, string, null, number, null, null]>(
         `INSERT INTO sessions(
-           id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+           id, machine_id, pad_id, created_by, agent_principal_id,
            status, exit_code, created_at, name, sort_order
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
         session.machineId,
         session.padId,
-        session.elementId,
         session.createdBy,
         session.agentPrincipalId,
         "running",
@@ -847,7 +839,7 @@ export class ServerStore {
   getSession(id: string): StoredSession | null {
     const row = this.db
       .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name, sort_order
          FROM sessions WHERE id = ?`,
       )
@@ -858,7 +850,7 @@ export class ServerStore {
   listSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name, sort_order
          FROM sessions ORDER BY created_at, id`,
       )
@@ -869,7 +861,7 @@ export class ServerStore {
   listRunningSessionsForMachine(machineId: string): StoredSession[] {
     return this.db
       .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name, sort_order
          FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
@@ -879,7 +871,7 @@ export class ServerStore {
   listRunningSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name, sort_order
          FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
       )
@@ -930,7 +922,7 @@ export class ServerStore {
   listParkedSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name, sort_order
          FROM sessions WHERE pad_id IS NULL
          ORDER BY sort_order IS NULL, sort_order, created_at, id`,

@@ -113,6 +113,15 @@ describe("migration 4: machines.name uniqueness", () => {
         .all();
       expect(pads).toEqual([{ id: "p", layout: "canvas", transient: 0, origin_pad_id: null }]);
 
+      // Migration 8: the write-only placement id is gone and the rows that carried it are
+      // untouched — a session's placements live in its container's live state now (#59).
+      const sessionColumns = db
+        .query<{ name: string }, []>("SELECT name FROM pragma_table_info('sessions')")
+        .all()
+        .map((row) => row.name);
+      expect(sessionColumns).not.toContain("element_id");
+      expect(sessionColumns).toContain("pad_id");
+
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

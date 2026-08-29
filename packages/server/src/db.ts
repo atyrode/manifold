@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const MIGRATIONS: Readonly<Record<number, string>> = {
   1: `
@@ -194,6 +194,15 @@ ALTER TABLE pads ADD COLUMN layout TEXT NOT NULL DEFAULT 'canvas';
 ALTER TABLE pads ADD COLUMN transient INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pads ADD COLUMN origin_pad_id TEXT;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '7');
+`,
+  8: `
+-- Placement left the session row (#59). sessions.element_id was written once at
+-- birth and never read: a session can be placed several times (mirrors) and in
+-- either discipline, so the id of "its" placement was a lie the moment the
+-- placement algebra made placements first-class. Live containers are the only
+-- source of truth for where a session appears — the column goes.
+ALTER TABLE sessions DROP COLUMN element_id;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '8');
 `,
 };
 

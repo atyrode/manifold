@@ -21,6 +21,7 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
+import { PlaceExecutor } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -68,6 +69,7 @@ interface PoolFixture {
   pad: Pad;
   rooms: RoomManager;
   broker: TerminalBroker;
+  placement: PlaceExecutor;
   machine: FakeMachine;
   socket: FakeSocket;
   opener: SessionPeer;
@@ -111,6 +113,9 @@ function poolFixture(): PoolFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  broker.setPlacement(placement);
+  rooms.setEmptyHandler((padId) => placement.dissolveIfBubble(padId));
   const machines = new MachineGateway(
     auth,
     store,
@@ -125,8 +130,32 @@ function poolFixture(): PoolFixture {
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
   const opener = new SessionPeer(runtime.newId(), socket, root, pad.id);
-  const app = new HttpApp(config, store, auth, rooms, broker, machines, runtime, silentLogger);
-  return { runtime, clock, store, auth, root, pad, rooms, broker, machine, socket, opener, app };
+  const app = new HttpApp(
+    config,
+    store,
+    auth,
+    rooms,
+    broker,
+    placement,
+    machines,
+    runtime,
+    silentLogger,
+  );
+  return {
+    runtime,
+    clock,
+    store,
+    auth,
+    root,
+    pad,
+    rooms,
+    broker,
+    placement,
+    machine,
+    socket,
+    opener,
+    app,
+  };
 }
 
 /** Opens one terminal and commits its create, returning the new session id. */
@@ -193,7 +222,7 @@ describe("TerminalBroker park", () => {
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
     fixture.socket.clear();
 
-    expect(fixture.broker.park(sessionId, "terminal-1")).toBe("ok");
+    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
 
     expect(readElements(room.doc).has("terminal-1")).toBe(false);
     expect(fixture.store.getSession(sessionId)?.padId).toBeNull();
@@ -215,7 +244,7 @@ describe("TerminalBroker park", () => {
     writeElement(room.doc, terminalElement("terminal-2", sessionId), LOCAL_ORIGIN);
     fixture.socket.clear();
 
-    expect(fixture.broker.park(sessionId, "terminal-1")).toBe("ok");
+    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
 
     expect([...readElements(room.doc).keys()]).toEqual(["terminal-2"]);
     expect(fixture.store.getSession(sessionId)?.padId).toBe(fixture.pad.id);
@@ -230,9 +259,9 @@ describe("TerminalBroker park", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     joinedRoom(fixture);
 
-    expect(fixture.broker.park("missing-session", "terminal-1")).toBe("not_found");
-    expect(fixture.broker.park(sessionId, "terminal-1")).toBe("ok");
-    expect(fixture.broker.park(sessionId, "terminal-1")).toBe("not_found");
+    expect(fixture.placement.park("missing-session", "terminal-1")).toBe("not_found");
+    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
+    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("not_found");
   });
 });
 
@@ -242,10 +271,10 @@ describe("TerminalBroker bind", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.socket.clear();
 
-    const bound = fixture.broker.bind(sessionId, fixture.pad.id, 40, 60);
+    const bound = fixture.placement.bind(sessionId, fixture.pad.id, 40, 60);
     if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
 
     expect(readElement(room.doc, bound.elementId)).toEqual({
@@ -279,9 +308,9 @@ describe("TerminalBroker bind", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
 
-    const bound = fixture.broker.bind(sessionId, fixture.pad.id);
+    const bound = fixture.placement.bind(sessionId, fixture.pad.id);
     if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
 
     expect(readElement(room.doc, bound.elementId)).toMatchObject({ x: 160, y: 120 });
@@ -293,10 +322,10 @@ describe("TerminalBroker bind", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
 
-    expect(fixture.broker.bind(sessionId, fixture.pad.id)).toBe("already_bound");
-    expect(fixture.broker.bind("missing-session", fixture.pad.id)).toBe("not_found");
-    fixture.broker.park(sessionId, "terminal-1");
-    expect(fixture.broker.bind(sessionId, "missing-pad")).toBe("pad_not_found");
+    expect(fixture.placement.bind(sessionId, fixture.pad.id)).toBe("already_bound");
+    expect(fixture.placement.bind("missing-session", fixture.pad.id)).toBe("not_found");
+    fixture.placement.park(sessionId, "terminal-1");
+    expect(fixture.placement.bind(sessionId, "missing-pad")).toBe("pad_not_found");
   });
 });
 
@@ -306,7 +335,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.machine.clear();
 
     expect(fixture.broker.killById(sessionId)).toBe("ok");
@@ -322,7 +351,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.socket.clear();
 
     fixture.broker.onExited(fixture.machine.machineId, sessionId, 3);
@@ -343,7 +372,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", parkedId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", boundId), LOCAL_ORIGIN);
-    fixture.broker.park(parkedId, "terminal-1");
+    fixture.placement.park(parkedId, "terminal-1");
     fixture.broker.onExited(fixture.machine.machineId, parkedId, 0);
     fixture.broker.onExited(fixture.machine.machineId, boundId, 0);
 
@@ -359,7 +388,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
 
     fixture.broker.pruneExitedParked();
 
@@ -394,7 +423,7 @@ describe("TerminalBroker rename", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.socket.clear();
 
     expect(fixture.broker.rename(sessionId, "notes")).toBe("ok");
@@ -417,11 +446,11 @@ describe("TerminalBroker rename", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.broker.rename(sessionId, "build");
     fixture.socket.clear();
 
-    const bound = fixture.broker.bind(sessionId, fixture.pad.id);
+    const bound = fixture.placement.bind(sessionId, fixture.pad.id);
     if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
 
     expect(
@@ -444,9 +473,9 @@ describe("TerminalBroker pool ordering", () => {
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
 
-    fixture.broker.park(second, "terminal-2");
-    fixture.broker.park(third, "terminal-3");
-    fixture.broker.park(first, "terminal-1");
+    fixture.placement.park(second, "terminal-2");
+    fixture.placement.park(third, "terminal-3");
+    fixture.placement.park(first, "terminal-1");
 
     expect(fixture.store.listParkedSessions().map((session) => session.sortOrder)).toEqual([
       0, 1, 2,
@@ -467,9 +496,9 @@ describe("TerminalBroker pool ordering", () => {
     writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
-    fixture.broker.park(first, "terminal-1");
-    fixture.broker.park(second, "terminal-2");
-    fixture.broker.park(third, "terminal-3");
+    fixture.placement.park(first, "terminal-1");
+    fixture.placement.park(second, "terminal-2");
+    fixture.placement.park(third, "terminal-3");
 
     expect(fixture.broker.movePooled(third, 0)).toBe("ok");
 
@@ -539,8 +568,8 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", runningId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", exitedId), LOCAL_ORIGIN);
-    fixture.broker.park(runningId, "terminal-1");
-    fixture.broker.park(exitedId, "terminal-2");
+    fixture.placement.park(runningId, "terminal-1");
+    fixture.placement.park(exitedId, "terminal-2");
     fixture.broker.onExited(fixture.machine.machineId, exitedId, 0);
 
     const response = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
@@ -586,7 +615,7 @@ describe("terminal pool HTTP routes", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
 
     const response = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
       padId: fixture.pad.id,
@@ -613,7 +642,7 @@ describe("terminal pool HTTP routes", () => {
     const conflict = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
       padId: fixture.pad.id,
     });
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     const missingPad = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
       padId: "missing-pad",
     });
@@ -629,7 +658,7 @@ describe("terminal pool HTTP routes", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.broker.park(sessionId, "terminal-1");
+    fixture.placement.park(sessionId, "terminal-1");
     fixture.machine.clear();
 
     const killed = await call(fixture, "DELETE", `/api/terminals/${sessionId}`, OWNER_KEY);
@@ -653,7 +682,7 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", parkedId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", boundId), LOCAL_ORIGIN);
-    fixture.broker.park(parkedId, "terminal-1");
+    fixture.placement.park(parkedId, "terminal-1");
 
     const response = await call(fixture, "GET", "/api/pad-sessions", OWNER_KEY);
 
@@ -707,8 +736,8 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
-    fixture.broker.park(first, "terminal-1");
-    fixture.broker.park(second, "terminal-2");
+    fixture.placement.park(first, "terminal-1");
+    fixture.placement.park(second, "terminal-2");
     await call(fixture, "PATCH", `/api/terminals/${second}`, OWNER_KEY, { name: "notes" });
 
     const moved = await call(fixture, "PUT", "/api/terminal-pool", OWNER_KEY, {

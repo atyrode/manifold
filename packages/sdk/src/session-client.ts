@@ -1,13 +1,21 @@
 import {
   ClientMessageSchema,
+  HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   reconnectDelayMs,
   type Cap,
   type ClientMessage,
   type Gesture,
+  type PlaceResponse,
+  type PlacementDenial,
+  type PlacementDestination,
+  type PlacementSurface,
   type PresencePayload,
   type PresenceState,
   type Principal,
@@ -131,6 +139,14 @@ export interface SessionEvents {
 type EventKey = ServerMessage["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
 
+/**
+ * What `place()` answers: the placement it executed, or the declared RULE that refused
+ * it. A refusal is data — never an exception — because a client renders it.
+ */
+export type PlaceOutcome =
+  | { readonly ok: true; readonly result: PlaceResponse }
+  | { readonly ok: false; readonly denial: PlacementDenial };
+
 export interface SessionClientOptions {
   /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
   url: string;
@@ -149,6 +165,11 @@ export interface SessionClientOptions {
   webSocketFactory?: (url: string) => WebSocket;
   /** Backoff schedule cap in ms (default 8000). */
   backoffCapMs?: number;
+  /**
+   * HTTP origin for placement writes; defaults to the origin `url` implies (same host,
+   * ws(s) mapped to http(s)), which is what a same-origin deployment wants.
+   */
+  apiUrl?: string;
 }
 
 const OUTBOX_LIMIT = 256;
@@ -613,6 +634,49 @@ export class SessionClient {
    */
   setTileRatios(splitId: string, ratios: readonly number[]): void {
     sceneSetTileRatios(this.currentDoc, splitId, ratios, LOCAL_ORIGIN);
+  }
+
+  /**
+   * THE placement call: put an item in a container. One envelope, one endpoint, and a
+   * refusal that names the RULE which refused it — legality lives in the protocol's
+   * placement declarations, so a caller never has to know which verb this used to be.
+   *
+   * It is HTTP rather than a socket message because placement crosses containers: this
+   * client is joined to ONE room, and the write may touch two.
+   */
+  async place(surface: PlacementSurface, destination: PlacementDestination): Promise<PlaceOutcome> {
+    const request = PlaceRequestSchema.parse({ surface, destination });
+    const response = await fetch(`${this.apiOrigin()}/api/place`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.opts.token}`,
+      },
+      body: JSON.stringify(request),
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`place returned a non-JSON response (${response.status})`);
+    }
+    if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(payload) };
+    const denied = PlacementDeniedResponseSchema.safeParse(payload);
+    // A denial is an ANSWER, not a failure: the caller renders the rule (and its drag
+    // preview already asked `resolvePlacement` the same question locally).
+    if (denied.success) return { ok: false, denial: denied.data.error.denial };
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success ? failure.data.error.message : `place failed (${response.status})`,
+    );
+  }
+
+  /** The HTTP origin this session's socket URL implies; `apiUrl` overrides it. */
+  private apiOrigin(): string {
+    if (this.opts.apiUrl !== undefined) return this.opts.apiUrl.replace(/\/+$/, "");
+    const url = new URL(this.opts.url);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    return url.origin;
   }
 
   sendGesture(gesture: Gesture): void {

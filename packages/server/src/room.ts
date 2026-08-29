@@ -48,9 +48,13 @@ import type { ServerStore } from "./stores.ts";
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
 
-/** Canvas placement used when a bind request carries no explicit drop coordinates. */
-const DEFAULT_TERMINAL_X = 160;
-const DEFAULT_TERMINAL_Y = 120;
+/**
+ * Canvas placement used when a placement request carries no explicit drop coordinates.
+ * The legacy bind route still allows that, so the executor supplies these on its behalf;
+ * every other placement names the point it landed on.
+ */
+export const DEFAULT_TERMINAL_X = 160;
+export const DEFAULT_TERMINAL_Y = 120;
 
 /**
  * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
@@ -514,12 +518,17 @@ export class Room {
     return readElement(this.doc, elementId);
   }
 
-  /** First element referencing a session, in canonical paint order; null when unplaced. */
-  firstElementForSession(sessionId: string): string | null {
+  /**
+   * Every element referencing a session, in canonical paint order. A session may be
+   * mirrored several times on one canvas, so releasing the ITEM from this container has
+   * to reach all of them; addressing a single PLACEMENT names its element id instead.
+   */
+  elementIdsForSession(sessionId: string): string[] {
+    const ids: string[] = [];
     for (const element of [...readElements(this.doc).values()].sort(compareElements)) {
-      if (element.type === "terminal" && element.sessionId === sessionId) return element.id;
+      if (element.type === "terminal" && element.sessionId === sessionId) ids.push(element.id);
     }
-    return null;
+    return ids;
   }
 
   /**
@@ -638,7 +647,7 @@ export class Room {
    * needs no explicit broadcast. `SERVER_PLACE_ORIGIN` keeps client undo managers —
    * which track only their own local origin — from capturing it.
    */
-  placeTerminalElement(sessionId: string, x?: number, y?: number): string {
+  placeTerminalElement(sessionId: string, x: number, y: number): string {
     const id = crypto.randomUUID();
     writeElement(
       this.doc,
@@ -646,8 +655,8 @@ export class Room {
         id,
         type: "terminal",
         sessionId,
-        x: x ?? DEFAULT_TERMINAL_X,
-        y: y ?? DEFAULT_TERMINAL_Y,
+        x,
+        y,
         width: DEFAULT_TERMINAL_WIDTH,
         height: DEFAULT_TERMINAL_HEIGHT,
         zIndex: nextZIndex(this.doc),
@@ -657,8 +666,54 @@ export class Room {
     return id;
   }
 
-  /** Removes one server-parked terminal element; the doc update hook broadcasts it. */
-  removeTerminalElement(elementId: string): boolean {
+  /**
+   * Authors a portal element onto `containerId` at the drop point: what it means for a
+   * container to land on a canvas. It is a REFERENCE, never a copy — the container keeps
+   * living where it lives, and cycles are legal because portals navigate.
+   */
+  placePortalElement(containerId: string, x: number, y: number): string {
+    const id = crypto.randomUUID();
+    writeElement(
+      this.doc,
+      {
+        id,
+        type: "portal",
+        containerId,
+        x,
+        y,
+        // A widget frames a terminal-sized surface, so a fresh portal borrows that size.
+        width: DEFAULT_TERMINAL_WIDTH,
+        height: DEFAULT_TERMINAL_HEIGHT,
+        zIndex: nextZIndex(this.doc),
+      },
+      SERVER_PLACE_ORIGIN,
+    );
+    return id;
+  }
+
+  /**
+   * Re-authors an element at a new position, keeping its id and everything else. This is
+   * how a plain canvas item repositions inside the canvas it already lives on: same
+   * element, new coordinates, one server-origin transaction.
+   */
+  moveElement(elementId: string, x: number, y: number): boolean {
+    const element = readElement(this.doc, elementId);
+    if (element === null) return false;
+    writeElement(this.doc, { ...element, x, y }, SERVER_PLACE_ORIGIN);
+    return true;
+  }
+
+  /**
+   * Adopts an element that left another canvas: the same item, its own id preserved so
+   * collaborators' selections and references still name it, placed at the drop point and
+   * lifted to the top of THIS canvas's stack.
+   */
+  adoptElement(element: SceneElement, x: number, y: number): void {
+    writeElement(this.doc, { ...element, x, y, zIndex: nextZIndex(this.doc) }, SERVER_PLACE_ORIGIN);
+  }
+
+  /** Removes one element the server placed or is releasing; the update hook broadcasts it. */
+  removeElementById(elementId: string): boolean {
     return removeElement(this.doc, elementId, SERVER_PLACE_ORIGIN);
   }
 

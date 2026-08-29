@@ -24,6 +24,7 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
+import { PlaceExecutor } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -67,6 +68,7 @@ interface ContainerFixture {
   pad: Pad;
   rooms: RoomManager;
   broker: TerminalBroker;
+  placement: PlaceExecutor;
   machine: FakeMachine;
   socket: FakeSocket;
   opener: SessionPeer;
@@ -110,7 +112,9 @@ function containerFixture(): ContainerFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  rooms.setEmptyHandler((padId) => broker.dissolveIfBubble(padId));
+  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  broker.setPlacement(placement);
+  rooms.setEmptyHandler((padId) => placement.dissolveIfBubble(padId));
   const machines = new MachineGateway(
     auth,
     store,
@@ -125,8 +129,32 @@ function containerFixture(): ContainerFixture {
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
   const opener = new SessionPeer(runtime.newId(), socket, root, pad.id);
-  const app = new HttpApp(config, store, auth, rooms, broker, machines, runtime, silentLogger);
-  return { runtime, clock, store, auth, root, pad, rooms, broker, machine, socket, opener, app };
+  const app = new HttpApp(
+    config,
+    store,
+    auth,
+    rooms,
+    broker,
+    placement,
+    machines,
+    runtime,
+    silentLogger,
+  );
+  return {
+    runtime,
+    clock,
+    store,
+    auth,
+    root,
+    pad,
+    rooms,
+    broker,
+    placement,
+    machine,
+    socket,
+    opener,
+    app,
+  };
 }
 
 /** Opens one terminal, commits its create, and authors its canvas element. */
@@ -193,7 +221,7 @@ function expanded(fixture: ContainerFixture, sessionId: string): string {
 
 /** Parks a placed terminal into the workspace pool. */
 function pooled(fixture: ContainerFixture, elementId: string, sessionId: string): string {
-  if (fixture.broker.park(sessionId, elementId) !== "ok") throw new Error("park failed");
+  if (fixture.placement.park(sessionId, elementId) !== "ok") throw new Error("park failed");
   return sessionId;
 }
 
@@ -421,7 +449,7 @@ describe("TerminalBroker bubble dissolve", () => {
     const first = placedTerminal(fixture, "terminal-1");
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.broker.addTile(
+    const added = fixture.placement.addTile(
       viewId,
       { kind: "terminal", sessionId: second },
       null,
@@ -458,7 +486,7 @@ describe("TerminalBroker container hardening", () => {
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
 
-    fixture.broker.addTile(viewId, { kind: "terminal", sessionId: second }, null, null);
+    fixture.placement.addTile(viewId, { kind: "terminal", sessionId: second }, null, null);
 
     expect(fixture.store.getPad(viewId)?.transient).toBe(false);
     expect(fixture.store.padOriginPadId(viewId)).toBe(fixture.pad.id);
@@ -563,9 +591,10 @@ describe("terminal_open into a tiled container", () => {
       sessionId: create.sessionId,
     });
     expect(tileLeafIds(layout ?? {})).toHaveLength(2);
+    // The session row carries no placement id (#59): the live layout above is the only
+    // truth about where a session appears, and it can appear more than once.
     expect(fixture.store.getSession(create.sessionId)).toMatchObject({
       padId: viewId,
-      elementId: opened.elementId,
       machineId: fixture.machine.machineId,
     });
     // Two leaves are a composition, not a bubble: the container it grew out of is durable.
@@ -973,7 +1002,7 @@ describe("pad tile extraction", () => {
     const first = placedTerminal(fixture, "terminal-1");
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.broker.addTile(
+    const added = fixture.placement.addTile(
       viewId,
       { kind: "terminal", sessionId: second },
       null,
@@ -1016,7 +1045,7 @@ describe("pad tile extraction", () => {
     const first = placedTerminal(fixture, "terminal-1", 80);
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.broker.addTile(
+    const added = fixture.placement.addTile(
       viewId,
       { kind: "terminal", sessionId: second },
       null,
@@ -1024,7 +1053,7 @@ describe("pad tile extraction", () => {
     );
     if (typeof added === "string") throw new Error(`addTile failed: ${added}`);
 
-    const extracted = fixture.broker.extractTile(viewId, added.tileId, 500, 300);
+    const extracted = fixture.placement.extractTile(viewId, added.tileId, 500, 300);
     if (typeof extracted === "string") throw new Error(`extract failed: ${extracted}`);
 
     expect(fixture.store.getPad(viewId)).toBeNull();

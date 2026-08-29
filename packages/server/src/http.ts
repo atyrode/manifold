@@ -22,13 +22,17 @@ import {
   MovePadTreeItemRequestSchema,
   MoveTerminalPoolRequestSchema,
   OkResponseSchema,
+  PLACEMENT_DENIED_CODE,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
-  PadTreeResponseSchema,
-  PadSessionsResponseSchema,
   PadResponseSchema,
+  PadSessionsResponseSchema,
+  PadTreeResponseSchema,
   PadsResponseSchema,
   ParkTerminalRequestSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
   RenamePadRequestSchema,
   RenameTerminalRequestSchema,
   RevokeRequestSchema,
@@ -47,6 +51,7 @@ import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { MachineGateway } from "./machine-ws.ts";
+import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
@@ -150,6 +155,7 @@ export class HttpApp {
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
+    private readonly placement: PlaceExecutor,
     private readonly machines: MachineGateway,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
@@ -366,14 +372,16 @@ export class HttpApp {
       const action = terminalMatch[2];
       if (request.method === "POST" && action === "/park") {
         const input = parseRequest(ParkTerminalRequestSchema, await parseJsonBody(request));
-        if (this.broker.park(sessionId, input.elementId) === "not_found") {
+        // P3 removes: `POST /api/place` with a pool destination is this same placement.
+        if (this.placement.park(sessionId, input.elementId) === "not_found") {
           throw new RequestError("not_found", "terminal not found");
         }
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
       if (request.method === "POST" && action === "/bind") {
         const input = parseRequest(BindTerminalRequestSchema, await parseJsonBody(request));
-        const bound = this.broker.bind(sessionId, input.padId, input.x, input.y);
+        // P3 removes: `POST /api/place` with a canvas or tile destination.
+        const bound = this.placement.bind(sessionId, input.padId, input.x, input.y);
         if (bound === "not_found") throw new RequestError("not_found", "terminal not found");
         if (bound === "pad_not_found") throw new RequestError("not_found", "pad not found");
         if (bound === "already_bound") {
@@ -442,7 +450,7 @@ export class HttpApp {
         const renamed = this.store.renamePad(padId, input.name);
         if (renamed === null) throw new RequestError("not_found", "pad not found");
         // Naming a container claims it: a named view is never popped by a bubble rule.
-        this.broker.harden(padId);
+        this.placement.harden(padId);
         const pad = this.store.getPad(padId);
         if (pad === null) throw new RequestError("not_found", "pad not found");
         return jsonResponse(PadResponseSchema.parse({ pad }));
@@ -471,14 +479,20 @@ export class HttpApp {
       if (containerMatch !== null && request.method === "POST") {
         const action = containerMatch[2];
         if (action === "pin") {
-          if (this.broker.harden(padId) === "not_found") {
+          if (this.placement.harden(padId) === "not_found") {
             throw new RequestError("not_found", "pad not found");
           }
           return jsonResponse(OkResponseSchema.parse({ ok: true }));
         }
         if (action === "tiles") {
           const input = parseRequest(AddPadTileRequestSchema, await parseJsonBody(request));
-          const added = this.broker.addTile(padId, input.surface, input.targetTileId, input.edge);
+          // P3 removes: `POST /api/place` with a tile destination.
+          const added = this.placement.addTile(
+            padId,
+            input.surface,
+            input.targetTileId,
+            input.edge,
+          );
           if (added === "not_found") throw new RequestError("not_found", "surface not found");
           if (added === "conflict") {
             throw new RequestError("conflict", "surface cannot be tiled into this container");
@@ -486,7 +500,8 @@ export class HttpApp {
           return jsonResponse(AddPadTileResponseSchema.parse({ tileId: added.tileId }));
         }
         const input = parseRequest(ComposePadTileRequestSchema, await parseJsonBody(request));
-        const composed = this.broker.composeOnCanvas(
+        // P3 removes: `POST /api/place` with a compose destination.
+        const composed = this.placement.composeOnCanvas(
           padId,
           input.targetElementId,
           input.surface,
@@ -501,14 +516,15 @@ export class HttpApp {
       if (tileMatch !== null) {
         const tileId = decodePathSegment(tileMatch[2], "tile id");
         if (request.method === "DELETE" && tileMatch[3] === undefined) {
-          const removed = this.broker.removeTile(padId, tileId);
+          const removed = this.placement.removeTile(padId, tileId);
           if (removed === "not_found") throw new RequestError("not_found", "tile not found");
           if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
           return jsonResponse(OkResponseSchema.parse({ ok: true }));
         }
         if (request.method === "POST" && tileMatch[3] === "/extract") {
           const input = parseRequest(ExtractPadTileRequestSchema, await parseJsonBody(request));
-          const extracted = this.broker.extractTile(padId, tileId, input.x, input.y);
+          // P3 removes: `POST /api/place` with a canvas destination for a tile surface.
+          const extracted = this.placement.extractTile(padId, tileId, input.x, input.y);
           if (extracted === "not_found") throw new RequestError("not_found", "tile not found");
           if (extracted === "conflict") {
             throw new RequestError("conflict", "tile cannot be extracted onto a canvas");
@@ -518,6 +534,41 @@ export class HttpApp {
           );
         }
       }
+    }
+
+    if (request.method === "POST" && pathname === "/api/place") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        // Same gate the verb routes carry: a placement moves items between containers, so
+        // a token scoped to one container can never authorize it.
+        throw new RequestError("forbidden", "scoped tokens cannot place items");
+      }
+      const input = parseRequest(PlaceRequestSchema, await parseJsonBody(request));
+      const outcome = this.placement.place(input);
+      if (outcome.status === "placed") {
+        return jsonResponse(PlaceResponseSchema.parse(outcome.result));
+      }
+      if (outcome.status === "denied") {
+        // A refusal is DATA: the rule that refused travels with the surface it refused and
+        // the container that refused it, so a client renders the rule instead of a string.
+        return jsonResponse(
+          PlacementDeniedResponseSchema.parse({
+            error: {
+              code: PLACEMENT_DENIED_CODE,
+              message: `placement refused by rule: ${outcome.denial.rule}`,
+              denial: outcome.denial,
+            },
+          }),
+          409,
+        );
+      }
+      throw new RequestError(
+        outcome.failure,
+        outcome.failure === "not_found"
+          ? "placement surface or container not found"
+          : "placement could not be carried out",
+      );
     }
 
     if (request.method === "POST" && pathname === "/api/principals") {
