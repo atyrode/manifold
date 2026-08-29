@@ -62,8 +62,8 @@ import {
   initialSectionOrder,
   rememberCollapsedSections,
   rememberSectionOrder,
-  reorderSections,
   SidebarSection,
+  useSectionStackDrag,
   type CollapsedSections,
   type SidebarSectionId,
 } from "./sidebar-section.tsx";
@@ -203,6 +203,17 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const [sectionOrder, setSectionOrder] =
     useState<readonly SidebarSectionId[]>(initialSectionOrder);
+  // Destructured because the rule tracking ref reads taints every member access on an
+  // object holding one; separate bindings keep the render-safe pieces render-usable.
+  const {
+    stackRef: sectionStackRef,
+    reordering: sectionReordering,
+    stackProps: sectionStackProps,
+    dragProps: sectionDragProps,
+  } = useSectionStackDrag(sectionOrder, (next) => {
+    setSectionOrder(next);
+    rememberSectionOrder(next);
+  });
   const [collapsedSections, setCollapsedSections] =
     useState<CollapsedSections>(initialCollapsedSections);
   const reorderingRef = useRef(false);
@@ -502,14 +513,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       if (current[id] === collapsed) return current;
       const next = { ...current, [id]: collapsed };
       rememberCollapsedSections(next);
-      return next;
-    });
-  };
-
-  const moveSection = (draggedId: string, targetId: SidebarSectionId): void => {
-    setSectionOrder((current) => {
-      const next = reorderSections(current, draggedId, targetId);
-      if (next !== current) rememberSectionOrder(next);
       return next;
     });
   };
@@ -1235,7 +1238,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
           count={`${online}/${machines?.length ?? 0} online`}
           collapsed={collapsedSections.machines === true}
           onCollapsedChange={toggleSection}
-          onReorder={moveSection}
+          {...sectionDragProps("machines")}
           key="machines"
         >
           <div className="workspace-sidebar workspace-machines">
@@ -1279,7 +1282,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             ) : undefined
           }
           onCollapsedChange={toggleSection}
-          onReorder={moveSection}
+          {...sectionDragProps("pads")}
           key="pads"
         >
           {sidebarOpen && folderCreateParentId === null ? renderFolderCreateForm(false) : null}
@@ -1287,26 +1290,30 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         </SidebarSection>
       );
     }
-    return (
-      <SidebarSection
-        id="terminals"
-        title="Terminals"
-        testId="terminals-section"
-        count={poolTerminals.length}
-        collapsed={collapsedSections.terminals === true}
-        onCollapsedChange={toggleSection}
-        onReorder={moveSection}
-        key="terminals"
-      >
-        <TerminalPoolSection
-          terminals={poolTerminals}
-          machines={workspace?.machines ?? []}
-          onKill={killPooled}
-          onRename={renamePooled}
-          onMove={movePooled}
-        />
-      </SidebarSection>
-    );
+    if (section === "terminals") {
+      return (
+        <SidebarSection
+          id="terminals"
+          title="Terminals"
+          testId="terminals-section"
+          count={poolTerminals.length}
+          collapsed={collapsedSections.terminals === true}
+          onCollapsedChange={toggleSection}
+          {...sectionDragProps("terminals")}
+          key="terminals"
+        >
+          <TerminalPoolSection
+            terminals={poolTerminals}
+            machines={workspace?.machines ?? []}
+            onKill={killPooled}
+            onRename={renamePooled}
+            onMove={movePooled}
+          />
+        </SidebarSection>
+      );
+    }
+    // "views" is a reserved slot in the stored order until the first view exists.
+    return null;
   };
 
   const collapsedPresencePrincipals =
@@ -1413,7 +1420,11 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             </form>
           ) : null}
 
-          <div className="pad-sidebar-sections">
+          <div
+            ref={sectionStackRef}
+            className={`pad-sidebar-sections${sectionReordering ? " is-reordering" : ""}`}
+            {...sectionStackProps}
+          >
             {(sidebarOpen ? sectionOrder : COLLAPSED_RAIL_SECTIONS).map(renderSidebarSection)}
           </div>
 
