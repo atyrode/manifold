@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@headless-tree/core": "1.7.0",
-    "@headless-tree/react": "1.7.0",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "@manifold/sdk": "workspace:*",
@@ -19,8 +18,7 @@
     "@xyflow/react": "12.11.5",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "yjs": "13.6.32",
-    "zod": "4.4.3"
+    "yjs": "13.6.32"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",
