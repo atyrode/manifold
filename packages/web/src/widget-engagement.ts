@@ -45,10 +45,15 @@ export interface WidgetSocketSwitch {
  * @param open  opens a socket in the given discipline (already `connect()`-able).
  * @param onSlot reports the socket the widget should paint; null before the first
  *               init and after `dispose`.
+ * @param onFailure a requested discipline could not be reached. Reported rather than
+ *               logged because engaging a widget is a direct user action: without it the
+ *               viewer is left looking at a tile that silently refuses keystrokes. The
+ *               consumer owns the notice surface — this module stays React-free.
  */
 export function createWidgetSocketSwitch<T extends EngageableSocket>(
   open: (role: WidgetRole) => T,
   onSlot: (slot: WidgetSlot<T> | null) => void,
+  onFailure: (role: WidgetRole, reason: unknown) => void,
 ): WidgetSocketSwitch {
   let painted: WidgetSlot<T> | null = null;
   let pending: WidgetSlot<T> | null = null;
@@ -83,7 +88,7 @@ export function createWidgetSocketSwitch<T extends EngageableSocket>(
         if (disposed || pending !== inflight) return;
         pending = null;
         client.close();
-        console.error("evt=widget_socket_failed", reason);
+        onFailure(role, reason);
       },
     );
   };

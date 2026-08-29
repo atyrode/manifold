@@ -22,6 +22,7 @@ import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.
 import {
   rawMachineSocket,
   rawSessionSocket,
+  sessionFrame,
   type AdversarialMachineSocket,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
@@ -33,7 +34,7 @@ async function joinRaw(
   padId: string,
   token: string,
 ): Promise<InitMessage> {
-  socket.sendRaw(JSON.stringify({ type: "join", padId, token, protocolVersion: PROTOCOL_VERSION }));
+  socket.sendRaw(sessionFrame({ type: "join", padId, token, protocolVersion: PROTOCOL_VERSION }));
   const message = await waitFor(
     () => socket.frames.find((frame) => frame.type === "init"),
     5_000,
@@ -76,7 +77,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     sockets.push(malformedKnown);
     await joinRaw(malformedKnown, pad.id, grant.token);
     malformedKnown.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "doc_update",
         update: "not base64",
       }),
@@ -89,7 +90,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     const unknownType = await rawSessionSocket(server);
     sockets.push(unknownType);
     await joinRaw(unknownType, pad.id, grant.token);
-    unknownType.sendRaw(JSON.stringify({ type: "zorp" }));
+    unknownType.sendRaw(sessionFrame({ type: "zorp" }));
     unknownType.sendRaw(JSON.stringify({ type: "ping" }));
     await waitFor(() => unknownType.frames.some((frame) => frame.type === "pong"), 5_000, 20);
     expect(unknownType.readyState).toBe(WebSocket.OPEN);
@@ -99,7 +100,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     await joinRaw(oversized, pad.id, grant.token);
     const frameStart = oversized.frames.length;
     oversized.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "doc_update",
         update: encodeUpdate(new Uint8Array(MAX_DOC_UPDATE_BYTES + 1)),
       }),
@@ -131,7 +132,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     elementsMap(invalidDoc).set("invalid-element", invalidElement);
     const repairStart = repaired.frames.length;
     repaired.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "doc_update",
         update: encodeUpdate(Y.encodeStateAsUpdate(invalidDoc)),
       }),
@@ -147,7 +148,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
       20,
     );
     expect(repairFrames.map((frame) => frame.by)).toEqual([grant.principal.id, "server"]);
-    repaired.sendRaw(JSON.stringify({ type: "resync_request" }));
+    repaired.sendRaw(sessionFrame({ type: "resync_request" }));
     const resync = await waitFor(
       () => repaired.frames.slice(repairStart).find((frame) => frame.type === "resync"),
       5_000,

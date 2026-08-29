@@ -1,8 +1,9 @@
-import type { SceneElement, ServerMessage } from "@manifold/protocol";
+import type { SceneElement, ServerMessageBody } from "@manifold/protocol";
 import { base64ToText, type SessionClient } from "@manifold/sdk";
 import { waitFor, type ProcessOutput, type TestAgent, type TestServer } from "../src/index.ts";
 
-type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
+// The SDK hands subscribers channel-agnostic bodies: a room handle already knows its room.
+type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 /** A terminal capture keeps snapshot and post-snapshot output separate for seq-exact checks. */
 export interface TerminalCapture {
@@ -15,7 +16,7 @@ export interface TerminalCapture {
 }
 
 /** Waits for one typed SDK message without leaving an event listener behind on timeout. */
-export function nextMessage<T extends ServerMessage["type"]>(
+export function nextMessage<T extends ServerMessageBody["type"]>(
   client: SessionClient,
   type: T,
   timeoutMs = 10_000,

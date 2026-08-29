@@ -23,6 +23,7 @@ import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.
 import {
   rawMachineSocket,
   rawSessionSocket,
+  sessionFrame,
   type AdversarialMachineSocket,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
@@ -79,7 +80,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const garbage = await rawSessionSocket(server);
     rawSockets.push(garbage);
     garbage.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: "garbage-token",
@@ -97,7 +98,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const wrongPad = await rawSessionSocket(server);
     rawSockets.push(wrongPad);
     wrongPad.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padY.id,
         token: scoped.token,
@@ -224,7 +225,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const revokedSocket = await rawSessionSocket(server);
     rawSockets.push(revokedSocket);
     revokedSocket.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: revokee.token,
@@ -243,7 +244,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     });
     try {
       revokedSocket.sendRaw(
-        JSON.stringify({
+        sessionFrame({
           type: "doc_update",
           update: "AAA=",
         }),
@@ -262,7 +263,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const reconnectRevoked = await rawSessionSocket(server);
     rawSockets.push(reconnectRevoked);
     reconnectRevoked.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: revokee.token,
@@ -341,7 +342,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     const viewer = await rawSessionSocket(server);
     rawSockets.push(viewer);
     viewer.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: pad.id,
         token: viewerGrant.token,
@@ -350,7 +351,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     );
     await waitFor(() => viewer.frames.find((frame) => frame.type === "init"), 5_000, 20);
     const firstSnapshotRequestStart = machine.frames.length;
-    viewer.sendRaw(JSON.stringify({ type: "terminal_attach", sessionId: session.id }));
+    viewer.sendRaw(sessionFrame({ type: "terminal_attach", sessionId: session.id }));
     const firstSnapshotRequest = await waitFor(
       () =>
         machine.frames

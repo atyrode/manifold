@@ -1,9 +1,10 @@
 import { ROOT_TILE_ID, type Principal, type TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
-import type { NodeProps } from "@xyflow/react";
+import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { memo, useEffect, useRef, useState } from "react";
 import { getPad } from "./api.ts";
 import { COMPOSE_TARGET_CLASS, useFlowPad } from "./flow-terminal-node.tsx";
+import { endCarry, startItemDrag } from "./item-envelope.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
@@ -40,14 +41,20 @@ import {
  *             an abandoned widget drops back to spectator instead of pinning a bubble.
  */
 
-/** Payload a tile dragged out of a widget carries: `{"containerId":…,"tileId":…}`. */
-export const TILE_DRAG_MIME = "application/x-manifold-tile";
-
 /**
  * React Flow drag handle for a portal node: the name strip only, so the preview
- * body stays free for the tile drags that decompose a view.
+ * body stays free for the tile drags that decompose a composition.
  */
 export const PORTAL_DRAG_HANDLE = ".flow-portal__strip";
+
+/**
+ * Resize is canvas-item chrome, not terminal chrome: a widget's frame border is a
+ * grab zone exactly as a terminal's is (same 8px edges, same 14px corners, same
+ * transparent controls), so the two species read as one. The floor is a widget's,
+ * not a shell's — a composition preview stays legible far below a usable 80×24.
+ */
+export const MIN_PORTAL_WIDTH = 240;
+export const MIN_PORTAL_HEIGHT = 160;
 
 /**
  * Container nesting renders live to depth 2 — the routed canvas is depth 1, so a
@@ -68,7 +75,7 @@ const MAX_PRESENCE_AVATARS = 3;
 
 const NO_PRINCIPALS: readonly Principal[] = [];
 
-/** Container names live in the pad row, not the room, so the widget reads its own. */
+/** Container names live in the container's row, not its room, so the widget reads its own. */
 function usePadName(token: string, padId: string): string | null {
   const [name, setName] = useState<string | null>(null);
   useEffect(() => {
@@ -79,6 +86,9 @@ function usePadName(token: string, padId: string): string | null {
         if (!cancelled) setName(pad.name);
       })
       .catch((reason: unknown) => {
+        // DELIBERATELY console-only, unlike every other failure in this app: nobody asked
+        // for this fetch, the widget already reads its fallback label, and a canvas full of
+        // widgets would raise one toast per widget on a single network blip.
         console.error("evt=portal_name_failed", reason);
       });
     return () => {
@@ -104,10 +114,13 @@ function useWidgetSocket(
   live: boolean,
   role: WidgetRole,
   open: (padId: string, role: WidgetRole) => SessionClient,
+  onFailure: (role: WidgetRole, reason: unknown) => void,
 ): WidgetSlot<SessionClient> | null {
   const openRef = useRef(open);
+  const failureRef = useRef(onFailure);
   useEffect(() => {
     openRef.current = open;
+    failureRef.current = onFailure;
   });
   const [slot, setSlot] = useState<WidgetSlot<SessionClient> | null>(null);
   const switchRef = useRef<WidgetSocketSwitch | null>(null);
@@ -116,6 +129,7 @@ function useWidgetSocket(
     const sockets = createWidgetSocketSwitch(
       (nextRole) => openRef.current(containerId, nextRole),
       setSlot,
+      (failedRole, reason) => failureRef.current(failedRole, reason),
     );
     switchRef.current = sockets;
     return () => {
@@ -284,10 +298,8 @@ function PortalTerminalTile({
         }
         draggable
         onPointerDown={(event) => event.stopPropagation()}
-        onDragStart={(event) => {
-          event.dataTransfer.setData(TILE_DRAG_MIME, JSON.stringify({ containerId, tileId }));
-          event.dataTransfer.effectAllowed = "move";
-        }}
+        onDragStart={(event) => startItemDrag(event, { kind: "tile", containerId, tileId })}
+        onDragEnd={() => endCarry()}
         onDoubleClick={() => pad.navigate(`/p/${encodeURIComponent(containerId)}`)}
       >
         <span className="flow-portal__grip" aria-hidden="true">
@@ -312,7 +324,7 @@ function PortalPadTile({ padId }: { readonly padId: string }): React.ReactElemen
       <span className="flow-portal__card-glyph" aria-hidden="true">
         ▦
       </span>
-      <strong>{name ?? "pad"}</strong>
+      <strong>{name ?? "canvas"}</strong>
       <button
         type="button"
         className="flow-portal__enter"
@@ -386,6 +398,20 @@ function PortalTile({
       );
     case "pad":
       return <PortalPadTile padId={surface.padId} />;
+    case "text":
+      /*
+        A note inside a widget preview is a READ of the composition's own document — the
+        element lives there, so the text is whatever the room says it is. It is not editable
+        from a preview even when engaged: editing belongs to the composition's renderer,
+        which is one double-click away, and a scaled 0.5 textarea is not an editor.
+      */
+      return (
+        <div className="flow-portal__note">
+          {client.elements.get(surface.elementId)?.type === "text"
+            ? client.elementText(surface.elementId)?.toString()
+            : null}
+        </div>
+      );
     default: {
       const exhaustiveSurface: never = surface;
       return exhaustiveSurface;
@@ -420,6 +446,16 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     live,
     engaged ? "occupant" : "spectator",
     pad.openClient,
+    (failedRole) => {
+      // Engaging is a direct action, so its failure has to be visible: without this the
+      // viewer is left clicking into a tile that will never accept a keystroke.
+      setEngagement(null);
+      pad.notify(
+        failedRole === "occupant"
+          ? "Could not open this composition for editing."
+          : "Could not open this composition.",
+      );
+    },
   );
   const client = slot?.client ?? null;
   /** Engagement is only real once the occupant socket is the one being painted. */
@@ -440,6 +476,21 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       if (root === null) return;
       const target = event.target;
       if (target instanceof Node && root.contains(target)) return;
+      /*
+       * The frame's resize controls live OUTSIDE `.flow-portal` (the frame clips its
+       * overflow, and a clipped control is a dead pointer target), but grabbing this
+       * widget's own border is not a press "outside the widget": dropping occupancy
+       * mid-resize would close the occupant socket under the pointer and hand a
+       * transient view its excuse to pop. They are the widget's only other children
+       * in the node wrapper, so the wrapper is the whole test.
+       */
+      if (
+        target instanceof Element &&
+        root.parentElement?.contains(target) === true &&
+        target.closest(".react-flow__resize-control") !== null
+      ) {
+        return;
+      }
       setEngagement(null);
     };
     // Capture on the document: a press a canvas handler stops must still end
@@ -465,83 +516,108 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     .join(" ");
 
   return (
-    <div className={rootClass} ref={rootRef} onDoubleClick={enter}>
-      <NodeTitleBar
-        className="flow-portal__strip"
-        icon="▤"
-        title={name}
-        defaultTitle="composition"
-        middle={
-          occupants.length === 0 ? null : (
-            <span
-              className="flow-portal__presence"
-              aria-label={`${String(occupants.length)} in this composition`}
-            >
-              {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
-                <span
-                  key={principal.id}
-                  className="flow-portal__avatar"
-                  style={{ backgroundColor: principal.color }}
-                  title={
-                    principal.id === selfId
-                      ? "you are in this composition"
-                      : `${principal.name} is in this composition`
-                  }
-                >
-                  {principal.name.slice(0, 1).toUpperCase()}
-                </span>
-              ))}
-              {occupants.length > MAX_PRESENCE_AVATARS ? (
-                <span className="flow-portal__avatar flow-portal__avatar--more">
-                  +{occupants.length - MAX_PRESENCE_AVATARS}
-                </span>
-              ) : null}
-            </span>
-          )
+    <>
+      {/*
+        Desktop-window ergonomics, identical to a terminal node's: the frame border is
+        the grab zone, so the pointer turns into a resize cursor on hover and no
+        selection step is needed. Rendered as a SIBLING of `.flow-portal` rather than a
+        child because the widget frame clips its overflow (the preview must not spill),
+        and a clipped control is a dead pointer target — the outer half of every edge
+        band would be unreachable. The controls carry no paint (the cursor is the
+        affordance) and commit once on resize end, matching the drag path.
+      */}
+      <NodeResizer
+        nodeId={id}
+        isVisible={pad.tool === "select"}
+        lineClassName="flow-portal-resize-edge"
+        handleClassName="flow-portal-resize-corner"
+        minWidth={MIN_PORTAL_WIDTH}
+        minHeight={MIN_PORTAL_HEIGHT}
+        onResize={(_event, params) =>
+          pad.onResize(id, params.x, params.y, params.width, params.height)
         }
-        onMinimize={() => pad.removeElement(id)}
-        minimizeLabel={`Put away composition ${name ?? containerId}`}
-        minimizeTooltip="Remove this widget from the canvas (the composition keeps running)"
-        onMaximize={enter}
-        maximizeLabel={`Open composition ${name ?? containerId}`}
-        maximizeTooltip="Open this composition"
-        onClose={() => pad.onDeleteContainer(containerId, id)}
-        closeLabel={`Delete composition ${name ?? containerId}`}
-        closeTooltip="Delete this composition for everyone"
-        closeConfirm={`Delete “${name ?? "this composition"}”?`}
+        onResizeEnd={(_event, params) =>
+          pad.onResizeEnd(id, params.x, params.y, params.width, params.height)
+        }
       />
-      <div className="flow-portal__viewport">
-        {client !== null && layout !== null ? (
-          <div
-            className="flow-portal__preview"
-            style={{
-              width: `${String(100 / PREVIEW_SCALE)}%`,
-              height: `${String(100 / PREVIEW_SCALE)}%`,
-              transform: `scale(${String(PREVIEW_SCALE)})`,
-            }}
-          >
-            <PortalTile
-              client={client}
-              containerId={containerId}
-              layout={layout}
-              tileId={ROOT_TILE_ID}
-              interactive={interactive}
-              engagedTileId={engagedTileId}
-              onEngage={(tileId) => setEngagement({ containerId, tileId })}
-            />
-          </div>
-        ) : (
-          <div className="flow-portal__card">
-            <span className="flow-portal__card-glyph" aria-hidden="true">
-              ▤
-            </span>
-            <span className="flow-portal__card-hint">
-              {live ? "opening composition…" : "nested composition — open it to work inside"}
-            </span>
-          </div>
-        )}
+      <div className={rootClass} ref={rootRef} onDoubleClick={enter}>
+        <NodeTitleBar
+          className="flow-portal__strip"
+          icon="▤"
+          title={name}
+          defaultTitle="composition"
+          middle={
+            occupants.length === 0 ? null : (
+              <span
+                className="flow-portal__presence"
+                aria-label={`${String(occupants.length)} in this composition`}
+              >
+                {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
+                  <span
+                    key={principal.id}
+                    className="flow-portal__avatar"
+                    style={{ backgroundColor: principal.color }}
+                    title={
+                      principal.id === selfId
+                        ? "you are in this composition"
+                        : `${principal.name} is in this composition`
+                    }
+                  >
+                    {principal.name.slice(0, 1).toUpperCase()}
+                  </span>
+                ))}
+                {occupants.length > MAX_PRESENCE_AVATARS ? (
+                  <span className="flow-portal__avatar flow-portal__avatar--more">
+                    +{occupants.length - MAX_PRESENCE_AVATARS}
+                  </span>
+                ) : null}
+              </span>
+            )
+          }
+          onMinimize={() => pad.removeElement(id)}
+          minimizeLabel={`Put away composition ${name ?? containerId}`}
+          minimizeTooltip="Remove this widget from the canvas (the composition keeps running)"
+          onMaximize={enter}
+          maximizeLabel={`Open composition ${name ?? containerId}`}
+          maximizeTooltip="Open this composition"
+          onClose={() => pad.onDeleteContainer(containerId, id)}
+          closeLabel={`Delete composition ${name ?? containerId}`}
+          closeTooltip="Delete this composition for everyone"
+          closeConfirm={`Delete “${name ?? "this composition"}”?`}
+        />
+        <div className="flow-portal__viewport">
+          {client !== null && layout !== null ? (
+            <div
+              className="flow-portal__preview"
+              style={{
+                width: `${String(100 / PREVIEW_SCALE)}%`,
+                height: `${String(100 / PREVIEW_SCALE)}%`,
+                transform: `scale(${String(PREVIEW_SCALE)})`,
+              }}
+            >
+              <PortalTile
+                client={client}
+                containerId={containerId}
+                layout={layout}
+                tileId={ROOT_TILE_ID}
+                interactive={interactive}
+                engagedTileId={engagedTileId}
+                onEngage={(tileId) => setEngagement({ containerId, tileId })}
+              />
+            </div>
+          ) : (
+            <div className="flow-portal__card">
+              <span className="flow-portal__card-glyph" aria-hidden="true">
+                ▤
+              </span>
+              <span className="flow-portal__card-hint">
+                {live ? "opening composition…" : "nested composition — open it to work inside"}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

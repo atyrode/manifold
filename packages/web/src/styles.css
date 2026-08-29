@@ -805,15 +805,10 @@ input:focus {
   background: #2b2e34;
 }
 
-.pad-sidebar-muted,
-.pad-sidebar-error {
+.pad-sidebar-muted {
   margin: 0.65rem 0.55rem;
   color: #868e96;
   font-size: 0.76rem;
-}
-
-.pad-sidebar-error {
-  color: #ffa8a8;
 }
 
 .pad-sidebar-folder-icon {
@@ -2034,9 +2029,6 @@ button.pad-sidebar-session.is-summary > small {
   color: #fff;
   background: color-mix(in srgb, currentColor 80%, #111);
 }
-.flow-error {
-  color: #ff6b6b;
-}
 .flow-pad-canvas {
   position: relative;
   flex: 1 1 auto;
@@ -2344,26 +2336,6 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.62rem;
   font-style: italic;
   letter-spacing: 0.02em;
-}
-
-/* Same span in both header states — inside the view bar's control cluster, or in a
-   headerless bubble's own strip. Bounded so a long message cannot push the controls
-   off the bar. */
-.tiled-notice {
-  overflow: hidden;
-  max-width: 22rem;
-  color: #ffc9c9;
-  font-size: 0.72rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tiled-notice-strip {
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid #23272e;
-  padding: 0.25rem 0.6rem;
-  background: #16191f;
 }
 
 .tiled-status {
@@ -2975,4 +2947,182 @@ button.pad-sidebar-session.is-summary > small {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
+}
+
+/* THE notice layer. Fixed to the viewport and mounted at the application root, so
+   it is above every renderer, outside the sidebar's collapse subtree, and outside
+   any transformed canvas — the three places notices used to get lost. The layer
+   itself is pointer-transparent; only the rows take the pointer, so a stack sitting
+   over the canvas never eats a drag. */
+.toast-layer {
+  position: fixed;
+  z-index: 200;
+  right: 0;
+  bottom: 1.1rem;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 1rem;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  max-width: min(34rem, 100%);
+  align-items: flex-start;
+  gap: 0.55rem;
+  border: 1px solid #3b4048;
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.45rem 0.45rem 0.7rem;
+  color: #e9ecef;
+  background: #202329;
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 45%);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  pointer-events: auto;
+  animation: toast-enter 160ms ease-out;
+}
+
+/* A failure that leaves the app degraded reads as one: the same card, alarmed. */
+.toast--sticky {
+  border-color: #7a3b3b;
+  color: #ffc9c9;
+  background: #2a2023;
+}
+
+/* Duration must match TOAST_FADE_MS in toast.tsx. */
+.toast--leaving {
+  opacity: 0;
+  transform: translateY(0.35rem);
+  transition:
+    opacity 220ms ease-in,
+    transform 220ms ease-in;
+}
+
+.toast-message {
+  overflow-wrap: anywhere;
+}
+
+.toast-dismiss {
+  width: 1.3rem;
+  height: 1.3rem;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 0.3rem;
+  padding: 0;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover,
+.toast-dismiss:focus-visible {
+  color: #f1f3f5;
+  background: #2f333a;
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+
+  .toast--leaving {
+    transform: none;
+    transition: opacity 220ms linear;
+  }
+}
+
+/* ── Placement legality cues ──────────────────────────────────────────────────
+   Uniform across every drop target, because the pipeline behind them is uniform:
+   a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its
+   preview box, and the named rule rides in the element's `title`. The prose badge
+   is the human half of the same denial. Legal targets keep the existing highlights
+   (`.pad-sidebar-row--terminal-target`, `.tiled-leaf.is-drop-target`). */
+[data-drop-denial] {
+  outline: 1px dashed rgb(255 107 107 / 55%);
+  outline-offset: -2px;
+  cursor: not-allowed;
+}
+
+.flow-compose-preview.is-denied,
+.tiled-snap-preview.is-denied {
+  border-color: rgb(255 107 107 / 60%);
+  background: rgb(255 107 107 / 10%);
+}
+
+/* Absolute inside its preview box: both `.flow-compose-preview` (flow space) and
+   `.tiled-leaf` (percentage leaf space) already establish a containing block. */
+.drop-denial-note {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  overflow: hidden;
+  padding: 0.12rem 0.35rem;
+  color: #ffc9c9;
+  background: rgb(20 20 22 / 82%);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pad-sidebar-terminal-pool.is-drop-target {
+  outline: 1px dashed rgb(116 192 252 / 50%);
+  outline-offset: -2px;
+}
+
+/* ── Portal widget resize chrome (PortalResize) ────────────────────────────────
+   Resize is canvas-item chrome, so a view widget's frame border is the same grab
+   zone a terminal's is: same 8px edge bands, same 14px corners, same transparent
+   controls (the OS resize cursor React Flow supplies is the whole affordance).
+   Kept as its own selectors rather than folded into the terminal block above so
+   this section stays append-only; the metrics mirror
+   `.flow-terminal-resize-edge` / `.flow-terminal-resize-corner` exactly. */
+.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge,
+.flow-pad-canvas .react-flow__resize-control.handle.flow-portal-resize-corner {
+  /*
+   * One band above the widget's shield (z 8), which is itself above the previewed
+   * terminal's titlebar and overlays: the border strip wins over everything inside
+   * the frame, exactly like an OS window, while the shield keeps the rest of the
+   * body as the extraction grab zone and the strip stays the drag surface.
+   */
+  z-index: 9;
+  border-color: transparent;
+  background: transparent;
+}
+
+.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.left,
+.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.right {
+  width: 8px;
+}
+
+.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.top,
+.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.bottom {
+  height: 8px;
+}
+
+.flow-pad-canvas .react-flow__resize-control.handle.flow-portal-resize-corner {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }

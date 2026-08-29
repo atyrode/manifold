@@ -89,6 +89,12 @@ export interface FlowPadContextValue {
   readonly presence: readonly PadPresence[];
   /** Pushes a route; portals navigate into the container they point at. */
   readonly navigate: (path: string) => void;
+  /**
+   * The one notice surface, handed down so a node can report a failure of its OWN
+   * (a widget that cannot open its occupant socket) without importing the toast layer
+   * into modules that must stay renderer-agnostic.
+   */
+  readonly notify: (message: string) => void;
 }
 
 const FlowPadContext = createContext<FlowPadContextValue | null>(null);

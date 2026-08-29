@@ -786,8 +786,8 @@ try {
     { selector: ".tiled-leaf", fx: 0.9, fy: 0.5 },
   );
   check(
-    "a pool row drag carries the terminal mime into a tile drop",
-    poolDrop.ok && poolDrop.types.includes("application/x-manifold-terminal") && poolDrop.accepted,
+    "a pool row drag carries the one item envelope into a tile drop",
+    poolDrop.ok && poolDrop.types.includes("application/x-manifold-item") && poolDrop.accepted,
     `types=[${poolDrop.types.join(", ")}] accepted=${String(poolDrop.accepted)}`,
   );
   const twoTiles = await settles(async () => (await viewTerminals(browser!)) === 2, 30_000);
@@ -881,8 +881,8 @@ try {
     { selector: ".tiled-leaf", fx: 0.5, fy: 0.9 },
   );
   check(
-    "a pad row drag carries the container mime into a tile drop",
-    padDrop.ok && padDrop.types.includes("application/x-manifold-container") && padDrop.accepted,
+    "a canvas row drag carries the one item envelope into a tile drop",
+    padDrop.ok && padDrop.types.includes("application/x-manifold-item") && padDrop.accepted,
     `types=[${padDrop.types.join(", ")}] accepted=${String(padDrop.accepted)}`,
   );
   const liveBoard = await settles(
@@ -1079,9 +1079,9 @@ try {
     { selector: ".react-flow__pane", fx: 0.2, fy: 0.85 },
   );
   check(
-    "a tile drag out of a widget carries the tile mime onto the canvas",
+    "a tile drag out of a widget carries the one item envelope onto the canvas",
     extraction.ok &&
-      extraction.types.includes("application/x-manifold-tile") &&
+      extraction.types.includes("application/x-manifold-item") &&
       extraction.accepted,
     `types=[${extraction.types.join(", ")}] accepted=${String(extraction.accepted)}`,
   );

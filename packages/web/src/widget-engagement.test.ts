@@ -16,12 +16,14 @@ interface FakeSocket extends EngageableSocket {
 function harness(): {
   readonly opened: FakeSocket[];
   readonly slots: (WidgetSlot<FakeSocket> | null)[];
+  readonly failures: { readonly role: WidgetRole; readonly reason: unknown }[];
   readonly painted: () => FakeSocket | null;
   readonly request: (role: WidgetRole) => void;
   readonly dispose: () => void;
 } {
   const opened: FakeSocket[] = [];
   const slots: (WidgetSlot<FakeSocket> | null)[] = [];
+  const failures: { readonly role: WidgetRole; readonly reason: unknown }[] = [];
   const open = (role: WidgetRole): FakeSocket => {
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const socket: FakeSocket = {
@@ -41,12 +43,19 @@ function harness(): {
     opened.push(socket);
     return socket;
   };
-  const { request, dispose } = createWidgetSocketSwitch(open, (slot) => {
-    slots.push(slot);
-  });
+  const { request, dispose } = createWidgetSocketSwitch(
+    open,
+    (slot) => {
+      slots.push(slot);
+    },
+    (role, reason) => {
+      failures.push({ role, reason });
+    },
+  );
   return {
     opened,
     slots,
+    failures,
     painted: () => slots.at(-1)?.client ?? null,
     request,
     dispose,
@@ -125,6 +134,11 @@ test("a failed escalation closes its socket and leaves the painted one alone", a
   await flush();
   expect(h.opened[1]?.closed).toBe(true);
   expect(h.painted()).toBe(h.opened[0] ?? null);
+  // Reported, never swallowed: engaging is a direct user action, and a silent failure
+  // leaves the viewer typing into a tile that refuses every key.
+  expect(h.failures).toHaveLength(1);
+  expect(h.failures[0]?.role).toBe("occupant");
+  expect((h.failures[0]?.reason as Error).message).toBe("refused");
   // The failure is not sticky: engaging again opens a fresh socket.
   h.request("occupant");
   expect(h.opened).toHaveLength(3);

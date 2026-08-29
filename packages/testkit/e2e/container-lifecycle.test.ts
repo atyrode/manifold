@@ -1,20 +1,17 @@
 import { expect, test } from "bun:test";
 import {
-  AddPadTileRequestSchema,
-  AddPadTileResponseSchema,
-  ComposePadTileRequestSchema,
-  ComposePadTileResponseSchema,
   ExpandTerminalResponseSchema,
-  ExtractPadTileRequestSchema,
-  ExtractPadTileResponseSchema,
   OkResponseSchema,
   PadPresenceResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
-  ParkTerminalRequestSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
   RenamePadRequestSchema,
   RenameTerminalRequestSchema,
   type Pad,
+  type PlaceRequest,
+  type PlaceResponse,
   type SessionInfo,
   type TileLayout,
 } from "@manifold/protocol";
@@ -120,6 +117,20 @@ async function waitForTileCount(client: SessionClient, count: number): Promise<T
   const layout = client.layout();
   if (layout === null) throw new Error("tiled container published no layout tree");
   return layout;
+}
+
+/**
+ * The ONE placement call. Every gesture this file exercises — park, tile, compose, extract —
+ * is the same envelope with a different destination, and the returned `op` says which
+ * placement the declarations chose, so each caller asserts the op it expected.
+ */
+async function place(server: TestServer, request: PlaceRequest): Promise<PlaceResponse> {
+  return await ownerFetch(server, "/api/place", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(PlaceRequestSchema.parse(request)),
+    responseSchema: PlaceResponseSchema,
+  });
 }
 
 async function listPads(server: TestServer): Promise<readonly Pad[]> {
@@ -253,11 +264,9 @@ test("splitting a bubble hardens it: the view and both tiles survive an empty ro
     const guest = await openPlaced(canvas, "el-split-2", { x: 900, y: 120 });
 
     // A tile surface must be pooled or already in the container, so park the second PTY.
-    await ownerFetch(server, `/api/terminals/${guest.id}/park`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(ParkTerminalRequestSchema.parse({ elementId: "el-split-2" })),
-      responseSchema: OkResponseSchema,
+    await place(server, {
+      surface: { kind: "element", padId: pad.id, elementId: "el-split-2" },
+      destination: { kind: "pool" },
     });
     await waitFor(() => !canvas.elements.has("el-split-2"), 10_000, 20);
 
@@ -270,18 +279,11 @@ test("splitting a bubble hardens it: the view and both tiles survive an empty ro
     await waitForTileCount(viewer, 1);
 
     const changed = nextLayoutChange(viewer);
-    const added = await ownerFetch(server, `/api/pads/${expanded.viewId}/tiles`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(
-        AddPadTileRequestSchema.parse({
-          surface: { kind: "terminal", sessionId: guest.id },
-          targetTileId: null,
-          edge: null,
-        }),
-      ),
-      responseSchema: AddPadTileResponseSchema,
+    const added = await place(server, {
+      surface: { kind: "terminal", sessionId: guest.id },
+      destination: { kind: "tile", padId: expanded.viewId, targetTileId: null, edge: null },
     });
+    if (added.op !== "add_tile") throw new Error(`expected add_tile, got ${added.op}`);
     // The structural write lands as a remote doc update, so every joined renderer re-reads.
     expect(await changed).toBe("remote");
     const split = await waitForTileCount(viewer, 2);
@@ -401,18 +403,11 @@ test("composing two canvas terminals births a named view that survives extractin
     await waitFor(() => canvas.sessions.get(dragged.id)?.name === "beta", 10_000, 20);
 
     // Drop one terminal on the other: the target becomes the widget, both become tiles.
-    const composed = await ownerFetch(server, `/api/pads/${pad.id}/compose`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(
-        ComposePadTileRequestSchema.parse({
-          targetElementId: "el-target",
-          surface: { kind: "terminal", sessionId: dragged.id },
-          edge: "right",
-        }),
-      ),
-      responseSchema: ComposePadTileResponseSchema,
+    const composed = await place(server, {
+      surface: { kind: "terminal", sessionId: dragged.id },
+      destination: { kind: "compose", padId: pad.id, targetElementId: "el-target", edge: "right" },
     });
+    if (composed.op !== "compose") throw new Error(`expected compose, got ${composed.op}`);
     const view = await ownerFetch(server, `/api/pads/${composed.viewId}`, {
       responseSchema: PadResponseSchema,
     });
@@ -452,17 +447,13 @@ test("composing two canvas terminals births a named view that survives extractin
     );
 
     // Decomposition: pull one tile back onto the canvas the widget lives on. An occupant is
-    // joined, so the bubble rule cannot pop the leftover single-tile view.
-    const extracted = await ownerFetch(
-      server,
-      `/api/pads/${composed.viewId}/tiles/${draggedTile}/extract`,
-      {
-        method: "POST",
-        headers: JSON_HEADERS,
-        body: JSON.stringify(ExtractPadTileRequestSchema.parse({ x: 640, y: 700 })),
-        responseSchema: ExtractPadTileResponseSchema,
-      },
-    );
+    // joined, so the bubble rule cannot pop the leftover single-tile view. The destination is
+    // NAMED now — the retired route derived it from the view's stored return address.
+    const extracted = await place(server, {
+      surface: { kind: "tile", containerId: composed.viewId, tileId: draggedTile },
+      destination: { kind: "canvas", padId: pad.id, x: 640, y: 700 },
+    });
+    if (extracted.op !== "extract") throw new Error(`expected extract, got ${extracted.op}`);
     await waitFor(() => canvas.elements.has(extracted.elementId), 10_000, 20);
     const plain = canvas.elements.get(extracted.elementId);
     if (plain?.type !== "terminal") throw new Error("extract authored no terminal element");

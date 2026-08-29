@@ -22,6 +22,24 @@ import type { TestServer } from "./spawn.ts";
 
 const OPEN_TIMEOUT_MS = 5_000;
 
+/**
+ * The channel a raw session socket drives. Since v12 every channel-level frame carries a
+ * routing id, and these tests exercise ONE room per socket, so they share one id.
+ */
+export const RAW_SESSION_CHANNEL = "c1";
+
+/**
+ * One channel-level frame as it appears on the wire. Connection-level frames (`ping`)
+ * carry no channel and are still written with plain `JSON.stringify`, as is any
+ * deliberately malformed text.
+ */
+export function sessionFrame(
+  body: Record<string, unknown>,
+  ch: string = RAW_SESSION_CHANNEL,
+): string {
+  return JSON.stringify({ ch, ...body });
+}
+
 /** Close metadata is retained because authentication and policy codes are e2e contracts. */
 export interface RawCloseInfo {
   readonly code: number;

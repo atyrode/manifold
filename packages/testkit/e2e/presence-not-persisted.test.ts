@@ -14,7 +14,11 @@ import {
   type TestAgent,
   type TestServer,
 } from "../src/index.ts";
-import { rawSessionSocket, type AdversarialSessionSocket } from "../src/adversarial.ts";
+import {
+  rawSessionSocket,
+  sessionFrame,
+  type AdversarialSessionSocket,
+} from "../src/adversarial.ts";
 import {
   closeClients,
   e2eFailure,
@@ -93,7 +97,7 @@ test("scene survives restart while presence and cursors do not", async () => {
 
     rejoined = await rawSessionSocket(restarted);
     rejoined.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: pad.id,
         token: alice.token,

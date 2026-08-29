@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import {
-  BindTerminalResponseSchema,
   HttpErrorSchema,
   OkResponseSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
   TerminalPoolResponseSchema,
   type HttpError,
   type TerminalPoolEntry,
@@ -72,6 +73,49 @@ async function listPool(server: TestServer): Promise<readonly TerminalPoolEntry[
   return listing.terminals;
 }
 
+/**
+ * The retired verbs, over the ONE envelope. `POST /api/place` replaced bind, park, add-tile,
+ * compose and extract; naming the two gestures this test is about keeps it readable while
+ * proving the envelope covers both, and asserting the returned `op` is how the test states
+ * WHICH placement the declarations chose for the pair it offered.
+ */
+async function park(server: TestServer, padId: string, elementId: string): Promise<string> {
+  const placed = await ownerFetch(server, "/api/place", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(
+      PlaceRequestSchema.parse({
+        surface: { kind: "element", padId, elementId },
+        destination: { kind: "pool" },
+      }),
+    ),
+    responseSchema: PlaceResponseSchema,
+  });
+  return placed.op;
+}
+
+async function placeOnCanvas(
+  server: TestServer,
+  sessionId: string,
+  padId: string,
+  x: number,
+  y: number,
+): Promise<string> {
+  const placed = await ownerFetch(server, "/api/place", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(
+      PlaceRequestSchema.parse({
+        surface: { kind: "terminal", sessionId },
+        destination: { kind: "canvas", padId, x, y },
+      }),
+    ),
+    responseSchema: PlaceResponseSchema,
+  });
+  if (placed.op !== "bind") throw new Error(`expected a bind, got ${placed.op}`);
+  return placed.elementId;
+}
+
 test("the terminal pool parks, rebinds, and kills a live session without losing its buffer", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
@@ -119,13 +163,8 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
       10_000,
       (message) => message.sessionId === session.id && message.kind === "parked",
     );
-    const parked = await ownerFetch(server, `/api/terminals/${session.id}/park`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ elementId: "el-pool-1" }),
-      responseSchema: OkResponseSchema,
-    });
-    expect(parked.ok).toBe(true);
+    const parked = await park(server, pad.id, "el-pool-1");
+    expect(parked).toBe("park");
     expect((await parkedEvent).kind).toBe("parked");
     await waitFor(() => !client.elements.has("el-pool-1"), 10_000, 20);
     await waitFor(() => !client.sessions.has(session.id), 10_000, 20);
@@ -158,12 +197,7 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
       tx.create(terminalElement("el-pool-2", { sessionId: second.id }));
     });
     await waitFor(() => client.elements.has("el-pool-2"), 10_000, 20);
-    await ownerFetch(server, `/api/terminals/${second.id}/park`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ elementId: "el-pool-2" }),
-      responseSchema: OkResponseSchema,
-    });
+    await park(server, pad.id, "el-pool-2");
     await waitFor(async () => (await listPool(server)).length === 2, 10_000, 50);
     expect((await listPool(server)).map((entry) => entry.id)).toEqual([session.id, second.id]);
 
@@ -184,17 +218,13 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
     });
     await waitFor(async () => (await listPool(server)).length === 1, 15_000, 100);
 
-    // Bind: the server authors a fresh element for the same PTY at the requested position.
-    const bound = await ownerFetch(server, `/api/terminals/${session.id}/bind`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ padId: pad.id, x: 240, y: 180 }),
-      responseSchema: BindTerminalResponseSchema,
-    });
-    expect(bound.elementId).not.toBe("el-pool-1");
-    await waitFor(() => client.elements.has(bound.elementId), 10_000, 20);
-    const rebound = client.elements.get(bound.elementId);
-    if (rebound?.type !== "terminal") throw new Error("bind authored no terminal element");
+    // Bind: a terminal placed on a CANVAS at a point. The server authors the element, so
+    // the response carries the placement the caller renders.
+    const boundElementId = await placeOnCanvas(server, session.id, pad.id, 240, 180);
+    expect(boundElementId).not.toBe("el-pool-1");
+    await waitFor(() => client.elements.has(boundElementId), 10_000, 20);
+    const rebound = client.elements.get(boundElementId);
+    if (rebound?.type !== "terminal") throw new Error("the placement authored no terminal element");
     expect(rebound.sessionId).toBe(session.id);
     expect(rebound.x).toBe(240);
     expect(rebound.y).toBe(180);
@@ -240,14 +270,9 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
       10_000,
       (message) => message.sessionId === session.id && message.kind === "parked",
     );
-    await ownerFetch(server, `/api/terminals/${session.id}/park`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ elementId: bound.elementId }),
-      responseSchema: OkResponseSchema,
-    });
+    await park(server, pad.id, boundElementId);
     await reparked;
-    await waitFor(() => !client.elements.has(bound.elementId), 10_000, 20);
+    await waitFor(() => !client.elements.has(boundElementId), 10_000, 20);
     await waitFor(async () => (await listPool(server)).length === 1, 10_000, 50);
 
     const killed = await ownerFetch(server, `/api/terminals/${session.id}`, {
@@ -268,7 +293,7 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
     await waitFor(async () => (await listPool(server)).length === 0, 15_000, 100);
     expect(await listPool(server)).toEqual([]);
 
-    // Pad-scoped tokens are rejected before any session lookup, so a dead id still proves
+    // Pad-scoped tokens are rejected before any surface lookup, so a dead id still proves
     // the scope gate rather than a 404.
     const scoped = await mintToken(server, {
       principal: { kind: "human", name: "Pool Scoped", color: "#8a5cf6" },
@@ -278,16 +303,16 @@ test("the terminal pool parks, rebinds, and kills a live session without losing 
     const scopedList = await fetchAsPrincipal(server, scoped.token, "/api/terminals");
     expect(scopedList.status).toBe(403);
     expect(scopedList.body.error.code).toBe("forbidden");
-    const scopedPark = await fetchAsPrincipal(
-      server,
-      scoped.token,
-      `/api/terminals/${session.id}/park`,
-      {
-        method: "POST",
-        headers: JSON_HEADERS,
-        body: JSON.stringify({ elementId: "el-pool-1" }),
-      },
-    );
+    const scopedPark = await fetchAsPrincipal(server, scoped.token, "/api/place", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(
+        PlaceRequestSchema.parse({
+          surface: { kind: "element", padId: pad.id, elementId: "el-pool-1" },
+          destination: { kind: "pool" },
+        }),
+      ),
+    });
     expect(scopedPark.status).toBe(403);
     expect(scopedPark.body.error.code).toBe("forbidden");
   } catch (error) {
