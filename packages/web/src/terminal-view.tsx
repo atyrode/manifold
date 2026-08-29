@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { SessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar, TITLEBAR_ACTIONS_CLASS } from "./node-titlebar.tsx";
+import { useToast } from "./toast.tsx";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
@@ -106,6 +107,7 @@ export function TerminalView({
   const [viewOnlyError, setViewOnlyError] = useState(false);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
+  const { notify } = useToast();
 
   const session = client.sessions.get(sessionId);
   const sessionReady = session !== undefined;
@@ -583,6 +585,14 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
+      {/*
+        NOT a notice, so it does not become a toast: this is a MODE indicator. It
+        states a standing condition of this terminal ("your socket may not write
+        here") and it is the control that ends that condition, anchored to the
+        surface the condition applies to. A toast is a message about an event that
+        just happened and then stops being true; this stays true until clicked, and
+        in a canvas of many terminals it has to say WHICH terminal by sitting on it.
+      */}
       {showViewOnly ? (
         <button
           className="view-only-ribbon"
@@ -613,7 +623,17 @@ export function TerminalView({
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => {
                 setIsRestarting(true);
-                void onRestart().finally(() => setIsRestarting(false));
+                void onRestart()
+                  .catch((reason: unknown) => {
+                    // The button that started the restart is the one place that knows a
+                    // restart was attempted at all, so it is where the failure is reported.
+                    // Keyed per session: hammering restart replaces the notice, never stacks.
+                    notify(
+                      reason instanceof Error ? reason.message : "Could not restart terminal",
+                      { key: `terminal-restart:${sessionId}` },
+                    );
+                  })
+                  .finally(() => setIsRestarting(false));
               }}
             >
               {isRestarting ? "⟳ restarting…" : "⟳ restart"}

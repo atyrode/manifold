@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { PadBrowser } from "./pad-browser.tsx";
+import { ToastProvider } from "./toast.tsx";
 
 type Route =
   { readonly kind: "browser"; readonly padId: string | null } | { readonly kind: "not_found" };
@@ -22,7 +23,14 @@ interface AppProps {
   readonly identity: StoredIdentity;
 }
 
-/** Keeps the pad browser shell mounted across root and direct-pad routes. */
+/**
+ * Keeps the view shell mounted across root and direct-container routes.
+ *
+ * The toast layer is mounted HERE, above every route: it must outlive the shell it
+ * reports for (a renderer that crashes into the error boundary still has notices to
+ * show) and it must sit outside the sidebar's collapse subtree, which is what used to
+ * hide sidebar failures on the icon rail.
+ */
 export function App({ identity }: AppProps) {
   const [route, setRoute] = useState<Route>(() => currentRoute());
 
@@ -38,6 +46,14 @@ export function App({ identity }: AppProps) {
     setRoute(currentRoute());
   }, []);
 
+  return <ToastProvider>{renderRoute(route, identity, navigate)}</ToastProvider>;
+}
+
+function renderRoute(
+  route: Route,
+  identity: StoredIdentity,
+  navigate: (path: string, options?: { readonly replace?: boolean }) => void,
+) {
   switch (route.kind) {
     case "browser":
       return <PadBrowser identity={identity} requestedPadId={route.padId} navigate={navigate} />;
