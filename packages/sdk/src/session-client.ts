@@ -493,6 +493,7 @@ export class SessionClient {
             if (msg.cols !== undefined) next.cols = msg.cols;
             if (msg.rows !== undefined) next.rows = msg.rows;
           }
+          if (msg.kind === "renamed") next.name = msg.name ?? null;
           this.sessions.set(msg.sessionId, next);
         }
         this.emit(msg.type, msg);

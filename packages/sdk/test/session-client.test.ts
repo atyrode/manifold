@@ -540,6 +540,7 @@ describe("terminal attach refcounting", () => {
   const SESSION = {
     id: "s1",
     padId: "pad",
+    name: null,
     elementId: "el1",
     machineId: "m1",
     status: "running" as const,
@@ -641,6 +642,47 @@ describe("terminal attach refcounting", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("session naming", () => {
+  const NAMED_SESSION = {
+    id: "s1",
+    padId: "pad",
+    name: null,
+    elementId: "el1",
+    machineId: "m1",
+    status: "running" as const,
+    exitCode: null,
+    cols: 80,
+    rows: 24,
+    controllerId: "me",
+    createdBy: "me",
+  };
+
+  test("a renamed event relabels the session in place and notifies listeners", () => {
+    const { client, socket } = connected();
+    socket.receive({ ...INIT, sessions: [NAMED_SESSION] });
+    let changes = 0;
+    client.on("sessions_changed", () => {
+      changes += 1;
+    });
+
+    socket.receive({ type: "session_event", sessionId: "s1", kind: "renamed", name: "build" });
+
+    expect(client.sessions.get("s1")?.name).toBe("build");
+    // Everything else about the session is untouched by a rename.
+    expect(client.sessions.get("s1")).toEqual({ ...NAMED_SESSION, name: "build" });
+    expect(changes).toBe(1);
+  });
+
+  test("a renamed event with no label clears the name back to the default", () => {
+    const { client, socket } = connected();
+    socket.receive({ ...INIT, sessions: [{ ...NAMED_SESSION, name: "build" }] });
+
+    socket.receive({ type: "session_event", sessionId: "s1", kind: "renamed" });
+
+    expect(client.sessions.get("s1")?.name).toBeNull();
   });
 });
 
