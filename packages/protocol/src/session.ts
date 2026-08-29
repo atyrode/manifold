@@ -14,7 +14,8 @@ const base64 = z.base64().max(700_000); // ~512KiB decoded per terminal frame
 
 export const SessionInfoSchema = z.strictObject({
   id: z.string().min(1),
-  padId: z.string().min(1),
+  /** Null while the session is parked in the workspace terminal pool (no pad binding). */
+  padId: z.string().min(1).nullable(),
   elementId: z.string().min(1),
   machineId: z.string().min(1),
   status: z.enum(["running", "exited"]),
@@ -172,7 +173,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("session_event"),
     sessionId: z.string().min(1),
-    kind: z.enum(["opened", "exited", "controller_changed", "resized"]),
+    kind: z.enum(["opened", "exited", "controller_changed", "resized", "parked"]),
     exitCode: z.number().int().nullable().optional(),
     controllerId: z.string().nullable().optional(),
     cols: z.number().int().positive().optional(),

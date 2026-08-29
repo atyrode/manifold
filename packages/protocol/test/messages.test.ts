@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentMessageSchema,
+  BindTerminalRequestSchema,
   ClientMessageSchema,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
+  ParkTerminalRequestSchema,
   ServerMessageSchema,
   SceneElementSchema,
+  TerminalPoolResponseSchema,
   buildProtocolJsonSchema,
   hasCap,
 } from "@manifold/protocol";
@@ -21,7 +24,6 @@ const element = (id: string) => ({
   height: 480,
   zIndex: 0,
 });
-
 describe("session channel schemas", () => {
   test("join round-trips", () => {
     const msg = {
@@ -31,6 +33,15 @@ describe("session channel schemas", () => {
       protocolVersion: PROTOCOL_VERSION,
     };
     expect(ClientMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  test("session_event carries the parked kind", () => {
+    const msg = { type: "session_event" as const, sessionId: "s1", kind: "parked" as const };
+    expect(ServerMessageSchema.parse(msg)).toEqual(msg);
+    expect(
+      ServerMessageSchema.safeParse({ type: "session_event", sessionId: "s1", kind: "vanished" })
+        .success,
+    ).toBe(false);
   });
 
   test("doc updates require bounded base64 payloads", () => {
@@ -220,6 +231,22 @@ describe("http schemas", () => {
       }).success,
     ).toBe(false);
     expect(MintTokenRequestSchema.safeParse({ caps: ["scene:write"] }).success).toBe(false);
+  });
+
+  test("terminal pool and park/bind shapes round-trip", () => {
+    const entry = {
+      id: "s1",
+      machineId: "m1",
+      createdAt: 1,
+      status: "running" as const,
+      exitCode: null,
+    };
+    expect(TerminalPoolResponseSchema.parse({ terminals: [entry] }).terminals[0]).toEqual(entry);
+    expect(ParkTerminalRequestSchema.safeParse({ elementId: "e1" }).success).toBe(true);
+    expect(ParkTerminalRequestSchema.safeParse({}).success).toBe(false);
+    expect(BindTerminalRequestSchema.safeParse({ padId: "p1" }).success).toBe(true);
+    expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: 10, y: -4 }).success).toBe(true);
+    expect(BindTerminalRequestSchema.safeParse({ padId: "p1", x: "10" }).success).toBe(false);
   });
 });
 

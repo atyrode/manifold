@@ -130,6 +130,38 @@ export const PadSessionsResponseSchema = z.strictObject({
   sessions: z.array(PadSessionSummarySchema),
 });
 
+/** A parked terminal in the workspace pool: a live session with no pad binding. */
+export const TerminalPoolEntrySchema = z.strictObject({
+  id: z.string().min(1),
+  machineId: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  status: z.enum(["running", "exited"]),
+  exitCode: z.number().int().nullable(),
+});
+export type TerminalPoolEntry = z.infer<typeof TerminalPoolEntrySchema>;
+export const TerminalPoolResponseSchema = z.strictObject({
+  terminals: z.array(TerminalPoolEntrySchema),
+});
+export type TerminalPoolResponse = z.infer<typeof TerminalPoolResponseSchema>;
+
+/** Park: remove one canvas element; unbinds the session when it was the last reference. */
+export const ParkTerminalRequestSchema = z.strictObject({
+  elementId: z.string().min(1),
+});
+export type ParkTerminalRequest = z.infer<typeof ParkTerminalRequestSchema>;
+
+/** Bind: attach a parked session to a pad; the server authors the canvas element. */
+export const BindTerminalRequestSchema = z.strictObject({
+  padId: z.string().min(1),
+  x: z.number().finite().optional(),
+  y: z.number().finite().optional(),
+});
+export type BindTerminalRequest = z.infer<typeof BindTerminalRequestSchema>;
+export const BindTerminalResponseSchema = z.strictObject({
+  elementId: z.string().min(1),
+});
+export type BindTerminalResponse = z.infer<typeof BindTerminalResponseSchema>;
+
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),
