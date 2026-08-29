@@ -98,7 +98,21 @@ export function TiledPadView({
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
     const readLayout = (): void => setLayout(client.layout());
-    const offLayout = client.on("layout_changed", readLayout);
+    // A structural change may have hardened the container (a split claims a bubble), so
+    // the row is refetched whenever the LEAF COUNT moves — never on ratio drags, which
+    // fire layout_changed per pointer frame. Local pin/rename/tile calls refetch directly.
+    let lastLeaves = -1;
+    const readLayoutAndRow = (): void => {
+      const tree = client.layout();
+      setLayout(tree);
+      const leaves =
+        tree === null ? 0 : Object.values(tree).filter((node) => node.dir === null).length;
+      if (leaves !== lastLeaves) {
+        lastLeaves = leaves;
+        onPadChanged();
+      }
+    };
+    const offLayout = client.on("layout_changed", readLayoutAndRow);
     const offInit = client.on("init", readLayout);
     const offReset = client.on("scene_reset", readLayout);
     const offStatus = client.on("status", setStatus);
@@ -109,7 +123,7 @@ export function TiledPadView({
       offReset();
       offStatus();
     };
-  }, [client]);
+  }, [client, onPadChanged]);
 
   useEffect(() => {
     if (connectStartedRef.current) return;
