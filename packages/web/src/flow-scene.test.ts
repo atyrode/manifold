@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SceneElement } from "@manifold/protocol";
 import type { GestureOverride } from "./remote-gestures";
 import {
-  carryMeasurements,
+  reconcileNodes,
   createDrawElement,
   createTerminalElement,
   createTextElement,
@@ -95,7 +95,7 @@ describe("flow scene", () => {
       { id: "b", position: { x: 1, y: 2 }, width: 100, height: 90, data: {} },
     ];
 
-    expect(carryMeasurements(next, current)).toEqual([
+    expect(reconcileNodes(next, current)).toEqual([
       {
         id: "a",
         position: { x: 5, y: 6 },
@@ -107,6 +107,80 @@ describe("flow scene", () => {
       { id: "b", position: { x: 1, y: 2 }, width: 100, height: 90, data: {} },
     ]);
     // A node React Flow has never measured must not gain a fabricated measurement.
-    expect(carryMeasurements(next, [])).toEqual(next);
+    expect(reconcileNodes(next, [])).toEqual(next);
+  });
+
+  test("keeps node identity for equivalent projections so unchanged nodes never re-render", () => {
+    const currentA = {
+      id: "a",
+      type: "terminal",
+      position: { x: 0, y: 0 },
+      width: 720,
+      height: 480,
+      zIndex: 1,
+      data: { sessionId: "s1" },
+      measured: { width: 720, height: 480 },
+      dragging: true,
+    };
+    const current = [currentA];
+    // A fresh projection rebuilds every object; equivalent values must map back to the
+    // exact current objects, and a fully-unchanged scene must return the current array.
+    const same = [
+      {
+        id: "a",
+        type: "terminal",
+        position: { x: 0, y: 0 },
+        width: 720,
+        height: 480,
+        zIndex: 1,
+        data: { sessionId: "s1" },
+      },
+    ];
+    expect(reconcileNodes(same, current)).toBe(current);
+
+    // Draw data arrays are rebuilt per projection; value-equal points still reuse.
+    const stroke = { id: "d", position: { x: 1, y: 1 }, data: { points: [0, 0, 4, 4] } };
+    const strokeCurrent = [{ ...stroke, data: { points: [0, 0, 4, 4] } }];
+    expect(reconcileNodes([stroke], strokeCurrent)).toBe(strokeCurrent);
+
+    // A genuine change replaces only the changed node and keeps the rest by identity.
+    const other = {
+      id: "b",
+      type: "text",
+      position: { x: 9, y: 9 },
+      width: 240,
+      height: 48,
+      zIndex: 2,
+      data: { text: "hi", fontSize: 20, color: "#fff" },
+    };
+    const moved = {
+      id: "a",
+      type: "terminal",
+      position: { x: 50, y: 0 },
+      width: 720,
+      height: 480,
+      zIndex: 1,
+      data: { sessionId: "s1" },
+    };
+    const otherCurrent = { ...other };
+    const result = reconcileNodes([moved, other], [currentA, otherCurrent]);
+    expect(result[0]).toEqual({ ...moved, measured: { width: 720, height: 480 } });
+    expect(result[0]).not.toBe(currentA);
+    expect(result[1]).toBe(otherCurrent);
+
+    // Selection flips must not be masked by identity reuse.
+    const selected = [
+      {
+        id: "a",
+        type: "terminal",
+        position: { x: 0, y: 0 },
+        width: 720,
+        height: 480,
+        zIndex: 1,
+        data: { sessionId: "s1" },
+        selected: true,
+      },
+    ];
+    expect(reconcileNodes(selected, current)[0]).not.toBe(currentA);
   });
 });

@@ -34,7 +34,7 @@ import {
   type FlowPadContextValue,
 } from "./flow-terminal-node.tsx";
 import {
-  carryMeasurements,
+  reconcileNodes,
   createDrawElement,
   createTerminalElement,
   createTextElement,
@@ -359,7 +359,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
   useEffect(() => {
-    setNodes((current) => carryMeasurements(canonicalNodes, current));
+    setNodes((current) => reconcileNodes(canonicalNodes, current));
   }, [canonicalNodes, setNodes]);
 
   const handleNodeDragStart = useCallback(

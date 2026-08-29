@@ -10,21 +10,71 @@ export const DEFAULT_TEXT_HEIGHT = 48;
 export const DEFAULT_FONT_SIZE = 20;
 export const DEFAULT_TEXT_COLOR = "#f8f9fa";
 
+function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    const valueA = a[key];
+    const valueB = b[key];
+    if (Object.is(valueA, valueB)) continue;
+    if (
+      Array.isArray(valueA) &&
+      Array.isArray(valueB) &&
+      valueA.length === valueB.length &&
+      valueA.every((value, index) => Object.is(value, valueB[index]))
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 /**
- * Canonical scene state owns geometry, but `measured` is React Flow's own record of the
- * painted box, and it is what the resizer reads for its starting size. Re-projecting the
- * scene builds fresh node objects, and `adoptUserNodes` copies `measured` straight off
- * the object it is handed — so a re-projection landing between two frames erased the
- * measurement and a resize begun in that window started from zero and produced negative
- * geometry. Carry the runtime measurement across; never let it into scene state.
+ * Reconciles a fresh projection into React Flow's live node state.
+ *
+ * Two duties:
+ * - Carry `measured`: it is React Flow's own record of the painted box and what the
+ *   resizer reads for its starting size. Re-projecting builds fresh node objects, and
+ *   `adoptUserNodes` copies `measured` straight off the object it is handed — a
+ *   re-projection landing between two frames erased it, and a resize begun in that
+ *   window started from zero and produced negative geometry. Never let it into scene
+ *   state.
+ * - Preserve identity: every projection rebuilds every node object, but handing React
+ *   Flow a new object per node re-renders the whole canvas (xterm terminals included)
+ *   on every drag frame — the main thread saturates and the dragged node visibly trails
+ *   the pointer. Equivalent nodes keep their current object; an unchanged scene keeps
+ *   the current array so the state update bails outright.
  */
-export function carryMeasurements(next: readonly Node[], current: readonly Node[]): Node[] {
+export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
   if (current.length === 0) return [...next];
-  const measured = new Map(current.map((node) => [node.id, node.measured] as const));
-  return next.map((node) => {
-    const previous = measured.get(node.id);
-    return previous === undefined ? node : { ...node, measured: previous };
+  const currentById = new Map(current.map((node) => [node.id, node] as const));
+  let reusedAll = current.length === next.length;
+  const out = next.map((node, index) => {
+    const previous = currentById.get(node.id);
+    if (previous === undefined) {
+      reusedAll = false;
+      return node;
+    }
+    if (
+      previous.type === node.type &&
+      previous.position.x === node.position.x &&
+      previous.position.y === node.position.y &&
+      previous.width === node.width &&
+      previous.height === node.height &&
+      previous.zIndex === node.zIndex &&
+      (previous.selected ?? false) === (node.selected ?? false) &&
+      previous.dragHandle === node.dragHandle &&
+      shallowDataEqual(previous.data, node.data)
+    ) {
+      if (previous !== current[index]) reusedAll = false;
+      return previous;
+    }
+    reusedAll = false;
+    return previous.measured === undefined ? node : { ...node, measured: previous.measured };
   });
+  return reusedAll ? current : out;
 }
 
 export interface TerminalNodeData extends Record<string, unknown> {
