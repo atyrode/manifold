@@ -473,6 +473,14 @@ export class SessionClient {
         break;
       }
       case "session_event": {
+        if (msg.kind === "parked") {
+          // The session left this pad for the workspace pool; it is no longer
+          // reachable over this connection.
+          this.sessions.delete(msg.sessionId);
+          this.emit(msg.type, msg);
+          this.emit("sessions_changed");
+          break;
+        }
         const session = this.sessions.get(msg.sessionId);
         if (session) {
           const next: SessionInfo = { ...session };
