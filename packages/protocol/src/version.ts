@@ -40,8 +40,11 @@ export const PROTOCOL_VERSION = 11;
  * v10 -> v11: pads gained layout/transient and tiled containers store a layout
  * tree; scene elements gained portal; the session `join` frame gained an OPTIONAL
  * `spectator` flag so a portal widget's preview socket can watch a room without
- * occupying it (absent ≡ occupant, the pre-flag semantics). The machine wire is
- * byte-identical, so existing agents stay accepted.
+ * occupying it (absent ≡ occupant, the pre-flag semantics); `terminal_open` gained
+ * an OPTIONAL `placement: "tile"` (absent ≡ the opener authors a canvas element)
+ * and `terminal_opened` an OPTIONAL `ref` echoing it, so a view can birth a
+ * terminal the server places as a tile. The machine wire is byte-identical, so
+ * existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   2, 3, 4, 5, 6, 7, 8, 9, 10, 11,

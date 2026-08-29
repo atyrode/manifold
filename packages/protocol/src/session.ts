@@ -90,10 +90,22 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("resync_request") }),
   z.strictObject({
     type: z.literal("terminal_open"),
+    /**
+     * Correlation token, and under the default element placement also the id of the
+     * canvas element the opener authors once the PTY lands. A tiled opener authors
+     * nothing, so there this is a pure ref, echoed back as `terminal_opened.ref`.
+     */
     elementId: z.string().min(1),
     ...terminalGeometry,
     cwd: z.string().optional(),
     machineId: z.string().optional(),
+    /**
+     * `"tile"` hands placement to the container: a view has no canvas to author into,
+     * so the server writes the tile leaf itself and answers with that tile id as the
+     * placement `elementId`. Absent ≡ the opener places a canvas element, so every
+     * pre-flag client keeps its exact semantics.
+     */
+    placement: z.literal("tile").optional(),
   }),
   z.strictObject({ type: z.literal("terminal_attach"), sessionId: z.string().min(1) }),
   z.strictObject({ type: z.literal("terminal_detach"), sessionId: z.string().min(1) }),
@@ -164,8 +176,16 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("terminal_opened"),
+    /** The placement: a canvas element id, or the tile id of a server-authored leaf. */
     elementId: z.string().min(1),
     session: SessionInfoSchema,
+    /**
+     * Echoes `terminal_open.elementId` when the SERVER authored the placement, so the
+     * opener can correlate a reply whose `elementId` it never chose. Sent ONLY to an
+     * opener that asked for `placement: "tile"`: pre-v11 peers strict-parse this union,
+     * so an unsolicited extra key would break their socket.
+     */
+    ref: z.string().min(1).optional(),
   }),
   z.strictObject({
     type: z.literal("terminal_snapshot"),

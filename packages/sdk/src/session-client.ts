@@ -635,13 +635,21 @@ export class SessionClient {
     this.send({ type: "resync_request" });
   }
 
-  /** Opens a terminal and resolves with its session once the server confirms. */
+  /**
+   * Opens a terminal and resolves with its session once the server confirms.
+   *
+   * `placement: "tile"` is how a TILED container births one: it has no canvas to author
+   * into, so the server writes the tile leaf and the resolved `session.elementId` is that
+   * tile id. `elementId` stays the correlation token either way — under the default
+   * element placement it is also the id the caller authors its element under.
+   */
   openTerminal(opts: {
     elementId: string;
     cols: number;
     rows: number;
     cwd?: string;
     machineId?: string;
+    placement?: "tile";
     timeoutMs?: number;
   }): Promise<SessionInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<SessionInfo>();
@@ -657,7 +665,9 @@ export class SessionClient {
       opts.timeoutMs ?? 15_000,
     );
     const offOpened = this.on("terminal_opened", (msg) => {
-      if (msg.elementId !== opts.elementId) return;
+      // A server-placed reply echoes the token as `ref`, because its `elementId` is a
+      // tile id this caller never chose.
+      if ((msg.ref ?? msg.elementId) !== opts.elementId) return;
       settle(() => resolve(msg.session));
     });
     const offError = this.on("error", (msg) => {
@@ -676,6 +686,7 @@ export class SessionClient {
       rows: opts.rows,
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       ...(opts.machineId !== undefined ? { machineId: opts.machineId } : {}),
+      ...(opts.placement !== undefined ? { placement: opts.placement } : {}),
     });
     return promise;
   }
