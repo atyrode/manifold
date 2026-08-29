@@ -89,7 +89,7 @@ function roomFixture(store: ServerStore = testStore()) {
     tokenId: null,
   };
   const socket = new FakeSocket();
-  const peer = new SessionPeer(runtime.newId(), socket, context, pad.id);
+  const peer = new SessionPeer(runtime.newId(), socket, context, pad.id, "c1");
   const room = new Room(
     pad.id,
     store,
@@ -132,6 +132,7 @@ describe("Room Yjs document consistency", () => {
       new FakeSocket(),
       { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
       pad.id,
+      "c1",
     );
     const socket = peer.socket as FakeSocket;
     const room = new Room(
@@ -304,6 +305,7 @@ describe("Room document persistence", () => {
       new FakeSocket(),
       { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
       pad.id,
+      "c1",
     );
     room.join(peer);
     room.applyDocUpdate(peer, encodedElements(terminal("before-leave")));
@@ -311,6 +313,57 @@ describe("Room document persistence", () => {
     room.leave(peer);
     expect(manager.introspect()).toHaveLength(0);
     expect(store.latestDoc(pad.id)?.rev).toBe(1);
+    store.close();
+  });
+
+  test("dropping a pad fences each member's channel without publishing departures", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const pad: Pad = {
+      id: runtime.newId(),
+      name: "dropped",
+      createdAt: 0,
+      layout: "canvas",
+      transient: false,
+    };
+    store.createPad(pad);
+    const principal: Principal = {
+      id: runtime.newId(),
+      kind: "human",
+      name: "occupant",
+      color: "#2563eb",
+    };
+    store.createPrincipal(principal, 0);
+    const manager = new RoomManager(store, runtime, clock, silentLogger);
+    let emptied = 0;
+    manager.setEmptyHandler(() => {
+      emptied += 1;
+    });
+    const room = manager.get(pad.id);
+    if (room === null) throw new Error("missing room");
+    const socket = new FakeSocket();
+    const peer = new SessionPeer(
+      runtime.newId(),
+      socket,
+      { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
+      pad.id,
+      "c1",
+    );
+    room.join(peer);
+    socket.clear();
+
+    manager.drop(pad.id);
+
+    // The room is gone for this member, but the tab's socket keeps whatever else it holds.
+    expect(socket.frames()).toEqual([
+      { type: "channel_closed", ch: "c1", code: 4404, reason: "pad deleted" },
+    ]);
+    expect(socket.closed).toBeNull();
+    // A demolished room never announces a departure, and the lifecycle hook that pops a
+    // bubble must not fire for a pad that was deleted outright.
+    expect(emptied).toBe(0);
+    expect(manager.introspect()).toHaveLength(0);
     store.close();
   });
 });

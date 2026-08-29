@@ -2,7 +2,7 @@ import {
   hasCap,
   type AdvertisedSession,
   type AgentMessage,
-  type ClientMessage,
+  type ClientMessageBody,
   type Pad,
   type RuntimeDeps,
   type ServerToAgentMessage,
@@ -20,13 +20,17 @@ import {
 } from "./session-peer.ts";
 import type { ServerStore } from "./stores.ts";
 
-type TerminalOpen = Extract<ClientMessage, { type: "terminal_open" }>;
-type TerminalAttach = Extract<ClientMessage, { type: "terminal_attach" }>;
-type TerminalDetach = Extract<ClientMessage, { type: "terminal_detach" }>;
-type TerminalInput = Extract<ClientMessage, { type: "terminal_input" }>;
-type TerminalResize = Extract<ClientMessage, { type: "terminal_resize" }>;
-type TerminalTake = Extract<ClientMessage, { type: "terminal_take" }>;
-type TerminalKill = Extract<ClientMessage, { type: "terminal_kill" }>;
+/**
+ * The broker answers a PEER, and a peer IS one channel, so its payload types are the
+ * channel-agnostic bodies: routing was already consumed by the gateway.
+ */
+type TerminalOpen = Extract<ClientMessageBody, { type: "terminal_open" }>;
+type TerminalAttach = Extract<ClientMessageBody, { type: "terminal_attach" }>;
+type TerminalDetach = Extract<ClientMessageBody, { type: "terminal_detach" }>;
+type TerminalInput = Extract<ClientMessageBody, { type: "terminal_input" }>;
+type TerminalResize = Extract<ClientMessageBody, { type: "terminal_resize" }>;
+type TerminalTake = Extract<ClientMessageBody, { type: "terminal_take" }>;
+type TerminalKill = Extract<ClientMessageBody, { type: "terminal_kill" }>;
 type OutputFrame = Extract<AgentMessage, { type: "output" }>;
 type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" }>;
 

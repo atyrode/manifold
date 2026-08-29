@@ -1,19 +1,11 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
-  AddPadTileRequestSchema,
-  AddPadTileResponseSchema,
-  BindTerminalRequestSchema,
-  BindTerminalResponseSchema,
   BootstrapPrincipalRequestSchema,
-  ComposePadTileRequestSchema,
-  ComposePadTileResponseSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   EnrollMachineRequestSchema,
   ExpandTerminalResponseSchema,
-  ExtractPadTileRequestSchema,
-  ExtractPadTileResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
@@ -29,7 +21,6 @@ import {
   PadSessionsResponseSchema,
   PadTreeResponseSchema,
   PadsResponseSchema,
-  ParkTerminalRequestSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
@@ -361,37 +352,15 @@ export class HttpApp {
       return jsonResponse(this.terminalPoolPayload());
     }
 
-    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/park|\/bind|\/expand)?$/.exec(pathname);
+    const terminalMatch = /^\/api\/terminals\/([^/]+)(\/expand)?$/.exec(pathname);
     if (terminalMatch !== null) {
       const sessionId = decodePathSegment(terminalMatch[1], "terminal id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot move terminals between pads");
+        throw new RequestError("forbidden", "scoped tokens cannot act on workspace terminals");
       }
       const action = terminalMatch[2];
-      if (request.method === "POST" && action === "/park") {
-        const input = parseRequest(ParkTerminalRequestSchema, await parseJsonBody(request));
-        // P3 removes: `POST /api/place` with a pool destination is this same placement.
-        if (this.placement.park(sessionId, input.elementId) === "not_found") {
-          throw new RequestError("not_found", "terminal not found");
-        }
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
-      if (request.method === "POST" && action === "/bind") {
-        const input = parseRequest(BindTerminalRequestSchema, await parseJsonBody(request));
-        // P3 removes: `POST /api/place` with a canvas or tile destination.
-        const bound = this.placement.bind(sessionId, input.padId, input.x, input.y);
-        if (bound === "not_found") throw new RequestError("not_found", "terminal not found");
-        if (bound === "pad_not_found") throw new RequestError("not_found", "pad not found");
-        if (bound === "already_bound") {
-          throw new RequestError("conflict", "terminal is already bound to a pad");
-        }
-        if (bound === "conflict") {
-          throw new RequestError("conflict", "container rejected the terminal placement");
-        }
-        return jsonResponse(BindTerminalResponseSchema.parse({ elementId: bound.elementId }));
-      }
       if (request.method === "POST" && action === "/expand") {
         const expanded = this.broker.expand(sessionId);
         if (expanded === "not_found") throw new RequestError("not_found", "terminal not found");
@@ -467,72 +436,29 @@ export class HttpApp {
       }
     }
 
-    const containerMatch = /^\/api\/pads\/([^/]+)\/(pin|tiles|compose)$/.exec(pathname);
-    const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)(\/extract)?$/.exec(pathname);
+    const containerMatch = /^\/api\/pads\/([^/]+)\/pin$/.exec(pathname);
+    const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
     if (containerMatch !== null || tileMatch !== null) {
       const padId = decodePathSegment((containerMatch ?? tileMatch)?.[1], "pad id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot recompose containers");
+        throw new RequestError("forbidden", "scoped tokens cannot claim containers");
       }
       if (containerMatch !== null && request.method === "POST") {
-        const action = containerMatch[2];
-        if (action === "pin") {
-          if (this.placement.harden(padId) === "not_found") {
-            throw new RequestError("not_found", "pad not found");
-          }
-          return jsonResponse(OkResponseSchema.parse({ ok: true }));
+        if (this.placement.harden(padId) === "not_found") {
+          throw new RequestError("not_found", "pad not found");
         }
-        if (action === "tiles") {
-          const input = parseRequest(AddPadTileRequestSchema, await parseJsonBody(request));
-          // P3 removes: `POST /api/place` with a tile destination.
-          const added = this.placement.addTile(
-            padId,
-            input.surface,
-            input.targetTileId,
-            input.edge,
-          );
-          if (added === "not_found") throw new RequestError("not_found", "surface not found");
-          if (added === "conflict") {
-            throw new RequestError("conflict", "surface cannot be tiled into this container");
-          }
-          return jsonResponse(AddPadTileResponseSchema.parse({ tileId: added.tileId }));
-        }
-        const input = parseRequest(ComposePadTileRequestSchema, await parseJsonBody(request));
-        // P3 removes: `POST /api/place` with a compose destination.
-        const composed = this.placement.composeOnCanvas(
-          padId,
-          input.targetElementId,
-          input.surface,
-          input.edge,
-        );
-        if (composed === "not_found") throw new RequestError("not_found", "surface not found");
-        if (composed === "conflict") {
-          throw new RequestError("conflict", "surfaces cannot be composed on this canvas");
-        }
-        return jsonResponse(ComposePadTileResponseSchema.parse({ viewId: composed.viewId }));
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
-      if (tileMatch !== null) {
+      // Leaf removal is NOT a placement: nothing accepts "nowhere", so a leaf is addressed
+      // directly here while every MOVE of its occupant goes through `POST /api/place`.
+      if (tileMatch !== null && request.method === "DELETE") {
         const tileId = decodePathSegment(tileMatch[2], "tile id");
-        if (request.method === "DELETE" && tileMatch[3] === undefined) {
-          const removed = this.placement.removeTile(padId, tileId);
-          if (removed === "not_found") throw new RequestError("not_found", "tile not found");
-          if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
-          return jsonResponse(OkResponseSchema.parse({ ok: true }));
-        }
-        if (request.method === "POST" && tileMatch[3] === "/extract") {
-          const input = parseRequest(ExtractPadTileRequestSchema, await parseJsonBody(request));
-          // P3 removes: `POST /api/place` with a canvas destination for a tile surface.
-          const extracted = this.placement.extractTile(padId, tileId, input.x, input.y);
-          if (extracted === "not_found") throw new RequestError("not_found", "tile not found");
-          if (extracted === "conflict") {
-            throw new RequestError("conflict", "tile cannot be extracted onto a canvas");
-          }
-          return jsonResponse(
-            ExtractPadTileResponseSchema.parse({ elementId: extracted.elementId }),
-          );
-        }
+        const removed = this.placement.removeTile(padId, tileId);
+        if (removed === "not_found") throw new RequestError("not_found", "tile not found");
+        if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
     }
 

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  PLACEMENT_DENIED_CODE,
+  PlaceResponseSchema,
   ServerToAgentMessageSchema,
   type Pad,
   type SceneElement,
@@ -26,7 +28,14 @@ import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  parkSession,
+  placeSession,
+  testStore,
+} from "./helpers.ts";
 
 const OWNER_KEY = "e".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -129,7 +138,7 @@ function poolFixture(): PoolFixture {
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
-  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id);
+  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id, "c1");
   const app = new HttpApp(
     config,
     store,
@@ -222,7 +231,7 @@ describe("TerminalBroker park", () => {
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
     fixture.socket.clear();
 
-    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
+    expect(parkSession(fixture.placement, fixture.pad.id, "terminal-1")).toBe("ok");
 
     expect(readElements(room.doc).has("terminal-1")).toBe(false);
     expect(fixture.store.getSession(sessionId)?.padId).toBeNull();
@@ -244,7 +253,7 @@ describe("TerminalBroker park", () => {
     writeElement(room.doc, terminalElement("terminal-2", sessionId), LOCAL_ORIGIN);
     fixture.socket.clear();
 
-    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
+    expect(parkSession(fixture.placement, fixture.pad.id, "terminal-1")).toBe("ok");
 
     expect([...readElements(room.doc).keys()]).toEqual(["terminal-2"]);
     expect(fixture.store.getSession(sessionId)?.padId).toBe(fixture.pad.id);
@@ -254,14 +263,27 @@ describe("TerminalBroker park", () => {
     );
   });
 
-  test("parking an unknown or already parked session reports not_found", () => {
+  test("parking an unknown session fails, and a vanished element is refused by rule", () => {
     const fixture = poolFixture();
     const sessionId = openTerminal(fixture, "terminal-1");
-    joinedRoom(fixture);
+    const room = joinedRoom(fixture);
+    writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
 
-    expect(fixture.placement.park("missing-session", "terminal-1")).toBe("not_found");
-    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("ok");
-    expect(fixture.placement.park(sessionId, "terminal-1")).toBe("not_found");
+    // The old park resolved the container from the SESSION, so an unknown session id was
+    // its not_found; the envelope addresses the ELEMENT, so that case is stated directly as
+    // the placement it always was.
+    const unknownSession = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: "missing-session" },
+      destination: { kind: "pool" },
+    });
+    expect(unknownSession.status).toBe("failed");
+    if (unknownSession.status === "failed") expect(unknownSession.failure).toBe("not_found");
+    expect(parkSession(fixture.placement, fixture.pad.id, "terminal-1")).toBe("ok");
+    // Parking again addresses an element that no longer exists: the lookup places nothing,
+    // so the algebra refuses BY RULE where the old park answered a flat "not_found".
+    expect(parkSession(fixture.placement, fixture.pad.id, "terminal-1")).toBe(
+      "denied:unknown_surface",
+    );
   });
 });
 
@@ -271,14 +293,17 @@ describe("TerminalBroker bind", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.socket.clear();
 
-    const bound = fixture.placement.bind(sessionId, fixture.pad.id, 40, 60);
-    if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
+    const bound = placeSession(fixture.placement, sessionId, fixture.pad.id, "canvas", {
+      x: 40,
+      y: 60,
+    });
+    if (typeof bound === "string") throw new Error(`placement failed: ${bound}`);
 
-    expect(readElement(room.doc, bound.elementId)).toEqual({
-      id: bound.elementId,
+    expect(readElement(room.doc, bound.placementId)).toEqual({
+      id: bound.placementId,
       type: "terminal",
       sessionId,
       x: 40,
@@ -298,7 +323,7 @@ describe("TerminalBroker bind", () => {
       .at(-1);
     expect(advertised).toMatchObject({
       type: "terminal_opened",
-      elementId: bound.elementId,
+      elementId: bound.placementId,
       session: { id: sessionId, padId: fixture.pad.id, status: "running" },
     });
   });
@@ -308,24 +333,33 @@ describe("TerminalBroker bind", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
 
-    const bound = fixture.placement.bind(sessionId, fixture.pad.id);
-    if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
+    const bound = placeSession(fixture.placement, sessionId, fixture.pad.id, "canvas");
+    if (typeof bound === "string") throw new Error(`placement failed: ${bound}`);
 
-    expect(readElement(room.doc, bound.elementId)).toMatchObject({ x: 160, y: 120 });
+    expect(readElement(room.doc, bound.placementId)).toMatchObject({ x: 160, y: 120 });
   });
 
-  test("binding rejects bound sessions, unknown sessions, and unknown pads", () => {
+  test("placing a bound terminal repositions it, and unknown ids are refused", () => {
     const fixture = poolFixture();
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
 
-    expect(fixture.placement.bind(sessionId, fixture.pad.id)).toBe("already_bound");
-    expect(fixture.placement.bind("missing-session", fixture.pad.id)).toBe("not_found");
-    fixture.placement.park(sessionId, "terminal-1");
-    expect(fixture.placement.bind(sessionId, "missing-pad")).toBe("pad_not_found");
+    // Reposition-as-placement: a terminal already on this canvas MOVES, so the old
+    // "already_bound" refusal has no successor — the same element is placed again.
+    expect(placeSession(fixture.placement, sessionId, fixture.pad.id, "canvas")).toEqual({
+      placementId: "terminal-1",
+    });
+    expect(placeSession(fixture.placement, "missing-session", fixture.pad.id, "canvas")).toBe(
+      "not_found",
+    );
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
+    // An unknown container is a DENIAL naming the rule, never the old "pad_not_found".
+    expect(placeSession(fixture.placement, sessionId, "missing-pad", "canvas")).toBe(
+      "denied:unknown_container",
+    );
   });
 });
 
@@ -335,7 +369,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.machine.clear();
 
     expect(fixture.broker.killById(sessionId)).toBe("ok");
@@ -351,7 +385,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.socket.clear();
 
     fixture.broker.onExited(fixture.machine.machineId, sessionId, 3);
@@ -372,7 +406,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", parkedId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", boundId), LOCAL_ORIGIN);
-    fixture.placement.park(parkedId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.broker.onExited(fixture.machine.machineId, parkedId, 0);
     fixture.broker.onExited(fixture.machine.machineId, boundId, 0);
 
@@ -388,7 +422,7 @@ describe("TerminalBroker pool lifecycle", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
 
     fixture.broker.pruneExitedParked();
 
@@ -423,7 +457,7 @@ describe("TerminalBroker rename", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.socket.clear();
 
     expect(fixture.broker.rename(sessionId, "notes")).toBe("ok");
@@ -446,12 +480,12 @@ describe("TerminalBroker rename", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.broker.rename(sessionId, "build");
     fixture.socket.clear();
 
-    const bound = fixture.placement.bind(sessionId, fixture.pad.id);
-    if (typeof bound === "string") throw new Error(`bind failed: ${bound}`);
+    const bound = placeSession(fixture.placement, sessionId, fixture.pad.id, "canvas");
+    if (typeof bound === "string") throw new Error(`placement failed: ${bound}`);
 
     expect(
       fixture.socket
@@ -473,9 +507,9 @@ describe("TerminalBroker pool ordering", () => {
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
 
-    fixture.placement.park(second, "terminal-2");
-    fixture.placement.park(third, "terminal-3");
-    fixture.placement.park(first, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-2");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-3");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
 
     expect(fixture.store.listParkedSessions().map((session) => session.sortOrder)).toEqual([
       0, 1, 2,
@@ -496,9 +530,9 @@ describe("TerminalBroker pool ordering", () => {
     writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-3", third), LOCAL_ORIGIN);
-    fixture.placement.park(first, "terminal-1");
-    fixture.placement.park(second, "terminal-2");
-    fixture.placement.park(third, "terminal-3");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-2");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-3");
 
     expect(fixture.broker.movePooled(third, 0)).toBe("ok");
 
@@ -549,11 +583,13 @@ describe("terminal pool HTTP routes", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const token = padScopedToken(fixture);
 
-    const park = await call(fixture, "POST", `/api/terminals/${sessionId}/park`, token, {
-      elementId: "terminal-1",
+    const park = await call(fixture, "POST", "/api/place", token, {
+      surface: { kind: "element", padId: fixture.pad.id, elementId: "terminal-1" },
+      destination: { kind: "pool" },
     });
-    const bind = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, token, {
-      padId: fixture.pad.id,
+    const bind = await call(fixture, "POST", "/api/place", token, {
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "canvas", padId: fixture.pad.id, x: 0, y: 0 },
     });
     const kill = await call(fixture, "DELETE", `/api/terminals/${sessionId}`, token);
 
@@ -568,8 +604,8 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", runningId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", exitedId), LOCAL_ORIGIN);
-    fixture.placement.park(runningId, "terminal-1");
-    fixture.placement.park(exitedId, "terminal-2");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-2");
     fixture.broker.onExited(fixture.machine.machineId, exitedId, 0);
 
     const response = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
@@ -596,15 +632,18 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
 
-    const parked = await call(fixture, "POST", `/api/terminals/${sessionId}/park`, OWNER_KEY, {
-      elementId: "terminal-1",
+    const parked = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "element", padId: fixture.pad.id, elementId: "terminal-1" },
+      destination: { kind: "pool" },
     });
-    const missing = await call(fixture, "POST", "/api/terminals/missing/park", OWNER_KEY, {
-      elementId: "terminal-1",
+    const missing = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: "missing-session" },
+      destination: { kind: "pool" },
     });
 
     expect(parked.status).toBe(200);
-    expect(parked.payload).toEqual({ ok: true });
+    // The envelope answers with the op it executed where the park route answered `ok`.
+    expect(parked.payload).toEqual({ op: "park" });
     expect(readElements(room.doc).size).toBe(0);
     expect(missing.status).toBe(404);
     expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
@@ -615,42 +654,46 @@ describe("terminal pool HTTP routes", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
 
-    const response = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
-      padId: fixture.pad.id,
-      x: 12,
-      y: 34,
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "canvas", padId: fixture.pad.id, x: 12, y: 34 },
     });
 
     expect(response.status).toBe(200);
-    const payload = response.payload;
-    if (typeof payload !== "object" || payload === null || !("elementId" in payload)) {
-      throw new Error("missing elementId in bind response");
-    }
-    const elementId = payload.elementId;
-    if (typeof elementId !== "string") throw new Error("elementId must be a string");
-    expect(readElement(room.doc, elementId)).toMatchObject({ sessionId, x: 12, y: 34 });
+    const payload = PlaceResponseSchema.parse(response.payload);
+    if (payload.op !== "bind") throw new Error("bind response expected");
+    expect(readElement(room.doc, payload.elementId)).toMatchObject({ sessionId, x: 12, y: 34 });
   });
 
-  test("binding maps an already-bound terminal to 409 and a missing pad to 404", async () => {
+  test("placing a bound terminal repositions it and an unknown container is a denial", async () => {
     const fixture = poolFixture();
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
 
-    const conflict = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
-      padId: fixture.pad.id,
-    });
-    fixture.placement.park(sessionId, "terminal-1");
-    const missingPad = await call(fixture, "POST", `/api/terminals/${sessionId}/bind`, OWNER_KEY, {
-      padId: "missing-pad",
+    const repositioned = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "canvas", padId: fixture.pad.id, x: 5, y: 6 },
     });
 
-    expect(conflict.status).toBe(409);
-    expect(conflict.payload).toMatchObject({ error: { code: "conflict" } });
-    expect(missingPad.status).toBe(404);
-    expect(missingPad.payload).toMatchObject({ error: { code: "not_found" } });
+    // Reposition-as-placement: a terminal already on this canvas MOVES instead of being
+    // refused, so the bind route's 409 for an already-bound terminal has no successor.
+    expect(repositioned.status).toBe(200);
+    expect(readElement(room.doc, "terminal-1")).toMatchObject({ x: 5, y: 6 });
+
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
+    const missingPad = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "canvas", padId: "missing-pad", x: 0, y: 0 },
+    });
+
+    // An unknown container is a placement DENIAL carried as data, never the old 404.
+    expect(missingPad.status).toBe(409);
+    expect(missingPad.payload).toMatchObject({
+      error: { code: PLACEMENT_DENIED_CODE, denial: { rule: "unknown_container" } },
+    });
   });
 
   test("deleting a pooled terminal kills it once, then reports 409 and 404", async () => {
@@ -658,7 +701,7 @@ describe("terminal pool HTTP routes", () => {
     const sessionId = openTerminal(fixture, "terminal-1");
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", sessionId), LOCAL_ORIGIN);
-    fixture.placement.park(sessionId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
     fixture.machine.clear();
 
     const killed = await call(fixture, "DELETE", `/api/terminals/${sessionId}`, OWNER_KEY);
@@ -682,7 +725,7 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", parkedId), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", boundId), LOCAL_ORIGIN);
-    fixture.placement.park(parkedId, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
 
     const response = await call(fixture, "GET", "/api/pad-sessions", OWNER_KEY);
 
@@ -736,8 +779,8 @@ describe("terminal pool HTTP routes", () => {
     const room = joinedRoom(fixture);
     writeElement(room.doc, terminalElement("terminal-1", first), LOCAL_ORIGIN);
     writeElement(room.doc, terminalElement("terminal-2", second), LOCAL_ORIGIN);
-    fixture.placement.park(first, "terminal-1");
-    fixture.placement.park(second, "terminal-2");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-1");
+    parkSession(fixture.placement, fixture.pad.id, "terminal-2");
     await call(fixture, "PATCH", `/api/terminals/${second}`, OWNER_KEY, { name: "notes" });
 
     const moved = await call(fixture, "PUT", "/api/terminal-pool", OWNER_KEY, {

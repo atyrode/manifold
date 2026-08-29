@@ -62,6 +62,25 @@ export function tileLeafIds(layout: TileLayout): string[] {
 }
 
 /**
+ * Do two surfaces name the SAME item? Exhaustive over the union by construction, so a
+ * new tileable form cannot be added without deciding what its identity is.
+ */
+export function sameSurface(a: TileSurface, b: TileSurface): boolean {
+  switch (a.kind) {
+    case "terminal":
+      return b.kind === "terminal" && a.sessionId === b.sessionId;
+    case "pad":
+      return b.kind === "pad" && a.padId === b.padId;
+    case "text":
+      return b.kind === "text" && a.elementId === b.elementId;
+    default: {
+      const exhaustive: never = a;
+      return exhaustive;
+    }
+  }
+}
+
+/**
  * Leaf id showing `surface`, in tree order; null when the container does not show it.
  * Placement truth for a session lives HERE and in the element table — never on a
  * session record, which one id could only ever describe partially.
@@ -69,15 +88,8 @@ export function tileLeafIds(layout: TileLayout): string[] {
 export function tileIdForSurface(layout: TileLayout | null, surface: TileSurface): string | null {
   if (layout === null) return null;
   for (const tileId of tileLeafIds(layout)) {
-    const found = layout[tileId]?.surface;
-    if (found === undefined || found === null || found.kind !== surface.kind) continue;
-    if (found.kind === "terminal" && surface.kind === "terminal") {
-      if (found.sessionId === surface.sessionId) return tileId;
-      continue;
-    }
-    if (found.kind === "pad" && surface.kind === "pad" && found.padId === surface.padId) {
-      return tileId;
-    }
+    const found = layout[tileId]?.surface ?? null;
+    if (found !== null && sameSurface(found, surface)) return tileId;
   }
   return null;
 }

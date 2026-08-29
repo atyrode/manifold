@@ -33,12 +33,12 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, type PlaceOutcome } from "../src/placement.ts";
+import { PlaceExecutor } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, FakeSocket, parkSession, testStore } from "./helpers.ts";
 
 const OWNER_KEY = "f".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -168,7 +168,7 @@ function placementFixture(): PlacementFixture {
   const enrollment = auth.enrollMachine("placement machine", root);
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
-  const opener = new SessionPeer(runtime.newId(), new FakeSocket(), root, canvas.id);
+  const opener = new SessionPeer(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
   const app = new HttpApp(
     config,
     store,
@@ -221,7 +221,7 @@ function placementFixture(): PlacementFixture {
     element({ id: "el-pooled", type: "terminal", sessionId: pooled }),
     LOCAL_ORIGIN,
   );
-  if (placement.park(pooled, "el-pooled") !== "ok") throw new Error("park failed");
+  if (parkSession(placement, canvas.id, "el-pooled") !== "ok") throw new Error("park failed");
   writeElement(
     room(fixture, canvas.id).doc,
     element({ id: "el-text", type: "text" }),
@@ -351,60 +351,6 @@ async function call(
   return { status: response.status, payload: await response.json() };
 }
 
-/**
- * Everything a placement can be observed to have DONE, with generated ids erased. Two
- * fixtures that took the same steps by different routes must produce byte-identical
- * snapshots — that equality is what "the legacy routes are delegates" means.
- */
-function snapshot(fixture: PlacementFixture): Record<string, readonly string[]> {
-  const padLabel = (padId: string | null): string => {
-    if (padId === null) return "pool";
-    return fixture.store.getPad(padId)?.name ?? `deleted(${padId})`;
-  };
-  const sessionLabel = (sessionId: string): string => {
-    if (sessionId === fixture.resident) return "resident";
-    if (sessionId === fixture.pooled) return "pooled";
-    if (sessionId === fixture.occupant) return "occupant";
-    return "unknown-session";
-  };
-  const pads = fixture.store
-    .listPads()
-    .map((pad) => `${pad.name}|${pad.layout}|transient=${String(pad.transient)}`)
-    .sort();
-  const sessions = fixture.store
-    .listSessions()
-    .map((session) => `${sessionLabel(session.id)}@${padLabel(session.padId)}`)
-    .sort();
-  const elements: string[] = [];
-  const tiles: string[] = [];
-  for (const pad of fixture.store.listPads()) {
-    const live = fixture.rooms.get(pad.id);
-    if (live === null) continue;
-    for (const found of readElements(live.doc).values()) {
-      const subject =
-        found.type === "terminal"
-          ? sessionLabel(found.sessionId)
-          : found.type === "portal"
-            ? padLabel(found.containerId)
-            : found.type;
-      elements.push(`${pad.name}|${found.type}|${subject}|${String(found.x)},${String(found.y)}`);
-    }
-    const layout = live.tileLayout();
-    if (layout === null) continue;
-    for (const tileId of tileLeafIds(layout)) {
-      const surface = layout[tileId]?.surface ?? null;
-      const subject =
-        surface === null
-          ? "empty"
-          : surface.kind === "terminal"
-            ? sessionLabel(surface.sessionId)
-            : padLabel(surface.padId);
-      tiles.push(`${pad.name}|${subject}`);
-    }
-  }
-  return { pads, sessions, elements: elements.sort(), tiles: tiles.sort() };
-}
-
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -458,8 +404,10 @@ describe("the placement algebra, executed", () => {
       "view -> compose=denied:not_accepted",
       "view -> pool=denied:not_accepted",
       "text -> canvas=move_element",
-      "text -> tile=denied:not_accepted",
-      "text -> compose=denied:not_accepted",
+      // A note is tileable now: `TileSurface` carries a `text` form, so a note joins a
+      // composition as a leaf and composes a view around a terminal like any other surface.
+      "text -> tile=add_tile",
+      "text -> compose=compose",
       "text -> pool=denied:not_accepted",
       "draw -> canvas=move_element",
       "draw -> tile=denied:not_accepted",
@@ -611,185 +559,5 @@ describe("POST /api/place", () => {
       destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
     });
     expect([malformed.status, scopedPlace.status, readOnlyPlace.status]).toEqual([400, 403, 403]);
-  });
-});
-
-/**
- * The rolling-deploy contract: while the browser still speaks the old verbs, each verb is
- * a delegate over `place()`. Every case runs the SAME intent twice on twin worlds — once
- * through the legacy method, once through the envelope — and both worlds must end up
- * indistinguishable.
- */
-describe("legacy verbs are delegates over place()", () => {
-  const cases: readonly {
-    readonly name: string;
-    readonly legacy: (fixture: PlacementFixture) => unknown;
-    readonly placed: (fixture: PlacementFixture) => PlaceOutcome;
-  }[] = [
-    {
-      name: "park",
-      legacy: (fixture) => fixture.placement.park(fixture.resident, "el-term"),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-term" },
-          destination: { kind: "pool" },
-        }),
-    },
-    {
-      name: "bind",
-      legacy: (fixture) => fixture.placement.bind(fixture.pooled, fixture.canvas.id, 40, 60),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "terminal", sessionId: fixture.pooled },
-          destination: { kind: "canvas", padId: fixture.canvas.id, x: 40, y: 60 },
-        }),
-    },
-    {
-      name: "bind into a tiled container",
-      legacy: (fixture) => fixture.placement.bind(fixture.pooled, fixture.view.id),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "terminal", sessionId: fixture.pooled },
-          destination: { kind: "tile", padId: fixture.view.id, targetTileId: null, edge: null },
-        }),
-    },
-    {
-      name: "addTile",
-      legacy: (fixture) =>
-        fixture.placement.addTile(
-          fixture.view.id,
-          { kind: "terminal", sessionId: fixture.pooled },
-          null,
-          null,
-        ),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "terminal", sessionId: fixture.pooled },
-          destination: { kind: "tile", padId: fixture.view.id, targetTileId: null, edge: null },
-        }),
-    },
-    {
-      name: "addTile with a canvas surface",
-      legacy: (fixture) =>
-        fixture.placement.addTile(
-          fixture.view.id,
-          { kind: "pad", padId: fixture.other.id },
-          null,
-          null,
-        ),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "pad", padId: fixture.other.id },
-          destination: { kind: "tile", padId: fixture.view.id, targetTileId: null, edge: null },
-        }),
-    },
-    {
-      name: "composeOnCanvas",
-      legacy: (fixture) =>
-        fixture.placement.composeOnCanvas(
-          fixture.canvas.id,
-          "el-term",
-          { kind: "terminal", sessionId: fixture.pooled },
-          "right",
-        ),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "terminal", sessionId: fixture.pooled },
-          destination: {
-            kind: "compose",
-            padId: fixture.canvas.id,
-            targetElementId: "el-term",
-            edge: "right",
-          },
-        }),
-    },
-    {
-      name: "extractTile",
-      legacy: (fixture) =>
-        fixture.placement.extractTile(
-          fixture.view.id,
-          soleLeafId(fixture, fixture.view.id),
-          300,
-          400,
-        ),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: {
-            kind: "tile",
-            containerId: fixture.view.id,
-            tileId: soleLeafId(fixture, fixture.view.id),
-          },
-          destination: { kind: "canvas", padId: fixture.canvas.id, x: 300, y: 400 },
-        }),
-    },
-    {
-      name: "removeTile",
-      // Removal addresses the LEAF and the pool placement addresses the OCCUPANT; the
-      // declarations refuse `tile -> pool` for exactly that reason. With one leaf per
-      // session — every real container — the two are the same release, and this asserts it.
-      legacy: (fixture) =>
-        fixture.placement.removeTile(fixture.view.id, soleLeafId(fixture, fixture.view.id)),
-      placed: (fixture) =>
-        fixture.placement.place({
-          surface: { kind: "terminal", sessionId: fixture.occupant },
-          destination: { kind: "pool" },
-        }),
-    },
-  ];
-
-  for (const scenario of cases) {
-    test(`${scenario.name} lands exactly where the envelope lands it`, () => {
-      const throughVerb = placementFixture();
-      const throughEnvelope = placementFixture();
-      scenario.legacy(throughVerb);
-      const outcome = scenario.placed(throughEnvelope);
-      expect(outcome.status).toBe("placed");
-      expect(snapshot(throughEnvelope)).toEqual(snapshot(throughVerb));
-    });
-  }
-
-  test("the park route and the pool destination answer the same HTTP request", async () => {
-    const throughVerb = placementFixture();
-    const throughEnvelope = placementFixture();
-    const legacy = await call(
-      throughVerb,
-      "POST",
-      `/api/terminals/${throughVerb.resident}/park`,
-      OWNER_KEY,
-      { elementId: "el-term" },
-    );
-    const envelope = await call(throughEnvelope, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "element", padId: throughEnvelope.canvas.id, elementId: "el-term" },
-      destination: { kind: "pool" },
-    });
-    expect([legacy.status, envelope.status]).toEqual([200, 200]);
-    expect(legacy.payload).toEqual({ ok: true });
-    expect(envelope.payload).toEqual({ op: "park" });
-    expect(snapshot(throughEnvelope)).toEqual(snapshot(throughVerb));
-  });
-
-  test("the tiles route and the tile destination answer the same HTTP request", async () => {
-    const throughVerb = placementFixture();
-    const throughEnvelope = placementFixture();
-    const legacy = await call(
-      throughVerb,
-      "POST",
-      `/api/pads/${throughVerb.view.id}/tiles`,
-      OWNER_KEY,
-      {
-        surface: { kind: "terminal", sessionId: throughVerb.pooled },
-        targetTileId: null,
-        edge: null,
-      },
-    );
-    const envelope = await call(throughEnvelope, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: throughEnvelope.pooled },
-      destination: { kind: "tile", padId: throughEnvelope.view.id, targetTileId: null, edge: null },
-    });
-    expect([legacy.status, envelope.status]).toEqual([200, 200]);
-    const tileId = PlaceResponseSchema.parse(envelope.payload);
-    if (tileId.op !== "add_tile") throw new Error("add_tile response expected");
-    expect(legacy.payload).toEqual({ tileId: tileId.tileId });
-    expect(snapshot(throughEnvelope)).toEqual(snapshot(throughVerb));
   });
 });

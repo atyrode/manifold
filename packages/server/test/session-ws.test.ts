@@ -1,13 +1,37 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_MIN_INTERVAL_MS, PROTOCOL_VERSION, type Pad } from "@manifold/protocol";
+import {
+  CHANNEL_LIMIT_CLOSE_CODE,
+  CURSOR_MIN_INTERVAL_MS,
+  MAX_SESSION_CHANNELS_PER_CONNECTION,
+  PROTOCOL_VERSION,
+  type Pad,
+} from "@manifold/protocol";
+import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
 import { AuthService } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
+import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
 
-function gatewayFixture() {
+/** Tests that are not about routing drive one channel per socket, exactly as v11 did. */
+const CH = "c1";
+
+interface GatewayFixture {
+  readonly runtime: FakeRuntime;
+  readonly clock: FakeClock;
+  readonly store: ServerStore;
+  readonly ownerKey: string;
+  readonly auth: AuthService;
+  readonly pad: Pad;
+  /** Creates one more container so a socket can carry two rooms at once. */
+  readonly secondPad: (name: string) => Pad;
+  readonly rooms: RoomManager;
+  readonly gateway: SessionGateway;
+}
+
+function gatewayFixture(): GatewayFixture {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -34,7 +58,57 @@ function gatewayFixture() {
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
   const gateway = new SessionGateway(auth, rooms, broker, clock, silentLogger, runtime);
-  return { runtime, clock, store, ownerKey, auth, pad, rooms, gateway };
+  const secondPad = (name: string): Pad => {
+    const created: Pad = {
+      id: runtime.newId(),
+      name,
+      createdAt: runtime.now(),
+      layout: "canvas",
+      transient: false,
+    };
+    store.createPad(created);
+    return created;
+  };
+  return { runtime, clock, store, ownerKey, auth, pad, secondPad, rooms, gateway };
+}
+
+/** Sends one channel-tagged client frame. */
+function send(
+  gateway: SessionGateway,
+  id: string,
+  ch: string,
+  body: Record<string, unknown>,
+): void {
+  gateway.message(id, JSON.stringify({ ch, ...body }));
+}
+
+interface JoinOptions {
+  readonly ch?: string;
+  readonly padId?: string;
+  readonly token?: string;
+  readonly spectator?: boolean;
+}
+
+/** Joins one channel on an already-open socket, without the `open` handshake. */
+function joinChannel(
+  fixture: GatewayFixture,
+  id: string,
+  socket: FakeSocket,
+  options: JoinOptions = {},
+): string {
+  const ch = options.ch ?? CH;
+  send(fixture.gateway, id, ch, {
+    type: "join",
+    padId: options.padId ?? fixture.pad.id,
+    token: options.token ?? fixture.ownerKey,
+    protocolVersion: PROTOCOL_VERSION,
+    ...(options.spectator === true ? { spectator: true } : {}),
+  });
+  // A second channel into the same room also hears that room's roster deltas, so the
+  // init this join earned is found by its channel id, not by frame order.
+  const init = socket.frames().findLast((frame) => frame.type === "init" && frame.ch === ch);
+  expect(init).toBeDefined();
+  return ch;
 }
 
 function join(
@@ -45,20 +119,12 @@ function join(
   token: string,
 ): void {
   gateway.open(id, socket);
-  gateway.message(
-    id,
-    JSON.stringify({
-      type: "join",
-      padId,
-      token,
-      protocolVersion: PROTOCOL_VERSION,
-    }),
-  );
+  send(gateway, id, CH, { type: "join", padId, token, protocolVersion: PROTOCOL_VERSION });
   expect(socket.messages()[0]?.type).toBe("init");
   socket.clear();
 }
 
-/** Joins the read-only socket a portal widget's live preview opens. */
+/** Joins the read-only channel a portal widget's live preview opens. */
 function joinSpectator(
   gateway: SessionGateway,
   id: string,
@@ -67,18 +133,35 @@ function joinSpectator(
   token: string,
 ): void {
   gateway.open(id, socket);
-  gateway.message(
-    id,
-    JSON.stringify({
-      type: "join",
-      padId,
-      token,
-      protocolVersion: PROTOCOL_VERSION,
-      spectator: true,
-    }),
-  );
+  send(gateway, id, CH, {
+    type: "join",
+    padId,
+    token,
+    protocolVersion: PROTOCOL_VERSION,
+    spectator: true,
+  });
   expect(socket.messages()[0]?.type).toBe("init");
   socket.clear();
+}
+
+/** One Yjs update authoring a single terminal element, as a client would send it. */
+function docUpdateFor(elementId: string): string {
+  const doc = createSceneDoc();
+  writeElement(
+    doc,
+    {
+      id: elementId,
+      type: "terminal",
+      sessionId: `session-${elementId}`,
+      x: 0,
+      y: 0,
+      width: 720,
+      height: 480,
+      zIndex: 0,
+    },
+    LOCAL_ORIGIN,
+  );
+  return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
 describe("SessionGateway high-rate request cadence", () => {
@@ -88,15 +171,15 @@ describe("SessionGateway high-rate request cadence", () => {
     join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
 
     for (let index = 0; index < 20; index += 1) {
-      fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+      send(fixture.gateway, "peer", CH, { type: "resync_request" });
     }
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
 
     fixture.clock.advance(999);
-    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+    send(fixture.gateway, "peer", CH, { type: "resync_request" });
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
     fixture.clock.advance(1);
-    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+    send(fixture.gateway, "peer", CH, { type: "resync_request" });
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(2);
     fixture.gateway.shutdown();
     fixture.store.close();
@@ -107,9 +190,9 @@ describe("SessionGateway high-rate request cadence", () => {
     const socket = new FakeSocket();
     join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
 
-    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
-    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
-    fixture.gateway.message("peer", JSON.stringify({ type: "resync_request" }));
+    send(fixture.gateway, "peer", CH, { type: "resync_request" });
+    send(fixture.gateway, "peer", CH, { type: "resync_request" });
+    send(fixture.gateway, "peer", CH, { type: "resync_request" });
 
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
     expect(fixture.clock.pendingJobs).toBe(1);
@@ -130,15 +213,12 @@ describe("SessionGateway high-rate request cadence", () => {
     join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
 
-    fixture.gateway.message("first", JSON.stringify({ type: "cursor", x: 1, y: 1 }));
+    send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     first.clear();
     second.clear();
     fixture.clock.advance(10);
     for (const coordinate of [2, 3, 4]) {
-      fixture.gateway.message(
-        "first",
-        JSON.stringify({ type: "cursor", x: coordinate, y: coordinate }),
-      );
+      send(fixture.gateway, "first", CH, { type: "cursor", x: coordinate, y: coordinate });
     }
 
     expect(fixture.clock.pendingJobs).toBe(1);
@@ -161,10 +241,10 @@ describe("SessionGateway high-rate request cadence", () => {
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
-    fixture.gateway.message("first", JSON.stringify({ type: "cursor", x: 1, y: 1 }));
+    send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     second.clear();
     fixture.clock.advance(10);
-    fixture.gateway.message("first", JSON.stringify({ type: "cursor", x: 9, y: 9 }));
+    send(fixture.gateway, "first", CH, { type: "cursor", x: 9, y: 9 });
     expect(fixture.clock.pendingJobs).toBe(1);
 
     fixture.gateway.close("first");
@@ -183,53 +263,282 @@ describe("SessionGateway connection identity", () => {
     const second = new FakeSocket();
 
     fixture.gateway.open("first", first);
-    fixture.gateway.message(
-      "first",
-      JSON.stringify({
-        type: "join",
-        padId: fixture.pad.id,
-        token: fixture.ownerKey,
-        protocolVersion: PROTOCOL_VERSION,
-      }),
-    );
+    joinChannel(fixture, "first", first);
     fixture.gateway.open("second", second);
-    fixture.gateway.message(
-      "second",
-      JSON.stringify({
-        type: "join",
-        padId: fixture.pad.id,
-        token: fixture.ownerKey,
-        protocolVersion: PROTOCOL_VERSION,
-      }),
-    );
+    joinChannel(fixture, "second", second);
 
     const firstInit = first.messages().find((message) => message.type === "init");
     const secondInit = second.messages().find((message) => message.type === "init");
-    expect(firstInit?.selfConnId).toBe("first");
-    expect(secondInit?.selfConnId).toBe("second");
-    expect(firstInit?.selfConnId).not.toBe(secondInit?.selfConnId);
+    const firstConnId = firstInit?.type === "init" ? firstInit.selfConnId : null;
+    const secondConnId = secondInit?.type === "init" ? secondInit.selfConnId : null;
+    expect(firstConnId).not.toBeNull();
+    expect(secondConnId).not.toBeNull();
+    expect(firstConnId).not.toBe(secondConnId);
 
     first.clear();
     second.clear();
-    fixture.gateway.message("first", JSON.stringify({ type: "cursor", x: 1, y: 2 }));
-    fixture.gateway.message("second", JSON.stringify({ type: "cursor", x: 3, y: 4 }));
+    send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 2 });
+    send(fixture.gateway, "second", CH, { type: "cursor", x: 3, y: 4 });
 
     expect(
-      first.messages().find((message) => message.type === "cursor" && message.connId === "second"),
+      first
+        .messages()
+        .find((message) => message.type === "cursor" && message.connId === secondConnId),
     ).toMatchObject({
       type: "cursor",
-      connId: "second",
+      connId: secondConnId,
       x: 3,
       y: 4,
     });
     expect(
-      second.messages().find((message) => message.type === "cursor" && message.connId === "first"),
+      second
+        .messages()
+        .find((message) => message.type === "cursor" && message.connId === firstConnId),
     ).toMatchObject({
       type: "cursor",
-      connId: "first",
+      connId: firstConnId,
       x: 1,
       y: 2,
     });
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+});
+
+describe("SessionGateway channel multiplexing", () => {
+  test("two channels on one socket carry two rooms' documents independently", () => {
+    const fixture = gatewayFixture();
+    const other = fixture.secondPad("other pad");
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+    socket.clear();
+
+    send(fixture.gateway, "tab", "a", { type: "doc_update", update: docUpdateFor("in-a") });
+    send(fixture.gateway, "tab", "b", { type: "doc_update", update: docUpdateFor("in-b") });
+
+    // Each write landed in exactly the room its channel names.
+    expect(fixture.rooms.live(fixture.pad.id)?.element("in-a")).toMatchObject({ id: "in-a" });
+    expect(fixture.rooms.live(fixture.pad.id)?.element("in-b")).toBeNull();
+    expect(fixture.rooms.live(other.id)?.element("in-b")).toMatchObject({ id: "in-b" });
+    expect(fixture.rooms.live(other.id)?.element("in-a")).toBeNull();
+
+    // And each fan-out came back tagged with the channel that owns it.
+    const routed = socket
+      .frames()
+      .filter((frame) => frame.type === "doc_update")
+      .map((frame) => (frame.type === "doc_update" ? frame.ch : null));
+    expect(routed).toEqual(["a", "b"]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("presence and roster stay per channel: one socket, two memberships", () => {
+    const fixture = gatewayFixture();
+    const other = fixture.secondPad("other pad");
+    const socket = new FakeSocket();
+    const witnessA = new FakeSocket();
+    const witnessB = new FakeSocket();
+    join(fixture.gateway, "witness-a", witnessA, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "witness-b", witnessB, other.id, fixture.ownerKey);
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+    witnessA.clear();
+    witnessB.clear();
+
+    send(fixture.gateway, "tab", "a", { type: "presence", payload: { status: "working" } });
+
+    expect(witnessA.messages()).toEqual([
+      expect.objectContaining({ type: "presence", payload: { status: "working" } }),
+    ]);
+    // The other room heard nothing: presence belongs to a membership, not to a socket.
+    expect(witnessB.messages()).toEqual([]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("role is per channel: one socket occupies one room and only watches another", () => {
+    const fixture = gatewayFixture();
+    const other = fixture.secondPad("watched pad");
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "live" });
+    joinChannel(fixture, "tab", socket, { ch: "preview", padId: other.id, spectator: true });
+    socket.clear();
+
+    // The watching channel writes nothing, so the watched room has no occupants.
+    send(fixture.gateway, "tab", "preview", { type: "cursor", x: 1, y: 1 });
+    expect(socket.frames()).toEqual([
+      expect.objectContaining({
+        type: "error",
+        ch: "preview",
+        message: "spectator sockets are read-only",
+      }),
+    ]);
+    expect(fixture.rooms.presence().map((entry) => entry.padId)).toEqual([fixture.pad.id]);
+
+    // The occupying channel on the SAME socket keeps full write authority.
+    socket.clear();
+    send(fixture.gateway, "tab", "live", { type: "doc_update", update: docUpdateFor("written") });
+    expect(fixture.rooms.live(fixture.pad.id)?.element("written")).toMatchObject({
+      id: "written",
+    });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("one channel leaving never disturbs the other, and an empty socket must rejoin", () => {
+    const fixture = gatewayFixture();
+    const other = fixture.secondPad("other pad");
+    const socket = new FakeSocket();
+    const witness = new FakeSocket();
+    join(fixture.gateway, "witness", witness, other.id, fixture.ownerKey);
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+
+    send(fixture.gateway, "tab", "a", { type: "leave" });
+
+    // The left room lost its only membership, so it stops being resident entirely; the
+    // socket and its other channel live on.
+    expect(fixture.rooms.live(fixture.pad.id)).toBeNull();
+    expect(socket.closed).toBeNull();
+    witness.clear();
+    socket.clear();
+    send(fixture.gateway, "tab", "b", { type: "presence", payload: { status: "working" } });
+    expect(witness.messages()).toEqual([
+      expect.objectContaining({ type: "presence", payload: { status: "working" } }),
+    ]);
+
+    // Frames for a retired channel are dropped, not fatal: they race the server's own
+    // channel teardown, and killing the socket would take healthy rooms with it.
+    socket.clear();
+    send(fixture.gateway, "tab", "a", { type: "cursor", x: 5, y: 5 });
+    expect(socket.frames()).toEqual([]);
+    expect(socket.closed).toBeNull();
+
+    // A socket carrying no rooms is closed exactly like one that never joined.
+    send(fixture.gateway, "tab", "b", { type: "leave" });
+    fixture.clock.advance(10_000);
+    expect(socket.closed).toEqual({ code: 4002, reason: "join timeout" });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("the channel cap refuses one channel, never the connection", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    for (let index = 0; index < MAX_SESSION_CHANNELS_PER_CONNECTION; index += 1) {
+      joinChannel(fixture, "tab", socket, { ch: `c${index}` });
+    }
+    socket.clear();
+
+    send(fixture.gateway, "tab", "overflow", {
+      type: "join",
+      padId: fixture.pad.id,
+      token: fixture.ownerKey,
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    const refusal = socket.frames().at(-1);
+    expect(refusal).toEqual({
+      type: "channel_closed",
+      ch: "overflow",
+      code: CHANNEL_LIMIT_CLOSE_CODE,
+      reason: "channel limit reached",
+    });
+    expect(socket.closed).toBeNull();
+
+    // The channels already carried by this socket are untouched.
+    socket.clear();
+    send(fixture.gateway, "tab", "c0", { type: "resync_request" });
+    expect(socket.frames()).toEqual([expect.objectContaining({ type: "resync", ch: "c0" })]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a duplicate channel id is a client bug and closes the socket", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    send(fixture.gateway, "tab", "a", {
+      type: "join",
+      padId: fixture.pad.id,
+      token: fixture.ownerKey,
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    expect(socket.closed).toEqual({ code: 4002, reason: "duplicate join" });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("an unknown pad refuses its channel; the socket keeps its other rooms", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    socket.clear();
+
+    send(fixture.gateway, "tab", "gone", {
+      type: "join",
+      padId: "no-such-pad",
+      token: fixture.ownerKey,
+      protocolVersion: PROTOCOL_VERSION,
+    });
+
+    expect(socket.frames()).toEqual([
+      { type: "channel_closed", ch: "gone", code: 4404, reason: "pad not found" },
+    ]);
+    expect(socket.closed).toBeNull();
+    socket.clear();
+    send(fixture.gateway, "tab", "a", { type: "resync_request" });
+    expect(socket.frames().at(-1)?.type).toBe("resync");
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a stale protocol version still closes the whole socket", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    send(fixture.gateway, "tab", "a", {
+      type: "join",
+      padId: fixture.pad.id,
+      token: fixture.ownerKey,
+      protocolVersion: PROTOCOL_VERSION - 1,
+    });
+    expect(socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("liveness is a socket property: ping carries no channel", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    socket.clear();
+
+    fixture.gateway.message("tab", JSON.stringify({ type: "ping" }));
+    expect(socket.frames()).toEqual([{ type: "pong" }]);
+
+    // A socket that has joined nothing must still join first.
+    const fresh = new FakeSocket();
+    fixture.gateway.open("fresh", fresh);
+    fixture.gateway.message("fresh", JSON.stringify({ type: "ping" }));
+    expect(fresh.closed).toEqual({ code: 4002, reason: "first frame must be join" });
+
     fixture.gateway.shutdown();
     fixture.store.close();
   });
@@ -243,8 +552,8 @@ describe("SessionGateway gesture cadence", () => {
     join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
 
-    const gesture = (phase: "active" | "end", x: number) =>
-      JSON.stringify({
+    const gesture = (phase: "active" | "end", x: number): void => {
+      send(fixture.gateway, "first", CH, {
         type: "gesture",
         kind: "move",
         phase,
@@ -252,29 +561,28 @@ describe("SessionGateway gesture cadence", () => {
         x,
         y: x,
       });
+    };
 
-    fixture.gateway.message("first", gesture("active", 1));
+    gesture("active", 1);
     expect(second.messages().at(-1)).toMatchObject({
       type: "gesture",
       principalId: expect.any(String),
-      connId: "first",
       phase: "active",
       x: 1,
     });
     second.clear();
 
     fixture.clock.advance(10);
-    fixture.gateway.message("first", gesture("active", 2));
-    fixture.gateway.message("first", gesture("active", 3));
+    gesture("active", 2);
+    gesture("active", 3);
     expect(second.messages()).toEqual([]);
     expect(fixture.clock.pendingJobs).toBe(1);
 
-    fixture.gateway.message("first", gesture("end", 4));
+    gesture("end", 4);
     expect(fixture.clock.pendingJobs).toBe(0);
     expect(second.messages()).toEqual([
       expect.objectContaining({
         type: "gesture",
-        connId: "first",
         phase: "end",
         x: 4,
       }),
@@ -291,35 +599,29 @@ describe("SessionGateway gesture cadence", () => {
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
-    fixture.gateway.message(
-      "first",
-      JSON.stringify({
+    send(fixture.gateway, "first", CH, {
+      type: "gesture",
+      kind: "resize",
+      phase: "active",
+      elementId: "element",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    second.clear();
+    fixture.clock.advance(5);
+    for (const width of [20, 30, 40]) {
+      send(fixture.gateway, "first", CH, {
         type: "gesture",
         kind: "resize",
         phase: "active",
         elementId: "element",
         x: 0,
         y: 0,
-        width: 10,
-        height: 10,
-      }),
-    );
-    second.clear();
-    fixture.clock.advance(5);
-    for (const width of [20, 30, 40]) {
-      fixture.gateway.message(
-        "first",
-        JSON.stringify({
-          type: "gesture",
-          kind: "resize",
-          phase: "active",
-          elementId: "element",
-          x: 0,
-          y: 0,
-          width,
-          height: width,
-        }),
-      );
+        width,
+        height: width,
+      });
     }
     fixture.clock.advance(25);
 
@@ -358,9 +660,9 @@ describe("SessionGateway spectator sockets", () => {
     ]);
 
     // Reading is the whole point: the watcher still receives the room's fan-out.
-    fixture.gateway.message("occupant", JSON.stringify({ type: "cursor", x: 7, y: 9 }));
+    send(fixture.gateway, "occupant", CH, { type: "cursor", x: 7, y: 9 });
     expect(watcherSocket.messages()).toEqual([
-      expect.objectContaining({ type: "cursor", connId: "occupant", x: 7, y: 9 }),
+      expect.objectContaining({ type: "cursor", x: 7, y: 9 }),
     ]);
 
     fixture.gateway.shutdown();
@@ -374,7 +676,7 @@ describe("SessionGateway spectator sockets", () => {
     join(fixture.gateway, "occupant", occupantSocket, fixture.pad.id, fixture.ownerKey);
     joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.pad.id, fixture.ownerKey);
 
-    const writes = [
+    const writes: Record<string, unknown>[] = [
       { type: "doc_update", update: "AA==" },
       { type: "presence", payload: { focus: null } },
       { type: "cursor", x: 1, y: 1 },
@@ -387,7 +689,7 @@ describe("SessionGateway spectator sockets", () => {
     ];
     for (const write of writes) {
       watcherSocket.clear();
-      fixture.gateway.message("watcher", JSON.stringify(write));
+      send(fixture.gateway, "watcher", CH, write);
       expect(watcherSocket.messages()).toEqual([
         {
           type: "error",
@@ -401,7 +703,7 @@ describe("SessionGateway spectator sockets", () => {
 
     // Recovery and keepalive stay open, or a dropped preview could never resync.
     watcherSocket.clear();
-    fixture.gateway.message("watcher", JSON.stringify({ type: "resync_request" }));
+    send(fixture.gateway, "watcher", CH, { type: "resync_request" });
     fixture.gateway.message("watcher", JSON.stringify({ type: "ping" }));
     expect(watcherSocket.messages().map((message) => message.type)).toEqual(["resync", "pong"]);
 

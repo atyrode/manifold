@@ -3,7 +3,7 @@ import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   type SceneElement,
-  type ServerMessage,
+  type ServerMessageBody,
   type TileSurface,
 } from "@manifold/protocol";
 import {
@@ -60,8 +60,21 @@ class FakeSocket {
     this.onopen?.();
   }
 
+  /**
+   * Tests that are not about routing drive one room, so an untagged frame is stamped with
+   * this socket's channel: v12 made routing mandatory on the wire, not interesting here.
+   */
+  channel = "c1";
+
   receive(frame: unknown): void {
-    const data = typeof frame === "string" ? frame : JSON.stringify(frame);
+    const tagged =
+      typeof frame === "object" &&
+      frame !== null &&
+      !("ch" in frame) &&
+      Reflect.get(frame, "type") !== "pong"
+        ? { ch: this.channel, ...frame }
+        : frame;
+    const data = typeof tagged === "string" ? tagged : JSON.stringify(tagged);
     this.onmessage?.({ data } as MessageEvent);
   }
 }
@@ -126,7 +139,10 @@ function encodedTiledDoc(...surfaces: TileSurface[]): string {
   return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
-const INIT: ServerMessage = {
+/** The one frame every harness starts from; naming its member type keeps spreads exact. */
+type InitFrame = Extract<ServerMessageBody, { type: "init" }>;
+
+const INIT: InitFrame = {
   type: "init",
   protocolVersion: PROTOCOL_VERSION,
   epoch: "e1",
@@ -138,6 +154,13 @@ const INIT: ServerMessage = {
   roster: [],
   sessions: [],
 };
+
+/** A client's channel id once it holds one; a missing id is a harness bug, not a case. */
+function channelOf(client: SessionClient): string {
+  const id = client.channelId;
+  if (id === null) throw new Error("client holds no channel");
+  return id;
+}
 
 interface ClientHarnessOptions {
   reconnect?: boolean;
@@ -167,6 +190,7 @@ function dialing(options: ClientHarnessOptions = {}): ClientHarness {
   const connection = client.connect();
   const socket = FakeSocket.instances.at(-1);
   if (!socket) throw new Error("no socket dialed");
+  socket.channel = client.channelId ?? "c1";
   return { client, socket, connection };
 }
 
@@ -205,6 +229,240 @@ describe("handshake", () => {
     expect(client.elements.get("srv")).toEqual(element("srv"));
     expect(client.selfConnId).toBe("conn-me");
     expect(client.status).toBe("open");
+  });
+});
+
+describe("shared transport", () => {
+  interface MultiplexHarness {
+    readonly first: SessionClient;
+    readonly second: SessionClient;
+    readonly socket: FakeSocket;
+    /** Each room's own connect promise: one may fail while the other lives. */
+    readonly firstConnect: Promise<void>;
+    readonly secondConnect: Promise<void>;
+  }
+
+  /**
+   * Two rooms of one tab: same url, same token, same socket factory — which is exactly
+   * what a canvas plus a portal widget looks like in the browser.
+   */
+  function twoRooms(options: { reconnect?: boolean } = {}): MultiplexHarness {
+    FakeSocket.instances = [];
+    const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
+    const build = (padId: string): SessionClient =>
+      new SessionClient({
+        url: "ws://test/ws/session",
+        padId,
+        token: "tok",
+        reconnect: options.reconnect ?? false,
+        webSocketFactory: factory,
+      });
+    const first = build("pad1");
+    const second = build("pad2");
+    const firstConnect = first.connect();
+    const secondConnect = second.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+    return { first, second, socket, firstConnect, secondConnect };
+  }
+
+  function initFor(client: SessionClient, epoch: string, elementId: string): InitFrame {
+    return {
+      ...INIT,
+      epoch,
+      doc: encodedDoc(element(elementId)),
+      selfConnId: `conn-${channelOf(client)}`,
+    };
+  }
+
+  function receiveOn(socket: FakeSocket, client: SessionClient, body: ServerMessageBody): void {
+    socket.receive({ ch: channelOf(client), ...body });
+  }
+
+  test("two rooms share ONE connection and each joins its own channel", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(first.transportId).toBe(second.transportId);
+    expect(first.channelId).not.toBe(second.channelId);
+
+    socket.open();
+    const JoinSchema = z.looseObject({ type: z.string(), ch: z.string(), padId: z.string() });
+    const joins = socket.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
+    expect(joins.map((join) => [join.padId, join.ch])).toEqual([
+      ["pad1", channelOf(first)],
+      ["pad2", channelOf(second)],
+    ]);
+
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+    first.close();
+    second.close();
+  });
+
+  test("state, doc updates, and resync stay per channel on the shared socket", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    expect(first.epoch).toBe("e-a");
+    expect(second.epoch).toBe("e-b");
+    expect(first.elements.has("in-a")).toBe(true);
+    expect(first.elements.has("in-b")).toBe(false);
+    expect(second.elements.has("in-b")).toBe(true);
+
+    // A remote write on one channel never reaches the other room's projection.
+    socket.receive({
+      ch: channelOf(second),
+      type: "doc_update",
+      update: encodedDoc(element("later-b")),
+      by: "peer",
+    });
+    expect(second.elements.has("later-b")).toBe(true);
+    expect(first.elements.has("later-b")).toBe(false);
+
+    // A resync replaces exactly one room's lineage.
+    receiveOn(socket, second, {
+      ...INIT,
+      type: "resync",
+      epoch: "e-b2",
+      doc: encodedDoc(element("fresh-b")),
+    });
+    expect(second.epoch).toBe("e-b2");
+    expect(second.elements.has("fresh-b")).toBe(true);
+    expect(second.elements.has("later-b")).toBe(false);
+    expect(first.epoch).toBe("e-a");
+    expect(first.elements.has("in-a")).toBe(true);
+
+    // Writes are tagged with the room that made them.
+    const before = socket.sent.length;
+    first.sendCursor(4, 5);
+    const cursor = z
+      .looseObject({ type: z.string(), ch: z.string() })
+      .parse(JSON.parse(socket.sent[before] ?? "{}"));
+    expect(cursor).toMatchObject({ type: "cursor", ch: first.channelId });
+
+    first.close();
+    second.close();
+  });
+
+  test("a reconnect redials once and rejoins every channel", () => {
+    vi.useFakeTimers();
+    const { first, second, socket } = twoRooms({ reconnect: true });
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+
+    socket.close(1006, "abnormal");
+    expect(first.status).toBe("reconnecting");
+    expect(second.status).toBe("reconnecting");
+
+    vi.runAllTimers();
+    // ONE new socket for both rooms — the whole point of v12.
+    expect(FakeSocket.instances).toHaveLength(2);
+    const replacement = FakeSocket.instances.at(-1);
+    if (!replacement || replacement === socket) throw new Error("no replacement socket");
+    replacement.open();
+
+    const JoinSchema = z.looseObject({
+      type: z.string(),
+      ch: z.string(),
+      padId: z.string(),
+      lastEpoch: z.string().optional(),
+    });
+    const joins = replacement.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
+    // Both rooms rejoined, each carrying its OWN resume hints.
+    expect(joins.map((join) => [join.padId, join.ch, join.lastEpoch])).toEqual([
+      ["pad1", channelOf(first), "e-a"],
+      ["pad2", channelOf(second), "e-b"],
+    ]);
+
+    first.close();
+    second.close();
+    vi.useRealTimers();
+  });
+
+  test("closing one room leaves it on the wire; the last close ends the socket", () => {
+    const { first, second, socket } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    const firstChannel = channelOf(first);
+
+    first.close();
+
+    expect(sentTypes(socket).at(-1)).toBe("leave");
+    expect(
+      z
+        .looseObject({ type: z.string(), ch: z.string() })
+        .parse(JSON.parse(socket.sent.at(-1) ?? "{}")).ch,
+    ).toBe(firstChannel);
+    expect(socket.closedWith).toBeNull();
+    expect(first.status).toBe("closed");
+    expect(second.status).toBe("open");
+
+    // The last room leaving IS the socket closing, so no second `leave` is spent.
+    const before = socket.sent.length;
+    second.close();
+    expect(socket.sent).toHaveLength(before);
+    expect(socket.closedWith?.code).toBe(1000);
+  });
+
+  test("a terminal channel refusal kills one room and spares its sibling", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "pad deleted",
+    });
+
+    // The dead room reports closed and holds no channel; the socket never went anywhere.
+    expect(first.status).toBe("closed");
+    expect(first.channelId).toBeNull();
+    expect(second.status).toBe("open");
+    expect(socket.closedWith).toBeNull();
+
+    // The surviving room keeps streaming on the same socket.
+    socket.receive({
+      ch: channelOf(second),
+      type: "doc_update",
+      update: encodedDoc(element("still-live")),
+      by: "peer",
+    });
+    expect(second.elements.has("still-live")).toBe(true);
+
+    second.close();
+  });
+
+  test("a refusal before init rejects connect with the code and reason", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "pad not found",
+    });
+
+    // Identical shape to the socket-level rejection this replaced: a room that cannot be
+    // joined reports its close code, and the tab's other rooms never notice.
+    await expect(firstConnect).rejects.toThrow(
+      "session rejected with close code 4404: pad not found",
+    );
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await secondConnect;
+    expect(second.status).toBe("open");
+
+    second.close();
   });
 });
 
@@ -710,7 +968,7 @@ describe("terminal attach refcounting", () => {
     controllerId: "me",
     createdBy: "me",
   };
-  const INIT_WITH_SESSION: ServerMessage = { ...INIT, sessions: [SESSION] };
+  const INIT_WITH_SESSION: InitFrame = { ...INIT, sessions: [SESSION] };
 
   test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
     const { client, socket } = connected();

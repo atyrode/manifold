@@ -1,16 +1,13 @@
 import {
-  ClientMessageSchema,
+  ClientMessageBodySchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
-  SERVER_MESSAGE_TYPES,
-  ServerMessageSchema,
-  reconnectDelayMs,
   type Cap,
-  type ClientMessage,
+  type ClientMessageBody,
   type Gesture,
   type PlaceResponse,
   type PlacementDenial,
@@ -20,7 +17,7 @@ import {
   type PresenceState,
   type Principal,
   type SceneElement,
-  type ServerMessage,
+  type ServerMessageBody,
   type SessionInfo,
   type TileLayout,
 } from "@manifold/protocol";
@@ -45,71 +42,36 @@ import {
   type ScenePatch,
 } from "@manifold/scene";
 import { bytesToBase64, textToBase64 } from "./base64.ts";
+import {
+  acquireChannel,
+  type ChannelFrame,
+  type JoinBody,
+  type PooledChannel,
+} from "./connection-pool.ts";
 
 /**
- * THE session-channel client. Browsers, tests, and tools all speak to the server through
- * this state machine — never through a second WebSocket implementation (AGENTS.md
- * invariant). It owns: the join handshake, reconnect with rejoin, epoch/rev tracking,
- * gap-triggered resync, optimistic local reconciliation, and offline-edit rebase.
+ * THE per-room session client. Browsers, tests, and tools all speak to the server
+ * through this state machine — never through a second WebSocket implementation (AGENTS.md
+ * invariant). It owns everything a ROOM means: the join handshake, epoch/rev tracking,
+ * gap-triggered resync, optimistic local reconciliation, offline-edit rebase, and the
+ * terminal subscription refcounts.
+ *
+ * What it no longer owns is the SOCKET. Since v12 the transport is multiplexed: this
+ * client is a channel handle on a pooled connection keyed by (url, token), so a tab
+ * rendering a canvas plus five portal widgets holds ONE TCP connection with six channels.
+ * The public surface is unchanged — construct one per room, `connect()`, subscribe — and
+ * reconnect, keepalive, and rejoin-every-channel live one layer down in
+ * `connection-pool.ts`.
  */
-
-const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
-
-type ClassifiedFrame =
-  | { kind: "message"; message: ServerMessage }
-  | { kind: "unknown_type" }
-  | { kind: "malformed"; detail: string };
-
-/**
- * Frame policy (CONTRACTS.md): unknown `type` values are ignored for forward
- * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors —
- * the caller closes the socket (4002) and heals via reconnect → fresh init.
- */
-type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "terminal_snapshot" }>;
-
-function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
-  const type = Reflect.get(raw, "type");
-  const sessionId = Reflect.get(raw, "sessionId");
-  const seq = Reflect.get(raw, "seq");
-  const data = Reflect.get(raw, "data");
-  return (
-    (type === "terminal_output" || type === "terminal_snapshot") &&
-    typeof sessionId === "string" &&
-    sessionId.length > 0 &&
-    typeof seq === "number" &&
-    Number.isInteger(seq) &&
-    seq >= 0 &&
-    typeof data === "string" &&
-    data.length <= 700_000
-  );
-}
-
-function classifyServerFrame(data: unknown): ClassifiedFrame {
-  if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return { kind: "malformed", detail: "invalid JSON" };
-  }
-  if (raw === null || typeof raw !== "object" || typeof Reflect.get(raw, "type") !== "string") {
-    return { kind: "malformed", detail: "missing type discriminator" };
-  }
-  const type = Reflect.get(raw, "type") as string;
-  if (!KNOWN_SERVER_TYPES.has(type)) return { kind: "unknown_type" };
-  if (type === "terminal_output" || type === "terminal_snapshot") {
-    return isTerminalDataFrame(raw)
-      ? { kind: "message", message: raw }
-      : { kind: "malformed", detail: `invalid ${type} frame` };
-  }
-  const parsed = ServerMessageSchema.safeParse(raw);
-  if (!parsed.success) return { kind: "malformed", detail: `invalid ${type} frame` };
-  return { kind: "message", message: parsed.data };
-}
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
-type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
+/**
+ * Subscribers see channel-agnostic BODIES: a handle already knows which room it is, so
+ * making every listener carry a routing id would be noise. Wire frames satisfy these
+ * types structurally, which is why nothing downstream had to change for v12.
+ */
+type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 export interface SceneTx {
   create(element: SceneElement): void;
@@ -121,7 +83,7 @@ export interface SceneTx {
 
 export interface SessionEvents {
   /** Server messages, by type. */
-  message: (msg: ServerMessage) => void;
+  message: (msg: ServerMessageBody) => void;
   status: (status: ConnectionStatus) => void;
   /** Scene document was replaced after an epoch change or full state adoption. */
   scene_reset: () => void;
@@ -136,7 +98,7 @@ export interface SessionEvents {
   sessions_changed: () => void;
 }
 
-type EventKey = ServerMessage["type"] | keyof SessionEvents;
+type EventKey = ChannelFrame["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
 
 /**
@@ -153,17 +115,24 @@ export interface SessionClientOptions {
   padId: string;
   token: string;
   /**
-   * Joins as a spectator: this socket watches the room (state, doc updates, terminal
+   * Joins as a spectator: this channel watches the room (state, doc updates, terminal
    * output) without occupying it. It is absent from the roster and from pad presence,
    * it never keeps a transient container alive, and the server rejects any write it
    * sends. Live previews of a container use it; anything a user acts in does not.
    */
   spectator?: boolean;
-  /** Reconnect on unexpected close (default true). */
+  /**
+   * Reconnect on unexpected close (default true). Reconnect belongs to the shared
+   * CONNECTION, so the first client to open a given (url, token) transport sets it.
+   */
   reconnect?: boolean;
-  /** DI seam for tests. */
+  /**
+   * DI seam for tests. It is also part of the pool key: two clients sharing a factory
+   * (and url and token) share one socket, while a test handing each client its own
+   * socket double keeps them genuinely separate.
+   */
   webSocketFactory?: (url: string) => WebSocket;
-  /** Backoff schedule cap in ms (default 8000). */
+  /** Backoff schedule cap in ms (default 8000); a connection-level policy. */
   backoffCapMs?: number;
   /**
    * HTTP origin for placement writes; defaults to the origin `url` implies (same host,
@@ -173,10 +142,6 @@ export interface SessionClientOptions {
 }
 
 const OUTBOX_LIMIT = 256;
-const KEEPALIVE_INTERVAL_MS = 45_000;
-const MALFORMED_FRAME_CLOSE_CODE = 4002;
-const TERMINAL_CLOSE_CODE_MIN = 4400;
-const TERMINAL_CLOSE_CODE_MAX = 4499;
 
 export class SessionClient {
   readonly roster = new Map<string, PresenceState>();
@@ -194,13 +159,10 @@ export class SessionClient {
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
     SessionClientOptions;
-  private socket: WebSocket | null = null;
+  /** This room's channel on the shared socket; null before connect and after close. */
+  private channel: PooledChannel | null = null;
   private listeners = new Map<EventKey, Set<Handler>>();
-  private outbox: ClientMessage[] = [];
-  private attempts = 0;
-  private closedIntentionally = false;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private keepaliveTimer: NodeJS.Timeout | null = null;
+  private outbox: ClientMessageBody[] = [];
   private closeError: Error | null = null;
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
@@ -209,6 +171,20 @@ export class SessionClient {
   constructor(opts: SessionClientOptions) {
     this.opts = opts;
     this.installDoc(this.currentDoc);
+  }
+
+  /**
+   * The pooled connection carrying this room, or null before `connect()`. Two handles
+   * reporting the same id ARE sharing one socket — the multiplex invariant, observable
+   * without reaching into the transport.
+   */
+  get transportId(): string | null {
+    return this.channel?.transportId ?? null;
+  }
+
+  /** This room's channel id on that connection; it appears in every frame it exchanges. */
+  get channelId(): string | null {
+    return this.channel?.id ?? null;
   }
 
   private installDoc(doc: Y.Doc): void {
@@ -254,7 +230,10 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ events
 
-  on<T extends ServerMessage["type"]>(type: T, fn: (msg: ServerMessageOf<T>) => void): () => void;
+  on<T extends ServerMessageBody["type"]>(
+    type: T,
+    fn: (msg: ServerMessageOf<T>) => void,
+  ): () => void;
   on<K extends keyof SessionEvents>(type: K, fn: SessionEvents[K]): () => void;
   on(type: EventKey, fn: Handler): () => void {
     let set = this.listeners.get(type);
@@ -291,9 +270,12 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ lifecycle
 
-  /** Resolves on the first successful init. Reconnects keep running afterwards. */
+  /**
+   * Resolves on the first successful init; reconnects keep running afterwards. Calling it
+   * on a handle that already holds a channel is an explicit "reconnect now": the shared
+   * transport redials and every room on it rejoins.
+   */
   connect(): Promise<void> {
-    this.closedIntentionally = false;
     this.closeError = null;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const offInit = this.on("init", () => {
@@ -308,140 +290,85 @@ export class SessionClient {
         reject(this.closeError ?? new Error("session closed before init"));
       }
     });
-    this.dial();
+    if (this.channel === null) this.attach();
+    else this.channel.redial();
     return promise;
   }
 
-  private startKeepalive(): void {
-    this.stopKeepalive();
-    const timer = setInterval(() => {
-      if (this.keepaliveTimer !== timer) return;
-      this.send({ type: "ping" });
-    }, KEEPALIVE_INTERVAL_MS);
-    this.keepaliveTimer = timer;
-  }
-
-  private stopKeepalive(): void {
-    if (this.keepaliveTimer === null) return;
-    clearInterval(this.keepaliveTimer);
-    this.keepaliveTimer = null;
-  }
-
   close(): void {
-    this.closedIntentionally = true;
     this.closeError = null;
-    this.stopKeepalive();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    const socket = this.socket;
-    this.socket = null;
-    socket?.close(1000);
+    const channel = this.channel;
+    this.channel = null;
+    // Releasing is the whole story: it leaves this room and, when this was the tab's last
+    // room, closes the socket — a close IS a leave, so no extra frame is spent.
+    channel?.release();
     this.setStatus("closed");
   }
 
-  private dial(): void {
-    this.stopKeepalive();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+  /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
+  private joinBody(): JoinBody {
+    return {
+      type: "join",
+      padId: this.opts.padId,
+      token: this.opts.token,
+      protocolVersion: PROTOCOL_VERSION,
+      // Omitted rather than sent as false: the flag's absence IS the occupant case, and
+      // every join must re-declare it because the server tracks it per channel.
+      ...(this.opts.spectator === true ? { spectator: true } : {}),
+      ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
+    };
+  }
 
-    // Fence every callback from the prior socket before asking it to close. Native close
-    // events may arrive after the replacement has already opened.
-    const previousSocket = this.socket;
-    this.socket = null;
-    previousSocket?.close(1000);
-
-    this.setStatus(this.attempts === 0 ? "connecting" : "reconnecting");
-    const factory = this.opts.webSocketFactory ?? ((url: string) => new WebSocket(url));
-    const socket = factory(this.opts.url);
-    this.socket = socket;
-
-    socket.onopen = () => {
-      if (this.socket !== socket) return;
-      const join: ClientMessage = {
-        type: "join",
-        padId: this.opts.padId,
+  /** Acquires this room's channel on the pooled connection its (url, token) names. */
+  private attach(): void {
+    this.channel = acquireChannel(
+      {
+        url: this.opts.url,
         token: this.opts.token,
-        protocolVersion: PROTOCOL_VERSION,
-        // Omitted rather than sent as false: the flag's absence IS the occupant case,
-        // and a reconnect must re-declare it because the server tracks it per socket.
-        ...(this.opts.spectator === true ? { spectator: true } : {}),
-        ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
-      };
-      socket.send(JSON.stringify(join));
-    };
-
-    socket.onmessage = (ev: MessageEvent) => {
-      if (this.socket !== socket) return;
-      const classified = classifyServerFrame(ev.data);
-      switch (classified.kind) {
-        case "message":
-          this.handle(classified.message);
-          return;
-        case "unknown_type":
-          return; // forward compatibility: newer servers may emit types we don't know
-        case "malformed":
-          // A malformed KNOWN frame means version skew or corruption — local state is no
-          // longer provable. Close with an application protocol error and heal through
-          // the normal reconnect → fresh init path (CONTRACTS.md).
-          console.error("manifold-sdk: malformed server frame", classified.detail);
-          socket.close(MALFORMED_FRAME_CLOSE_CODE, "malformed server frame");
-          return;
-      }
-    };
-
-    socket.onclose = (event: CloseEvent) => {
-      if (this.socket !== socket) return; // superseded socket
-      this.socket = null;
-      this.stopKeepalive();
-
-      // 44xx codes are permanent session rejections. Retrying them cannot succeed without
-      // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
-      const terminalClose =
-        event.code !== MALFORMED_FRAME_CLOSE_CODE &&
-        event.code >= TERMINAL_CLOSE_CODE_MIN &&
-        event.code <= TERMINAL_CLOSE_CODE_MAX;
-      if (terminalClose) {
-        this.closedIntentionally = true;
-        const reason = event.reason.trim();
-        this.closeError = new Error(
-          reason === ""
-            ? `session rejected with close code ${event.code}`
-            : `session rejected with close code ${event.code}: ${reason}`,
-        );
-        this.setStatus("closed");
-        return;
-      }
-
-      if (this.closedIntentionally || this.opts.reconnect === false) {
-        this.setStatus("closed");
-        return;
-      }
-      const cap = this.opts.backoffCapMs ?? 8000;
-      const delay = reconnectDelayMs(this.attempts, 250, cap);
-      this.attempts += 1;
-      const timer = setTimeout(() => {
-        // clearTimeout cannot retract a callback already queued by the event loop. The
-        // identity check fences such stale callbacks after close() or a manual connect().
-        if (this.reconnectTimer !== timer) return;
-        this.reconnectTimer = null;
-        if (!this.closedIntentionally && this.socket === null) this.dial();
-      }, delay);
-      this.reconnectTimer = timer;
-      this.setStatus("reconnecting");
-    };
+        ...(this.opts.reconnect !== undefined ? { reconnect: this.opts.reconnect } : {}),
+        ...(this.opts.backoffCapMs !== undefined ? { backoffCapMs: this.opts.backoffCapMs } : {}),
+        ...(this.opts.webSocketFactory !== undefined
+          ? { webSocketFactory: this.opts.webSocketFactory }
+          : {}),
+      },
+      {
+        joinBody: () => this.joinBody(),
+        receive: (body) => {
+          this.handle(body);
+        },
+        transportPhase: (phase) => {
+          this.setStatus(phase);
+        },
+        channelClosed: (code, reason, terminal) => {
+          if (!terminal) {
+            // The connection is rejoining this room on backoff; from this handle's point
+            // of view that is exactly a reconnect, and its outbox waits for the fresh init.
+            this.setStatus("reconnecting");
+            return;
+          }
+          this.channel = null;
+          this.closeError = new Error(
+            reason.trim() === ""
+              ? `session rejected with close code ${code}`
+              : `session rejected with close code ${code}: ${reason.trim()}`,
+          );
+          this.setStatus("closed");
+        },
+        transportClosed: (error) => {
+          this.channel = null;
+          this.closeError = error;
+          this.setStatus("closed");
+        },
+      },
+    );
   }
 
   // ------------------------------------------------------------------ incoming
 
-  private handle(msg: ServerMessage): void {
+  private handle(msg: ChannelFrame): void {
     switch (msg.type) {
       case "init":
       case "resync": {
-        this.attempts = 0;
         const previousSelfConnId = this.selfConnId;
         const lineageChanged = this.epoch !== "" && this.epoch !== msg.epoch;
         if (lineageChanged) {
@@ -459,7 +386,7 @@ export class SessionClient {
         this.sessions.clear();
         for (const s of msg.sessions) this.sessions.set(s.id, s);
         this.setStatus("open");
-        this.startKeepalive();
+        // Keepalive belongs to the socket, which the pooled connection owns and pings.
         this.flushOutbox();
         if (this.hasLocalEdits) {
           const state = Y.encodeStateAsUpdate(this.currentDoc);
@@ -553,8 +480,7 @@ export class SessionClient {
       case "cursor":
       case "gesture":
       case "terminal_snapshot":
-      case "terminal_output":
-      case "pong": {
+      case "terminal_output": {
         this.emit(msg.type, msg);
         break;
       }
@@ -573,17 +499,19 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ outgoing
 
-  private send(msg: ClientMessage): void {
-    if (this.socket !== null && this.socket.readyState === 1 && this.status === "open") {
+  private send(msg: ClientMessageBody): void {
+    if (this.channel !== null && this.channel.isOpen() && this.status === "open") {
       // Development guard: never put an invalid frame on the wire. High-volume binary
       // frame types are constructed entirely by this SDK, so avoid rescanning their payloads.
       if (msg.type !== "cursor" && msg.type !== "doc_update" && msg.type !== "terminal_input") {
-        ClientMessageSchema.parse(msg);
+        ClientMessageBodySchema.parse(msg);
       }
-      this.socket.send(JSON.stringify(msg));
+      this.channel.send(msg);
       return;
     }
-    if (msg.type === "cursor" || msg.type === "gesture" || msg.type === "ping") return;
+    // High-rate ephemera is never worth replaying: a stale cursor or gesture is noise.
+    // Liveness is not here at all — the pooled connection owns the socket's ping.
+    if (msg.type === "cursor" || msg.type === "gesture") return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }

@@ -29,6 +29,7 @@ export {
   nextTileId,
   readTileLayout,
   removeTileLeaf,
+  sameSurface,
   setTileRatios,
   tileIdForSurface,
   tileLeaf,

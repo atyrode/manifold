@@ -56,7 +56,7 @@ function openingFixture() {
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
-  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id);
+  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id, "c1");
   broker.open(opener, { type: "terminal_open", elementId: "terminal-1", cols: 80, rows: 24 });
   const create = machine.sent.find((message) => message.type === "create");
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
@@ -153,6 +153,7 @@ describe("TerminalBroker controller lease", () => {
       secondSocket,
       secondContext,
       fixture.pad.id,
+      "c2",
     );
 
     fixture.broker.input(second, {
@@ -228,6 +229,7 @@ describe("TerminalBroker controller lease", () => {
       janitorSocket,
       fixture.auth.authenticate(grant.token),
       fixture.pad.id,
+      "c2",
     );
     fixture.broker.kill(janitor, {
       type: "terminal_kill",
@@ -300,6 +302,7 @@ describe("TerminalBroker controller lease", () => {
       new FakeSocket(),
       fixture.auth.authenticate(grant.token),
       fixture.pad.id,
+      "c2",
     );
     fixture.broker.take(controller, {
       type: "terminal_take",
@@ -485,8 +488,8 @@ describe("TerminalBroker bounded pending work", () => {
       message: "terminal attach queue overflow",
     });
     expect(fixture.socket.closed).toBeNull();
-    expect(fixture.opener.send({ type: "pong" })).toBe(true);
-    expect(fixture.socket.messages().at(-1)?.type).toBe("pong");
+    expect(fixture.opener.send({ type: "saved", rev: 1, at: 0 })).toBe(true);
+    expect(fixture.socket.messages().at(-1)?.type).toBe("saved");
     fixture.store.close();
   });
 });
@@ -617,6 +620,7 @@ describe("TerminalBroker live stream and control contracts", () => {
       secondSocket,
       fixture.root,
       fixture.pad.id,
+      "c2",
     );
     room.join(fixture.opener);
     room.join(second);
@@ -679,6 +683,7 @@ describe("TerminalBroker concurrent snapshot generations", () => {
       secondSocket,
       fixture.root,
       fixture.pad.id,
+      "c2",
     );
 
     fixture.broker.attach(fixture.opener, {

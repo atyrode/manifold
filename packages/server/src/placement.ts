@@ -8,12 +8,13 @@ import {
   type PlacementLookup,
   type PlacementSurface,
   type RuntimeDeps,
+  type SceneElement,
   type TileEdge,
   type TileLayout,
   type TileSurface,
 } from "@manifold/protocol";
 import { tileLeafIds } from "@manifold/scene";
-import { DEFAULT_TERMINAL_X, DEFAULT_TERMINAL_Y, type Room, type RoomManager } from "./room.ts";
+import type { Room, RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 
 /**
@@ -333,7 +334,37 @@ export class PlaceExecutor {
     if (item.kind === "canvas-pad" && item.containerId !== null) {
       return { kind: "pad", padId: item.containerId };
     }
+    if (item.kind === "text") {
+      // A note is addressed as an element of the container holding it, and stored as the
+      // element id the DESTINATION will hold it under — the ids are the same because the
+      // element MOVES between documents rather than being copied.
+      const elementId = source.addressed[0];
+      return elementId === undefined ? null : { kind: "text", elementId };
+    }
     return null;
+  }
+
+  /**
+   * The note behind a `text` surface, read before anything is written so a placement that
+   * cannot be carried out mutates neither document. Null when the element is gone or was
+   * never a note.
+   */
+  private noteAt(padId: string | null, elementId: string): SceneElement | null {
+    if (padId === null) return null;
+    const element = this.rooms.get(padId)?.element(elementId) ?? null;
+    return element?.type === "text" ? element : null;
+  }
+
+  /**
+   * Moves a note into the container that now holds its leaf. A composition OWNS its notes:
+   * its own document stores the element, so the text stays collaborative through the same
+   * room everyone in the composition is already joined to, with no second socket and no
+   * cross-document reference to keep alive.
+   */
+  private adoptNote(source: SourceLocation, note: SceneElement, target: Room): void {
+    this.release(source, "addressed");
+    target.adoptElement(note, note.x, note.y);
+    this.afterLeaving(source.padId);
   }
 
   /** The label a composed view borrows from one of the surfaces it was built from. */
@@ -341,7 +372,8 @@ export class PlaceExecutor {
     if (item.kind === "terminal" && source.sessionId !== null) {
       return this.sessions.terminalLabel(source.sessionId, "terminal");
     }
-    if (item.containerId !== null) return this.store.getPad(item.containerId)?.name ?? "pad";
+    if (item.kind === "text") return "note";
+    if (item.containerId !== null) return this.store.getPad(item.containerId)?.name ?? "canvas";
     return "surface";
   }
 
@@ -470,7 +502,8 @@ export class PlaceExecutor {
 
   /**
    * A tileable surface joining a tiled container. The leaf is written FIRST: a tree that
-   * refuses the write leaves the source untouched, so a rejected placement mutates nothing.
+   * refuses the write leaves the source untouched, so a rejected placement mutates nothing
+   * — which is also why a note is READ before the write and moved only after it.
    * A terminal arriving from another container then moves — release, rebind — while a
    * second leaf for a terminal already living here is simply another copy of it.
    */
@@ -485,6 +518,10 @@ export class PlaceExecutor {
     if (view === null) return { status: "failed", failure: "not_found" };
     const surface = this.tileSurfaceFor(item, source);
     if (surface === null) return { status: "failed", failure: "conflict" };
+    const note = surface.kind === "text" ? this.noteAt(source.padId, surface.elementId) : null;
+    if (surface.kind === "text" && note === null) {
+      return { status: "failed", failure: "not_found" };
+    }
     const tileId = view.placeTile(surface, targetTileId, edge);
     if (tileId === null) return { status: "failed", failure: "conflict" };
     if (surface.kind === "terminal" && source.padId !== padId) {
@@ -492,6 +529,7 @@ export class PlaceExecutor {
       this.sessions.rebindSession(surface.sessionId, source.padId, padId, tileId);
       this.afterLeaving(source.padId);
     }
+    if (note !== null) this.adoptNote(source, note, view);
     this.hardenIfComposed(padId, view);
     return { status: "placed", result: { op: "add_tile", tileId } };
   }
@@ -543,9 +581,15 @@ export class PlaceExecutor {
       return { status: "failed", failure: "not_found" };
     }
     // Composing an item with itself is a degenerate identity, not a rule about kinds.
-    if (source.sessionId === target.sessionId) return { status: "failed", failure: "conflict" };
+    if (source.sessionId !== null && source.sessionId === target.sessionId) {
+      return { status: "failed", failure: "conflict" };
+    }
     const tiled = this.tileSurfaceFor(item, source);
     if (tiled === null) return { status: "failed", failure: "conflict" };
+    const note = tiled.kind === "text" ? this.noteAt(source.padId, tiled.elementId) : null;
+    if (tiled.kind === "text" && note === null) {
+      return { status: "failed", failure: "not_found" };
+    }
 
     const viewId = this.runtime.newId();
     const name = `${this.sessions.terminalLabel(target.sessionId, "terminal")} + ${this.surfaceLabel(item, source)}`;
@@ -579,15 +623,19 @@ export class PlaceExecutor {
       this.sessions.rebindSession(tiled.sessionId, source.padId, viewId, addedTileId);
       if (source.padId !== destination.padId) this.afterLeaving(source.padId);
     }
+    // The note moves into the composition that now holds its leaf, exactly as it would
+    // for a plain tile add: composition is the same placement with a container born first.
+    if (note !== null) this.adoptNote(source, note, view);
     this.rooms.evictIfIdle(destination.padId);
     return { status: "placed", result: { op: "compose", viewId, tileId: addedTileId } };
   }
 
   /**
    * Extraction: a leaf leaves its container and its occupant lands on a canvas as a plain
-   * element — a terminal element for a session, a portal for an embedded canvas. When one
-   * leaf is left the bubble rule runs, which is how decomposing a two-tile view collapses
-   * it instead of stranding a single-widget container.
+   * element — a terminal element for a session, a portal for an embedded canvas, the note's
+   * own element for a note (it moves documents, keeping its id and its text). When one leaf
+   * is left the bubble rule runs, which is how decomposing a two-tile view collapses it
+   * instead of stranding a single-widget container.
    */
   private executeExtract(
     destination: { readonly padId: string; readonly x: number; readonly y: number },
@@ -621,6 +669,16 @@ export class PlaceExecutor {
       this.rooms.evictIfIdle(destination.padId);
       return { status: "placed", result: { op: "extract", elementId } };
     }
+    if (occupant.kind === "text") {
+      const note = view.element(occupant.elementId);
+      if (note === null || note.type !== "text") return { status: "failed", failure: "not_found" };
+      view.removeElementById(occupant.elementId);
+      canvas.adoptElement(note, destination.x, destination.y);
+      this.dissolveIfBubble(containerId);
+      this.afterLeaving(containerId);
+      this.rooms.evictIfIdle(destination.padId);
+      return { status: "placed", result: { op: "extract", elementId: occupant.elementId } };
+    }
     const elementId = canvas.placePortalElement(occupant.padId, destination.x, destination.y);
     this.dissolveIfBubble(containerId);
     this.afterLeaving(containerId);
@@ -650,6 +708,9 @@ export class PlaceExecutor {
     if (occupant !== null && occupant.kind === "terminal") {
       this.releaseIfUnreferenced(occupant.sessionId, padId, tileId);
     }
+    // A note's leaf IS its only placement: nothing accepts "nowhere", and a composition
+    // renders only its layout, so leaving the element behind would be invisible garbage.
+    if (occupant !== null && occupant.kind === "text") room.removeElementById(occupant.elementId);
     this.afterLeaving(padId);
     return "ok";
   }
@@ -683,6 +744,10 @@ export class PlaceExecutor {
     if (leaves.length !== 1) return;
     const leafId = leaves[0];
     const surface = leafId === undefined ? null : (layout[leafId]?.surface ?? null);
+    // A note has nowhere to go home to: its element lives in THIS document, and the pool
+    // takes only terminals. Dissolving would destroy the only copy, so a composition down
+    // to one note simply persists — the operator can still delete it explicitly.
+    if (surface !== null && surface.kind === "text") return;
     if (leafId !== undefined && surface !== null && surface.kind === "terminal") {
       this.returnOccupant(surface.sessionId, padId, leafId, originPadId);
     } else if (originPadId !== null) {
@@ -743,186 +808,4 @@ export class PlaceExecutor {
     if (layout === null || tileLeafIds(layout).length <= 1) return;
     if (this.store.getPad(padId)?.transient === true) this.store.updatePadTransient(padId, false);
   }
-
-  // --------------------------------------------------------------- legacy delegates
-  //
-  // The pre-algebra verbs, each now a few lines over `place()`. They exist ONLY so a
-  // rolling deploy stays functional while the browser still speaks the old routes: every
-  // one keeps its exact response contract, including admission checks the algebra itself no
-  // longer makes (reposition-as-placement is ratified, so the executor MOVES a terminal
-  // that lives in another container where these routes answered 409). P3 deletes this
-  // section wholesale together with the routes and request schemas that feed it.
-
-  /** P3 removes: `POST /api/terminals/:id/park`. */
-  park(sessionId: string, elementId: string): "ok" | "not_found" {
-    const session = this.sessions.placedSession(sessionId);
-    const padId = session?.padId ?? null;
-    if (padId === null) return "not_found";
-    if (this.store.getPad(padId)?.layout === "tiled") {
-      // A leaf is removed, never parked: the declarations refuse `tile -> pool` because
-      // parking addresses the occupant. Same pooling rule underneath either way.
-      return this.removeTile(padId, elementId) === "ok" ? "ok" : "not_found";
-    }
-    const outcome = this.place({
-      surface: { kind: "element", padId, elementId },
-      destination: { kind: "pool" },
-    });
-    if (outcome.status === "placed") return "ok";
-    // The old route was lenient about the placement id: what it really asked was "this
-    // terminal is not on that canvas any more". Addressing the ITEM keeps that promise, so
-    // a raced element id can never leave a session bound to a placement nobody can see.
-    const released = this.place({
-      surface: { kind: "terminal", sessionId },
-      destination: { kind: "pool" },
-    });
-    return released.status === "placed" ? "ok" : "not_found";
-  }
-
-  /** P3 removes: `POST /api/terminals/:id/bind`. */
-  bind(
-    sessionId: string,
-    padId: string,
-    x?: number,
-    y?: number,
-  ): { elementId: string } | "not_found" | "already_bound" | "pad_not_found" | "conflict" {
-    const session = this.sessions.placedSession(sessionId);
-    if (session === null) return "not_found";
-    if (session.padId !== null) return "already_bound";
-    const pad = this.store.getPad(padId);
-    if (pad === null) return "pad_not_found";
-    const surface: PlacementSurface = { kind: "terminal", sessionId };
-    // One route covered both disciplines; the algebra names them apart, so the discipline
-    // picks the destination form. The returned placement id is still the tile id in a
-    // tiled container — coordinates are meaningless in a layout tree.
-    const outcome =
-      pad.layout === "tiled"
-        ? this.place({
-            surface,
-            destination: { kind: "tile", padId, targetTileId: null, edge: null },
-          })
-        : this.place({
-            surface,
-            destination: {
-              kind: "canvas",
-              padId,
-              x: x ?? DEFAULT_TERMINAL_X,
-              y: y ?? DEFAULT_TERMINAL_Y,
-            },
-          });
-    if (outcome.status !== "placed") return "conflict";
-    if (outcome.result.op === "bind") return { elementId: outcome.result.elementId };
-    if (outcome.result.op === "add_tile") return { elementId: outcome.result.tileId };
-    return "conflict";
-  }
-
-  /** P3 removes: `POST /api/pads/:id/tiles`. */
-  addTile(
-    padId: string,
-    surface: TileSurface,
-    targetTileId: string | null,
-    edge: TileEdge | null,
-  ): { tileId: string } | PlaceFailure {
-    // Order is the contract: the old route judged the DESTINATION first, so a request
-    // naming a container that does not exist is 404 whatever the surface was.
-    const pad = this.store.getPad(padId);
-    if (pad === null) return "not_found";
-    if (pad.layout !== "tiled") return "conflict";
-    const admission = this.legacyAdmission(padId, surface);
-    if (admission !== null) return admission;
-    const outcome = this.place({
-      surface,
-      destination: { kind: "tile", padId, targetTileId, edge },
-    });
-    if (outcome.status === "placed" && outcome.result.op === "add_tile") {
-      return { tileId: outcome.result.tileId };
-    }
-    return legacyFailure(outcome);
-  }
-
-  /** P3 removes: `POST /api/pads/:id/compose`. */
-  composeOnCanvas(
-    padId: string,
-    targetElementId: string,
-    surface: TileSurface,
-    edge: TileEdge,
-  ): { viewId: string } | PlaceFailure {
-    const pad = this.store.getPad(padId);
-    if (pad === null) return "not_found";
-    if (pad.layout !== "canvas") return "conflict";
-    const room = this.rooms.get(padId);
-    if (room === null) return "not_found";
-    // The old route resolved the TARGET before judging the dragged surface, and judged a
-    // portal target's surface against the container it points at — this ordering is the
-    // whole reason these delegates exist.
-    const target = room.element(targetElementId);
-    if (target === null) return "not_found";
-    if (target.type === "portal") {
-      const added = this.addTile(target.containerId, surface, null, edge);
-      return typeof added === "string" ? added : { viewId: target.containerId };
-    }
-    const admission = this.legacyAdmission(padId, surface);
-    if (admission !== null) return admission;
-    const outcome = this.place({
-      surface,
-      destination: { kind: "compose", padId, targetElementId, edge },
-    });
-    if (outcome.status === "placed" && outcome.result.op === "compose") {
-      return { viewId: outcome.result.viewId };
-    }
-    return legacyFailure(outcome);
-  }
-
-  /** P3 removes: `POST /api/pads/:id/tiles/:tileId/extract`. */
-  extractTile(
-    padId: string,
-    tileId: string,
-    x: number,
-    y: number,
-  ): { elementId: string } | PlaceFailure {
-    const pad = this.store.getPad(padId);
-    if (pad === null) return "not_found";
-    if (pad.layout !== "tiled") return "conflict";
-    const node = this.rooms.get(padId)?.tileLayout()?.[tileId];
-    if (node === undefined) return "not_found";
-    // The route only ever decomposed terminals, and only back onto the view's return
-    // address; the executor generalizes both, so that narrowing lives here.
-    if (node.dir !== null || node.surface?.kind !== "terminal") return "conflict";
-    const destinationPadId = this.store.padOriginPadId(padId);
-    if (destinationPadId === null) return "conflict";
-    const outcome = this.place({
-      surface: { kind: "tile", containerId: padId, tileId },
-      destination: { kind: "canvas", padId: destinationPadId, x, y },
-    });
-    if (outcome.status === "placed" && outcome.result.op === "extract") {
-      return { elementId: outcome.result.elementId };
-    }
-    return legacyFailure(outcome);
-  }
-
-  /**
-   * P3 removes: the pre-algebra tile/compose admission rule. A terminal living in another
-   * container is a MOVE to the executor, so the routes that answered 409 keep that answer
-   * here rather than in policy.
-   */
-  private legacyAdmission(padId: string, surface: TileSurface): PlaceFailure | null {
-    if (surface.kind === "pad") {
-      if (surface.padId === padId) return "conflict";
-      const embedded = this.store.getPad(surface.padId);
-      if (embedded === null) return "not_found";
-      return embedded.layout === "canvas" ? null : "conflict";
-    }
-    const session = this.sessions.placedSession(surface.sessionId);
-    if (session === null) return "not_found";
-    return session.padId === null || session.padId === padId ? null : "conflict";
-  }
-}
-
-/** P3 removes: maps the algebra's answer back onto the old two-code vocabulary. */
-function legacyFailure(outcome: PlaceOutcome): PlaceFailure {
-  if (outcome.status === "failed") return outcome.failure;
-  if (outcome.status === "denied") {
-    const rule = outcome.denial.rule;
-    return rule === "unknown_surface" || rule === "unknown_container" ? "not_found" : "conflict";
-  }
-  return "conflict";
 }

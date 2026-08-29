@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  PlaceResponseSchema,
   ROOT_TILE_ID,
   ServerToAgentMessageSchema,
   type Pad,
@@ -29,7 +30,15 @@ import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import {
+  extractTile,
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  parkSession,
+  placeTile,
+  testStore,
+} from "./helpers.ts";
 
 const OWNER_KEY = "c".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -128,7 +137,7 @@ function containerFixture(): ContainerFixture {
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
-  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id);
+  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id, "c1");
   const app = new HttpApp(
     config,
     store,
@@ -183,7 +192,13 @@ function room(fixture: ContainerFixture, padId: string): Room {
 
 /** Joins a fresh connection to a container so leaving it fires the room-empty hook. */
 function occupy(fixture: ContainerFixture, padId: string): { leave: () => void } {
-  const peer = new SessionPeer(fixture.runtime.newId(), new FakeSocket(), fixture.root, padId);
+  const peer = new SessionPeer(
+    fixture.runtime.newId(),
+    new FakeSocket(),
+    fixture.root,
+    padId,
+    "c1",
+  );
   const target = room(fixture, padId);
   target.join(peer);
   return {
@@ -202,7 +217,7 @@ function watch(
   padId: string,
 ): { socket: FakeSocket; leave: () => void } {
   const socket = new FakeSocket();
-  const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, true);
+  const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, "c1", true);
   const target = room(fixture, padId);
   target.join(peer);
   return {
@@ -221,7 +236,8 @@ function expanded(fixture: ContainerFixture, sessionId: string): string {
 
 /** Parks a placed terminal into the workspace pool. */
 function pooled(fixture: ContainerFixture, elementId: string, sessionId: string): string {
-  if (fixture.placement.park(sessionId, elementId) !== "ok") throw new Error("park failed");
+  if (parkSession(fixture.placement, fixture.pad.id, elementId) !== "ok")
+    throw new Error("park failed");
   return sessionId;
 }
 
@@ -406,9 +422,16 @@ describe("TerminalBroker bubble dissolve", () => {
     expect(readElement(canvasRoom(fixture).doc, "terminal-1")).toEqual(
       terminalElement("terminal-1", sessionId, 40),
     );
-    // The watched container is gone, so its watcher is fenced exactly like any other
-    // socket on a deleted pad — the preview tears down instead of reading a dead room.
-    expect(watcher.socket.closed).toEqual({ code: 4404, reason: "pad deleted" });
+    // The watched container is gone, so its watcher's CHANNEL is fenced exactly like any
+    // other membership of a deleted pad — the preview tears down instead of reading a
+    // dead room, while the socket keeps carrying whatever else the tab is rendering.
+    expect(watcher.socket.closed).toBeNull();
+    expect(watcher.socket.frames().at(-1)).toEqual({
+      type: "channel_closed",
+      ch: "c1",
+      code: 4404,
+      reason: "pad deleted",
+    });
   });
 
   test("a watcher joining and hanging up never pops the bubble it previewed", () => {
@@ -449,13 +472,14 @@ describe("TerminalBroker bubble dissolve", () => {
     const first = placedTerminal(fixture, "terminal-1");
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.placement.addTile(
+    const added = placeTile(
+      fixture.placement,
       viewId,
       { kind: "terminal", sessionId: second },
       null,
       null,
     );
-    if (typeof added === "string") throw new Error(`addTile failed: ${added}`);
+    if (typeof added === "string") throw new Error(`placement failed: ${added}`);
     const occupant = occupy(fixture, viewId);
 
     occupant.leave();
@@ -486,7 +510,7 @@ describe("TerminalBroker container hardening", () => {
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
 
-    fixture.placement.addTile(viewId, { kind: "terminal", sessionId: second }, null, null);
+    placeTile(fixture.placement, viewId, { kind: "terminal", sessionId: second }, null, null);
 
     expect(fixture.store.getPad(viewId)?.transient).toBe(false);
     expect(fixture.store.padOriginPadId(viewId)).toBe(fixture.pad.id);
@@ -545,7 +569,7 @@ describe("terminal_open into a tiled container", () => {
     padId: string,
   ): { peer: SessionPeer; socket: FakeSocket } {
     const socket = new FakeSocket();
-    const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId);
+    const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, "c1");
     room(fixture, padId).join(peer);
     return { peer, socket };
   }
@@ -682,19 +706,15 @@ describe("pad tiles HTTP routes", () => {
     const pooledId = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, resident);
 
-    const response = await call(fixture, "POST", `/api/terminals/${pooledId}/bind`, OWNER_KEY, {
-      padId: viewId,
-      x: 10,
-      y: 20,
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: pooledId },
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
 
     expect(response.status).toBe(200);
-    const payload = response.payload;
-    if (typeof payload !== "object" || payload === null || !("elementId" in payload)) {
-      throw new Error("missing elementId in bind response");
-    }
-    const tileId = payload.elementId;
-    if (typeof tileId !== "string") throw new Error("elementId must be a string");
+    const payload = PlaceResponseSchema.parse(response.payload);
+    if (payload.op !== "add_tile") throw new Error("add_tile response expected");
+    const tileId = payload.tileId;
     const layout = room(fixture, viewId).tileLayout();
     expect(layout?.[tileId]?.surface).toEqual({ kind: "terminal", sessionId: pooledId });
     // A tiled container has no coordinates to honour, so nothing lands on a canvas.
@@ -708,14 +728,13 @@ describe("pad tiles HTTP routes", () => {
     const pooledId = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, resident);
 
-    const response = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: pooledId },
-      targetTileId: ROOT_TILE_ID,
-      edge: "right",
+      destination: { kind: "tile", padId: viewId, targetTileId: ROOT_TILE_ID, edge: "right" },
     });
 
     expect(response.status).toBe(200);
-    expect(response.payload).toMatchObject({ tileId: expect.any(String) });
+    expect(response.payload).toMatchObject({ op: "add_tile", tileId: expect.any(String) });
     expect(fixture.store.getSession(pooledId)?.padId).toBe(viewId);
     expect(fixture.store.listParkedSessions()).toEqual([]);
     const layout = room(fixture, viewId).tileLayout();
@@ -735,10 +754,9 @@ describe("pad tiles HTTP routes", () => {
     };
     fixture.store.createPad(embedded);
 
-    const response = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "pad", padId: embedded.id },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
 
     expect(response.status).toBe(200);
@@ -747,84 +765,80 @@ describe("pad tiles HTTP routes", () => {
     expect(surfaces).toContainEqual({ kind: "pad", padId: embedded.id });
   });
 
-  test("the tiles endpoint rejects every illegal surface without mutating the tree", async () => {
+  test("the place envelope refuses every illegal tile surface without mutating the tree", async () => {
     const fixture = containerFixture();
     const resident = placedTerminal(fixture, "terminal-1");
     const boundElsewhere = placedTerminal(fixture, "terminal-2");
     const viewId = expanded(fixture, resident);
     const otherViewId = expanded(fixture, boundElsewhere);
 
-    const canvasTarget = await call(
-      fixture,
-      "POST",
-      `/api/pads/${fixture.pad.id}/tiles`,
-      OWNER_KEY,
-      {
-        surface: { kind: "terminal", sessionId: resident },
-        targetTileId: null,
-        edge: null,
-      },
-    );
-    const selfReference = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const canvasTarget = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: resident },
+      destination: { kind: "tile", padId: fixture.pad.id, targetTileId: null, edge: null },
+    });
+    const selfReference = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "pad", padId: viewId },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
-    const tiledSurface = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const tiledSurface = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "pad", padId: otherViewId },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
-    const foreignTerminal = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: boundElsewhere },
-      targetTileId: null,
-      edge: null,
-    });
-    const missingPadSurface = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const missingPadSurface = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "pad", padId: "missing-pad" },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
-    const missingTerminal = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const missingTerminal = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: "missing-session" },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
     });
-    const missingContainer = await call(fixture, "POST", "/api/pads/missing-pad/tiles", OWNER_KEY, {
+    const missingContainer = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: resident },
-      targetTileId: null,
-      edge: null,
+      destination: { kind: "tile", padId: "missing-pad", targetTileId: null, edge: null },
     });
-    const unknownTarget = await call(fixture, "POST", `/api/pads/${viewId}/tiles`, OWNER_KEY, {
+    const unknownTarget = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: resident },
-      targetTileId: "t99",
-      edge: "right",
+      destination: { kind: "tile", padId: viewId, targetTileId: "t99", edge: "right" },
     });
-    const scoped = await call(
-      fixture,
-      "POST",
-      `/api/pads/${viewId}/tiles`,
-      padScopedToken(fixture),
-      {
-        surface: { kind: "terminal", sessionId: resident },
-        targetTileId: null,
-        edge: null,
-      },
-    );
+    const scoped = await call(fixture, "POST", "/api/place", padScopedToken(fixture), {
+      surface: { kind: "terminal", sessionId: resident },
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
+    });
 
+    // A refusal is DATA now: an unknown pad SURFACE and an unknown DESTINATION container are
+    // named denials (409) where the tiles route flattened both to 404. Only a session id
+    // that names nothing still fails operationally, and that is the one 404 left.
     expect([
       canvasTarget.status,
       selfReference.status,
       tiledSurface.status,
-      foreignTerminal.status,
       missingPadSurface.status,
       missingTerminal.status,
       missingContainer.status,
       unknownTarget.status,
       scoped.status,
-    ]).toEqual([409, 409, 409, 409, 404, 404, 404, 409, 403]);
+    ]).toEqual([409, 409, 409, 409, 404, 409, 409, 403]);
     expect(soleSurface(fixture, viewId)).toEqual({ kind: "terminal", sessionId: resident });
     expect(fixture.store.getPad(viewId)?.transient).toBe(true);
+  });
+
+  test("a terminal bound to another container tiles in as a move", async () => {
+    const fixture = containerFixture();
+    const resident = placedTerminal(fixture, "terminal-1");
+    const boundElsewhere = placedTerminal(fixture, "terminal-2");
+    const viewId = expanded(fixture, resident);
+    expanded(fixture, boundElsewhere);
+
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: boundElsewhere },
+      destination: { kind: "tile", padId: viewId, targetTileId: null, edge: null },
+    });
+
+    // The tiles route refused a terminal bound elsewhere; reposition-as-placement MOVES it,
+    // which is why this case left the refusal list above instead of keeping its 409.
+    expect(response.status).toBe(200);
+    expect(fixture.store.getSession(boundElsewhere)?.padId).toBe(viewId);
+    expect(tileLeafIds(room(fixture, viewId).tileLayout() ?? {})).toHaveLength(2);
   });
 
   test("deleting a terminal tile parks its session when it was the last placement", async () => {
@@ -869,19 +883,20 @@ describe("TerminalBroker composeOnCanvas", () => {
     fixture.broker.rename(dragged, "beta");
     const canvas = canvasRoom(fixture);
 
-    const response = await call(fixture, "POST", `/api/pads/${fixture.pad.id}/compose`, OWNER_KEY, {
-      targetElementId: "terminal-1",
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: dragged },
-      edge: "right",
+      destination: {
+        kind: "compose",
+        padId: fixture.pad.id,
+        targetElementId: "terminal-1",
+        edge: "right",
+      },
     });
 
     expect(response.status).toBe(200);
-    const payload = response.payload;
-    if (typeof payload !== "object" || payload === null || !("viewId" in payload)) {
-      throw new Error("missing viewId in compose response");
-    }
+    const payload = PlaceResponseSchema.parse(response.payload);
+    if (payload.op !== "compose") throw new Error("compose response expected");
     const viewId = payload.viewId;
-    if (typeof viewId !== "string") throw new Error("viewId must be a string");
     expect(fixture.store.getPad(viewId)).toMatchObject({
       name: "alpha + beta",
       layout: "tiled",
@@ -916,14 +931,20 @@ describe("TerminalBroker composeOnCanvas", () => {
     const dragged = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, resident);
 
-    const response = await call(fixture, "POST", `/api/pads/${fixture.pad.id}/compose`, OWNER_KEY, {
-      targetElementId: "terminal-1",
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
       surface: { kind: "terminal", sessionId: dragged },
-      edge: "bottom",
+      destination: {
+        kind: "compose",
+        padId: fixture.pad.id,
+        targetElementId: "terminal-1",
+        edge: "bottom",
+      },
     });
 
     expect(response.status).toBe(200);
-    expect(response.payload).toEqual({ viewId });
+    // Composing onto a PORTAL adds a leaf to the view it points at, so the envelope reports
+    // that same view id plus the tile it authored.
+    expect(response.payload).toMatchObject({ op: "compose", viewId });
     expect(
       fixture.store
         .listPads()
@@ -941,44 +962,45 @@ describe("TerminalBroker composeOnCanvas", () => {
     const other = placedTerminal(fixture, "terminal-2");
     const tiledId = expanded(fixture, other);
 
-    const tiledSurface = await call(
-      fixture,
-      "POST",
-      `/api/pads/${fixture.pad.id}/compose`,
-      OWNER_KEY,
-      {
+    const tiledSurface = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "pad", padId: tiledId },
+      destination: {
+        kind: "compose",
+        padId: fixture.pad.id,
         targetElementId: "terminal-1",
-        surface: { kind: "pad", padId: tiledId },
         edge: "right",
       },
-    );
-    const selfDrop = await call(fixture, "POST", `/api/pads/${fixture.pad.id}/compose`, OWNER_KEY, {
-      targetElementId: "terminal-1",
-      surface: { kind: "terminal", sessionId: target },
-      edge: "right",
     });
-    const missingElement = await call(
-      fixture,
-      "POST",
-      `/api/pads/${fixture.pad.id}/compose`,
-      OWNER_KEY,
-      {
-        targetElementId: "missing-element",
-        surface: { kind: "pad", padId: fixture.pad.id },
-        edge: "right",
-      },
-    );
-    const onTiledContainer = await call(
-      fixture,
-      "POST",
-      `/api/pads/${tiledId}/compose`,
-      OWNER_KEY,
-      {
+    const selfDrop = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: target },
+      destination: {
+        kind: "compose",
+        padId: fixture.pad.id,
         targetElementId: "terminal-1",
-        surface: { kind: "terminal", sessionId: target },
         edge: "right",
       },
-    );
+    });
+    // The surface is a terminal, not this canvas: a pad surface naming its own destination
+    // is refused by `self_embed` before the target element is ever looked up, and the case
+    // under test here is the missing TARGET.
+    const missingElement = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: target },
+      destination: {
+        kind: "compose",
+        padId: fixture.pad.id,
+        targetElementId: "missing-element",
+        edge: "right",
+      },
+    });
+    const onTiledContainer = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: target },
+      destination: {
+        kind: "compose",
+        padId: tiledId,
+        targetElementId: "terminal-1",
+        edge: "right",
+      },
+    });
 
     expect([
       tiledSurface.status,
@@ -1002,30 +1024,25 @@ describe("pad tile extraction", () => {
     const first = placedTerminal(fixture, "terminal-1");
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.placement.addTile(
+    const added = placeTile(
+      fixture.placement,
       viewId,
       { kind: "terminal", sessionId: second },
       null,
       null,
     );
-    if (typeof added === "string") throw new Error(`addTile failed: ${added}`);
+    if (typeof added === "string") throw new Error(`placement failed: ${added}`);
     occupy(fixture, viewId);
 
-    const response = await call(
-      fixture,
-      "POST",
-      `/api/pads/${viewId}/tiles/${added.tileId}/extract`,
-      OWNER_KEY,
-      { x: 320, y: 240 },
-    );
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "tile", containerId: viewId, tileId: added.tileId },
+      destination: { kind: "canvas", padId: fixture.pad.id, x: 320, y: 240 },
+    });
 
     expect(response.status).toBe(200);
-    const payload = response.payload;
-    if (typeof payload !== "object" || payload === null || !("elementId" in payload)) {
-      throw new Error("missing elementId in extract response");
-    }
+    const payload = PlaceResponseSchema.parse(response.payload);
+    if (payload.op !== "extract") throw new Error("extract response expected");
     const elementId = payload.elementId;
-    if (typeof elementId !== "string") throw new Error("elementId must be a string");
     expect(readElement(canvasRoom(fixture).doc, elementId)).toMatchObject({
       type: "terminal",
       sessionId: second,
@@ -1045,16 +1062,24 @@ describe("pad tile extraction", () => {
     const first = placedTerminal(fixture, "terminal-1", 80);
     const second = pooled(fixture, "terminal-2", placedTerminal(fixture, "terminal-2"));
     const viewId = expanded(fixture, first);
-    const added = fixture.placement.addTile(
+    const added = placeTile(
+      fixture.placement,
       viewId,
       { kind: "terminal", sessionId: second },
       null,
       null,
     );
-    if (typeof added === "string") throw new Error(`addTile failed: ${added}`);
+    if (typeof added === "string") throw new Error(`placement failed: ${added}`);
 
-    const extracted = fixture.placement.extractTile(viewId, added.tileId, 500, 300);
-    if (typeof extracted === "string") throw new Error(`extract failed: ${extracted}`);
+    const extracted = extractTile(
+      fixture.placement,
+      viewId,
+      added.tileId,
+      fixture.pad.id,
+      500,
+      300,
+    );
+    if (typeof extracted === "string") throw new Error(`placement failed: ${extracted}`);
 
     expect(fixture.store.getPad(viewId)).toBeNull();
     expect(fixture.store.getSession(second)?.padId).toBe(fixture.pad.id);
@@ -1065,22 +1090,31 @@ describe("pad tile extraction", () => {
     );
   });
 
-  test("a claimed view can no longer be decomposed onto a canvas", async () => {
+  test("a claimed view is decomposed onto the canvas the placement names", async () => {
     const fixture = containerFixture();
     const sessionId = placedTerminal(fixture, "terminal-1");
     const viewId = expanded(fixture, sessionId);
     await call(fixture, "POST", `/api/pads/${viewId}/pin`, OWNER_KEY);
 
-    const response = await call(
-      fixture,
-      "POST",
-      `/api/pads/${viewId}/tiles/${ROOT_TILE_ID}/extract`,
-      OWNER_KEY,
-      { x: 10, y: 20 },
-    );
+    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+      surface: { kind: "tile", containerId: viewId, tileId: ROOT_TILE_ID },
+      destination: { kind: "canvas", padId: fixture.pad.id, x: 10, y: 20 },
+    });
 
-    expect(response.status).toBe(409);
-    expect(fixture.store.getSession(sessionId)?.padId).toBe(viewId);
-    expect(soleSurface(fixture, viewId)).toEqual({ kind: "terminal", sessionId });
+    // The extract route derived its canvas from the return address a claim CLEARS, so a
+    // claimed view refused decomposition outright. The envelope NAMES the canvas instead, so
+    // the leaf's occupant lands there — and the claim still holds, so nothing pops the view.
+    expect(response.status).toBe(200);
+    const payload = PlaceResponseSchema.parse(response.payload);
+    if (payload.op !== "extract") throw new Error("extract response expected");
+    expect(readElement(canvasRoom(fixture).doc, payload.elementId)).toMatchObject({
+      type: "terminal",
+      sessionId,
+      x: 10,
+      y: 20,
+    });
+    expect(fixture.store.getSession(sessionId)?.padId).toBe(fixture.pad.id);
+    expect(fixture.store.getPad(viewId)).not.toBeNull();
+    expect(soleSurface(fixture, viewId)).toBeNull();
   });
 });

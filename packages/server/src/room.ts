@@ -3,14 +3,13 @@ import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   compareElements,
-  type ClientMessage,
+  type ClientMessageBody,
   type PadPresence,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type RuntimeDeps,
   type SceneElement,
-  type ServerMessage,
   type SessionInfo,
   type TileEdge,
   type TileLayout,
@@ -41,20 +40,13 @@ import type { Logger } from "./log.ts";
 import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
   serializeServerMessage,
+  type ChannelMessage,
   type SessionPeer,
 } from "./session-peer.ts";
 import type { ServerStore } from "./stores.ts";
 
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
-
-/**
- * Canvas placement used when a placement request carries no explicit drop coordinates.
- * The legacy bind route still allows that, so the executor supplies these on its behalf;
- * every other placement names the point it landed on.
- */
-export const DEFAULT_TERMINAL_X = 160;
-export const DEFAULT_TERMINAL_Y = 120;
 
 /**
  * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
@@ -64,9 +56,11 @@ export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
 const DOC_UPDATE_BURST = 240;
 
-type DocUpdate = Extract<ClientMessage, { type: "doc_update" }>;
-type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
-type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
+// A room is joined by PEERS, and a peer is one channel: routing is already consumed, so
+// the payloads a room applies and relays are channel-agnostic bodies.
+type DocUpdate = Extract<ClientMessageBody, { type: "doc_update" }>;
+type CursorUpdate = Extract<ClientMessageBody, { type: "cursor" }>;
+type GestureUpdate = Extract<ClientMessageBody, { type: "gesture" }>;
 
 /** Timer seam whose returned cancellation closures avoid platform-specific handle types. */
 export interface RoomTimers {
@@ -177,7 +171,7 @@ export class Room {
     return result.sort((left, right) => left.principal.id.localeCompare(right.principal.id));
   }
 
-  private stateMessage(type: "init" | "resync", peer: SessionPeer): ServerMessage {
+  private stateMessage(type: "init" | "resync", peer: SessionPeer): ChannelMessage {
     return {
       type,
       protocolVersion: PROTOCOL_VERSION,
@@ -376,20 +370,32 @@ export class Room {
       true,
     );
   }
-  /** Relays high-rate gesture motion with droppable delivery under socket pressure. */
+  /**
+   * Relays high-rate gesture motion with droppable delivery under socket pressure. The
+   * outbound frame names its fields rather than spreading the inbound one: the client
+   * frame arrives with routing attached, and a broadcast body must carry none.
+   */
   relayGesture(peer: SessionPeer, gesture: GestureUpdate): void {
     this.broadcast(
       {
-        ...gesture,
+        type: "gesture",
         principalId: peer.auth.principal.id,
         connId: peer.id,
+        kind: gesture.kind,
+        phase: gesture.phase,
+        elementId: gesture.elementId,
+        x: gesture.x,
+        y: gesture.y,
+        ...(gesture.width === undefined ? {} : { width: gesture.width }),
+        ...(gesture.height === undefined ? {} : { height: gesture.height }),
+        ...(gesture.points === undefined ? {} : { points: gesture.points }),
       },
       true,
     );
   }
 
   /** Broadcasts one schema serialization to all current room members. */
-  broadcast(message: ServerMessage, droppable = false, except?: SessionPeer): void {
+  broadcast(message: ChannelMessage, droppable = false, except?: SessionPeer): void {
     const frame = serializeServerMessage(message);
     for (const peers of this.connections.values()) {
       for (const peer of peers) {
@@ -461,17 +467,23 @@ export class Room {
     this.cancelMax = null;
   }
 
-  /** Closes every member when a pad is deleted or the process shuts down. */
+  /**
+   * Closes every member when a pad is deleted or the process shuts down. Membership is
+   * dropped BEFORE the channels are told, because a channel close now calls back into
+   * `leave` (the gateway retires the channel record): a room that is being demolished
+   * must not publish departures, write events for a row that may already be gone, or
+   * fire the room-empty hook on its way out.
+   */
   closeAll(code: number, reason: string): void {
     this.cancelSnapshotTimers();
-    for (const peers of this.connections.values()) {
-      for (const peer of peers) peer.close(code, reason);
-    }
-    for (const peer of this.spectators) peer.close(code, reason);
+    const members: SessionPeer[] = [];
+    for (const peers of this.connections.values()) members.push(...peers);
+    members.push(...this.spectators);
     this.connections.clear();
     this.spectators.clear();
     this.presences.clear();
     this.updateBuckets.clear();
+    for (const peer of members) peer.close(code, reason);
   }
 
   /** Whether any socket — occupant or watcher — still holds this room resident. */
