@@ -50,6 +50,13 @@ export class SessionPeer {
     readonly socket: RawSocket,
     readonly auth: AuthContext,
     readonly padId: string,
+    /**
+     * Declared once in the join frame: a spectator socket (a portal widget's live
+     * preview) watches this room without occupying it. It is absent from the roster
+     * and from pad presence, it never holds a transient container open, and every
+     * write it attempts is refused.
+     */
+    readonly spectator: boolean = false,
   ) {}
 
   /** Enqueues a protocol message or drops it when explicitly marked best-effort. */

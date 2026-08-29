@@ -142,6 +142,7 @@ const INIT: ServerMessage = {
 interface ClientHarnessOptions {
   reconnect?: boolean;
   backoffCapMs?: number;
+  spectator?: boolean;
 }
 
 interface ClientHarness {
@@ -157,6 +158,7 @@ function dialing(options: ClientHarnessOptions = {}): ClientHarness {
     padId: "pad1",
     token: "tok",
     reconnect: options.reconnect ?? false,
+    ...(options.spectator === true ? { spectator: true } : {}),
     ...(options.backoffCapMs !== undefined ? { backoffCapMs: options.backoffCapMs } : {}),
     // Test double implements the full surface SessionClient touches; a runtime check is
     // meaningless here, hence the deliberate unchecked cast.
@@ -182,6 +184,18 @@ describe("handshake", () => {
     const first = JoinSchema.parse(JSON.parse(socket.sent[0] ?? "{}"));
     expect(first.type).toBe("join");
     expect(first.protocolVersion).toBe(PROTOCOL_VERSION);
+  });
+
+  test("a spectator declares the flag in its join; an occupant omits it entirely", () => {
+    const JoinSchema = z.looseObject({ type: z.string(), spectator: z.boolean().optional() });
+    const watching = JoinSchema.parse(
+      JSON.parse(connected({ spectator: true }).socket.sent[0] ?? "{}"),
+    );
+    expect(watching.spectator).toBe(true);
+
+    // Undefined, never `false`: absence IS the occupant case on the wire.
+    const occupying = JoinSchema.parse(JSON.parse(connected().socket.sent[0] ?? "{}"));
+    expect(occupying.spectator).toBeUndefined();
   });
 
   test("init adopts epoch, rev, scene, and the assigned connection id", () => {

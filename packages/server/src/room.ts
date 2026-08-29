@@ -79,6 +79,15 @@ export const defaultRoomTimers: RoomTimers = {
   },
 };
 
+/**
+ * Why a room reported itself empty. `occupants` is the lifecycle event — the last real
+ * member walked out, so the bubble rule runs. `sockets` says only that the last WATCHER
+ * of an already-unoccupied room hung up: nothing happened socially, the room merely stops
+ * being resident. Keeping them apart is load-bearing: a widget preview closing must never
+ * pop somebody's newborn bubble.
+ */
+export type RoomEmptyReason = "occupants" | "sockets";
+
 /** Canonical in-memory Yjs document and ephemeral membership for one persisted pad. */
 export class Room {
   readonly doc = createSceneDoc();
@@ -86,6 +95,13 @@ export class Room {
   rev: number;
 
   private readonly connections = new Map<string, Set<SessionPeer>>();
+  /**
+   * Watching sockets, kept apart from `connections` on purpose: they are not principals
+   * in this room. Everything membership means — roster fan-out, presence, the join/leave
+   * events, and the room-empty hook that pops a bubble — reads `connections`, while
+   * everything transport means — broadcast, close, eviction residency — reads both.
+   */
+  private readonly spectators = new Set<SessionPeer>();
   private readonly presences = new Map<string, PresencePayload>();
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private dirty = false;
@@ -102,7 +118,7 @@ export class Room {
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly sessions: () => readonly SessionInfo[],
-    private readonly onEmpty: (room: Room) => void,
+    private readonly onEmpty: (room: Room, reason: RoomEmptyReason) => void,
   ) {
     const record = store.latestDoc(padId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
@@ -194,6 +210,16 @@ export class Room {
 
   /** Registers a tab, sends init first, then publishes principal-level roster deltas. */
   join(peer: SessionPeer): boolean {
+    if (peer.spectator) {
+      // A watcher receives the same authoritative state (its preview IS this room) and
+      // nothing else: no roster entry, no presence slot, no principal_joined event.
+      this.spectators.add(peer);
+      if (!this.sendState("init", peer)) {
+        this.spectators.delete(peer);
+        return false;
+      }
+      return true;
+    }
     const principalId = peer.auth.principal.id;
     let peers = this.connections.get(principalId);
     const firstConnection = peers === undefined;
@@ -226,6 +252,14 @@ export class Room {
 
   /** Removes a tab and expires principal presence only after its final connection leaves. */
   leave(peer: SessionPeer): void {
+    if (peer.spectator) {
+      if (!this.spectators.delete(peer)) return;
+      // A watcher hanging up is not a departure: the bubble rule must NOT run here, or a
+      // preview closing would pop a container nobody ever occupied — the newborn-expand
+      // race. Reporting it at all only lets an unoccupied room stop being resident.
+      if (!this.hasConnections()) this.onEmpty(this, "sockets");
+      return;
+    }
     const principalId = peer.auth.principal.id;
     const peers = this.connections.get(principalId);
     if (peers === undefined || !peers.delete(peer)) return;
@@ -235,7 +269,7 @@ export class Room {
       this.presences.delete(principalId);
       this.broadcast({ type: "roster", left: { principalId } });
       this.store.addEvent(this.padId, this.runtime.now(), principalId, "principal_left", {});
-      if (this.connections.size === 0) this.onEmpty(this);
+      if (this.connections.size === 0) this.onEmpty(this, "occupants");
       return;
     }
     const first = peers.values().next().value;
@@ -358,6 +392,9 @@ export class Room {
         if (peer !== except) peer.sendSerialized(frame, droppable);
       }
     }
+    for (const peer of this.spectators) {
+      if (peer !== except) peer.sendSerialized(frame, droppable);
+    }
   }
 
   private scheduleSnapshot(): void {
@@ -426,13 +463,24 @@ export class Room {
     for (const peers of this.connections.values()) {
       for (const peer of peers) peer.close(code, reason);
     }
+    for (const peer of this.spectators) peer.close(code, reason);
     this.connections.clear();
+    this.spectators.clear();
     this.presences.clear();
     this.updateBuckets.clear();
   }
 
-  /** Whether this room still has any joined sockets. */
+  /** Whether any socket — occupant or watcher — still holds this room resident. */
   hasConnections(): boolean {
+    return this.connections.size > 0 || this.spectators.size > 0;
+  }
+
+  /**
+   * Whether any socket actually OCCUPIES this room. The bubble rule reads this, never
+   * `hasConnections`: a widget's live preview must not pin a transient container open,
+   * and a room holding only watchers is empty as far as the lifecycle is concerned.
+   */
+  hasOccupants(): boolean {
     return this.connections.size > 0;
   }
 
@@ -636,6 +684,7 @@ export class Room {
       docBytes: this.docBytes,
       principals: this.connections.size,
       connections: connectionCount,
+      spectators: this.spectators.size,
     };
   }
 }
@@ -667,7 +716,8 @@ export class RoomManager {
   /**
    * Installs the broker's room-empty hook. Eviction alone is not enough for the
    * bubble lifecycle: a bubble still holds a running session, which pins its room
-   * against eviction, so the pop must fire the moment the last occupant leaves.
+   * against eviction, so the pop must fire the moment the last OCCUPANT leaves — and
+   * only then. Watchers hanging up reach `evict` without ever reaching this handler.
    */
   setEmptyHandler(handler: (padId: string) => void): void {
     this.emptyHandler = handler;
@@ -687,8 +737,8 @@ export class RoomManager {
         () => {
           return this.sessionProvider(padId);
         },
-        (idleRoom) => {
-          this.emptyHandler(idleRoom.padId);
+        (idleRoom, reason) => {
+          if (reason === "occupants") this.emptyHandler(idleRoom.padId);
           this.evict(idleRoom);
         },
       );

@@ -1092,8 +1092,10 @@ export class TerminalBroker {
    * a tile back onto the canvas must be able to collapse the leftover single-widget view
    * instead of stranding it.
    *
-   * A room with occupants is never dissolved under them: the empty hook fires when the
+   * A room with OCCUPANTS is never dissolved under them: the empty hook fires when the
    * last one leaves and the pop happens then, which also makes a dead browser crash-safe.
+   * Watching sockets are not occupants — a collaborator's widget preview holds a real room
+   * socket, and counting it here is what used to make a watched bubble unpoppable.
    */
   dissolveIfBubble(padId: string): void {
     const pad = this.store.getPad(padId);
@@ -1101,7 +1103,7 @@ export class TerminalBroker {
     const originPadId = this.store.padOriginPadId(padId);
     if (!pad.transient && originPadId === null) return;
     const room = this.rooms.get(padId);
-    if (room === null || room.hasConnections()) return;
+    if (room === null || room.hasOccupants()) return;
     const layout = room.tileLayout();
     if (layout === null) return;
     const leaves = tileLeafIds(layout);

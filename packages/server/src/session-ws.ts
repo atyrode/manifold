@@ -28,6 +28,31 @@ const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 
 const RESYNC_MIN_INTERVAL_MS = 1_000;
 
+/**
+ * Which frames a spectator socket may send. Reading is the whole point of a watching
+ * socket, so state, doc updates, terminal output and the attach/detach subscription pair
+ * all flow to it — but every mutation is refused, so a widget's live preview can never
+ * type into a PTY, resize it, move an element, or fake presence. The map is keyed by the
+ * frame union itself: a new client frame cannot compile without declaring its answer.
+ */
+const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
+  // A duplicate join closes the socket either way; the read-only refusal must not mask it.
+  join: true,
+  resync_request: true,
+  ping: true,
+  terminal_attach: true,
+  terminal_detach: true,
+  doc_update: false,
+  gesture: false,
+  presence: false,
+  cursor: false,
+  terminal_open: false,
+  terminal_input: false,
+  terminal_resize: false,
+  terminal_take: false,
+  terminal_kill: false,
+};
+
 interface SessionConnection {
   socket: RawSocket;
   peer: SessionPeer | null;
@@ -173,7 +198,13 @@ export class SessionGateway {
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
-    const peer = new SessionPeer(id, connection.socket, context, message.padId);
+    const peer = new SessionPeer(
+      id,
+      connection.socket,
+      context,
+      message.padId,
+      message.spectator === true,
+    );
     connection.peer = peer;
     connection.room = room;
     room.join(peer);
@@ -292,6 +323,14 @@ export class SessionGateway {
     const peer = connection.peer;
     const room = connection.room;
     if (peer === null || room === null) return;
+    if (peer.spectator && !SPECTATOR_MAY_SEND[message.type]) {
+      peer.send({
+        type: "error",
+        code: "forbidden",
+        message: "spectator sockets are read-only",
+      });
+      return;
+    }
     switch (message.type) {
       case "join":
         peer.close(4002, "duplicate join");

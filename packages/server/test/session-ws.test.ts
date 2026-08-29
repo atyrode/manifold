@@ -34,7 +34,7 @@ function gatewayFixture() {
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
   const gateway = new SessionGateway(auth, rooms, broker, clock, silentLogger, runtime);
-  return { runtime, clock, store, ownerKey, pad, gateway };
+  return { runtime, clock, store, ownerKey, auth, pad, rooms, gateway };
 }
 
 function join(
@@ -52,6 +52,29 @@ function join(
       padId,
       token,
       protocolVersion: PROTOCOL_VERSION,
+    }),
+  );
+  expect(socket.messages()[0]?.type).toBe("init");
+  socket.clear();
+}
+
+/** Joins the read-only socket a portal widget's live preview opens. */
+function joinSpectator(
+  gateway: SessionGateway,
+  id: string,
+  socket: FakeSocket,
+  padId: string,
+  token: string,
+): void {
+  gateway.open(id, socket);
+  gateway.message(
+    id,
+    JSON.stringify({
+      type: "join",
+      padId,
+      token,
+      protocolVersion: PROTOCOL_VERSION,
+      spectator: true,
     }),
   );
   expect(socket.messages()[0]?.type).toBe("init");
@@ -303,6 +326,85 @@ describe("SessionGateway gesture cadence", () => {
     expect(second.messages()).toEqual([
       expect.objectContaining({ type: "gesture", width: 40, height: 40 }),
     ]);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+});
+
+describe("SessionGateway spectator sockets", () => {
+  test("a watching socket is absent from the roster and from pad presence", () => {
+    const fixture = gatewayFixture();
+    const occupantSocket = new FakeSocket();
+    const watcherSocket = new FakeSocket();
+    const watcherToken = fixture.auth.mintToken(
+      {
+        principal: { name: "widget watcher", kind: "human" },
+        caps: ["pads:read"],
+      },
+      fixture.auth.authenticate(fixture.ownerKey),
+    ).token;
+    join(fixture.gateway, "occupant", occupantSocket, fixture.pad.id, fixture.ownerKey);
+
+    joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.pad.id, watcherToken);
+
+    // Nobody joined: the occupant hears no roster delta for a watcher.
+    expect(occupantSocket.messages()).toEqual([]);
+    // The widget avatars read this endpoint's source, so a watcher must not appear in it.
+    expect(fixture.rooms.presence()).toEqual([
+      {
+        padId: fixture.pad.id,
+        principals: [expect.objectContaining({ name: "owner" })],
+      },
+    ]);
+
+    // Reading is the whole point: the watcher still receives the room's fan-out.
+    fixture.gateway.message("occupant", JSON.stringify({ type: "cursor", x: 7, y: 9 }));
+    expect(watcherSocket.messages()).toEqual([
+      expect.objectContaining({ type: "cursor", connId: "occupant", x: 7, y: 9 }),
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("every write a watching socket attempts is refused while its reads are served", () => {
+    const fixture = gatewayFixture();
+    const occupantSocket = new FakeSocket();
+    const watcherSocket = new FakeSocket();
+    join(fixture.gateway, "occupant", occupantSocket, fixture.pad.id, fixture.ownerKey);
+    joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.pad.id, fixture.ownerKey);
+
+    const writes = [
+      { type: "doc_update", update: "AA==" },
+      { type: "presence", payload: { focus: null } },
+      { type: "cursor", x: 1, y: 1 },
+      { type: "gesture", kind: "move", phase: "active", elementId: "element", x: 1, y: 1 },
+      { type: "terminal_open", elementId: "element", cols: 80, rows: 24 },
+      { type: "terminal_input", sessionId: "session", data: "AA==" },
+      { type: "terminal_resize", sessionId: "session", cols: 80, rows: 24 },
+      { type: "terminal_take", sessionId: "session" },
+      { type: "terminal_kill", sessionId: "session" },
+    ];
+    for (const write of writes) {
+      watcherSocket.clear();
+      fixture.gateway.message("watcher", JSON.stringify(write));
+      expect(watcherSocket.messages()).toEqual([
+        {
+          type: "error",
+          code: "forbidden",
+          message: "spectator sockets are read-only",
+        },
+      ]);
+    }
+    // Refused means refused: nothing a watcher sent ever reached the room.
+    expect(occupantSocket.messages()).toEqual([]);
+
+    // Recovery and keepalive stay open, or a dropped preview could never resync.
+    watcherSocket.clear();
+    fixture.gateway.message("watcher", JSON.stringify({ type: "resync_request" }));
+    fixture.gateway.message("watcher", JSON.stringify({ type: "ping" }));
+    expect(watcherSocket.messages().map((message) => message.type)).toEqual(["resync", "pong"]);
+
     fixture.gateway.shutdown();
     fixture.store.close();
   });

@@ -136,6 +136,13 @@ export interface SessionClientOptions {
   url: string;
   padId: string;
   token: string;
+  /**
+   * Joins as a spectator: this socket watches the room (state, doc updates, terminal
+   * output) without occupying it. It is absent from the roster and from pad presence,
+   * it never keeps a transient container alive, and the server rejects any write it
+   * sends. Live previews of a container use it; anything a user acts in does not.
+   */
+  spectator?: boolean;
   /** Reconnect on unexpected close (default true). */
   reconnect?: boolean;
   /** DI seam for tests. */
@@ -338,6 +345,9 @@ export class SessionClient {
         padId: this.opts.padId,
         token: this.opts.token,
         protocolVersion: PROTOCOL_VERSION,
+        // Omitted rather than sent as false: the flag's absence IS the occupant case,
+        // and a reconnect must re-declare it because the server tracks it per socket.
+        ...(this.opts.spectator === true ? { spectator: true } : {}),
         ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
       };
       socket.send(JSON.stringify(join));

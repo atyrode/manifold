@@ -165,6 +165,26 @@ function occupy(fixture: ContainerFixture, padId: string): { leave: () => void }
   };
 }
 
+/**
+ * Joins the read-only socket a collaborator's widget preview opens onto a container.
+ * Watching must never be participation: the bubble rule has to ignore this peer.
+ */
+function watch(
+  fixture: ContainerFixture,
+  padId: string,
+): { socket: FakeSocket; leave: () => void } {
+  const socket = new FakeSocket();
+  const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, true);
+  const target = room(fixture, padId);
+  target.join(peer);
+  return {
+    socket,
+    leave: () => {
+      target.leave(peer);
+    },
+  };
+}
+
 function expanded(fixture: ContainerFixture, sessionId: string): string {
   const result = fixture.broker.expand(sessionId);
   if (typeof result === "string") throw new Error(`expand failed: ${result}`);
@@ -341,6 +361,44 @@ describe("TerminalBroker bubble dissolve", () => {
       terminalElement("terminal-1", sessionId, 40),
     );
     expect(fixture.store.listParkedSessions()).toEqual([]);
+  });
+
+  test("a collaborator watching the widget cannot keep the bubble from popping", () => {
+    const fixture = containerFixture();
+    const sessionId = placedTerminal(fixture, "terminal-1", 40);
+    const viewId = expanded(fixture, sessionId);
+    const occupant = occupy(fixture, viewId);
+    // The origin canvas paints a live view widget, which holds a real socket into this
+    // room for as long as anyone is looking at it.
+    const watcher = watch(fixture, viewId);
+
+    occupant.leave();
+
+    expect(fixture.store.getPad(viewId)).toBeNull();
+    expect(readElement(canvasRoom(fixture).doc, "terminal-1")).toEqual(
+      terminalElement("terminal-1", sessionId, 40),
+    );
+    // The watched container is gone, so its watcher is fenced exactly like any other
+    // socket on a deleted pad — the preview tears down instead of reading a dead room.
+    expect(watcher.socket.closed).toEqual({ code: 4404, reason: "pad deleted" });
+  });
+
+  test("a watcher joining and hanging up never pops the bubble it previewed", () => {
+    const fixture = containerFixture();
+    const sessionId = placedTerminal(fixture, "terminal-1");
+    const viewId = expanded(fixture, sessionId);
+
+    // The newborn-expand window: both canvases open previews into the view while its
+    // expander is still walking in, and the expander's own preview leaves as it
+    // navigates. Neither joining nor leaving may be read as occupancy changing.
+    const watcher = watch(fixture, viewId);
+    expect(fixture.rooms.presence().map((entry) => entry.padId)).not.toContain(viewId);
+
+    watcher.leave();
+
+    expect(fixture.store.getPad(viewId)).not.toBeNull();
+    expect(readElement(canvasRoom(fixture).doc, "terminal-1")?.type).toBe("portal");
+    expect(fixture.store.getSession(sessionId)?.padId).toBe(viewId);
   });
 
   test("a portal deleted mid-focus sends the popped terminal to the pool instead", () => {
