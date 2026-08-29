@@ -21,6 +21,8 @@ import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
 import { debugSeamEnabled, toElementSnapshot } from "./debug-seam.ts";
 import {
+  cursorLabel,
+  pruneRemoteCursors,
   recordRemoteCursor,
   remoteCursorSocketId,
   stepRemoteCursors,
@@ -194,10 +196,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     const offSessions = client.on("sessions_changed", invalidate);
     const offStatus = client.on("status", setStatus);
     const refreshRoster = (): void => {
-      const connected = new Set(client.roster.keys());
-      for (const [socketId, cursor] of remoteCursorsRef.current) {
-        if (!connected.has(cursor.principalId)) remoteCursorsRef.current.delete(socketId);
-      }
+      pruneRemoteCursors(remoteCursorsRef.current, client.roster.values());
       setRemoteCursors([...remoteCursorsRef.current.values()]);
       setRosterRows(deriveRosterRows(client.roster.values(), client.self ?? identity.principal));
     };
@@ -994,9 +993,11 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
                   />
                 ))}
                 {remoteCursors.map((cursor) => {
-                  const principal =
-                    rosterRows.find((row) => row.principal.id === cursor.principalId)?.principal ??
-                    null;
+                  const state = client.roster.get(cursor.principalId);
+                  const principal = state?.principal ?? null;
+                  const label = principal
+                    ? cursorLabel(principal.name, cursor.connId, state?.connIds ?? [])
+                    : "Collaborator";
                   return (
                     <div
                       className="flow-remote-cursor"
@@ -1010,7 +1011,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M3 2 20 12l-8 2-4 7Z" fill="currentColor" />
                       </svg>
-                      <span>{principal?.name ?? "Collaborator"}</span>
+                      <span>{label}</span>
                     </div>
                   );
                 })}
