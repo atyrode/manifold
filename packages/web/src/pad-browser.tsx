@@ -32,6 +32,7 @@ import {
   createPadFolder,
   deletePad,
   deletePadFolder,
+  getPad,
   getPadPresence,
   getPadSessions,
   killPooledTerminal,
@@ -48,6 +49,8 @@ import { parseChangelogReferences } from "./changelog-references.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { browserPadStorage, chooseInitialPad, forgetPad, rememberPad } from "./pad-memory.ts";
 import { FlowPadView } from "./flow-pad-view.tsx";
+import { TiledPadView } from "./tiled-pad-view.tsx";
+import { CONTAINER_DRAG_MIME } from "./tile-snap.ts";
 import { projectLocalPresence } from "./presence-projection.ts";
 import { buildPadTree, projectPadTreeMove, treeItemId, type PadTreeNode } from "./pad-tree.ts";
 import {
@@ -116,6 +119,16 @@ function SidebarIcon({ kind }: { readonly kind: "collapse" | "expand" | "plus" }
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <path d="M9 4v16" />
       <path d={kind === "collapse" ? "m15 9-3 3 3 3" : "m13 9 3 3-3 3"} />
+    </svg>
+  );
+}
+
+/** A container's discipline at a glance: a split frame marks the tiled ones. */
+function TilesGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M12 4v16M12 12h9" />
     </svg>
   );
 }
@@ -188,6 +201,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
   const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
   const [terminalDropPadId, setTerminalDropPadId] = useState<string | null>(null);
+  /** Which discipline the open create form will author: a canvas pad or a tiled view. */
+  const [createLayout, setCreateLayout] = useState<Pad["layout"]>("canvas");
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -249,6 +264,16 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [memory] = useState(browserPadStorage);
+  /**
+   * The routed container's own record. The tree is the usual source, but a view born
+   * by an expand exists before the sidebar has heard of it, so an unknown id is
+   * fetched directly and the tree refetched so its row appears.
+   */
+  const [fetchedPad, setFetchedPad] = useState<Pad | null>(null);
+  const [unresolvedPadId, setUnresolvedPadId] = useState<string | null>(null);
+  const directPadFetchRef = useRef<string | null>(null);
+  /** Shrink's return address: the last canvas the viewer was on, else the workspace root. */
+  const [originPadId, setOriginPadId] = useState<string | null>(null);
 
   const scheduleDndPresentation = useCallback((): void => {
     if (dndFrameRef.current !== null) return;
@@ -312,6 +337,46 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       active = false;
     };
   }, [identity.token]);
+
+  /** Refetches the routed container and the tree; pin and splits change both. */
+  const refreshActivePad = useCallback((): void => {
+    if (requestedPadId === null) return;
+    void Promise.all([getPad(identity.token, requestedPadId), listPadTree(identity.token)])
+      .then(([pad, items]) => {
+        setFetchedPad(pad);
+        setUnresolvedPadId(null);
+        setTreeItems(items);
+      })
+      .catch(() => {
+        // Unreachable record: fall through to the canvas renderer, which surfaces the
+        // join failure the same way a bad pad id always has.
+        setUnresolvedPadId(requestedPadId);
+      });
+  }, [identity.token, requestedPadId]);
+
+  /** The routed container's record: the tree's copy when known, else the one-shot fetch. */
+  const activePad =
+    requestedPadId === null
+      ? null
+      : (pads?.find((pad) => pad.id === requestedPadId) ??
+        (fetchedPad?.id === requestedPadId ? fetchedPad : null) ??
+        null);
+
+  // Render-phase adjustment (not an effect): the last canvas container visited is the
+  // Shrink return address, and it only moves when the routed canvas actually changes.
+  if (activePad?.layout === "canvas" && originPadId !== activePad.id) {
+    setOriginPadId(activePad.id);
+  }
+
+  useEffect(() => {
+    // Fetch each unknown routed id exactly once after the tree has answered; the tree
+    // refetch inside refreshActivePad re-runs this effect with the row present.
+    if (requestedPadId === null || pads === null) return;
+    if (pads.some((pad) => pad.id === requestedPadId)) return;
+    if (directPadFetchRef.current === requestedPadId) return;
+    directPadFetchRef.current = requestedPadId;
+    refreshActivePad();
+  }, [pads, refreshActivePad, requestedPadId]);
 
   useEffect(() => {
     let active = true;
@@ -523,14 +588,18 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     setCreating(true);
     setError(null);
     try {
-      const pad = await createPad(identity.token, trimmedName);
+      const pad = await createPad(identity.token, trimmedName, createLayout);
       setTreeItems(await listPadTree(identity.token));
       setName("");
       setCreateOpen(false);
       rememberPad(memory, identity.principal.id, pad.id);
       navigate(`/p/${encodeURIComponent(pad.id)}`);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Could not create the pad");
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : `Could not create the ${createLayout === "tiled" ? "view" : "pad"}`,
+      );
     } finally {
       setCreating(false);
     }
@@ -672,6 +741,15 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     navigate(`/p/${encodeURIComponent(pad.id)}`);
   };
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
+  /** Which renderer the route asks for; `unknown` while the container record is in flight. */
+  const routedLayout: Pad["layout"] | "unknown" =
+    requestedPadId === null
+      ? "unknown"
+      : activePad?.id === requestedPadId
+        ? activePad.layout
+        : unresolvedPadId === requestedPadId
+          ? "canvas"
+          : "unknown";
   const treeData = useMemo(() => {
     const data = new Map<string, { item: PadTreeItem; children: string[] }>();
     const roots = buildPadTree(treeItems ?? []);
@@ -717,6 +795,17 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         : renamingFolderId !== data.id && confirmFolderDeleteId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
+    // A pad row drag still advertises the container mime, so the same gesture that
+    // reorders the tree also drops a canvas into a view tile or onto another canvas.
+    // Folders carry an empty payload: every drop target ignores it.
+    createForeignDragObject: (items) => {
+      const data = items[0]?.getItemData();
+      return {
+        format: CONTAINER_DRAG_MIME,
+        data: data?.kind === "pad" ? data.pad.id : "",
+        effectAllowed: "move",
+      };
+    },
     onDrop: (items, target) => {
       const moved = items[0]?.getItemData();
       if (moved === undefined || moved === null || reorderingRef.current || treeItems === null) {
@@ -854,18 +943,24 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     } else {
       row = (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}${pad.layout === "tiled" ? " pad-sidebar-row--tiled" : ""}${pad.transient ? " pad-sidebar-row--transient" : ""}`}
           {...terminalDropProps(pad.id)}
         >
           <button
             className="pad-sidebar-link"
             type="button"
             title={pad.name}
-            aria-label={`Open pad ${pad.name}`}
+            aria-label={`Open ${pad.layout === "tiled" ? "view" : "pad"} ${pad.name}`}
             aria-current={active ? "page" : undefined}
             onClick={() => selectPad(pad)}
           >
-            <span className="pad-sidebar-pad-mark" aria-hidden="true" />
+            {pad.layout === "tiled" ? (
+              <span className="pad-sidebar-tiles-mark" aria-hidden="true">
+                <TilesGlyph />
+              </span>
+            ) : (
+              <span className="pad-sidebar-pad-mark" aria-hidden="true" />
+            )}
             {sidebarOpen ? <span className="pad-sidebar-pad-name">{pad.name}</span> : null}
             {sidebarOpen && runningCount > 0 ? (
               <span
@@ -1370,11 +1465,26 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
               aria-label="New pad"
               onClick={() => {
                 if (!sidebarOpen) setOpen(true);
+                setCreateLayout("canvas");
                 setCreateOpen(true);
               }}
             >
               <SidebarIcon kind="plus" />
               {sidebarOpen ? <span>New pad</span> : null}
+            </button>
+            <button
+              className="pad-sidebar-new pad-sidebar-new-view"
+              type="button"
+              title="New view"
+              aria-label="New view"
+              onClick={() => {
+                if (!sidebarOpen) setOpen(true);
+                setCreateLayout("tiled");
+                setCreateOpen(true);
+              }}
+            >
+              <TilesGlyph />
+              {sidebarOpen ? <span>New view</span> : null}
             </button>
             <button
               className="pad-sidebar-new pad-sidebar-new-folder"
@@ -1405,8 +1515,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 maxLength={120}
                 value={name}
                 onChange={(event) => setName(event.currentTarget.value)}
-                placeholder="Pad name"
-                aria-label="Pad name"
+                placeholder={createLayout === "tiled" ? "View name" : "Pad name"}
+                aria-label={createLayout === "tiled" ? "View name" : "Pad name"}
                 disabled={creating}
               />
               <div>
@@ -1488,6 +1598,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                     type="button"
                     onClick={() => {
                       setOpen(true);
+                      setCreateLayout("canvas");
                       setCreateOpen(true);
                     }}
                   >
@@ -1496,11 +1607,31 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 </>
               ) : null}
             </div>
+          ) : routedLayout === "unknown" ? (
+            // The renderer follows the container's discipline, so the record decides
+            // before anything mounts: guessing would mean tearing a live room down.
+            <div className="pad-browser-empty">
+              <p>Opening…</p>
+            </div>
+          ) : routedLayout === "tiled" && activePad !== null ? (
+            <PadErrorBoundary key={requestedPadId}>
+              <TiledPadView
+                pad={activePad}
+                identity={identity}
+                pads={pads ?? []}
+                originPadId={originPadId}
+                navigate={navigate}
+                presence={displayedPresence}
+                onPadChanged={refreshActivePad}
+              />
+            </PadErrorBoundary>
           ) : (
             <PadErrorBoundary key={requestedPadId}>
               <FlowPadView
                 padId={requestedPadId}
                 identity={identity}
+                navigate={navigate}
+                presence={displayedPresence}
                 onWorkspaceChange={setWorkspace}
                 isOverSidebar={(clientX, clientY) => {
                   const bounds = sidebarRef.current?.getBoundingClientRect();

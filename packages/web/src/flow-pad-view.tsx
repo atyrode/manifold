@@ -3,6 +3,9 @@ import {
   MAX_GESTURE_POINT_VALUES,
   VIEWPORT_MIN_INTERVAL_MS,
   type MachineSummary,
+  type PadPresence,
+  type TileEdge,
+  type TileSurface,
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
@@ -15,7 +18,15 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { bindTerminal, getMachines, parkTerminal } from "./api.ts";
+import {
+  addPadTile,
+  bindTerminal,
+  composePadTile,
+  expandTerminal,
+  extractPadTile,
+  getMachines,
+  parkTerminal,
+} from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
@@ -29,6 +40,7 @@ import {
   type RemoteCursor,
 } from "./cursor-identity.ts";
 import { DrawNode } from "./flow-draw-node.tsx";
+import { PORTAL_DRAG_HANDLE, PortalNode, TILE_DRAG_MIME } from "./flow-portal-node.tsx";
 import {
   FlowPadProvider,
   TERMINAL_DRAG_HANDLE,
@@ -41,6 +53,9 @@ import {
   createTerminalElement,
   createTextElement,
   projectElements,
+  type ProjectedNode,
+  type ProjectedPortalNode,
+  type ProjectedTerminalNode,
 } from "./flow-scene.ts";
 import { TextNode } from "./flow-text-node.tsx";
 import { createGestureStream } from "./gesture-stream.ts";
@@ -63,6 +78,7 @@ import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
 import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
+import { CONTAINER_DRAG_MIME, previewRect, snapZone } from "./tile-snap.ts";
 
 /**
  * React Flow is manifold's pad renderer. Native terminal scene records project directly
@@ -70,12 +86,25 @@ import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
  */
 
 /** Stable module-scope identity prevents React Flow from remounting live PTYs. */
-const NODE_TYPES: NodeTypes = { terminal: TerminalNode, text: TextNode, draw: DrawNode };
+const NODE_TYPES: NodeTypes = {
+  terminal: TerminalNode,
+  text: TextNode,
+  draw: DrawNode,
+  portal: PortalNode,
+};
 const NO_EDGES: readonly never[] = Object.freeze([]);
 const ROUND_GESTURE_COORDINATE = 10;
 const PRO_OPTIONS = Object.freeze({ hideAttribution: true });
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 30;
+/**
+ * How long a dragged surface must hover a node before the canvas offers to compose.
+ * Long enough that dragging a terminal PAST another one on the way somewhere else
+ * never arms; short enough that deliberately holding it there feels immediate.
+ */
+const COMPOSE_ARM_MS = 150;
+/** A refused compose reads as a toast, not as a banner that outlives the gesture. */
+const COMPOSE_TOAST_MS = 4000;
 
 function isTypingTarget(target: EventTarget | null): boolean {
   return (
@@ -84,8 +113,8 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
-/** Client point where a React Flow node drag ended; React Flow may hand us either event. */
-function dragStopPoint(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
+/** Client point of a React Flow node drag frame; React Flow may hand us either event. */
+function dragPoint(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
   if ("clientX" in event) return { x: event.clientX, y: event.clientY };
   const touch = event.changedTouches[0] ?? event.touches[0];
   return touch === undefined ? null : { x: touch.clientX, y: touch.clientY };
@@ -96,15 +125,92 @@ function gesturePoints(points: readonly number[]): number[] {
     .slice(-MAX_GESTURE_POINT_VALUES)
     .map((value) => Math.round(value * ROUND_GESTURE_COORDINATE) / ROUND_GESTURE_COORDINATE);
 }
+/**
+ * What a compose gesture carries. HTML5 payloads stay sealed until `drop` (the
+ * spec hides `getData` during `dragover`), so a sidebar drag resolves its surface
+ * at release while a React Flow node drag knows it from the first frame.
+ */
+type ComposeSource =
+  | { readonly kind: "surface"; readonly surface: TileSurface }
+  | { readonly kind: "sealed" }
+  | { readonly kind: "view" };
+
+interface ComposeDrag {
+  readonly source: ComposeSource;
+  /** Element being dragged inside this canvas; never its own drop target. */
+  readonly sourceElementId: string | null;
+}
+
+/** The armed drop: the node that morphed into view chrome and the zone it will split on. */
+interface ComposeArmed {
+  readonly elementId: string;
+  readonly zone: TileEdge;
+}
+
+/**
+ * Topmost composable node under a flow-space point. React Flow gives no
+ * node-over-node hit-testing, so the pointer is tested against the projected
+ * rects — the same rect test the drag-stop park check runs against the sidebar.
+ */
+function composeTargetAt(
+  nodes: readonly ProjectedNode[],
+  point: { readonly x: number; readonly y: number },
+  excludeId: string | null,
+): ProjectedTerminalNode | ProjectedPortalNode | null {
+  let hit: ProjectedTerminalNode | ProjectedPortalNode | null = null;
+  for (const node of nodes) {
+    if (node.id === excludeId) continue;
+    if (node.type !== "terminal" && node.type !== "portal") continue;
+    if (
+      point.x < node.position.x ||
+      point.x > node.position.x + node.width ||
+      point.y < node.position.y ||
+      point.y > node.position.y + node.height
+    ) {
+      continue;
+    }
+    if (hit === null || node.zIndex >= hit.zIndex) hit = node;
+  }
+  return hit;
+}
+
+/** Reads a tile-extraction payload; anything malformed is simply not a tile drag. */
+function parseTileDrag(
+  payload: string,
+): { readonly containerId: string; readonly tileId: string } | null {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record: Record<string, unknown> = parsed as Record<string, unknown>;
+  const containerId = record["containerId"];
+  const tileId = record["tileId"];
+  if (typeof containerId !== "string" || typeof tileId !== "string") return null;
+  if (containerId === "" || tileId === "") return null;
+  return { containerId, tileId };
+}
+
 interface FlowPadViewProps {
   readonly padId: string;
   readonly identity: StoredIdentity;
   readonly onWorkspaceChange: (workspace: WorkspaceSidebarState | null) => void;
+  /** Pushes a route: expanding a terminal and entering a portal both navigate. */
+  readonly navigate: (path: string) => void;
+  /** Polled principal-level presence; portal widgets show their container's occupants. */
+  readonly presence: readonly PadPresence[];
   /**
    * True when a client point lands on the workspace sidebar. Supplied by the sidebar
    * host so dropping a terminal there parks it instead of committing the drag.
    */
   readonly isOverSidebar?: (clientX: number, clientY: number) => boolean;
+  /**
+   * Container nesting depth of this canvas: 1 when it is the routed pad, 2 when it
+   * is embedded in a container. Portals render live above the depth-2 floor only.
+   */
+  readonly depth?: number;
 }
 
 interface RemoteSelectionRect {
@@ -116,7 +222,7 @@ interface RemoteSelectionRect {
   readonly color: string;
 }
 
-function sessionUrl(): string {
+export function sessionUrl(): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${window.location.host}/ws/session`;
 }
@@ -130,7 +236,10 @@ export function FlowPadView({
   padId,
   identity,
   onWorkspaceChange,
+  navigate,
+  presence,
   isOverSidebar,
+  depth = 1,
 }: FlowPadViewProps) {
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), padId, token: identity.token }),
@@ -169,6 +278,21 @@ export function FlowPadView({
     readonly pointerId: number;
     readonly points: number[];
   } | null>(null);
+  const [composeArmed, setComposeArmed] = useState<ComposeArmed | null>(null);
+  /**
+   * The compose gesture runs off refs, not state: it is driven by drag frames and
+   * read by the release handler, and re-rendering the canvas on every hover frame
+   * would put the xterm subtrees back into the drag hot path. Only the armed drop
+   * — a rare, deliberate transition — reaches React state, where it stamps the
+   * hovered node's data and paints the preview overlay.
+   */
+  const composeDragRef = useRef<ComposeDrag | null>(null);
+  const composeArmedRef = useRef<ComposeArmed | null>(null);
+  const composeCandidateRef = useRef<string | null>(null);
+  const composeZoneRef = useRef<TileEdge | null>(null);
+  const composeTimerRef = useRef<number | null>(null);
+  const composeToastRef = useRef<number | null>(null);
+  const projectedRef = useRef<readonly ProjectedNode[]>([]);
   const initialViewport = useMemo(
     () => loadViewport(window.localStorage, padId) ?? { x: 0, y: 0, zoom: 1 },
     [padId],
@@ -300,6 +424,12 @@ export function FlowPadView({
     void sceneRevision;
     return projectElements(client.elements, remoteGestures);
   }, [client, remoteGestures, sceneRevision]);
+  // Compose hit-testing reads the freshest projection from inside handlers that
+  // must stay stable across drag frames, so it travels by ref, written post-commit
+  // (handlers only fire on pointer events, which land after the effect flush).
+  useEffect(() => {
+    projectedRef.current = projected;
+  }, [projected]);
 
   /**
    * React Flow paints every node with its own `zIndex` inside the viewport's stacking
@@ -321,23 +451,37 @@ export function FlowPadView({
     void rosterRows;
     const rects: RemoteSelectionRect[] = [];
     const projectedById = new Map(projected.map((element) => [element.id, element] as const));
-    for (const presence of client.roster.values()) {
-      if (presence.principal.id === client.self?.id) continue;
-      for (const elementId of presence.payload.selection ?? []) {
+    for (const viewer of client.roster.values()) {
+      if (viewer.principal.id === client.self?.id) continue;
+      for (const elementId of viewer.payload.selection ?? []) {
         const element = projectedById.get(elementId);
         if (element === undefined) continue;
         rects.push({
-          key: `${presence.principal.id}:${elementId}`,
+          key: `${viewer.principal.id}:${elementId}`,
           x: element.position.x,
           y: element.position.y,
           width: element.width,
           height: element.height,
-          color: presence.principal.color,
+          color: viewer.principal.color,
         });
       }
     }
     return rects;
   }, [client, projected, rosterRows]);
+
+  /**
+   * The half the dropped surface would take over on the armed target, drawn in flow
+   * coordinates beside the other presence overlays so it tracks pan and zoom for free.
+   */
+  const composePreview = useMemo(() => {
+    if (composeArmed === null) return null;
+    const target = projected.find((element) => element.id === composeArmed.elementId);
+    if (target === undefined) return null;
+    return previewRect(
+      { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
+      composeArmed.zone,
+    );
+  }, [composeArmed, projected]);
 
   /**
    * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
@@ -355,9 +499,17 @@ export function FlowPadView({
         zIndex: element.zIndex,
         selected: element.id === highlightedId,
         ...(element.type === "terminal" ? { dragHandle: TERMINAL_DRAG_HANDLE } : {}),
-        data: element.data,
+        // A widget moves by its name strip: the preview body belongs to the tile
+        // drags that decompose the view.
+        ...(element.type === "portal" ? { dragHandle: PORTAL_DRAG_HANDLE } : {}),
+        // The armed compose zone rides in node data so only the hovered node
+        // re-renders into view chrome (`reconcileNodes` reuses every other object).
+        data:
+          composeArmed?.elementId === element.id
+            ? { ...element.data, composeZone: composeArmed.zone }
+            : element.data,
       })),
-    [highlightedId, projected],
+    [composeArmed, highlightedId, projected],
   );
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
@@ -388,9 +540,166 @@ export function FlowPadView({
     [parkElement],
   );
 
+  const clearCompose = useCallback((): void => {
+    if (composeTimerRef.current !== null) {
+      window.clearTimeout(composeTimerRef.current);
+      composeTimerRef.current = null;
+    }
+    composeDragRef.current = null;
+    composeCandidateRef.current = null;
+    composeZoneRef.current = null;
+    composeArmedRef.current = null;
+    setComposeArmed(null);
+  }, []);
+
+  /** A refused compose speaks, then gets out of the way; a real error stays put. */
+  const toastCompose = useCallback((message: string): void => {
+    setError(message);
+    if (composeToastRef.current !== null) window.clearTimeout(composeToastRef.current);
+    composeToastRef.current = window.setTimeout(() => {
+      composeToastRef.current = null;
+      setError((current) => (current === message ? null : current));
+    }, COMPOSE_TOAST_MS);
+  }, []);
+
+  /**
+   * One frame of the compose gesture: find the node under the pointer, hold it for
+   * COMPOSE_ARM_MS, then arm the drop. Moving to another node restarts the hold and
+   * leaving every node disarms, so dragging PAST a terminal never composes onto it.
+   */
+  const trackCompose = useCallback((clientX: number, clientY: number): void => {
+    const flow = flowRef.current;
+    const drag = composeDragRef.current;
+    if (flow === null || drag === null) return;
+    const point = flow.screenToFlowPosition({ x: clientX, y: clientY });
+    const target = composeTargetAt(projectedRef.current, point, drag.sourceElementId);
+    if (target === null) {
+      if (composeCandidateRef.current === null) return;
+      if (composeTimerRef.current !== null) {
+        window.clearTimeout(composeTimerRef.current);
+        composeTimerRef.current = null;
+      }
+      composeCandidateRef.current = null;
+      composeZoneRef.current = null;
+      composeArmedRef.current = null;
+      setComposeArmed(null);
+      return;
+    }
+    const zone = snapZone(
+      { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
+      point,
+    );
+    if (zone === null) return;
+    composeZoneRef.current = zone;
+    if (composeCandidateRef.current === target.id) {
+      const armed = composeArmedRef.current;
+      if (armed === null || armed.zone === zone) return;
+      const rezoned: ComposeArmed = { elementId: target.id, zone };
+      composeArmedRef.current = rezoned;
+      setComposeArmed(rezoned);
+      return;
+    }
+    composeCandidateRef.current = target.id;
+    composeArmedRef.current = null;
+    setComposeArmed(null);
+    if (composeTimerRef.current !== null) window.clearTimeout(composeTimerRef.current);
+    // The hold is timed, not sampled: a pointer that stops moving over a target
+    // still arms, because drag frames stop arriving the moment it settles.
+    composeTimerRef.current = window.setTimeout(() => {
+      composeTimerRef.current = null;
+      const heldZone = composeZoneRef.current;
+      if (composeDragRef.current === null || composeCandidateRef.current !== target.id) return;
+      if (heldZone === null) return;
+      const armed: ComposeArmed = { elementId: target.id, zone: heldZone };
+      composeArmedRef.current = armed;
+      setComposeArmed(armed);
+    }, COMPOSE_ARM_MS);
+  }, []);
+
+  /**
+   * Releases an armed compose. Onto a terminal the server births a durable view
+   * around it and both surfaces become tiles; onto a view widget it is a plain tile
+   * add against the container the portal points at — views hold surfaces, never
+   * other views. The canvas stays put: the widget appears in the target's own slot.
+   */
+  const commitCompose = useCallback(
+    (armed: ComposeArmed, surface: TileSurface): void => {
+      const target = client.elements.get(armed.elementId);
+      if (target === undefined) return;
+      if (surface.kind === "pad" && surface.padId === padId) {
+        toastCompose("A canvas cannot be tiled inside itself.");
+        return;
+      }
+      if (target.type === "portal") {
+        void addPadTile(identity.token, target.containerId, surface, null, armed.zone).catch(
+          (reason: unknown) => {
+            toastCompose(reason instanceof Error ? reason.message : "Could not add the tile");
+          },
+        );
+        return;
+      }
+      if (target.type !== "terminal") return;
+      void composePadTile(identity.token, padId, armed.elementId, surface, armed.zone).catch(
+        (reason: unknown) => {
+          toastCompose(reason instanceof Error ? reason.message : "Could not compose the view");
+        },
+      );
+    },
+    [client, identity.token, padId, toastCompose],
+  );
+
+  /**
+   * Escape abandons the composition without abandoning the drag, and a drag that
+   * ends anywhere but this canvas (`dragend` fires on the source) must not leave a
+   * node wearing view chrome.
+   */
+  useEffect(() => {
+    const onDragEnd = (): void => clearCompose();
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") clearCompose();
+    };
+    window.addEventListener("dragend", onDragEnd);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("dragend", onDragEnd);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [clearCompose]);
+
+  useEffect(
+    () => () => {
+      if (composeToastRef.current !== null) window.clearTimeout(composeToastRef.current);
+      if (composeTimerRef.current !== null) window.clearTimeout(composeTimerRef.current);
+    },
+    [],
+  );
+
+  /**
+   * A canvas terminal is a tileable surface from the first drag frame. A view widget
+   * is not a surface at all — nesting views is deferred — so it is tracked only so
+   * the release can refuse with a toast instead of silently moving it.
+   */
+  const handleNodeDragStart = useCallback(
+    (_event: MouseEvent | TouchEvent, node: Node): void => {
+      const element = client.elements.get(node.id);
+      if (element?.type === "terminal") {
+        composeDragRef.current = {
+          source: { kind: "surface", surface: { kind: "terminal", sessionId: element.sessionId } },
+          sourceElementId: node.id,
+        };
+        return;
+      }
+      composeDragRef.current =
+        element?.type === "portal" ? { source: { kind: "view" }, sourceElementId: node.id } : null;
+    },
+    [client],
+  );
+
   const handleNodeDrag = useCallback(
-    (_event: unknown, node: Node): void => {
+    (event: MouseEvent | TouchEvent, node: Node): void => {
       if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) return;
+      const point = dragPoint(event);
+      if (point !== null) trackCompose(point.x, point.y);
       gestureStream.push({
         kind: "move",
         phase: "active",
@@ -399,22 +708,54 @@ export function FlowPadView({
         y: node.position.y,
       });
     },
-    [gestureStream],
+    [gestureStream, trackCompose],
   );
 
   const handleNodeDragStop = useCallback(
     (event: MouseEvent | TouchEvent, node: Node): void => {
       const element = client.elements.get(node.id);
+      const armed = composeArmedRef.current;
+      const drag = composeDragRef.current;
       if (
         element === undefined ||
         !Number.isFinite(node.position.x) ||
         !Number.isFinite(node.position.y)
       ) {
+        clearCompose();
         return;
       }
+      const point = dragPoint(event);
+      // Composed: the server rewrites both placements (the target becomes a portal,
+      // this element is consumed), so the geometry this drag produced is dropped.
+      if (armed !== null && drag !== null) {
+        switch (drag.source.kind) {
+          case "surface":
+            commitCompose(armed, drag.source.surface);
+            break;
+          case "view":
+            toastCompose("Views cannot be nested — drag a terminal or a canvas onto one.");
+            break;
+          case "sealed":
+            // Sealed payloads belong to HTML5 drags; a node drag never carries one.
+            break;
+          default: {
+            const exhaustiveSource: never = drag.source;
+            throw new Error(`unreachable compose source ${String(exhaustiveSource)}`);
+          }
+        }
+        clearCompose();
+        gestureStream.end({
+          kind: "move",
+          phase: "end",
+          elementId: node.id,
+          x: node.position.x,
+          y: node.position.y,
+        });
+        return;
+      }
+      clearCompose();
       // Released over the sidebar: the gesture asked for the pool, not a canvas
       // position, so the geometry is dropped and the terminal parks instead.
-      const point = dragStopPoint(event);
       const parked =
         element.type === "terminal" && point !== null && isOverSidebar?.(point.x, point.y) === true;
       if (parked) {
@@ -432,7 +773,7 @@ export function FlowPadView({
         y: node.position.y,
       });
     },
-    [client, gestureStream, isOverSidebar, onPark],
+    [clearCompose, client, commitCompose, gestureStream, isOverSidebar, onPark, toastCompose],
   );
 
   const handleResize = useCallback(
@@ -602,6 +943,34 @@ export function FlowPadView({
     [client],
   );
 
+  /**
+   * Expand transmutes a terminal into a tiled view born around it: the server swaps
+   * the element for a portal onto the new container and rebinds the session into it,
+   * so all the expander has to do is walk into the container it just created.
+   */
+  const onExpand = useCallback(
+    (sessionId: string): void => {
+      void expandTerminal(identity.token, sessionId)
+        .then((viewId) => {
+          navigate(`/p/${encodeURIComponent(viewId)}`);
+        })
+        .catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : "Could not expand terminal");
+        });
+    },
+    [identity.token, navigate],
+  );
+
+  /**
+   * Room sockets for the containers portal widgets preview. The canvas owns the
+   * session URL and the token so a widget never rebuilds either.
+   */
+  const openClient = useCallback(
+    (containerId: string) =>
+      new SessionClient({ url: sessionUrl(), padId: containerId, token: identity.token }),
+    [identity.token],
+  );
+
   const liveBindings = useMemo(() => {
     const bindings = new Map<string, string[]>();
     for (const element of projected) {
@@ -680,6 +1049,7 @@ export function FlowPadView({
       machineFor,
       onPark,
       onClose,
+      onExpand,
       onRestart: restartTerminal,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
@@ -689,16 +1059,27 @@ export function FlowPadView({
       endTextEditing: (elementId) => {
         setEditingId((current) => (current === elementId ? null : current));
       },
+      depth,
+      token: identity.token,
+      openClient,
+      presence,
+      navigate,
     }),
     [
       client,
+      depth,
       editingId,
       handleResize,
       handleResizeEnd,
+      identity.token,
       machineFor,
       machines,
+      navigate,
       onClose,
+      onExpand,
       onPark,
+      openClient,
+      presence,
       restartTerminal,
       tool,
     ],
@@ -851,19 +1232,73 @@ export function FlowPadView({
           }
         }}
         onDragOver={(event) => {
-          if (!event.dataTransfer.types.includes(TERMINAL_DRAG_MIME)) return;
+          const types = event.dataTransfer.types;
+          const isTerminal = types.includes(TERMINAL_DRAG_MIME);
+          const isContainer = types.includes(CONTAINER_DRAG_MIME);
+          const isTile = types.includes(TILE_DRAG_MIME);
+          if (!isTerminal && !isContainer && !isTile) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
+          // A tile dragged out of a widget is a decomposition, never a composition:
+          // it lands on bare canvas as a plain element.
+          if (isTile) return;
+          // The payload stays sealed until `drop`, so the gesture is tracked by its
+          // mime and the surface is resolved at release.
+          composeDragRef.current ??= { source: { kind: "sealed" }, sourceElementId: null };
+          trackCompose(event.clientX, event.clientY);
+        }}
+        onDragLeave={(event) => {
+          const next = event.relatedTarget;
+          if (next instanceof Element && event.currentTarget.contains(next)) return;
+          clearCompose();
         }}
         onDrop={(event) => {
-          if (!event.dataTransfer.types.includes(TERMINAL_DRAG_MIME)) return;
-          event.preventDefault();
-          const sessionId = event.dataTransfer.getData(TERMINAL_DRAG_MIME);
+          const types = event.dataTransfer.types;
           const flow = flowRef.current;
-          if (sessionId === "" || flow === null) return;
-          // The server authors the element and broadcasts it; nothing local to write.
+          if (flow === null) return;
+          if (types.includes(TILE_DRAG_MIME)) {
+            event.preventDefault();
+            clearCompose();
+            const dragged = parseTileDrag(event.dataTransfer.getData(TILE_DRAG_MIME));
+            if (dragged === null) return;
+            const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            // The server removes the leaf and authors the element in the canvas the
+            // widget lives on, so the drop point is all it needs from here.
+            void extractPadTile(
+              identity.token,
+              dragged.containerId,
+              dragged.tileId,
+              at.x,
+              at.y,
+            ).catch((reason: unknown) => {
+              toastCompose(reason instanceof Error ? reason.message : "Could not extract the tile");
+            });
+            return;
+          }
+          const isTerminal = types.includes(TERMINAL_DRAG_MIME);
+          const isContainer = types.includes(CONTAINER_DRAG_MIME);
+          if (!isTerminal && !isContainer) return;
+          event.preventDefault();
+          const armed = composeArmedRef.current;
+          const sessionId = isTerminal ? event.dataTransfer.getData(TERMINAL_DRAG_MIME) : "";
+          const containerId = isContainer ? event.dataTransfer.getData(CONTAINER_DRAG_MIME) : "";
+          clearCompose();
+          const surface: TileSurface | null =
+            sessionId !== ""
+              ? { kind: "terminal", sessionId }
+              : containerId !== ""
+                ? { kind: "pad", padId: containerId }
+                : null;
+          if (surface === null) return;
+          if (armed !== null) {
+            commitCompose(armed, surface);
+            return;
+          }
+          // Bare canvas: a pooled terminal binds here (the server authors the element
+          // and broadcasts it). A container has nothing to bind to without a target.
+          if (surface.kind !== "terminal") return;
           const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          void bindTerminal(identity.token, sessionId, padId, position.x, position.y).catch(
+          void bindTerminal(identity.token, surface.sessionId, padId, position.x, position.y).catch(
             (reason: unknown) => {
               console.error("evt=terminal_bind_failed", reason);
             },
@@ -947,6 +1382,7 @@ export function FlowPadView({
               reemitCursor();
             }}
             onNodesChange={handleNodesChange}
+            onNodeDragStart={handleNodeDragStart}
             onNodeDrag={handleNodeDrag}
             onSelectionChange={({ nodes: selectedNodes }) => {
               client.sendPresence({ selection: selectedNodes.map((node) => node.id) });
@@ -972,6 +1408,16 @@ export function FlowPadView({
           >
             <ViewportPortal>
               <div className="flow-presence-layer" style={{ zIndex: presenceZIndex }}>
+                {composePreview === null ? null : (
+                  <div
+                    className="flow-compose-preview"
+                    style={{
+                      height: composePreview.height,
+                      transform: `translate(${String(composePreview.x)}px, ${String(composePreview.y)}px)`,
+                      width: composePreview.width,
+                    }}
+                  />
+                )}
                 {activeStrokePoints === null ? null : (
                   <svg className="flow-stroke-preview" overflow="visible">
                     <path

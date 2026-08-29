@@ -1,4 +1,4 @@
-import type { MachineSummary } from "@manifold/protocol";
+import type { MachineSummary, PadPresence } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { createContext, memo, useContext } from "react";
@@ -21,6 +21,12 @@ export interface FlowPadContextValue {
   readonly onPark: (elementId: string) => void;
   /** Kills the PTY and tombstones the element. */
   readonly onClose: (elementId: string, sessionId: string) => void;
+  /**
+   * Transmutes a canvas terminal into a tiled view born around it: the element
+   * becomes a portal onto the new container and the expander navigates into it.
+   * The server finds the placement from the session, so the id is enough.
+   */
+  readonly onExpand: (sessionId: string) => void;
   readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
   /** Streams live resize geometry and commits its final frame. */
   readonly onResize: (
@@ -46,6 +52,23 @@ export interface FlowPadContextValue {
   readonly editingId: string | null;
   readonly beginTextEditing: (elementId: string) => void;
   readonly endTextEditing: (elementId: string) => void;
+  /**
+   * Container nesting depth of the canvas these nodes live on: 1 for the routed
+   * pad, 2 for a canvas embedded one container deep. Portals render their
+   * container live while `depth < MAX_LIVE_DEPTH` and as cards below that.
+   */
+  readonly depth: number;
+  /** Bearer token for the REST calls canvas nodes make on their own (portal reads). */
+  readonly token: string;
+  /**
+   * Opens a room socket for another container — the portal widget's live preview.
+   * The canvas owns the session URL and identity, so nodes never rebuild either.
+   */
+  readonly openClient: (padId: string) => SessionClient;
+  /** Polled principal-level presence; portal widgets show their container's occupants. */
+  readonly presence: readonly PadPresence[];
+  /** Pushes a route; portals navigate into the container they point at. */
+  readonly navigate: (path: string) => void;
 }
 
 const FlowPadContext = createContext<FlowPadContextValue | null>(null);
@@ -69,14 +92,24 @@ export const TERMINAL_DRAG_HANDLE = ".terminal-titlebar";
 export const MIN_TERMINAL_WIDTH = 320;
 export const MIN_TERMINAL_HEIGHT = 200;
 
+/**
+ * Painted on the node a dragged surface is hovering over, long enough to mean it
+ * (see COMPOSE_ARM_MS): the frame morphs into view chrome so the release reads as
+ * "these two become one view", not as a move that happens to end on top.
+ */
+export const COMPOSE_TARGET_CLASS = "flow-node--compose-target";
+
 function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement {
   const sessionId = typeof data["sessionId"] === "string" ? data["sessionId"] : "";
   const pad = useFlowPad();
+  // The canvas stamps the armed compose zone onto this node's data, so only the
+  // hovered node re-renders (see `reconcileNodes`) instead of the whole tree.
+  const composeTarget = typeof data["composeZone"] === "string";
 
   if (sessionId === "") return <div className="terminal-placeholder">Opening terminal…</div>;
 
   return (
-    <div className="flow-terminal">
+    <div className={composeTarget ? `flow-terminal ${COMPOSE_TARGET_CLASS}` : "flow-terminal"}>
       {/*
         Desktop-window ergonomics: the frame border is the grab zone, so the pointer
         turns into a resize cursor on hover and no selection step is needed. The
@@ -111,6 +144,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement
         panelHighlighted={false}
         onClose={() => pad.onClose(id, sessionId)}
         onRestart={() => pad.onRestart(id, sessionId)}
+        onExpand={() => pad.onExpand(sessionId)}
         machine={pad.machineFor(sessionId)}
       />
     </div>

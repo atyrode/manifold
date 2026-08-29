@@ -1413,27 +1413,6 @@ button.pad-sidebar-session.is-summary > small {
   box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
-/* Expanded: the terminal is promoted to the browser top layer (Popover API) and
-   becomes the view, filling the canvas column only — the sidebar stays usable.
-   Explicit box because showPopover() alone doesn't size or place anything; the
-   left edge is re-pinned inline at expand time because the top layer is measured
-   against the viewport and `--sidebar-width` does not track a collapsed sidebar. */
-.manifold-terminal--expanded {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: var(--sidebar-width, 17.5rem);
-  width: auto;
-  height: auto;
-  margin: 0;
-  padding: 0;
-  border: 1px solid #343a40;
-  border-radius: 0;
-  background: #0b0d10;
-  pointer-events: auto;
-}
-
 /* Remote focus: the frame wears a ring in the focuser's presence color, supplied
    inline as border-color + box-shadow so there is no layout shift. */
 .manifold-terminal--remote-focus {
@@ -2118,16 +2097,6 @@ button.pad-sidebar-session.is-summary > small {
   width: 100%;
   height: 100%;
 }
-/*
- * Expanded wins over the node-fill rule above: with `width: 100%` the fixed box is
- * over-constrained and `left + width` beats `right: 0`, spilling a full viewport
- * width past the right edge. Same specificity, later in the file, so auto wins and
- * the top/right/bottom/left constraints govern the box.
- */
-.flow-terminal > .manifold-terminal--expanded {
-  width: auto;
-  height: auto;
-}
 /* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
 .flow-terminal .terminal-titlebar {
   pointer-events: auto;
@@ -2357,4 +2326,449 @@ button.pad-sidebar-session.is-summary > small {
 .react-flow__node-draw .flow-draw path.flow-draw__hit {
   pointer-events: stroke;
   cursor: pointer;
+}
+
+/* ── Tiled containers (Phase 3) ───────────────────────────────────────────────
+   The tiled discipline's renderer plus the sidebar marks that tell a view from a
+   canvas. Appended as one block so the canvas rules above stay untouched. */
+
+/* Three creators do not fit one 280px row: the two container creators share the
+   first row, the folder creator takes the second. */
+.pad-sidebar-new-folder {
+  grid-column: 1 / -1;
+}
+
+.pad-browser.is-collapsed .pad-sidebar-new-folder {
+  grid-column: auto;
+}
+
+.pad-sidebar-tiles-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+.pad-sidebar-tiles-mark svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.pad-sidebar-row.is-active .pad-sidebar-tiles-mark {
+  color: #91a7ff;
+}
+
+/* A bubble: alive only while someone is inside it. */
+.pad-sidebar-row--transient .pad-sidebar-pad-name {
+  font-style: italic;
+  color: #adb5bd;
+}
+
+.tiled-pad-view {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  background: #101216;
+}
+
+.tiled-header {
+  display: flex;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid #23272e;
+  padding: 0.35rem 0.6rem;
+  background: #16191f;
+}
+
+.tiled-title {
+  overflow: hidden;
+  color: #f1f3f5;
+  font-size: 0.85rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tiled-bubble-chip {
+  flex: 0 0 auto;
+  border: 1px solid #495057;
+  border-radius: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  color: #adb5bd;
+  font-size: 0.62rem;
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+.tiled-notice {
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: #ffc9c9;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tiled-status {
+  margin-inline-start: auto;
+  color: #868e96;
+  font-size: 0.66rem;
+}
+
+.tiled-status.is-open {
+  color: #69db7c;
+}
+
+.tiled-action {
+  flex: 0 0 auto;
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  color: #dee2e6;
+  font-size: 0.75rem;
+  background: #202329;
+  cursor: pointer;
+}
+
+.tiled-action:hover:not(:disabled) {
+  border-color: #4c6ef5;
+  background: #252932;
+}
+
+.tiled-action:disabled {
+  color: #868e96;
+  cursor: default;
+}
+
+.tiled-body {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.tiled-placeholder {
+  display: grid;
+  width: 100%;
+  place-items: center;
+  color: #868e96;
+  font-size: 0.8rem;
+}
+
+.tiled-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.tiled-split.is-row {
+  flex-direction: row;
+}
+
+.tiled-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.tiled-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.tiled-divider {
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.tiled-divider:hover,
+.tiled-divider:active {
+  background: #4c6ef5;
+}
+
+.tiled-split.is-row > .tiled-divider {
+  cursor: col-resize;
+}
+
+.tiled-split.is-column > .tiled-divider {
+  cursor: row-resize;
+}
+
+.tiled-leaf {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+/* Which tile takes the keystrokes: the same cue the canvas gives a selected node. */
+.tiled-leaf.is-focused {
+  outline: 1px solid #495057;
+  outline-offset: -1px;
+}
+
+.tiled-leaf.is-drop-target {
+  outline: 1px solid #748ffc;
+  outline-offset: -1px;
+}
+
+.tiled-empty {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.45rem;
+  margin: 0.35rem;
+  color: #868e96;
+  font-size: 0.78rem;
+}
+
+.tiled-empty-glyph {
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid #495057;
+  border-radius: 0.3rem;
+}
+
+/* The snap preview is painted in the leaf's own percentage space (see LEAF_BOX). */
+.tiled-snap-preview {
+  position: absolute;
+  z-index: 40;
+  border: 1px solid #748ffc;
+  background: rgb(92 124 250 / 22%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease;
+}
+
+/* ── Portal widgets and canvas composition (Phase 3 / 3b) ─────────────────────
+   The canvas face of a tiled container — a live widget onto its tiles — plus the
+   chrome the compose gesture paints. Appended as one block; nothing above is
+   restyled. */
+
+.flow-portal {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #3b4252;
+  border-radius: 0.5rem;
+  background: #0b0d10;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+/* The strip IS the React Flow drag handle (PORTAL_DRAG_HANDLE): the preview body
+   below it belongs to the tile drags that decompose a view. */
+.flow-portal__strip {
+  display: flex;
+  min-height: 1.85rem;
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline: 0.5rem;
+  border-bottom: 1px solid #23272e;
+  background: #15181d;
+  cursor: grab;
+}
+
+.flow-portal__strip:active {
+  cursor: grabbing;
+}
+
+.flow-portal__glyph {
+  color: #748ffc;
+  font-size: 0.8rem;
+}
+
+.flow-portal__name {
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: #f1f3f5;
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.flow-portal__presence {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.15rem;
+}
+
+.flow-portal__avatar {
+  display: grid;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  color: #0b0d10;
+  font-size: 0.6rem;
+  font-weight: 700;
+  place-items: center;
+}
+
+.flow-portal__avatar--more {
+  color: #ced4da;
+  background: #343a40;
+}
+
+.flow-portal__enter {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  color: #ced4da;
+  background: #1b1f24;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.flow-portal__enter:hover {
+  border-color: #4c6ef5;
+  color: #f8f9fa;
+}
+
+.flow-portal__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The preview is laid out at 1/PORTAL_PREVIEW_SCALE and transformed down: xterm
+   fits against the computed box, which a transform leaves alone, so previewing a
+   terminal never reflows the PTY for whoever is working in it. */
+.flow-portal__preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.flow-portal__split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 2px;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.flow-portal__slot {
+  display: flex;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.flow-portal__slot > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.flow-portal__tile {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A preview is a preview: the shield keeps input out of a terminal nobody
+   navigated into, and it is the grab zone that extracts the tile back onto the
+   canvas as a plain element. */
+.flow-portal__shield {
+  position: absolute;
+  /* Above the previewed terminal's own bands (titlebar 3, overlays 5): the frame
+     creates no stacking context, so those children would otherwise paint over it. */
+  z-index: 8;
+  inset: 0;
+  cursor: grab;
+}
+
+.flow-portal__shield:active {
+  cursor: grabbing;
+}
+
+.flow-portal__empty,
+.flow-portal__pad-card,
+.flow-portal__card {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  align-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.4rem;
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.flow-portal__pad-card strong {
+  color: #dee2e6;
+  font-size: 0.76rem;
+}
+
+.flow-portal__card {
+  border-style: solid;
+  border-color: #23272e;
+}
+
+.flow-portal__card-glyph {
+  color: #748ffc;
+  font-size: 1.5rem;
+}
+
+.flow-portal__card-hint {
+  padding-inline: 0.6rem;
+  text-align: center;
+}
+
+/* The compose morph: a node about to become a view already wears view chrome, so
+   the release reads as composition and not as a move that ended on top. */
+.flow-node--compose-target {
+  border-radius: 0.5rem;
+  outline: 2px solid #748ffc;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px rgb(116 143 252 / 18%);
+}
+
+/* The half the dropped surface would claim, drawn in flow space (see previewRect)
+   inside the presence layer, so it tracks pan and zoom with the scene. */
+.flow-compose-preview {
+  position: absolute;
+  z-index: 45;
+  border: 1px solid #748ffc;
+  border-radius: 0.35rem;
+  background: rgb(116 143 252 / 22%);
+  pointer-events: none;
+  animation: flow-compose-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes flow-compose-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }

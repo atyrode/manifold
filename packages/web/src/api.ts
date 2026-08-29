@@ -16,6 +16,15 @@ import {
   ParkTerminalRequestSchema,
   MoveTerminalPoolRequestSchema,
   RenameTerminalRequestSchema,
+  AddPadTileRequestSchema,
+  AddPadTileResponseSchema,
+  ComposePadTileRequestSchema,
+  ComposePadTileResponseSchema,
+  ExpandTerminalResponseSchema,
+  ExtractPadTileRequestSchema,
+  ExtractPadTileResponseSchema,
+  type TileEdge,
+  type TileSurface,
   TerminalPoolResponseSchema,
   type TerminalPoolEntry,
   type MachineSummary,
@@ -104,9 +113,9 @@ export async function getPad(token: string, padId: string): Promise<Pad> {
   return PadSchema.parse(fieldFromObject(body, "pad"));
 }
 
-/** Creates a pad through the protocol-owned request schema. */
-export async function createPad(token: string, name: string): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name });
+/** Creates a pad through the protocol-owned request schema; `layout` picks the discipline. */
+export async function createPad(token: string, name: string, layout?: Pad["layout"]): Promise<Pad> {
+  const request = CreatePadRequestSchema.parse({ name, layout });
   const body = await requestJson("/api/pads", {
     method: "POST",
     headers: authHeaders(token, true),
@@ -291,4 +300,92 @@ export async function deletePad(token: string, padId: string): Promise<void> {
     method: "DELETE",
     headers: authHeaders(token, false),
   });
+}
+
+/**
+ * Expands a terminal into a tiled view born around it (`POST /api/terminals/:id/expand`).
+ * Returns the new container id; the caller navigates into it.
+ */
+export async function expandTerminal(token: string, sessionId: string): Promise<string> {
+  const body = await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/expand`, {
+    method: "POST",
+    headers: authHeaders(token, false),
+  });
+  return ExpandTerminalResponseSchema.parse(body).viewId;
+}
+
+/** Hardens a transient view so it outlives its last occupant (`POST /api/pads/:id/pin`). */
+export async function pinPad(token: string, padId: string): Promise<void> {
+  await requestJson(`/api/pads/${encodeURIComponent(padId)}/pin`, {
+    method: "POST",
+    headers: authHeaders(token, false),
+  });
+}
+
+/**
+ * Adds a surface to a tiled container (`POST /api/pads/:id/tiles`). A null target
+ * fills the first empty leaf; otherwise `edge` splits the target tile. Returns the
+ * new leaf's tile id.
+ */
+export async function addPadTile(
+  token: string,
+  padId: string,
+  surface: TileSurface,
+  targetTileId: string | null,
+  edge: TileEdge | null,
+): Promise<string> {
+  const request = AddPadTileRequestSchema.parse({ surface, targetTileId, edge });
+  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return AddPadTileResponseSchema.parse(body).tileId;
+}
+
+/** Removes one leaf from a tiled container (`DELETE /api/pads/:id/tiles/:tileId`). */
+export async function removePadTile(token: string, padId: string, tileId: string): Promise<void> {
+  await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
+}
+
+/**
+ * Composes a dragged surface onto a canvas terminal (`POST /api/pads/:id/compose`),
+ * birthing a durable view around the target. Returns the new container id.
+ */
+export async function composePadTile(
+  token: string,
+  padId: string,
+  targetElementId: string,
+  surface: TileSurface,
+  edge: TileEdge,
+): Promise<string> {
+  const request = ComposePadTileRequestSchema.parse({ targetElementId, surface, edge });
+  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}/compose`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return ComposePadTileResponseSchema.parse(body).viewId;
+}
+
+/**
+ * Pulls one tile out of a view back onto the canvas it lives on
+ * (`POST /api/pads/:id/tiles/:tileId/extract`). Returns the new element's id.
+ */
+export async function extractPadTile(
+  token: string,
+  padId: string,
+  tileId: string,
+  x: number,
+  y: number,
+): Promise<string> {
+  const request = ExtractPadTileRequestSchema.parse({ x, y });
+  const body = await requestJson(
+    `/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}/extract`,
+    { method: "POST", headers: authHeaders(token, true), body: JSON.stringify(request) },
+  );
+  return ExtractPadTileResponseSchema.parse(body).elementId;
 }
