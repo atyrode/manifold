@@ -92,34 +92,34 @@ and produces negative geometry that the commit path then rejects.
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                        | Auth cap              | Req → Res                                                                                                                                     |
-| ---------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                     |
-| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary                                                         |
-| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                    |
-| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                       |
-| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                |
-| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                   |
-| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                        |
-| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                               |
-| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                     |
-| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                |
-| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                     |
-| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                       |
-| PATCH /api/terminals/:id           | pads:write            | `{ name }` → `{ ok }`; broadcasts `session_event { kind:"renamed" }` into the home                                                            |
-| DELETE /api/terminals/:id          | pads:write            | → `{ ok }` (kill); 409 `conflict` when it has already exited                                                                                  |
-| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                   |
-| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                               |
-| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                           |
-| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                       |
-| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                  |
-| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                      |
-| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                            |
-| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                     |
-| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                  |
-| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash |
-| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                          |
-| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                            |
+| Method+Path                        | Auth cap              | Req → Res                                                                                                                                                       |
+| ---------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                       |
+| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary                                                                           |
+| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                                      |
+| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                                         |
+| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                                  |
+| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                                     |
+| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                                          |
+| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                                 |
+| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                       |
+| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                                  |
+| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                                       |
+| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                                         |
+| PATCH /api/terminals/:id           | pads:write            | `{ name }` → `{ ok }`; broadcasts `session_event { kind:"renamed" }` into the home                                                                              |
+| DELETE /api/terminals/:id          | pads:write            | → `{ ok }` (kill): the session, its home, and every portal onto that home, at once. 404 only when no such terminal exists — an exited one is swept the same way |
+| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                                     |
+| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                                 |
+| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                                             |
+| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                                         |
+| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                                    |
+| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                                        |
+| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                                              |
+| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                                       |
+| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                                    |
+| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash                   |
+| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                                            |
+| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                                              |
 
 `PadTreeItem` is either `{ kind:"pad", pad:{ id, name, createdAt }, parentId:
 string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
@@ -273,11 +273,27 @@ anybody.
   releases that one; naming the item by identity releases all of them. Nothing is destroyed,
   which is the whole difference from the park it replaced: there is no pool to move into
   because there is nowhere else to be.
-- **Reaping.** `DELETE /api/pads/:id/tiles/:tileId` is the one tile gesture that is NOT a
-  placement — nothing accepts "nowhere" as a destination for a LEAF — and removing a
-  terminal's LAST home leaf destroys the terminal: it lives in exactly one composition, there
-  is no pool to fall back into, and the operator who closed its last tile closed the
-  terminal. A note's leaf is its only placement, so its element goes with the leaf.
+- **Reaping, and the ONE lifecycle predicate.** A terminal stops in exactly one of two ways,
+  and the whole difference is INTENT.
+  - **KILLED** — somebody asked for it: `terminal_kill`, `DELETE /api/terminals/:id`, or
+    `DELETE /api/pads/:id/tiles/:tileId` on its last leaf. All three are one write: the PTY,
+    the session row, every leaf its home held for it, and — when the terminal was the last
+    thing its home held — the home itself plus EVERY portal onto that home, on every canvas,
+    whether or not anybody has it open. Nothing lingers, so there is no exited row to find
+    afterwards and no exit code to report, because nothing is left to report it on. The tile
+    door is the one tile gesture that is NOT a placement (nothing accepts "nowhere" as a
+    destination for a LEAF); a note's leaf is its only placement, so its element goes with it.
+  - **EXITED** — the PTY stopped on its own. That is INFORMATION, so nothing at all is
+    deleted: the row keeps its REAL exit code (`null` only when none was observed, e.g. an
+    agent-disconnected exit), its home keeps its leaf, and every portal onto that home keeps
+    rendering it until somebody kills it. Killing an already-exited terminal sweeps it exactly
+    like a running one — dismissing a dead terminal is the same verb, not a second path.
+
+  The predicate is structural, not a stored flag: a killed session is gone before the
+  machine's `exited` frame can arrive, so that frame finds nothing and no third status can
+  propagate. An undeliverable kill (machine offline) still removes everything; the PTY that
+  outlived it is killed by `hello` reconciliation, which finds no row to adopt it against.
+
 - **Emptying and deletion.** A composition that just lost its last occupant retires: it is
   the DEPARTURE, not the emptiness, that retires a container, so a deliberately empty
   composition ("New composition", or one whose tiles were never filled) stays. Deleting a
@@ -510,9 +526,13 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   `session_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
 - Kill authorization: the current **controller**, OR any holder of the wildcard
-  capability (`*`), may send `terminal_kill` for a running session; other principals
-  receive `error { code:"forbidden" }`. An exited session whose home no longer holds a leaf
-  for it is pruned on the next init/resync of that home.
+  capability (`*`), may send `terminal_kill` for a RUNNING session; other principals
+  receive `error { code:"forbidden" }`. An EXITED session has no controller, so there is no
+  lease to win: `terminal:write` on the home is enough to dismiss it, and the dismissal is a
+  kill (see the lifecycle predicate). Unlike input/resize/take, `terminal_kill` is therefore
+  never `conflict` on an exited session. An exited session whose home no longer holds a leaf
+  for it (a client rewrote the layout document directly) is pruned on the next init/resync of
+  that home.
 - **Unplaced terminals.** `SessionInfo.padId` is the composition the terminal lives in —
   never a canvas, never null, so "unbound" is not a state a session can be in. There is no
   pool: what parking used to mean is now `unplaced`, which says that nothing REFERENCES that
@@ -527,13 +547,17 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   where every titlebar and index row picks it up without a refetch). Labels everywhere are
   `name ?? machine name`.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
-{ kind:"exited", exitCode }` on PTY exit. A dead PTY stays listed (status `exited`) with its
-  leaf intact, so the exit code stays readable until somebody dismisses that leaf — and
-  dismissing a terminal's LAST leaf is what retires the terminal and its home.
+{ kind:"exited", exitCode }` on a PTY that stopped ON ITS OWN. Such a terminal stays listed
+  (status `exited`, real code) with its leaf and every portal onto its home intact, so the
+  exit code stays readable until somebody kills it. A KILL broadcasts no `exited` event: the
+  leaf and the portals vanish through the documents instead, which is how viewers learn the
+  terminal is gone rather than dead.
 - `session_event { kind:"parked" }` keeps its pre-cutover name and now means exactly "this
   session left THIS room": it fires in the OLD home when a merge or an extraction re-homes
-  the session, paired with `terminal_opened` carrying the new leaf in the new home. Nothing
-  is parked anywhere — the frame is a departure notice, not a state.
+  the session, paired with `terminal_opened` carrying the new leaf in the new home, and
+  UNPAIRED when a kill reaps the session — it left every room. Clients drop the row from
+  their session listing on it, which is what makes a kill visible at once rather than at the
+  next resync. Nothing is parked anywhere — the frame is a departure notice, not a state.
 - Session ids are opaque. A session's placements are read from live containers (portal
   elements and tile leaves), never from the session row: one session can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements
