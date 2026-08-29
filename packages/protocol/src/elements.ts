@@ -16,15 +16,19 @@ export const MAX_GESTURE_POINT_VALUES = 4_096;
 export const MAX_DOC_UPDATE_BYTES = 524_288;
 export const MAX_SESSION_FRAME_BYTES = 1_048_576;
 
+/**
+ * A canvas holds FURNITURE and REFERENCES, never a composition-homed item directly.
+ * A terminal lives in a composition of its own — solo from birth — and a canvas shows it
+ * through a portal onto that composition. So there is no `terminal` element kind: the
+ * element that used to carry a session id now carries the id of the container the session
+ * lives in, which is the same reference a canvas already used for every other container.
+ */
 export const SceneElementSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    ...baseFields,
-    type: z.literal("terminal"),
-    sessionId: z.string().min(1).max(128),
-  }),
   /**
-   * A container rendered inside a canvas: live at depth <= 2, a navigable card
-   * deeper. Reference cycles are legal because portals navigate, never recurse.
+   * A container rendered inside a canvas: live at depth <= 2, a navigable card deeper.
+   * Reference cycles are legal because portals navigate, never recurse. A portal onto a
+   * SOLO composition IS the item wearing the container's clothes, which is why the
+   * renderer gives it the item's own chrome instead of a widget frame.
    */
   z.strictObject({
     ...baseFields,

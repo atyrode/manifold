@@ -26,8 +26,19 @@ import { TileEdgeSchema, type ContainerLayout } from "./layout.ts";
 export const PLACEMENT_GROUPS = [
   /** May become a tile leaf of a tiled container. */
   "tileable",
-  /** May rest in the workspace terminal pool, bound to no container. */
-  "parkable",
+  /**
+   * May be absorbed into a composition as the item it holds. This is the "compositions
+   * MERGE, never nest" half: a composition that holds exactly one item is that item as
+   * far as placement is concerned, and dropping it into another composition moves the
+   * item across and retires the emptied home.
+   */
+  "mergeable",
+  /**
+   * May be removed from every container that references it without ceasing to exist.
+   * A terminal qualifies because its home composition outlives any placement of it; a
+   * note does not, because until it is claimed its element IS its only existence.
+   */
+  "unplaceable",
   /** Renders live where embedded rather than as a navigable card. */
   "embeddable",
   /** May be a free-floating element of a canvas. */
@@ -40,6 +51,22 @@ export const PLACEMENT_GROUPS = [
 export type PlacementGroup = (typeof PLACEMENT_GROUPS)[number];
 
 /**
+ * How an item acquires the composition it LIVES in — its home — which is a property of
+ * the kind, not of any gesture:
+ *
+ *   `eager`    the server births the home with the item. A terminal has one before its
+ *              first frame of output, so "where does this terminal live" is never a
+ *              question with two answers.
+ *   `on-claim` the item is born inline in whatever document created it (CRDT-instant, no
+ *              round trip) and its home row materialises inside the first placement op
+ *              that needs one — entering it, merging it, naming it.
+ *   `inline`   the item needs no home: it exists in the document or row that holds it.
+ *              Canvas furniture is inline, and so is a container, which IS a home.
+ */
+export const HOMING_MODES = ["eager", "on-claim", "inline"] as const;
+export type HomingMode = (typeof HOMING_MODES)[number];
+
+/**
  * The guards: the only rules that cannot be expressed as group containment. Each
  * declares the denial rule it raises and the SITE that declares it — an `item` guard is
  * listed by item kinds, a `container` guard by container kinds. Nothing else is
@@ -50,6 +77,14 @@ export const PLACEMENT_GUARDS = {
   "no-self-embed": { rule: "self_embed", site: "item" },
   /** A destination form only fits a container of its own discipline. */
   "discipline-match": { rule: "discipline", site: "container" },
+  /**
+   * Only a composition holding exactly ONE item merges into another composition. This
+   * is the surviving half of "compositions merge, never nest": a solo composition is
+   * absorbed as the item it holds — and by the time resolution runs it has already been
+   * classified AS that item — so a composition still reaching a tile destination is one
+   * that holds several items or none, and nothing absorbs it.
+   */
+  "solo-only": { rule: "not_solo", site: "item" },
 } as const;
 export type PlacementGuard = keyof typeof PLACEMENT_GUARDS;
 
@@ -64,46 +99,75 @@ export type ContainerGuard = GuardsWithSite<"container">;
 interface ItemDeclaration {
   readonly groups: readonly PlacementGroup[];
   readonly guards: readonly ItemGuard[];
+  /** How the item acquires the composition it lives in. */
+  readonly homed: HomingMode;
 }
 
 /**
  * Every placeable item kind. A container is two kinds because its discipline decides what
  * it can be: a canvas tiles and embeds live, a composition only ever appears elsewhere as
- * a portal — the absence of `tileable` IS the no-nesting rule.
+ * a portal — the absence of `tileable` IS the no-nesting rule, and `mergeable` plus the
+ * `solo-only` guard is what replaces it for the one case that is not nesting at all.
  */
 export const ITEM_KINDS = {
-  terminal: { groups: ["tileable", "parkable", "canvas-item"], guards: [] },
-  "canvas-pad": {
-    groups: ["tileable", "embeddable", "canvas-item-as-portal"],
-    guards: ["no-self-embed"],
+  /**
+   * A terminal is server-born, so its home composition is born with it: there is no
+   * moment where a live PTY exists outside a composition, and no pool for one to fall
+   * back into. Landing on a canvas therefore authors a PORTAL onto that home rather
+   * than an element carrying the session — hence `canvas-item-as-portal`.
+   */
+  terminal: {
+    groups: ["tileable", "unplaceable", "canvas-item-as-portal"],
+    guards: [],
+    homed: "eager",
   },
-  view: { groups: ["canvas-item-as-portal"], guards: ["no-self-embed"] },
+  "canvas-pad": {
+    groups: ["tileable", "embeddable", "unplaceable", "canvas-item-as-portal"],
+    guards: ["no-self-embed"],
+    homed: "inline",
+  },
+  view: {
+    groups: ["mergeable", "unplaceable", "canvas-item-as-portal"],
+    guards: ["no-self-embed", "solo-only"],
+    homed: "inline",
+  },
   /**
    * A note tiles: a composition owns the note's element in its own document, which is
    * what makes `TileSurface`'s `text` form an element id rather than a cross-document
    * reference. Ink stays canvas-only — a stroke is positioned in canvas coordinates,
    * and a tile has none to give it.
    */
-  text: { groups: ["tileable", "canvas-item"], guards: [] },
-  draw: { groups: ["canvas-item"], guards: [] },
+  text: { groups: ["tileable", "canvas-item"], guards: [], homed: "on-claim" },
+  draw: { groups: ["canvas-item"], guards: [], homed: "inline" },
   /** A leaf of a tiled container, addressed for extraction back onto a canvas. */
-  tile: { groups: ["extractable"], guards: [] },
+  tile: { groups: ["extractable"], guards: [], homed: "inline" },
 } as const satisfies Record<string, ItemDeclaration>;
 export type ItemKind = keyof typeof ITEM_KINDS;
+
+/**
+ * The same kinds as a value tuple, so a schema that must enumerate them is generated from
+ * the declarations rather than restating them — a new kind cannot be added without every
+ * enumeration following it.
+ */
+export const ITEM_KIND_NAMES = Object.keys(ITEM_KINDS) as [ItemKind, ...ItemKind[]];
 
 interface ContainerDeclaration {
   readonly accepts: readonly PlacementGroup[];
   readonly guards: readonly ContainerGuard[];
 }
 
-/** Every destination container kind and the groups it takes. */
+/**
+ * Every destination container kind and the groups it takes. `unplaced` is the absence of
+ * a container: it is listed here because "nowhere" has to be a destination the algebra
+ * can refuse by name, not a request that quietly does nothing.
+ */
 export const CONTAINER_KINDS = {
   canvas: {
     accepts: ["canvas-item", "canvas-item-as-portal", "extractable"],
     guards: ["discipline-match"],
   },
-  view: { accepts: ["tileable"], guards: ["discipline-match"] },
-  pool: { accepts: ["parkable"], guards: [] },
+  view: { accepts: ["tileable", "mergeable"], guards: ["discipline-match"] },
+  unplaced: { accepts: ["unplaceable"], guards: [] },
 } as const satisfies Record<string, ContainerDeclaration>;
 export type ContainerKind = keyof typeof CONTAINER_KINDS;
 
@@ -116,7 +180,7 @@ export const DESTINATION_KINDS = {
   canvas: { container: "canvas", requires: "canvas" },
   tile: { container: "view", requires: "tiled" },
   compose: { container: "view", requires: "canvas" },
-  pool: { container: "pool", requires: null },
+  unplaced: { container: "unplaced", requires: null },
 } as const satisfies Record<string, { container: ContainerKind; requires: ContainerLayout | null }>;
 export type DestinationKind = keyof typeof DESTINATION_KINDS;
 
@@ -128,19 +192,30 @@ export type DestinationKind = keyof typeof DESTINATION_KINDS;
  */
 export const DEFAULT_CANVAS_DROP = { x: 160, y: 120 } as const;
 
-/** The operations a legal placement classifies into; P2's executor dispatches on these. */
+/**
+ * The operations a legal placement classifies into; the executor dispatches on these.
+ *
+ * Two names retired with the solo-composition cutover, and the ops they named did not
+ * survive as separate ideas:
+ *   `bind` -> `portal`. A terminal landing on a canvas no longer authors an element that
+ *     carries its session; it authors a portal onto the composition the session lives in,
+ *     which is byte-for-byte the same op a container already used. One door.
+ *   `park` -> `unplace`. There is no pool to park into. Releasing a terminal removes the
+ *     references to it and leaves it where it lives, so the op names the removal.
+ */
 export const PLACEMENT_OPS = [
-  /** Author a canvas terminal element for a session that lands here. */
-  "bind",
-  /** Author a portal element onto a container that lands on a canvas. */
+  /**
+   * Author a portal element onto a container that lands on a canvas — including the home
+   * composition of a terminal, which is how a terminal appears on a canvas at all.
+   */
   "portal",
-  /** Pull a tile out of its container and author a plain element for its occupant. */
+  /** Pull a tile out of its container and author a canvas element for its occupant. */
   "extract",
-  /** Release the item's last placement; a session joins the workspace pool. */
-  "park",
-  /** Write a tile leaf into a tiled container. */
+  /** Remove every reference to the item; the item itself stays where it lives. */
+  "unplace",
+  /** Write a tile leaf into a tiled container, absorbing a solo composition if that is what landed. */
   "add_tile",
-  /** Birth a view around a canvas element and tile both surfaces inside it. */
+  /** Merge a canvas reference with the surface dropped on it into one new composition. */
   "compose",
   /** Move a plain canvas item (text, ink) from its canvas to the destination canvas. */
   "move_element",
@@ -149,7 +224,7 @@ export type PlacementOp = (typeof PLACEMENT_OPS)[number];
 
 /** What landing on a canvas MEANS per item kind; a canvas is the one polymorphic door. */
 export const CANVAS_OPS = {
-  terminal: "bind",
+  terminal: "portal",
   "canvas-pad": "portal",
   view: "portal",
   text: "move_element",
@@ -161,7 +236,7 @@ export const CANVAS_OPS = {
 export const DESTINATION_OPS = {
   tile: "add_tile",
   compose: "compose",
-  pool: "park",
+  unplaced: "unplace",
 } as const satisfies Record<Exclude<DestinationKind, "canvas">, PlacementOp>;
 
 /**
@@ -175,6 +250,7 @@ export const PLACEMENT_DENIAL_RULES = [
   "unknown_container",
   PLACEMENT_GUARDS["no-self-embed"].rule,
   PLACEMENT_GUARDS["discipline-match"].rule,
+  PLACEMENT_GUARDS["solo-only"].rule,
 ] as const;
 export type PlacementDenialRule = (typeof PLACEMENT_DENIAL_RULES)[number];
 
@@ -235,11 +311,13 @@ export const PlacementDestinationSchema = z.discriminatedUnion("kind", [
     targetElementId: z.string().min(1),
     edge: TileEdgeSchema,
   }),
-  z.strictObject({
-    kind: z.literal("pool"),
-    /** Pool position; omitted appends. */
-    index: z.number().int().nonnegative().optional(),
-  }),
+  /**
+   * Nowhere. The item keeps existing — a terminal in its home composition, a container in
+   * the index — and every reference to it goes. There is no position field because there
+   * is no order to hold a position in: what used to be a pool with a durable sort order is
+   * now the top level of the one index, and top level is where the unreferenced already are.
+   */
+  z.strictObject({ kind: z.literal("unplaced") }),
 ]);
 export type PlacementDestination = z.infer<typeof PlacementDestinationSchema>;
 
@@ -263,7 +341,7 @@ export type PlaceRequest = z.infer<typeof PlaceRequestSchema>;
 export const PlacementContainerSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("canvas"), padId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("view"), padId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("pool") }),
+  z.strictObject({ kind: z.literal("unplaced") }),
 ]);
 export type PlacementContainer = z.infer<typeof PlacementContainerSchema>;
 
@@ -290,19 +368,26 @@ export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
 /**
  * What an executed placement RETURNS, tagged by the op that ran. Each op yields exactly
  * the id its caller needs to keep rendering: the placement it authored (`elementId` /
- * `tileId`), the container a composition was born into (`viewId`), or nothing at all for
- * a release. `POST /api/place` serves this shape verbatim.
+ * `tileId`), the container a composition was born into (`viewId`), or the number of
+ * references a release removed. `POST /api/place` serves this shape verbatim.
  */
 export const PlaceResponseSchema = z.discriminatedUnion("op", [
-  z.strictObject({ op: z.literal("bind"), elementId: z.string().min(1) }),
   z.strictObject({ op: z.literal("portal"), elementId: z.string().min(1) }),
   z.strictObject({ op: z.literal("extract"), elementId: z.string().min(1) }),
   z.strictObject({ op: z.literal("move_element"), elementId: z.string().min(1) }),
-  z.strictObject({ op: z.literal("park") }),
+  z.strictObject({
+    op: z.literal("unplace"),
+    /**
+     * References removed. Zero is a legal, meaningful answer — the item was already
+     * unplaced — and it is the difference between "nothing happened because it was
+     * already so" and the silent no-op the algebra refuses to have.
+     */
+    removed: z.number().int().nonnegative(),
+  }),
   z.strictObject({ op: z.literal("add_tile"), tileId: z.string().min(1) }),
   z.strictObject({
     op: z.literal("compose"),
-    /** The view the composition lives in: newly born, or the one a portal pointed at. */
+    /** The composition the surfaces now share: newly born, or the one a portal pointed at. */
     viewId: z.string().min(1),
     /** The leaf the placed surface landed in. */
     tileId: z.string().min(1),
@@ -338,26 +423,42 @@ export type PlacementDeniedResponse = z.infer<typeof PlacementDeniedResponseSche
 
 // ------------------------------------------------------------------ resolution
 
-/** An item, classified. `containerId` is set when the item IS a container. */
+/**
+ * An item, classified. `containerId` is the container the item IS, or — for a
+ * composition-homed item — the container it LIVES IN. The two collapse into one field on
+ * purpose: a solo composition and the terminal inside it are the same thing addressed
+ * from two sides, and every op that needs an id needs exactly this one.
+ */
 export interface PlacementItem {
   readonly kind: ItemKind;
   readonly containerId: string | null;
 }
 
 /**
- * The two questions resolution asks of state. Both are answerable without IO — the
- * server reads its pad rows and live room docs, the browser its props and live doc — so
- * the same function drives a drag preview and the write that follows it.
+ * The questions resolution asks of state. All are answerable without IO — the server reads
+ * its pad rows and live room docs, the browser its props and live doc — so the same
+ * function drives a drag preview and the write that follows it.
  */
 export interface PlacementLookup {
   /** A container's discipline; null when no such container exists. */
   padLayout(padId: string): ContainerLayout | null;
   /**
-   * What an existing canvas placement places: a terminal element places a terminal, a
-   * portal places the container it points at (hence `containerId`), text places text.
-   * Null when the element is absent.
+   * What an existing canvas placement places: a portal places the container it points at
+   * (hence `containerId`), text places text. Null when the element is absent.
    */
   elementItem(padId: string, elementId: string): PlacementItem | null;
+  /**
+   * The composition a terminal lives in. Never null for a live session — a terminal is
+   * `homed: "eager"` — so null means no such session, which is a denial, not a state.
+   */
+  terminalHome(sessionId: string): string | null;
+  /**
+   * What a composition holds when it holds exactly ONE item; null when it holds several
+   * or none. This is the whole of "merge, never nest": a solo composition is classified
+   * as its occupant everywhere placement looks at it, so absorbing it is an ordinary
+   * `tileable` placement of that occupant and no op has to know it happened.
+   */
+  soloOccupant(padId: string): PlacementItem | null;
 }
 
 export type PlacementResolution =
@@ -376,13 +477,23 @@ function containerFor(destination: PlacementDestination): PlacementContainer {
     case "tile":
     case "compose":
       return { kind: "view", padId: destination.padId };
-    case "pool":
-      return { kind: "pool" };
+    case "unplaced":
+      return { kind: "unplaced" };
     default: {
       const exhaustive: never = destination;
       return exhaustive;
     }
   }
+}
+
+/**
+ * Looks THROUGH a solo composition to the item it holds. A composition of one is that
+ * item — the renderer says so with element-first chrome, and placement says so here — so
+ * every door gets the same answer without a single caller testing arity.
+ */
+function throughSolo(item: PlacementItem, lookup: PlacementLookup): PlacementItem {
+  if (item.kind !== "view" || item.containerId === null) return item;
+  return lookup.soloOccupant(item.containerId) ?? item;
 }
 
 /**
@@ -395,20 +506,25 @@ export function placementItemFor(
   lookup: PlacementLookup,
 ): PlacementItem | null {
   switch (surface.kind) {
-    case "terminal":
-      return { kind: "terminal", containerId: null };
+    case "terminal": {
+      const home = lookup.terminalHome(surface.sessionId);
+      if (home === null) return null;
+      return { kind: "terminal", containerId: home };
+    }
     case "pad": {
       const layout = lookup.padLayout(surface.padId);
       if (layout === null) return null;
-      return {
-        kind: layout === "canvas" ? "canvas-pad" : "view",
-        containerId: surface.padId,
-      };
+      return throughSolo(
+        { kind: layout === "canvas" ? "canvas-pad" : "view", containerId: surface.padId },
+        lookup,
+      );
     }
     case "tile":
       return { kind: "tile", containerId: null };
-    case "element":
-      return lookup.elementItem(surface.padId, surface.elementId);
+    case "element": {
+      const placed = lookup.elementItem(surface.padId, surface.elementId);
+      return placed === null ? null : throughSolo(placed, lookup);
+    }
     default: {
       const exhaustive: never = surface;
       return exhaustive;
@@ -424,7 +540,7 @@ export function placementItemFor(
  * Check order is fixed so denials are stable and testable: the destination container must
  * exist and match its discipline (`unknown_container`, `discipline`), the surface must
  * resolve to a declared kind (`unknown_surface`), the container must accept one of its
- * groups (`not_accepted`), and finally the item-site guards run (`self_embed`).
+ * groups (`not_accepted`), and finally the item-site guards run (`self_embed`, `not_solo`).
  */
 export function resolvePlacement(
   surface: PlacementSurface,
@@ -441,7 +557,7 @@ export function resolvePlacement(
 
   const containerGuards: readonly PlacementGuard[] = containerDeclaration.guards;
   if (
-    container.kind !== "pool" &&
+    container.kind !== "unplaced" &&
     containerGuards.includes("discipline-match") &&
     declaration.requires !== null
   ) {
@@ -462,10 +578,15 @@ export function resolvePlacement(
   const itemGuards: readonly PlacementGuard[] = itemDeclaration.guards;
   if (
     itemGuards.includes("no-self-embed") &&
-    container.kind !== "pool" &&
+    container.kind !== "unplaced" &&
     item.containerId === container.padId
   ) {
     return deny(PLACEMENT_GUARDS["no-self-embed"].rule);
+  }
+  // Reaching a composition still classified as a composition means `throughSolo` found no
+  // single occupant to absorb: it holds several items, or none. Either way nothing takes it.
+  if (itemGuards.includes("solo-only") && container.kind === "view") {
+    return deny(PLACEMENT_GUARDS["solo-only"].rule);
   }
 
   const op =
@@ -480,6 +601,7 @@ export function resolvePlacement(
 export function placementVocabulary(): Record<string, unknown> {
   return {
     groups: PLACEMENT_GROUPS,
+    homingModes: HOMING_MODES,
     guards: PLACEMENT_GUARDS,
     items: ITEM_KINDS,
     containers: CONTAINER_KINDS,

@@ -4,6 +4,7 @@ import {
   CONTAINER_KINDS,
   DESTINATION_KINDS,
   DESTINATION_OPS,
+  HOMING_MODES,
   ITEM_KINDS,
   PLACEMENT_DENIAL_RULES,
   PLACEMENT_DENIED_CODE,
@@ -17,6 +18,7 @@ import {
   PlacementDestinationSchema,
   PlacementSurfaceSchema,
   buildProtocolJsonSchema,
+  placementItemFor,
   resolvePlacement,
   type ContainerLayout,
   type DestinationKind,
@@ -32,50 +34,70 @@ import {
 } from "@manifold/protocol";
 
 /**
- * One small world, shared by every case: two canvases, one view, and a canvas holding
- * every element shape a drag can grab. The lookup is the whole state interface, so these
- * maps are exactly what the server's store and the browser's doc supply in production.
+ * One small world, shared by every case: two canvases, a SOLO composition holding a
+ * terminal, and two multi-tile compositions — two because "a composition into a different
+ * composition" is a distinct answer from "a composition into itself", and one pad cannot
+ * play both. The lookup is the whole state interface, so these maps are exactly what the
+ * server's store and the browser's doc supply in production.
  */
 const PAD_LAYOUTS: Readonly<Record<string, ContainerLayout>> = {
   "canvas-1": "canvas",
   "canvas-2": "canvas",
-  "view-1": "tiled",
+  "solo-1": "tiled",
+  "multi-1": "tiled",
+  "multi-2": "tiled",
 };
 
+/** Every terminal lives in a composition from birth, so nothing else answers here. */
+const TERMINAL_HOMES: Readonly<Record<string, string>> = { "session-1": "solo-1" };
+
+/** What a composition holds when it holds exactly one item; multi-tile pads are absent. */
+const SOLO_OCCUPANTS: Readonly<Record<string, PlacementItem>> = {
+  "solo-1": { kind: "terminal", containerId: "solo-1" },
+};
+
+/**
+ * The elements of `canvas-1`. There is no terminal element: a canvas references a terminal
+ * through a portal onto the composition it lives in, which is why the terminal's row here
+ * is a portal whose container is `solo-1`.
+ */
 const ELEMENTS: Readonly<Record<string, PlacementItem>> = {
-  "el-term": { kind: "terminal", containerId: null },
   "el-text": { kind: "text", containerId: null },
   "el-draw": { kind: "draw", containerId: null },
-  // A portal places the container it points at, which is why it carries that identity.
+  "el-portal-solo": { kind: "view", containerId: "solo-1" },
+  "el-portal-multi": { kind: "view", containerId: "multi-2" },
   "el-portal-canvas": { kind: "canvas-pad", containerId: "canvas-2" },
-  "el-portal-view": { kind: "view", containerId: "view-1" },
 };
 
 const lookup: PlacementLookup = {
   padLayout: (padId) => PAD_LAYOUTS[padId] ?? null,
   elementItem: (padId, elementId) =>
     PAD_LAYOUTS[padId] === undefined ? null : (ELEMENTS[elementId] ?? null),
+  terminalHome: (sessionId) => TERMINAL_HOMES[sessionId] ?? null,
+  soloOccupant: (padId) => SOLO_OCCUPANTS[padId] ?? null,
 };
 
 /**
  * One surface per declared item kind. `Record<ItemKind, …>` is the point: adding an item
- * kind fails to compile until the matrix can exercise it.
+ * kind fails to compile until the matrix can exercise it. The `view` surface names a
+ * MULTI-tile composition because a solo one is classified as its occupant instead — that
+ * reclassification is what the focused tests below cover.
  */
 const SURFACES: Readonly<Record<ItemKind, PlacementSurface>> = {
   terminal: { kind: "terminal", sessionId: "session-1" },
   "canvas-pad": { kind: "pad", padId: "canvas-2" },
-  view: { kind: "pad", padId: "view-1" },
+  view: { kind: "pad", padId: "multi-2" },
   text: { kind: "element", padId: "canvas-1", elementId: "el-text" },
   draw: { kind: "element", padId: "canvas-1", elementId: "el-draw" },
-  tile: { kind: "tile", containerId: "view-1", tileId: "t1" },
+  tile: { kind: "tile", containerId: "multi-1", tileId: "t1" },
 };
 
 /** One destination per declared form, each aimed at a container the item is not. */
 const DESTINATIONS: Readonly<Record<DestinationKind, PlacementDestination>> = {
   canvas: { kind: "canvas", padId: "canvas-1", x: 40, y: 80 },
-  tile: { kind: "tile", padId: "view-1", targetTileId: null, edge: null },
-  compose: { kind: "compose", padId: "canvas-1", targetElementId: "el-term", edge: "right" },
-  pool: { kind: "pool" },
+  tile: { kind: "tile", padId: "multi-1", targetTileId: null, edge: null },
+  compose: { kind: "compose", padId: "canvas-1", targetElementId: "el-portal-solo", edge: "right" },
+  unplaced: { kind: "unplaced" },
 };
 
 /**
@@ -84,27 +106,32 @@ const DESTINATIONS: Readonly<Record<DestinationKind, PlacementDestination>> = {
  * expected answer, and a new kind or destination cannot compile without one.
  */
 const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>>>> = {
-  terminal: { canvas: "bind", tile: "add_tile", compose: "compose", pool: "park" },
+  // A terminal on a canvas is a PORTAL onto its home, never an element carrying the
+  // session, and releasing it is `unplace` because there is no pool left to park in.
+  terminal: { canvas: "portal", tile: "add_tile", compose: "compose", unplaced: "unplace" },
   "canvas-pad": {
     canvas: "portal",
     tile: "add_tile",
     compose: "compose",
-    pool: "not_accepted",
+    unplaced: "unplace",
   },
-  // Views never nest: `view` simply is not `tileable`, so tile and compose refuse it.
+  // Compositions merge, never nest — and merging is the SOLO case, which never arrives here
+  // as a `view` because it was reclassified as its occupant. So a composition still
+  // reaching a composition holds several items or none, and `not_solo` names that refusal.
   view: {
     canvas: "portal",
-    tile: "not_accepted",
-    compose: "not_accepted",
-    pool: "not_accepted",
+    tile: "not_solo",
+    compose: "not_solo",
+    unplaced: "unplace",
   },
-  // A note tiles as of this wave: a composition owns the element in its own document,
-  // which is why the surface form names an element id and not a cross-container pair.
+  // A note tiles: a composition owns the note's element in its own document, which is why
+  // the surface form names an element id and not a cross-container pair. It is not
+  // unplaceable, because until it is claimed its element IS its only existence.
   text: {
     canvas: "move_element",
     tile: "add_tile",
     compose: "compose",
-    pool: "not_accepted",
+    unplaced: "not_accepted",
   },
   // Ink stays canvas-only: a stroke is positioned in canvas coordinates, and a tile has
   // none to give it.
@@ -112,15 +139,15 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
     canvas: "move_element",
     tile: "not_accepted",
     compose: "not_accepted",
-    pool: "not_accepted",
+    unplaced: "not_accepted",
   },
-  // A tile is addressable for extraction only; moving or parking its occupant addresses
+  // A tile is addressable for extraction only; moving or releasing its occupant addresses
   // the occupant, never the leaf.
   tile: {
     canvas: "extract",
     tile: "not_accepted",
     compose: "not_accepted",
-    pool: "not_accepted",
+    unplaced: "not_accepted",
   },
 };
 
@@ -183,6 +210,87 @@ describe("placement matrix", () => {
   });
 });
 
+describe("solo compositions", () => {
+  test("a pad surface naming a solo composition IS the item inside it", () => {
+    expect(placementItemFor({ kind: "pad", padId: "solo-1" }, lookup)).toEqual({
+      kind: "terminal",
+      containerId: "solo-1",
+    });
+
+    // The consequence: it absorbs into another composition as an ordinary tileable
+    // placement of the terminal, where the composition it arrived as would be refused.
+    const absorbed = resolvePlacement({ kind: "pad", padId: "solo-1" }, DESTINATIONS.tile, lookup);
+    expect(absorbed.ok && absorbed.op).toBe("add_tile");
+    expect(absorbed.ok && absorbed.item.kind).toBe("terminal");
+    expect(absorbed.ok && absorbed.item.containerId).toBe("solo-1");
+  });
+
+  test("a pad surface naming a multi-tile composition stays a composition", () => {
+    expect(placementItemFor({ kind: "pad", padId: "multi-2" }, lookup)).toEqual({
+      kind: "view",
+      containerId: "multi-2",
+    });
+    const refused = resolvePlacement({ kind: "pad", padId: "multi-2" }, DESTINATIONS.tile, lookup);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.denial.rule).toBe(PLACEMENT_GUARDS["solo-only"].rule);
+  });
+
+  test("an element surface portalling onto a solo composition IS the item too", () => {
+    const surface: PlacementSurface = {
+      kind: "element",
+      padId: "canvas-1",
+      elementId: "el-portal-solo",
+    };
+    expect(placementItemFor(surface, lookup)).toEqual({ kind: "terminal", containerId: "solo-1" });
+
+    // One door: a canvas terminal is released and merged through the same classification
+    // a sidebar row uses, so no caller tests the arity of a composition for itself.
+    const released = resolvePlacement(surface, DESTINATIONS.unplaced, lookup);
+    expect(released.ok && released.op).toBe("unplace");
+    const merged = resolvePlacement(surface, DESTINATIONS.tile, lookup);
+    expect(merged.ok && merged.op).toBe("add_tile");
+    expect(merged.ok && merged.item.kind).toBe("terminal");
+  });
+
+  test("an element surface portalling onto a multi-tile composition stays a composition", () => {
+    const surface: PlacementSurface = {
+      kind: "element",
+      padId: "canvas-1",
+      elementId: "el-portal-multi",
+    };
+    expect(placementItemFor(surface, lookup)).toEqual({ kind: "view", containerId: "multi-2" });
+    const refused = resolvePlacement(surface, DESTINATIONS.tile, lookup);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.denial.rule).toBe(PLACEMENT_GUARDS["solo-only"].rule);
+  });
+
+  test("a terminal with no home is unknown, not homeless", () => {
+    const surface: PlacementSurface = { kind: "terminal", sessionId: "ghost" };
+    expect(placementItemFor(surface, lookup)).toBeNull();
+    const result = resolvePlacement(surface, DESTINATIONS.canvas, lookup);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.denial.rule).toBe("unknown_surface");
+  });
+});
+
+describe("placement homing", () => {
+  test("every item kind declares a homing mode drawn from the vocabulary", () => {
+    const modes: readonly string[] = HOMING_MODES;
+    for (const declaration of Object.values(ITEM_KINDS)) {
+      expect(modes).toContain(declaration.homed);
+    }
+  });
+
+  test("the paradigm's three homing modes are pinned by name", () => {
+    // Server-born: its composition exists before its first frame of output.
+    expect(ITEM_KINDS.terminal.homed).toBe("eager");
+    // Born inline in the document that created it; its home materialises on first claim.
+    expect(ITEM_KINDS.text.homed).toBe("on-claim");
+    // Needs no home: a stroke exists in the document that holds it.
+    expect(ITEM_KINDS.draw.homed).toBe("inline");
+  });
+});
+
 describe("placement guards", () => {
   test("no-self-embed refuses a container placed into itself, however it is addressed", () => {
     const cases: readonly {
@@ -194,15 +302,21 @@ describe("placement guards", () => {
         surface: { kind: "pad", padId: "canvas-1" },
         to: { kind: "canvas", padId: "canvas-1", x: 0, y: 0 },
       },
-      // The same pad, composed onto one of its own terminals.
+      // The same pad, composed onto one of its own elements.
       {
         surface: { kind: "pad", padId: "canvas-1" },
-        to: { kind: "compose", padId: "canvas-1", targetElementId: "el-term", edge: "left" },
+        to: { kind: "compose", padId: "canvas-1", targetElementId: "el-portal-solo", edge: "left" },
       },
       // Addressed through a portal element that lives on a different canvas.
       {
         surface: { kind: "element", padId: "canvas-1", elementId: "el-portal-canvas" },
-        to: { kind: "compose", padId: "canvas-2", targetElementId: "el-term", edge: "top" },
+        to: { kind: "compose", padId: "canvas-2", targetElementId: "el-text", edge: "top" },
+      },
+      // Identity is answered before arity: a composition into ITSELF is self-embedding,
+      // not a merge that failed for want of a single occupant.
+      {
+        surface: { kind: "pad", padId: "multi-2" },
+        to: { kind: "tile", padId: "multi-2", targetTileId: null, edge: null },
       },
     ];
     for (const { surface, to } of cases) {
@@ -217,7 +331,7 @@ describe("placement guards", () => {
   test("a container is placeable into a DIFFERENT container of the same kind", () => {
     const result = resolvePlacement(
       { kind: "pad", padId: "canvas-2" },
-      { kind: "compose", padId: "canvas-1", targetElementId: "el-term", edge: "left" },
+      { kind: "compose", padId: "canvas-1", targetElementId: "el-text", edge: "left" },
       lookup,
     );
     expect(result.ok && result.op).toBe("compose");
@@ -225,9 +339,9 @@ describe("placement guards", () => {
 
   test("discipline-match refuses a destination form its container cannot honour", () => {
     const mismatched: readonly PlacementDestination[] = [
-      { kind: "canvas", padId: "view-1", x: 0, y: 0 },
+      { kind: "canvas", padId: "multi-1", x: 0, y: 0 },
       { kind: "tile", padId: "canvas-1", targetTileId: null, edge: null },
-      { kind: "compose", padId: "view-1", targetElementId: "el-term", edge: "left" },
+      { kind: "compose", padId: "multi-1", targetElementId: "t1", edge: "left" },
     ];
     for (const to of mismatched) {
       const result = resolvePlacement({ kind: "terminal", sessionId: "session-1" }, to, lookup);
@@ -237,13 +351,17 @@ describe("placement guards", () => {
     }
   });
 
-  test("the pool has no discipline, so a parkable item always lands there", () => {
+  test("nowhere has no discipline, so an unplaceable item always lands there", () => {
     for (const surface of [
       SURFACES.terminal,
-      { kind: "element", padId: "canvas-1", elementId: "el-term" } satisfies PlacementSurface,
+      {
+        kind: "element",
+        padId: "canvas-1",
+        elementId: "el-portal-solo",
+      } satisfies PlacementSurface,
     ]) {
-      const result = resolvePlacement(surface, { kind: "pool", index: 2 }, lookup);
-      expect(result.ok && result.op).toBe("park");
+      const result = resolvePlacement(surface, { kind: "unplaced" }, lookup);
+      expect(result.ok && result.op).toBe("unplace");
     }
   });
 
@@ -266,7 +384,7 @@ describe("placement guards", () => {
 
     const unknownElement = resolvePlacement(
       { kind: "element", padId: "canvas-1", elementId: "ghost" },
-      DESTINATIONS.pool,
+      DESTINATIONS.unplaced,
       lookup,
     );
     expect(unknownElement.ok).toBe(false);
@@ -275,11 +393,11 @@ describe("placement guards", () => {
 
   test("an element surface is resolved by what it places, not by how it is addressed", () => {
     const asElement = resolvePlacement(
-      { kind: "element", padId: "canvas-1", elementId: "el-portal-view" },
+      { kind: "element", padId: "canvas-1", elementId: "el-portal-multi" },
       DESTINATIONS.tile,
       lookup,
     );
-    const asPad = resolvePlacement({ kind: "pad", padId: "view-1" }, DESTINATIONS.tile, lookup);
+    const asPad = resolvePlacement({ kind: "pad", padId: "multi-2" }, DESTINATIONS.tile, lookup);
     expect(asElement.ok).toBe(false);
     expect(asPad.ok).toBe(false);
     if (!asElement.ok && !asPad.ok) {
@@ -287,7 +405,7 @@ describe("placement guards", () => {
     }
 
     const terminalCopy = resolvePlacement(
-      { kind: "element", padId: "canvas-1", elementId: "el-term" },
+      { kind: "element", padId: "canvas-1", elementId: "el-portal-solo" },
       DESTINATIONS.tile,
       lookup,
     );
@@ -320,10 +438,6 @@ describe("placement wire shapes", () => {
     for (const destination of Object.values(DESTINATIONS)) {
       expect(PlacementDestinationSchema.parse(destination)).toEqual(destination);
     }
-    expect(PlacementDestinationSchema.parse({ kind: "pool", index: 0 })).toEqual({
-      kind: "pool",
-      index: 0,
-    });
     expect(
       PlacementDestinationSchema.safeParse({ kind: "canvas", padId: "p1", x: Infinity, y: 0 })
         .success,
@@ -344,7 +458,10 @@ describe("placement wire shapes", () => {
         edge: "middle",
       }).success,
     ).toBe(false);
-    expect(PlacementDestinationSchema.safeParse({ kind: "pool", index: -1 }).success).toBe(false);
+    // Nowhere carries no fields: there is no order left for a position to index into.
+    expect(PlacementDestinationSchema.safeParse({ kind: "unplaced", index: 0 }).success).toBe(
+      false,
+    );
   });
 
   test("the place envelope carries exactly a surface and a destination", () => {
@@ -356,11 +473,10 @@ describe("placement wire shapes", () => {
 
   test("every declared op has exactly one response form", () => {
     const responses: readonly PlaceResponse[] = [
-      { op: "bind", elementId: "e1" },
-      { op: "portal", elementId: "e2" },
-      { op: "extract", elementId: "e3" },
-      { op: "move_element", elementId: "e4" },
-      { op: "park" },
+      { op: "portal", elementId: "e1" },
+      { op: "extract", elementId: "e2" },
+      { op: "move_element", elementId: "e3" },
+      { op: "unplace", removed: 2 },
       { op: "add_tile", tileId: "t1" },
       { op: "compose", viewId: "v1", tileId: "t2" },
     ];
@@ -369,19 +485,26 @@ describe("placement wire shapes", () => {
     }
     // Exhaustive against the declarations: a new op with no response form fails here.
     expect(responses.map((response) => response.op).sort()).toEqual([...PLACEMENT_OPS].sort());
-    expect(PlaceResponseSchema.safeParse({ op: "park", elementId: "e1" }).success).toBe(false);
-    expect(PlaceResponseSchema.safeParse({ op: "bind" }).success).toBe(false);
+    // Zero references removed is a legal answer — "it was already unplaced" — which is why
+    // the count is required rather than omitted when nothing moved.
+    expect(PlaceResponseSchema.parse({ op: "unplace", removed: 0 })).toEqual({
+      op: "unplace",
+      removed: 0,
+    });
+    expect(PlaceResponseSchema.safeParse({ op: "unplace" }).success).toBe(false);
+    expect(PlaceResponseSchema.safeParse({ op: "unplace", elementId: "e1" }).success).toBe(false);
+    expect(PlaceResponseSchema.safeParse({ op: "portal" }).success).toBe(false);
   });
 
   test("a denied placement carries its code and the denial itself", () => {
     const body: PlacementDeniedResponse = {
       error: {
         code: PLACEMENT_DENIED_CODE,
-        message: "views never nest",
+        message: "compositions merge, never nest",
         denial: {
-          rule: "not_accepted" satisfies PlacementDenialRule,
+          rule: "not_solo" satisfies PlacementDenialRule,
           surface: SURFACES.view,
-          container: { kind: "view" as const, padId: "view-1" },
+          container: { kind: "view" as const, padId: "multi-1" },
         },
       },
     };
@@ -403,7 +526,7 @@ describe("placement wire shapes", () => {
       const denial = {
         rule,
         surface: SURFACES.terminal,
-        container: { kind: "view" as const, padId: "view-1" },
+        container: { kind: "view" as const, padId: "multi-1" },
       };
       expect(PlacementDenialSchema.parse(denial)).toEqual(denial);
     }
@@ -411,14 +534,14 @@ describe("placement wire shapes", () => {
       PlacementDenialSchema.safeParse({
         rule: "because_i_said_so",
         surface: SURFACES.terminal,
-        container: { kind: "pool" },
+        container: { kind: "unplaced" },
       }).success,
     ).toBe(false);
     expect(
       PlacementDenialSchema.safeParse({
         rule: "not_accepted" satisfies PlacementDenialRule,
         surface: SURFACES.terminal,
-        container: { kind: "pool" },
+        container: { kind: "unplaced" },
       }).success,
     ).toBe(true);
   });
@@ -432,6 +555,7 @@ describe("placement introspection", () => {
     expect(Object.keys(published).sort()).toEqual(
       [
         "groups",
+        "homingModes",
         "guards",
         "items",
         "containers",
@@ -448,9 +572,26 @@ describe("placement introspection", () => {
     expect(Object.keys(published["items"] as object)).toEqual(itemKinds);
     expect(Object.keys(published["containers"] as object)).toEqual(Object.keys(CONTAINER_KINDS));
     expect(published["groups"]).toEqual(PLACEMENT_GROUPS);
+    // Homing belongs to the published algebra: where a kind LIVES decides whether placing
+    // it moves something or births its home.
+    expect(published["homingModes"]).toEqual(HOMING_MODES);
     expect(published["denialRules"]).toEqual(PLACEMENT_DENIAL_RULES);
     // The generated payload is the source: a mod reads legality without reading prose.
     expect(JSON.stringify(published["items"])).toContain("tileable");
+    expect(JSON.stringify(published["items"])).toContain("eager");
+  });
+
+  test("the denial rules are one per guard plus identity and containment", () => {
+    const guardRules = Object.values(PLACEMENT_GUARDS).map((guard) => guard.rule);
+    // Two guards sharing a rule would make a rendered refusal ambiguous.
+    expect(new Set(guardRules).size).toBe(guardRules.length);
+    const expected: readonly string[] = [
+      ...guardRules,
+      "not_accepted",
+      "unknown_surface",
+      "unknown_container",
+    ];
+    expect([...denialRules].sort()).toEqual([...expected].sort());
   });
 
   test("the declarations are internally closed", () => {

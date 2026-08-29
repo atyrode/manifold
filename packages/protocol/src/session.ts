@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { MAX_GESTURE_POINT_VALUES } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
-import { PresencePayloadSchema, PresenceStateSchema } from "./presence.ts";
+import {
+  CarrySchema,
+  GestureKindSchema,
+  PresencePayloadSchema,
+  PresenceStateSchema,
+} from "./presence.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /**
@@ -60,14 +65,20 @@ export const CHANNEL_LIMIT_CLOSE_CODE = 4429;
 
 /**
  * A live PTY session as the wire describes it. Placement is deliberately ABSENT: a
- * session can hold several placements at once (canvas mirrors, tile leaves), so any
- * single `elementId` here would be a lie. Consumers read placement from live state —
- * the scene doc's elements and the container's layout tree.
+ * session can be referenced from several places at once (portals on many canvases), so any
+ * single `elementId` here would be a lie. Consumers read placement from live state — the
+ * scene doc's elements and the container's layout tree.
  */
 export const SessionInfoSchema = z.strictObject({
   id: z.string().min(1),
-  /** Null while the session is parked in the workspace terminal pool (no pad binding). */
-  padId: z.string().min(1).nullable(),
+  /**
+   * The composition this session LIVES IN — never a canvas, and never null. A terminal is
+   * `homed: "eager"`: its composition is born with it and outlives every reference to it,
+   * so "unbound" is not a state a session can be in. It is also the room this session's
+   * frames travel through, which is why a canvas showing the terminal through a portal
+   * joins that room rather than streaming the terminal over its own.
+   */
+  padId: z.string().min(1),
   /** Operator-assigned display name; null means the client renders its default label. */
   name: z.string().min(1).max(120).nullable(),
   machineId: z.string().min(1),
@@ -98,7 +109,7 @@ const terminalGeometry = {
   rows: z.number().int().positive().max(1000),
 };
 export const GestureFields = {
-  kind: z.enum(["move", "resize", "draw"]),
+  kind: GestureKindSchema,
   phase: z.enum(["active", "end"]),
   elementId: z.string().min(1).max(128),
   x: z.number().finite(),
@@ -106,6 +117,12 @@ export const GestureFields = {
   width: z.number().finite().positive().optional(),
   height: z.number().finite().positive().optional(),
   points: z.array(z.number().finite()).max(MAX_GESTURE_POINT_VALUES).optional(),
+  /**
+   * Set on `carry` frames only: the item in flight, so a viewer can render what is
+   * being moved without resolving ids it may have no room for. Geometry above then
+   * says WHERE that item's representation currently is.
+   */
+  carry: CarrySchema.optional(),
 };
 export const GestureSchema = z.strictObject(GestureFields);
 export type Gesture = z.infer<typeof GestureSchema>;

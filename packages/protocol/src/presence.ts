@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PlacementSurfaceSchema } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /**
@@ -47,6 +48,32 @@ export const PresenceStateSchema = z.strictObject({
   payload: PresencePayloadSchema,
 });
 export type PresenceState = z.infer<typeof PresenceStateSchema>;
+
+/**
+ * What a pointer is HOLDING right now. Motion is the dynamic half of the placement
+ * algebra: grabbing anything by its chrome is one `carry`, whatever the item and
+ * whatever the renderer, so the surface that will be placed on release is the surface
+ * that travels while the gesture is live. Collaborators paint it from this alone.
+ *
+ * The label is the item's display name at grab time. It rides along because the viewer
+ * frequently cannot derive it: a terminal carried in from the pool, or a tile carried
+ * off a widget, belongs to a room the viewer has not joined.
+ */
+export const CarrySchema = z.strictObject({
+  surface: PlacementSurfaceSchema,
+  label: z.string().min(1).max(120).optional(),
+});
+export type Carry = z.infer<typeof CarrySchema>;
+
+/**
+ * The gesture family. `move`, `resize` and `draw` say how one placed object's own
+ * geometry is changing; `carry` says an item is in flight between placements and names
+ * it — the geometry fields then describe where its representation currently renders,
+ * which for an object still in its source container is that object's live box.
+ */
+export const GESTURE_KINDS = ["move", "resize", "draw", "carry"] as const;
+export const GestureKindSchema = z.enum(GESTURE_KINDS);
+export type GestureKind = z.infer<typeof GestureKindSchema>;
 
 /** Client-side cursor send throttle; server may additionally drop under backpressure. */
 export const CURSOR_MIN_INTERVAL_MS = 16;

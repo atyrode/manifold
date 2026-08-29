@@ -6,14 +6,13 @@ import {
   CreatePadRequestSchema,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
-  MoveTerminalPoolRequestSchema,
   PROTOCOL_VERSION,
   PadSchema,
   ROOT_TILE_ID,
   RenameTerminalRequestSchema,
   ServerMessageSchema,
   SceneElementSchema,
-  TerminalPoolResponseSchema,
+  TerminalsResponseSchema,
   TileLayoutSchema,
   TileNodeSchema,
   TileSurfaceSchema,
@@ -24,10 +23,14 @@ import {
   type TileSurface,
 } from "@manifold/protocol";
 
+/**
+ * The canvas reference every fixture below reuses. A canvas never holds a session: it
+ * holds a portal onto the composition the session lives in.
+ */
 const element = (id: string) => ({
   id,
-  type: "terminal" as const,
-  sessionId: `session-${id}`,
+  type: "portal" as const,
+  containerId: `solo-${id}`,
   x: 0,
   y: 0,
   width: 720,
@@ -275,8 +278,8 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("scene records validate terminal, collaborative text, and freedraw variants", () => {
-    expect(SceneElementSchema.parse(element("terminal-1"))).toEqual(element("terminal-1"));
+  test("scene records validate portal, collaborative text, and freedraw variants", () => {
+    expect(SceneElementSchema.parse(element("portal-1"))).toEqual(element("portal-1"));
     expect(
       SceneElementSchema.safeParse({
         id: "text-1",
@@ -325,10 +328,28 @@ describe("session channel schemas", () => {
       zIndex: 3,
     };
     expect(SceneElementSchema.parse(portal)).toEqual(portal);
-    // A portal is not a terminal: the discriminant owns the payload shape.
+    // The discriminant owns the payload shape: a portal carries a container, never a session.
     expect(SceneElementSchema.safeParse({ ...portal, containerId: "" }).success).toBe(false);
     expect(SceneElementSchema.safeParse({ ...portal, sessionId: "s1" }).success).toBe(false);
-    expect(SceneElementSchema.safeParse({ ...element("portal-2"), type: "portal" }).success).toBe(
+  });
+
+  test("the retired terminal element kind is refused on the wire", () => {
+    // A canvas never holds a session. The element that used to carry one now carries the
+    // id of the composition the session lives in, so the old kind has to fail to PARSE —
+    // a doc still emitting it is a bug in the writer, not a variant to tolerate.
+    const terminalElement = {
+      id: "terminal-1",
+      type: "terminal",
+      sessionId: "session-1",
+      x: 0,
+      y: 0,
+      width: 720,
+      height: 480,
+      zIndex: 0,
+    };
+    expect(SceneElementSchema.safeParse(terminalElement).success).toBe(false);
+    // Nor does dropping the session id rescue it: `terminal` is not a discriminant value.
+    expect(SceneElementSchema.safeParse({ ...terminalElement, sessionId: undefined }).success).toBe(
       false,
     );
   });
@@ -377,7 +398,7 @@ describe("http schemas", () => {
     expect(MintTokenRequestSchema.safeParse({ caps: ["scene:write"] }).success).toBe(false);
   });
 
-  test("terminal pool shapes round-trip", () => {
+  test("the terminal index round-trips a row that names where the terminal lives", () => {
     const entry = {
       id: "s1",
       machineId: "m1",
@@ -385,54 +406,70 @@ describe("http schemas", () => {
       createdAt: 1,
       status: "running" as const,
       exitCode: null,
-      sortOrder: 0,
+      homeId: "solo-1",
+      unplaced: true,
     };
-    expect(TerminalPoolResponseSchema.parse({ terminals: [entry] }).terminals[0]).toEqual(entry);
+    expect(TerminalsResponseSchema.parse({ terminals: [entry] }).terminals[0]).toEqual(entry);
     expect(
-      TerminalPoolResponseSchema.parse({ terminals: [{ ...entry, name: "build", sortOrder: 3 }] })
-        .terminals[0],
-    ).toEqual({ ...entry, name: "build", sortOrder: 3 });
+      TerminalsResponseSchema.parse({
+        terminals: [{ ...entry, name: "build", unplaced: false }],
+      }).terminals[0],
+    ).toEqual({ ...entry, name: "build", unplaced: false });
+  });
+
+  test("a terminal row without a home, or without a placement answer, is not a terminal", () => {
+    const entry = {
+      id: "s1",
+      machineId: "m1",
+      name: null,
+      createdAt: 1,
+      status: "running" as const,
+      exitCode: null,
+      homeId: "solo-1",
+      unplaced: true,
+    };
+    // Every terminal lives in a composition, so a row that cannot say which one is not a
+    // row with a missing field — it describes something the model has no place for.
+    const homeless: Record<string, unknown> = { ...entry };
+    delete homeless["homeId"];
+    expect(TerminalsResponseSchema.safeParse({ terminals: [homeless] }).success).toBe(false);
     expect(
-      TerminalPoolResponseSchema.safeParse({ terminals: [{ ...entry, sortOrder: 1.5 }] }).success,
+      TerminalsResponseSchema.safeParse({ terminals: [{ ...entry, homeId: "" }] }).success,
+    ).toBe(false);
+    // `unplaced` is derived, never stored, and the endpoint lists EVERY terminal — so the
+    // flag is what tells top-level rows from placed ones and cannot be left out.
+    const unanswered: Record<string, unknown> = { ...entry };
+    delete unanswered["unplaced"];
+    expect(TerminalsResponseSchema.safeParse({ terminals: [unanswered] }).success).toBe(false);
+    // The pool's durable ordering retired with the pool: index order is the pad tree's.
+    expect(
+      TerminalsResponseSchema.safeParse({ terminals: [{ ...entry, sortOrder: 0 }] }).success,
     ).toBe(false);
   });
 
-  test("terminal rename and pool move shapes round-trip", () => {
+  test("terminal rename shapes round-trip", () => {
     expect(RenameTerminalRequestSchema.parse({ name: "build" })).toEqual({ name: "build" });
     expect(RenameTerminalRequestSchema.safeParse({ name: "" }).success).toBe(false);
     expect(RenameTerminalRequestSchema.safeParse({ name: "x".repeat(121) }).success).toBe(false);
     expect(RenameTerminalRequestSchema.safeParse({}).success).toBe(false);
-    expect(MoveTerminalPoolRequestSchema.parse({ sessionId: "s1", index: 0 })).toEqual({
-      sessionId: "s1",
-      index: 0,
-    });
-    expect(MoveTerminalPoolRequestSchema.safeParse({ sessionId: "s1", index: -1 }).success).toBe(
-      false,
-    );
-    expect(MoveTerminalPoolRequestSchema.safeParse({ sessionId: "s1", index: 1.5 }).success).toBe(
-      false,
-    );
-    expect(MoveTerminalPoolRequestSchema.safeParse({ index: 0 }).success).toBe(false);
   });
 
-  test("pads carry a container discipline and a bubble flag", () => {
+  test("pads carry a container discipline and nothing about bubbles", () => {
     const pad = {
       id: "p1",
       name: "Pad",
       createdAt: 5,
       layout: "canvas" as const,
-      transient: false,
     };
     expect(PadSchema.parse(pad)).toEqual(pad);
-    expect(PadSchema.parse({ ...pad, layout: "tiled", transient: true })).toEqual({
-      ...pad,
-      layout: "tiled",
-      transient: true,
-    });
-    // Both fields are required on the wire: a pad without a discipline is unrenderable.
+    expect(PadSchema.parse({ ...pad, layout: "tiled" })).toEqual({ ...pad, layout: "tiled" });
+    // The discipline is required on the wire: a pad without one is unrenderable.
     expect(PadSchema.safeParse({ id: "p1", name: "Pad", createdAt: 5 }).success).toBe(false);
     expect(PadSchema.safeParse({ ...pad, layout: "grid" }).success).toBe(false);
-    expect(PadSchema.safeParse({ ...pad, transient: 0 }).success).toBe(false);
+    // Transience is gone with the bubbles: every composition is durable, so a row still
+    // carrying the flag is stale state and must fail to parse rather than be ignored.
+    expect(PadSchema.safeParse({ ...pad, transient: false }).success).toBe(false);
+    expect(PadSchema.safeParse({ ...pad, transient: true }).success).toBe(false);
   });
 
   test("pad creation takes an optional discipline and never a bubble flag", () => {

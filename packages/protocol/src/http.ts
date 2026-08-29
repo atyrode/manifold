@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { ContainerLayoutSchema } from "./layout.ts";
+import { ITEM_KIND_NAMES } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /** REST surface schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
@@ -9,10 +10,8 @@ export const PadSchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1).max(120),
   createdAt: z.number().int().nonnegative(),
-  /** Container discipline: a free canvas of elements, or a tiled view of surfaces. */
+  /** Container discipline: a free canvas of elements, or a tiled composition of surfaces. */
   layout: ContainerLayoutSchema,
-  /** A bubble: unsplit, unpinned, and dissolved when its last occupant leaves. */
-  transient: z.boolean(),
 });
 export type Pad = z.infer<typeof PadSchema>;
 
@@ -26,7 +25,7 @@ export type HttpError = z.infer<typeof HttpErrorSchema>;
 
 export const CreatePadRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
-  /** Omitted means `"canvas"`; explicit creations are never transient. */
+  /** Omitted means `"canvas"`. */
   layout: ContainerLayoutSchema.optional(),
 });
 export const RenamePadRequestSchema = z.strictObject({
@@ -136,52 +135,89 @@ export const PadSessionsResponseSchema = z.strictObject({
   sessions: z.array(PadSessionSummarySchema),
 });
 
-/** A parked terminal in the workspace pool: a live session with no pad binding. */
-export const TerminalPoolEntrySchema = z.strictObject({
+/**
+ * A terminal, indexed. Every terminal lives in a composition — `homeId` — so there is no
+ * "pooled" variant of this row and no pool position to carry: what used to be a workspace
+ * pool with its own durable ordering is now the top level of the one index, and `unplaced`
+ * says whether this terminal belongs there. `unplaced` is DERIVED (no container references
+ * its home), never stored, which is why parking and unparking leave no state behind.
+ */
+export const TerminalSummarySchema = z.strictObject({
   id: z.string().min(1),
   machineId: z.string().min(1),
   name: z.string().min(1).max(120).nullable(),
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
-  /** Durable pool position; contiguous 0..n-1 in the response order. */
-  sortOrder: z.number().int(),
+  /** The composition this terminal lives in: solo from birth, shared once merged. */
+  homeId: z.string().min(1),
+  /** True while nothing references `homeId`: the terminal sits at the index's top level. */
+  unplaced: z.boolean(),
 });
-export type TerminalPoolEntry = z.infer<typeof TerminalPoolEntrySchema>;
-export const TerminalPoolResponseSchema = z.strictObject({
-  terminals: z.array(TerminalPoolEntrySchema),
+export type TerminalSummary = z.infer<typeof TerminalSummarySchema>;
+export const TerminalsResponseSchema = z.strictObject({
+  terminals: z.array(TerminalSummarySchema),
 });
-export type TerminalPoolResponse = z.infer<typeof TerminalPoolResponseSchema>;
+export type TerminalsResponse = z.infer<typeof TerminalsResponseSchema>;
 
-/** Rename: set a terminal's display name (works for bound and parked sessions). */
+/** Rename: set a terminal's display name. */
 export const RenameTerminalRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
 export type RenameTerminalRequest = z.infer<typeof RenameTerminalRequestSchema>;
 
-/** Move: reorder a parked terminal within the workspace pool. */
-export const MoveTerminalPoolRequestSchema = z.strictObject({
-  sessionId: z.string().min(1),
-  index: z.number().int().nonnegative(),
-});
-export type MoveTerminalPoolRequest = z.infer<typeof MoveTerminalPoolRequestSchema>;
-
 /**
- * Expand: transmute a terminal into a tiled view born around it. The response is the
- * new container's id — the client navigates into it, and its canvas element becomes a
- * portal onto the same container.
+ * One item a container holds, classified with the placement algebra's own vocabulary so a
+ * census answer and a placement resolution can never disagree about what something is.
+ * `containerId` is set when the item IS a container; `sessionId` when it is a terminal.
  */
-export const ExpandTerminalResponseSchema = z.strictObject({
-  viewId: z.string().min(1),
+export const CensusItemSchema = z.strictObject({
+  kind: z.enum(ITEM_KIND_NAMES),
+  containerId: z.string().min(1).nullable(),
+  sessionId: z.string().min(1).nullable(),
 });
-export type ExpandTerminalResponse = z.infer<typeof ExpandTerminalResponseSchema>;
+export type CensusItem = z.infer<typeof CensusItemSchema>;
 
 /**
- * Everything that used to be a verb here — bind, park, add-tile, compose, extract — is now
- * `POST /api/place` carrying `PlaceRequest`, whose legality comes from the placement
- * declarations rather than from a schema per gesture. Only leaf REMOVAL kept its own route
- * (`DELETE /api/pads/:id/tiles/:tileId`), because removal is not a placement: nothing
- * accepts "nowhere", so there is no destination to name.
+ * What one container holds and what it points at — the index's whole input.
+ *
+ * `items` are the items it holds DIRECTLY: occupied tile leaves for a composition, elements
+ * for a canvas, in the container's own order. `references` is the forward edge of
+ * containment; inverting it across every container yields the INDEX VISIBILITY RULE
+ * directly — a container no other container references is top-level, and one with parents
+ * renders as a collapsed child under each of them.
+ */
+export const ContainerCensusSchema = z.strictObject({
+  padId: z.string().min(1),
+  layout: ContainerLayoutSchema,
+  items: z.array(CensusItemSchema),
+  references: z.array(z.string().min(1)),
+});
+export type ContainerCensus = z.infer<typeof ContainerCensusSchema>;
+export const ContainersResponseSchema = z.strictObject({
+  containers: z.array(ContainerCensusSchema),
+});
+export type ContainersResponse = z.infer<typeof ContainersResponseSchema>;
+
+/**
+ * The item a container of ONE holds, else null. Exported rather than inlined because this
+ * one line IS the paradigm — a composition holding a single item is that item, for chrome,
+ * for merging and for the index — and three subsystems deciding it separately is exactly
+ * how they would come to disagree.
+ */
+export function censusSolo(census: ContainerCensus): CensusItem | null {
+  return census.items.length === 1 ? (census.items[0] ?? null) : null;
+}
+
+/**
+ * Everything that used to be a verb here — bind, park, add-tile, compose, extract, and
+ * (with the solo-composition cutover) expand and pin — is now `POST /api/place` carrying
+ * `PlaceRequest`, whose legality comes from the placement declarations rather than from a
+ * schema per gesture. Expand had nothing left to do once every terminal already lived in a
+ * composition: entering one is navigation to something that exists. Pin had nothing left to
+ * claim once no container dissolved under anybody. Only leaf REMOVAL kept its own route
+ * (`DELETE /api/pads/:id/tiles/:tileId`), because removal is not a placement: it addresses
+ * the leaf rather than moving its occupant anywhere.
  */
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
