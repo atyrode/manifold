@@ -54,6 +54,16 @@ server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.h
 fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
 storing it.
 
+Canvas resize affordances differ by element on purpose. A terminal is a window: its frame
+border is a grab zone under the select tool, so hovering it shows the OS resize cursor and
+a drag resizes with no selection step, and the controls carry no paint of their own. Text
+and freehand keep the classic contract — no handles until the element is selected, then a
+bounding box — and a stroke's box carries an SVG `viewBox`, so resizing scales the ink
+instead of growing an empty frame around it. React Flow measures painted nodes itself and
+the resizer reads `measured` for its starting size: a re-projection MUST carry that
+measurement across (`carryMeasurements`), or a resize begun in that window starts from zero
+and produces negative geometry that the commit path then rejects.
+
 ## Identity, tokens, capabilities
 
 - `Principal { id, kind: "human" | "agent", name, color }`. Stable; stored in SQLite.
