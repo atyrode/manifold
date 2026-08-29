@@ -227,11 +227,29 @@ height?, points? }` carries ephemeral move, resize, and freehand previews at the
 controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   `session_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
 - Kill authorization: the current **controller**, OR any holder of the wildcard
-  capability (`*`), may send `terminal_kill` for a running session. The wildcard path
-  exists for owner-side pruning of orphaned sessions (element deleted while the PTY is
-  still running — such sessions are listed by the web sessions panel as "unbound");
-  other principals receive `error { code:"forbidden" }`. Exited + unreferenced sessions
-  are garbage-collected server-side on the next init/resync of their pad.
+  capability (`*`), may send `terminal_kill` for a running session; other principals
+  receive `error { code:"forbidden" }`. Exited + unreferenced sessions are
+  garbage-collected server-side on the next init/resync of their pad; exited + parked
+  sessions are pruned when the pool is listed.
+- **Terminal pool (parked terminals).** A session's pad binding is dynamic:
+  `SessionInfo.padId` is nullable, and `null` means the terminal is parked in the
+  workspace pool — no canvas element anywhere, unreachable over `/ws/session` (the
+  per-session pad gate rejects it), listed and mutated only over HTTP:
+  `GET /api/terminals` (pool listing; prunes exited parked rows first),
+  `POST /api/terminals/:id/park { elementId }` (removes that canvas element; unbinds
+  the session only when it was the last element referencing it — otherwise it is copy
+  removal and the session stays bound), `POST /api/terminals/:id/bind { padId, x?, y? }`
+  (rebinds and **server-authors** the terminal element in the destination pad's doc),
+  and `DELETE /api/terminals/:id` (kill). All reject pad-scoped tokens like the
+  pad-tree mutations; reads need `pads:read`, mutations `pads:write`. Park broadcasts
+  `session_event { kind:"parked" }` to the old room (clients drop the session); bind
+  broadcasts `terminal_opened { elementId, session }` to the new room. Park/bind doc
+  mutations transact under `SERVER_PLACE_ORIGIN`, which client undo managers never
+  track — parking is deliberately not undoable. This narrowly amends "the server never
+  mutates the element": it still holds for `terminal_open`, where the opening client
+  writes `sessionId`; park/bind are the two server-authored exceptions. The
+  session-scoped agent token stays scoped to the ORIGINAL pad after a rebind (env is
+  baked at spawn); the PTY data path is machine-channel and unaffected.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on PTY exit; sessions with dead PTYs stay listed (status
   `exited`) until the pad's elements stop referencing them.
