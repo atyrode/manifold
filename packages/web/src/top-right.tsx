@@ -21,15 +21,6 @@ function EyeIcon() {
   );
 }
 
-function RestoreIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 12a9 9 0 1 0 3-7.7L3 7" />
-      <path d="M3 3v4h4" />
-    </svg>
-  );
-}
-
 function PowerIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -131,7 +122,6 @@ export interface WorkspaceSidebarState {
   readonly onCreateTerminal: (machine?: MachineSummary) => void;
   readonly onFocus: (elementId: string) => void;
   readonly onKill: (sessionId: string) => void;
-  readonly onRestore: (sessionId: string) => void;
   readonly onRemoveCopy: (sessionId: string, elementId: string) => void;
   readonly onRemoveAllCopies: (sessionId: string) => void;
   readonly onHighlight: (elementId: string | null) => void;
@@ -141,7 +131,6 @@ interface WorkspaceSessionRowProps {
   readonly row: SessionRow;
   readonly onFocus: (elementId: string) => void;
   readonly onKill: (sessionId: string) => void;
-  readonly onRestore: (sessionId: string) => void;
   readonly onRemoveCopy: (sessionId: string, elementId: string) => void;
   readonly onRemoveAllCopies: (sessionId: string) => void;
   readonly onHighlight: (elementId: string | null) => void;
@@ -151,7 +140,6 @@ export function WorkspaceSessionRow({
   row,
   onFocus,
   onKill,
-  onRestore,
   onRemoveCopy,
   onRemoveAllCopies,
   onHighlight,
@@ -160,9 +148,8 @@ export function WorkspaceSessionRow({
   const boundElementId = row.boundElementIds[0] ?? null;
   const copyCount = row.boundElementIds.length;
   const hasMultipleCopies = copyCount > 1;
-  const locationLabel = row.orphaned
-    ? "Unbound"
-    : row.status === "exited"
+  const locationLabel =
+    row.status === "exited"
       ? `Exited${row.exitCode === null ? "" : ` ${row.exitCode}`}`
       : row.machineOnline === false
         ? "Machine offline"
@@ -172,9 +159,7 @@ export function WorkspaceSessionRow({
 
   return (
     <div className="workspace-session-group">
-      <div
-        className={`workspace-session-row${row.orphaned ? " is-orphaned" : ""}${row.status === "exited" ? " is-exited" : ""}`}
-      >
+      <div className={`workspace-session-row${row.status === "exited" ? " is-exited" : ""}`}>
         <span
           className={`session-state ${row.status === "running" ? "is-running" : ""}`}
           title={row.status}
@@ -211,15 +196,6 @@ export function WorkspaceSessionRow({
               aria-label="Reveal terminal on canvas"
             >
               <EyeIcon />
-            </button>
-          ) : row.status === "running" ? (
-            <button
-              className="workspace-action is-restore"
-              onClick={() => onRestore(row.id)}
-              title="Restore running session to canvas"
-              aria-label="Restore running session to canvas"
-            >
-              <RestoreIcon />
             </button>
           ) : null}
           {hasMultipleCopies && row.status === "exited" ? (

@@ -7,8 +7,6 @@ export interface SessionRow {
   readonly machineOnline: boolean | null;
   readonly status: SessionInfo["status"];
   readonly exitCode: number | null;
-  /** Running but no live (non-deleted) terminal element references it anymore. */
-  readonly orphaned: boolean;
   /** Every live canvas mirror in stable scene order. */
   readonly boundElementIds: readonly string[];
   readonly isController: boolean;
@@ -26,8 +24,9 @@ export interface SessionInventoryInput {
 }
 
 /**
- * Projects wire sessions + canvas bindings into janitor rows. Pure so the
- * orphan-detection policy stays unit-testable outside a renderer.
+ * Projects wire sessions + canvas bindings into janitor rows. Pure so the binding
+ * policy stays unit-testable outside a renderer. A session with no pad binding is
+ * not in this inventory at all: it lives in the workspace terminal pool.
  */
 export function buildSessionRows(input: SessionInventoryInput): readonly SessionRow[] {
   const machineById = new Map(
@@ -46,7 +45,6 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
         machineOnline: machine === undefined ? null : machine.online,
         status: session.status,
         exitCode: session.exitCode,
-        orphaned: session.status === "running" && boundElementIds.length === 0,
         boundElementIds,
         isController,
         canKill:
@@ -59,12 +57,10 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
       // cannot be restarted in place, and has no remaining user action.
       (row) => row.status === "running" || row.boundElementIds.length > 0,
     );
-  const statusRank = (row: SessionRow): number =>
-    row.status === "running" ? (row.orphaned ? 0 : 1) : 2;
+  const statusRank = (row: SessionRow): number => (row.status === "running" ? 0 : 1);
   return rows.sort((left, right) => {
     const byStatus = statusRank(left) - statusRank(right);
     if (byStatus !== 0) return byStatus;
-    if (left.orphaned !== right.orphaned) return left.orphaned ? -1 : 1;
     return left.id.localeCompare(right.id);
   });
 }

@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getMachines } from "./api.ts";
+import { bindTerminal, getMachines, parkTerminal } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
@@ -62,6 +62,7 @@ import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
+import { TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 
 /**
  * React Flow is manifold's pad renderer. Native terminal scene records project directly
@@ -83,6 +84,13 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** Client point where a React Flow node drag ended; React Flow may hand us either event. */
+function dragStopPoint(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
+  if ("clientX" in event) return { x: event.clientX, y: event.clientY };
+  const touch = event.changedTouches[0] ?? event.touches[0];
+  return touch === undefined ? null : { x: touch.clientX, y: touch.clientY };
+}
+
 function gesturePoints(points: readonly number[]): number[] {
   return points
     .slice(-MAX_GESTURE_POINT_VALUES)
@@ -92,6 +100,11 @@ interface FlowPadViewProps {
   readonly padId: string;
   readonly identity: StoredIdentity;
   readonly onWorkspaceChange: (workspace: WorkspaceSidebarState | null) => void;
+  /**
+   * True when a client point lands on the workspace sidebar. Supplied by the sidebar
+   * host so dropping a terminal there parks it instead of committing the drag.
+   */
+  readonly isOverSidebar?: (clientX: number, clientY: number) => boolean;
 }
 
 interface RemoteSelectionRect {
@@ -113,7 +126,12 @@ function gestureIntervalOverride(): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewProps) {
+export function FlowPadView({
+  padId,
+  identity,
+  onWorkspaceChange,
+  isOverSidebar,
+}: FlowPadViewProps) {
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), padId, token: identity.token }),
   );
@@ -347,6 +365,29 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     setNodes((current) => reconcileNodes(canonicalNodes, current));
   }, [canonicalNodes, setNodes]);
 
+  /**
+   * Parking is entirely server-side: the element removal (and the session's unbinding
+   * when this was its last reference) arrives as a normal doc update under a non-local
+   * origin, which is also why park is deliberately not undoable.
+   */
+  const parkElement = useCallback(
+    async (elementId: string): Promise<void> => {
+      const element = client.elements.get(elementId);
+      if (element?.type !== "terminal") return;
+      await parkTerminal(identity.token, element.sessionId, elementId);
+    },
+    [client, identity.token],
+  );
+
+  const onPark = useCallback(
+    (elementId: string): void => {
+      void parkElement(elementId).catch((reason: unknown) => {
+        console.error("evt=terminal_park_failed", reason);
+      });
+    },
+    [parkElement],
+  );
+
   const handleNodeDrag = useCallback(
     (_event: unknown, node: Node): void => {
       if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) return;
@@ -362,7 +403,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
   );
 
   const handleNodeDragStop = useCallback(
-    (_event: unknown, node: Node): void => {
+    (event: MouseEvent | TouchEvent, node: Node): void => {
       const element = client.elements.get(node.id);
       if (
         element === undefined ||
@@ -371,7 +412,14 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       ) {
         return;
       }
-      if (element.x !== node.position.x || element.y !== node.position.y) {
+      // Released over the sidebar: the gesture asked for the pool, not a canvas
+      // position, so the geometry is dropped and the terminal parks instead.
+      const point = dragStopPoint(event);
+      const parked =
+        element.type === "terminal" && point !== null && isOverSidebar?.(point.x, point.y) === true;
+      if (parked) {
+        onPark(node.id);
+      } else if (element.x !== node.position.x || element.y !== node.position.y) {
         client.transact((tx) => {
           tx.patch(node.id, { x: node.position.x, y: node.position.y });
         });
@@ -384,7 +432,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
         y: node.position.y,
       });
     },
-    [client, gestureStream],
+    [client, gestureStream, isOverSidebar, onPark],
   );
 
   const handleResize = useCallback(
@@ -450,22 +498,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     [client, machines],
   );
 
-  const sessionShared = useCallback(
-    (elementId: string, sessionId: string): boolean => {
-      for (const element of client.elements.values()) {
-        if (
-          element.id !== elementId &&
-          element.type === "terminal" &&
-          element.sessionId === sessionId
-        ) {
-          return true;
-        }
-      }
-      return false;
-    },
-    [client],
-  );
-
   const tombstone = useCallback(
     (elementIds: readonly string[]): void => {
       client.transact((tx) => {
@@ -475,19 +507,20 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     [client],
   );
 
+  /**
+   * X is the deliberate destroy — park is the non-destructive exit — so it always
+   * kills the PTY, claiming the controller lease first because a viewer may not hold
+   * it. Only this element is tombstoned; other mirrors of the session render exited.
+   */
   const onClose = useCallback(
     (elementId: string, sessionId: string): void => {
-      tombstone([elementId]);
-      const session = client.sessions.get(sessionId);
-      if (
-        !sessionShared(elementId, sessionId) &&
-        session?.status === "running" &&
-        session.controllerId === client.self?.id
-      ) {
+      if (client.sessions.get(sessionId)?.status === "running") {
+        client.takeTerminal(sessionId);
         client.killTerminal(sessionId);
       }
+      tombstone([elementId]);
     },
-    [client, sessionShared, tombstone],
+    [client, tombstone],
   );
 
   const canvasCenter = useCallback((): { x: number; y: number } => {
@@ -499,15 +532,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       y: bounds.top + bounds.height / 2,
     });
   }, []);
-
-  const placeSession = useCallback(
-    (sessionId: string, elementId: string = crypto.randomUUID()): void => {
-      client.transact((tx) => {
-        tx.create(createTerminalElement(elementId, sessionId, canvasCenter(), tx.nextZIndex()));
-      });
-    },
-    [canvasCenter, client],
-  );
 
   const createTerminal = useCallback(
     async (machine?: MachineSummary): Promise<void> => {
@@ -531,12 +555,14 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
         });
-        placeSession(session.id, elementId);
+        client.transact((tx) => {
+          tx.create(createTerminalElement(elementId, session.id, canvasCenter(), tx.nextZIndex()));
+        });
       } catch (reason: unknown) {
         setError(reason instanceof Error ? reason.message : "Could not open terminal");
       }
     },
-    [client, machines, padId, placeSession],
+    [canvasCenter, client, machines, padId],
   );
 
   const restartTerminal = useCallback(
@@ -652,9 +678,9 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       client,
       machines,
       machineFor,
+      onPark,
       onClose,
       onRestart: restartTerminal,
-      sessionShared,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
       tool,
@@ -672,8 +698,8 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       machineFor,
       machines,
       onClose,
+      onPark,
       restartTerminal,
-      sessionShared,
       tool,
     ],
   );
@@ -687,14 +713,7 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
       rows: sessionRows,
       onCreateTerminal: (machine) => void createTerminal(machine),
       onFocus: focusElement,
-      onKill: (sessionId) => {
-        const row = sessionRows.find((candidate) => candidate.id === sessionId);
-        if (row?.orphaned && !row.isController && !client.selfCaps.includes("*")) {
-          client.takeTerminal(sessionId);
-        }
-        client.killTerminal(sessionId);
-      },
-      onRestore: (sessionId) => placeSession(sessionId),
+      onKill: (sessionId) => client.killTerminal(sessionId),
       onRemoveCopy: (_sessionId, elementId) => tombstone([elementId]),
       onRemoveAllCopies: (sessionId) => {
         const row = sessionRows.find((candidate) => candidate.id === sessionId);
@@ -708,7 +727,6 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
     focusElement,
     machines,
     onWorkspaceChange,
-    placeSession,
     savedAt,
     sceneRevision,
     sessionRows,
@@ -807,9 +825,49 @@ export function FlowPadView({ padId, identity, onWorkspaceChange }: FlowPadViewP
           const selected = flowRef.current?.getNodes().filter((node) => node.selected) ?? [];
           if (selected.length === 0) return;
           event.preventDefault();
-          client.transact((tx) => {
-            for (const node of selected) tx.remove(node.id);
-          });
+          // Terminals park (the shell survives in the pool); everything else is a
+          // plain scene delete, and a mixed selection does both.
+          const terminals: string[] = [];
+          const others: string[] = [];
+          for (const node of selected) {
+            const target = client.elements.get(node.id)?.type === "terminal" ? terminals : others;
+            target.push(node.id);
+          }
+          if (others.length > 0) {
+            client.transact((tx) => {
+              for (const elementId of others) tx.remove(elementId);
+            });
+          }
+          if (terminals.length > 0) {
+            void Promise.allSettled(terminals.map((elementId) => parkElement(elementId))).then(
+              (results) => {
+                for (const result of results) {
+                  if (result.status === "rejected") {
+                    console.error("evt=terminal_park_failed", result.reason);
+                  }
+                }
+              },
+            );
+          }
+        }}
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes(TERMINAL_DRAG_MIME)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.types.includes(TERMINAL_DRAG_MIME)) return;
+          event.preventDefault();
+          const sessionId = event.dataTransfer.getData(TERMINAL_DRAG_MIME);
+          const flow = flowRef.current;
+          if (sessionId === "" || flow === null) return;
+          // The server authors the element and broadcasts it; nothing local to write.
+          const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          void bindTerminal(identity.token, sessionId, padId, position.x, position.y).catch(
+            (reason: unknown) => {
+              console.error("evt=terminal_bind_failed", reason);
+            },
+          );
         }}
         onPointerDownCapture={(event) => {
           if (tool !== "draw" || event.button !== 0 || isTypingTarget(event.target)) return;

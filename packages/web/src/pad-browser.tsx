@@ -7,7 +7,13 @@ import {
   type ItemInstance,
   type TreeInstance,
 } from "@headless-tree/core";
-import type { Pad, PadPresence, PadSessionSummary, PadTreeItem } from "@manifold/protocol";
+import type {
+  Pad,
+  PadPresence,
+  PadSessionSummary,
+  PadTreeItem,
+  TerminalPoolEntry,
+} from "@manifold/protocol";
 import {
   useCallback,
   useEffect,
@@ -15,18 +21,22 @@ import {
   useMemo,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  bindTerminal,
   createPad,
   createPadFolder,
   deletePad,
   deletePadFolder,
   getPadPresence,
   getPadSessions,
+  killPooledTerminal,
   listPadTree,
+  listTerminals,
   movePadTreeItem,
   renamePad,
   renamePadFolder,
@@ -44,6 +54,7 @@ import {
   WorkspaceStatus,
   type WorkspaceSidebarState,
 } from "./top-right.tsx";
+import { TerminalPoolSection, TERMINAL_DRAG_MIME } from "./terminal-pool.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
 
@@ -160,6 +171,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     [treeItems],
   );
   const [padSessions, setPadSessions] = useState<readonly PadSessionSummary[]>([]);
+  const [poolTerminals, setPoolTerminals] = useState<readonly TerminalPoolEntry[]>([]);
+  const [terminalDropPadId, setTerminalDropPadId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -204,6 +217,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const versionButtonRef = useRef<HTMLButtonElement | null>(null);
   const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const [memory] = useState(browserPadStorage);
 
   const scheduleDndPresentation = useCallback((): void => {
@@ -289,6 +303,67 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       window.clearInterval(interval);
     };
   }, [identity.token]);
+
+  const refreshPool = useCallback((): void => {
+    void listTerminals(identity.token)
+      .then((terminals) => setPoolTerminals(terminals))
+      .catch(() => {
+        // The parked pool keeps its last successful snapshot across transient failures.
+      });
+  }, [identity.token]);
+
+  /** Park and bind move sessions in and out of the active pad, so its row count is the pool signal. */
+  const activeSessionCount = workspace?.status === "open" ? workspace.rows.length : null;
+
+  useEffect(() => {
+    refreshPool();
+    const interval = window.setInterval(refreshPool, 2_000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [activeSessionCount, refreshPool]);
+
+  const killPooled = useCallback(
+    (sessionId: string): void => {
+      void killPooledTerminal(identity.token, sessionId)
+        .catch((reason: unknown) => {
+          // A 409 means the session already died; the refetch below settles the row either way.
+          console.error("evt=pool_terminal_kill_failed", reason);
+        })
+        .finally(refreshPool);
+    },
+    [identity.token, refreshPool],
+  );
+
+  const acceptsTerminalDrag = (transfer: DataTransfer): boolean =>
+    transfer.types.includes(TERMINAL_DRAG_MIME);
+
+  /** Pad rows accept pooled terminals only; every other drag falls through to headless-tree. */
+  const terminalDropProps = (padId: string) => ({
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!acceptsTerminalDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setTerminalDropPadId(padId);
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!acceptsTerminalDrag(event.dataTransfer)) return;
+      setTerminalDropPadId((current) => (current === padId ? null : current));
+    },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!acceptsTerminalDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setTerminalDropPadId(null);
+      const sessionId = event.dataTransfer.getData(TERMINAL_DRAG_MIME);
+      if (sessionId === "") return;
+      void bindTerminal(identity.token, sessionId, padId)
+        .catch((reason: unknown) => {
+          console.error("evt=terminal_bind_failed", reason);
+        })
+        .finally(refreshPool);
+    },
+  });
 
   useEffect(() => {
     let active = true;
@@ -708,7 +783,10 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
       );
     } else {
       row = (
-        <div className={`pad-sidebar-row${active ? " is-active" : ""}`}>
+        <div
+          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalDropPadId === pad.id ? " pad-sidebar-row--terminal-target" : ""}`}
+          {...terminalDropProps(pad.id)}
+        >
           <button
             className="pad-sidebar-link"
             type="button"
@@ -817,7 +895,6 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                   row={session}
                   onFocus={activeWorkspace.onFocus}
                   onKill={activeWorkspace.onKill}
-                  onRestore={activeWorkspace.onRestore}
                   onRemoveCopy={activeWorkspace.onRemoveCopy}
                   onRemoveAllCopies={activeWorkspace.onRemoveAllCopies}
                   onHighlight={activeWorkspace.onHighlight}
@@ -1050,7 +1127,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         className={`pad-browser${sidebarOpen ? "" : " is-collapsed"}`}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <aside className="pad-sidebar" aria-label="Pads">
+        <aside className="pad-sidebar" aria-label="Pads" ref={sidebarRef}>
           <header className="pad-sidebar-header">
             <span className="pad-sidebar-brand">
               <span className="pad-sidebar-mark" aria-hidden="true">
@@ -1215,6 +1292,16 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
             <div style={{ display: "none" }} className="pad-tree-drag-line" />
           </div>
 
+          {sidebarOpen ? (
+            <div className="workspace-sidebar workspace-terminal-pool">
+              <TerminalPoolSection
+                terminals={poolTerminals}
+                machines={workspace?.machines ?? []}
+                onKill={killPooled}
+              />
+            </div>
+          ) : null}
+
           {sidebarOpen && workspace !== null ? (
             <WorkspaceStatus
               status={workspace.status}
@@ -1289,6 +1376,16 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 padId={requestedPadId}
                 identity={identity}
                 onWorkspaceChange={setWorkspace}
+                isOverSidebar={(clientX, clientY) => {
+                  const bounds = sidebarRef.current?.getBoundingClientRect();
+                  return (
+                    bounds !== undefined &&
+                    clientX >= bounds.left &&
+                    clientX <= bounds.right &&
+                    clientY >= bounds.top &&
+                    clientY <= bounds.bottom
+                  );
+                }}
               />
             </PadErrorBoundary>
           )}

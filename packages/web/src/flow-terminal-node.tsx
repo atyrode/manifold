@@ -17,9 +17,11 @@ export interface FlowPadContextValue {
   readonly client: SessionClient;
   readonly machines: readonly MachineSummary[] | null;
   readonly machineFor: (sessionId: string) => SessionMachine | null;
+  /** Parks the element's terminal into the workspace pool (server removes the element). */
+  readonly onPark: (elementId: string) => void;
+  /** Kills the PTY and tombstones the element. */
   readonly onClose: (elementId: string, sessionId: string) => void;
   readonly onRestart: (elementId: string, sessionId: string) => Promise<void>;
-  readonly sessionShared: (elementId: string, sessionId: string) => boolean;
   /** Streams live resize geometry and commits its final frame. */
   readonly onResize: (
     elementId: string,
@@ -105,7 +107,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps): React.ReactElement
         sessionId={sessionId}
         elementId={id}
         active={selected === true}
-        sessionShared={pad.sessionShared(id, sessionId)}
+        onPark={() => pad.onPark(id)}
         panelHighlighted={false}
         onClose={() => pad.onClose(id, sessionId)}
         onRestart={() => pad.onRestart(id, sessionId)}

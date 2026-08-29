@@ -11,6 +11,11 @@ import {
   PadSchema,
   RenamePadRequestSchema,
   TokenGrantSchema,
+  BindTerminalRequestSchema,
+  BindTerminalResponseSchema,
+  ParkTerminalRequestSchema,
+  TerminalPoolResponseSchema,
+  type TerminalPoolEntry,
   type MachineSummary,
   type Pad,
   type PadPresence,
@@ -192,6 +197,53 @@ export async function getPadSessions(token: string): Promise<readonly PadSession
     headers: authHeaders(token, false),
   });
   return PadSessionsResponseSchema.parse(body).sessions;
+}
+
+/** Lists parked terminals in the workspace pool (`GET /api/terminals`). */
+export async function listTerminals(token: string): Promise<readonly TerminalPoolEntry[]> {
+  const body = await requestJson("/api/terminals", {
+    headers: authHeaders(token, false),
+  });
+  return TerminalPoolResponseSchema.parse(body).terminals;
+}
+
+/** Parks one canvas element; unbinds the session when it was the last reference. */
+export async function parkTerminal(
+  token: string,
+  sessionId: string,
+  elementId: string,
+): Promise<void> {
+  const request = ParkTerminalRequestSchema.parse({ elementId });
+  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/park`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+}
+
+/** Binds a parked session to a pad; the server authors the canvas element. */
+export async function bindTerminal(
+  token: string,
+  sessionId: string,
+  padId: string,
+  x?: number,
+  y?: number,
+): Promise<string> {
+  const request = BindTerminalRequestSchema.parse({ padId, x, y });
+  const body = await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}/bind`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  return BindTerminalResponseSchema.parse(body).elementId;
+}
+
+/** Kills a pooled terminal's PTY (`DELETE /api/terminals/:id`). */
+export async function killPooledTerminal(token: string, sessionId: string): Promise<void> {
+  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
 }
 
 /** Loads the enrolled machines with live online state (`GET /api/machines`). */

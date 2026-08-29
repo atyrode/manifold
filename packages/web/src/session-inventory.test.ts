@@ -31,12 +31,11 @@ const BASE = {
 };
 
 describe("buildSessionRows", () => {
-  test("bound running session is not orphaned and controller can kill", () => {
+  test("bound running session keeps its binding and the controller can kill", () => {
     const rows = buildSessionRows({ ...BASE, sessions: [session({})] });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       id: "s1",
-      orphaned: false,
       boundElementIds: ["el1"],
       machineName: "tyrode-vps",
       machineOnline: true,
@@ -45,13 +44,12 @@ describe("buildSessionRows", () => {
     });
   });
 
-  test("running session with no live binding is flagged orphaned", () => {
+  test("running session with no live binding reports no bound elements", () => {
     const rows = buildSessionRows({
       ...BASE,
       liveBindings: new Map(),
       sessions: [session({})],
     });
-    expect(rows[0]?.orphaned).toBe(true);
     expect(rows[0]?.boundElementIds).toEqual([]);
   });
 
@@ -106,7 +104,7 @@ describe("buildSessionRows", () => {
       selfId: "someone-else",
       sessions: [session({ controllerId: "another" })],
     });
-    expect(rows[0]).toMatchObject({ orphaned: true, isController: false, canKill: true });
+    expect(rows[0]).toMatchObject({ isController: false, canKill: true });
   });
 
   test("offline machine surfaces through the row", () => {
@@ -117,20 +115,21 @@ describe("buildSessionRows", () => {
     expect(rows[0]).toMatchObject({ machineName: "sleepy", machineOnline: false });
   });
 
-  test("rows sort orphans first, then bound running, then exited", () => {
+  test("rows sort running before exited, then by id", () => {
     const rows = buildSessionRows({
       ...BASE,
       liveBindings: new Map([
         ["bound", ["el-bound"]],
         ["zz-exited", ["el-exited"]],
+        ["another", ["el-another"]],
       ]),
       sessions: [
         session({ id: "zz-exited", status: "exited", exitCode: 1 }),
-        session({ id: "orphan", elementId: "gone" }),
+        session({ id: "another" }),
         session({ id: "bound" }),
       ],
     });
-    expect(rows.map((row) => row.id)).toEqual(["orphan", "bound", "zz-exited"]);
+    expect(rows.map((row) => row.id)).toEqual(["another", "bound", "zz-exited"]);
   });
 
   test("cloned bindings preserve stable canvas order", () => {
@@ -140,7 +139,6 @@ describe("buildSessionRows", () => {
       sessions: [session({})],
     });
     expect(rows[0]).toMatchObject({
-      orphaned: false,
       boundElementIds: ["el-z", "el-a", "el1", "el-m"],
     });
   });

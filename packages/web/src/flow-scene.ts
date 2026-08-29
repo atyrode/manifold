@@ -1,10 +1,12 @@
 import { compareElements, type SceneElement } from "@manifold/protocol";
+import { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH } from "@manifold/scene";
 import type { GestureOverride } from "./remote-gestures";
 import { strokeBounds, toRelativePoints } from "./stroke";
 import type { Node } from "@xyflow/react";
 
-export const DEFAULT_TERMINAL_WIDTH = 720;
-export const DEFAULT_TERMINAL_HEIGHT = 480;
+// Terminal element defaults live in @manifold/scene: the server authors terminal
+// elements too (bind), so both sides must size them identically.
+export { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH };
 export const DEFAULT_TEXT_WIDTH = 240;
 export const DEFAULT_TEXT_HEIGHT = 48;
 export const DEFAULT_FONT_SIZE = 20;

@@ -3,7 +3,15 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { base64ToBytes, type SessionClient } from "@manifold/sdk";
 import type { Principal } from "@manifold/protocol";
-import { useEffect, useReducer, useRef, useState, type FocusEvent, type WheelEvent } from "react";
+import {
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type FocusEvent,
+  type MouseEvent as ReactMouseEvent,
+  type WheelEvent,
+} from "react";
 import type { SessionMachine } from "./machine-visibility.ts";
 
 interface TerminalViewProps {
@@ -12,11 +20,11 @@ interface TerminalViewProps {
   readonly elementId: string;
   /** Host-canvas selection state; a rising edge focuses xterm so typing works immediately. */
   readonly active: boolean;
-  /** True when other live elements are bound to this same session (clones/mirrors). */
-  readonly sessionShared: boolean;
   /** Session-panel hover target; highlights this copy without changing the viewport. */
   readonly panelHighlighted: boolean;
-  /** Tombstones this element; kills the PTY only when it was the last binding. */
+  /** Parks this element: the PTY keeps running in the workspace terminal pool. */
+  readonly onPark: () => void;
+  /** Kills the PTY and removes this element. */
   readonly onClose: () => void;
   /** Opens a fresh PTY session and rebinds it to this element (restart in place). */
   readonly onRestart: () => Promise<void>;
@@ -30,8 +38,8 @@ export function TerminalView({
   sessionId,
   elementId,
   active,
-  sessionShared,
   panelHighlighted,
+  onPark,
   onClose,
   onRestart,
   machine,
@@ -45,8 +53,7 @@ export function TerminalView({
   const [viewOnlyError, setViewOnlyError] = useState(false);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const frameRef = useRef<HTMLDivElement | null>(null);
-  const [isMaximized, setIsMaximized] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
 
   const session = client.sessions.get(sessionId);
@@ -102,40 +109,57 @@ export function TerminalView({
     };
   }, [active]);
 
-  // Maximize = this terminal becomes the view. The Popover API promotes the
-  // SAME node into the browser top layer (xterm survives, no remount) without
-  // browser-chrome fullscreen. popover="manual" keeps outside clicks inert.
+  // Expand = this terminal becomes the view, filling the canvas area. The Popover
+  // API promotes the SAME node into the browser top layer (xterm survives, no
+  // remount) without browser-chrome fullscreen. popover="manual" keeps outside
+  // clicks inert. Note: cols/rows are shared session state, so expanding reflows
+  // the PTY for every viewer of this session (unchanged from the old maximize).
   useEffect(() => {
     const frame = frameRef.current;
     if (frame === null) return;
-    if (isMaximized) {
+    if (isExpanded) {
       frame.setAttribute("popover", "manual");
+      // The top layer is positioned against the viewport while `--sidebar-width`
+      // is a container-scoped property that does NOT track a collapsed sidebar
+      // (`.pad-browser.is-collapsed` overrides the grid columns instead). Measure
+      // the real canvas column and pin the left edge to it, re-pinning whenever the
+      // column resizes (sidebar drag, collapse, window resize); the CSS class
+      // carries the default and the rest of the box.
+      const column = frame.closest(".pad-browser")?.querySelector(".pad-browser-canvas") ?? null;
+      const pinLeft = (): void => {
+        if (column === null) return;
+        frame.style.left = `${String(Math.round(column.getBoundingClientRect().left))}px`;
+      };
+      pinLeft();
       try {
         frame.showPopover();
       } catch (reason: unknown) {
         // Unreachable by design (the button is disabled without Popover
         // support) — but if showPopover still throws, recover instead of
-        // wedging in a maximized-without-top-layer state.
-        console.error("evt=terminal_maximize_failed", reason);
+        // wedging in an expanded-without-top-layer state.
+        console.error("evt=terminal_expand_failed", reason);
         frame.removeAttribute("popover");
-        const recover = requestAnimationFrame(() => setIsMaximized(false));
+        frame.style.left = "";
+        const recover = requestAnimationFrame(() => setIsExpanded(false));
         return () => cancelAnimationFrame(recover);
       }
-      // Esc restores ONLY while the shell doesn't own the keyboard: inside
+      // Esc shrinks ONLY while the shell doesn't own the keyboard: inside
       // xterm, Escape belongs to the running program (vim, readline). While
-      // typing, the Restore button is the way back.
+      // typing, the Shrink button is the way back.
       const onKeyDown = (event: KeyboardEvent): void => {
         if (event.key !== "Escape") return;
         const host = containerRef.current;
         if (host !== null && host.contains(document.activeElement)) return;
         event.stopPropagation();
-        setIsMaximized(false);
+        setIsExpanded(false);
       };
       document.addEventListener("keydown", onKeyDown, true);
       const onToggle = (event: Event): void => {
-        if ((event as ToggleEvent).newState === "closed") setIsMaximized(false);
+        if ((event as ToggleEvent).newState === "closed") setIsExpanded(false);
       };
       frame.addEventListener("toggle", onToggle);
+      const columnObserver = new ResizeObserver(pinLeft);
+      if (column !== null) columnObserver.observe(column);
       requestAnimationFrame(() => {
         fitRef.current?.fit();
         scheduleResizeRef.current?.();
@@ -144,6 +168,7 @@ export function TerminalView({
       return () => {
         document.removeEventListener("keydown", onKeyDown, true);
         frame.removeEventListener("toggle", onToggle);
+        columnObserver.disconnect();
         if (frame.hasAttribute("popover")) {
           try {
             frame.hidePopover();
@@ -152,6 +177,7 @@ export function TerminalView({
           }
           frame.removeAttribute("popover");
         }
+        frame.style.left = "";
       };
     }
     requestAnimationFrame(() => {
@@ -159,16 +185,7 @@ export function TerminalView({
       scheduleResizeRef.current?.();
     });
     return;
-  }, [isMaximized]);
-
-  // A collapsed host has no size to fit against; refit when it reappears.
-  useEffect(() => {
-    if (isMinimized) return;
-    requestAnimationFrame(() => {
-      fitRef.current?.fit();
-      scheduleResizeRef.current?.();
-    });
-  }, [isMinimized]);
+  }, [isExpanded]);
 
   useEffect(() => {
     const refreshSession = (): void => {
@@ -369,12 +386,7 @@ export function TerminalView({
     scheduleResizeRef.current?.();
   }, [isController]);
 
-  const isRunning = session?.status === "running";
   const showViewOnly = viewOnlyError && !isController;
-  // Close is offered when it can complete cleanly: as controller, once the
-  // session stopped running, or when this element is just one of several
-  // mirrors of the session (closing a mirror never kills the PTY).
-  const canClose = isController || !isRunning || sessionShared;
 
   // Focus presence — other principals whose ephemeral focus is on THIS terminal.
   // Distinct from controllerId (the write lease): this is "who is looking/typing
@@ -404,19 +416,30 @@ export function TerminalView({
     if (focusedRef.current) event.stopPropagation();
   };
 
-  const supportsMaximize = "showPopover" in HTMLElement.prototype;
-  const toggleMaximize = (): void => {
-    setIsMaximized((value) => !value);
+  const supportsExpand = "showPopover" in HTMLElement.prototype;
+  const toggleExpand = (): void => {
+    setIsExpanded((value) => !value);
   };
 
-  // All close semantics (tombstone + last-binding kill decision) live in the
-  // host's onClose, which sees the authoritative scene at click time.
-  const handleClose = (): void => onClose();
+  /**
+   * Double-clicking the titlebar is the same toggle as the button — except on the
+   * controls themselves, where a fast double click on Park or Close must not also
+   * expand (dblclick fires independently of the pointerdown those buttons stop).
+   */
+  const handleTitlebarDoubleClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      (target.closest("button") !== null || target.closest(".terminal-titlebar__controls") !== null)
+    ) {
+      return;
+    }
+    toggleExpand();
+  };
 
   const frameClass = [
     "manifold-terminal",
-    isMinimized ? "manifold-terminal--collapsed" : "",
-    isMaximized ? "manifold-terminal--maximized" : "",
+    isExpanded ? "manifold-terminal--expanded" : "",
     remoteFocuser === null ? "" : "manifold-terminal--remote-focus",
     panelHighlighted ? "manifold-terminal--panel-highlight" : "",
   ]
@@ -459,7 +482,7 @@ export function TerminalView({
           ))}
         </div>
       )}
-      <div className="terminal-titlebar">
+      <div className="terminal-titlebar" onDoubleClick={handleTitlebarDoubleClick}>
         <span className="terminal-titlebar__title">
           <span className="terminal-titlebar__glyph" aria-hidden="true">
             {">_"}
@@ -476,41 +499,39 @@ export function TerminalView({
           <button
             type="button"
             className="terminal-ctl"
-            title={isMinimized ? "Expand" : "Minimize"}
-            aria-label={isMinimized ? "Expand terminal" : "Minimize terminal"}
+            title="Park terminal to sidebar (keeps the shell running)"
+            aria-label="Park terminal to sidebar"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => setIsMinimized((value) => !value)}
+            onClick={onPark}
           >
-            {isMinimized ? "□" : "–"}
+            –
           </button>
           <button
             type="button"
             className="terminal-ctl"
-            title={isMaximized ? "Restore (Esc)" : "Maximize"}
-            aria-label={isMaximized ? "Restore terminal" : "Maximize terminal"}
-            disabled={!supportsMaximize}
+            title={isExpanded ? "Shrink to canvas (Esc)" : "Expand to full view"}
+            aria-label={isExpanded ? "Shrink terminal to canvas" : "Expand terminal to full view"}
+            disabled={!supportsExpand}
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={toggleMaximize}
+            onClick={toggleExpand}
           >
-            ⛶
+            {isExpanded ? "⤡" : "⛶"}
           </button>
-          {canClose ? (
-            <button
-              type="button"
-              className="terminal-ctl terminal-ctl--close"
-              title="Close terminal (ends session)"
-              aria-label="Close terminal"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={handleClose}
-            >
-              ✕
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="terminal-ctl terminal-ctl--close"
+            title="Kill terminal (ends the session)"
+            aria-label="Kill terminal"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={onClose}
+          >
+            ✕
+          </button>
         </div>
       </div>
       <div className="xterm-host" ref={containerRef} />
       <div
-        className={`terminal-idle-veil${active || isMinimized || isMaximized ? "" : " terminal-idle-veil--on"}`}
+        className={`terminal-idle-veil${active || isExpanded ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
       {showViewOnly ? (
