@@ -94,6 +94,14 @@ export function TerminalView({
   const fitRef = useRef<FitAddon | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
   const scheduleResizeRef = useRef<(() => void) | null>(null);
+  /**
+   * True once a snapshot has been painted into the LIVE terminal. It outlives socket
+   * swaps on purpose: the next snapshot must replace what is on screen instead of
+   * appending to it, whichever socket delivers it.
+   */
+  const paintedRef = useRef(false);
+  /** Post-replay fit/refresh, owned by the terminal effect and called from the socket effect. */
+  const settleRef = useRef<(() => void) | null>(null);
   const focusedRef = useRef(false);
   const [viewOnlyError, setViewOnlyError] = useState(false);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
@@ -180,12 +188,36 @@ export function TerminalView({
     };
   }, [client, sessionId]);
 
+  /**
+   * The current socket, reachable from the xterm lifecycle without being a dependency
+   * of it. See the two effects below: the terminal belongs to the session, the
+   * subscriptions belong to the socket.
+   */
+  const clientRef = useRef(client);
+  useEffect(() => {
+    clientRef.current = client;
+  }, [client]);
+
+  /**
+   * The xterm instance and its DOM host, whose life is the SESSION's — never the
+   * socket's. A widget escalating from spectator to occupant (and dropping back) hands
+   * this component a DIFFERENT `SessionClient` for the same tile; a terminal disposed
+   * and re-opened on that swap is a visible refresh — new DOM node, buffer repainted
+   * from zero, selection and mouse-mode TUIs losing their host mid-gesture. So
+   * creation depends on the session alone, and the socket wiring below re-runs against
+   * the SAME terminal.
+   *
+   * `sessionReady` is read off whichever client is painting, and both sides of a role
+   * swap know the session before the swap is visible (the switch promotes only after
+   * `connect()` resolves, and init carries the session table), so an escalation never
+   * flickers this effect.
+   */
   useEffect(() => {
     if (!sessionReady) return;
     const container = containerRef.current;
     if (container === null) return;
 
-    const initialSession = client.sessions.get(sessionId);
+    const initialSession = clientRef.current.sessions.get(sessionId);
     if (initialSession === undefined) return;
     const terminal = new Terminal({
       cols: initialSession.cols,
@@ -206,11 +238,8 @@ export function TerminalView({
     terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
+    paintedRef.current = false;
 
-    let snapshotSeq: number | null = null;
-    let lastWrittenSeq = 0;
-    let hasRenderedSnapshot = false;
-    const bufferedOutputs = new Map<number, string>();
     let lastSentGeometry: { cols: number; rows: number } | null = null;
 
     const sendCurrentGeometry = (): void => {
@@ -230,7 +259,7 @@ export function TerminalView({
         return;
       }
       lastSentGeometry = geometry;
-      client.resizeTerminal(sessionId, geometry.cols, geometry.rows);
+      clientRef.current.resizeTerminal(sessionId, geometry.cols, geometry.rows);
     };
 
     const scheduleResize = (): void => {
@@ -244,7 +273,7 @@ export function TerminalView({
       // geometry. Replaying them into an eagerly-fitted viewport corrupts
       // wrapping and character placement. Keep the advertised geometry until
       // replay completes, then fit the painted terminal to its canvas box.
-      if (!hasRenderedSnapshot) return;
+      if (!paintedRef.current) return;
       fitAddon.fit();
       scheduleResize();
     };
@@ -269,30 +298,67 @@ export function TerminalView({
         });
       });
     };
+    settleRef.current = settleAfterReplay;
 
     const observer = new ResizeObserver(fitAndScheduleResize);
     observer.observe(container);
     const initialFitFrame = window.requestAnimationFrame(fitAndScheduleResize);
 
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(initialFitFrame);
+      if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
+      if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = null;
+      }
+      scheduleResizeRef.current = null;
+      settleRef.current = null;
+      terminal.dispose();
+      terminalRef.current = null;
+      fitRef.current = null;
+      paintedRef.current = false;
+    };
+  }, [sessionId, sessionReady]);
+
+  /**
+   * The SOCKET half: output subscriptions, keyboard input and the attach refcount.
+   * Keyed on the client, so a widget's spectator⇄occupant swap re-runs exactly this
+   * much — the terminal, its DOM node and its buffer all survive — and the re-attach's
+   * snapshot lands in the existing terminal as a single-frame `reset()` + replay.
+   * That is lossless because the server's snapshot is a complete, seq-anchored picture
+   * of the PTY (the no-gap invariant): the replay paints what was already on screen,
+   * plus whatever the swap would otherwise have missed.
+   *
+   * Declared AFTER the terminal effect so `terminalRef` is populated in the commit that
+   * creates it; React runs setups in declaration order.
+   */
+  useEffect(() => {
+    if (!sessionReady) return;
+    const terminal = terminalRef.current;
+    if (terminal === null) return;
+
+    let snapshotSeq: number | null = null;
+    let lastWrittenSeq = 0;
+    const bufferedOutputs = new Map<number, string>();
+    const settle = (): void => settleRef.current?.();
+
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (message.sessionId !== sessionId) return;
-      if (hasRenderedSnapshot) terminal.reset();
+      // Whatever is on screen — painted by this socket or by the one it replaced — is
+      // REPLACED by the snapshot, never appended to.
+      if (paintedRef.current) terminal.reset();
       snapshotSeq = message.seq;
       lastWrittenSeq = message.seq;
-      hasRenderedSnapshot = true;
+      paintedRef.current = true;
       const queued = [...bufferedOutputs.entries()]
         .filter(([seq]) => seq > message.seq)
         .sort(([left], [right]) => left - right);
       bufferedOutputs.clear();
-      terminal.write(
-        base64ToBytes(message.data),
-        queued.length === 0 ? settleAfterReplay : undefined,
-      );
+      terminal.write(base64ToBytes(message.data), queued.length === 0 ? settle : undefined);
       queued.forEach(([seq, data], index) => {
-        terminal.write(
-          base64ToBytes(data),
-          index === queued.length - 1 ? settleAfterReplay : undefined,
-        );
+        terminal.write(base64ToBytes(data), index === queued.length - 1 ? settle : undefined);
         lastWrittenSeq = seq;
       });
     });
@@ -351,18 +417,6 @@ export function TerminalView({
       offError();
       offStatus();
       inputDisposable.dispose();
-      observer.disconnect();
-      window.cancelAnimationFrame(initialFitFrame);
-      if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
-      if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
-      if (resizeTimerRef.current !== null) {
-        window.clearTimeout(resizeTimerRef.current);
-        resizeTimerRef.current = null;
-      }
-      scheduleResizeRef.current = null;
-      terminal.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
       client.detachTerminal(sessionId);
     };
   }, [client, sessionId, sessionReady]);
@@ -517,12 +571,18 @@ export function TerminalView({
         extraActions={readOnly ? null : titlebarExtras}
       />
       <div className="xterm-host" ref={containerRef} />
-      {chrome === "preview" ? null : (
-        <div
-          className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
-          aria-hidden="true"
-        />
-      )}
+      {/*
+        The idle veil is a property of ATTENTION, not of chrome. It used to be skipped in
+        preview because a preview had no notion of a focused tile; a widget's tiles now
+        carry `active` (false for every tile while the widget only watches, true for the
+        one engaged tile), so the same dimming that tells a canvas which terminal you are
+        in tells a widget it is resting — and inside an engaged widget, which tile holds
+        the keyboard while its siblings stay veiled.
+      */}
+      <div
+        className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
+        aria-hidden="true"
+      />
       {showViewOnly ? (
         <button
           className="view-only-ribbon"

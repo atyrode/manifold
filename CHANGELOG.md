@@ -16,6 +16,9 @@
 - Every node carries one standardized titlebar — icon, name (double-click to rename in place), origin, then minimize / maximize / close — on terminals, view widgets, and the view renderer alike; view widgets on a canvas gained real minimize (back to the sidebar) and close, and views now live in their own sidebar "Views" section while Pads lists only canvases. (#15, #57)
 - View widgets on a canvas are now fully interactive: click a tile to engage — your keystrokes reach the terminal and your avatar appears inside the view; click elsewhere to disengage back to watching. Watching alone never occupies a view. (#15, #57)
 - The Machines "+" works inside composed views too: the new terminal is born straight into the view as a tile. (#15, #57)
+- One vocabulary for arranging work: a "view" is any way to see your items — a freeform "pad" or a tiled "composition" — and the sidebar now indexes them all in one Views section (folders hold either kind, discipline glyphs tell them apart, old sidebar arrangements migrate automatically). (#59)
+- Placement is now an algebra, not a feature list: every item kind declares what it composes with, one `POST /api/place` places anything anywhere legality allows, refusals come back as named rules ("views never nest"), and the whole vocabulary is discoverable through the protocol schema — for humans, agents, and future mods alike. (#59)
+- Pad tiles inside a composition carry their own titlebar: jump into the pad, detach the tile, or delete the pad — full parity with every other item. (#59)
 
 ### Fixed
 
@@ -23,6 +26,8 @@
 - Collapsing the Pads sidebar section now releases its height instead of leaving a blank gap. (#15, #57)
 - Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)
 - The workspace status now shows real autosave times instead of permanently reading "Not saved". (#15, #57)
+- An unengaged view widget now dims its terminals like any resting terminal; engaging undims only the tile you clicked. (#59)
+- Engaging and disengaging a view widget no longer refreshes its terminals: the tiles keep their DOM identity across the socket swap and replay in a single frame. (#59)
 
 ## [0.4.4] - 2026-08-27
 

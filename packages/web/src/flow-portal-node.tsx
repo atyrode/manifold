@@ -279,8 +279,8 @@ function PortalTerminalTile({
         }
         title={
           interactive
-            ? "Drag onto the canvas to pull this terminal out of the view"
-            : "Click to work in this terminal — drag onto the canvas to pull it out of the view"
+            ? "Drag onto the canvas to pull this terminal out of the composition"
+            : "Click to work in this terminal — drag onto the canvas to pull it out of the composition"
         }
         draggable
         onPointerDown={(event) => event.stopPropagation()}
@@ -312,7 +312,7 @@ function PortalPadTile({ padId }: { readonly padId: string }): React.ReactElemen
       <span className="flow-portal__card-glyph" aria-hidden="true">
         ▦
       </span>
-      <strong>{name ?? "canvas"}</strong>
+      <strong>{name ?? "pad"}</strong>
       <button
         type="button"
         className="flow-portal__enter"
@@ -470,12 +470,12 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         className="flow-portal__strip"
         icon="▤"
         title={name}
-        defaultTitle="view"
+        defaultTitle="composition"
         middle={
           occupants.length === 0 ? null : (
             <span
               className="flow-portal__presence"
-              aria-label={`${String(occupants.length)} in this view`}
+              aria-label={`${String(occupants.length)} in this composition`}
             >
               {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
                 <span
@@ -484,8 +484,8 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                   style={{ backgroundColor: principal.color }}
                   title={
                     principal.id === selfId
-                      ? "you are in this view"
-                      : `${principal.name} is in this view`
+                      ? "you are in this composition"
+                      : `${principal.name} is in this composition`
                   }
                 >
                   {principal.name.slice(0, 1).toUpperCase()}
@@ -500,15 +500,15 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           )
         }
         onMinimize={() => pad.removeElement(id)}
-        minimizeLabel={`Put away view ${name ?? containerId}`}
-        minimizeTooltip="Remove this widget from the canvas (the view keeps running)"
+        minimizeLabel={`Put away composition ${name ?? containerId}`}
+        minimizeTooltip="Remove this widget from the canvas (the composition keeps running)"
         onMaximize={enter}
-        maximizeLabel={`Open view ${name ?? containerId}`}
-        maximizeTooltip="Open this view"
+        maximizeLabel={`Open composition ${name ?? containerId}`}
+        maximizeTooltip="Open this composition"
         onClose={() => pad.onDeleteContainer(containerId, id)}
-        closeLabel={`Delete view ${name ?? containerId}`}
-        closeTooltip="Delete this view for everyone"
-        closeConfirm={`Delete “${name ?? "this view"}”?`}
+        closeLabel={`Delete composition ${name ?? containerId}`}
+        closeTooltip="Delete this composition for everyone"
+        closeConfirm={`Delete “${name ?? "this composition"}”?`}
       />
       <div className="flow-portal__viewport">
         {client !== null && layout !== null ? (
@@ -536,7 +536,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
               ▤
             </span>
             <span className="flow-portal__card-hint">
-              {live ? "opening view…" : "nested view — open it to work inside"}
+              {live ? "opening composition…" : "nested composition — open it to work inside"}
             </span>
           </div>
         )}

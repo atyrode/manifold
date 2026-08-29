@@ -208,6 +208,22 @@ export function TiledPadView({
     [client, machines],
   );
 
+  /**
+   * A pad tile's bar names its surface. The list the sidebar already fetched IS the
+   * index of containers, so an embedded pad's name costs no extra request; a pad
+   * created since the last refetch falls back to the bar's own default.
+   */
+  const padNameFor = useCallback(
+    (embeddedPadId: string): string | null =>
+      pads.find((candidate) => candidate.id === embeddedPadId)?.name ?? null,
+    [pads],
+  );
+  /** Accessible names must identify the object even before its row is known. */
+  const padLabelFor = useCallback(
+    (embeddedPadId: string): string => padNameFor(embeddedPadId) ?? embeddedPadId,
+    [padNameFor],
+  );
+
   const failed = useCallback((reason: unknown, fallback: string): void => {
     setNotice(reason instanceof Error ? reason.message : fallback);
   }, []);
@@ -295,6 +311,37 @@ export function TiledPadView({
         .then(() => killPooledTerminal(identity.token, sessionId))
         .then(onPadChanged)
         .catch((reason: unknown) => failed(reason, "Could not close this terminal"));
+    },
+    [failed, identity.token, onPadChanged, padId],
+  );
+
+  /**
+   * A PAD tile's minimize: the leaf goes away and the pad itself is untouched — a
+   * canvas is a shared object indexed in the sidebar, so removing its representation
+   * from this composition is not ending it. Same endpoint as a terminal's park; the
+   * server's park semantics only apply to a session, and a pad surface has none.
+   */
+  const detachPadTile = useCallback(
+    (tileId: string): void => {
+      void removePadTile(identity.token, padId, tileId)
+        .then(onPadChanged)
+        .catch((reason: unknown) => failed(reason, "Could not remove this pad from the view"));
+    },
+    [failed, identity.token, onPadChanged, padId],
+  );
+
+  /**
+   * A PAD tile's close: the pad is deleted for everyone and its leaf goes with it,
+   * because a tile onto a deleted container is a hole. The same order the canvas's
+   * view widget uses (delete, then drop the representation), so a failed delete
+   * leaves the tile in place rather than silently emptying it.
+   */
+  const deletePadTile = useCallback(
+    (tileId: string, embeddedPadId: string): void => {
+      void deletePad(identity.token, embeddedPadId)
+        .then(() => removePadTile(identity.token, padId, tileId))
+        .then(onPadChanged)
+        .catch((reason: unknown) => failed(reason, "Could not delete this pad"));
     },
     [failed, identity.token, onPadChanged, padId],
   );
@@ -512,17 +559,47 @@ export function TiledPadView({
                 { onExpand: () => expandTile(surface.sessionId) })}
           />
         ) : (
-          <FlowPadView
-            key={surface.padId}
-            padId={surface.padId}
-            identity={identity}
-            depth={2}
-            navigate={navigate}
-            presence={presence}
-            // The sidebar's session panel belongs to the route-level container, not
-            // to a canvas embedded three levels down inside it.
-            onWorkspaceChange={() => undefined}
-          />
+          /*
+            A pad tile wears the same bar as every other placed object. Maximize is the
+            load-bearing control: an embedded board is a BOARD — its interior belongs to
+            React Flow, panning and all — so the titlebar is the only door INTO the pad
+            from here. Minimize drops just this representation; close deletes the pad
+            for everyone behind the bar's own two-step confirm.
+
+            The bar sits ABOVE the board rather than over it, so nothing about the
+            embedded canvas's own pointer handling changes.
+          */
+          <div className="tiled-pad-tile">
+            <NodeTitleBar
+              className="tiled-pad-tile__bar"
+              icon="▦"
+              title={padNameFor(surface.padId)}
+              defaultTitle="pad"
+              onMinimize={() => detachPadTile(node.id)}
+              minimizeLabel={`Remove pad ${padLabelFor(surface.padId)} from this composition`}
+              minimizeTooltip="Remove this pad from the composition (the pad keeps existing)"
+              onMaximize={() => navigate(`/p/${encodeURIComponent(surface.padId)}`)}
+              maximizeLabel={`Open pad ${padLabelFor(surface.padId)}`}
+              maximizeTooltip="Open this pad"
+              onClose={() => deletePadTile(node.id, surface.padId)}
+              closeLabel={`Delete pad ${padLabelFor(surface.padId)}`}
+              closeTooltip="Delete this pad for everyone"
+              closeConfirm={`Delete “${padNameFor(surface.padId) ?? "this pad"}”?`}
+            />
+            <div className="tiled-pad-tile__body">
+              <FlowPadView
+                key={surface.padId}
+                padId={surface.padId}
+                identity={identity}
+                depth={2}
+                navigate={navigate}
+                presence={presence}
+                // The sidebar's session panel belongs to the route-level container, not
+                // to a canvas embedded three levels down inside it.
+                onWorkspaceChange={() => undefined}
+              />
+            </div>
+          </div>
         )}
         {preview === null ? null : (
           <div

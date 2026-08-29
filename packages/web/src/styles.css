@@ -2927,3 +2927,52 @@ button.pad-sidebar-session.is-summary > small {
   width: 1.5rem;
   height: 1.5rem;
 }
+
+/* ── A pad placed in a composition ───────────────────────────────────────────
+   Chrome above, board below. The tile is a column: the bar takes its natural
+   height and the embedded canvas takes the rest, so the board's own pointer
+   handling (pan, node drags, its tools) is never overlaid by tile controls.
+
+   The frame is the TERMINAL's frame (same border, radius and depth): a pad and a
+   terminal are both placed objects, so a composition must not draw them as two
+   different species — and copying the border is also what puts the two kinds of
+   titlebar on the same baseline. */
+.tiled-pad-tile {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #2c3239;
+  border-radius: 0.5rem;
+  background: #0b0d10;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+.tiled-pad-tile__bar {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #23272e;
+  background: #14181e;
+}
+
+.tiled-pad-tile__bar .node-titlebar__icon {
+  color: #748ffc;
+}
+
+/* The embedded board fills what the bar leaves; `min-height: 0` is what keeps a
+   flex child from refusing to shrink below its content. */
+.tiled-pad-tile__body {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.tiled-pad-tile__body > * {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
