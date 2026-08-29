@@ -2115,8 +2115,12 @@ button.pad-sidebar-session.is-summary > small {
  */
 .flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge,
 .flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
-  /* Above the terminal frame, which is positioned and paints after these controls. */
-  z-index: 2;
+  /*
+   * Above everything inside the terminal frame — including the titlebar (z 3) and its
+   * pill/overlay (z 5) — exactly like an OS window, where the thin border strip wins
+   * over the titlebar it borders and the rest of the titlebar stays the drag surface.
+   */
+  z-index: 6;
   border-color: transparent;
   background: transparent;
 }

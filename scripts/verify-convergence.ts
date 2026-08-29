@@ -1098,33 +1098,77 @@ try {
       "F10 terminal resizes from its border without selecting first",
       { adds: 0, changes: [second.id] },
       async () => {
+        // Higher-band ink from F7 may cross this terminal's border and correctly own the
+        // pointer there, so park the terminal in clear space before probing its frame.
+        sdk.transact((tx) => {
+          tx.patch(second.id, { x: 300, y: 360 });
+        });
+        await until(
+          () =>
+            browserA.evaluate<boolean>(
+              `(() => {
+                const node = document.querySelector(${edgeSelector});
+                if (!(node instanceof HTMLElement)) return false;
+                const transform = node.style.transform;
+                return transform.includes("300px") && transform.includes("360px");
+              })()`,
+            ),
+          5_000,
+          "terminal rendered at its parked position",
+        );
         // Clear any selection so the grab zone cannot be credited to selection handles.
         await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
         await sleep(200);
-        const edge = await browserA.evaluate<{
-          readonly x: number;
-          readonly y: number;
-          readonly cursor: string;
-          readonly hit: string;
+        const borders = await browserA.evaluate<{
           readonly selected: boolean;
+          readonly cursors: Readonly<Record<string, string>>;
+          readonly hits: Readonly<Record<string, string>>;
         }>(
           `(() => {
             const node = document.querySelector(${edgeSelector});
             if (!(node instanceof HTMLElement)) throw new Error("terminal node missing");
             const rect = node.getBoundingClientRect();
-            const point = { x: rect.right - 1, y: rect.top + rect.height / 2 };
-            const hit = document.elementFromPoint(point.x, point.y);
-            return {
-              ...point,
-              cursor: hit === null ? "none" : getComputedStyle(hit).cursor,
-              hit: hit === null ? "none" : hit.tagName + "." + String(hit.className),
-              selected: node.classList.contains("selected"),
+            const midX = rect.left + rect.width / 2;
+            const midY = rect.top + rect.height / 2;
+            const points = {
+              left: [rect.left + 1, midY],
+              right: [rect.right - 1, midY],
+              top: [midX, rect.top + 1],
+              bottom: [midX, rect.bottom - 1],
+              topLeft: [rect.left + 2, rect.top + 2],
+              topRight: [rect.right - 2, rect.top + 2],
+              bottomLeft: [rect.left + 2, rect.bottom - 2],
+              bottomRight: [rect.right - 2, rect.bottom - 2],
             };
+            const cursors = {};
+            const hits = {};
+            for (const [name, [x, y]] of Object.entries(points)) {
+              const hit = document.elementFromPoint(x, y);
+              cursors[name] = hit === null ? "none" : getComputedStyle(hit).cursor;
+              hits[name] = hit === null ? "none" : hit.tagName + "." + String(hit.className).slice(0, 80);
+            }
+            return { selected: node.classList.contains("selected"), cursors, hits };
           })()`,
         );
-        if (edge.selected) throw new Error("terminal was already selected before the hover");
-        if (edge.cursor !== "ew-resize") {
-          throw new Error(`border hover shows cursor ${edge.cursor}, expected ew-resize`);
+        if (borders.selected) throw new Error("terminal was already selected before the hover");
+        const wanted: Readonly<Record<string, string>> = {
+          left: "ew-resize",
+          right: "ew-resize",
+          top: "ns-resize",
+          bottom: "ns-resize",
+          topLeft: "nwse-resize",
+          bottomRight: "nwse-resize",
+          topRight: "nesw-resize",
+          bottomLeft: "nesw-resize",
+        };
+        for (const [name, expected] of Object.entries(wanted)) {
+          if (borders.cursors[name] !== expected) {
+            throw new Error(
+              `border ${name} shows cursor ${String(borders.cursors[name])} on ${String(
+                borders.hits[name],
+              )}, expected ${expected}`,
+            );
+          }
         }
         // Deselection re-renders the node: wait for the grab zone, then drive the drag
         // from the control's own centre so the press cannot land a pixel off it.
