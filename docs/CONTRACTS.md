@@ -84,7 +84,7 @@ and produces negative geometry that the commit path then rejects.
 | GET /api/protocol           | none                  | → generated JSON-Schema of all wire messages                                                                                                     |
 | GET /api/pads               | pads:read             | → `{ pads: Pad[] }`                                                                                                                              |
 | GET /api/pad-presence       | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected principals; scoped tokens see only their pad                                         |
-| POST /api/pads              | pads:write            | `{ name, layout? }` → `{ pad }` (explicit creations always durable)                                                                                                                           |
+| POST /api/pads              | pads:write            | `{ name, layout? }` → `{ pad }` (explicit creations always durable)                                                                              |
 | GET /api/pads/:id           | pads:read             | → `{ pad }`                                                                                                                                      |
 | PATCH /api/pads/:id         | pads:write            | `{ name }` → `{ pad }`                                                                                                                           |
 | DELETE /api/pads/:id        | `*`                   | → `{ ok }`                                                                                                                                       |
@@ -125,7 +125,7 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 ## WS /ws/session — session channel (JSON text frames)
 
 Handshake: first client frame MUST be
-`join { padId, token, protocolVersion, lastEpoch?, lastRev? }`. Server replies
+`join { padId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }`. Server replies
 `init { protocolVersion, epoch, rev, doc, roster, sessions, self, selfCaps,
 selfConnId }` or closes:
 4401 bad token · 4403 revoked/forbidden · 4404 unknown pad · 4409 protocol version mismatch.
@@ -134,6 +134,17 @@ joining principal's granted caps so clients can gate UI affordances (for example
 sessions janitor's kill buttons) without a separate introspection round-trip. Presence is
 carried by `roster`, whose entries are `PresenceState`; there is no separate `presences`
 field.
+
+**Spectators.** `spectator: true` joins a socket that WATCHES the room without occupying
+it (absent ≡ occupant, so every pre-v11 client is unchanged). A portal widget's live
+preview uses it: it opens a real room socket into another container, and counting that as
+membership both faked occupant avatars and made a watched bubble unpoppable. A spectator
+receives `init`/`resync`, `doc_update`, roster/presence/cursor fan-out and terminal
+snapshots and output, and may send `resync_request`, `ping`, `terminal_attach` and
+`terminal_detach`. Every other client frame is refused with
+`error { code:"forbidden" }` — a preview never writes. Spectators appear in NO roster and
+in NO `GET /api/pad-presence` entry, and only occupant departures fire the room-empty
+hook; a room holding watchers alone still counts as resident for eviction.
 
 ### Scene sync (Yjs CRDT)
 
@@ -172,7 +183,6 @@ field.
 - **Portal elements.** Canvas scene records `{ type:"portal", containerId, ...geometry }`
   render another container in place: live scaled preview at nesting depth ≤ 2, card-only
   deeper. Cycles are legal — portals navigate on enter, they never recurse live.
-
 
 ### Presence (ephemeral, never persisted)
 
@@ -272,8 +282,10 @@ name }`) and the pool a durable order (`sort_order`, contiguous; `PUT
   session (`transient: true`, `origin_pad_id` = the session's pad, off-wire), swaps the
   first canvas element bound to the session for a portal keeping its geometry, and rebinds
   the session into the view's tile tree (pooled terminals bind straight in). When a
-  transient view's room empties (last leave — crash-safe) and its layout is a single
-  terminal leaf, `dissolveIfBubble` pops it: the session rebinds to `origin_pad_id`
+  transient view's room loses its last OCCUPANT (crash-safe; watching spectator sockets
+  never count, so a collaborator previewing the widget cannot block the pop) and its layout
+  is a single terminal leaf, `dissolveIfBubble` pops it: the session rebinds to
+  `origin_pad_id`
   (`swapPortalToTerminal` restores the old slot; portal deleted meanwhile → park to pool)
   and the row + doc are deleted. Hardening claims a bubble forever: >1 leaf, rename,
   compose, or `POST /api/pads/:id/pin`; explicit `POST /api/pads` creations are always
