@@ -108,6 +108,16 @@ technology verdicts with evidence.
     that set and requires a coordinated fleet restart (server + spokes together). A
     version bump hidden in a `web:` commit silently locked every spoke out on
     2026-08-25.
+11. **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30):
+    every shared behavior — previews, motion, fades, cues — is ONE producer-agnostic
+    pipeline. Local input normalizes into the WIRE form first and is consumed as if
+    received, so single-player is a special case of multiplayer, never the reverse, and a
+    wire form that cannot express something breaks locally and visibly instead of only for
+    spectators. The one legitimate local-vs-remote decision is arbitration — WHICH intent
+    wins a surface; no code downstream of arbitration may ask whose intent it renders. A
+    second "remote flavor" of an existing behavior (own styling, own state derivation, own
+    fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
+    2026-08-30 shipped exactly that way and was operator-caught.
 
 ## Conventions
 

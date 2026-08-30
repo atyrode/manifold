@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MAX_TILE_CHILDREN,
   ROOT_TILE_ID,
   validateTileLayout,
   type TileLayout,
+  type TileNode,
   type TileSurface,
 } from "@manifold/protocol";
 import {
+  applyTileLayout,
   LOCAL_ORIGIN,
   SERVER_PLACE_ORIGIN,
   Y,
@@ -477,5 +480,80 @@ describe("tile layout document", () => {
     const client = createSceneDoc();
     Y.applyUpdate(client, Y.encodeStateAsUpdate(server));
     expect(readTileLayout(client)).toEqual(readTileLayout(server));
+  });
+
+  test("an invalid table is refused before the doc is touched, so a bad write cannot brick a room", () => {
+    const doc = tiledDoc();
+    writeTileLeaf(doc, terminal("s1"), ROOT_TILE_ID, "center", SERVER_PLACE_ORIGIN);
+    const second = writeTileLeaf(doc, terminal("s2"), ROOT_TILE_ID, "right", SERVER_PLACE_ORIGIN);
+    const before = readTileLayout(doc);
+    const rootBefore = layoutMap(doc).get(ROOT_TILE_ID);
+    expect(before).not.toBeNull();
+
+    const split = (children: string[], ratios: number[]): TileNode => ({
+      id: ROOT_TILE_ID,
+      dir: "row",
+      ratios,
+      children,
+      surface: null,
+    });
+    const wide = (count: number): TileLayout => {
+      const ids = Array.from({ length: count }, (_, index) => `w${index}`);
+      const out: TileLayout = {
+        [ROOT_TILE_ID]: split(
+          ids,
+          ids.map(() => 1),
+        ),
+      };
+      for (const id of ids) out[id] = tileLeaf(id, null);
+      return out;
+    };
+    // Each of these fails ONE half of the read predicate; a gate missing either half
+    // would persist the other and every peer would then read the container as null.
+    const invalid: readonly TileLayout[] = [
+      // Structural: a child reference that resolves to nothing.
+      { [ROOT_TILE_ID]: split(["a", "gone"], [1, 1]), a: tileLeaf("a", null) },
+      // Structural: ratios no longer parallel to children.
+      { [ROOT_TILE_ID]: split(["a", "b"], [1]), a: tileLeaf("a", null), b: tileLeaf("b", null) },
+      // Structural: the same subtree reachable twice.
+      { [ROOT_TILE_ID]: split(["a", "a"], [1, 1]), a: tileLeaf("a", null) },
+      // Structural: no root at all.
+      { a: tileLeaf("a", null) },
+      // Schema-only: fan-out past the wire bound, which `validateTileLayout` allows.
+      wide(MAX_TILE_CHILDREN + 1),
+      // Schema-only: a share of zero, which `validateTileLayout` also allows.
+      { [ROOT_TILE_ID]: split(["a", "b"], [1, 0]), a: tileLeaf("a", null), b: tileLeaf("b", null) },
+    ];
+    for (const table of invalid) {
+      expect(applyTileLayout(doc, table, SERVER_PLACE_ORIGIN)).toBe(false);
+      expect(readTileLayout(doc)).toEqual(before);
+      expect(layoutMap(doc).get(ROOT_TILE_ID)).toBe(rootBefore);
+    }
+    // The widest LEGAL table still passes, so the bound is checked and not merely feared.
+    expect(validateTileLayout(wide(MAX_TILE_CHILDREN))).toBe(true);
+    expect(applyTileLayout(doc, wide(MAX_TILE_CHILDREN), SERVER_PLACE_ORIGIN)).toBe(true);
+    expect(readTileLayout(doc)).toEqual(wide(MAX_TILE_CHILDREN));
+    expect(second).not.toBeNull();
+  });
+
+  test("writeTileLeaf surfaces a refused write as null and leaves the tree readable", () => {
+    // A flat row grown to the fan-out bound: `insertLeaf` splices siblings without one,
+    // so the next same-axis drop clears every pure guard and only the write gate stops it.
+    const doc = tiledDoc();
+    writeTileLeaf(doc, terminal("s0"), ROOT_TILE_ID, "center", SERVER_PLACE_ORIGIN);
+    let last = writeTileLeaf(doc, terminal("s1"), ROOT_TILE_ID, "right", SERVER_PLACE_ORIGIN);
+    for (let index = 2; index < MAX_TILE_CHILDREN; index += 1) {
+      last = writeTileLeaf(doc, terminal(`s${index}`), last ?? "", "right", SERVER_PLACE_ORIGIN);
+      expect(last).not.toBeNull();
+    }
+    const full = readTileLayout(doc);
+    expect(full?.[ROOT_TILE_ID]?.children).toHaveLength(MAX_TILE_CHILDREN);
+
+    expect(
+      writeTileLeaf(doc, terminal("overflow"), last ?? "", "right", SERVER_PLACE_ORIGIN),
+    ).toBeNull();
+    // The refusal costs the drop, never the container: the tree still reads back whole.
+    expect(readTileLayout(doc)).toEqual(full);
+    expect(layoutMap(doc).size).toBe(MAX_TILE_CHILDREN + 1);
   });
 });

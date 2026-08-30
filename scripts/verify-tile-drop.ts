@@ -24,6 +24,8 @@
  *      and the displaced terminal survives in a fresh home of its own.
  *   7. REMOUNT PROBE — a pane that merely gains a sibling keeps its xterm DOM across
  *      the commit (the Step-10 decision: a changed stamp means the commit remounts).
+ *   8. SEAM DRAG ON A WIDGET — an engaged widget resizes its composition from a press on
+ *      the seam's VISIBLE centre, the gesture the half-scale preview used to swallow.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -191,9 +193,19 @@ async function dragSequence(
         const x = box.left + box.width * stop.fx;
         const y = box.top + box.height * stop.fy;
         fire(onto, 'dragenter', x, y);
+        /*
+          A REAL drag delivers dragover continuously (~60 Hz) for as long as the pointer
+          hovers; two isolated events per stop is the synthetic part of this harness. The
+          app's whole aim pipeline is built on that cadence — the wire aim rides the NEXT
+          frame after the overlay publishes, and a peer's aim expires when frames stop —
+          so the gesture streams dragover through the hold instead of bracketing it.
+        */
+        const holdUntil = performance.now() + stop.holdMs;
         fire(onto, 'dragover', x, y);
-        await wait(stop.holdMs);
-        fire(onto, 'dragover', x, y);
+        while (performance.now() < holdUntil) {
+          await wait(120);
+          fire(onto, 'dragover', x, y);
+        }
         await wait(80);
         const areaEl = document.querySelector(${JSON.stringify(area)});
         const slot = areaEl === null ? null : areaEl.querySelector('.tile-preview');
@@ -815,13 +827,14 @@ try {
   const viewerSample = await (async () => {
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline) {
-      const sample = await viewer!.evaluate<{ cls: string; moved: boolean } | null>(
+      const sample = await viewer!.evaluate<{ cls: string; moved: boolean; note: string } | null>(
         `(() => {
           const slot = document.querySelector('.tile-area .tile-preview');
           if (slot === null) return null;
           const moved = [...document.querySelectorAll('.tile-area [data-tile-id]')]
             .some((el) => el.style.transform !== '');
-          return { cls: slot.className, moved };
+          const note = document.querySelector('.tile-area .drop-denial-note')?.textContent ?? '';
+          return { cls: slot.className, moved, note };
         })()`,
       );
       if (sample !== null && sample.cls.includes("is-remote")) return sample;
@@ -844,6 +857,463 @@ try {
     "a silent carry releases the viewer's preview (#61)",
     true,
     "the gesture TTL retired the remote aim with no end frame needed",
+  );
+
+  /* ── Round A: a SEAM is ONE object, answering the same across its whole band ── */
+
+  /*
+    A seam is the boundary between two adjacent children, materialized as a band: the
+    divider gap PLUS a ring-scale strip into each neighbour. The kernel's promise is
+    that inside that band the answer depends ONLY on the position ALONG the seam and
+    never on how deep into either flank the pointer sits — a flank pixel is the gap
+    column. Three offsets therefore have to paint the identical slot: the gap itself,
+    and 9px into each neighbour (inside the ~10px half-strips at this area size).
+    Sampled twice along the seam — at its middle, where the answer is a between-insert,
+    and inside its end quarter, where it is a structural group split — and the two must
+    disagree, or the "band" would be collapsing into a single zone and proving nothing.
+  */
+  const seamArea = await elementRect(browser, ".tile-area");
+  /*
+    Measured with any residual FLIP transform LIFTED (transitions suppressed, or the
+    rect reads a mid-flight animation value) and restored verbatim — the seam lives in
+    the layout's stable geometry, which is where the pointer's position is judged.
+  */
+  const seamKids = await browser.evaluate<readonly { id: string; top: number; bottom: number }[]>(
+    `(() => {
+      const root = document.querySelector('.tile-area [data-tile-id="root"]');
+      if (root === null) return [];
+      const kids = [...root.children].filter((el) => el.hasAttribute('data-tile-id'));
+      const lifted = [];
+      for (const el of kids) {
+        if (el.style.transform === '') continue;
+        lifted.push([el, el.style.transform]);
+        el.style.transition = 'none';
+        el.style.transform = 'none';
+      }
+      const measured = kids.map((el) => {
+        const box = el.getBoundingClientRect();
+        return { id: el.getAttribute('data-tile-id') ?? '', top: box.top, bottom: box.bottom };
+      });
+      for (const [el, transform] of lifted) {
+        el.style.transform = transform;
+        el.style.transition = '';
+      }
+      return measured;
+    })()`,
+  );
+  const leadingKid = seamKids[0] ?? null;
+  const trailingKid = seamKids[1] ?? null;
+  const seamReady = seamArea !== null && leadingKid !== null && trailingKid !== null;
+  const seamBox = seamArea ?? { left: 0, top: 0, width: 800, height: 600 };
+  const fyAt = (clientY: number): number => (clientY - seamBox.top) / seamBox.height;
+  const seamGapY = ((leadingKid?.bottom ?? 0) + (trailingKid?.top ?? 0)) / 2;
+  const fyGap = fyAt(seamGapY);
+  /*
+    Flank samples must sit inside the seam band's GUARANTEED width. The nominal strip is
+    seamHalf = min(ROOT_RING_PX/2, 0.125 × pane extent) into each pane, but hysteresis
+    bounds membership to no less than HALF that when a rival aim is held mid-drag — so a
+    fixed offset (9px) can fall outside the band and legitimately answer as the pane's
+    own zone. Sample at 40% of seamHalf: inside the band under any held state.
+  */
+  const seamPaneExtent = Math.min(
+    (leadingKid?.bottom ?? 0) - (leadingKid?.top ?? 0),
+    (trailingKid?.bottom ?? 0) - (trailingKid?.top ?? 0),
+  );
+  const seamFlankPx = Math.max(2, Math.floor(0.4 * Math.min(10, 0.125 * seamPaneExtent)));
+  const fyFlankUp = fyAt((leadingKid?.bottom ?? 0) - seamFlankPx);
+  const fyFlankDown = fyAt((trailingKid?.top ?? 0) + seamFlankPx);
+  /*
+    The along-the-seam MIDDLE sample must not sit on a CROSSING seam. Either flanked
+    pane may itself be a split whose own perpendicular seam crosses this one; at the
+    crossing, the child seam's gap (distance 0) legitimately outranks the root seam's
+    flank by the kernel's deepest-penetration rule, and its END CAP answers there — a
+    correct resolution that would make this round measure the wrong seam. So the round
+    measures every nested divider inside both flanked panes and picks a middle x at
+    least 25px clear of all of them (and of the area's side rings).
+  */
+  const nestedSeamXs = await browser.evaluate<readonly number[]>(
+    `(() => {
+      const kids = [
+        document.querySelector('.tile-area [data-tile-id="${leadingKid?.id ?? ""}"]'),
+        document.querySelector('.tile-area [data-tile-id="${trailingKid?.id ?? ""}"]'),
+      ];
+      const xs = [];
+      for (const kid of kids) {
+        if (kid === null) continue;
+        for (const divider of kid.querySelectorAll('[role="separator"]')) {
+          const box = divider.getBoundingClientRect();
+          if (box.width < box.height) xs.push(box.left + box.width / 2);
+        }
+      }
+      return xs;
+    })()`,
+  );
+  const xMid = ((): number => {
+    for (const candidate of [0.5, 0.38, 0.62, 0.32, 0.68]) {
+      const clientX = seamBox.left + seamBox.width * candidate;
+      if (nestedSeamXs.every((x) => Math.abs(x - clientX) > 25)) return candidate;
+    }
+    return 0.44;
+  })();
+  /*
+    The along-the-seam end sample must stay clear of the root's OWN border ring, or it
+    answers as an area edge instead of the seam's end quarter and the round would be
+    measuring the wrong object.
+  */
+  const xEnd = seamBox.width * 0.88 < seamBox.width - 25 ? 0.88 : 0.85;
+
+  const termK = await bornTerminal("gate-K");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.pad-tree-item[data-tree-id="${termK.homeId}"] .session-state') !== null`,
+      ),
+    20_000,
+    "terminal K's sidebar row",
+  );
+
+  // Every stop is measured against `.tile-area`, whose box no FLIP ever transforms.
+  const seamHeld = await dragSequence(
+    browser,
+    `.pad-tree-item[data-tree-id="${termK.homeId}"]`,
+    ".tile-area",
+    [
+      { selector: ".tile-area", fx: xMid, fy: fyGap, holdMs: 160 },
+      { selector: ".tile-area", fx: xMid, fy: fyFlankUp, holdMs: 160 },
+      { selector: ".tile-area", fx: xMid, fy: fyFlankDown, holdMs: 160 },
+      { selector: ".tile-area", fx: xEnd, fy: fyGap, holdMs: 160 },
+      { selector: ".tile-area", fx: xEnd, fy: fyFlankUp, holdMs: 160 },
+      { selector: ".tile-area", fx: xEnd, fy: fyFlankDown, holdMs: 160 },
+    ],
+    false,
+  );
+  const sameRect = (a: Rect | null, b: Rect | null): boolean =>
+    a !== null &&
+    b !== null &&
+    Math.abs(a.left - b.left) <= 3 &&
+    Math.abs(a.top - b.top) <= 3 &&
+    Math.abs(a.width - b.width) <= 3 &&
+    Math.abs(a.height - b.height) <= 3;
+  /** True when every offset across the band's thickness gave the very same answer. */
+  const bandIsOneObject = (samples: readonly (HoverSample | null)[]): boolean => {
+    const painted: HoverSample[] = [];
+    for (const sample of samples) {
+      if (sample === null || !sample.present) return false;
+      painted.push(sample);
+    }
+    const head = painted[0];
+    if (head === undefined) return false;
+    return (
+      painted.every((sample) => sample.className === head.className) &&
+      painted.every((a) => painted.every((b) => sameRect(a.rect, b.rect)))
+    );
+  };
+  const bandStory = (samples: readonly (HoverSample | null)[]): string =>
+    samples
+      .map((sample) =>
+        sample === null || !sample.present || sample.rect === null
+          ? "absent"
+          : `top ${sample.rect.top.toFixed(1)} h ${sample.rect.height.toFixed(1)} [${sample.className}]`,
+      )
+      .join(" · ");
+
+  const midBand = seamHeld.samples.slice(0, 3);
+  const endBand = seamHeld.samples.slice(3, 6);
+  check(
+    "seam band answers as one object (middle)",
+    seamReady && seamHeld.ok && bandIsOneObject(midBand),
+    `gap ${seamGapY.toFixed(1)} ±${String(seamFlankPx)}px at x=${String(xMid)} into ${String(leadingKid?.id)}/${String(trailingKid?.id)} of ${String(seamKids.length)} panes → ${bandStory(midBand)}`,
+  );
+  check(
+    "seam band answers as one object (end)",
+    seamReady && seamHeld.ok && bandIsOneObject(endBand),
+    `the same three offsets at x=${String(xEnd)} → ${bandStory(endBand)}`,
+  );
+  const midGapSample = seamHeld.samples[0] ?? null;
+  const endGapSample = seamHeld.samples[3] ?? null;
+  const zoneShift =
+    midGapSample?.rect == null || endGapSample?.rect == null
+      ? -1
+      : Math.max(
+          Math.abs(midGapSample.rect.top - endGapSample.rect.top),
+          Math.abs(midGapSample.rect.height - endGapSample.rect.height),
+        );
+  check(
+    "seam middle and seam end are different zones",
+    seamReady && zoneShift > 10,
+    `between-slot at the boundary vs group-split slot at the area edge differ by ${zoneShift.toFixed(1)}px (>10)`,
+  );
+
+  /* ── Rounds B + C: a peer sees the carry fade, and paints the identical slot ── */
+
+  /*
+    One gesture proves both contracts. While a carry holds an armed target, the carried
+    item's own box wears `is-carried-away` — producer-agnostic, so a peer's browser must
+    show it for a drag it is only WATCHING. And the peer's slot goes through the same
+    renderer as the dragger's, so its computed border, fill and border style have to
+    match to the character; `is-remote` survives as a style-free semantic marker only.
+    The dragger's own reading is taken by `extraJs` at sample time, inside the held
+    frame, so both observations describe the same instant of the same carry.
+  */
+  const carriedLeaf = leafOf(termG.id);
+  const hostLeaf = leafOf(termF.id);
+  const gripSelector = `[data-tile-id="${carriedLeaf}"] .tiled-leaf__grip`;
+  const gripPresent = await browser.evaluate<boolean>(
+    `document.querySelector(${JSON.stringify(gripSelector)}) !== null`,
+  );
+
+  interface SlotStyle {
+    readonly border: string;
+    readonly bg: string;
+    readonly style: string;
+  }
+  const slotStyleJs = `() => {
+    const slot = document.querySelector('.tile-area .tile-preview');
+    if (slot === null) return null;
+    const shown = getComputedStyle(slot);
+    return {
+      border: shown.borderColor,
+      bg: shown.backgroundColor,
+      style: shown.borderStyle,
+      cls: slot.className,
+      fade: document.querySelector('[data-tile-id="${carriedLeaf}"]')?.classList.contains('is-carried-away') === true,
+    };
+  }`;
+  const fadeDrag = dragSequence(
+    browser,
+    gripSelector,
+    ".tile-area",
+    [{ selector: `[data-tile-id="${hostLeaf}"]`, fx: 0.5, fy: 0.5, holdMs: 1800 }],
+    false,
+    slotStyleJs,
+  );
+  const peerSample = await (async () => {
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      const sample = await viewer!.evaluate<
+        (SlotStyle & { readonly cls: string; readonly fade: boolean }) | null
+      >(
+        `(() => {
+          const pane = document.querySelector('[data-tile-id="${carriedLeaf}"]');
+          const slot = document.querySelector('.tile-area .tile-preview');
+          if (pane === null || slot === null) return null;
+          const shown = getComputedStyle(slot);
+          return {
+            border: shown.borderColor,
+            bg: shown.backgroundColor,
+            style: shown.borderStyle,
+            cls: slot.className,
+            fade: pane.classList.contains('is-carried-away'),
+          };
+        })()`,
+      );
+      if (sample !== null && sample.fade) return sample;
+      await sleep(100);
+    }
+    return null;
+  })();
+  const fadeHeld = await fadeDrag;
+  check(
+    "a viewer sees the carried tile ease away",
+    gripPresent && carriedLeaf !== "" && hostLeaf !== "" && peerSample !== null,
+    peerSample === null
+      ? `no viewer frame showed [data-tile-id="${carriedLeaf}"] wearing is-carried-away beside a live slot (grip present: ${String(gripPresent)})`
+      : `the peer faded the carried pane while its slot "${peerSample.cls}" stood armed`,
+  );
+
+  const ownSample = (fadeHeld.samples[0]?.extra ?? null) as
+    (SlotStyle & { readonly cls: string; readonly fade: boolean }) | null;
+  const stateOf = (sample: (SlotStyle & { readonly cls: string }) | null): string =>
+    sample === null
+      ? "absent"
+      : `border ${sample.border} / bg ${sample.bg} / ${sample.style} ("${sample.cls}")`;
+  check(
+    "a viewer's preview is pixel-identical to the dragger's",
+    ownSample !== null &&
+      peerSample !== null &&
+      ownSample.border === peerSample.border &&
+      ownSample.bg === peerSample.bg &&
+      ownSample.style === peerSample.style &&
+      ownSample.style === "solid",
+    `dragger ${stateOf(ownSample)} vs viewer ${stateOf(peerSample)} — carried pane faded for the dragger: ${String(ownSample?.fade)}, for the viewer: ${String(peerSample?.fade)}`,
+  );
+
+  // The fade is a property of an ARMED carry, so it must lift on its own once the
+  // gesture goes silent — no end frame, the same TTL the remote aim rides.
+  await until(
+    () =>
+      viewer!.evaluate<boolean>(
+        `document.querySelector('[data-tile-id="${carriedLeaf}"]')?.classList.contains('is-carried-away') !== true`,
+      ),
+    10_000,
+    "viewer's carried pane lost its fade",
+  );
+  check(
+    "the fade lifts when the carry goes silent",
+    true,
+    "the peer's carried pane came back to full presence with no end frame",
+  );
+
+  /* ── Round 8: an engaged widget's seam drags, exactly like the route's ── */
+
+  /*
+    THE SEAM YOU SEE IS THE SEAM YOU GRAB. A widget draws its tree under
+    `transform: scale(PORTAL_PREVIEW_SCALE)` and any canvas zoom, so a seam's paint and
+    its pointer band shrink together — and the band was additionally defeated on its
+    trailing side by the neighbouring pane's own positioned content, which left the live
+    band entirely on the LEADING side of the line a viewer aims at. Pressing the visible
+    centre landed in the terminal, so the resize never started on a canvas while the
+    fullscreen route (drawn 1:1) was fine. The gesture below is the operator's: engage the
+    widget, press the seam's visible centre the way a real mouse does (whole device
+    pixels), drag, and read the ratios back off the SERVER rather than the paint.
+  */
+  await browser.goto(`${origin}/p/${canvasPadId}`);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('${widgetSelector} .flow-portal__divider') !== null`,
+      ),
+    20_000,
+    "widget remounted with its seams",
+  );
+  const seamTile = await elementRect(browser, `${widgetSelector} .flow-portal__tile`);
+  if (seamTile !== null) {
+    // One real click on a tile: watching becomes working, which is what arms the seams.
+    await browser.drag(
+      [{ x: seamTile.left + seamTile.width / 2, y: seamTile.top + seamTile.height / 2 }],
+      0,
+    );
+  }
+  const seamEngaged = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('${widgetSelector} .flow-portal--engaged') !== null`,
+      ),
+    15_000,
+  );
+  /*
+    The ROOMIEST live seam, not simply the first: by this point the composition has been
+    resplit half a dozen times, and a seam whose neighbour already sits at
+    MIN_TILE_FRACTION would answer a working drag with no movement at all.
+
+    The press point walks ALONG the seam until the topmost element there is this very
+    divider. Widening reaches on all four sides, so at a T-junction the crossing seam
+    wins a small square — and the centre of a two-way split's seam is exactly where its
+    child's own seam crosses it. Both answers are a legitimate resize, but only one of
+    them moves the split this round is reading, so the aim steps off the junction.
+
+    `band` is how much of the seam answers the pointer across its drag axis — the number
+    this round exists to defend, so it travels in the detail line either way.
+  */
+  const seam = await browser.evaluate<{
+    readonly splitId: string;
+    readonly index: number;
+    readonly column: boolean;
+    readonly x: number;
+    readonly y: number;
+    readonly band: number;
+    readonly extent: number;
+    readonly inert: boolean;
+  } | null>(
+    `(() => {
+      const widget = document.querySelector('${widgetSelector}');
+      if (widget === null) return null;
+      let best = null;
+      for (const div of widget.querySelectorAll('.flow-portal__divider')) {
+        const split = div.parentElement;
+        if (split === null) continue;
+        const column = split.classList.contains('is-column');
+        const splitBox = split.getBoundingClientRect();
+        const extent = column ? splitBox.height : splitBox.width;
+        if (best !== null && extent <= best.extent) continue;
+        const box = div.getBoundingClientRect();
+        let index = 0;
+        for (let kid = div.previousElementSibling; kid !== null; kid = kid.previousElementSibling) {
+          if (kid.getAttribute('role') === 'separator') index += 1;
+        }
+        // Whole device pixels, dead centre of the LINE: what a person actually presses.
+        const across = Math.round((column ? box.top + box.height / 2 : box.left + box.width / 2));
+        let along = 0;
+        for (const fraction of [0.5, 0.25, 0.75, 0.35, 0.65, 0.12, 0.88]) {
+          const at = Math.round(
+            column ? box.left + box.width * fraction : box.top + box.height * fraction,
+          );
+          if (document.elementFromPoint(column ? at : across, column ? across : at) === div) {
+            along = at;
+            break;
+          }
+        }
+        if (along === 0) continue;
+        const x = column ? along : across;
+        const y = column ? across : along;
+        let band = 0;
+        for (let d = -18; d <= 18; d += 0.5) {
+          if (document.elementFromPoint(column ? x : x + d, column ? y + d : y) === div) band += 0.5;
+        }
+        best = {
+          splitId: split.getAttribute('data-tile-id') ?? '',
+          index,
+          column,
+          x,
+          y,
+          band,
+          extent,
+          inert: div.classList.contains('is-inert'),
+        };
+      }
+      return best;
+    })()`,
+  );
+  const seamSplit = seam?.splitId ?? "";
+  /*
+    Stored ratios are RELATIVE and their sum drifts as tiles come and go, so a drag is
+    only readable as the SHARE each pane holds of its split — which is also what the
+    renderer paints.
+  */
+  const seamShares = (tileId: string): readonly number[] => {
+    const ratios = layoutNow()[tileId]?.ratios ?? [];
+    let total = 0;
+    for (const ratio of ratios) total += ratio;
+    return total > 0 ? ratios.map((ratio) => ratio / total) : ratios;
+  };
+  const sharesBefore = seamShares(seamSplit);
+  if (seam !== null) {
+    // Toward the roomier neighbour, so a pane already pinned at MIN_TILE_FRACTION cannot
+    // make a working drag look dead.
+    const leading = sharesBefore[seam.index] ?? 0;
+    const trailing = sharesBefore[seam.index + 1] ?? 0;
+    const step = leading <= trailing ? 5 : -5;
+    const travel: { x: number; y: number }[] = [];
+    for (let i = 0; i <= 8; i += 1) {
+      travel.push({
+        x: seam.column ? seam.x : seam.x + i * step,
+        y: seam.column ? seam.y + i * step : seam.y,
+      });
+    }
+    await browser.drag(travel, 30);
+  }
+  const seamMoved = await settles(() => {
+    const after = seamShares(seamSplit);
+    return sharesBefore.some((share, index) => Math.abs(share - (after[index] ?? 0)) >= 0.05);
+  }, 10_000);
+  const sharesAfter = seamShares(seamSplit);
+  const shareStory = (shares: readonly number[]): string =>
+    `[${shares.map((share) => share.toFixed(3)).join(", ")}]`;
+  /*
+    Two claims, one gesture. The drag has to LAND (server-side ratios, read through the
+    SDK), and the band it landed through has to be as reachable as the route's: the
+    fullscreen route answers across 18.5 device px at this font size, and a widget used to
+    answer across 6.75 px sitting entirely LEFT of the line it painted. 16 px keeps the
+    on-screen parity claim honest with room for rounding, and fails on any regression that
+    lets the widget's transform shrink the band again.
+  */
+  const SEAM_BAND_FLOOR = 16;
+  check(
+    "an engaged widget's divider drags resize the split",
+    seamEngaged && seam !== null && !seam.inert && seamMoved && seam.band >= SEAM_BAND_FLOOR,
+    seam === null
+      ? `no seam found in the widget (engaged: ${String(seamEngaged)})`
+      : `${seamSplit} ${seam.column ? "column" : "row"} shares ${shareStory(sharesBefore)} -> ${shareStory(sharesAfter)} from a 40px press on the seam's visible line; ${seam.band.toFixed(1)}px grab band (≥${String(SEAM_BAND_FLOOR)}) across a ${seam.extent.toFixed(0)}px split, inert ${String(seam.inert)}`,
   );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

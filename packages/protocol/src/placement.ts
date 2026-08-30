@@ -381,6 +381,21 @@ export const PlacementDestinationSchema = z.discriminatedUnion("kind", [
      * pane alone — the target cedes half and the neighbor is untouched. Absent ≡
      * false (split the target). Meaningless (and ignored) for cross-axis edges,
      * ends of a row, and `center`.
+     *
+     * `resolvePlacement` never reads this field, and that is deliberate: the algebra
+     * answers on destination SHAPE alone, so it cannot refuse a nonsense `between`
+     * and no future rule here should try — a ratio detail is not a placement legality
+     * question. The authority it widens is real but bounded: `between` makes the
+     * NEIGHBOR cede a third, a pane the request never names. Bounded because ratios
+     * are already freely client-writable through divider drags, so this grants no new
+     * capability, only a less obvious route to one already held.
+     *
+     * The whole defence is therefore `insertLeaf`'s branch structure in
+     * `@manifold/scene`, which keeps every abusive combination inert rather than
+     * refused: `center` returns before `between` is read, a cross-axis edge falls to
+     * the wrapper branch that never reads it, and a row end fails the neighbor-index
+     * guard and splits the target instead. A reader looking for the check upstream
+     * will not find one; it is not missing.
      */
     between: z.boolean().optional(),
   }),

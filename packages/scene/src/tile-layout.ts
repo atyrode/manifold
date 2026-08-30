@@ -402,6 +402,9 @@ export function readTileLayout(doc: Y.Doc, containerId?: string): TileLayout | n
 /**
  * Seeds a tiled container with a single empty leaf. A tree that fails validation
  * is unusable, so it is replaced rather than left stranding the room.
+ *
+ * The seed is valid by construction, so `applyTileLayout` can never refuse it and
+ * there is nothing here for a caller to handle: this stays void.
  */
 export function initTiledLayout(doc: Y.Doc, origin: unknown): void {
   if (readTileLayout(doc) !== null) return;
@@ -420,7 +423,7 @@ export function writeTileLeaf(
   const layout = readTileLayout(doc) ?? emptyTileLayout();
   const inserted = withTileLeaf(layout, surface, targetTileId, edge, between);
   if (inserted === null) return null;
-  applyTileLayout(doc, inserted.layout, origin);
+  if (!applyTileLayout(doc, inserted.layout, origin)) return null;
   return inserted.tileId;
 }
 
@@ -429,7 +432,7 @@ export function removeTileLeaf(doc: Y.Doc, tileId: string, origin: unknown): boo
   if (layout === null) return false;
   const next = withoutTileLeaf(layout, tileId);
   if (next === null) return false;
-  applyTileLayout(doc, next, origin);
+  if (!applyTileLayout(doc, next, origin)) return false;
   return true;
 }
 
@@ -444,7 +447,7 @@ export function swapTileLeaves(
   if (layout === null) return false;
   const next = withTilesSwapped(layout, aTileId, bTileId);
   if (next === null) return false;
-  applyTileLayout(doc, next, origin);
+  if (!applyTileLayout(doc, next, origin)) return false;
   return true;
 }
 
@@ -459,7 +462,7 @@ export function writeTileLeafSurface(
   if (layout === null) return false;
   const next = withTileLeafSurface(layout, tileId, surface);
   if (next === null) return false;
-  applyTileLayout(doc, next, origin);
+  if (!applyTileLayout(doc, next, origin)) return false;
   return true;
 }
 
@@ -473,15 +476,40 @@ export function setTileRatios(
   if (layout === null) return false;
   const next = withTileRatios(layout, splitId, ratios);
   if (next === null) return false;
-  applyTileLayout(doc, next, origin);
+  if (!applyTileLayout(doc, next, origin)) return false;
   return true;
 }
 
 /**
  * Diffs a whole node table into the doc: only changed fields are written, so a
  * ratio drag touches one key and never churns the tiles around it.
+ *
+ * REFUSES a table the read side could not read back, before touching the doc, and
+ * answers false. This is the only door into the stored tree and a CRDT keeps no
+ * prior state to fall back to, so a persisted invalid table is not a failed write —
+ * it is a permanently empty container for EVERY peer, with no undo. Refusing costs
+ * one gesture; persisting costs the room. The pure surgery above is total, but it
+ * gained a `between` parameter recently and the next one is an off-by-one away, so
+ * the write gate is defence in depth rather than a restatement of it. It is not
+ * only hypothetical today: `insertLeaf`'s same-axis branch splices a sibling into a
+ * flat row with no fan-out bound, so a 17th child would clear every pure guard and
+ * then fail `MAX_TILE_CHILDREN` on read.
+ *
+ * The gate is `readTileLayout`'s own predicate, reused rather than restated: the
+ * schema carries runtime facts the TS type does not (positive ratios, non-empty
+ * ids, `MAX_TILE_CHILDREN`), so re-deriving them here would be a second copy of the
+ * document's shape, free to drift from the one that decides readability. Only
+ * `.success` is consumed; the parsed clone is discarded. Cost is ~6 µs on a typical
+ * table and ~24 µs on the widest legal one, which a divider drag can afford once
+ * per pointer frame.
+ *
+ * `containerId`'s self-reference rule is deliberately NOT enforced here: doc access
+ * never learns which container it writes. `readTileLayout` enforces it where the
+ * caller knows the id, and a container tiling itself renders as a hole rather than
+ * bricking the tree, so it is not this gate's business.
  */
-export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): void {
+export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): boolean {
+  if (!TileLayoutSchema.safeParse(next).success || !validateTileLayout(next)) return false;
   const map = layoutMap(doc);
   doc.transact(() => {
     for (const id of [...map.keys()]) {
@@ -504,6 +532,7 @@ export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): 
       }
     }
   }, origin);
+  return true;
 }
 
 /** Writes only the fields that actually changed, so untouched tiles never churn. */

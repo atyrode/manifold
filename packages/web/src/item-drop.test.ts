@@ -6,6 +6,7 @@ import {
   type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
+  type PlacementSurface,
   type SceneElement,
 } from "@manifold/protocol";
 import { createPlacementLookup, denialMessage } from "./item-drop.ts";
@@ -200,6 +201,33 @@ describe("denial prose", () => {
       expect(message.length).toBeGreaterThan(0);
       expect(message.endsWith(".")).toBe(true);
     }
+  });
+
+  /*
+   * The claim behind widening `assess(destination, surface?)`: legality is a question
+   * about a SURFACE, never about who happens to be dragging. A viewer holding a peer's
+   * surface and its own lookup reaches the same verdict the peer's own browser does,
+   * which is what lets a collaborator's preview wear the refusal instead of painting a
+   * legal-looking cue over a drop the server will reject.
+   */
+  test("a surface nobody here is carrying is judged exactly as the carrier's own is", () => {
+    const foreign: PlacementSurface = { kind: "pad", padId: "comp-2" };
+    const intoComposition: PlacementDestination = {
+      kind: "tile",
+      padId: "comp-1",
+      targetTileId: "t1",
+      edge: "right",
+    };
+    const resolution = resolvePlacement(foreign, intoComposition, lookup);
+    expect(resolution.ok).toBe(false);
+    if (resolution.ok) return;
+    expect(denialMessage(resolution.denial, lookup)).toBe(
+      "A composition holds more than one item, so it cannot merge into another.",
+    );
+    // And a legal one stays legal: absence of a cue, not a fabricated denial.
+    expect(
+      resolvePlacement({ kind: "terminal", sessionId: "s1" }, intoComposition, lookup).ok,
+    ).toBe(true);
   });
 
   test("legal placements are the majority case and produce no prose at all", () => {

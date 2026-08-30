@@ -15,12 +15,12 @@ import { SNAP_EDGE_BAND, snapZone } from "./tile-snap.ts";
  * every rectangle and point is a fraction 0..1 of the tile area, so the same numbers
  * hold at any canvas zoom and under a widget's `transform: scale()`.
  *
- * This module answers WHERE a pointer aims inside a tile tree — any leaf, at any
- * depth, plus the area's own border ring for root-level splits — and WHAT the panes
- * would do about it (`paneShifts`), which is what the live preview animates. It is
- * deliberately separate from `tile-snap.ts`: that module keeps serving the canvas
- * door, whose center semantics (dissolve-to-nearest-edge for a seatless carry) are
- * now WRONG for tile targets, where five zones are always live.
+ * This module answers WHERE a pointer aims inside a tile tree — any leaf at any depth,
+ * every SEAM between adjacent siblings at any depth, and the area's own border ring —
+ * and WHAT the panes would do about it (`paneShifts`), which is what the live preview
+ * animates. It is deliberately separate from `tile-snap.ts`: that module keeps serving
+ * the canvas door, whose center semantics (dissolve-to-nearest-edge for a seatless
+ * carry) are now WRONG for tile targets, where five zones are always live.
  */
 
 /** A rectangle in unit space: fractions of the tile area. */
@@ -49,6 +49,17 @@ export const RING_AXIS_CAP = 0.15;
  * edge-band area and never a leaf's center — the 5-zones-always-live guarantee.
  */
 export const RING_LEAF_CAP = 0.2;
+
+/**
+ * Slack for every float comparison in this module. `tileRects` builds a split's
+ * trailing edge by ACCUMULATION (`cursor += share + divider`), so the last child's far
+ * edge lands at `1 ± ~1e-16` depending on the divider and the ratios — one realistic
+ * geometry in three. Border contact and rect equality are therefore both epsilon
+ * questions; an exact compare silently drops `RING_LEAF_CAP` on the right and bottom
+ * borders (the 5-zones-always-live proof) for some window widths and not others, which
+ * would also make the zone field differ between two viewers of the same tree.
+ */
+const SHIFT_EPSILON = 1e-6;
 
 /**
  * Every tile's rectangle, splits included — a split's union rect is what makes an
@@ -155,7 +166,10 @@ export interface TileAimCarry {
   readonly holdsTileSeat: boolean;
 }
 
-/** The smallest extent of any leaf touching one border of the unit square, else 1. */
+/**
+ * The smallest extent of any leaf touching one border of the unit square, else 1.
+ * Contact is an EPSILON question, never an exact one: see `SHIFT_EPSILON`.
+ */
 function minTouchingLeaf(
   layout: TileLayout,
   rects: ReadonlyMap<string, UnitRect>,
@@ -167,12 +181,12 @@ function minTouchingLeaf(
     if (node === undefined || node.dir !== null) continue;
     const touches =
       edge === "left"
-        ? rect.x <= 0
+        ? rect.x <= SHIFT_EPSILON
         : edge === "right"
-          ? rect.x + rect.width >= 1
+          ? rect.x + rect.width >= 1 - SHIFT_EPSILON
           : edge === "top"
-            ? rect.y <= 0
-            : rect.y + rect.height >= 1;
+            ? rect.y <= SHIFT_EPSILON
+            : rect.y + rect.height >= 1 - SHIFT_EPSILON;
     if (!touches) continue;
     const extent = edge === "left" || edge === "right" ? rect.width : rect.height;
     if (extent < min) min = extent;
@@ -180,74 +194,36 @@ function minTouchingLeaf(
   return min;
 }
 
-/**
- * The seam a pointer sits on, resolved to the insert it means (#60).
- *
- * The MIDDLE stretch of a seam is "wedge in between these two": the leading
- * neighbor's trailing edge, which `insertLeaf`'s same-axis branch turns into a flat
- * sibling exactly where the pointer is. A neighbor dropped on its own seam would be
- * a no-op, so it aims at nothing — never previewed, never committed.
- *
- * The seam's outer ENDS are "split the GROUP this seam belongs to, across": the seam
- * is the one piece of geometry that unambiguously belongs to the split itself — a
- * group's outer border is always coincident with its members' edge bands, but its
- * seam is flanked by leaf centers — so pulling toward a seam's end is how an inner
- * split like `(C | D)` in `A | (B / (C | D))` grows `E` across its whole width:
- * `B / (C | D) / E`. When that runs the grandparent's axis it flattens like every
- * other same-axis insert; a cross-axis end wraps the group as a unit.
- */
-function dividerAim(
-  rects: ReadonlyMap<string, UnitRect>,
-  split: TileNode,
-  point: UnitPoint,
-  carry: TileAimCarry,
-  depth: number,
-): TileAim | null {
-  const row = split.dir === "row";
-  const p = row ? point.x : point.y;
-  let previous: string | null = null;
-  let next: string | null = null;
-  for (const childId of split.children) {
-    const rect = rects.get(childId);
-    if (rect === undefined) continue;
-    const start = row ? rect.x : rect.y;
-    const end = start + (row ? rect.width : rect.height);
-    if (p >= end) previous = childId;
-    if (p <= start && next === null) next = childId;
-  }
-  if (previous === null || next === null) return null;
-
-  const own = rects.get(split.id);
-  if (own !== undefined) {
-    // Position ALONG the seam, as a fraction of the split's perpendicular extent.
-    const along = row
-      ? (point.y - own.y) / (own.height > 0 ? own.height : 1)
-      : (point.x - own.x) / (own.width > 0 ? own.width : 1);
-    if (along < SNAP_EDGE_BAND) {
-      return { tileId: split.id, edge: row ? "top" : "left", action: "place", depth: depth - 1 };
-    }
-    if (along > 1 - SNAP_EDGE_BAND) {
-      return {
-        tileId: split.id,
-        edge: row ? "bottom" : "right",
-        action: "place",
-        depth: depth - 1,
-      };
-    }
-  }
-
-  if (carry.carriedTileId === previous || carry.carriedTileId === next) return null;
-  return {
-    tileId: previous,
-    edge: row ? "right" : "bottom",
-    action: "place",
-    depth,
-    between: true,
-  };
-}
-
 /** How far past a held zone's boundary the pointer must travel before the aim flips. */
 export const ZONE_HYSTERESIS = 0.06;
+
+/**
+ * One boundary's hysteresis margin, BOUNDED BY HALF THE BAND IT MODULATES, so a held
+ * aim can only ever move that boundary within [0.5, 1.5] × the band's nominal width.
+ *
+ * The bound is load-bearing wherever the band is derived from device px while the
+ * margin is an area fraction. `ZONE_HYSTERESIS` (0.06 of a leaf) is fine against the
+ * leaf's own `SNAP_EDGE_BAND` (0.25 of the same leaf) — same units, ~24 % — but it
+ * DWARFS the seam band and the ring, which are ~10–20 px converted to a fraction
+ * (0.006..0.04 per axis). Unbounded, those bands vanished entirely whenever anything
+ * else was held — so a pointer approaching from a flank, which is exactly the state
+ * "something else is held", could never enter the zone at all — and inflated ~6× once
+ * held, making it violently sticky on the way out. Both directions were wrong.
+ */
+function heldMargin(nominal: number, wanted: number): number {
+  return Math.min(wanted, 0.5 * nominal);
+}
+
+/**
+ * The aim a preview is already painting, handed back so the resolver can bias every
+ * boundary toward it. Structurally what `resolveTileAim` returns, minus the derived
+ * fields, so a caller can simply pass its last answer.
+ */
+interface HeldAim {
+  readonly tileId: string;
+  readonly edge: TileEdge;
+  readonly between?: boolean;
+}
 
 /** Is the point still inside `edge`'s zone of `rect`, grown by the hysteresis margin? */
 function withinHeldZone(rect: UnitRect, point: UnitPoint, edge: TileEdge): boolean {
@@ -276,73 +252,307 @@ function withinHeldZone(rect: UnitRect, point: UnitPoint, edge: TileEdge): boole
   }
 }
 
-/**
- * Half-thickness of the seam band inside one flank, in unit space. The seam band is
- * the divider gap plus this strip on either side, so its total on-screen thickness
- * tracks the ring's (`ROOT_RING_PX`), constant at any zoom. Capped at half the snap
- * band so the flank always keeps an outer stretch that means "split this pane".
- */
-function seamHalf(ringAxis: number, leafExtent: number): number {
-  return Math.min(ringAxis / 2, 0.5 * SNAP_EDGE_BAND * leafExtent);
+/*
+  SEAMS ARE ONE OBJECT.
+
+  A seam is the boundary between two adjacent children of a split, materialised as a
+  BAND: the divider gap plus a strip `seamHalf` deep into each neighbour. Inside that
+  band the answer is a pure function of position ALONG the seam and never of how far
+  ACROSS it the pointer sits. That invariance is the whole point. dev.16 resolved the
+  gap column and the flank strips in two different functions that disagreed: the gap
+  subdivided along the seam (outer stretches split the group, the middle wedges
+  between) while the flanks only measured distance across it — so at one height a
+  single seam answered `t1/right/between` on its left flank, `root/bottom` in its gap
+  and `t2/left/between` on its right flank. Two of those are the SAME insert addressed
+  two ways and the third interleaves with them. One band, one function, one answer.
+
+  ANCESTOR SEAMS COUNT. A flank pixel beside a grandparent's boundary belongs to that
+  grandparent's seam exactly as its gap column does, so in `A | (B/C)` a pointer inside
+  B can still address the root seam. Otherwise an ancestor's structural split would be
+  reachable from its two-pixel gap and nowhere else.
+
+  The MIDDLE stretch means "wedge in between these two", CANONICALLY addressed as the
+  LEADING child's trailing edge: `insertLeaf`'s same-axis branch turns that into a flat
+  sibling exactly where the pointer is, and naming it exactly one way is what kills the
+  dual addressing. A neighbour dropped on its own seam would be a no-op, so it aims at
+  nothing — never previewed, never committed. The outer ENDS mean "split the GROUP this
+  seam belongs to, across": the seam is the one piece of geometry that unambiguously
+  belongs to the split itself — a group's outer border is always coincident with its
+  members' edge bands, but its seam is flanked by leaf centres — so pulling toward a
+  seam's end is how an inner split like `(C | D)` in `A | (B / (C | D))` grows `E`
+  across its whole width: `B / (C | D) / E`.
+
+  HYSTERESIS runs on both axes of the band, always biased toward the aim already being
+  painted. ACROSS: when the held aim names THIS seam the membership threshold grows by
+  the margin; when it names anything else it shrinks by the same margin, so a flip must
+  be earned in either direction. The margin is `ZONE_HYSTERESIS` of the point-side
+  child's extent BOUNDED BY HALF THE BAND (`heldMargin`) — unbounded it is many times
+  the px-derived band, which made the seam unreachable by approach from a flank and
+  ~6× sticky once held. ALONG: a held middle pulls both end stretches in by
+  `ZONE_HYSTERESIS`, and a held end pushes that one end out by it; those boundaries cut
+  at `SNAP_EDGE_BAND` of the same extent the margin is a fraction of, so they need no
+  bound. Competing seams are ranked by PENETRATION rather than by raw distance, so the
+  widened threshold also wins the held seam a contested pixel.
+*/
+
+/** Which meaning of one seam a held aim names. */
+type SeamHeld = "middle" | "low-end" | "high-end";
+
+/** One seam the pointer sits in the band of, and how deeply. */
+interface Seam {
+  readonly split: TileNode;
+  /** The split's own depth in the chain: what its structural end aims address. */
+  readonly depth: number;
+  /** Index of the leading child, so ties resolve to the leading boundary. */
+  readonly index: number;
+  readonly previousChildId: string;
+  readonly nextChildId: string;
+  /** 1 anywhere in the divider gap, 0 at the band's outer lip. */
+  readonly score: number;
+  readonly held: SeamHeld | null;
 }
 
 /**
- * Whether an edge-zone aim on a leaf means BETWEEN — wedge into the seam it shares
- * with a same-axis sibling, both ceding thirds — rather than splitting the leaf's own
- * share. True only when the edge faces a same-axis sibling AND the pointer sits in
- * the seam band flanking their shared boundary. `heldBetween` is hysteresis: the
- * boundary between the two meanings moves a margin against the direction of a flip,
- * so a pointer resting on it never flutters between previews.
+ * Half-thickness of the seam band inside one flank, in unit space, so the band's total
+ * on-screen thickness tracks the ring's (`ROOT_RING_PX`) and stays constant at any
+ * zoom. Capped at half the snap band so a flank always keeps an outer stretch that
+ * means "split this pane".
  */
-function betweenAim(
-  layout: TileLayout,
-  chain: readonly string[],
-  leafId: string,
-  rect: UnitRect,
-  edge: TileEdge,
+function seamHalf(ringAxis: number, childExtent: number): number {
+  return Math.min(ringAxis / 2, 0.5 * SNAP_EDGE_BAND * childExtent);
+}
+
+/** Which meaning of this seam the held aim names — the bias every boundary takes. */
+function seamHeld(held: HeldAim | null, split: TileNode, previousChildId: string): SeamHeld | null {
+  if (held === null) return null;
+  const row = split.dir === "row";
+  // A middle aim IS the leading child's trailing edge, so it names this seam exactly.
+  if (held.between === true && held.tileId === previousChildId) return "middle";
+  if (held.tileId !== split.id) return null;
+  if (held.edge === (row ? "top" : "left")) return "low-end";
+  if (held.edge === (row ? "bottom" : "right")) return "high-end";
+  return null;
+}
+
+/**
+ * The seam between children `index` and `index + 1` of `split`, when the pointer is a
+ * member of its band. `pointSideExtent` is the extent of the child the pointer is
+ * inside — what the band's depth is measured against — and is null when the pointer is
+ * in the gap itself and has no side, where the narrower neighbour stands in.
+ */
+function seamAt(
+  rects: ReadonlyMap<string, UnitRect>,
+  split: TileNode,
+  index: number,
+  depth: number,
   point: UnitPoint,
   ring: { readonly x: number; readonly y: number },
-  heldBetween: boolean | null,
-): boolean {
-  if (edge === "center") return false;
-  const parentId = chain.length >= 2 ? chain[chain.length - 2] : undefined;
-  const parent = parentId === undefined ? undefined : layout[parentId];
-  if (parent === undefined || parent.dir === null) return false;
-  const row = edge === "left" || edge === "right";
-  if ((parent.dir === "row") !== row) return false;
-  const index = parent.children.indexOf(leafId);
-  if (index < 0) return false;
-  const neighborIndex = edge === "left" || edge === "top" ? index - 1 : index + 1;
-  if (neighborIndex < 0 || neighborIndex >= parent.children.length) return false;
-  const extent = row ? rect.width : rect.height;
-  const distance =
-    edge === "left"
-      ? point.x - rect.x
-      : edge === "right"
-        ? rect.x + rect.width - point.x
-        : edge === "top"
-          ? point.y - rect.y
-          : rect.y + rect.height - point.y;
-  let threshold = seamHalf(row ? ring.x : ring.y, extent);
-  if (heldBetween !== null) {
-    const margin = ZONE_HYSTERESIS * extent;
-    threshold = Math.max(0, threshold + (heldBetween ? margin : -margin));
+  held: HeldAim | null,
+  pointSideExtent: number | null,
+): Seam | null {
+  const previousChildId = split.children[index];
+  const nextChildId = split.children[index + 1];
+  if (previousChildId === undefined || nextChildId === undefined) return null;
+  const previous = rects.get(previousChildId);
+  const next = rects.get(nextChildId);
+  if (previous === undefined || next === undefined) return null;
+
+  const row = split.dir === "row";
+  const p = row ? point.x : point.y;
+  const gapStart = row ? previous.x + previous.width : previous.y + previous.height;
+  const gapEnd = row ? next.x : next.y;
+  // Distance ACROSS the seam, zero everywhere inside the divider gap.
+  const distance = p < gapStart ? gapStart - p : p > gapEnd ? p - gapEnd : 0;
+
+  const extent =
+    pointSideExtent ??
+    Math.min(row ? previous.width : previous.height, row ? next.width : next.height);
+  const meaning = seamHeld(held, split, previousChildId);
+  const band = seamHalf(row ? ring.x : ring.y, extent);
+  // Bounded, so band membership always lives in [0.5, 1.5] × the band at ANY scale.
+  const margin = held === null ? 0 : heldMargin(band, ZONE_HYSTERESIS * (extent > 0 ? extent : 1));
+  const threshold = meaning !== null ? band + margin : band - margin;
+  if (distance > threshold) return null;
+  return {
+    split,
+    depth,
+    index,
+    previousChildId,
+    nextChildId,
+    score: threshold > 0 ? 1 - distance / threshold : 1,
+    held: meaning,
+  };
+}
+
+/** Deepest penetration wins; a tie goes to the deeper split, then the leading boundary. */
+function closerSeam(a: Seam | null, b: Seam | null): Seam | null {
+  if (b === null) return a;
+  if (a === null) return b;
+  if (b.score !== a.score) return b.score > a.score ? b : a;
+  if (b.depth !== a.depth) return b.depth > a.depth ? b : a;
+  return b.index < a.index ? b : a;
+}
+
+/** The leading child of the gap a pointer stands in, when the chain ended on this split. */
+function gapIndexAt(
+  rects: ReadonlyMap<string, UnitRect>,
+  split: TileNode,
+  point: UnitPoint,
+): number | null {
+  const row = split.dir === "row";
+  const p = row ? point.x : point.y;
+  let leading: number | null = null;
+  let trailing = false;
+  for (let index = 0; index < split.children.length; index += 1) {
+    const childId = split.children[index];
+    const rect = childId === undefined ? undefined : rects.get(childId);
+    if (rect === undefined) continue;
+    const start = row ? rect.x : rect.y;
+    if (p >= start + (row ? rect.width : rect.height)) leading = index;
+    if (p <= start) trailing = true;
   }
-  return distance <= threshold;
+  return leading !== null && trailing ? leading : null;
+}
+
+/**
+ * The seam whose band the pointer sits deepest in, across the whole chain: every
+ * ancestor split offers the boundaries adjacent to the child the pointer descended
+ * into, and a chain that ENDS on a split offers the gap the pointer stands in.
+ */
+function bestSeamAt(
+  layout: TileLayout,
+  rects: ReadonlyMap<string, UnitRect>,
+  chain: readonly string[],
+  point: UnitPoint,
+  ring: { readonly x: number; readonly y: number },
+  held: HeldAim | null,
+): Seam | null {
+  let best: Seam | null = null;
+  for (let depth = 0; depth < chain.length; depth += 1) {
+    const tileId = chain[depth];
+    const split = tileId === undefined ? undefined : layout[tileId];
+    if (split === undefined || split.dir === null) continue;
+    const descentId = chain[depth + 1];
+    if (descentId === undefined) {
+      const index = gapIndexAt(rects, split, point);
+      if (index === null) continue;
+      best = closerSeam(best, seamAt(rects, split, index, depth, point, ring, held, null));
+      continue;
+    }
+    const descent = rects.get(descentId);
+    if (descent === undefined) continue;
+    const at = split.children.indexOf(descentId);
+    if (at < 0) continue;
+    const extent = split.dir === "row" ? descent.width : descent.height;
+    // The two boundaries the descent child touches: its leading one, then its trailing.
+    best = closerSeam(best, seamAt(rects, split, at - 1, depth, point, ring, held, extent));
+    best = closerSeam(best, seamAt(rects, split, at, depth, point, ring, held, extent));
+  }
+  return best;
+}
+
+/**
+ * What releasing on one seam means — the ONLY seam logic there is, so a gap pixel and a
+ * flank pixel at the same height can never answer differently.
+ */
+function seamAim(
+  rects: ReadonlyMap<string, UnitRect>,
+  seam: Seam,
+  point: UnitPoint,
+  carry: TileAimCarry,
+): TileAim | null {
+  const row = seam.split.dir === "row";
+  const carriesMember =
+    carry.carriedTileId === seam.previousChildId || carry.carriedTileId === seam.nextChildId;
+  /*
+    A member of a TWO-child split cannot aim at that split, at either meaning of its
+    seam. Its own departure collapses the split — `withoutTileLeaf` promotes the lone
+    survivor into the parent — so the id a seam-end aim names does not exist in the
+    pruned tree, `tileProspect` remaps nothing (a split has no surface to re-find) and
+    answers null: a zone that looks live for every other carry, previews nothing and
+    commits nothing. The middle refuses for the simpler reason below (a no-op), so the
+    whole seam is nothing to a member of a pair.
+  */
+  if (carriesMember && seam.split.children.length === 2) return null;
+  const own = rects.get(seam.split.id);
+  if (own !== undefined) {
+    // Position ALONG the seam, as a fraction of the split's perpendicular extent.
+    const along = row
+      ? (point.y - own.y) / (own.height > 0 ? own.height : 1)
+      : (point.x - own.x) / (own.width > 0 ? own.width : 1);
+    let low = SNAP_EDGE_BAND;
+    let high = SNAP_EDGE_BAND;
+    switch (seam.held) {
+      case "middle":
+        low -= ZONE_HYSTERESIS;
+        high -= ZONE_HYSTERESIS;
+        break;
+      case "low-end":
+        low += ZONE_HYSTERESIS;
+        break;
+      case "high-end":
+        high += ZONE_HYSTERESIS;
+        break;
+      case null:
+        break;
+      default: {
+        const exhaustive: never = seam.held;
+        return exhaustive;
+      }
+    }
+    if (along < low) {
+      return {
+        tileId: seam.split.id,
+        edge: row ? "top" : "left",
+        action: "place",
+        depth: seam.depth,
+      };
+    }
+    if (along > 1 - high) {
+      return {
+        tileId: seam.split.id,
+        edge: row ? "bottom" : "right",
+        action: "place",
+        depth: seam.depth,
+      };
+    }
+  }
+  if (carriesMember) return null;
+  return {
+    tileId: seam.previousChildId,
+    edge: row ? "right" : "bottom",
+    action: "place",
+    depth: seam.depth + 1,
+    between: true,
+  };
 }
 
 /**
  * The tile a pointer aims at, or null when the release would mean nothing: outside the
- * area, or anywhere over the carry's own leaf (the server treats leaf-onto-itself as a
- * no-op, and null is how the client never previews or commits it). A pointer on a
- * DIVIDER aims between the seam's two siblings — a flat insert into their split.
+ * area, or over the carry's own leaf (the server treats leaf-onto-itself as a no-op,
+ * and null is how the client never previews or commits it).
  *
- * The border ring targets the ROOT and only the root. Ancestors are targetable only
- * along a border they share with the tile area itself, which collapses escalation to
- * exactly one level: any deeper ancestor's ring would be geometrically coincident with a
- * descendant's ring (in `A | (B/C)` the column split's left border IS C's left border),
- * and coincident rings make targeting unpredictable. A solo container has no ring —
- * its one leaf's own bands already reach every border.
+ * Three doors, tried in this order. The border RING targets the ROOT and only the
+ * root: ancestors are targetable only along a border they share with the tile area
+ * itself, which collapses escalation to exactly one level, because any deeper
+ * ancestor's ring would be geometrically coincident with a descendant's (in
+ * `A | (B/C)` the column split's left border IS C's left border) and coincident rings
+ * make targeting unpredictable. A solo container has no ring — its one leaf's own bands
+ * already reach every border. Then SEAMS, one band per boundary at every depth, so a
+ * divider gap and the flanks beside it answer the same single insert (see above).
+ * Everything else is the LEAF's own five zones, where an edge means "split this pane"
+ * and never `between`: the seam bands already claimed the strips where it would.
+ *
+ * CORNERS BELONG TO THE RING, deliberately. Because the ring answers first, a leaf
+ * touching two borders has no corner band of ITS OWN inside the ring: in a 2×2 grid
+ * every leaf's outer corner is the root's, and the two ring bands there are ranked by
+ * normalised penetration with a fixed tie order (left, then right, then top, then
+ * bottom, strict `>`), so every viewer resolves the same pixel the same way. It is a
+ * precedence, not a loss: `RING_LEAF_CAP` keeps the ring strictly inside the leaf's
+ * own edge band, so the leaf's four bands stay reachable one ring-width inward and its
+ * center is never touched. What a corner costs is only the choice BETWEEN two of that
+ * leaf's bands within the last ~20 px of the frame, where "split the whole area" is
+ * the likelier intent anyway.
  */
 export function resolveTileAim(
   layout: TileLayout,
@@ -350,11 +560,7 @@ export function resolveTileAim(
   carry: TileAimCarry,
   dividers: { readonly x: number; readonly y: number },
   ring: { readonly x: number; readonly y: number },
-  held: {
-    readonly tileId: string;
-    readonly edge: TileEdge;
-    readonly between?: boolean;
-  } | null = null,
+  held: HeldAim | null = null,
 ): TileAim | null {
   const rects = tileRects(layout, dividers);
   const chain = tileChainAt(layout, rects, point);
@@ -362,12 +568,27 @@ export function resolveTileAim(
 
   const root = layout[ROOT_TILE_ID];
   if (root !== undefined && root.dir !== null) {
-    // Normalised penetration into each border's ring; the deepest wins a corner.
+    /*
+      Normalised penetration into each border's ring; the deepest wins a corner. The
+      ring/leaf-band frontier separates the two most different previews in the system —
+      "split the entire area at this border", where every pane glides, from "split this
+      one pane" — so it takes the same hysteresis every other boundary does, or a
+      pointer resting a ring-width from a border flutters between them on sub-pixel
+      jitter. A held ROOT edge grows its own band; a held anything-else shrinks all
+      four, bounded (`heldMargin`) so the ring can never collapse and latch the way the
+      seam band once did.
+    */
+    const bias = (nominal: number, edge: TileEdge): number => {
+      if (held === null || nominal <= 0) return nominal;
+      const margin = heldMargin(nominal, ZONE_HYSTERESIS);
+      if (held.tileId !== ROOT_TILE_ID) return nominal - margin;
+      return held.edge === edge ? nominal + margin : nominal;
+    };
     const rings = {
-      left: ringFraction(ring.x, minTouchingLeaf(layout, rects, "left")),
-      right: ringFraction(ring.x, minTouchingLeaf(layout, rects, "right")),
-      top: ringFraction(ring.y, minTouchingLeaf(layout, rects, "top")),
-      bottom: ringFraction(ring.y, minTouchingLeaf(layout, rects, "bottom")),
+      left: bias(ringFraction(ring.x, minTouchingLeaf(layout, rects, "left")), "left"),
+      right: bias(ringFraction(ring.x, minTouchingLeaf(layout, rects, "right")), "right"),
+      top: bias(ringFraction(ring.y, minTouchingLeaf(layout, rects, "top")), "top"),
+      bottom: bias(ringFraction(ring.y, minTouchingLeaf(layout, rects, "bottom")), "bottom"),
     };
     const depths: readonly (readonly [TileEdge, number])[] = [
       ["left", rings.left > 0 ? 1 - point.x / rings.left : 0],
@@ -388,13 +609,14 @@ export function resolveTileAim(
     }
   }
 
+  const seam = bestSeamAt(layout, rects, chain, point, ring, held);
+  if (seam !== null) return seamAim(rects, seam, point, carry);
+
   const leafId = chain[chain.length - 1] ?? ROOT_TILE_ID;
   const node = layout[leafId];
-  if (node === undefined) return null;
-  // A chain ending on a split means the pointer sits on one of its dividers.
-  if (node.dir !== null) {
-    return dividerAim(rects, node, point, carry, chain.length);
-  }
+  // A chain ending on a split means the pointer stands in a gap, which is a seam and
+  // nothing else; no seam there (a degenerate rect) means the release means nothing.
+  if (node === undefined || node.dir !== null) return null;
   if (carry.carriedTileId === leafId) return null;
   const rect = rects.get(leafId);
   if (rect === undefined) return null;
@@ -404,20 +626,16 @@ export function resolveTileAim(
     HYSTERESIS: while the FLIP glides panes around, the ZONES stay put — but an eye
     following the moving pixels drifts, and a pointer sitting near a boundary would
     flutter between aims. So a zone, once held, keeps the aim until the pointer
-    travels a real margin past its boundary. Only leaf zones need it: the ring,
-    seams and seam ends are chunky, and crossing a divider is a deliberate move.
+    travels a real margin past its boundary. Every frontier in this function has one:
+    the ring's above, the seams' in `seamAt`/`seamAim`, and a leaf's own five here.
   */
   if (held !== null && held.tileId === leafId && zone !== held.edge) {
     if (withinHeldZone(rect, point, held.edge)) zone = held.edge;
   }
   const depth = chain.length - 1;
   if (zone !== "center") {
-    const heldBetween =
-      held !== null && held.tileId === leafId && held.edge === zone && held.between !== undefined
-        ? held.between
-        : null;
-    const between = betweenAim(layout, chain, leafId, rect, zone, point, ring, heldBetween);
-    return { tileId: leafId, edge: zone, action: "place", depth, between };
+    // Past the seam band, an edge is the pane's OWN split: it cedes half, nobody moves.
+    return { tileId: leafId, edge: zone, action: "place", depth, between: false };
   }
   // Center never dissolves on a tile target: five zones are always live here.
   if (node.surface === null) return { tileId: leafId, edge: "center", action: "place", depth };
@@ -434,7 +652,9 @@ export function resolveTileAim(
  * the old root content to a fresh id, and pruning can promote a survivor into its
  * parent's id, so an id-matched diff would report spurious unmounts for panes that
  * visibly must move. Empty leaves have no identity to follow. Exported because the
- * tree's content portals key pane CONTENT by the same identity (`tile-tree.tsx`).
+ * tree's content portals key pane CONTENT by this same base — but a base is NOT a
+ * pane: one surface may legally occupy several leaves, so both sides disambiguate the
+ * repeats by ordinal (`paneIdentities` here, `seen` there).
  */
 export function surfaceKey(surface: TileSurface | null): string | null {
   if (surface === null) return null;
@@ -462,8 +682,6 @@ export interface PaneShift {
   readonly to: UnitRect;
 }
 
-const SHIFT_EPSILON = 1e-6;
-
 function sameRect(a: UnitRect, b: UnitRect): boolean {
   return (
     Math.abs(a.x - b.x) < SHIFT_EPSILON &&
@@ -474,8 +692,43 @@ function sameRect(a: UnitRect, b: UnitRect): boolean {
 }
 
 /**
+ * Every occupied leaf's pane identity, in the tree's own document order and ORDINALLY
+ * disambiguated: `base`, then `base#1`, `base#2` for repeats of that base.
+ *
+ * Duplicates are legal — a second leaf for a terminal already living in this container
+ * "is simply another copy of it", says the placement executor — so a bare `surfaceKey`
+ * would collapse two panes onto one seat, and a diff would then point both prospective
+ * leaves at one DOM box: two transforms written to it, last one winning, while the
+ * other pane never moves at all.
+ *
+ * The walk and the `base` / `base#N` spelling are `tile-tree.tsx`'s content-host keying
+ * VERBATIM, and must stay so: the host that keying seats is the very box a shift moves,
+ * so pairing panes by ordinal is pairing them the way the DOM already does.
+ */
+function paneIdentities(layout: TileLayout): ReadonlyMap<string, string> {
+  const identities = new Map<string, string>();
+  const seen = new Map<string, number>();
+  const walk = (tileId: string): void => {
+    const node = layout[tileId];
+    if (node === undefined) return;
+    if (node.dir !== null) {
+      for (const childId of node.children) walk(childId);
+      return;
+    }
+    // An empty leaf has nothing on screen to glide, so it has no identity to follow.
+    const base = surfaceKey(node.surface);
+    if (base === null) return;
+    const nth = seen.get(base) ?? 0;
+    seen.set(base, nth + 1);
+    identities.set(nth === 0 ? base : `${base}#${String(nth)}`, tileId);
+  };
+  walk(ROOT_TILE_ID);
+  return identities;
+}
+
+/**
  * Where every occupied pane of `current` would sit under `next`, for the panes whose
- * rectangle actually changes. Matched by surface identity (see `surfaceKey`); a pane
+ * rectangle actually changes. Matched by pane identity (see `paneIdentities`); a pane
  * with no counterpart — the carried surface entering, an occupant leaving — is simply
  * not a shift, because there is nothing on screen to glide.
  */
@@ -486,22 +739,19 @@ export function paneShifts(
 ): readonly PaneShift[] {
   const currentRects = tileRects(current, dividers);
   const nextRects = tileRects(next, dividers);
-  const seats = new Map<string, { readonly tileId: string; readonly rect: UnitRect }>();
-  for (const [tileId, rect] of currentRects) {
-    const node = current[tileId];
-    if (node === undefined || node.dir !== null) continue;
-    const key = surfaceKey(node.surface);
-    if (key !== null) seats.set(key, { tileId, rect });
-  }
+  const seats = paneIdentities(current);
   const shifts: PaneShift[] = [];
-  for (const [tileId, rect] of nextRects) {
-    const node = next[tileId];
-    if (node === undefined || node.dir !== null) continue;
-    const key = surfaceKey(node.surface);
-    if (key === null) continue;
-    const seat = seats.get(key);
-    if (seat === undefined || sameRect(seat.rect, rect)) continue;
-    shifts.push({ tileId, fromTileId: seat.tileId, from: seat.rect, to: rect });
+  for (const [key, tileId] of paneIdentities(next)) {
+    const fromTileId = seats.get(key);
+    if (fromTileId === undefined) continue;
+    const from = currentRects.get(fromTileId);
+    const to = nextRects.get(tileId);
+    if (from === undefined || to === undefined || sameRect(from, to)) continue;
+    // A FLIP divides the travel by `from`'s extent, so a zero-extent `from` — dividers
+    // thicker than the axis they subdivide — would emit `translate(NaN%) scale(NaN)`.
+    // Nothing visible sits there to glide anyway: drop it rather than paint garbage.
+    if (from.width < SHIFT_EPSILON || from.height < SHIFT_EPSILON) continue;
+    shifts.push({ tileId, fromTileId, from, to });
   }
   return shifts;
 }

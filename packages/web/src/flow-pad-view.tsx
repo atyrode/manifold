@@ -54,16 +54,20 @@ import {
   rememberMachine,
 } from "./machine-choice.ts";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
-import { carryGhosts, remoteTileCarry } from "./carry.ts";
+import { carryGhosts, remoteTileCarries } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
-import { createTileDropStore, wireCarryAim } from "./tile-drop-store.ts";
+import { createTileDropStore } from "./tile-drop-store.ts";
 import { composeTargetAt } from "./tile-snap.ts";
 import { useToast } from "./toast.tsx";
-import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
+import {
+  carrierColor,
+  REMOTE_CURSOR_FALLBACK_COLOR,
+  useRemoteCursors,
+} from "./use-remote-cursors.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
@@ -361,9 +365,20 @@ export function FlowPadView({
     [client],
   );
 
-  const projected = useMemo(() => {
+  /*
+    A peer's carried element eases away exactly like the node in your own hand. The fade
+    is a property of the CARRY — an override whose carry has an armed aim — not of being
+    the dragger, so both producers resolve to the ONE rule in styles.css. It rides the
+    projection because React Flow owns the node box the class has to land on.
+  */
+  const projected = useMemo<readonly (ProjectedNode & { readonly className?: string })[]>(() => {
     void sceneRevision;
-    return projectElements(client.elements, remoteGestures);
+    return projectElements(client.elements, remoteGestures).map((node) => {
+      const override = remoteGestures.get(node.id);
+      if (override === undefined || override.kind !== "carry" || override.carry?.aim === undefined)
+        return node;
+      return { ...node, className: "is-carried-away" };
+    });
   }, [client, remoteGestures, sceneRevision]);
   // Compose hit-testing reads the freshest projection from inside handlers that
   // must stay stable across drag frames, so it travels by ref, written post-commit
@@ -427,20 +442,15 @@ export function FlowPadView({
     [client, padId, remoteGestures],
   );
 
-  /** A carrier's chosen color, so a ghost belongs to the same person as their cursor. */
-  const carrierColor = useCallback(
-    (principalId: string): string =>
-      client.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR,
-    [client],
-  );
-
-  // A peer's armed aim, fed to the widget overlays through the same per-frame channel
+  // Peers' armed aims, fed to the widget overlays through the same per-frame channel
   // the local pointer uses. Imperative store write: a collaborator's 60 Hz drag
-  // repaints the armed overlay alone, never the node tree. Each widget's overlay
-  // matches the aim's containerId itself, so one store serves every widget.
+  // repaints the armed overlay alone, never the node tree. Keyed per container, so two
+  // peers aiming at two different widgets both preview instead of masking each other —
+  // and this canvas's room is only ONE feed: each live widget publishes what its own
+  // container's room hears, which is how a route dragger reaches these viewers.
   useEffect(() => {
-    dropStore.set({ ...dropStore.get(), remote: remoteTileCarry(remoteGestures.values()) });
-  }, [dropStore, remoteGestures]);
+    dropStore.setRemote(padId, remoteTileCarries(remoteGestures.values()));
+  }, [dropStore, padId, remoteGestures]);
 
   /**
    * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
@@ -457,6 +467,7 @@ export function FlowPadView({
         height: element.height,
         zIndex: element.zIndex,
         selected: element.id === highlightedId,
+        ...(element.className === undefined ? {} : { className: element.className }),
         /*
           A widget moves by its name strip, and its MONO form has no name strip: a solo
           composition wears the terminal's own titlebar instead (the arity rule), so the
@@ -687,7 +698,7 @@ export function FlowPadView({
       if (point !== null) trackCompose(point.x, point.y, node.id);
       // The armed widget's published aim rides this drag's frames (one frame behind
       // the overlay's resolution), so every viewer paints the same split preview.
-      carry.track({ x: node.position.x, y: node.position.y }, wireCarryAim(dropStore.get().aim));
+      carry.track({ x: node.position.x, y: node.position.y }, dropStore.get().aim?.tile);
     },
     [carry, dropStore, trackCompose],
   );
@@ -1073,7 +1084,10 @@ export function FlowPadView({
       notify,
       padId,
       dropStore,
-      carrierColor,
+      // The index the sidebar fetched, as a lookup: a widget naming a canvas or a
+      // composition nested in its own tree reads the same names this canvas does, which
+      // is what stopped a displaced view from captioning here and nowhere in a widget.
+      padName: (namedPadId) => pads.find((candidate) => candidate.id === namedPadId)?.name ?? null,
       assessDrop: drop.assess,
       // A portal element showing a terminal is a seated carry: its solo home's leaf
       // is the seat a displaced occupant trades into (#62).
@@ -1083,13 +1097,13 @@ export function FlowPadView({
     }),
     [
       carry,
-      carrierColor,
       client,
       notify,
       lookup,
       drop.assess,
       dropStore,
       padId,
+      pads,
       depth,
       editingId,
       handleResize,
@@ -1251,12 +1265,15 @@ export function FlowPadView({
               : flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
           const pane =
             at === null ? null : drop.assess({ kind: "canvas", padId, x: at.x, y: at.y });
+          // Pointer FIRST, then read the answer: this frame's pointer reaches the armed
+          // widget's overlay before anything here consults the store, so the aim is one
+          // frame behind — the same lag the node-drag transport has, instead of two.
+          trackCompose(event.clientX, event.clientY, null);
+          const aim = dropStore.get().aim;
           // The carry streams from wherever the pointer IS, so a drag that began on a
           // sidebar row or a widget's tile becomes visible to collaborators the moment
           // it enters this canvas — the same motion a node drag broadcasts.
-          if (at !== null) carry.track(at, wireCarryAim(dropStore.get().aim));
-          trackCompose(event.clientX, event.clientY, null);
-          const aim = dropStore.get().aim;
+          if (at !== null) carry.track(at, aim?.tile);
           const verdict = aim !== null ? drop.assess(aim.destination) : pane;
           event.dataTransfer.dropEffect = verdict?.denial == null ? "move" : "none";
         }}
@@ -1456,7 +1473,7 @@ export function FlowPadView({
                     data-carry-kind={ghost.kind}
                     key={ghost.key}
                     style={{
-                      borderColor: carrierColor(ghost.principalId),
+                      borderColor: carrierColor(client, ghost.principalId),
                       transform: `translate(${String(ghost.x)}px, ${String(ghost.y)}px)`,
                     }}
                   >

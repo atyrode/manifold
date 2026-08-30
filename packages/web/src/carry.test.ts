@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { carryFrame, carryGhosts, carryPayload, carryPlacementId, remoteTileCarry } from "./carry";
+import {
+  carryFrame,
+  carryGhosts,
+  carryPayload,
+  carryPlacementId,
+  remoteTileCarries,
+  surfaceDisplayLabel,
+} from "./carry";
 import type { CarrySource } from "./carry";
 import type { GestureOverride } from "./remote-gestures";
 
@@ -124,7 +131,7 @@ describe("carry", () => {
     expect(carryPayload(poolCarry)).not.toHaveProperty("aim");
   });
 
-  test("the freshest aiming carry wins; carries without an aim are invisible to it", () => {
+  test("the freshest aim wins PER CONTAINER, so two peers over two areas cannot mask each other", () => {
     const stale = override({
       connId: "old",
       updatedAt: 10,
@@ -142,12 +149,26 @@ describe("carry", () => {
         aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
       },
     });
+    // Another container entirely: an older frame, and it must still be visible — the
+    // widget it addresses is a different tile area on the same canvas.
+    const elsewhere = override({
+      connId: "third",
+      elementId: "other",
+      updatedAt: 5,
+      carry: {
+        surface: { kind: "terminal", sessionId: "s3" },
+        aim: { containerId: "other-view", tileId: "t1", edge: "top", action: "place" },
+      },
+    });
     const aimless = override({
       connId: "no-aim",
       updatedAt: 30,
       carry: { surface: { kind: "terminal", sessionId: "s2" } },
     });
-    expect(remoteTileCarry([stale, fresh, aimless])).toEqual({
+
+    const carries = remoteTileCarries([stale, fresh, elsewhere, aimless]);
+    expect(carries.size).toBe(2);
+    expect(carries.get("view")).toEqual({
       connId: "new",
       principalId: "peer",
       aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
@@ -155,6 +176,22 @@ describe("carry", () => {
       label: "build",
       updatedAt: 20,
     });
-    expect(remoteTileCarry([aimless])).toBeNull();
+    expect(carries.get("other-view")?.connId).toBe("third");
+    // A peer with no armed aim is invisible here however fresh their geometry is.
+    expect(remoteTileCarries([aimless]).size).toBe(0);
+  });
+
+  test("every tiled species is named by one switch, and an unknown name is null", () => {
+    const lookups = {
+      sessionName: (sessionId: string) => (sessionId === "s1" ? "build" : null),
+      padName: (padId: string) => (padId === "p1" ? "Sketches" : null),
+      noteText: (elementId: string) => (elementId === "e1" ? "Groceries\nmilk\neggs" : null),
+    };
+    expect(surfaceDisplayLabel({ kind: "terminal", sessionId: "s1" }, lookups)).toBe("build");
+    expect(surfaceDisplayLabel({ kind: "pad", padId: "p1" }, lookups)).toBe("Sketches");
+    // A note borrows its FIRST line, which is the only handle a note has.
+    expect(surfaceDisplayLabel({ kind: "text", elementId: "e1" }, lookups)).toBe("Groceries");
+    expect(surfaceDisplayLabel({ kind: "text", elementId: "gone" }, lookups)).toBeNull();
+    expect(surfaceDisplayLabel(null, lookups)).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import type { Carry, CarryAim, Gesture, PlacementSurface } from "@manifold/protocol";
+import type { Carry, CarryAim, Gesture, PlacementSurface, TileSurface } from "@manifold/protocol";
 import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
 import type { GestureOverride } from "./remote-gestures.ts";
 
@@ -102,13 +102,72 @@ export function carryFrame(
  * Fallback names for a carry whose sender sent none. The MARK a ghost wears is not here:
  * a renderer looks it up from the surface kind (`SurfaceIcon`), so the object's picture
  * comes from the one icon vocabulary instead of travelling as a glyph over the wire.
+ *
+ * Exported because it is the LAST link of the one label chain: a ghost, a slot chip and
+ * a peer's caption all end here when nothing better is known, so a local preview can
+ * never show a bare icon where a viewer of the same drag reads a species name.
  */
-const SURFACE_NAMES: Record<PlacementSurface["kind"], string> = {
+export const SURFACE_NAMES: Record<PlacementSurface["kind"], string> = {
   terminal: "terminal",
   pad: "view",
   tile: "tile",
   element: "item",
 };
+
+/** Past this a note's first line stops being a name and starts being the note. */
+const NOTE_TITLE_LENGTH = 40;
+
+/**
+ * A note has no name, so it borrows its first line — the only handle a note has.
+ * Null while the note is empty, which is what makes a caller fall back to "note".
+ */
+export function noteTitle(text: string): string | null {
+  const firstLine = text.split("\n", 1)[0]?.trim() ?? "";
+  if (firstLine === "") return null;
+  return firstLine.length <= NOTE_TITLE_LENGTH
+    ? firstLine
+    : `${firstLine.slice(0, NOTE_TITLE_LENGTH - 1)}…`;
+}
+
+/**
+ * The three questions naming a tiled surface asks of a host's own documents. Every
+ * host can answer all three — a route from its room, a canvas widget from its widget
+ * socket plus the container index the canvas holds — so no host owns a private switch.
+ */
+export interface SurfaceLabelLookups {
+  readonly sessionName: (sessionId: string) => string | null;
+  readonly padName: (padId: string) => string | null;
+  /** The note's raw text; the first-line rule is applied here, once, for everyone. */
+  readonly noteText: (elementId: string) => string | null;
+}
+
+/**
+ * What a tiled surface is CALLED. One switch for the whole application: the fullscreen
+ * route and a canvas widget differ only in the documents they read, never in which
+ * species they can name — which is what stopped a displaced canvas or note from
+ * captioning on the route and captioning nothing inside a widget.
+ */
+export function surfaceDisplayLabel(
+  surface: TileSurface | null,
+  lookups: SurfaceLabelLookups,
+): string | null {
+  switch (surface?.kind) {
+    case "terminal":
+      return lookups.sessionName(surface.sessionId);
+    case "pad":
+      return lookups.padName(surface.padId);
+    case "text": {
+      const text = lookups.noteText(surface.elementId);
+      return text === null ? null : noteTitle(text);
+    }
+    case undefined:
+      return null;
+    default: {
+      const exhaustive: never = surface;
+      return exhaustive;
+    }
+  }
+}
 
 /** What a collaborator paints under a carrier's pointer. */
 export interface CarryGhost {
@@ -152,9 +211,7 @@ export function carryGhosts(
 /**
  * A peer's carry that is currently AIMING at a tile target: everything a preview
  * overlay needs to re-derive the producer's exact split preview from the shared
- * geometry kernel. One picked per surface — the freshest wins — because two
- * simultaneous foreign carries over one area would paint contradictory prospects;
- * the loser's aim takes over the moment the winner's frames stop.
+ * geometry kernel.
  */
 export interface RemoteTileCarry {
   readonly connId: string;
@@ -165,21 +222,32 @@ export interface RemoteTileCarry {
   readonly updatedAt: number;
 }
 
-/** The freshest live aim among a room's overrides, else null. */
-export function remoteTileCarry(overrides: Iterable<GestureOverride>): RemoteTileCarry | null {
-  let latest: RemoteTileCarry | null = null;
+/**
+ * The freshest live aim PER CONTAINER, keyed by the container each aim addresses.
+ *
+ * Freshest-wins is right for one tile area and wrong for a room: a canvas draws many
+ * widgets, so a single winner across every override let peer A aiming at widget 1 and
+ * peer B at widget 2 mask each other — the two flipped on every frame as their receipt
+ * timestamps alternated and the loser's widget went blank. Two carries over the SAME
+ * area still contradict each other, and there the freshest is the honest answer.
+ */
+export function remoteTileCarries(
+  overrides: Iterable<GestureOverride>,
+): ReadonlyMap<string, RemoteTileCarry> {
+  const latest = new Map<string, RemoteTileCarry>();
   for (const override of overrides) {
     const carry = override.carry;
     if (override.kind !== "carry" || carry === undefined || carry.aim === undefined) continue;
-    if (latest !== null && override.updatedAt <= latest.updatedAt) continue;
-    latest = {
+    const held = latest.get(carry.aim.containerId);
+    if (held !== undefined && override.updatedAt <= held.updatedAt) continue;
+    latest.set(carry.aim.containerId, {
       connId: override.connId,
       principalId: override.principalId,
       aim: carry.aim,
       surface: carry.surface,
       label: carry.label ?? SURFACE_NAMES[carry.surface.kind],
       updatedAt: override.updatedAt,
-    };
+    });
   }
   return latest;
 }

@@ -2417,6 +2417,12 @@ button.pad-sidebar-session.is-summary > small {
    fits against the computed box, which a transform leaves alone, so previewing a
    terminal never reflows the PTY for whoever is working in it. */
 .flow-portal__preview {
+  /* Everything below this box is drawn at PORTAL_PREVIEW_SCALE, so a length that has to
+     be CONSTANT ON SCREEN is written double here — otherwise the transform shrinks it
+     along with the paint, which is exactly how the seam's grab band ended up a third of
+     the route's. The seam reach is the only such length. */
+  --tile-seam-reach: 0.75rem;
+
   position: absolute;
   top: 0;
   left: 0;
@@ -2456,11 +2462,12 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* A widget wears the route's dividers, because it IS the route's tree: an engaged widget
-   resizes its composition through the same drag and the same doc write. Wider than the
-   route's band since a preview is drawn at PORTAL_PREVIEW_SCALE — the transform shrinks
-   the hit area with the paint. */
+   resizes its composition through the same drag and the same doc write. Exactly DOUBLE
+   the route's 0.35rem, because a preview is drawn at PORTAL_PREVIEW_SCALE — the transform
+   shrinks paint and hit area together, so twice the layout thickness is what makes the
+   seam the same size ON SCREEN as the one the route offers. */
 .flow-portal__divider {
-  flex: 0 0 0.5rem;
+  flex: 0 0 0.7rem;
   background: #23272e;
   touch-action: none;
 }
@@ -3201,19 +3208,6 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0;
 }
 
-/* A collaborator's live aim, painted from their carry frames through the same
-   kernel as a local drag. The carrier's presence color owns the slot, so the
-   preview belongs to a person the way their cursor does. */
-.tile-preview.is-remote {
-  --carrier-color: #868e96;
-  border: 1px dashed var(--carrier-color);
-  background: color-mix(in srgb, var(--carrier-color) 16%, transparent);
-}
-
-.tile-preview.is-remote .tile-preview__glyph {
-  color: color-mix(in srgb, var(--carrier-color) 70%, #fff);
-}
-
 /* Centred in the slot; `pointer-events: none` rides on the slot itself. */
 .tile-preview__glyph {
   position: absolute;
@@ -3280,36 +3274,68 @@ button.pad-sidebar-session.is-summary > small {
   min-height: 0;
 }
 
-/* While a drop target is armed, the node IN HAND fades almost away so the live
-   preview underneath stays readable. React Flow marks the dragged node with
-   `.dragging`; the canvas root wears `is-composing` only while a target is armed,
-   both written imperatively (arming never touches React state — drag hot path).
-   The transition lives on `.dragging` itself so the fade runs BOTH ways — easing
-   in when a target arms and back out when it disarms — reading as a deliberate
-   "stepping aside", never as the held item vanishing. */
-.flow-pad-canvas .react-flow__node.dragging {
+/* While a carry has an armed drop target, the item IN HAND fades almost away so the
+   live preview underneath stays readable. THE EASE-AWAY IS A PROPERTY OF THE CARRY,
+   NOT OF BEING THE DRAGGER: your own canvas drag (React Flow marks the node
+   `.dragging`, the canvas root wears `is-composing` while a target is armed, both
+   written imperatively — arming never touches React state on the drag hot path), a
+   peer's carried node, and a carried tile pane all resolve to the SAME declarations
+   below, so a viewer sees exactly what the dragger sees.
+   The transition sits on the classes that persist across arming, so the fade runs BOTH
+   ways — easing in when a target arms and back out when it disarms — reading as a
+   deliberate "stepping aside", never as the held item vanishing. */
+.flow-pad-canvas .react-flow__node.dragging,
+.flow-pad-canvas .react-flow__node.is-carried-away,
+.tile-area .is-carried-away {
   transition: opacity 160ms ease;
 }
 
-.flow-pad-canvas.is-composing .react-flow__node.dragging {
+.flow-pad-canvas.is-composing .react-flow__node.dragging,
+.flow-pad-canvas .react-flow__node.is-carried-away,
+.tile-area .is-carried-away {
   opacity: 0.15;
 }
 
-/* A seam's PAINT stays slim; its GRAB does not. Under the widget's 0.5 preview
-   scale and any canvas zoom, an 8px divider can shrink to a couple of on-screen
-   pixels — pseudo-elements extend the pointer target without moving any layout.
-   Pseudo hit-testing belongs to the divider element, so drags, seam drop aims and
-   the resize cursor all gain the widened band together. */
+/* The armed fade SUPERSEDES the in-flight dim rather than multiplying with it: only the
+   person holding a tile sees `is-carried` on its leaf, so without this the holder's fade
+   would land on a different value than every viewer's. One value for everyone. */
+.tile-area .is-carried-away .tiled-leaf.is-carried {
+  opacity: 1;
+}
+
+/* A seam's PAINT stays slim; its GRAB does not. Pseudo-elements extend the pointer
+   target without moving any layout, and pseudo hit-testing belongs to the divider
+   element, so drags, seam drop aims and the resize cursor gain the widened band
+   together. Two things make that band actually reach:
+
+   THE REACH IS A VARIABLE, because it is declared in the tree's OWN layout px while a
+   widget draws its tree under `transform: scale()`. A fixed length shrinks with the very
+   transform it exists to compensate for; `.flow-portal__preview` doubles it instead.
+
+   A LIVE SEAM IS LIFTED ABOVE THE PANES. The divider and its neighbours are all
+   positioned with `z-index: auto`, and the TRAILING neighbour comes later in DOM
+   order — so a pane's own content (a terminal frame, xterm's layers, a widget's
+   engagement shield at z-index 8) painted over the trailing half of the band, right
+   through the divider's own box. The seam you saw was not the seam you could grab: the
+   live band sat entirely on the leading side, so a press on the visible seam's centre
+   landed in the terminal and the resize never started. Only an INTERACTIVE seam claims
+   any of this — a watching widget's dividers are structure, so they keep their tooltip
+   and never take a pixel from the tile shields they sit between. */
 .tiled-divider,
 .flow-portal__divider {
   position: relative;
 }
 
-.tiled-divider::after,
-.flow-portal__divider::after {
+.tiled-divider:not(.is-inert),
+.flow-portal__divider:not(.is-inert) {
+  z-index: 10;
+}
+
+.tiled-divider:not(.is-inert)::after,
+.flow-portal__divider:not(.is-inert)::after {
   position: absolute;
   content: "";
-  inset: -6px;
+  inset: calc(-1 * var(--tile-seam-reach, 0.375rem));
 }
 
 /* The F9 drop-zone field (tile-zone-debug): a sampled painting of what the real

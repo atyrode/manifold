@@ -47,12 +47,13 @@ export interface SnapNode {
 }
 
 /**
- * Element types a canvas drop can compose ONTO: a terminal (a composition is born around
- * it) or a widget (the surface joins the composition it points at). Text and ink are not
- * targets — there is nothing to birth a container around — and the executor refuses them
- * anyway, so offering the gesture would be a lie.
+ * The ONE element type a canvas drop can compose onto: a widget, which is a portal onto
+ * the container the surface would join. There is no second species — a canvas terminal
+ * IS a portal onto its solo home, so the composition it births is the container behind
+ * that same portal. Notes and ink are not targets (there is nothing to birth a container
+ * around, and the executor refuses them anyway), so offering the gesture would be a lie.
  */
-const COMPOSE_TARGET_TYPES: Readonly<Record<string, true>> = { terminal: true, portal: true };
+const COMPOSE_TARGET_TYPE = "portal";
 
 /**
  * Topmost composable node under a flow-space point. React Flow gives no node-over-node
@@ -67,7 +68,7 @@ export function composeTargetAt<T extends SnapNode>(
   let hit: T | null = null;
   for (const node of nodes) {
     if (node.id === excludeId) continue;
-    if (COMPOSE_TARGET_TYPES[node.type] !== true) continue;
+    if (node.type !== COMPOSE_TARGET_TYPE) continue;
     if (
       point.x < node.position.x ||
       point.x > node.position.x + node.width ||

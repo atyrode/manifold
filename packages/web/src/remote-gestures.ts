@@ -64,13 +64,38 @@ export function applyGestureFrame(
   return true;
 }
 
+/**
+ * How long a peer's AIM stays believable — far shorter than the geometry TTL, because
+ * the two cost different things when a carrier's end frame is lost. A stale ghost is a
+ * chip left hanging; a stale aim holds FLIP transforms on the real panes, so the whole
+ * composition sits visibly squeezed. A few send intervals is enough to ride out a
+ * dropped frame and short enough that nobody watches a phantom split.
+ */
+export const AIM_TTL_MS = 400;
+
+/**
+ * Retires what a missing end frame left behind. Geometry survives to
+ * `GESTURE_TTL_MS`; the aim inside a carry is dropped at `AIM_TTL_MS`, which leaves
+ * the ghost in place (the carry is still believed to be happening) while every
+ * viewer's preview clears, because a preview is a claim about what a release WOULD do.
+ */
 export function expireGestures(state: Map<string, GestureOverride>, now: number): boolean {
   let changed = false;
   for (const [elementId, gesture] of state) {
-    if (now - gesture.updatedAt > GESTURE_TTL_MS) {
+    const age = now - gesture.updatedAt;
+    if (age > GESTURE_TTL_MS) {
       state.delete(elementId);
       changed = true;
+      continue;
     }
+    const carry = gesture.carry;
+    if (carry?.aim === undefined || age <= AIM_TTL_MS) continue;
+    const aimless: Carry = {
+      surface: carry.surface,
+      ...(carry.label === undefined ? {} : { label: carry.label }),
+    };
+    state.set(elementId, { ...gesture, carry: aimless });
+    changed = true;
   }
   return changed;
 }

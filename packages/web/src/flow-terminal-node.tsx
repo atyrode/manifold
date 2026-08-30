@@ -1,4 +1,9 @@
-import type { MachineSummary, PadPresence, PlacementDestination } from "@manifold/protocol";
+import type {
+  MachineSummary,
+  PadPresence,
+  PlacementDestination,
+  PlacementSurface,
+} from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext } from "react";
 import type { CarryController } from "./use-carry.ts";
@@ -97,17 +102,28 @@ export interface FlowPadContextValue {
   /** The canvas's own container id: the pad these nodes are elements OF. */
   readonly padId: string;
   /**
+   * Names a container from the index the sidebar fetched. A widget's tree can hold a
+   * canvas or a composition, and naming one is not knowledge the widget's own room has
+   * — without this a caption that reads on the fullscreen route read as nothing here.
+   */
+  readonly padName: (padId: string) => string | null;
+  /**
    * The per-frame drop channel between the canvas's drag transports and its widgets'
    * preview overlays. The canvas writes `{pointer, armedElementId}`; the armed
-   * widget's overlay resolves the aim and publishes `{destination, containerId}`
-   * back, which is what the canvas commits at release.
+   * widget's overlay resolves the aim and publishes it back, which is both what the
+   * canvas commits at release and what rides this drag's carry frames.
    */
   readonly dropStore: TileDropStore;
   /**
    * The canvas's placement assessment, so a widget's overlay judges a prospective
-   * drop with the same lookup the canvas's own commit will use.
+   * drop with the same lookup the canvas's own commit will use. The surface is
+   * optional and defaults to the local carry: a widget previewing a PEER's aim passes
+   * the peer's surface, so a viewer paints the refusal the server would give.
    */
-  readonly assessDrop: (destination: PlacementDestination) => ItemDropAssessment | null;
+  readonly assessDrop: (
+    destination: PlacementDestination,
+    surface?: PlacementSurface,
+  ) => ItemDropAssessment | null;
   /**
    * Whether a canvas ELEMENT carry holds a seat to trade at an occupied tile center
    * (#62): true for a portal showing a terminal — the element is a window onto its
@@ -115,8 +131,6 @@ export interface FlowPadContextValue {
    * paint the swap cue exactly where the executor will trade.
    */
   readonly elementSeat: (padId: string, elementId: string) => boolean;
-  /** A carrier's presence color, so a peer's preview belongs to them like their cursor. */
-  readonly carrierColor: (principalId: string) => string;
 }
 
 /**

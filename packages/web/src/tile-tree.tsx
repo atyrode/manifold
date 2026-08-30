@@ -75,8 +75,8 @@ export const PORTAL_TREE_CLASSES: TileTreeClasses = {
   split: "flow-portal__split",
   pane: "flow-portal__slot",
   divider: "flow-portal__divider",
-  /** `.flow-portal__divider` is `flex: 0 0 0.5rem` = 8px at the root font size. */
-  dividerPx: 8,
+  /** `.flow-portal__divider` is `flex: 0 0 0.7rem` = 11.2px at the root font size. */
+  dividerPx: 11.2,
 };
 
 export interface TileTreeProps {

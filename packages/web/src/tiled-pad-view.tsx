@@ -44,12 +44,12 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { createTileDropStore, wireCarryAim } from "./tile-drop-store.ts";
+import { createTileDropStore } from "./tile-drop-store.ts";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
 import { useToast } from "./toast.tsx";
-import { carryGhosts, remoteTileCarry } from "./carry.ts";
+import { carryGhosts, noteTitle, remoteTileCarries, surfaceDisplayLabel } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
@@ -70,20 +70,6 @@ import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cur
 /** The fallbacks the canvas's note node uses, for the frame between a leaf and its element. */
 const NOTE_FALLBACK_FONT_SIZE = 20;
 const NOTE_FALLBACK_COLOR = "#f8f9fa";
-/** Past this a note's first line stops being a name and starts being the note. */
-const NOTE_TITLE_LENGTH = 40;
-
-/**
- * A note has no name, so its bar borrows its first line — the only handle a note has.
- * Null while the note is empty, which is what makes the bar fall back to "note".
- */
-function noteTitle(text: string): string | null {
-  const firstLine = text.split("\n", 1)[0]?.trim() ?? "";
-  if (firstLine === "") return null;
-  return firstLine.length <= NOTE_TITLE_LENGTH
-    ? firstLine
-    : `${firstLine.slice(0, NOTE_TITLE_LENGTH - 1)}…`;
-}
 
 /**
  * What this composition holds when it holds exactly ONE thing — the arity fact the
@@ -548,9 +534,53 @@ export function TiledPadView({
   );
 
   /**
-   * ONE drop pipeline for the whole area, shared with the preview overlay. This
-   * instance exists so the RELEASE can re-resolve from its own pointer against the
-   * live layout — never trusting the painted state, which is a frame old by then.
+   * What a tiled surface is CALLED here, through the one shared switch: this route
+   * supplies the three lookups (its sessions, the container index, its own note
+   * elements) and supplies no species logic of its own, so a canvas widget showing the
+   * same composition captions the same drag with the same words.
+   */
+  const surfaceLabel = useCallback(
+    (surface: TileSurface | null): string | null =>
+      surfaceDisplayLabel(surface, {
+        sessionName: (sessionId) => client.sessions.get(sessionId)?.name ?? null,
+        padName: padNameFor,
+        noteText: (elementId) => {
+          const element = client.elements.get(elementId);
+          return element?.type === "text" ? element.text : null;
+        },
+      }),
+    [client, padNameFor],
+  );
+
+  /** The slot chip names what is in flight, the way a carry ghost does. */
+  const carryLabel = useCallback(
+    (envelope: ItemEnvelope): string | null => {
+      switch (envelope.kind) {
+        case "terminal":
+          return client.sessions.get(envelope.sessionId)?.name ?? null;
+        case "tile":
+          return envelope.containerId === padId
+            ? surfaceLabel(layout?.[envelope.tileId]?.surface ?? null)
+            : null;
+        case "canvas":
+        case "composition":
+          return padNameFor(envelope.padId);
+        case "element":
+          return null;
+        default: {
+          const exhaustive: never = envelope;
+          return exhaustive;
+        }
+      }
+    },
+    [client, layout, padId, padNameFor, surfaceLabel],
+  );
+
+  /**
+   * THE drop pipeline for this area — ONE instance, created here and handed to the
+   * preview overlay, because the memo inside it is also the hysteresis state: a second
+   * instance would hold a second zone and the release could commit an aim one
+   * transition ahead of the one the eye was shown.
    */
   const dropHost = useMemo<TileDropHost>(
     () => ({
@@ -560,8 +590,9 @@ export function TiledPadView({
       widget: null,
       dividerPx: TILED_TREE_CLASSES.dividerPx,
       assess: drop.assess,
+      describeCarry: carryLabel,
     }),
-    [drop.assess, layout, padId],
+    [carryLabel, drop.assess, layout, padId],
   );
   const tileDrop = useTileDrop(dropHost);
 
@@ -587,20 +618,15 @@ export function TiledPadView({
     [remoteGestures],
   );
 
-  /** A carrier's chosen color, so their preview belongs to them like their cursor. */
-  const carrierColor = useCallback(
-    (principalId: string): string =>
-      client.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR,
-    [client],
-  );
-
-  // A peer's armed aim, fed to the overlay through the same per-frame channel the
-  // local pointer uses. Imperative store write: a collaborator's 60 Hz drag repaints
-  // the overlay alone, never this tree or its terminals. Expiry and end frames both
-  // clear it through the override map, so a vanished carrier cannot strand a preview.
+  // Peers' armed aims, fed to the overlay through the same per-frame channel the local
+  // pointer uses — keyed by the container each addresses, because one store can serve
+  // several tile areas. Imperative store write: a collaborator's 60 Hz drag repaints
+  // the overlay alone, never this tree or its terminals. End frames, the geometry TTL
+  // and the much shorter AIM TTL all clear it through the override map, so a vanished
+  // carrier can never strand a preview or hold this composition squeezed.
   useEffect(() => {
-    dropStore.set({ ...dropStore.get(), remote: remoteTileCarry(remoteGestures.values()) });
-  }, [dropStore, remoteGestures]);
+    dropStore.setRemote(padId, remoteTileCarries(remoteGestures.values()));
+  }, [dropStore, padId, remoteGestures]);
 
   /**
    * A client point in this view's own space. Fractions, like the cursors: the tile area
@@ -656,26 +682,24 @@ export function TiledPadView({
       // explains nothing. The `dropEffect` still says "none", so the cursor stays honest.
       event.preventDefault();
       event.stopPropagation();
-      // The carry streams from every frame that crosses this view, whether it began on
-      // a leaf here or on a row in the sidebar — motion is the same concept either way.
-      const at = bodyFraction(event.clientX, event.clientY);
-      const state = tileDrop.aimAt(event.clientX, event.clientY);
-      // The aim rides the same frame, so every viewer re-derives THIS drag's split
-      // preview from the shared kernel — the multiplayer path is the only path.
-      if (at !== null) {
-        carry.track(
-          at,
-          state === null
-            ? undefined
-            : wireCarryAim({ destination: state.destination, containerId: padId, tile: state.aim }),
-        );
-      }
+      // Pointer FIRST, then read the answer — the same order the canvas transports use,
+      // so aim staleness is one frame everywhere instead of one here and two there.
       // Arm delay 0: the route previews on the first dragover frame.
       dropStore.set({
         ...dropStore.get(),
         pointer: { clientX: event.clientX, clientY: event.clientY },
         armedElementId: null,
       });
+      // The carry streams from every frame that crosses this view, whether it began on
+      // a leaf here or on a row in the sidebar — motion is the same concept either way.
+      // The aim it carries is the PUBLISHED one: the overlay is the single producer of
+      // the wire aim on both renderers, so what peers re-derive is what was painted
+      // here, never a second resolution running beside it.
+      const at = bodyFraction(event.clientX, event.clientY);
+      if (at !== null) carry.track(at, dropStore.get().aim?.tile);
+      // This browser's own cue comes from the one pipeline instance the overlay paints
+      // from, so the cursor and the preview can never disagree about legality.
+      const state = tileDrop.aimAt(event.clientX, event.clientY);
       event.dataTransfer.dropEffect =
         state !== null && state.assessment?.denial == null ? "move" : "none";
     },
@@ -835,22 +859,6 @@ export function TiledPadView({
     }
   };
 
-  /** What a carried leaf is called for the people watching it move. */
-  const surfaceLabel = (surface: TileSurface | null): string | null => {
-    switch (surface?.kind) {
-      case "terminal":
-        return client.sessions.get(surface.sessionId)?.name ?? null;
-      case "pad":
-        return padNameFor(surface.padId);
-      case "text": {
-        const element = client.elements.get(surface.elementId);
-        return element?.type === "text" ? noteTitle(element.text) : null;
-      }
-      default:
-        return null;
-    }
-  };
-
   const renderLeaf = (node: TileNode): ReactNode => (
     <div
       className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
@@ -876,27 +884,6 @@ export function TiledPadView({
       )}
     </div>
   );
-
-  /** The slot chip names what is in flight, the way a carry ghost does. */
-  const carryLabel = (envelope: ItemEnvelope): string | null => {
-    switch (envelope.kind) {
-      case "terminal":
-        return client.sessions.get(envelope.sessionId)?.name ?? null;
-      case "tile":
-        return envelope.containerId === padId
-          ? surfaceLabel(layout?.[envelope.tileId]?.surface ?? null)
-          : null;
-      case "canvas":
-      case "composition":
-        return padNameFor(envelope.padId);
-      case "element":
-        return null;
-      default: {
-        const exhaustive: never = envelope;
-        return exhaustive;
-      }
-    }
-  };
 
   const body =
     layout === null ? (
@@ -958,13 +945,7 @@ export function TiledPadView({
         */}
         <div className="tile-area" ref={areaRef} {...areaDropProps}>
           {body}
-          <TilePreviewOverlay
-            host={dropHost}
-            store={dropStore}
-            surfaceLabel={surfaceLabel}
-            carryLabel={carryLabel}
-            carrierColor={carrierColor}
-          />
+          <TilePreviewOverlay drop={tileDrop} store={dropStore} surfaceLabel={surfaceLabel} />
           <TileZoneDebug
             layout={layout}
             areaRef={areaRef}

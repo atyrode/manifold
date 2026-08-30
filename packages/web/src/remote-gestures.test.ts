@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { ServerGesture } from "@manifold/protocol";
+import { GESTURE_TTL_MS, type ServerGesture } from "@manifold/protocol";
 import {
+  AIM_TTL_MS,
   applyGestureFrame,
   expireGestures,
   stepGestures,
   type GestureOverride,
 } from "./remote-gestures";
-
 import { GESTURE_HALF_LIFE_MS } from "./interpolate.ts";
 
 function frame(x: number, phase: "active" | "end" = "active"): ServerGesture {
@@ -109,6 +109,46 @@ describe("remote gestures", () => {
       current: { x: 50, y: 0 },
     });
     expect(applyGestureFrame(state, { ...carried, phase: "end" }, null, 20)).toBe(true);
+    expect(state.size).toBe(0);
+  });
+
+  test("a stale AIM is dropped long before the ghost is, because it holds the panes", () => {
+    const state = new Map<string, GestureOverride>();
+    const aiming: ServerGesture = {
+      type: "gesture",
+      connId: "peer-connection",
+      principalId: "peer",
+      kind: "carry",
+      phase: "active",
+      elementId: "leaf",
+      x: 0,
+      y: 0,
+      carry: {
+        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        label: "build",
+        aim: { containerId: "view", tileId: "t1", edge: "right", action: "place" },
+      },
+    };
+    applyGestureFrame(state, aiming, null, 0);
+
+    // Inside the aim's freshness bound a dropped frame changes nothing.
+    expect(expireGestures(state, AIM_TTL_MS)).toBe(false);
+    expect(state.get("leaf")?.carry?.aim).toBeDefined();
+
+    // Past it, the preview claim is retired — the carry, its surface and its label stay,
+    // so the peer's ghost keeps riding the geometry TTL. A lost end frame must not leave
+    // every viewer's composition visibly squeezed for three seconds.
+    expect(expireGestures(state, AIM_TTL_MS + 1)).toBe(true);
+    const swept = state.get("leaf");
+    expect(swept?.carry).toEqual({
+      surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+      label: "build",
+    });
+    // Idempotent: the sweep runs every animation frame and must not keep rewriting.
+    expect(expireGestures(state, AIM_TTL_MS + 2)).toBe(false);
+    expect(state.get("leaf")).toBe(swept);
+
+    expect(expireGestures(state, GESTURE_TTL_MS + 1)).toBe(true);
     expect(state.size).toBe(0);
   });
 });

@@ -11,14 +11,17 @@ import {
   useFlowPadPresence,
 } from "./flow-terminal-node.tsx";
 import { ControlIcon, ItemIcon } from "./icons.tsx";
+import { remoteTileCarries, surfaceDisplayLabel } from "./carry.ts";
 import type { ItemEnvelope } from "./item-envelope.ts";
+import type { TileDropStore } from "./tile-drop-store.ts";
+import { useRemoteGestures } from "./use-carry.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
-import type { TileDropHost } from "./use-tile-drop.ts";
+import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
 import {
   createWidgetSocketSwitch,
   type WidgetRole,
@@ -523,6 +526,46 @@ function PortalLeaf({
   }
 }
 
+/**
+ * The widget's OWN room, as a second feed of peer aims.
+ *
+ * Gesture relay is room-scoped while `CarryAim.containerId` addresses a CONTAINER, so a
+ * collaborator dragging inside this composition's fullscreen route publishes into that
+ * container's room and the canvas — listening only to its own room — never hears it,
+ * even though this widget holds a live socket to exactly that room and is already
+ * receiving those frames. Reading them here closes that direction with no protocol
+ * change: the store merges feeds per container, freshest wins.
+ *
+ * The reverse direction (someone dragging over this widget, watched by a peer sitting in
+ * the container's route) still needs a SERVER-side relay of carry frames whose
+ * `aim.containerId` names another room, and is not solved here.
+ *
+ * A component rather than a hook call in the parent, because the socket only exists
+ * while the widget is live: mounting is the honest way to express "listen while there is
+ * something to listen to", and unmounting retires the feed.
+ */
+function WidgetAimFeed({
+  client,
+  containerId,
+  store,
+}: {
+  readonly client: SessionClient;
+  readonly containerId: string;
+  readonly store: TileDropStore;
+}): null {
+  const overrides = useRemoteGestures(client);
+  useEffect(() => {
+    store.setRemote(`widget:${containerId}`, remoteTileCarries(overrides.values()));
+  }, [containerId, overrides, store]);
+  useEffect(
+    () => () => {
+      store.setRemote(`widget:${containerId}`, new Map());
+    },
+    [containerId, store],
+  );
+  return null;
+}
+
 function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   countRender("portal-node");
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
@@ -655,10 +698,52 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     );
 
   /**
+   * What a tiled surface is CALLED here, through the one shared switch. The widget can
+   * answer all three questions: sessions and note text from its own room socket, and
+   * container names from the index the canvas holds — so the same drag reads the same
+   * words here and on the fullscreen route instead of captioning terminals only.
+   */
+  const occupantLabel = useCallback(
+    (surface: TileSurface | null): string | null =>
+      surfaceDisplayLabel(surface, {
+        sessionName: (sessionId) => client?.sessions.get(sessionId)?.name ?? null,
+        padName: pad.padName,
+        noteText: (elementId) => {
+          const element = client?.elements.get(elementId);
+          return element?.type === "text" ? element.text : null;
+        },
+      }),
+    [client, pad.padName],
+  );
+  const carryLabel = useCallback(
+    (envelope: ItemEnvelope): string | null => {
+      switch (envelope.kind) {
+        case "terminal":
+          return client?.sessions.get(envelope.sessionId)?.name ?? null;
+        case "tile":
+          return envelope.containerId === containerId
+            ? occupantLabel(layout?.[envelope.tileId]?.surface ?? null)
+            : null;
+        case "canvas":
+        case "composition":
+          return pad.padName(envelope.padId);
+        case "element":
+          return null;
+        default: {
+          const exhaustive: never = envelope;
+          return exhaustive;
+        }
+      }
+    },
+    [client, containerId, layout, occupantLabel, pad.padName],
+  );
+
+  /**
    * The widget is the only place its own layout is visible — the canvas holds no
-   * channel on that container — so aim resolution lives HERE: the overlay reads the
-   * canvas's pointer from the shared store, resolves against this tree, and publishes
-   * the destination back for the canvas to commit at release.
+   * channel on that container — so aim resolution lives HERE, in ONE pipeline created
+   * by this host and handed to the overlay: the overlay reads the canvas's pointer from
+   * the shared store, resolves against this tree, and publishes the aim back both for
+   * the canvas to commit at release and for this drag's carry frames to carry.
    */
   const dropHost = useMemo<TileDropHost>(
     () => ({
@@ -669,37 +754,18 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       dividerPx: PORTAL_TREE_CLASSES.dividerPx,
       assess: pad.assessDrop,
       elementSeat: pad.elementSeat,
+      describeCarry: carryLabel,
     }),
-    [containerId, id, layout, pad.assessDrop, pad.elementSeat, pad.padId],
+    [carryLabel, containerId, id, layout, pad.assessDrop, pad.elementSeat, pad.padId],
   );
-
-  /** What a displaced or carried surface is called, from this widget's own socket. */
-  const occupantLabel = useCallback(
-    (surface: TileSurface): string | null => {
-      if (surface.kind === "terminal") {
-        return client?.sessions.get(surface.sessionId)?.name ?? null;
-      }
-      return null;
-    },
-    [client],
-  );
-  const carryLabel = useCallback(
-    (envelope: ItemEnvelope): string | null =>
-      envelope.kind === "terminal"
-        ? (client?.sessions.get(envelope.sessionId)?.name ?? null)
-        : null,
-    [client],
-  );
+  const tileDrop = useTileDrop(dropHost);
 
   const overlay = (
     <>
-      <TilePreviewOverlay
-        host={dropHost}
-        store={pad.dropStore}
-        surfaceLabel={occupantLabel}
-        carryLabel={carryLabel}
-        carrierColor={pad.carrierColor}
-      />
+      {client === null ? null : (
+        <WidgetAimFeed client={client} containerId={containerId} store={pad.dropStore} />
+      )}
+      <TilePreviewOverlay drop={tileDrop} store={pad.dropStore} surfaceLabel={occupantLabel} />
       <TileZoneDebug layout={layout} areaRef={areaRef} dividerPx={PORTAL_TREE_CLASSES.dividerPx} />
     </>
   );

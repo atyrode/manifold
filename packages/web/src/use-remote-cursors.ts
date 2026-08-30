@@ -30,6 +30,16 @@ export const REMOTE_CURSOR_FALLBACK_COLOR = "#868e96";
 /** Likewise for the name strip: a cursor is never anonymous on screen. */
 export const REMOTE_CURSOR_FALLBACK_LABEL = "Collaborator";
 
+/**
+ * A carrier's chosen color, so the ghost of what someone is dragging belongs to the
+ * same person as their cursor. It lives beside the fallback it falls back TO, because
+ * the two are one rule and each renderer having its own copy is how a presence color
+ * quietly starts disagreeing with itself between a cursor and a carry.
+ */
+export function carrierColor(client: SessionClient | null, principalId: string): string {
+  return client?.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR;
+}
+
 export interface RemoteCursorsView {
   /** Every live remote connection's cursor, in the room's own coordinate space. */
   readonly cursors: readonly RemoteCursor[];

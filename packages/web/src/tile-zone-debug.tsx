@@ -8,7 +8,8 @@ import {
   type RefObject,
 } from "react";
 
-import { ROOT_RING_PX, resolveTileAim } from "./tile-geometry.ts";
+import { resolveTileAim } from "./tile-geometry.ts";
+import { areaUnits } from "./use-tile-drop.ts";
 
 /**
  * The drop-zone field, made visible (F9): a debug-only overlay that SAMPLES the real
@@ -90,21 +91,26 @@ export function TileZoneDebug({
     if (!on || area === null || canvas === null || layout === null) return;
     const width = area.offsetWidth;
     const height = area.offsetHeight;
-    const bounds = area.getBoundingClientRect();
-    if (width <= 0 || height <= 0 || bounds.width <= 0) return;
+    // The ONE unit-space conversion — divider fractions from the LAYOUT box, the ring
+    // from the on-screen rect — so this picture is the resolver's own geometry rather
+    // than a third transcription of a subtle rule.
+    const units = areaUnits(area, dividerPx);
+    if (units === null) return;
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d");
     if (context === null) return;
     context.clearRect(0, 0, width, height);
-    const dividers = { x: dividerPx / width, y: dividerPx / height };
-    // The ring is a DEVICE-px constant; convert through the on-screen rect the way
-    // the drop hook does, then paint in layout px.
-    const ring = { x: ROOT_RING_PX / bounds.width, y: ROOT_RING_PX / bounds.height };
     const carry = { carriedTileId: null, holdsTileSeat: false };
     for (let y = CELL_PX / 2; y < height; y += CELL_PX) {
       for (let x = CELL_PX / 2; x < width; x += CELL_PX) {
-        const aim = resolveTileAim(layout, { x: x / width, y: y / height }, carry, dividers, ring);
+        const aim = resolveTileAim(
+          layout,
+          { x: x / width, y: y / height },
+          carry,
+          units.dividers,
+          units.ring,
+        );
         if (aim === null) continue;
         const structural = layout[aim.tileId]?.dir !== null;
         const rgb = structural

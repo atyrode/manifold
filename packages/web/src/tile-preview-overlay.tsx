@@ -1,24 +1,25 @@
 import { ROOT_TILE_ID, type TileSurface } from "@manifold/protocol";
-import {
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { ControlIcon, SurfaceIcon } from "./icons.tsx";
-import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
 import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
-import { tileProspect, type TileAim } from "./tile-geometry.ts";
-import { useTileDrop, type TileDropHost, type TileDropState } from "./use-tile-drop.ts";
+import type { TileDropPipeline, TileDropState } from "./use-tile-drop.ts";
 
 /**
  * The live split preview. Subscribes to the host's drop store — the ONLY consumer of
- * the per-frame pointer — resolves the aim, draws the landing slot, and drives the
- * FLIP: the REAL panes glide and squeeze into their prospective places while only the
- * slot is a ghost.
+ * the per-frame pointer — renders the landing slot, and drives the FLIP: the REAL panes
+ * glide and squeeze into their prospective places while only the slot is a ghost.
+ *
+ * It owns no pipeline. The host creates exactly one {@link TileDropPipeline} and passes
+ * it in, because the pipeline's memo is also its hysteresis state: a second instance for
+ * the same area would hold a second zone, and the aim a release commits could be one
+ * transition ahead of the aim the eye was shown.
+ *
+ * Its entire local-vs-remote logic is ARBITRATION — choosing which producer's
+ * `(aim, surface, label)` triple enters the builder. Everything after that reads one
+ * {@link TileDropState} and cannot ask who produced it: the slot, the cues, the caption,
+ * the denial and the pane motion are one implementation, so a collaborator's view of a
+ * drag is the dragger's view by construction rather than by matching two code paths.
  *
  * The motion is written imperatively as `transform` on the boxes `TileTree` already
  * owns, never through React state, so the tree does not re-render and no xterm is
@@ -31,22 +32,32 @@ import { useTileDrop, type TileDropHost, type TileDropState } from "./use-tile-d
  * widget's `scale(0.5)` and any canvas zoom without knowing either.
  */
 export interface TilePreviewOverlayProps {
-  readonly host: TileDropHost;
+  /** The host's one pipeline: aim resolution, the shared builder, its memo. */
+  readonly drop: TileDropPipeline;
   readonly store: TileDropStore;
   /** Names the displaced occupant in a replace caption; the host answers from its doc. */
   readonly surfaceLabel: (surface: TileSurface) => string | null;
-  /** Names the carried item on the slot chip; null hides the label. */
-  readonly carryLabel?: (envelope: ItemEnvelope) => string | null;
-  /** A carrier's presence color, so a peer's preview belongs to them like their cursor. */
-  readonly carrierColor?: (principalId: string) => string;
 }
 
-function clearWritten(written: HTMLElement[]): void {
-  for (const element of written) {
+/** The class a carried item wears while its carry has an armed target (see styles.css). */
+const CARRIED_AWAY_CLASS = "is-carried-away";
+
+/** Everything this overlay wrote onto the tree, so disarm can undo it exactly. */
+interface PreviewMotion {
+  /** Boxes carrying a FLIP transform. */
+  readonly shifted: HTMLElement[];
+  /** Boxes wearing the ease-away class. */
+  readonly faded: HTMLElement[];
+}
+
+function clearMotion(motion: PreviewMotion): void {
+  for (const element of motion.shifted) {
     element.style.transform = "";
     element.style.transformOrigin = "";
   }
-  written.length = 0;
+  motion.shifted.length = 0;
+  for (const element of motion.faded) element.classList.remove(CARRIED_AWAY_CLASS);
+  motion.faded.length = 0;
 }
 
 /** The DOM box a shift moves: the pane the CURRENT tree drew for that tile. */
@@ -64,103 +75,98 @@ function paneElement(
 }
 
 export function TilePreviewOverlay({
-  host,
+  drop,
   store,
   surfaceLabel,
-  carryLabel,
-  carrierColor,
 }: TilePreviewOverlayProps): ReactNode {
   const signal: TileDropSignal = useSyncExternalStore(store.subscribe, store.get, store.get);
-  const drop = useTileDrop(host);
-  const writtenRef = useRef<HTMLElement[]>([]);
+  const host = drop.host;
+  const motionRef = useRef<PreviewMotion>({ shifted: [], faded: [] });
   /** The last real state, so a gap (divider, own leaf) fades instead of popping. */
   const [held, setHeld] = useState<TileDropState | null>(null);
 
   const armed =
     signal.pointer !== null &&
     (host.widget === null || signal.armedElementId === host.widget.elementId);
-  const state =
+  const local =
     armed && signal.pointer !== null
       ? drop.aimAt(signal.pointer.clientX, signal.pointer.clientY)
       : null;
   // Render-phase derived state (the documented previous-value pattern): `aimAt`
   // memoizes per zone, so this settles after one immediate re-render.
-  if (state !== null && state !== held) setHeld(state);
+  if (local !== null && local !== held) setHeld(local);
   if (!armed && held !== null) setHeld(null);
-  /*
-    A PEER's armed aim, re-derived through the same kernel the local pointer uses —
-    the whole point: one prospect computation, two producers. Local always outranks
-    remote, purely as arbitration; if the two could ever disagree on geometry that
-    would be a kernel bug, not a rendering difference. An agent driving a carry
-    through the SDK lands here exactly like a human collaborator.
-  */
-  const remote = signal.remote;
-  const remoteState = ((): TileDropState | null => {
-    if (armed || remote === null || host.layout === null) return null;
-    if (remote.aim.containerId !== host.containerId) return null;
-    const aim: TileAim = {
-      tileId: remote.aim.tileId,
-      edge: remote.aim.edge,
-      action: remote.aim.action,
-      depth: 0,
-      between: remote.aim.between === true,
-    };
-    const area = host.areaRef.current;
-    const width = area === null || area.offsetWidth <= 0 ? 1 : area.offsetWidth;
-    const height = area === null || area.offsetHeight <= 0 ? 1 : area.offsetHeight;
-    const dividers = { x: host.dividerPx / width, y: host.dividerPx / height };
-    const carriedTileId =
-      remote.surface.kind === "tile" && remote.surface.containerId === host.containerId
-        ? remote.surface.tileId
-        : null;
-    const prospect = tileProspect(host.layout, aim, carriedTileId, dividers);
-    if (prospect === null) return null;
-    return {
-      aim,
-      slot: prospect.slot,
-      partner: prospect.partner,
-      shifts: prospect.shifts,
-      assessment: null,
-      destination: { kind: "unplaced" },
-      envelope: null,
-    };
-  })();
-  const shown = state ?? (armed ? held : null) ?? remoteState;
 
-  // Publish the resolved aim back to the store, so the transport commits exactly what
-  // was previewed. ONLY the armed overlay writes: a canvas holds one overlay per
-  // widget, and an unarmed one publishing its null would clobber the armed answer —
-  // and ping-pong the store into an endless notify loop. Disarming is the
-  // TRANSPORT's write (`clearCompose` / the arm losing its element), never ours.
-  // `set` is value-equal, so re-notification of the same aim converges immediately.
+  /*
+    ARBITRATION, and nothing else: this browser's pointer outranks a peer's carry while
+    it is armed over this area, and otherwise the freshest peer aim FOR THIS CONTAINER
+    wins. Both triples enter the same builder, so the two cannot disagree about geometry,
+    legality or wording — if they ever did it would be a kernel bug, not a rendering
+    difference. An agent driving a carry through the SDK lands here as a peer does.
+  */
+  const remote = signal.remote.get(host.containerId) ?? null;
+  const remoteState =
+    armed || remote === null ? null : drop.previewOf(remote.aim, remote.surface, remote.label);
+  /** THE live answer for whichever input owns this area right now. */
+  const live = local ?? remoteState;
+  /** What is painted: the live answer, or the last one while a gap passes through. */
+  const shown = local ?? (armed ? held : null) ?? remoteState;
+  /**
+   * A held fallback, not the live answer — a pointer sitting in a gap (a divider, its
+   * own leaf). Asked as "is this still the answer", never as "who made it", so the cue
+   * cannot start meaning "a peer made it" the way the old formulation did.
+   */
+  const stale = shown !== null && shown !== live;
+  /** Arbitration's outcome as a style-free marker on the slot, and nothing more. */
+  const isRemote = shown !== null && shown === remoteState;
+
+  /*
+    Publish the resolved aim back to the store: the SINGLE source of both what a release
+    commits and what rides the carry wire, so no transport builds an aim beside the one
+    painted here. ONLY the armed overlay writes: a canvas holds one overlay per widget,
+    and an unarmed one publishing its null would clobber the armed answer — and ping-pong
+    the store into an endless notify loop. Disarming is the TRANSPORT's write
+    (`clearCompose` / the arm losing its element), never ours. The dependency list is
+    what keeps that loop structurally impossible rather than value-equality's job alone.
+  */
   useEffect(() => {
     if (!armed) return;
-    const current = store.get();
     store.set({
-      ...current,
-      aim:
-        state === null
-          ? null
-          : { destination: state.destination, containerId: host.containerId, tile: state.aim },
+      ...store.get(),
+      aim: local === null ? null : { destination: local.destination, tile: local.aim },
     });
-  });
+  }, [armed, local, store]);
 
   useEffect(() => {
     if (!armed) drop.clear();
   }, [armed, drop]);
 
   // The FLIP itself: written imperatively so the tree never re-renders. Nothing moves
-  // when the drop is denied, because nothing will move on release. A peer's aim
-  // glides the panes exactly like a local one — same shifts, same kernel.
+  // when the drop is denied, because nothing will move on release — and that guard now
+  // serves a peer's refused aim too, since a viewer judges the peer's own surface.
   useEffect(() => {
     const area = host.areaRef.current;
-    clearWritten(writtenRef.current);
+    const motion = motionRef.current;
+    clearMotion(motion);
     if (area === null) return;
     area.classList.toggle("is-previewing", shown !== null);
-    const active = state ?? remoteState;
-    if (active === null || active.assessment?.denial != null) return;
-    const singleLeaf = host.layout?.[ROOT_TILE_ID]?.dir === null;
-    for (const shift of active.shifts) {
+    if (live === null) return;
+    const singleLeaf = host.layout === null || host.layout[ROOT_TILE_ID]?.dir === null;
+    /*
+      The item IN HAND eases away while its carry holds an armed target, exactly as the
+      canvas fades the node a dragger is holding — the fade belongs to the carry, not to
+      being the dragger, so one rule serves your own tile drag and a peer's alike. Armed
+      is armed: a denied target still fades, because the canvas door does the same.
+    */
+    if (live.carriedTileId !== null) {
+      const carried = paneElement(area, live.carriedTileId, singleLeaf);
+      if (carried !== null) {
+        carried.classList.add(CARRIED_AWAY_CLASS);
+        motion.faded.push(carried);
+      }
+    }
+    if (live.assessment?.denial != null) return;
+    for (const shift of live.shifts) {
       const element = paneElement(area, shift.fromTileId, singleLeaf);
       if (element === null) continue;
       const dx = ((shift.to.x - shift.from.x) / shift.from.width) * 100;
@@ -169,45 +175,43 @@ export function TilePreviewOverlay({
       const sy = shift.to.height / shift.from.height;
       element.style.transformOrigin = "0 0";
       element.style.transform = `translate(${String(dx)}%, ${String(dy)}%) scale(${String(sx)}, ${String(sy)})`;
-      writtenRef.current.push(element);
+      motion.shifted.push(element);
     }
-  }, [armed, host.areaRef, host.layout, shown, state, remoteState]);
+  }, [host.areaRef, host.layout, shown, live]);
 
   // Disarm and unmount both leave the tree exactly as the doc says it is.
   useEffect(() => {
-    const written = writtenRef.current;
+    const motion = motionRef.current;
     const area = host.areaRef.current;
     return () => {
-      clearWritten(written);
+      clearMotion(motion);
       area?.classList.remove("is-previewing");
     };
   }, [host.areaRef]);
 
   if (shown === null) return null;
 
-  const isRemote = state === null && (armed ? held : null) === null && remoteState !== null;
   const denied = shown.assessment?.denial != null;
   const swapping = shown.aim.action === "swap" && !denied;
   const replacing = shown.aim.action === "replace" && !denied;
   const displaced =
     replacing && host.layout !== null ? (host.layout[shown.aim.tileId]?.surface ?? null) : null;
-  const chipLabel = shown.envelope === null ? null : (carryLabel?.(shown.envelope) ?? null);
+  /*
+    ONE class computation for the slot AND its swap partner. They are two halves of one
+    trade, so a branch that could restyle one and not the other is a defect waiting for
+    a new cue: `is-partner` is the only difference either box is allowed to have.
+    `is-remote` is a style-free semantic marker driven purely by the arbitration outcome.
+  */
   const slotClass = [
     "tile-preview",
     swapping ? "is-swap" : "",
     replacing ? "is-replace" : "",
     denied ? "is-denied" : "",
-    !isRemote && state === null ? "is-idle" : "",
+    stale ? "is-idle" : "",
     isRemote ? "is-remote" : "",
   ]
     .filter(Boolean)
     .join(" ");
-  const remoteTint =
-    isRemote && remote !== null && carrierColor !== undefined
-      ? carrierColor(remote.principalId)
-      : null;
-  const tintStyle: CSSProperties =
-    remoteTint === null ? {} : ({ "--carrier-color": remoteTint } as CSSProperties);
 
   const rectStyle = (rect: typeof shown.slot) => ({
     left: `${String(rect.x * 100)}%`,
@@ -218,11 +222,7 @@ export function TilePreviewOverlay({
 
   return (
     <>
-      <div
-        className={slotClass}
-        aria-hidden="true"
-        style={{ ...rectStyle(shown.slot), ...tintStyle }}
-      >
+      <div className={slotClass} aria-hidden="true" style={rectStyle(shown.slot)}>
         {swapping ? (
           <span className="tile-preview__glyph">
             <ControlIcon kind="swap" size={28} />
@@ -236,15 +236,10 @@ export function TilePreviewOverlay({
               </span>
             )}
           </span>
-        ) : isRemote && remote !== null ? (
+        ) : shown.chip === null || denied ? null : (
           <span className="tile-preview__glyph">
-            <SurfaceIcon kind={remote.surface.kind} size={14} />
-            <span className="tile-preview__caption">{remote.label}</span>
-          </span>
-        ) : shown.envelope === null || denied ? null : (
-          <span className="tile-preview__glyph">
-            <SurfaceIcon kind={envelopeSurface(shown.envelope).kind} size={14} />
-            {chipLabel === null ? null : <span className="tile-preview__caption">{chipLabel}</span>}
+            <SurfaceIcon kind={shown.chip.kind} size={14} />
+            <span className="tile-preview__caption">{shown.chip.label}</span>
           </span>
         )}
         {denied && shown.assessment?.message != null ? (
@@ -253,7 +248,7 @@ export function TilePreviewOverlay({
       </div>
       {shown.partner === null ? null : (
         <div
-          className="tile-preview is-swap is-partner"
+          className={`${slotClass} is-partner`}
           aria-hidden="true"
           style={rectStyle(shown.partner)}
         >

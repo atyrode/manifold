@@ -21,8 +21,10 @@ function node(id: string, type: string, x: number, y: number, zIndex = 0, size =
 
 describe("composeTargetAt", () => {
   const nodes: readonly SnapNode[] = [
-    node("term-a", "terminal", 0, 0, 1),
-    node("term-b", "terminal", 50, 50, 2),
+    // Every canvas node a drop can compose onto is a `portal`: a terminal on a canvas IS
+    // a portal onto its solo home, so there is one species here, not two.
+    node("widget-a", "portal", 0, 0, 1),
+    node("widget-b", "portal", 50, 50, 2),
     node("widget", "portal", 300, 0, 1),
     node("note", "text", 500, 0, 9),
     node("ink", "draw", 700, 0, 9),
@@ -32,27 +34,27 @@ describe("composeTargetAt", () => {
     expect(composeTargetAt(nodes, { x: 250, y: 250 }, null)).toBeNull();
   });
 
-  test("terminals and widgets are targets; notes and ink are not", () => {
-    expect(composeTargetAt(nodes, { x: 10, y: 10 }, null)?.id).toBe("term-a");
+  test("widgets are targets; notes and ink are not", () => {
+    expect(composeTargetAt(nodes, { x: 10, y: 10 }, null)?.id).toBe("widget-a");
     expect(composeTargetAt(nodes, { x: 320, y: 20 }, null)?.id).toBe("widget");
-    // There is nothing to birth a container around, and the executor refuses it, so
-    // offering the gesture over a note or a stroke would be a lie.
+    // There is nothing to birth a container around, and the executor refuses them
+    // anyway, so offering the gesture over a note or a stroke would be a lie.
     expect(composeTargetAt(nodes, { x: 520, y: 20 }, null)).toBeNull();
     expect(composeTargetAt(nodes, { x: 720, y: 20 }, null)).toBeNull();
   });
 
   test("overlaps resolve to the topmost node, matching what the viewer sees", () => {
-    expect(composeTargetAt(nodes, { x: 60, y: 60 }, null)?.id).toBe("term-b");
+    expect(composeTargetAt(nodes, { x: 60, y: 60 }, null)?.id).toBe("widget-b");
   });
 
   test("the dragged node is never its own target", () => {
-    expect(composeTargetAt(nodes, { x: 60, y: 60 }, "term-b")?.id).toBe("term-a");
-    expect(composeTargetAt([nodes[0]!], { x: 10, y: 10 }, "term-a")).toBeNull();
+    expect(composeTargetAt(nodes, { x: 60, y: 60 }, "widget-b")?.id).toBe("widget-a");
+    expect(composeTargetAt([nodes[0]!], { x: 10, y: 10 }, "widget-a")).toBeNull();
   });
 
   test("edges count as inside, so a drop on a border still composes", () => {
-    expect(composeTargetAt([nodes[0]!], { x: 0, y: 0 }, null)?.id).toBe("term-a");
-    expect(composeTargetAt([nodes[0]!], { x: 100, y: 100 }, null)?.id).toBe("term-a");
+    expect(composeTargetAt([nodes[0]!], { x: 0, y: 0 }, null)?.id).toBe("widget-a");
+    expect(composeTargetAt([nodes[0]!], { x: 100, y: 100 }, null)?.id).toBe("widget-a");
     expect(composeTargetAt([nodes[0]!], { x: 101, y: 100 }, null)).toBeNull();
   });
 });

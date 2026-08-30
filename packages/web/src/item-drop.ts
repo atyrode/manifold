@@ -148,9 +148,10 @@ export function denialMessage(denial: PlacementDenial, lookup: PlacementLookup):
   return DENIAL_PROSE[denial.rule](subject, CONTAINER_NOUN[denial.container.kind]);
 }
 
-/** What the live carry would do at one destination: nothing to say, allowed, or refused. */
+/** What a carry would do at one destination: nothing to say, allowed, or refused. */
 export interface ItemDropAssessment {
-  readonly envelope: ItemEnvelope;
+  /** The surface that was judged — the live carry's, or a peer's, as asked. */
+  readonly surface: PlacementSurface;
   /** Null when the placement is legal. */
   readonly denial: PlacementDenial | null;
   /** Prose for the refusal; null when legal. */
@@ -180,8 +181,21 @@ export interface UseItemDropOptions {
 }
 
 export interface ItemDropApi {
-  /** Legality of the live carry at `destination`; null when nothing is being carried. */
-  readonly assess: (destination: PlacementDestination) => ItemDropAssessment | null;
+  /**
+   * Legality of `surface` at `destination`, defaulting to whatever this browser is
+   * carrying; null when there is nothing to judge.
+   *
+   * The surface is a parameter because legality is not the local dragger's privilege: a
+   * preview of a PEER's aim has to answer the same question about the peer's surface,
+   * or every collaborator paints a legal-looking cue over a drop the server will refuse
+   * — and glides panes for it. The lookup already keys off surfaces, so this asks
+   * nothing new of it. A surface this renderer cannot resolve answers null, which
+   * renders as the ABSENCE of a refusal rather than as a fabricated one.
+   */
+  readonly assess: (
+    destination: PlacementDestination,
+    surface?: PlacementSurface,
+  ) => ItemDropAssessment | null;
   readonly refusalProps: (assessment: ItemDropAssessment | null | undefined) => RefusalProps;
   /**
    * Releases the carry into `destination`. A refusal the client can already see is
@@ -193,13 +207,14 @@ export interface ItemDropApi {
 
 export function useItemDrop({ lookup, place, notify, onPlaced }: UseItemDropOptions): ItemDropApi {
   const assess = useCallback(
-    (destination: PlacementDestination): ItemDropAssessment | null => {
-      const envelope = carriedItem();
-      if (envelope === null) return null;
-      const resolution = resolvePlacement(envelopeSurface(envelope), destination, lookup);
-      if (resolution.ok) return { envelope, denial: null, message: null };
+    (destination: PlacementDestination, surface?: PlacementSurface): ItemDropAssessment | null => {
+      const carried = carriedItem();
+      const subject = surface ?? (carried === null ? null : envelopeSurface(carried));
+      if (subject === null) return null;
+      const resolution = resolvePlacement(subject, destination, lookup);
+      if (resolution.ok) return { surface: subject, denial: null, message: null };
       return {
-        envelope,
+        surface: subject,
         denial: resolution.denial,
         message: denialMessage(resolution.denial, lookup),
       };
