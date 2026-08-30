@@ -386,21 +386,21 @@ export function TiledPadView({
   );
 
   /**
-   * A CANVAS tile's close: the canvas is deleted for everyone and its leaf goes with it,
-   * because a tile onto a deleted container is a hole. The same order the canvas's own
-   * portal widget uses (delete, then drop the representation), so a failed delete leaves
-   * the tile in place rather than silently emptying it.
+   * A CANVAS tile's close: the canvas is deleted for everyone, and the server's delete
+   * prunes EVERY reference to it — this leaf included — before the row goes
+   * (`deleteContainer` → `removeReferences`). No second removal call: chasing the leaf
+   * afterwards always found it already gone and toasted "Could not delete this canvas"
+   * over a delete that had succeeded.
    */
   const deletePadTile = useCallback(
-    (tileId: string, embeddedPadId: string): void => {
+    (embeddedPadId: string): void => {
       void deletePad(identity.token, embeddedPadId)
-        .then(() => removePadTile(identity.token, padId, tileId))
         .then(onPadChanged)
         .catch((reason: unknown) =>
           failed(reason, "Could not delete this canvas", "delete-canvas"),
         );
     },
-    [failed, identity.token, onPadChanged, padId],
+    [failed, identity.token, onPadChanged],
   );
 
   /**
@@ -737,7 +737,7 @@ export function TiledPadView({
               onMaximize={() => navigate(`/p/${encodeURIComponent(surface.padId)}`)}
               maximizeLabel={`Open canvas ${padLabelFor(surface.padId)}`}
               maximizeTooltip="Open this canvas"
-              onClose={() => deletePadTile(node.id, surface.padId)}
+              onClose={() => deletePadTile(surface.padId)}
               closeLabel={`Delete canvas ${padLabelFor(surface.padId)}`}
               closeTooltip="Delete this canvas for everyone"
             />
