@@ -110,11 +110,12 @@ export interface TileInsert {
 
 /**
  * Insert `surface` next to `targetTileId`. `center` fills an empty leaf in place;
- * an edge wraps the target in a new split holding the target and the new leaf.
+ * a CROSS-axis edge wraps the target in a new two-way split, while a SAME-axis
+ * edge joins the parent split as a flat sibling (see the branch note below).
  *
  * The root id is immovable, so splitting the root moves the root's own content
  * into a fresh leaf and turns the root into the split. Splitting any other tile
- * keeps that tile's id — only the wrapper is new.
+ * keeps that tile's id — only a cross-axis wrapper is ever new.
  */
 export function withTileLeaf(
   layout: TileLayout,
@@ -188,6 +189,39 @@ function insertLeaf(
   if (parentId === null) return null;
   const parent = layout[parentId];
   if (parent === undefined) return null;
+
+  /*
+    SAME AXIS JOINS THE ROW, it never nests (#60). A row inside a row is pure
+    structural noise — it looks identical to the flat row at drop time, then
+    behaves worse: its dividers only rebalance within the nest and collapses
+    leave deeper trees. So when the requested split runs the parent's own way,
+    the new leaf is spliced in BESIDE the target, which cedes half its share —
+    the exact geometry the wrap would have painted, minus the wrapper. This is
+    also how a drop on a DIVIDER lands between two siblings: it is addressed as
+    the leading neighbor's trailing edge, which is this branch. Cross-axis
+    edges keep wrapping below — that IS the nesting gesture — and the root
+    keeps its wrap in the branch above, so grouping a whole composition under
+    a fresh split stays reachable at the area's ring.
+  */
+  if (parent.dir === dir) {
+    const index = parent.children.indexOf(targetTileId);
+    if (index < 0) return null;
+    const targetRatio = parent.ratios[index] ?? 1;
+    const children = [...parent.children];
+    const ratios = [...parent.ratios];
+    children.splice(leading ? index : index + 1, 0, leafId);
+    ratios.splice(leading ? index : index + 1, 0, targetRatio / 2);
+    ratios[leading ? index + 1 : index] = targetRatio / 2;
+    return {
+      layout: {
+        ...layout,
+        [leafId]: leaf,
+        [parentId]: { ...parent, children, ratios },
+      },
+      tileId: leafId,
+    };
+  }
+
   const splitId = nextTileId(layout, new Set([leafId]));
   return {
     layout: {

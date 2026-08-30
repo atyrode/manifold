@@ -142,6 +142,43 @@ describe("tile layout pure math", () => {
     expect(withTileSlot(layout, target, "center")).toBeNull();
   });
 
+  test("a same-axis edge joins the parent split flat instead of nesting (#60)", () => {
+    const seeded = withTileLeaf(emptyTileLayout(), terminal("s1"), ROOT_TILE_ID, "center")?.layout;
+    const split = withTileLeaf(seeded ?? {}, terminal("s2"), ROOT_TILE_ID, "right");
+    const layout = split?.layout ?? {};
+    const target = split?.tileId ?? "";
+
+    // Trailing: the row grows a THIRD sibling after the target; no wrapper is born.
+    const flat = withTileLeaf(layout, terminal("s3"), target, "right");
+    const root = flat?.layout[ROOT_TILE_ID];
+    expect(root?.dir).toBe("row");
+    expect(root?.children).toHaveLength(3);
+    expect(root?.children[2]).toBe(flat?.tileId ?? "");
+    expect(Object.keys(flat?.layout ?? {})).toHaveLength(4);
+    // The target cedes half its share; the untouched sibling keeps all of its own.
+    expect(root?.ratios).toEqual([0.5, 0.25, 0.25]);
+
+    // Leading: the sibling lands BEFORE the target.
+    const before = withTileLeaf(layout, terminal("s3"), target, "left");
+    expect(before?.layout[ROOT_TILE_ID]?.children).toEqual([
+      before?.layout[ROOT_TILE_ID]?.children[0] ?? "",
+      before?.tileId ?? "",
+      target,
+    ]);
+    expect(before?.layout[ROOT_TILE_ID]?.ratios).toEqual([0.5, 0.25, 0.25]);
+
+    // Cross-axis still nests: that IS the deliberate nesting gesture.
+    const wrapped = withTileLeaf(layout, terminal("s3"), target, "bottom");
+    expect(wrapped?.layout[ROOT_TILE_ID]?.children).toHaveLength(2);
+    expect(wrapped?.layout[tileParentId(wrapped?.layout ?? {}, target) ?? ""]?.dir).toBe("column");
+
+    // The preview shares the surgery: a same-axis slot is the same flat splice.
+    const slotted = withTileSlot(layout, target, "right");
+    expect(slotted?.layout[ROOT_TILE_ID]?.children).toHaveLength(3);
+    expect(slotted?.layout[slotted?.slotId ?? ""]?.surface).toBeNull();
+    expect(validateTileLayout(slotted?.layout ?? {})).toBe(true);
+  });
+
   test("removing a leaf collapses the split it leaves behind", () => {
     const seeded = withTileLeaf(emptyTileLayout(), terminal("s1"), ROOT_TILE_ID, "center")?.layout;
     const split = withTileLeaf(seeded ?? {}, terminal("s2"), ROOT_TILE_ID, "right");
