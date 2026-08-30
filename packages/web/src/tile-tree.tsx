@@ -272,6 +272,25 @@ function TileSplit({
     }
   };
 
+  /*
+    Ratios are RELATIVE, so the renderer must normalize them: flexbox only
+    distributes the FULL free space when grow factors sum to at least 1, and a
+    removal from an N-wide split legitimately leaves a sum below 1 (the departing
+    child takes its ratio with it). Feeding raw ratios to flex-grow then leaves a
+    dead, uninteractable band where the missing fraction was — while the drop
+    kernel, which normalizes, keeps aiming at the full area. Normalizing here is
+    what keeps the painted tree and the hit-tested tree the same tree.
+  */
+  let ratioTotal = 0;
+  for (const ratio of node.ratios) {
+    ratioTotal += Number.isFinite(ratio) && ratio > 0 ? ratio : 0;
+  }
+  const growFor = (index: number): number => {
+    const ratio = node.ratios[index] ?? 0;
+    const share = Number.isFinite(ratio) && ratio > 0 ? ratio : 0;
+    return ratioTotal > 0 ? (share / ratioTotal) * node.children.length : 1;
+  };
+
   return (
     <div
       className={`${classes.split} is-${node.dir ?? "leaf"}`}
@@ -307,11 +326,7 @@ function TileSplit({
                   })}
             />
           )}
-          <div
-            className={classes.pane}
-            data-tile-id={childId}
-            style={{ flexGrow: node.ratios[index] ?? 1 }}
-          >
+          <div className={classes.pane} data-tile-id={childId} style={{ flexGrow: growFor(index) }}>
             {renderChild(childId)}
           </div>
         </Fragment>

@@ -740,6 +740,33 @@ try {
     bandDrop.ok && bandLanded,
     "B's bottom band appended a FOURTH column sibling instead of nesting a two-way split",
   );
+
+  /*
+    Ratios are RELATIVE and a removal from an N-wide split legitimately leaves their
+    sum below 1. Flexbox only distributes ALL free space when grow factors reach 1,
+    so an unnormalized renderer paints a dead band where the missing fraction was —
+    the operator-reported ghost black square. The renderer normalizes; this pins it.
+  */
+  viewClient?.setTileRatios(ROOT_TILE_ID, [0.1, 0.1, 0.1, 0.1]);
+  await sleep(800);
+  const fill = await browser.evaluate<{ root: number; last: number } | null>(
+    `(() => {
+      const root = document.querySelector('.tile-area [data-tile-id="root"]');
+      if (root === null) return null;
+      const panes = [...root.children].filter((el) => el.hasAttribute('data-tile-id'));
+      const lastPane = panes[panes.length - 1];
+      if (lastPane === undefined) return null;
+      return {
+        root: root.getBoundingClientRect().bottom,
+        last: lastPane.getBoundingClientRect().bottom,
+      };
+    })()`,
+  );
+  check(
+    "a ratio sum below 1 still fills the area",
+    fill !== null && Math.abs(fill.root - fill.last) <= 4,
+    `last pane bottom ${String(fill?.last)} vs area bottom ${String(fill?.root)} after ratios [0.1 × 4] — no ghost band`,
+  );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {

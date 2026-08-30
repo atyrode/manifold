@@ -45,6 +45,7 @@
 - Closing a tab no longer strands a dead ghost cursor on the canvas when the same user keeps another tab open. (#15, #57)
 - The workspace status now shows real autosave times instead of permanently reading "Not saved". (#15, #57)
 - An unengaged view widget now dims its terminals like any resting terminal; engaging undims only the tile you clicked. (#59)
+- Deleting a tile from a three-or-more-way split no longer leaves a dead black band: split ratios are relative, and the renderer now normalizes them, so the surviving panes always fill the area and the drop highlights line up with what is painted. (#60)
 - Closing a canvas tile inside a composition no longer toasts "Could not delete this canvas" after a delete that succeeded: the server's delete already prunes the leaf, and the client stopped chasing it. (#59)
 - Engaging and disengaging a view widget no longer refreshes its terminals: the tiles keep their DOM identity across the socket swap and replay in a single frame. (#59)
 - Drop zones on a composition widget no longer count the title strip as part of the tiles, so edge and center drops land where the highlight says they will. (#59)
