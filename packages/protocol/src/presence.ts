@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TileEdgeSchema } from "./layout.ts";
 import { PlacementSurfaceSchema } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
 
@@ -59,9 +60,28 @@ export type PresenceState = z.infer<typeof PresenceStateSchema>;
  * frequently cannot derive it: a terminal carried in from the pool, or a tile carried
  * off a widget, belongs to a room the viewer has not joined.
  */
+/**
+ * Where a live carry is currently AIMING inside a tiled container: the resolved drop
+ * target a collaborator can re-derive the full split preview from, using the same
+ * geometry kernel the producer used. Sent only while an aim is armed; a frame without
+ * one means the carry is over no target (viewers drop their preview).
+ */
+export const CarryAimSchema = z.strictObject({
+  /** The tiled container (composition id) the aim addresses. */
+  containerId: z.string().min(1),
+  tileId: z.string().min(1),
+  edge: TileEdgeSchema,
+  action: z.enum(["place", "swap", "replace"]),
+  /** Same-axis seam-band drop: wedge between the target and its neighbor (thirds). */
+  between: z.boolean().optional(),
+});
+export type CarryAim = z.infer<typeof CarryAimSchema>;
+
 export const CarrySchema = z.strictObject({
   surface: PlacementSurfaceSchema,
   label: z.string().min(1).max(120).optional(),
+  /** Set while the carry is armed over a tile target; absent means no live aim. */
+  aim: CarryAimSchema.optional(),
 });
 export type Carry = z.infer<typeof CarrySchema>;
 

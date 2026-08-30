@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -54,9 +54,14 @@ export const PROTOCOL_VERSION = 12;
  * one TCP connection no matter how many rooms it renders. ping/pong stay
  * connection-level. The machine wire is byte-identical, so existing agents stay
  * accepted.
+ * v12 -> v13: session-channel only. Tile placement destinations gained an OPTIONAL
+ * `between` flag (absent ≡ split-the-target, the pre-bump semantics) so a seam-band
+ * drop can mean "wedge between both neighbors" on the wire; gesture `carry` payloads
+ * gained an OPTIONAL `aim` so collaborators can re-derive a producer's live split
+ * preview. The machine wire is byte-identical, so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 ]);
 
 /**

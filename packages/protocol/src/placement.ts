@@ -374,6 +374,15 @@ export const PlacementDestinationSchema = z.discriminatedUnion("kind", [
     targetTileId: z.string().min(1).nullable(),
     /** Null fills an empty target leaf, else splits it. */
     edge: TileEdgeSchema.nullable(),
+    /**
+     * A same-axis edge means one of two gestures, told apart by distance from the
+     * seam: dropped ON the seam band, the newcomer wedges BETWEEN target and neighbor
+     * and both cede a third; dropped deeper into the target's flank, it splits THAT
+     * pane alone — the target cedes half and the neighbor is untouched. Absent ≡
+     * false (split the target). Meaningless (and ignored) for cross-axis edges,
+     * ends of a row, and `center`.
+     */
+    between: z.boolean().optional(),
   }),
   z.strictObject({
     kind: z.literal("compose"),
