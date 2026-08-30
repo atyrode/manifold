@@ -234,6 +234,36 @@ function dividerAim(
   return { tileId: previous, edge: row ? "right" : "bottom", action: "place", depth };
 }
 
+/** How far past a held zone's boundary the pointer must travel before the aim flips. */
+export const ZONE_HYSTERESIS = 0.06;
+
+/** Is the point still inside `edge`'s zone of `rect`, grown by the hysteresis margin? */
+function withinHeldZone(rect: UnitRect, point: UnitPoint, edge: TileEdge): boolean {
+  const dx = point.x - rect.x;
+  const dy = point.y - rect.y;
+  const bandX = (SNAP_EDGE_BAND + ZONE_HYSTERESIS) * rect.width;
+  const bandY = (SNAP_EDGE_BAND + ZONE_HYSTERESIS) * rect.height;
+  switch (edge) {
+    case "left":
+      return dx < bandX;
+    case "right":
+      return dx > rect.width - bandX;
+    case "top":
+      return dy < bandY;
+    case "bottom":
+      return dy > rect.height - bandY;
+    case "center": {
+      const innerX = (SNAP_EDGE_BAND - ZONE_HYSTERESIS) * rect.width;
+      const innerY = (SNAP_EDGE_BAND - ZONE_HYSTERESIS) * rect.height;
+      return dx > innerX && dx < rect.width - innerX && dy > innerY && dy < rect.height - innerY;
+    }
+    default: {
+      const exhaustive: never = edge;
+      return exhaustive;
+    }
+  }
+}
+
 /**
  * The tile a pointer aims at, or null when the release would mean nothing: outside the
  * area, or anywhere over the carry's own leaf (the server treats leaf-onto-itself as a
@@ -253,6 +283,7 @@ export function resolveTileAim(
   carry: TileAimCarry,
   dividers: { readonly x: number; readonly y: number },
   ring: { readonly x: number; readonly y: number },
+  held: { readonly tileId: string; readonly edge: TileEdge } | null = null,
 ): TileAim | null {
   const rects = tileRects(layout, dividers);
   const chain = tileChainAt(layout, rects, point);
@@ -296,8 +327,18 @@ export function resolveTileAim(
   if (carry.carriedTileId === leafId) return null;
   const rect = rects.get(leafId);
   if (rect === undefined) return null;
-  const zone = snapZone(rect, point);
+  let zone = snapZone(rect, point);
   if (zone === null) return null;
+  /*
+    HYSTERESIS: while the FLIP glides panes around, the ZONES stay put — but an eye
+    following the moving pixels drifts, and a pointer sitting near a boundary would
+    flutter between aims. So a zone, once held, keeps the aim until the pointer
+    travels a real margin past its boundary. Only leaf zones need it: the ring,
+    seams and seam ends are chunky, and crossing a divider is a deliberate move.
+  */
+  if (held !== null && held.tileId === leafId && zone !== held.edge) {
+    if (withinHeldZone(rect, point, held.edge)) zone = held.edge;
+  }
   const depth = chain.length - 1;
   if (zone !== "center") return { tileId: leafId, edge: zone, action: "place", depth };
   // Center never dissolves on a tile target: five zones are always live here.

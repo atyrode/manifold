@@ -39,20 +39,14 @@ import {
   type TileLayout,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
+import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 const repoRoot = join(import.meta.dir, "..");
-const distDir = join(mkdtempSync(join(tmpdir(), "manifold-tile-")), "dist");
+const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-tile-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-tile-data-"));
 const port = 43200 + Math.floor(Math.random() * 2000);
 const origin = `http://127.0.0.1:${String(port)}`;
-
-const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
-  cwd: join(repoRoot, "packages", "web"),
-  stdout: "ignore",
-  stderr: "inherit",
-});
-if (!build.success) throw new Error("web build failed");
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   cwd: repoRoot,
@@ -775,7 +769,7 @@ try {
   await browser?.close();
   server.kill();
   rmSync(dataDir, { recursive: true, force: true });
-  rmSync(join(distDir, ".."), { recursive: true, force: true });
+  cleanupDist();
 }
 
 console.log(

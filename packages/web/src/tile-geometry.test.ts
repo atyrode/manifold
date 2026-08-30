@@ -246,6 +246,26 @@ describe("resolveTileAim", () => {
     expect(slotted?.layout["tCol"]?.children).toEqual(["tB", "tRow", slotted?.slotId ?? ""]);
     expect(slotted?.layout["tCol"]?.ratios).toEqual([1, 0.5, 0.5]);
   });
+
+  test("a held zone keeps the aim until the pointer clears a real margin", () => {
+    const layout = rowLayout();
+    const over = (
+      x: number,
+      held: { tileId: string; edge: "center" | "left" } | null,
+    ): TileAim | null =>
+      resolveTileAim(layout, { x, y: 0.5 }, SEAT_CARRY, NO_DIVIDERS, { x: 0, y: 0 }, held);
+    // t1 spans x 0..0.5; its left band ends at 0.125. Just inside the band…
+    expect(over(0.115, null)?.edge).toBe("left");
+    // …a HELD center keeps the center: the boundary grew by the hysteresis margin.
+    expect(over(0.115, { tileId: "t1", edge: "center" })?.edge).toBe("center");
+    // Past the margin the flip is real, held or not.
+    expect(over(0.08, { tileId: "t1", edge: "center" })?.edge).toBe("left");
+    // And the mirror: a held LEFT stretches into what would already be center.
+    expect(over(0.14, null)?.edge).toBe("center");
+    expect(over(0.14, { tileId: "t1", edge: "left" })?.edge).toBe("left");
+    // A hold never crosses tiles.
+    expect(over(0.6, { tileId: "t1", edge: "center" })?.tileId).toBe("t2");
+  });
 });
 
 describe("paneShifts", () => {

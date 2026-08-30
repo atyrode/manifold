@@ -182,6 +182,13 @@ export function useTileDrop(host: TileDropHost): {
           },
           dividers,
           ring,
+          // The zone already held, so a pointer near a boundary — or an eye chasing
+          // the FLIP's moving pixels — does not flutter between aims (hysteresis).
+          cacheRef.current !== null &&
+            cacheRef.current.layout === layout &&
+            cacheRef.current.envelope === envelope
+            ? cacheRef.current.state.aim
+            : null,
         );
       }
       if (aim === null) {

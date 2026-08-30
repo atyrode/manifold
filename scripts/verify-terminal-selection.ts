@@ -18,20 +18,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 const repoRoot = join(import.meta.dir, "..");
-const distDir = join(mkdtempSync(join(tmpdir(), "manifold-sel-")), "dist");
+const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-sel-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-sel-data-"));
 const port = 39000 + Math.floor(Math.random() * 2000);
 const origin = `http://127.0.0.1:${String(port)}`;
-
-const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
-  cwd: join(repoRoot, "packages", "web"),
-  stdout: "ignore",
-  stderr: "inherit",
-});
-if (!build.success) throw new Error("web build failed");
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   cwd: repoRoot,
@@ -239,7 +233,7 @@ try {
 } finally {
   await browser?.close();
   server.kill();
-  rmSync(distDir, { recursive: true, force: true });
+  cleanupDist();
   rmSync(dataDir, { recursive: true, force: true });
 }
 

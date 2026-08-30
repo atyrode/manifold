@@ -26,7 +26,7 @@
     "dev:server": "MANIFOLD_ANNOUNCE_KEY=1 bun --watch packages/server/src/main.ts",
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
-    "gate": "bun run changelog:check && bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence && bun run verify:terminal-selection && bun run verify:terminal-mirror && bun run verify:tile-drop"
+    "gate": "bun scripts/gate.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

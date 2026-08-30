@@ -17,6 +17,7 @@ import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
+import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import type { TileDropHost } from "./use-tile-drop.ts";
 import {
   createWidgetSocketSwitch,
@@ -691,12 +692,15 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   );
 
   const overlay = (
-    <TilePreviewOverlay
-      host={dropHost}
-      store={pad.dropStore}
-      surfaceLabel={occupantLabel}
-      carryLabel={carryLabel}
-    />
+    <>
+      <TilePreviewOverlay
+        host={dropHost}
+        store={pad.dropStore}
+        surfaceLabel={occupantLabel}
+        carryLabel={carryLabel}
+      />
+      <TileZoneDebug layout={layout} areaRef={areaRef} dividerPx={PORTAL_TREE_CLASSES.dividerPx} />
+    </>
   );
 
   const rootClass = [

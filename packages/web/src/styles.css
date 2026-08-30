@@ -3298,3 +3298,14 @@ button.pad-sidebar-session.is-summary > small {
   content: "";
   inset: -6px;
 }
+
+/* The F9 drop-zone field (tile-zone-debug): a sampled painting of what the real
+   resolver answers at every point, purely visual. */
+.tile-zone-debug {
+  position: absolute;
+  z-index: 58;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}

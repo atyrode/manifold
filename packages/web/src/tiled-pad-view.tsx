@@ -51,6 +51,7 @@ import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
 import { useToast } from "./toast.tsx";
 import { carryGhosts } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
+import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 
 /**
@@ -938,6 +939,11 @@ export function TiledPadView({
             store={dropStore}
             surfaceLabel={surfaceLabel}
             carryLabel={carryLabel}
+          />
+          <TileZoneDebug
+            layout={layout}
+            areaRef={areaRef}
+            dividerPx={TILED_TREE_CLASSES.dividerPx}
           />
         </div>
         <div className="tiled-presence-layer" aria-hidden="true">

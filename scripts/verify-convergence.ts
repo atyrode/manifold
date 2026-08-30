@@ -39,6 +39,7 @@ import {
   MachinesResponseSchema,
   type SceneElement,
 } from "../packages/protocol/src/index.ts";
+import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
 function debugPortIsAvailable(port: number): boolean {
@@ -65,21 +66,10 @@ function availableDebugPorts(): readonly [number, number] {
 }
 
 const repoRoot = join(import.meta.dir, "..");
-const distDir = mkdtempSync(join(tmpdir(), "manifold-conv-dist-"));
+const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-conv-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-conv-data-"));
 const [debugPortA, debugPortB] = availableDebugPorts();
 let origin = "";
-
-console.log("building web bundle...");
-const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
-  cwd: join(repoRoot, "packages/web"),
-  stdout: "pipe",
-  stderr: "pipe",
-});
-if (build.exitCode !== 0) {
-  console.error(build.stderr.toString());
-  throw new Error("web build failed");
-}
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   cwd: repoRoot,
@@ -1779,7 +1769,7 @@ try {
   await browserB.close().catch(() => undefined);
   observer?.close();
   await stopServer();
-  rmSync(distDir, { recursive: true, force: true });
+  cleanupDist();
   rmSync(dataDir, { recursive: true, force: true });
 }
 

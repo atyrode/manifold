@@ -195,13 +195,17 @@ function insertLeaf(
     structural noise — it looks identical to the flat row at drop time, then
     behaves worse: its dividers only rebalance within the nest and collapses
     leave deeper trees. So when the requested split runs the parent's own way,
-    the new leaf is spliced in BESIDE the target, which cedes half its share —
-    the exact geometry the wrap would have painted, minus the wrapper. This is
-    also how a drop on a DIVIDER lands between two siblings: it is addressed as
-    the leading neighbor's trailing edge, which is this branch. Cross-axis
-    edges keep wrapping below — that IS the nesting gesture — and the root
-    keeps its wrap in the branch above, so grouping a whole composition under
-    a fresh split stays reachable at the area's ring.
+    the new leaf is spliced in BESIDE the target. Cross-axis edges keep wrapping
+    below — that IS the nesting gesture — and the root keeps its wrap in the
+    branch above, so grouping a whole composition under a fresh split stays
+    reachable at the area's ring.
+
+    The share the newcomer takes says what the gesture MEANT. An INTERIOR insert
+    lands between two siblings — the drop on a seam, or on either flank of it —
+    so BOTH neighbors cede a third and the newcomer arrives an equal citizen
+    (equal neighbors yield exact thirds); anything else reads as nesting into
+    one side. At the row's ends there is only one neighbor, so the target cedes
+    half — splitting the edge pane's own space, exactly what it looks like.
   */
   if (parent.dir === dir) {
     const index = parent.children.indexOf(targetTileId);
@@ -209,9 +213,20 @@ function insertLeaf(
     const targetRatio = parent.ratios[index] ?? 1;
     const children = [...parent.children];
     const ratios = [...parent.ratios];
-    children.splice(leading ? index : index + 1, 0, leafId);
-    ratios.splice(leading ? index : index + 1, 0, targetRatio / 2);
-    ratios[leading ? index + 1 : index] = targetRatio / 2;
+    const neighborIndex = leading ? index - 1 : index + 1;
+    const neighborRatio = parent.ratios[neighborIndex];
+    if (neighborIndex >= 0 && neighborIndex < parent.children.length) {
+      // Interior: the newcomer sits between target and neighbor; both cede.
+      const grown = (targetRatio + (neighborRatio ?? 1)) / 3;
+      ratios[index] = (targetRatio * 2) / 3;
+      ratios[neighborIndex] = ((neighborRatio ?? 1) * 2) / 3;
+      children.splice(leading ? index : index + 1, 0, leafId);
+      ratios.splice(leading ? index : index + 1, 0, grown);
+    } else {
+      children.splice(leading ? index : index + 1, 0, leafId);
+      ratios.splice(leading ? index : index + 1, 0, targetRatio / 2);
+      ratios[leading ? index + 1 : index] = targetRatio / 2;
+    }
     return {
       layout: {
         ...layout,
