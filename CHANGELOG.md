@@ -46,6 +46,7 @@
 - A collaborator's drag preview is now pixel-identical to the dragger's — same colors, glyphs, and captions — the carried item eases away for every watcher (not just the dragger), and a refused drop shows viewers the same denial prose the dragger sees. One producer-agnostic pipeline builds every preview from the same wire data your own pointer normalizes into first, so local and remote cannot diverge by construction; each widget on a canvas now previews its own peer independently, and a stale peer aim releases the panes within half a second even if its final frame is lost. (#61)
 - Dragging a divider inside a canvas widget resizes again at any zoom: the seam's grab band is now a constant on-screen thickness equal to the fullscreen route's (it used to shrink with the widget's own scale and lose half its width under the neighboring pane). (#65)
 - A structural write that would brick a composition for everyone — persist a tree the readers then refuse — is now validated and refused before it touches the document; the drop that caused it reads as a conflict instead. A 17-wide flat row could really do this. (#66)
+- The changelog dialog now separates every release into its own dated section: dev builds ship as real 0.x versions through the one release path instead of `-dev.N` suffixes accumulating under a single in-progress block, so release history reads per version from here on. (#63)
 
 ### Fixed
 
