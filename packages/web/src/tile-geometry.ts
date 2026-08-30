@@ -139,6 +139,11 @@ export interface TileAim {
   readonly action: TileAction;
   /** Tree depth of the aimed tile; 0 is the root. */
   readonly depth: number;
+  /**
+   * Same-axis seam-band aim: the newcomer wedges BETWEEN the target and its
+   * neighbor (both cede a third) instead of splitting the target's own share.
+   */
+  readonly between?: boolean;
 }
 
 /** What the carry can offer, answered by the caller — this module never sees a document. */
@@ -231,7 +236,13 @@ function dividerAim(
   }
 
   if (carry.carriedTileId === previous || carry.carriedTileId === next) return null;
-  return { tileId: previous, edge: row ? "right" : "bottom", action: "place", depth };
+  return {
+    tileId: previous,
+    edge: row ? "right" : "bottom",
+    action: "place",
+    depth,
+    between: true,
+  };
 }
 
 /** How far past a held zone's boundary the pointer must travel before the aim flips. */
@@ -265,6 +276,61 @@ function withinHeldZone(rect: UnitRect, point: UnitPoint, edge: TileEdge): boole
 }
 
 /**
+ * Half-thickness of the seam band inside one flank, in unit space. The seam band is
+ * the divider gap plus this strip on either side, so its total on-screen thickness
+ * tracks the ring's (`ROOT_RING_PX`), constant at any zoom. Capped at half the snap
+ * band so the flank always keeps an outer stretch that means "split this pane".
+ */
+function seamHalf(ringAxis: number, leafExtent: number): number {
+  return Math.min(ringAxis / 2, 0.5 * SNAP_EDGE_BAND * leafExtent);
+}
+
+/**
+ * Whether an edge-zone aim on a leaf means BETWEEN — wedge into the seam it shares
+ * with a same-axis sibling, both ceding thirds — rather than splitting the leaf's own
+ * share. True only when the edge faces a same-axis sibling AND the pointer sits in
+ * the seam band flanking their shared boundary. `heldBetween` is hysteresis: the
+ * boundary between the two meanings moves a margin against the direction of a flip,
+ * so a pointer resting on it never flutters between previews.
+ */
+function betweenAim(
+  layout: TileLayout,
+  chain: readonly string[],
+  leafId: string,
+  rect: UnitRect,
+  edge: TileEdge,
+  point: UnitPoint,
+  ring: { readonly x: number; readonly y: number },
+  heldBetween: boolean | null,
+): boolean {
+  if (edge === "center") return false;
+  const parentId = chain.length >= 2 ? chain[chain.length - 2] : undefined;
+  const parent = parentId === undefined ? undefined : layout[parentId];
+  if (parent === undefined || parent.dir === null) return false;
+  const row = edge === "left" || edge === "right";
+  if ((parent.dir === "row") !== row) return false;
+  const index = parent.children.indexOf(leafId);
+  if (index < 0) return false;
+  const neighborIndex = edge === "left" || edge === "top" ? index - 1 : index + 1;
+  if (neighborIndex < 0 || neighborIndex >= parent.children.length) return false;
+  const extent = row ? rect.width : rect.height;
+  const distance =
+    edge === "left"
+      ? point.x - rect.x
+      : edge === "right"
+        ? rect.x + rect.width - point.x
+        : edge === "top"
+          ? point.y - rect.y
+          : rect.y + rect.height - point.y;
+  let threshold = seamHalf(row ? ring.x : ring.y, extent);
+  if (heldBetween !== null) {
+    const margin = ZONE_HYSTERESIS * extent;
+    threshold = Math.max(0, threshold + (heldBetween ? margin : -margin));
+  }
+  return distance <= threshold;
+}
+
+/**
  * The tile a pointer aims at, or null when the release would mean nothing: outside the
  * area, or anywhere over the carry's own leaf (the server treats leaf-onto-itself as a
  * no-op, and null is how the client never previews or commits it). A pointer on a
@@ -283,7 +349,11 @@ export function resolveTileAim(
   carry: TileAimCarry,
   dividers: { readonly x: number; readonly y: number },
   ring: { readonly x: number; readonly y: number },
-  held: { readonly tileId: string; readonly edge: TileEdge } | null = null,
+  held: {
+    readonly tileId: string;
+    readonly edge: TileEdge;
+    readonly between?: boolean;
+  } | null = null,
 ): TileAim | null {
   const rects = tileRects(layout, dividers);
   const chain = tileChainAt(layout, rects, point);
@@ -340,7 +410,14 @@ export function resolveTileAim(
     if (withinHeldZone(rect, point, held.edge)) zone = held.edge;
   }
   const depth = chain.length - 1;
-  if (zone !== "center") return { tileId: leafId, edge: zone, action: "place", depth };
+  if (zone !== "center") {
+    const heldBetween =
+      held !== null && held.tileId === leafId && held.edge === zone && held.between !== undefined
+        ? held.between
+        : null;
+    const between = betweenAim(layout, chain, leafId, rect, zone, point, ring, heldBetween);
+    return { tileId: leafId, edge: zone, action: "place", depth, between };
+  }
   // Center never dissolves on a tile target: five zones are always live here.
   if (node.surface === null) return { tileId: leafId, edge: "center", action: "place", depth };
   return {
@@ -453,5 +530,11 @@ export function tileDestinationFor(
       edge: aim.edge,
     };
   }
-  return { kind: "tile", padId: host.containerId, targetTileId: aim.tileId, edge: aim.edge };
+  return {
+    kind: "tile",
+    padId: host.containerId,
+    targetTileId: aim.tileId,
+    edge: aim.edge,
+    ...(aim.between === true ? { between: true } : {}),
+  };
 }

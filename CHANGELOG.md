@@ -40,6 +40,7 @@
 - F9 toggles a debug view of the drop zones: a live-sampled painting of exactly what the drop resolver answers across a composition — ring, seams, seam ends, bands and centers — updating in real time with the layout. (#59)
 - While a drop target is armed, the node you are holding eases into a ghost — and back — so the live preview underneath stays readable. (#59)
 - Dividers are far easier to grab: a seam's pointer target is now wider than its slim paint at any zoom, and a watching widget's inert dividers explain how to make them live (click a tile to engage). (#59)
+- The seam between two panes is now a real drop BAND — as wide as the area's outer ring at any zoom, not a hairline — and it is the only place that means "wedge in between": both neighbors cede a third. Deeper into a pane's flank the drop splits THAT pane alone (it cedes half, its neighbor untouched), so the grouped `(A|C)|B` shapes are reachable again alongside flat thirds, told apart purely by where you hover. The F9 debug view paints the seam band its own color. (#60)
 
 ### Fixed
 

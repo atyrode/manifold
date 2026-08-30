@@ -112,6 +112,8 @@ export interface TileInsert {
  * Insert `surface` next to `targetTileId`. `center` fills an empty leaf in place;
  * a CROSS-axis edge wraps the target in a new two-way split, while a SAME-axis
  * edge joins the parent split as a flat sibling (see the branch note below).
+ * `between` picks the interior same-axis ratio rule: wedge between both neighbors
+ * (thirds) instead of splitting the target's own share.
  *
  * The root id is immovable, so splitting the root moves the root's own content
  * into a fresh leaf and turns the root into the split. Splitting any other tile
@@ -122,8 +124,9 @@ export function withTileLeaf(
   surface: TileSurface,
   targetTileId: string,
   edge: TileEdge,
+  between = false,
 ): TileInsert | null {
-  return insertLeaf(layout, surface, targetTileId, edge);
+  return insertLeaf(layout, surface, targetTileId, edge, between);
 }
 
 /**
@@ -138,8 +141,9 @@ export function withTileSlot(
   layout: TileLayout,
   targetTileId: string,
   edge: TileEdge,
+  between = false,
 ): { readonly layout: TileLayout; readonly slotId: string } | null {
-  const inserted = insertLeaf(layout, null, targetTileId, edge);
+  const inserted = insertLeaf(layout, null, targetTileId, edge, between);
   return inserted === null ? null : { layout: inserted.layout, slotId: inserted.tileId };
 }
 
@@ -149,6 +153,7 @@ function insertLeaf(
   surface: TileSurface | null,
   targetTileId: string,
   edge: TileEdge,
+  between: boolean,
 ): TileInsert | null {
   const target = layout[targetTileId];
   if (target === undefined) return null;
@@ -200,12 +205,13 @@ function insertLeaf(
     branch above, so grouping a whole composition under a fresh split stays
     reachable at the area's ring.
 
-    The share the newcomer takes says what the gesture MEANT. An INTERIOR insert
-    lands between two siblings — the drop on a seam, or on either flank of it —
-    so BOTH neighbors cede a third and the newcomer arrives an equal citizen
-    (equal neighbors yield exact thirds); anything else reads as nesting into
-    one side. At the row's ends there is only one neighbor, so the target cedes
-    half — splitting the edge pane's own space, exactly what it looks like.
+    The share the newcomer takes says what the gesture MEANT, and distance from the
+    seam is what says it (`between`). A drop ON the seam band wedges the newcomer
+    BETWEEN the two siblings: both cede a third and it arrives an equal citizen
+    (equal neighbors yield exact thirds). A drop deeper into the target's flank —
+    or at a row's end, where there is no neighbor — splits the TARGET's own space:
+    it cedes half and nobody else moves, which is the `(A|C)|B`-shaped outcome
+    that reads as splitting one pane.
   */
   if (parent.dir === dir) {
     const index = parent.children.indexOf(targetTileId);
@@ -215,8 +221,8 @@ function insertLeaf(
     const ratios = [...parent.ratios];
     const neighborIndex = leading ? index - 1 : index + 1;
     const neighborRatio = parent.ratios[neighborIndex];
-    if (neighborIndex >= 0 && neighborIndex < parent.children.length) {
-      // Interior: the newcomer sits between target and neighbor; both cede.
+    if (between && neighborIndex >= 0 && neighborIndex < parent.children.length) {
+      // Between: the newcomer sits between target and neighbor; both cede a third.
       const grown = (targetRatio + (neighborRatio ?? 1)) / 3;
       ratios[index] = (targetRatio * 2) / 3;
       ratios[neighborIndex] = ((neighborRatio ?? 1) * 2) / 3;
@@ -409,9 +415,10 @@ export function writeTileLeaf(
   targetTileId: string,
   edge: TileEdge,
   origin: unknown,
+  between = false,
 ): string | null {
   const layout = readTileLayout(doc) ?? emptyTileLayout();
-  const inserted = withTileLeaf(layout, surface, targetTileId, edge);
+  const inserted = withTileLeaf(layout, surface, targetTileId, edge, between);
   if (inserted === null) return null;
   applyTileLayout(doc, inserted.layout, origin);
   return inserted.tileId;

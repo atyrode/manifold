@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { ROOT_TILE_ID, type TileLayout, type TileNode, type TileSurface } from "@manifold/protocol";
+import {
+  ROOT_TILE_ID,
+  type TileEdge,
+  type TileLayout,
+  type TileNode,
+  type TileSurface,
+} from "@manifold/protocol";
 import { withTileSlot } from "@manifold/scene";
 
 import {
@@ -137,7 +143,7 @@ describe("resolveTileAim", () => {
   test("one ring-width inward resolves to the leaf's own band", () => {
     const layout = rowLayout();
     const aim = resolveTileAim(layout, { x: 0.07, y: 0.5 }, NO_CARRY, NO_DIVIDERS, RING);
-    expect(aim).toEqual({ tileId: "t1", edge: "left", action: "place", depth: 1 });
+    expect(aim).toEqual({ tileId: "t1", edge: "left", action: "place", depth: 1, between: false });
   });
 
   test("a nested leaf keeps all five zones live", () => {
@@ -149,7 +155,13 @@ describe("resolveTileAim", () => {
     expect(over(0.56, 0.25)?.edge).toBe("left");
     // x 0.93 sits in t2's right band but OUTSIDE the root ring (x ≥ 0.95) — the ring
     // only ever consumes edge-band area, so the leaf's own band stays reachable.
-    expect(over(0.93, 0.25)).toEqual({ tileId: "t2", edge: "right", action: "place", depth: 2 });
+    expect(over(0.93, 0.25)).toEqual({
+      tileId: "t2",
+      edge: "right",
+      action: "place",
+      depth: 2,
+      between: false,
+    });
     expect(over(0.75, 0.08)?.edge).toBe("top");
     expect(over(0.75, 0.44)?.edge).toBe("bottom");
     expect(over(0.75, 0.25)).toEqual({ tileId: "t2", edge: "center", action: "swap", depth: 2 });
@@ -158,7 +170,13 @@ describe("resolveTileAim", () => {
   test("a solo container has no ring", () => {
     const layout: TileLayout = { [ROOT_TILE_ID]: leaf(ROOT_TILE_ID, terminal("s1")) };
     const aim = resolveTileAim(layout, { x: 0.02, y: 0.5 }, NO_CARRY, NO_DIVIDERS, RING);
-    expect(aim).toEqual({ tileId: ROOT_TILE_ID, edge: "left", action: "place", depth: 0 });
+    expect(aim).toEqual({
+      tileId: ROOT_TILE_ID,
+      edge: "left",
+      action: "place",
+      depth: 0,
+      between: false,
+    });
   });
 
   test("center on an empty leaf is a fill for any carry", () => {
@@ -198,7 +216,13 @@ describe("resolveTileAim", () => {
     const noRing = { x: 0, y: 0 } as const;
     // The seam of `A | B` means "wedge in after A": the leading neighbor's trailing edge.
     const aim = resolveTileAim(rowLayout(), { x: 0.5, y: 0.5 }, NO_CARRY, dividers, noRing);
-    expect(aim).toEqual({ tileId: "t1", edge: "right", action: "place", depth: 1 });
+    expect(aim).toEqual({
+      tileId: "t1",
+      edge: "right",
+      action: "place",
+      depth: 1,
+      between: true,
+    });
     // A nested split's own divider inserts into THAT split.
     const nested = resolveTileAim(
       nestedLayout(),
@@ -207,7 +231,13 @@ describe("resolveTileAim", () => {
       { x: 0, y: 0.04 },
       noRing,
     );
-    expect(nested).toEqual({ tileId: "t2", edge: "bottom", action: "place", depth: 2 });
+    expect(nested).toEqual({
+      tileId: "t2",
+      edge: "bottom",
+      action: "place",
+      depth: 2,
+      between: true,
+    });
   });
 
   test("a neighbor dropped on its own seam aims at nothing", () => {
@@ -236,7 +266,13 @@ describe("resolveTileAim", () => {
     const over = (x: number, y: number): TileAim | null =>
       resolveTileAim(layout, { x, y }, NO_CARRY, dividers, { x: 0.05, y: 0.05 });
     // The seam sits at x ≈ 0.75, spanning y 0.5..1. Its middle inserts between C and D…
-    expect(over(0.75, 0.7)).toEqual({ tileId: "tC", edge: "right", action: "place", depth: 3 });
+    expect(over(0.75, 0.7)).toEqual({
+      tileId: "tC",
+      edge: "right",
+      action: "place",
+      depth: 3,
+      between: true,
+    });
     // …its bottom end grows a pane across the whole group ( -> B / (C|D) / E )…
     expect(over(0.75, 0.9)).toEqual({ tileId: "tRow", edge: "bottom", action: "place", depth: 2 });
     // …and its top end the same, above.
@@ -265,6 +301,51 @@ describe("resolveTileAim", () => {
     expect(over(0.14, { tileId: "t1", edge: "left" })?.edge).toBe("left");
     // A hold never crosses tiles.
     expect(over(0.6, { tileId: "t1", edge: "center" })?.tileId).toBe("t2");
+  });
+
+  test("a same-axis flank tells the seam band from the pane's own split (#60)", () => {
+    const layout = rowLayout();
+    const ring = { x: 0.04, y: 0.04 } as const;
+    const over = (x: number): TileAim | null =>
+      resolveTileAim(layout, { x, y: 0.5 }, NO_CARRY, NO_DIVIDERS, ring);
+    // t1 spans x 0..0.5; seamHalf = min(ring/2 = 0.02, half its band = 0.0625) = 0.02,
+    // so the seam band claims 0.48..0.5 and the rest of the band means "split t1".
+    expect(over(0.49)).toEqual({
+      tileId: "t1",
+      edge: "right",
+      action: "place",
+      depth: 1,
+      between: true,
+    });
+    expect(over(0.4)).toEqual({
+      tileId: "t1",
+      edge: "right",
+      action: "place",
+      depth: 1,
+      between: false,
+    });
+    // The neighbor's flank mirrors it: near-seam wedges, deeper splits t2 alone.
+    expect(over(0.51)?.between).toBe(true);
+    expect(over(0.6)?.between).toBe(false);
+    // An outer border has no neighbor to wedge against: never between.
+    expect(over(0.07)?.between).toBe(false);
+  });
+
+  test("the between boundary holds under its own hysteresis margin", () => {
+    const layout = rowLayout();
+    const ring = { x: 0.04, y: 0.04 } as const;
+    const over = (
+      x: number,
+      held: { tileId: string; edge: TileEdge; between?: boolean } | null,
+    ): TileAim | null => resolveTileAim(layout, { x, y: 0.5 }, NO_CARRY, NO_DIVIDERS, ring, held);
+    // Seam band boundary at 0.48; margin = 0.06 × 0.5 = 0.03. A held BETWEEN keeps
+    // wedging down to 0.45, while an unheld pointer there already reads split.
+    expect(over(0.46, { tileId: "t1", edge: "right", between: true })?.between).toBe(true);
+    expect(over(0.46, { tileId: "t1", edge: "right", between: false })?.between).toBe(false);
+    // A held SPLIT shrinks the seam strip away entirely: even 0.49 stays split.
+    expect(over(0.49, { tileId: "t1", edge: "right", between: false })?.between).toBe(false);
+    // Past the margin the flip is real, held or not.
+    expect(over(0.4, { tileId: "t1", edge: "right", between: true })?.between).toBe(false);
   });
 });
 
@@ -315,6 +396,23 @@ describe("tileDestinationFor", () => {
         widget: { padId: "canvas-1", elementId: "el-1" },
         rootIsLeaf: false,
       }),
+    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left" });
+  });
+
+  test("a between aim rides the wire destination; a split aim stays lean", () => {
+    const wedge: TileAim = { tileId: "t2", edge: "left", action: "place", depth: 1, between: true };
+    expect(
+      tileDestinationFor(wedge, { containerId: "view-1", widget: null, rootIsLeaf: false }),
+    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left", between: true });
+    const split: TileAim = {
+      tileId: "t2",
+      edge: "left",
+      action: "place",
+      depth: 1,
+      between: false,
+    };
+    expect(
+      tileDestinationFor(split, { containerId: "view-1", widget: null, rootIsLeaf: false }),
     ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left" });
   });
 

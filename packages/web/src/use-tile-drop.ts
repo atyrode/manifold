@@ -74,7 +74,12 @@ interface AimCache {
 }
 
 function sameAim(a: TileAim, b: TileAim): boolean {
-  return a.tileId === b.tileId && a.edge === b.edge && a.action === b.action;
+  return (
+    a.tileId === b.tileId &&
+    a.edge === b.edge &&
+    a.action === b.action &&
+    (a.between === true) === (b.between === true)
+  );
 }
 
 /**
@@ -247,7 +252,7 @@ export function useTileDrop(host: TileDropHost): {
           cacheRef.current = null;
           return null;
         }
-        const slotted = withTileSlot(pruned, remapped, aim.edge);
+        const slotted = withTileSlot(pruned, remapped, aim.edge, aim.between === true);
         if (slotted === null) {
           cacheRef.current = null;
           return null;

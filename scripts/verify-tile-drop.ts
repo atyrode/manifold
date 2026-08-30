@@ -704,6 +704,13 @@ try {
     seamLanded && rootBefore?.children.length === 2,
     `the root column went ${String(rootBefore?.children.length)} -> 3 children with F in the middle — no wrapper split`,
   );
+  // The seam drop is the BETWEEN gesture on the wire: both neighbors ceded a third.
+  const seamRatios = layoutNow()[ROOT_TILE_ID]?.ratios ?? [];
+  check(
+    "seam drop wedges with thirds",
+    seamRatios.length === 3 && seamRatios.every((ratio) => Math.abs(ratio - 1 / 3) < 1e-6),
+    `root ratios ${JSON.stringify(seamRatios)} after the seam drop — both neighbors ceded (#60)`,
+  );
 
   const termG = await bornTerminal("gate-G");
   await until(

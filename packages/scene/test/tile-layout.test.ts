@@ -158,17 +158,32 @@ describe("tile layout pure math", () => {
     // An END insert has one neighbor: the target cedes half; the far sibling keeps all.
     expect(root?.ratios).toEqual([0.5, 0.25, 0.25]);
 
-    // Leading: the sibling lands BETWEEN the two — an interior insert — so BOTH
-    // neighbors cede a third and the newcomer arrives an equal citizen.
+    // Leading WITHOUT `between`: an interior insert still splits the TARGET's own
+    // share — it cedes half, the far sibling is untouched (the `(A|C)|B` shape).
     const before = withTileLeaf(layout, terminal("s3"), target, "left");
     expect(before?.layout[ROOT_TILE_ID]?.children).toEqual([
       before?.layout[ROOT_TILE_ID]?.children[0] ?? "",
       before?.tileId ?? "",
       target,
     ]);
-    const thirds = before?.layout[ROOT_TILE_ID]?.ratios ?? [];
+    expect(before?.layout[ROOT_TILE_ID]?.ratios).toEqual([0.5, 0.25, 0.25]);
+
+    // Leading WITH `between` — the seam-band gesture: BOTH neighbors cede a third
+    // and the newcomer arrives an equal citizen.
+    const wedged = withTileLeaf(layout, terminal("s3"), target, "left", true);
+    expect(wedged?.layout[ROOT_TILE_ID]?.children).toEqual([
+      wedged?.layout[ROOT_TILE_ID]?.children[0] ?? "",
+      wedged?.tileId ?? "",
+      target,
+    ]);
+    const thirds = wedged?.layout[ROOT_TILE_ID]?.ratios ?? [];
     expect(thirds).toHaveLength(3);
     for (const ratio of thirds) expect(ratio).toBeCloseTo(1 / 3, 10);
+
+    // `between` at a row's END has no second neighbor: it degrades to the same
+    // target-cedes-half split a plain end insert performs.
+    const end = withTileLeaf(layout, terminal("s3"), target, "right", true);
+    expect(end?.layout[ROOT_TILE_ID]?.ratios).toEqual([0.5, 0.25, 0.25]);
 
     // Cross-axis still nests: that IS the deliberate nesting gesture.
     const wrapped = withTileLeaf(layout, terminal("s3"), target, "bottom");

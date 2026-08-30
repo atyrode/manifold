@@ -606,6 +606,7 @@ export class Room {
     surface: TileSurface,
     targetTileId: string | null,
     edge: TileEdge | null,
+    between = false,
   ): string | null {
     const layout = this.tileLayout();
     if (layout === null) return null;
@@ -616,7 +617,7 @@ export class Room {
     const node = layout[target];
     if (node === undefined) return null;
     const resolved = edge ?? (node.dir === null && node.surface === null ? "center" : "right");
-    return writeTileLeaf(this.doc, surface, target, resolved, SERVER_PLACE_ORIGIN);
+    return writeTileLeaf(this.doc, surface, target, resolved, SERVER_PLACE_ORIGIN, between);
   }
 
   /** Places a terminal surface; the returned tile id IS the session's placement id. */

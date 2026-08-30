@@ -929,6 +929,66 @@ function noteLeafId(fixture: PlacementFixture, padId: string): string {
   return added.result.tileId;
 }
 
+describe("the seam distinguishes wedging between from splitting one pane (#60)", () => {
+  test("`between` takes thirds from both neighbors; its absence splits the target alone", () => {
+    const fixture = placementFixture();
+    const pad: Pad = {
+      id: fixture.runtime.newId(),
+      name: "seam",
+      createdAt: fixture.runtime.now(),
+      layout: "tiled",
+    };
+    fixture.store.createPad(pad);
+    // Seed `A | B`: the loose terminal fills the root, the canvas pad splits it right.
+    fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: { kind: "tile", padId: pad.id, targetTileId: "root", edge: "center" },
+    });
+    fixture.placement.place({
+      surface: { kind: "pad", padId: fixture.other.id },
+      destination: { kind: "tile", padId: pad.id, targetTileId: "root", edge: "right" },
+    });
+    const room = roomFor(fixture, pad.id);
+    const seeded = room.tileLayout() ?? {};
+    const aId = Object.entries(occupants(fixture, pad.id)).find(
+      ([, surface]) => surface?.kind === "terminal",
+    )?.[0];
+    if (aId === undefined) throw new Error("seeded terminal leaf missing");
+    expect(seeded["root"]?.ratios).toEqual([0.5, 0.5]);
+
+    // WITHOUT `between`, an interior insert splits the TARGET's own share: A cedes
+    // half, B is untouched — the `(A|C)|B` shape dev.14 had regressed away.
+    const split = fixture.placement.place({
+      surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-text" },
+      destination: { kind: "tile", padId: pad.id, targetTileId: aId, edge: "right" },
+    });
+    expect(split.status).toBe("placed");
+    if (split.status !== "placed" || split.result.op !== "add_tile") return;
+    const afterSplit = room.tileLayout() ?? {};
+    expect(afterSplit["root"]?.children).toHaveLength(3);
+    expect(afterSplit["root"]?.ratios).toEqual([0.25, 0.25, 0.5]);
+
+    // WITH `between`, the newcomer wedges into the seam: BOTH neighbors cede a third.
+    const wedged = fixture.placement.place({
+      surface: { kind: "pad", padId: fixture.canvas.id },
+      destination: {
+        kind: "tile",
+        padId: pad.id,
+        targetTileId: split.result.tileId,
+        edge: "right",
+        between: true,
+      },
+    });
+    expect(wedged.status).toBe("placed");
+    const ratios = (room.tileLayout() ?? {})["root"]?.ratios ?? [];
+    expect(ratios).toHaveLength(4);
+    expect(ratios[0]).toBeCloseTo(0.25, 10);
+    expect(ratios[1]).toBeCloseTo(1 / 6, 10);
+    expect(ratios[2]).toBeCloseTo(0.25, 10);
+    expect(ratios[3]).toBeCloseTo(1 / 3, 10);
+  });
+});
+
 describe("a center drop with nothing to trade displaces instead", () => {
   test("the occupant is re-homed into a fresh solo composition and keeps running", () => {
     const fixture = placementFixture();

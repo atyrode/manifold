@@ -163,6 +163,7 @@ export class PlaceExecutor {
           destination.padId,
           destination.targetTileId,
           destination.edge,
+          destination.between ?? false,
           source,
         );
       case "compose":
@@ -693,6 +694,7 @@ export class PlaceExecutor {
     padId: string,
     targetTileId: string | null,
     edge: TileEdge | null,
+    between: boolean,
     source: SourceLocation,
   ): PlaceOutcome {
     const view = this.rooms.get(padId);
@@ -740,7 +742,7 @@ export class PlaceExecutor {
     if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
-    const tileId = view.placeTile(dragged, targetTileId, edge);
+    const tileId = view.placeTile(dragged, targetTileId, edge, between);
     if (tileId === null) return { status: "failed", failure: "conflict" };
     if (fromLeaf !== null) {
       const moved = this.finishLeafMove(dragged, source, view, padId, tileId);

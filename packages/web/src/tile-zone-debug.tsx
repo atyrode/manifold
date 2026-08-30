@@ -57,6 +57,8 @@ const EDGE_COLORS: Record<string, string> = {
   center: "255, 212, 59",
 };
 const STRUCTURAL_COLOR = "240, 101, 149";
+/** The seam band: a same-axis aim that wedges BETWEEN two siblings (thirds). */
+const BETWEEN_COLOR = "34, 211, 238";
 
 const CELL_PX = 10;
 
@@ -105,8 +107,12 @@ export function TileZoneDebug({
         const aim = resolveTileAim(layout, { x: x / width, y: y / height }, carry, dividers, ring);
         if (aim === null) continue;
         const structural = layout[aim.tileId]?.dir !== null;
-        const rgb = structural ? STRUCTURAL_COLOR : (EDGE_COLORS[aim.edge] ?? "255, 255, 255");
-        context.fillStyle = `rgba(${rgb}, ${structural ? "0.55" : "0.35"})`;
+        const rgb = structural
+          ? STRUCTURAL_COLOR
+          : aim.between === true
+            ? BETWEEN_COLOR
+            : (EDGE_COLORS[aim.edge] ?? "255, 255, 255");
+        context.fillStyle = `rgba(${rgb}, ${structural || aim.between === true ? "0.55" : "0.35"})`;
         context.fillRect(x - CELL_PX / 2 + 1, y - CELL_PX / 2 + 1, CELL_PX - 2, CELL_PX - 2);
       }
     }
@@ -117,6 +123,7 @@ export function TileZoneDebug({
       ["top", EDGE_COLORS["top"] ?? ""],
       ["bottom", EDGE_COLORS["bottom"] ?? ""],
       ["center", EDGE_COLORS["center"] ?? ""],
+      ["between (seam band: both cede thirds)", BETWEEN_COLOR],
       ["root / group (ring · seam · seam end)", STRUCTURAL_COLOR],
     ];
     legend.forEach(([label, rgb], index) => {
