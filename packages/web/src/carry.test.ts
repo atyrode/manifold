@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { carryFrame, carryGhosts, carryPayload, carryPlacementId } from "./carry";
+import { carryFrame, carryGhosts, carryPayload, carryPlacementId, remoteTileCarry } from "./carry";
 import type { CarrySource } from "./carry";
 import type { GestureOverride } from "./remote-gestures";
 
@@ -108,5 +108,53 @@ describe("carry", () => {
       carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" } },
     });
     expect(carryGhosts([unnamed], () => false)[0]).toMatchObject({ label: "tile" });
+  });
+
+  test("an armed aim rides the frame; without one the payload stays lean", () => {
+    const aim = {
+      containerId: "view",
+      tileId: "t1",
+      edge: "right",
+      action: "place",
+      between: true,
+    } as const;
+    const framed = carryFrame(poolCarry, { x: 1, y: 2 }, "active", aim);
+    expect(framed.carry?.aim).toEqual(aim);
+    expect(carryFrame(poolCarry, { x: 1, y: 2 }, "active").carry?.aim).toBeUndefined();
+    expect(carryPayload(poolCarry)).not.toHaveProperty("aim");
+  });
+
+  test("the freshest aiming carry wins; carries without an aim are invisible to it", () => {
+    const stale = override({
+      connId: "old",
+      updatedAt: 10,
+      carry: {
+        surface: { kind: "terminal", sessionId: "s1" },
+        aim: { containerId: "view", tileId: "t1", edge: "left", action: "place" },
+      },
+    });
+    const fresh = override({
+      connId: "new",
+      updatedAt: 20,
+      carry: {
+        surface: { kind: "tile", containerId: "view", tileId: "t9" },
+        label: "build",
+        aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
+      },
+    });
+    const aimless = override({
+      connId: "no-aim",
+      updatedAt: 30,
+      carry: { surface: { kind: "terminal", sessionId: "s2" } },
+    });
+    expect(remoteTileCarry([stale, fresh, aimless])).toEqual({
+      connId: "new",
+      principalId: "peer",
+      aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
+      surface: { kind: "tile", containerId: "view", tileId: "t9" },
+      label: "build",
+      updatedAt: 20,
+    });
+    expect(remoteTileCarry([aimless])).toBeNull();
   });
 });

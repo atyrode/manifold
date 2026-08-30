@@ -7,6 +7,7 @@ import {
   type TileSurface,
 } from "@manifold/protocol";
 
+import { sameSurface, withTileSlot, withoutTileLeaf } from "@manifold/scene";
 import { SNAP_EDGE_BAND, snapZone } from "./tile-snap.ts";
 
 /**
@@ -537,4 +538,74 @@ export function tileDestinationFor(
     edge: aim.edge,
     ...(aim.between === true ? { between: true } : {}),
   };
+}
+
+/** Everything a preview paints for one aim: the landing slot, a swap's partner, the glide. */
+export interface TileProspect {
+  readonly slot: UnitRect;
+  /** The second rect a swap trades with, else null. */
+  readonly partner: UnitRect | null;
+  /** How the real panes glide and squeeze into their prospective places. */
+  readonly shifts: readonly PaneShift[];
+}
+
+/**
+ * The aimed tile after the carried leaf's departure reshaped the tree. Pruning can
+ * retire the aimed id (a collapse promotes a survivor into its parent's — even the
+ * root's — id), so the tile is re-found by WHAT IT SHOWS; null when it is gone.
+ */
+function remapAimedTile(
+  layout: TileLayout,
+  pruned: TileLayout,
+  aimedTileId: string,
+): string | null {
+  if (pruned[aimedTileId] !== undefined) return aimedTileId;
+  const aimed = layout[aimedTileId];
+  if (aimed === undefined || aimed.dir !== null || aimed.surface === null) return null;
+  for (const node of Object.values(pruned)) {
+    if (node.dir !== null || node.surface === null) continue;
+    if (sameSurface(node.surface, aimed.surface)) return node.id;
+  }
+  return null;
+}
+
+/**
+ * The preview one aim means over one tree — THE computation behind every split
+ * preview, whoever produced the aim. A local pointer and a collaborator's carry
+ * frame (and an agent's, through the SDK) all resolve here, which is what makes
+ * every renderer paint the same prospect: multiplayer is not a second code path.
+ *
+ * A carry that is a leaf of THIS container first leaves it, because the server
+ * removes the origin too — and removal can collapse the origin's parent split and
+ * reshape its siblings. The COMMIT still sends the unpruned aim id: the server
+ * writes the landing leaf against the live tree first and prunes afterwards, so
+ * preview and commit agree on the resulting SHAPE, which is all a viewer can see.
+ * `center` is no structural change: the slot is the target leaf itself, and for a
+ * swap the partner is the seat the carry came from — both drawn where they are.
+ */
+export function tileProspect(
+  layout: TileLayout,
+  aim: TileAim,
+  carriedTileId: string | null,
+  dividers: { readonly x: number; readonly y: number },
+): TileProspect | null {
+  if (aim.edge === "center") {
+    const rects = tileRects(layout, dividers);
+    const slot = rects.get(aim.tileId) ?? null;
+    if (slot === null) return null;
+    const partner =
+      aim.action === "swap" && carriedTileId !== null ? (rects.get(carriedTileId) ?? null) : null;
+    return { slot, partner, shifts: [] };
+  }
+  const pruned =
+    carriedTileId !== null && layout[carriedTileId] !== undefined
+      ? (withoutTileLeaf(layout, carriedTileId) ?? layout)
+      : layout;
+  const remapped = remapAimedTile(layout, pruned, aim.tileId);
+  if (remapped === null) return null;
+  const slotted = withTileSlot(pruned, remapped, aim.edge, aim.between === true);
+  if (slotted === null) return null;
+  const slot = tileRects(slotted.layout, dividers).get(slotted.slotId) ?? null;
+  if (slot === null) return null;
+  return { slot, partner: null, shifts: paneShifts(layout, slotted.layout, dividers) };
 }

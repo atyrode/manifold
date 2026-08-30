@@ -54,13 +54,13 @@ import {
   rememberMachine,
 } from "./machine-choice.ts";
 import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
-import { carryGhosts } from "./carry.ts";
+import { carryGhosts, remoteTileCarry } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
-import { createTileDropStore } from "./tile-drop-store.ts";
+import { createTileDropStore, wireCarryAim } from "./tile-drop-store.ts";
 import { composeTargetAt } from "./tile-snap.ts";
 import { useToast } from "./toast.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
@@ -434,6 +434,14 @@ export function FlowPadView({
     [client],
   );
 
+  // A peer's armed aim, fed to the widget overlays through the same per-frame channel
+  // the local pointer uses. Imperative store write: a collaborator's 60 Hz drag
+  // repaints the armed overlay alone, never the node tree. Each widget's overlay
+  // matches the aim's containerId itself, so one store serves every widget.
+  useEffect(() => {
+    dropStore.set({ ...dropStore.get(), remote: remoteTileCarry(remoteGestures.values()) });
+  }, [dropStore, remoteGestures]);
+
   /**
    * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
    * node React Flow is dragging or resizing verbatim, so the pointer is tracked by React
@@ -553,7 +561,7 @@ export function FlowPadView({
     composeCandidateRef.current = null;
     armedElementIdRef.current = null;
     reflectArmed();
-    dropStore.set({ pointer: null, armedElementId: null, aim: null });
+    dropStore.set({ ...dropStore.get(), pointer: null, armedElementId: null, aim: null });
   }, [dropStore, reflectArmed]);
 
   /**
@@ -576,6 +584,7 @@ export function FlowPadView({
         const armedElementId = armedElementIdRef.current;
         reflectArmed();
         dropStore.set({
+          ...dropStore.get(),
           pointer: { clientX, clientY },
           armedElementId,
           // The aim is the armed overlay's answer; disarming retires it with the arm.
@@ -676,9 +685,11 @@ export function FlowPadView({
       if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) return;
       const point = dragPoint(event);
       if (point !== null) trackCompose(point.x, point.y, node.id);
-      carry.track({ x: node.position.x, y: node.position.y });
+      // The armed widget's published aim rides this drag's frames (one frame behind
+      // the overlay's resolution), so every viewer paints the same split preview.
+      carry.track({ x: node.position.x, y: node.position.y }, wireCarryAim(dropStore.get().aim));
     },
-    [carry, trackCompose],
+    [carry, dropStore, trackCompose],
   );
 
   const handleNodeDragStop = useCallback(
@@ -1062,6 +1073,7 @@ export function FlowPadView({
       notify,
       padId,
       dropStore,
+      carrierColor,
       assessDrop: drop.assess,
       // A portal element showing a terminal is a seated carry: its solo home's leaf
       // is the seat a displaced occupant trades into (#62).
@@ -1071,6 +1083,7 @@ export function FlowPadView({
     }),
     [
       carry,
+      carrierColor,
       client,
       notify,
       lookup,
@@ -1241,7 +1254,7 @@ export function FlowPadView({
           // The carry streams from wherever the pointer IS, so a drag that began on a
           // sidebar row or a widget's tile becomes visible to collaborators the moment
           // it enters this canvas — the same motion a node drag broadcasts.
-          if (at !== null) carry.track(at);
+          if (at !== null) carry.track(at, wireCarryAim(dropStore.get().aim));
           trackCompose(event.clientX, event.clientY, null);
           const aim = dropStore.get().aim;
           const verdict = aim !== null ? drop.assess(aim.destination) : pane;

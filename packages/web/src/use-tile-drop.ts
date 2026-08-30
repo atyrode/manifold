@@ -5,17 +5,15 @@ import {
   type TileLayout,
   type TileNode,
 } from "@manifold/protocol";
-import { sameSurface, withTileSlot, withoutTileLeaf } from "@manifold/scene";
 import { useCallback, useMemo, useRef, type RefObject } from "react";
 
 import type { ItemDropAssessment } from "./item-drop.ts";
 import { carriedItem, type ItemEnvelope } from "./item-envelope.ts";
 import {
   ROOT_RING_PX,
-  paneShifts,
   resolveTileAim,
   tileDestinationFor,
-  tileRects,
+  tileProspect,
   type PaneShift,
   type TileAim,
   type UnitRect,
@@ -80,26 +78,6 @@ function sameAim(a: TileAim, b: TileAim): boolean {
     a.action === b.action &&
     (a.between === true) === (b.between === true)
   );
-}
-
-/**
- * The aimed tile after the carried leaf's departure reshaped the tree. Pruning can
- * retire the aimed id (a collapse promotes a survivor into its parent's — even the
- * root's — id), so the tile is re-found by WHAT IT SHOWS; null when it is gone.
- */
-function remapAimedTile(
-  layout: TileLayout,
-  pruned: TileLayout,
-  aimedTileId: string,
-): string | null {
-  if (pruned[aimedTileId] !== undefined) return aimedTileId;
-  const aimed = layout[aimedTileId];
-  if (aimed === undefined || aimed.dir !== null || aimed.surface === null) return null;
-  for (const node of Object.values(pruned)) {
-    if (node.dir !== null || node.surface === null) continue;
-    if (sameSurface(node.surface, aimed.surface)) return node.id;
-  }
-  return null;
 }
 
 /** The half of the unit square a zone claims; the whole square for `center`. */
@@ -224,41 +202,17 @@ export function useTileDrop(host: TileDropHost): {
         // The canvas door has no tree to reshape: the slot is the half the surface
         // would take (the whole area for the element exchange), and nothing glides.
         slot = unitZoneRect(aim.edge);
-      } else if (aim.edge === "center") {
-        // No structural change: the slot is the target leaf itself, and for a swap the
-        // partner is the seat the carry came from — both drawn where they already are.
-        const rects = tileRects(layout, dividers);
-        slot = rects.get(aim.tileId) ?? null;
-        partner =
-          aim.action === "swap" && carriedTileId !== null
-            ? (rects.get(carriedTileId) ?? null)
-            : null;
       } else {
-        /*
-          A carry that is a leaf of THIS container first leaves it, because the server
-          removes the origin too — and removal can collapse the origin's parent split
-          and reshape its siblings. Without the prune, dragging a tile to another edge
-          of its own composition would preview no sibling reflow and then jump on
-          release. The COMMIT still sends the unpruned aim id: the server writes the
-          landing leaf against the live tree first and prunes afterwards, so preview
-          and commit agree on the resulting SHAPE, which is all a viewer can see.
-        */
-        const pruned =
-          carriedTileId !== null && layout[carriedTileId] !== undefined
-            ? (withoutTileLeaf(layout, carriedTileId) ?? layout)
-            : layout;
-        const remapped = remapAimedTile(layout, pruned, aim.tileId);
-        if (remapped === null) {
+        // THE shared prospect: the same computation a viewer runs on this drag's
+        // carry frames, so what this pointer previews is what every renderer paints.
+        const prospect = tileProspect(layout, aim, carriedTileId, dividers);
+        if (prospect === null) {
           cacheRef.current = null;
           return null;
         }
-        const slotted = withTileSlot(pruned, remapped, aim.edge, aim.between === true);
-        if (slotted === null) {
-          cacheRef.current = null;
-          return null;
-        }
-        slot = tileRects(slotted.layout, dividers).get(slotted.slotId) ?? null;
-        shifts = paneShifts(layout, slotted.layout, dividers);
+        slot = prospect.slot;
+        partner = prospect.partner;
+        shifts = prospect.shifts;
       }
       if (slot === null) {
         cacheRef.current = null;

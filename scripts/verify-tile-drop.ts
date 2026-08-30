@@ -65,6 +65,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
 
 const failures: string[] = [];
 let browser: Browser | null = null;
+let viewer: Browser | null = null;
 let canvasClient: SessionClient | null = null;
 let viewClient: SessionClient | null = null;
 
@@ -768,12 +769,89 @@ try {
     fill !== null && Math.abs(fill.root - fill.last) <= 4,
     `last pane bottom ${String(fill?.last)} vs area bottom ${String(fill?.root)} after ratios [0.1 × 4] — no ghost band`,
   );
+
+  /* ── Multiplayer (#61): a second browser paints the dragger's live preview ── */
+
+  viewer = new Browser();
+  await viewer.launch(9378);
+  await viewer.goto(`${origin}/#key=${ownerKey}`);
+  if (await viewer.evaluate<boolean>("document.querySelector('input') !== null")) {
+    await viewer.typeInto("input", "tile-drop-viewer");
+    await viewer.clickText("Enter manifold");
+  }
+  await viewer.goto(`${origin}/p/${viewId}`);
+  await until(
+    () => viewer!.evaluate<boolean>("document.querySelector('.tile-area [data-tile-id]') !== null"),
+    20_000,
+    "viewer mounted the composition route",
+  );
+
+  const termJ = await bornTerminal("gate-J");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.pad-tree-item[data-tree-id="${termJ.homeId}"] .session-state') !== null`,
+      ),
+    20_000,
+    "terminal J's sidebar row",
+  );
+
+  // The producer holds a drag over a pane's flank WITHOUT releasing; the aim rides its
+  // carry frames, and the viewer re-derives the same prospect from the same kernel.
+  const heldDrag = dragSequence(
+    browser,
+    `.pad-tree-item[data-tree-id="${termJ.homeId}"]`,
+    ".tile-area",
+    [
+      {
+        selector: '.tile-area [data-tile-id="root"] > [data-tile-id]',
+        fx: 0.5,
+        fy: 0.82,
+        holdMs: 1800,
+      },
+    ],
+    false,
+  );
+  const viewerSample = await (async () => {
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      const sample = await viewer!.evaluate<{ cls: string; moved: boolean } | null>(
+        `(() => {
+          const slot = document.querySelector('.tile-area .tile-preview');
+          if (slot === null) return null;
+          const moved = [...document.querySelectorAll('.tile-area [data-tile-id]')]
+            .some((el) => el.style.transform !== '');
+          return { cls: slot.className, moved };
+        })()`,
+      );
+      if (sample !== null && sample.cls.includes("is-remote")) return sample;
+      await sleep(100);
+    }
+    return null;
+  })();
+  await heldDrag;
+  check(
+    "a collaborator paints the dragger's preview (#61)",
+    viewerSample !== null && viewerSample.moved,
+    `viewer slot "${String(viewerSample?.cls)}", panes glided: ${String(viewerSample?.moved)} — second real browser, same kernel`,
+  );
+  await until(
+    () => viewer!.evaluate<boolean>("document.querySelector('.tile-area .tile-preview') === null"),
+    10_000,
+    "viewer preview cleared after the carry went silent",
+  );
+  check(
+    "a silent carry releases the viewer's preview (#61)",
+    true,
+    "the gesture TTL retired the remote aim with no end frame needed",
+  );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
   viewClient?.close();
   canvasClient?.close();
   await browser?.close();
+  await viewer?.close();
   server.kill();
   rmSync(dataDir, { recursive: true, force: true });
   cleanupDist();

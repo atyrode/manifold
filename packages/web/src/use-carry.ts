@@ -1,3 +1,4 @@
+import type { CarryAim } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { useEffect, useRef, useState } from "react";
 import { carryFrame, carryPlacementId, type CarryPoint, type CarrySource } from "./carry.ts";
@@ -49,9 +50,11 @@ export interface CarryController {
   /**
    * One frame of motion. A carry that started somewhere else (a sidebar row, whose
    * source cannot reach this room) is ADOPTED on its first frame: the item register is
-   * process-wide, so entering a renderer is all the invitation a carry needs.
+   * process-wide, so entering a renderer is all the invitation a carry needs. `aim` is
+   * the resolved drop target while one is armed — it rides the same frame so every
+   * viewer re-derives this drag's split preview from the shared kernel.
    */
-  track(at: CarryPoint): void;
+  track(at: CarryPoint, aim?: CarryAim): void;
   /** Ends the carry: final frame, and the item register is cleared. */
   end(at?: CarryPoint): void;
   /** The placement id being streamed, for a source that renders its own carried state. */
@@ -105,7 +108,7 @@ export function useCarry({ client, describe }: UseCarryOptions): CarryController
         else startItemDrag({ dataTransfer: options.transfer }, envelope);
         if (options.at !== undefined) stream().push(carryFrame(source, options.at, "active"));
       },
-      track(at) {
+      track(at, aim) {
         let source = sourceRef.current;
         if (source === null) {
           const envelope = carriedItem();
@@ -114,7 +117,7 @@ export function useCarry({ client, describe }: UseCarryOptions): CarryController
           sourceRef.current = source;
         }
         lastPointRef.current = at;
-        stream().push(carryFrame(source, at, "active"));
+        stream().push(carryFrame(source, at, "active", aim));
       },
       end(at) {
         const source = sourceRef.current;

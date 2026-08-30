@@ -3201,6 +3201,19 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0;
 }
 
+/* A collaborator's live aim, painted from their carry frames through the same
+   kernel as a local drag. The carrier's presence color owns the slot, so the
+   preview belongs to a person the way their cursor does. */
+.tile-preview.is-remote {
+  --carrier-color: #868e96;
+  border: 1px dashed var(--carrier-color);
+  background: color-mix(in srgb, var(--carrier-color) 16%, transparent);
+}
+
+.tile-preview.is-remote .tile-preview__glyph {
+  color: color-mix(in srgb, var(--carrier-color) 70%, #fff);
+}
+
 /* Centred in the slot; `pointer-events: none` rides on the slot itself. */
 .tile-preview__glyph {
   position: absolute;

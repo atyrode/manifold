@@ -1,4 +1,4 @@
-import type { Carry, Gesture, PlacementSurface } from "@manifold/protocol";
+import type { Carry, CarryAim, Gesture, PlacementSurface } from "@manifold/protocol";
 import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
 import type { GestureOverride } from "./remote-gestures.ts";
 
@@ -61,19 +61,31 @@ export function carryPlacementId(envelope: ItemEnvelope): string | null {
   }
 }
 
-/** The wire payload of one grab. */
-export function carryPayload(source: CarrySource): Carry {
+/** The wire payload of one grab; `aim` is the resolved drop target while one is armed. */
+export function carryPayload(source: CarrySource, aim?: CarryAim): Carry {
   const surface = envelopeSurface(source.envelope);
-  return source.label === null ? { surface } : { surface, label: source.label };
+  return {
+    surface,
+    ...(source.label === null ? {} : { label: source.label }),
+    ...(aim === undefined ? {} : { aim }),
+  };
 }
 
 /**
  * One frame. Geometry says where the carried representation is right now: for an object
  * still drawn in its source container that is the object's own live box, so the frame
  * doubles as the move it used to send; for everything else it is the pointer, which is
- * where the ghost belongs.
+ * where the ghost belongs. `aim` rides along while the producer has a drop target
+ * armed, so every viewer can re-derive the SAME split preview from the same kernel —
+ * multiplayer is the design, and a local drag is just the case where the producer is
+ * your own pointer. An agent driving a carry through the SDK paints identically.
  */
-export function carryFrame(source: CarrySource, at: CarryPoint, phase: Gesture["phase"]): Gesture {
+export function carryFrame(
+  source: CarrySource,
+  at: CarryPoint,
+  phase: Gesture["phase"],
+  aim?: CarryAim,
+): Gesture {
   return {
     kind: "carry",
     phase,
@@ -82,7 +94,7 @@ export function carryFrame(source: CarrySource, at: CarryPoint, phase: Gesture["
     y: at.y,
     ...(at.width === undefined ? {} : { width: at.width }),
     ...(at.height === undefined ? {} : { height: at.height }),
-    carry: carryPayload(source),
+    carry: carryPayload(source, aim),
   };
 }
 
@@ -135,4 +147,39 @@ export function carryGhosts(
     });
   }
   return ghosts;
+}
+
+/**
+ * A peer's carry that is currently AIMING at a tile target: everything a preview
+ * overlay needs to re-derive the producer's exact split preview from the shared
+ * geometry kernel. One picked per surface — the freshest wins — because two
+ * simultaneous foreign carries over one area would paint contradictory prospects;
+ * the loser's aim takes over the moment the winner's frames stop.
+ */
+export interface RemoteTileCarry {
+  readonly connId: string;
+  readonly principalId: string;
+  readonly aim: CarryAim;
+  readonly surface: PlacementSurface;
+  readonly label: string;
+  readonly updatedAt: number;
+}
+
+/** The freshest live aim among a room's overrides, else null. */
+export function remoteTileCarry(overrides: Iterable<GestureOverride>): RemoteTileCarry | null {
+  let latest: RemoteTileCarry | null = null;
+  for (const override of overrides) {
+    const carry = override.carry;
+    if (override.kind !== "carry" || carry === undefined || carry.aim === undefined) continue;
+    if (latest !== null && override.updatedAt <= latest.updatedAt) continue;
+    latest = {
+      connId: override.connId,
+      principalId: override.principalId,
+      aim: carry.aim,
+      surface: carry.surface,
+      label: carry.label ?? SURFACE_NAMES[carry.surface.kind],
+      updatedAt: override.updatedAt,
+    };
+  }
+  return latest;
 }

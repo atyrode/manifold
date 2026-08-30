@@ -115,6 +115,8 @@ export interface FlowPadContextValue {
    * paint the swap cue exactly where the executor will trade.
    */
   readonly elementSeat: (padId: string, elementId: string) => boolean;
+  /** A carrier's presence color, so a peer's preview belongs to them like their cursor. */
+  readonly carrierColor: (principalId: string) => string;
 }
 
 /**

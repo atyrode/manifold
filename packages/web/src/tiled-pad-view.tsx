@@ -44,12 +44,12 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { createTileDropStore } from "./tile-drop-store.ts";
+import { createTileDropStore, wireCarryAim } from "./tile-drop-store.ts";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
 import { useToast } from "./toast.tsx";
-import { carryGhosts } from "./carry.ts";
+import { carryGhosts, remoteTileCarry } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
@@ -566,7 +566,7 @@ export function TiledPadView({
   const tileDrop = useTileDrop(dropHost);
 
   const clearDrop = useCallback((): void => {
-    dropStore.set({ pointer: null, armedElementId: null, aim: null });
+    dropStore.set({ ...dropStore.get(), pointer: null, armedElementId: null, aim: null });
     tileDrop.clear();
   }, [dropStore, tileDrop]);
 
@@ -586,6 +586,21 @@ export function TiledPadView({
     () => carryGhosts(remoteGestures.values(), () => false),
     [remoteGestures],
   );
+
+  /** A carrier's chosen color, so their preview belongs to them like their cursor. */
+  const carrierColor = useCallback(
+    (principalId: string): string =>
+      client.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR,
+    [client],
+  );
+
+  // A peer's armed aim, fed to the overlay through the same per-frame channel the
+  // local pointer uses. Imperative store write: a collaborator's 60 Hz drag repaints
+  // the overlay alone, never this tree or its terminals. Expiry and end frames both
+  // clear it through the override map, so a vanished carrier cannot strand a preview.
+  useEffect(() => {
+    dropStore.set({ ...dropStore.get(), remote: remoteTileCarry(remoteGestures.values()) });
+  }, [dropStore, remoteGestures]);
 
   /**
    * A client point in this view's own space. Fractions, like the cursors: the tile area
@@ -644,13 +659,22 @@ export function TiledPadView({
       // The carry streams from every frame that crosses this view, whether it began on
       // a leaf here or on a row in the sidebar — motion is the same concept either way.
       const at = bodyFraction(event.clientX, event.clientY);
-      if (at !== null) carry.track(at);
       const state = tileDrop.aimAt(event.clientX, event.clientY);
+      // The aim rides the same frame, so every viewer re-derives THIS drag's split
+      // preview from the shared kernel — the multiplayer path is the only path.
+      if (at !== null) {
+        carry.track(
+          at,
+          state === null
+            ? undefined
+            : wireCarryAim({ destination: state.destination, containerId: padId, tile: state.aim }),
+        );
+      }
       // Arm delay 0: the route previews on the first dragover frame.
       dropStore.set({
+        ...dropStore.get(),
         pointer: { clientX: event.clientX, clientY: event.clientY },
         armedElementId: null,
-        aim: dropStore.get().aim,
       });
       event.dataTransfer.dropEffect =
         state !== null && state.assessment?.denial == null ? "move" : "none";
@@ -939,6 +963,7 @@ export function TiledPadView({
             store={dropStore}
             surfaceLabel={surfaceLabel}
             carryLabel={carryLabel}
+            carrierColor={carrierColor}
           />
           <TileZoneDebug
             layout={layout}

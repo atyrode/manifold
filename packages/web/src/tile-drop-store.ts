@@ -1,4 +1,7 @@
-import type { PlacementDestination } from "@manifold/protocol";
+import type { CarryAim, PlacementDestination } from "@manifold/protocol";
+
+import type { RemoteTileCarry } from "./carry.ts";
+import type { TileAim } from "./tile-geometry.ts";
 
 /**
  * The per-frame channel between a drag transport and a tile area's preview overlay.
@@ -19,7 +22,15 @@ export interface TileDropSignal {
   readonly aim: {
     readonly destination: PlacementDestination;
     readonly containerId: string;
+    /** The kernel's resolved aim, so the transport can lift it onto the carry wire. */
+    readonly tile: TileAim;
   } | null;
+  /**
+   * The freshest PEER aim over this surface, written imperatively by the host from
+   * its gesture frames — the overlay is the only subscriber, so a collaborator's
+   * 60 Hz drag never re-renders the tree or its terminals. Local always outranks it.
+   */
+  readonly remote: RemoteTileCarry | null;
 }
 
 export interface TileDropStore {
@@ -28,7 +39,12 @@ export interface TileDropStore {
   subscribe(listener: () => void): () => void;
 }
 
-const IDLE_SIGNAL: TileDropSignal = { pointer: null, armedElementId: null, aim: null };
+const IDLE_SIGNAL: TileDropSignal = {
+  pointer: null,
+  armedElementId: null,
+  aim: null,
+  remote: null,
+};
 
 function destinationsEqual(a: PlacementDestination, b: PlacementDestination): boolean {
   if (a.kind !== b.kind) return false;
@@ -40,7 +56,8 @@ function destinationsEqual(a: PlacementDestination, b: PlacementDestination): bo
         b.kind === "tile" &&
         a.padId === b.padId &&
         a.targetTileId === b.targetTileId &&
-        a.edge === b.edge
+        a.edge === b.edge &&
+        (a.between === true) === (b.between === true)
       );
     case "compose":
       return (
@@ -74,8 +91,33 @@ export function tileDropSignalsEqual(a: TileDropSignal, b: TileDropSignal): bool
   if (a.aim !== null && b.aim !== null) {
     if (a.aim.containerId !== b.aim.containerId) return false;
     if (!destinationsEqual(a.aim.destination, b.aim.destination)) return false;
+    if (a.aim.tile.action !== b.aim.tile.action || a.aim.tile.tileId !== b.aim.tile.tileId) {
+      return false;
+    }
+  }
+  if ((a.remote === null) !== (b.remote === null)) return false;
+  if (a.remote !== null && b.remote !== null) {
+    if (a.remote.connId !== b.remote.connId || a.remote.updatedAt !== b.remote.updatedAt) {
+      return false;
+    }
   }
   return true;
+}
+
+/**
+ * The carry-wire form of a published aim: what a transport stamps onto its next
+ * gesture frame so every viewer re-derives this drag's preview. Null aim — no armed
+ * target — sends no aim, which is itself the signal that drops peers' previews.
+ */
+export function wireCarryAim(aim: TileDropSignal["aim"]): CarryAim | undefined {
+  if (aim === null) return undefined;
+  return {
+    containerId: aim.containerId,
+    tileId: aim.tile.tileId,
+    edge: aim.tile.edge,
+    action: aim.tile.action,
+    ...(aim.tile.between === true ? { between: true } : {}),
+  };
 }
 
 export function createTileDropStore(): TileDropStore {

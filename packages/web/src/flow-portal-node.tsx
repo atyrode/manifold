@@ -698,6 +698,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         store={pad.dropStore}
         surfaceLabel={occupantLabel}
         carryLabel={carryLabel}
+        carrierColor={pad.carrierColor}
       />
       <TileZoneDebug layout={layout} areaRef={areaRef} dividerPx={PORTAL_TREE_CLASSES.dividerPx} />
     </>

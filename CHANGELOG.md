@@ -41,6 +41,7 @@
 - While a drop target is armed, the node you are holding eases into a ghost — and back — so the live preview underneath stays readable. (#59)
 - Dividers are far easier to grab: a seam's pointer target is now wider than its slim paint at any zoom, and a watching widget's inert dividers explain how to make them live (click a tile to engage). (#59)
 - The seam between two panes is now a real drop BAND — as wide as the area's outer ring at any zoom, not a hairline — and it is the only place that means "wedge in between": both neighbors cede a third. Deeper into a pane's flank the drop splits THAT pane alone (it cedes half, its neighbor untouched), so the grouped `(A|C)|B` shapes are reachable again alongside flat thirds, told apart purely by where you hover. The F9 debug view paints the seam band its own color. (#60)
+- Collaborators now watch your drag think: while you hover a drop target, your resolved aim rides your carry frames, and every watching browser re-derives the same landing slot and pane glide through the same geometry kernel — painted in your presence color, cleared the instant your drag leaves a target or goes silent. Agents driving a placement through the SDK will paint identically: the multiplayer path is the only path. (#61)
 
 ### Fixed
 

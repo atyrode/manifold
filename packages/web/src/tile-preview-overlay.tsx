@@ -1,9 +1,17 @@
 import { ROOT_TILE_ID, type TileSurface } from "@manifold/protocol";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import { ControlIcon, SurfaceIcon } from "./icons.tsx";
 import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
 import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
+import { tileProspect, type TileAim } from "./tile-geometry.ts";
 import { useTileDrop, type TileDropHost, type TileDropState } from "./use-tile-drop.ts";
 
 /**
@@ -29,6 +37,8 @@ export interface TilePreviewOverlayProps {
   readonly surfaceLabel: (surface: TileSurface) => string | null;
   /** Names the carried item on the slot chip; null hides the label. */
   readonly carryLabel?: (envelope: ItemEnvelope) => string | null;
+  /** A carrier's presence color, so a peer's preview belongs to them like their cursor. */
+  readonly carrierColor?: (principalId: string) => string;
 }
 
 function clearWritten(written: HTMLElement[]): void {
@@ -58,6 +68,7 @@ export function TilePreviewOverlay({
   store,
   surfaceLabel,
   carryLabel,
+  carrierColor,
 }: TilePreviewOverlayProps): ReactNode {
   const signal: TileDropSignal = useSyncExternalStore(store.subscribe, store.get, store.get);
   const drop = useTileDrop(host);
@@ -76,7 +87,45 @@ export function TilePreviewOverlay({
   // memoizes per zone, so this settles after one immediate re-render.
   if (state !== null && state !== held) setHeld(state);
   if (!armed && held !== null) setHeld(null);
-  const shown = state ?? (armed ? held : null);
+  /*
+    A PEER's armed aim, re-derived through the same kernel the local pointer uses —
+    the whole point: one prospect computation, two producers. Local always outranks
+    remote, purely as arbitration; if the two could ever disagree on geometry that
+    would be a kernel bug, not a rendering difference. An agent driving a carry
+    through the SDK lands here exactly like a human collaborator.
+  */
+  const remote = signal.remote;
+  const remoteState = ((): TileDropState | null => {
+    if (armed || remote === null || host.layout === null) return null;
+    if (remote.aim.containerId !== host.containerId) return null;
+    const aim: TileAim = {
+      tileId: remote.aim.tileId,
+      edge: remote.aim.edge,
+      action: remote.aim.action,
+      depth: 0,
+      between: remote.aim.between === true,
+    };
+    const area = host.areaRef.current;
+    const width = area === null || area.offsetWidth <= 0 ? 1 : area.offsetWidth;
+    const height = area === null || area.offsetHeight <= 0 ? 1 : area.offsetHeight;
+    const dividers = { x: host.dividerPx / width, y: host.dividerPx / height };
+    const carriedTileId =
+      remote.surface.kind === "tile" && remote.surface.containerId === host.containerId
+        ? remote.surface.tileId
+        : null;
+    const prospect = tileProspect(host.layout, aim, carriedTileId, dividers);
+    if (prospect === null) return null;
+    return {
+      aim,
+      slot: prospect.slot,
+      partner: prospect.partner,
+      shifts: prospect.shifts,
+      assessment: null,
+      destination: { kind: "unplaced" },
+      envelope: null,
+    };
+  })();
+  const shown = state ?? (armed ? held : null) ?? remoteState;
 
   // Publish the resolved aim back to the store, so the transport commits exactly what
   // was previewed. ONLY the armed overlay writes: a canvas holds one overlay per
@@ -90,7 +139,9 @@ export function TilePreviewOverlay({
     store.set({
       ...current,
       aim:
-        state === null ? null : { destination: state.destination, containerId: host.containerId },
+        state === null
+          ? null
+          : { destination: state.destination, containerId: host.containerId, tile: state.aim },
     });
   });
 
@@ -99,15 +150,17 @@ export function TilePreviewOverlay({
   }, [armed, drop]);
 
   // The FLIP itself: written imperatively so the tree never re-renders. Nothing moves
-  // when the drop is denied, because nothing will move on release.
+  // when the drop is denied, because nothing will move on release. A peer's aim
+  // glides the panes exactly like a local one — same shifts, same kernel.
   useEffect(() => {
     const area = host.areaRef.current;
     clearWritten(writtenRef.current);
     if (area === null) return;
     area.classList.toggle("is-previewing", shown !== null);
-    if (state === null || state.assessment?.denial != null) return;
+    const active = state ?? remoteState;
+    if (active === null || active.assessment?.denial != null) return;
     const singleLeaf = host.layout?.[ROOT_TILE_ID]?.dir === null;
-    for (const shift of state.shifts) {
+    for (const shift of active.shifts) {
       const element = paneElement(area, shift.fromTileId, singleLeaf);
       if (element === null) continue;
       const dx = ((shift.to.x - shift.from.x) / shift.from.width) * 100;
@@ -118,7 +171,7 @@ export function TilePreviewOverlay({
       element.style.transform = `translate(${String(dx)}%, ${String(dy)}%) scale(${String(sx)}, ${String(sy)})`;
       writtenRef.current.push(element);
     }
-  }, [armed, host.areaRef, host.layout, shown, state]);
+  }, [armed, host.areaRef, host.layout, shown, state, remoteState]);
 
   // Disarm and unmount both leave the tree exactly as the doc says it is.
   useEffect(() => {
@@ -132,6 +185,7 @@ export function TilePreviewOverlay({
 
   if (shown === null) return null;
 
+  const isRemote = state === null && (armed ? held : null) === null && remoteState !== null;
   const denied = shown.assessment?.denial != null;
   const swapping = shown.aim.action === "swap" && !denied;
   const replacing = shown.aim.action === "replace" && !denied;
@@ -143,10 +197,17 @@ export function TilePreviewOverlay({
     swapping ? "is-swap" : "",
     replacing ? "is-replace" : "",
     denied ? "is-denied" : "",
-    state === null ? "is-idle" : "",
+    !isRemote && state === null ? "is-idle" : "",
+    isRemote ? "is-remote" : "",
   ]
     .filter(Boolean)
     .join(" ");
+  const remoteTint =
+    isRemote && remote !== null && carrierColor !== undefined
+      ? carrierColor(remote.principalId)
+      : null;
+  const tintStyle: CSSProperties =
+    remoteTint === null ? {} : ({ "--carrier-color": remoteTint } as CSSProperties);
 
   const rectStyle = (rect: typeof shown.slot) => ({
     left: `${String(rect.x * 100)}%`,
@@ -157,7 +218,11 @@ export function TilePreviewOverlay({
 
   return (
     <>
-      <div className={slotClass} aria-hidden="true" style={rectStyle(shown.slot)}>
+      <div
+        className={slotClass}
+        aria-hidden="true"
+        style={{ ...rectStyle(shown.slot), ...tintStyle }}
+      >
         {swapping ? (
           <span className="tile-preview__glyph">
             <ControlIcon kind="swap" size={28} />
@@ -170,6 +235,11 @@ export function TilePreviewOverlay({
                 {surfaceLabel(displaced) ?? "this tile"} moves out
               </span>
             )}
+          </span>
+        ) : isRemote && remote !== null ? (
+          <span className="tile-preview__glyph">
+            <SurfaceIcon kind={remote.surface.kind} size={14} />
+            <span className="tile-preview__caption">{remote.label}</span>
           </span>
         ) : shown.envelope === null || denied ? null : (
           <span className="tile-preview__glyph">
