@@ -667,6 +667,79 @@ try {
     topAligned,
     `slot top ${String(widgetSample?.rect?.top)} vs viewport top ${String(viewportRect?.top)} — the strip no longer skews the zones (defect 2)`,
   );
+
+  /* ── Flat inserts (#60): dividers are drop targets, same-axis edges join the row ── */
+
+  await browser.goto(`${origin}/p/${viewId}`);
+  await until(
+    () => browser!.evaluate<boolean>("document.querySelector('.tile-area') !== null"),
+    20_000,
+    "route remounted for flat-insert rounds",
+  );
+  const termF = await bornTerminal("gate-F");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.pad-tree-item[data-tree-id="${termF.homeId}"] .session-state') !== null`,
+      ),
+    20_000,
+    "terminal F's sidebar row",
+  );
+  // The root is a column of [old row, B]; its horizontal seam sits at half height.
+  const rootBefore = layoutNow()[ROOT_TILE_ID];
+  const seamDrop = await dragSequence(
+    browser,
+    `.pad-tree-item[data-tree-id="${termF.homeId}"]`,
+    ".tile-area",
+    [{ selector: ".tile-area", fx: 0.5, fy: 0.5, holdMs: 250 }],
+    true,
+  );
+  check(
+    "seam previews an insert between",
+    seamDrop.ok && (seamDrop.samples[0]?.present ?? false),
+    "the divider painted a live slot between its two siblings",
+  );
+  const seamLanded = await settles(() => {
+    const root = layoutNow()[ROOT_TILE_ID];
+    return (
+      root?.dir === "column" && root.children.length === 3 && leafOf(termF.id) === root.children[1]
+    );
+  }, 10_000);
+  check(
+    "seam drop lands a flat sibling",
+    seamLanded && rootBefore?.children.length === 2,
+    `the root column went ${String(rootBefore?.children.length)} -> 3 children with F in the middle — no wrapper split`,
+  );
+
+  const termG = await bornTerminal("gate-G");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.pad-tree-item[data-tree-id="${termG.homeId}"] .session-state') !== null`,
+      ),
+    20_000,
+    "terminal G's sidebar row",
+  );
+  const leafBNow = leafOf(termB.id);
+  const bandDrop = await dragSequence(
+    browser,
+    `.pad-tree-item[data-tree-id="${termG.homeId}"]`,
+    ".tile-area",
+    // B's bottom band runs the parent column's own axis: it joins the row, not nests.
+    [{ selector: `[data-tile-id="${leafBNow}"]`, fx: 0.5, fy: 0.9, holdMs: 250 }],
+    true,
+  );
+  const bandLanded = await settles(() => {
+    const root = layoutNow()[ROOT_TILE_ID];
+    return (
+      root?.dir === "column" && root.children.length === 4 && leafOf(termG.id) === root.children[3]
+    );
+  }, 10_000);
+  check(
+    "same-axis band joins the row flat",
+    bandDrop.ok && bandLanded,
+    "B's bottom band appended a FOURTH column sibling instead of nesting a two-way split",
+  );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {

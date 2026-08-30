@@ -3266,3 +3266,12 @@ button.pad-sidebar-session.is-summary > small {
   min-width: 0;
   min-height: 0;
 }
+
+/* While a drop target is armed, the node IN HAND steps almost out of the way so the
+   live preview underneath stays readable. React Flow marks the dragged node with
+   `.dragging`; the canvas root wears `is-composing` only while a target is armed,
+   both written imperatively (arming never touches React state — drag hot path). */
+.flow-pad-canvas.is-composing .react-flow__node.dragging {
+  opacity: 0.15;
+  transition: opacity 120ms ease;
+}

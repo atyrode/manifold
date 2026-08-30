@@ -533,6 +533,16 @@ export function FlowPadView({
     [notify, parkElement],
   );
 
+  /**
+   * The held node steps almost out of the way while a target is armed, so the live
+   * preview underneath stays readable. Imperative — a class on the canvas root plus
+   * React Flow's own `.dragging` marker — because arming deliberately touches no
+   * React state (re-rendering the canvas per hover frame is the drag hot path).
+   */
+  const reflectArmed = useCallback((): void => {
+    canvasRef.current?.classList.toggle("is-composing", armedElementIdRef.current !== null);
+  }, []);
+
   const clearCompose = useCallback((): void => {
     if (composeTimerRef.current !== null) {
       window.clearTimeout(composeTimerRef.current);
@@ -541,8 +551,9 @@ export function FlowPadView({
     carryingRef.current = false;
     composeCandidateRef.current = null;
     armedElementIdRef.current = null;
+    reflectArmed();
     dropStore.set({ pointer: null, armedElementId: null, aim: null });
-  }, [dropStore]);
+  }, [dropStore, reflectArmed]);
 
   /**
    * One frame of the compose gesture: find the node under the pointer, hold it for
@@ -562,6 +573,7 @@ export function FlowPadView({
       const target = composeTargetAt(projectedRef.current, point, sourceElementId);
       const publish = (): void => {
         const armedElementId = armedElementIdRef.current;
+        reflectArmed();
         dropStore.set({
           pointer: { clientX, clientY },
           armedElementId,
@@ -595,11 +607,12 @@ export function FlowPadView({
         composeTimerRef.current = null;
         if (!carryingRef.current || composeCandidateRef.current !== target.id) return;
         armedElementIdRef.current = target.id;
+        reflectArmed();
         // The pointer already in the store is the one the drag settled on.
         dropStore.set({ ...dropStore.get(), armedElementId: target.id });
       }, COMPOSE_ARM_MS);
     },
-    [dropStore],
+    [dropStore, reflectArmed],
   );
 
   /**

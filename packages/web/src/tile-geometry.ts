@@ -7,7 +7,7 @@ import {
   type TileSurface,
 } from "@manifold/protocol";
 
-import { snapZone } from "./tile-snap.ts";
+import { SNAP_EDGE_BAND, snapZone } from "./tile-snap.ts";
 
 /**
  * Leaf-addressed drop geometry for tiled containers, DOM-free and in UNIT SPACE:
@@ -175,9 +175,70 @@ function minTouchingLeaf(
 }
 
 /**
+ * The seam a pointer sits on, resolved to the insert it means (#60).
+ *
+ * The MIDDLE stretch of a seam is "wedge in between these two": the leading
+ * neighbor's trailing edge, which `insertLeaf`'s same-axis branch turns into a flat
+ * sibling exactly where the pointer is. A neighbor dropped on its own seam would be
+ * a no-op, so it aims at nothing — never previewed, never committed.
+ *
+ * The seam's outer ENDS are "split the GROUP this seam belongs to, across": the seam
+ * is the one piece of geometry that unambiguously belongs to the split itself — a
+ * group's outer border is always coincident with its members' edge bands, but its
+ * seam is flanked by leaf centers — so pulling toward a seam's end is how an inner
+ * split like `(C | D)` in `A | (B / (C | D))` grows `E` across its whole width:
+ * `B / (C | D) / E`. When that runs the grandparent's axis it flattens like every
+ * other same-axis insert; a cross-axis end wraps the group as a unit.
+ */
+function dividerAim(
+  rects: ReadonlyMap<string, UnitRect>,
+  split: TileNode,
+  point: UnitPoint,
+  carry: TileAimCarry,
+  depth: number,
+): TileAim | null {
+  const row = split.dir === "row";
+  const p = row ? point.x : point.y;
+  let previous: string | null = null;
+  let next: string | null = null;
+  for (const childId of split.children) {
+    const rect = rects.get(childId);
+    if (rect === undefined) continue;
+    const start = row ? rect.x : rect.y;
+    const end = start + (row ? rect.width : rect.height);
+    if (p >= end) previous = childId;
+    if (p <= start && next === null) next = childId;
+  }
+  if (previous === null || next === null) return null;
+
+  const own = rects.get(split.id);
+  if (own !== undefined) {
+    // Position ALONG the seam, as a fraction of the split's perpendicular extent.
+    const along = row
+      ? (point.y - own.y) / (own.height > 0 ? own.height : 1)
+      : (point.x - own.x) / (own.width > 0 ? own.width : 1);
+    if (along < SNAP_EDGE_BAND) {
+      return { tileId: split.id, edge: row ? "top" : "left", action: "place", depth: depth - 1 };
+    }
+    if (along > 1 - SNAP_EDGE_BAND) {
+      return {
+        tileId: split.id,
+        edge: row ? "bottom" : "right",
+        action: "place",
+        depth: depth - 1,
+      };
+    }
+  }
+
+  if (carry.carriedTileId === previous || carry.carriedTileId === next) return null;
+  return { tileId: previous, edge: row ? "right" : "bottom", action: "place", depth };
+}
+
+/**
  * The tile a pointer aims at, or null when the release would mean nothing: outside the
- * area, on a divider, or anywhere over the carry's own leaf (the server treats
- * leaf-onto-itself as a no-op, and null is how the client never previews or commits it).
+ * area, or anywhere over the carry's own leaf (the server treats leaf-onto-itself as a
+ * no-op, and null is how the client never previews or commits it). A pointer on a
+ * DIVIDER aims between the seam's two siblings — a flat insert into their split.
  *
  * The border ring targets the ROOT and only the root. Ancestors are targetable only
  * along a border they share with the tile area itself, which collapses escalation to
@@ -227,8 +288,11 @@ export function resolveTileAim(
 
   const leafId = chain[chain.length - 1] ?? ROOT_TILE_ID;
   const node = layout[leafId];
-  // A chain ending on a split means the pointer sits on a divider: no zone there.
-  if (node === undefined || node.dir !== null) return null;
+  if (node === undefined) return null;
+  // A chain ending on a split means the pointer sits on one of its dividers.
+  if (node.dir !== null) {
+    return dividerAim(rects, node, point, carry, chain.length);
+  }
   if (carry.carriedTileId === leafId) return null;
   const rect = rects.get(leafId);
   if (rect === undefined) return null;

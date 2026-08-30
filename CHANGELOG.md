@@ -33,6 +33,8 @@
 - The center drop zone now means "this exact spot": over an empty tile it fills as before, over an occupied one it swaps the two placements — shown with an orange highlight and a swap glyph instead of yesterday's guaranteed-failure full highlight. Tiles gained edge-drop rearranging inside and across compositions (an edge moves the tile, center trades places), and drags that carry nothing to trade simply snap to the nearest edge. (#59)
 - Dropping onto a composition now aims at the exact tile under the pointer, at any depth: every tile offers its four edges and its center, and the area's outer band splits the whole composition at the top level. The preview is the real thing — the panes glide and squeeze into their prospective places while you hover, so the highlight IS the outcome you get on release. (#59)
 - The exact spot of an occupied tile now also accepts items with nothing to trade: the carried item takes the tile and the displaced occupant moves out into its own composition at the top level of the index — previewed in violet with a "moves out" caption. A note cannot be displaced and says so in prose before you release. (#59)
+- Splits can now grow FLAT: dropping on a tile's edge along its row's own direction joins that row as a new sibling instead of nesting a two-way split, and dividers are drop targets — release on a seam to wedge the item in exactly there. A seam's outer ends split the whole group the seam belongs to (how a nested `C | D` pair grows a pane across its full width), in both orientations. (#60)
+- While a drop target is armed, the node you are holding fades to a ghost so the live preview underneath stays readable. (#59)
 
 ### Fixed
 

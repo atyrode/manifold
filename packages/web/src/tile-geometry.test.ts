@@ -193,18 +193,58 @@ describe("resolveTileAim", () => {
     expect(ringAim?.tileId).toBe(ROOT_TILE_ID);
   });
 
-  test("a point on a divider aims at nothing", () => {
-    const aim = resolveTileAim(
-      rowLayout(),
-      { x: 0.5, y: 0.5 },
+  test("a divider aims between its two siblings as a flat insert", () => {
+    const dividers = { x: 0.04, y: 0.04 } as const;
+    const noRing = { x: 0, y: 0 } as const;
+    // The seam of `A | B` means "wedge in after A": the leading neighbor's trailing edge.
+    const aim = resolveTileAim(rowLayout(), { x: 0.5, y: 0.5 }, NO_CARRY, dividers, noRing);
+    expect(aim).toEqual({ tileId: "t1", edge: "right", action: "place", depth: 1 });
+    // A nested split's own divider inserts into THAT split.
+    const nested = resolveTileAim(
+      nestedLayout(),
+      { x: 0.75, y: 0.5 },
       NO_CARRY,
-      { x: 0.04, y: 0.04 },
-      {
-        x: 0,
-        y: 0,
-      },
+      { x: 0, y: 0.04 },
+      noRing,
     );
-    expect(aim).toBeNull();
+    expect(nested).toEqual({ tileId: "t2", edge: "bottom", action: "place", depth: 2 });
+  });
+
+  test("a neighbor dropped on its own seam aims at nothing", () => {
+    const dividers = { x: 0.04, y: 0.04 } as const;
+    const noRing = { x: 0, y: 0 } as const;
+    for (const carriedTileId of ["t1", "t2"]) {
+      const carry: TileAimCarry = { carriedTileId, holdsTileSeat: true };
+      expect(resolveTileAim(rowLayout(), { x: 0.5, y: 0.5 }, carry, dividers, noRing)).toBeNull();
+    }
+  });
+
+  test("a seam's ends split the GROUP the seam belongs to (#60)", () => {
+    // The reported tree: `A | (B / (C | D))` — the (C|D) group's own bottom border is
+    // coincident with C's and D's bottom bands, so the group is addressable only
+    // through the one geometry that is unambiguously ITS OWN: the C/D seam.
+    const layout: TileLayout = {
+      [ROOT_TILE_ID]: split(ROOT_TILE_ID, "row", ["tA", "tCol"], [1, 1]),
+      tA: leaf("tA", terminal("sA")),
+      tCol: split("tCol", "column", ["tB", "tRow"], [1, 1]),
+      tB: leaf("tB", terminal("sB")),
+      tRow: split("tRow", "row", ["tC", "tD"], [1, 1]),
+      tC: leaf("tC", terminal("sC")),
+      tD: leaf("tD", terminal("sD")),
+    };
+    const dividers = { x: 0.02, y: 0 } as const;
+    const over = (x: number, y: number): TileAim | null =>
+      resolveTileAim(layout, { x, y }, NO_CARRY, dividers, { x: 0.05, y: 0.05 });
+    // The seam sits at x ≈ 0.75, spanning y 0.5..1. Its middle inserts between C and D…
+    expect(over(0.75, 0.7)).toEqual({ tileId: "tC", edge: "right", action: "place", depth: 3 });
+    // …its bottom end grows a pane across the whole group ( -> B / (C|D) / E )…
+    expect(over(0.75, 0.9)).toEqual({ tileId: "tRow", edge: "bottom", action: "place", depth: 2 });
+    // …and its top end the same, above.
+    expect(over(0.75, 0.55)).toEqual({ tileId: "tRow", edge: "top", action: "place", depth: 2 });
+    // The insert the aim addresses is the flat same-axis splice into the column.
+    const slotted = withTileSlot(layout, "tRow", "bottom");
+    expect(slotted?.layout["tCol"]?.children).toEqual(["tB", "tRow", slotted?.slotId ?? ""]);
+    expect(slotted?.layout["tCol"]?.ratios).toEqual([1, 0.5, 0.5]);
   });
 });
 
