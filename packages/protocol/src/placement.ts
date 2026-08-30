@@ -139,8 +139,17 @@ export const ITEM_KINDS = {
    */
   text: { groups: ["tileable", "canvas-item"], guards: [], homed: "on-claim" },
   draw: { groups: ["canvas-item"], guards: [], homed: "inline" },
-  /** A leaf of a tiled container, addressed for extraction back onto a canvas. */
-  tile: { groups: ["extractable"], guards: [], homed: "inline" },
+  /**
+   * A leaf of a tiled container, addressed as the PLACEMENT it is rather than as the item
+   * it holds — which is what makes one mirror of a multi-placed session grabbable.
+   *
+   * It is `extractable` onto a canvas and `tileable` into a composition, so a leaf can be
+   * re-placed the way anything else can: an edge moves it, and the exact spot of another
+   * leaf exchanges the two. The executor resolves what the leaf HOLDS at execution time,
+   * because only the side owning the tree can see into it — a browser dragging a leaf of a
+   * container it has not joined knows the placement and not the occupant.
+   */
+  tile: { groups: ["tileable", "extractable"], guards: [], homed: "inline" },
 } as const satisfies Record<string, ItemDeclaration>;
 export type ItemKind = keyof typeof ITEM_KINDS;
 
@@ -219,8 +228,33 @@ export const PLACEMENT_OPS = [
   "compose",
   /** Move a plain canvas item (text, ink) from its canvas to the destination canvas. */
   "move_element",
+  /**
+   * Exchange two placements' contents: the carried surface takes the exact spot it was
+   * released on, and whatever was there takes the seat the carry came from. Identities
+   * survive — tile ids, element ids, z-order and selections are untouched — because a
+   * swap moves occupants between seats, never the seats themselves.
+   *
+   * CENTER MEANS THIS EXACT SPOT, and that is the whole rule this op exists for. The
+   * middle of an EMPTY leaf is a fill (`add_tile`); the middle of an OCCUPIED one is this
+   * exchange. Occupancy is document state rather than a property of a kind, so
+   * `resolvePlacement` cannot see it and never names this op: a center placement resolves
+   * to `add_tile` or `compose`, and the executor re-tags it `swap` when it finds the spot
+   * taken. The response is tagged by what actually ran, which is why the op is on the
+   * wire at all instead of hiding inside the two it re-tags.
+   */
+  "swap",
 ] as const;
 export type PlacementOp = (typeof PLACEMENT_OPS)[number];
+
+/**
+ * Ops no resolution ever names, because document state — not a kind — decides them. The
+ * executor re-tags a resolved op to one of these at execution time, and publishing the
+ * list is what keeps that honest: an agent reading the vocabulary learns that a center
+ * placement can come back as a `swap` instead of discovering it from a response it did
+ * not expect.
+ */
+export const EXECUTION_ONLY_OPS = ["swap"] as const satisfies readonly PlacementOp[];
+export type ExecutionOnlyOp = (typeof EXECUTION_ONLY_OPS)[number];
 
 /** What landing on a canvas MEANS per item kind; a canvas is the one polymorphic door. */
 export const CANVAS_OPS = {
@@ -241,13 +275,21 @@ export const DESTINATION_OPS = {
 
 /**
  * Denial rules: one per guard (derived from `PLACEMENT_GUARDS`), one for failed group
- * containment, and two for identity — an id that resolves to nothing is a denial too, so
- * no request can fall through to a silent no-op.
+ * containment, two for identity — an id that resolves to nothing is a denial too, so no
+ * request can fall through to a silent no-op — and one for the exchange a center drop
+ * asks for when the gesture holds no seat to give back.
  */
 export const PLACEMENT_DENIAL_RULES = [
   "not_accepted",
   "unknown_surface",
   "unknown_container",
+  /**
+   * The spot a center drop pointed at is taken, and the surface offered is an IDENTITY
+   * form — a sidebar row, a bare session id — which names an item without naming any
+   * placement of it. There is nowhere for the occupant to go, so the exchange is refused
+   * by name rather than quietly becoming a different placement.
+   */
+  "not_swappable",
   PLACEMENT_GUARDS["no-self-embed"].rule,
   PLACEMENT_GUARDS["discipline-match"].rule,
   PLACEMENT_GUARDS["solo-only"].rule,
@@ -366,10 +408,12 @@ export const PlacementDenialSchema = z.strictObject({
 export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
 
 /**
- * What an executed placement RETURNS, tagged by the op that ran. Each op yields exactly
- * the id its caller needs to keep rendering: the placement it authored (`elementId` /
- * `tileId`), the container a composition was born into (`viewId`), or the number of
- * references a release removed. `POST /api/place` serves this shape verbatim.
+ * What an executed placement RETURNS, tagged by the op that ran — which is the op that
+ * ACTUALLY ran, not the one resolution predicted: a center placement onto a taken spot
+ * comes back as `swap`. Each op yields exactly the id its caller needs to keep rendering:
+ * the placement it authored (`elementId` / `tileId`), the container a composition was born
+ * into (`viewId`), the two seats an exchange moved between, or the number of references a
+ * release removed. `POST /api/place` serves this shape verbatim.
  */
 export const PlaceResponseSchema = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("portal"), elementId: z.string().min(1) }),
@@ -391,6 +435,18 @@ export const PlaceResponseSchema = z.discriminatedUnion("op", [
     viewId: z.string().min(1),
     /** The leaf the placed surface landed in. */
     tileId: z.string().min(1),
+  }),
+  z.strictObject({
+    op: z.literal("swap"),
+    /**
+     * The placement now holding the carried surface: the exact spot the drop pointed at.
+     * A tile id when two leaves exchanged, an element id when two canvas seats did — the
+     * ids are of the same species as the placements that traded, which is why one field
+     * answers for both contexts.
+     */
+    placementId: z.string().min(1),
+    /** The placement now holding what was there: the seat the carry came from. */
+    withPlacementId: z.string().min(1),
   }),
 ]);
 export type PlaceResponse = z.infer<typeof PlaceResponseSchema>;
@@ -541,6 +597,12 @@ export function placementItemFor(
  * exist and match its discipline (`unknown_container`, `discipline`), the surface must
  * resolve to a declared kind (`unknown_surface`), the container must accept one of its
  * groups (`not_accepted`), and finally the item-site guards run (`self_embed`, `not_solo`).
+ *
+ * It answers about KINDS, never about the contents of a document, which is why a center
+ * placement resolves to `add_tile` or `compose` here whatever occupies the target: the
+ * executor holds the tree and re-tags the result `swap` when the spot turns out to be
+ * taken (see `EXECUTION_ONLY_OPS`). Keeping the occupancy branch out of this function is
+ * what lets a browser predict legality from props alone.
  */
 export function resolvePlacement(
   surface: PlacementSurface,
@@ -607,6 +669,7 @@ export function placementVocabulary(): Record<string, unknown> {
     containers: CONTAINER_KINDS,
     destinations: DESTINATION_KINDS,
     ops: PLACEMENT_OPS,
+    executionOnlyOps: EXECUTION_ONLY_OPS,
     canvasOps: CANVAS_OPS,
     destinationOps: DESTINATION_OPS,
     denialRules: PLACEMENT_DENIAL_RULES,

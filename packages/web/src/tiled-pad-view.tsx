@@ -41,7 +41,7 @@ import {
   useItemDrop,
   type ItemDropAssessment,
 } from "./item-drop.ts";
-import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import { carriedItem, carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import {
   browserMachineStorage,
   chooseDefaultMachine,
@@ -51,7 +51,7 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { previewRect, snapZone } from "./tile-snap.ts";
+import { previewRect, resolveSnapTarget, type SnapAction, type SnapTarget } from "./tile-snap.ts";
 import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { useToast } from "./toast.tsx";
 import { carryGhosts } from "./carry.ts";
@@ -75,6 +75,13 @@ import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cur
 interface TileDropTarget {
   readonly tileId: string;
   readonly zone: TileEdge;
+  /**
+   * What releasing here would DO. `swap` is a center release on a leaf that is already
+   * taken: the two occupants trade seats. It rides beside the zone because the WIRE
+   * carries the same `center` edge either way — the server owns the occupancy branch —
+   * so this is the only place that knows to paint the exchange rather than a fill.
+   */
+  readonly action: SnapAction;
   /**
    * What the placement pipeline says about the live carry at this zone: null when
    * nothing is being carried, `denial: null` when the drop is legal. The leaf paints
@@ -552,14 +559,28 @@ export function TiledPadView({
     [client, failed, lookup, onPadChanged, padId],
   );
 
-  const zoneAt = (
+  /**
+   * The zone a pointer resolves to over one leaf, and what releasing there would do.
+   *
+   * Only a carried TILE can swap: it is a placement of the same species as the target, so
+   * the occupant has a leaf to move into. Everything else — a sidebar row, a session id, a
+   * canvas element — names an item with no leaf to give back, and for those the center band
+   * dissolves into its nearest edge rather than offering an exchange the server would
+   * refuse (`not_swappable`).
+   */
+  const targetAt = (
+    tileId: string,
     target: HTMLDivElement,
     pointer: { readonly clientX: number; readonly clientY: number },
-  ): TileEdge | null => {
+  ): SnapTarget | null => {
     const bounds = target.getBoundingClientRect();
-    return snapZone(
+    return resolveSnapTarget(
       { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height },
       { x: pointer.clientX, y: pointer.clientY },
+      {
+        occupied: (layout?.[tileId]?.surface ?? null) !== null,
+        canSwap: carriedItem()?.kind === "tile",
+      },
     );
   };
 
@@ -617,6 +638,10 @@ export function TiledPadView({
    * The destination one leaf means. Geometry is all this renderer contributes: the zone
    * comes from the pointer, and every question about what may land there belongs to the
    * pipeline — which is why there is no rule in either handler below.
+   *
+   * A swap travels as the same `center` edge a fill does. Occupancy is the server's to
+   * read — its tree is the authority — so the wire says WHERE and the executor says what
+   * that turned out to mean.
    */
   const destinationFor = (tileId: string, zone: TileEdge): PlacementDestination => ({
     kind: "tile",
@@ -633,29 +658,30 @@ export function TiledPadView({
       // nothing. The `dropEffect` still says "none", so the cursor stays honest.
       event.preventDefault();
       event.stopPropagation();
-      const zone = zoneAt(event.currentTarget, event);
+      const snap = targetAt(tileId, event.currentTarget, event);
       // The carry streams from every frame that crosses this view, whether it began on
       // a leaf here or on a row in the sidebar — motion is the same concept either way.
       const at = bodyFraction(event.clientX, event.clientY);
       if (at !== null) carry.track(at);
-      if (zone === null) {
+      if (snap === null) {
         event.dataTransfer.dropEffect = "none";
         setDropTarget((current) => (current?.tileId === tileId ? null : current));
         return;
       }
-      const assessment = drop.assess(destinationFor(tileId, zone));
+      const assessment = drop.assess(destinationFor(tileId, snap.zone));
       event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
       setDropTarget((current) => {
         // Compared by RULE rather than by assessment identity: `assess` hands back a fresh
         // object every frame, and a drag fires this handler per pointer move.
         if (
           current?.tileId === tileId &&
-          current.zone === zone &&
+          current.zone === snap.zone &&
+          current.action === snap.action &&
           (current.assessment?.denial?.rule ?? null) === (assessment?.denial?.rule ?? null)
         ) {
           return current;
         }
-        return { tileId, zone, assessment };
+        return { tileId, zone: snap.zone, action: snap.action, assessment };
       });
     },
     onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
@@ -668,7 +694,7 @@ export function TiledPadView({
       event.stopPropagation();
       // The drop's own pointer decides the edge. Reading the highlight state instead
       // would race the render that painted it, and a drop is a one-shot event.
-      const zone = zoneAt(event.currentTarget, event);
+      const snap = targetAt(tileId, event.currentTarget, event);
       setDropTarget(null);
       const at = bodyFraction(event.clientX, event.clientY);
       // The ghost is retired before the write: the payload is in the transfer, so
@@ -676,8 +702,8 @@ export function TiledPadView({
       carry.end(at ?? undefined);
       setCarriedTileId(null);
       // Released between zones: aborting with no mutation is the documented escape.
-      if (zone === null) return;
-      drop.commit(event.dataTransfer, destinationFor(tileId, zone));
+      if (snap === null) return;
+      drop.commit(event.dataTransfer, destinationFor(tileId, snap.zone));
     },
   });
 
@@ -834,6 +860,9 @@ export function TiledPadView({
     const zone = highlight?.zone ?? null;
     const assessment = highlight?.assessment ?? null;
     const denied = assessment?.denial != null;
+    // A legal exchange wears its own colour and glyph: releasing here trades the two
+    // occupants rather than splitting the leaf, and nothing else in the frame says so.
+    const swapping = highlight?.action === "swap" && !denied;
     const preview = zone === null ? null : previewRect(LEAF_BOX, zone);
     return (
       <div
@@ -863,7 +892,9 @@ export function TiledPadView({
         )}
         {preview === null ? null : (
           <div
-            className={`tiled-snap-preview${denied ? " is-denied" : ""}`}
+            className={`tiled-snap-preview${denied ? " is-denied" : ""}${
+              swapping ? " is-swap" : ""
+            }`}
             aria-hidden="true"
             style={{
               left: `${preview.x}%`,
@@ -872,6 +903,11 @@ export function TiledPadView({
               height: `${preview.height}%`,
             }}
           >
+            {swapping ? (
+              <span className="tiled-snap-preview__glyph">
+                <ControlIcon kind="swap" size={28} />
+              </span>
+            ) : null}
             {assessment?.message == null ? null : (
               <span className="drop-denial-note">{assessment.message}</span>
             )}

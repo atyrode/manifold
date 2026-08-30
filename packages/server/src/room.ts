@@ -30,13 +30,16 @@ import {
   encodeUpdate,
   initTiledLayout,
   nextZIndex,
+  patchElement,
   readElement,
   readElements,
   readTileLayout,
   removeElement,
   removeTileLeaf,
+  swapTileLeaves,
   writeElement,
   writeTileLeaf,
+  writeTileLeafSurface,
 } from "@manifold/scene";
 import type { Logger } from "./log.ts";
 import {
@@ -628,6 +631,54 @@ export class Room {
   /** Removes one tile leaf, collapsing the split it leaves behind. */
   removeTileLeafById(tileId: string): boolean {
     return removeTileLeaf(this.doc, tileId, SERVER_PLACE_ORIGIN);
+  }
+
+  /**
+   * Exchanges two leaves' occupants inside this container, in one server-origin write.
+   * What a CENTER drop means when the spot it pointed at is already taken: the seats stay
+   * where they are and their contents trade places.
+   */
+  swapTileLeavesById(aTileId: string, bTileId: string): boolean {
+    return swapTileLeaves(this.doc, aTileId, bTileId, SERVER_PLACE_ORIGIN);
+  }
+
+  /**
+   * Writes one leaf's occupant. This is the per-room half of an exchange that crosses two
+   * containers: two documents cannot share a transaction, so each side writes its own new
+   * occupant and fans its own update out. Inside one container `swapTileLeavesById` is the
+   * whole operation.
+   */
+  setTileSurface(tileId: string, surface: TileSurface | null): boolean {
+    return writeTileLeafSurface(this.doc, tileId, surface, SERVER_PLACE_ORIGIN);
+  }
+
+  /**
+   * Exchanges two elements' geometry in ONE transaction, so collaborators see both seats
+   * change together rather than watching one element land on top of the other. Everything
+   * that is not a rectangle is untouched — ids, z-order, portal targets and a note's
+   * collaborative text — which is what makes this an exchange of SEATS and not of objects,
+   * and why it patches fields instead of re-authoring the elements.
+   */
+  swapElementGeometry(aElementId: string, bElementId: string): boolean {
+    if (aElementId === bElementId) return false;
+    const a = readElement(this.doc, aElementId);
+    const b = readElement(this.doc, bElementId);
+    if (a === null || b === null) return false;
+    this.doc.transact(() => {
+      patchElement(
+        this.doc,
+        aElementId,
+        { x: b.x, y: b.y, width: b.width, height: b.height },
+        SERVER_PLACE_ORIGIN,
+      );
+      patchElement(
+        this.doc,
+        bElementId,
+        { x: a.x, y: a.y, width: a.width, height: a.height },
+        SERVER_PLACE_ORIGIN,
+      );
+    }, SERVER_PLACE_ORIGIN);
+    return true;
   }
 
   /**

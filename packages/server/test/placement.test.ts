@@ -22,6 +22,7 @@ import {
   type PlacementSurface,
   type SceneElement,
   type ServerToAgentMessage,
+  type TileSurface,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -490,8 +491,12 @@ describe("the placement algebra, executed", () => {
       "draw -> compose=denied:not_accepted",
       "draw -> unplaced=denied:not_accepted",
       "tile -> canvas=extract",
-      "tile -> tile=denied:not_accepted",
-      "tile -> compose=denied:not_accepted",
+      // A leaf is a re-placeable PLACEMENT: both cells were `denied:not_accepted` until the
+      // center-swap work, and the operator approved the flip. An edge MOVES the leaf into
+      // the destination, the exact spot of an occupied leaf EXCHANGES the two, and merging
+      // onto a canvas widget is that same move reached through the compose door.
+      "tile -> tile=add_tile",
+      "tile -> compose=compose",
       "tile -> unplaced=denied:not_accepted",
     ]);
   });
@@ -632,6 +637,291 @@ describe("the placement algebra, executed", () => {
       "denied:unknown_surface",
       "failed",
     ]);
+  });
+});
+
+/** The leaf showing an embedded canvas, so a swap has a second species to trade with. */
+function padLeafId(fixture: PlacementFixture, padId: string, embedded: string): string {
+  const tileId = tileIdForSurface(roomFor(fixture, padId).tileLayout(), {
+    kind: "pad",
+    padId: embedded,
+  });
+  if (tileId === null) throw new Error(`${padId} holds no leaf for ${embedded}`);
+  return tileId;
+}
+
+/** Every leaf's occupant keyed by tile id, so an exchange can be read as one value. */
+function occupants(fixture: PlacementFixture, padId: string): Record<string, TileSurface | null> {
+  const layout = roomFor(fixture, padId).tileLayout() ?? {};
+  const held: Record<string, TileSurface | null> = {};
+  for (const tileId of tileLeafIds(layout)) held[tileId] = layout[tileId]?.surface ?? null;
+  return held;
+}
+
+describe("center means this exact spot", () => {
+  test("center on an EMPTY leaf still fills it, and says so", () => {
+    const fixture = placementFixture();
+    const empty: Pad = {
+      id: fixture.runtime.newId(),
+      name: "empty",
+      createdAt: fixture.runtime.now(),
+      layout: "tiled",
+    };
+    fixture.store.createPad(empty);
+    expect(occupants(fixture, empty.id)).toEqual({ root: null });
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: { kind: "tile", padId: empty.id, targetTileId: "root", edge: "center" },
+    });
+
+    // Unchanged behaviour, and deliberately NOT a swap: an empty seat has nothing to trade.
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result).toEqual({ op: "add_tile", tileId: "root" });
+    expect(occupants(fixture, empty.id)).toEqual({
+      root: { kind: "terminal", sessionId: fixture.loose },
+    });
+  });
+
+  test("two leaves of ONE composition exchange occupants, keeping their seats", () => {
+    const fixture = placementFixture();
+    const terminalTile = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const canvasTile = padLeafId(fixture, fixture.view.id, fixture.spare.id);
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: terminalTile },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: canvasTile,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    // The op the executor RAN, not the one resolution predicted (`add_tile`).
+    expect(outcome.result).toEqual({
+      op: "swap",
+      placementId: canvasTile,
+      withPlacementId: terminalTile,
+    });
+    expect(occupants(fixture, fixture.view.id)).toEqual({
+      [terminalTile]: { kind: "pad", padId: fixture.spare.id },
+      [canvasTile]: { kind: "terminal", sessionId: fixture.occupant },
+    });
+    // Nothing about where the terminal LIVES changed: it never left the container.
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.view.id);
+  });
+
+  test("leaves of two DIFFERENT compositions exchange, and the terminal's home follows", () => {
+    const fixture = placementFixture();
+    const terminalTile = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const foreignTile = padLeafId(fixture, fixture.otherView.id, fixture.other.id);
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: terminalTile },
+      destination: {
+        kind: "tile",
+        padId: fixture.otherView.id,
+        targetTileId: foreignTile,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result).toEqual({
+      op: "swap",
+      placementId: foreignTile,
+      withPlacementId: terminalTile,
+    });
+    // Each container kept its seats and swapped what sits in them.
+    expect(occupants(fixture, fixture.view.id)[terminalTile]).toEqual({
+      kind: "pad",
+      padId: fixture.other.id,
+    });
+    expect(occupants(fixture, fixture.otherView.id)[foreignTile]).toEqual({
+      kind: "terminal",
+      sessionId: fixture.occupant,
+    });
+    // A terminal lives in exactly one composition, so the exchange rebound it.
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.otherView.id);
+    expect(roomFor(fixture, fixture.view.id).homesSession(fixture.occupant)).toBe(false);
+    expect(roomFor(fixture, fixture.otherView.id).homesSession(fixture.occupant)).toBe(true);
+    // Both containers survive the trade, so neither is retired and no portal is repointed.
+    expect(fixture.store.getPad(fixture.view.id)).not.toBeNull();
+    expect(fixture.store.getPad(fixture.otherView.id)).not.toBeNull();
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-view")).toMatchObject({
+      containerId: fixture.otherView.id,
+    });
+  });
+
+  test("two canvas elements exchange rectangles and nothing else about them", () => {
+    const fixture = placementFixture();
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    writeElement(
+      canvas.doc,
+      element({
+        id: "el-portal-canvas",
+        type: "portal",
+        containerId: fixture.other.id,
+        x: 10,
+        y: 20,
+      }),
+      LOCAL_ORIGIN,
+    );
+    writeElement(
+      canvas.doc,
+      element({
+        id: "el-portal-view",
+        type: "portal",
+        containerId: fixture.otherView.id,
+        x: 400,
+        y: 300,
+        width: 200,
+        height: 150,
+      }),
+      LOCAL_ORIGIN,
+    );
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-portal-canvas" },
+      destination: {
+        kind: "compose",
+        padId: fixture.canvas.id,
+        targetElementId: "el-portal-view",
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    // The exact spot on a canvas IS the target's rectangle, so this is a trade of seats,
+    // never the merge an edge would have made.
+    expect(outcome.result).toEqual({
+      op: "swap",
+      placementId: "el-portal-canvas",
+      withPlacementId: "el-portal-view",
+    });
+    expect(canvas.element("el-portal-canvas")).toMatchObject({
+      containerId: fixture.other.id,
+      x: 400,
+      y: 300,
+      width: 200,
+      height: 150,
+    });
+    expect(canvas.element("el-portal-view")).toMatchObject({
+      containerId: fixture.otherView.id,
+      x: 10,
+      y: 20,
+      width: DEFAULT_TERMINAL_WIDTH,
+      height: DEFAULT_TERMINAL_HEIGHT,
+    });
+    // No composition was born, and no element was authored or removed.
+    expect(readElements(canvas.doc).size).toBe(5);
+  });
+
+  test("a surface with no placement of its own is refused by name, not coerced", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const before = occupants(fixture, fixture.view.id);
+
+    // A sidebar row names an ITEM. There is no seat to give the occupant back, so the
+    // exchange is refused by rule rather than quietly becoming a split.
+    const identityAtLeaf = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: occupied,
+        edge: "center",
+      },
+    });
+    const identityAtWidget = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: {
+        kind: "compose",
+        padId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "center",
+      },
+    });
+
+    expect([identityAtLeaf, identityAtWidget].map(ruleOrStatus)).toEqual([
+      "denied:not_swappable",
+      "denied:not_swappable",
+    ]);
+    if (identityAtLeaf.status !== "denied") return;
+    expect(identityAtLeaf.denial).toEqual({
+      rule: "not_swappable",
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      container: { kind: "view", padId: fixture.view.id },
+    });
+    // A refusal mutates nothing on either side.
+    expect(occupants(fixture, fixture.view.id)).toEqual(before);
+    expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.view.id);
+  });
+
+  test("an EDGE release moves the leaf instead of trading it", () => {
+    const fixture = placementFixture();
+    const terminalTile = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const foreignTile = padLeafId(fixture, fixture.otherView.id, fixture.other.id);
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: terminalTile },
+      destination: {
+        kind: "tile",
+        padId: fixture.otherView.id,
+        targetTileId: foreignTile,
+        edge: "right",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result.op).toBe("add_tile");
+    // The old seat is GONE: re-placing a placement moves it rather than copying it.
+    expect(roomFor(fixture, fixture.view.id).homesSession(fixture.occupant)).toBe(false);
+    expect(Object.keys(occupants(fixture, fixture.view.id))).toHaveLength(1);
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.otherView.id);
+    expect(tileLeafIds(roomFor(fixture, fixture.otherView.id).tileLayout() ?? {})).toHaveLength(3);
+  });
+
+  test("a leaf released on a canvas widget merges through the same move", () => {
+    const fixture = placementFixture();
+    const terminalTile = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const canvas = roomFor(fixture, fixture.canvas.id);
+
+    // The compose door, reached by a LEAF rather than by a canvas element. It was denied
+    // `not_accepted` before the center-swap work; it has to be carried out fully now.
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: terminalTile },
+      destination: {
+        kind: "compose",
+        padId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed" || outcome.result.op !== "compose") return;
+    const viewId = outcome.result.viewId;
+    // Both terminals live in the newborn, which is named after what went into it — the
+    // leaf is named for what it HOLDS, never for the gesture that carried it.
+    expect(homeOf(fixture, fixture.occupant)).toBe(viewId);
+    expect(homeOf(fixture, fixture.resident)).toBe(viewId);
+    expect(fixture.store.getPad(viewId)?.name).toContain(" + ");
+    expect(fixture.store.getPad(viewId)?.name).not.toContain("surface");
+    // The widget keeps its element id and now points at the composition it grew into.
+    expect(canvas.element("el-portal-solo")).toMatchObject({ containerId: viewId });
+    // The leaf's old seat is gone, and its container survives because it still holds the
+    // embedded canvas — a departure only absorbs a container it left holding nothing.
+    expect(roomFor(fixture, fixture.view.id).homesSession(fixture.occupant)).toBe(false);
+    expect(fixture.store.getPad(fixture.view.id)).not.toBeNull();
+    expect(fixture.store.getPad(fixture.residentHome)).toBeNull();
   });
 });
 

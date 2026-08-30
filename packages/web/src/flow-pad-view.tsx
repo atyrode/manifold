@@ -43,14 +43,14 @@ import {
 } from "./flow-scene.ts";
 import { TextNode } from "./flow-text-node.tsx";
 import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
-import { RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
+import { ControlIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
 import {
   createPlacementLookup,
   denialMessage,
   useItemDrop,
   type ItemDropAssessment,
 } from "./item-drop.ts";
-import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import { carriedItem, carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import {
   browserMachineStorage,
@@ -65,7 +65,13 @@ import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
-import { composeTargetAt, previewRect, snapZone } from "./tile-snap.ts";
+import {
+  composeTargetAt,
+  previewRect,
+  resolveSnapTarget,
+  type SnapAction,
+  type SnapTarget,
+} from "./tile-snap.ts";
 import { useToast } from "./toast.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
@@ -128,12 +134,19 @@ function gesturePoints(points: readonly number[]): number[] {
 
 /**
  * The armed drop: the node that morphed into composition chrome, the zone it will split
- * on, and what the pipeline says about it. A REFUSED arm is still armed — the target wears
- * the refusal instead of the preview, so the viewer learns the rule before releasing.
+ * on, what releasing there would DO, and what the pipeline says about it. A REFUSED arm is
+ * still armed — the target wears the refusal instead of the preview, so the viewer learns
+ * the rule before releasing.
  */
 interface ComposeArmed {
   readonly elementId: string;
   readonly zone: TileEdge;
+  /**
+   * `swap` is a center release: on a canvas the exact spot IS the target's rectangle, so
+   * the two elements trade seats instead of merging. The wire carries the same `center`
+   * edge either way — the executor owns that branch — so this exists only to paint it.
+   */
+  readonly action: SnapAction;
   readonly assessment: ItemDropAssessment | null;
 }
 
@@ -272,7 +285,7 @@ export function FlowPadView({
    */
   const composeArmedRef = useRef<ComposeArmed | null>(null);
   const composeCandidateRef = useRef<string | null>(null);
-  const composeZoneRef = useRef<TileEdge | null>(null);
+  const composeSnapRef = useRef<SnapTarget | null>(null);
   const composeTimerRef = useRef<number | null>(null);
   /** True while a gesture is over this canvas; the WHAT lives in the carry register. */
   const carryingRef = useRef(false);
@@ -451,7 +464,9 @@ export function FlowPadView({
    * The half the dropped surface would take over on the armed target, drawn in flow
    * coordinates beside the other presence overlays so it tracks pan and zoom for free.
    * A REFUSED arm paints the same box in the refusal style with the rule's prose in it,
-   * so the viewer reads why before releasing rather than after.
+   * so the viewer reads why before releasing rather than after — and an EXCHANGE paints
+   * the whole rectangle in its own colour with the swap glyph in the middle, because
+   * "the two trade seats" and "the surface takes this half" must not look alike.
    */
   const composePreview = useMemo(() => {
     if (composeArmed === null) return null;
@@ -461,7 +476,8 @@ export function FlowPadView({
       { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
       composeArmed.zone,
     );
-    return { rect, denied: composeArmed.assessment?.message ?? null };
+    const denied = composeArmed.assessment?.message ?? null;
+    return { rect, denied, swapping: composeArmed.action === "swap" && denied === null };
   }, [composeArmed, projected]);
 
   /**
@@ -576,7 +592,7 @@ export function FlowPadView({
     }
     carryingRef.current = false;
     composeCandidateRef.current = null;
-    composeZoneRef.current = null;
+    composeSnapRef.current = null;
     composeArmedRef.current = null;
     setComposeArmed(null);
   }, []);
@@ -617,26 +633,39 @@ export function FlowPadView({
           composeTimerRef.current = null;
         }
         composeCandidateRef.current = null;
-        composeZoneRef.current = null;
+        composeSnapRef.current = null;
         composeArmedRef.current = null;
         setComposeArmed(null);
         return;
       }
-      const zone = snapZone(
+      /*
+        A canvas element always OCCUPIES its rectangle, so the center band over one is
+        never a fill: it is an exchange, and only when the carry holds a placement of this
+        canvas to give the occupant back. A sidebar row or a tile of some composition has
+        no seat here, so for those the band dissolves into its nearest edge instead of
+        offering a trade the executor would refuse (`not_swappable`).
+       */
+      const carried = carriedItem();
+      const snap = resolveSnapTarget(
         { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
         point,
+        {
+          occupied: true,
+          canSwap: carried?.kind === "element" && carried.padId === padId,
+        },
       );
-      if (zone === null) return;
-      composeZoneRef.current = zone;
-      const arm = (heldZone: TileEdge): ComposeArmed => ({
+      if (snap === null) return;
+      composeSnapRef.current = snap;
+      const arm = (held: SnapTarget): ComposeArmed => ({
         elementId: target.id,
-        zone: heldZone,
-        assessment: drop.assess(composeDestination(target.id, heldZone)),
+        zone: held.zone,
+        action: held.action,
+        assessment: drop.assess(composeDestination(target.id, held.zone)),
       });
       if (composeCandidateRef.current === target.id) {
         const armed = composeArmedRef.current;
-        if (armed === null || armed.zone === zone) return;
-        const rezoned = arm(zone);
+        if (armed === null || (armed.zone === snap.zone && armed.action === snap.action)) return;
+        const rezoned = arm(snap);
         composeArmedRef.current = rezoned;
         setComposeArmed(rezoned);
         return;
@@ -649,15 +678,15 @@ export function FlowPadView({
       // still arms, because drag frames stop arriving the moment it settles.
       composeTimerRef.current = window.setTimeout(() => {
         composeTimerRef.current = null;
-        const heldZone = composeZoneRef.current;
+        const held = composeSnapRef.current;
         if (!carryingRef.current || composeCandidateRef.current !== target.id) return;
-        if (heldZone === null) return;
-        const armed = arm(heldZone);
+        if (held === null) return;
+        const armed = arm(held);
         composeArmedRef.current = armed;
         setComposeArmed(armed);
       }, COMPOSE_ARM_MS);
     },
-    [composeDestination, drop],
+    [composeDestination, drop, padId],
   );
 
   /**
@@ -1418,13 +1447,20 @@ export function FlowPadView({
               <div className="flow-presence-layer" style={{ zIndex: presenceZIndex }}>
                 {composePreview === null ? null : (
                   <div
-                    className={`flow-compose-preview${composePreview.denied === null ? "" : " is-denied"}`}
+                    className={`flow-compose-preview${
+                      composePreview.denied === null ? "" : " is-denied"
+                    }${composePreview.swapping ? " is-swap" : ""}`}
                     style={{
                       height: composePreview.rect.height,
                       transform: `translate(${String(composePreview.rect.x)}px, ${String(composePreview.rect.y)}px)`,
                       width: composePreview.rect.width,
                     }}
                   >
+                    {composePreview.swapping ? (
+                      <span className="flow-compose-preview__glyph">
+                        <ControlIcon kind="swap" size={32} />
+                      </span>
+                    ) : null}
                     {composePreview.denied === null ? null : (
                       <span className="drop-denial-note">{composePreview.denied}</span>
                     )}

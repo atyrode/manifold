@@ -9,6 +9,7 @@ import {
   MIN_TILE_FRACTION,
   previewRect,
   resizeRatios,
+  resolveSnapTarget,
   snapZone,
   SNAP_EDGE_BAND,
   type DividerDrag,
@@ -103,6 +104,83 @@ describe("snapZone", () => {
   test("a degenerate rect snaps nowhere", () => {
     expect(snapZone({ x: 0, y: 0, width: 0, height: 10 }, { x: 0, y: 5 })).toBeNull();
     expect(snapZone({ x: 0, y: 0, width: 10, height: 0 }, { x: 5, y: 0 })).toBeNull();
+  });
+});
+
+describe("resolveSnapTarget", () => {
+  const EMPTY = { occupied: false, canSwap: false } as const;
+  const TAKEN = { occupied: true, canSwap: false } as const;
+  const TRADEABLE = { occupied: true, canSwap: true } as const;
+
+  test("an edge band means the same thing whatever the carry holds", () => {
+    for (const carry of [EMPTY, TAKEN, TRADEABLE]) {
+      expect(resolveSnapTarget(rect, { x: 110, y: 350 }, carry)).toEqual({
+        zone: "left",
+        action: "place",
+      });
+      expect(resolveSnapTarget(rect, { x: 300, y: 490 }, carry)).toEqual({
+        zone: "bottom",
+        action: "place",
+      });
+    }
+  });
+
+  test("center on an EMPTY target fills it, exactly as it always did", () => {
+    expect(resolveSnapTarget(rect, { x: 300, y: 350 }, EMPTY)).toEqual({
+      zone: "center",
+      action: "place",
+    });
+    // A carry that could trade changes nothing here: there is nothing in the seat.
+    expect(resolveSnapTarget(rect, { x: 300, y: 350 }, { ...EMPTY, canSwap: true })).toEqual({
+      zone: "center",
+      action: "place",
+    });
+  });
+
+  test("center on a TAKEN target is an exchange when the carry has a seat to trade", () => {
+    expect(resolveSnapTarget(rect, { x: 300, y: 350 }, TRADEABLE)).toEqual({
+      zone: "center",
+      action: "swap",
+    });
+  });
+
+  test("without a seat to trade the center band dissolves into its nearest edge", () => {
+    /*
+      The lying affordance this function exists to remove: an identity carry over a taken
+      leaf used to highlight the whole target and then be refused by the server. The band
+      is not simply dropped — the target stays fully droppable, and which edge it resolves
+      to follows the pointer, so the gesture still means the thing nearest the cursor.
+     */
+    expect(resolveSnapTarget(rect, { x: 150, y: 350 }, TAKEN)).toEqual({
+      zone: "left",
+      action: "place",
+    });
+    expect(resolveSnapTarget(rect, { x: 450, y: 350 }, TAKEN)).toEqual({
+      zone: "right",
+      action: "place",
+    });
+    expect(resolveSnapTarget(rect, { x: 300, y: 280 }, TAKEN)).toEqual({
+      zone: "top",
+      action: "place",
+    });
+    expect(resolveSnapTarget(rect, { x: 300, y: 420 }, TAKEN)).toEqual({
+      zone: "bottom",
+      action: "place",
+    });
+    // Dead centre of a rect wider than it is tall: the vertical sides are nearer.
+    expect(resolveSnapTarget(rect, { x: 300, y: 350 }, TAKEN)).toEqual({
+      zone: "top",
+      action: "place",
+    });
+  });
+
+  test("outside the rect nothing resolves, so a release there still aborts", () => {
+    for (const carry of [EMPTY, TAKEN, TRADEABLE]) {
+      expect(resolveSnapTarget(rect, { x: 99, y: 350 }, carry)).toBeNull();
+      expect(resolveSnapTarget({ x: 0, y: 0, width: 0, height: 10 }, { x: 0, y: 5 }, carry)).toBe(
+        null,
+      );
+    }
   });
 });
 

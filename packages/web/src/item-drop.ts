@@ -134,6 +134,8 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
   self_embed: (subject) => `${subject} cannot be placed inside itself.`,
   discipline: (subject, container) => `${subject} cannot be placed that way in ${container}.`,
   not_solo: (subject) => `${subject} holds more than one item, so it cannot merge into another.`,
+  not_swappable: (subject) =>
+    `${subject} has no place of its own to trade, so it cannot take that spot.`,
   unknown_surface: () => "That item no longer exists.",
   unknown_container: () => "That container no longer exists.",
 };

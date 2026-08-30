@@ -114,6 +114,69 @@ export function snapZone(rect: SnapRect, pointer: SnapPoint): TileEdge | null {
   return top >= bottom ? "top" : "bottom";
 }
 
+/** What releasing on a resolved zone will DO; `swap` is the center-on-occupied case. */
+export type SnapAction = "place" | "swap";
+
+/** A resolved drop: the zone the wire will carry, and what that zone means here. */
+export interface SnapTarget {
+  readonly zone: TileEdge;
+  readonly action: SnapAction;
+}
+
+/**
+ * What the carry can offer at one target. Both answers come from the caller because both
+ * are state this module deliberately cannot see — a tree's leaf, a canvas's elements —
+ * which is what keeps the resolution pure and testable without a DOM.
+ */
+export interface SnapCarry {
+  /** True when the exact spot is already taken: an occupied leaf, or any canvas element. */
+  readonly occupied: boolean;
+  /**
+   * True when the carry holds a PLACEMENT of the target's own species — a leaf for a leaf,
+   * a canvas element for a canvas element — so there is a seat to give the occupant back.
+   * False for identity forms (a sidebar row, a bare session id), which name an item
+   * without naming any placement of it and therefore have nothing to trade.
+   */
+  readonly canSwap: boolean;
+}
+
+/**
+ * The zone a release means, with what it would do. CENTER MEANS THIS EXACT SPOT: on an
+ * empty target it fills it, on a taken one it exchanges the two occupants.
+ *
+ * A carry with no seat to give back gets no center band at all — it DISSOLVES into the
+ * edge it is nearest, so the whole target stays droppable and the gesture keeps meaning
+ * something. Offering the exchange and refusing it on release is the lying affordance this
+ * function exists to remove, so the same rule runs for the highlight and for the drop.
+ */
+export function resolveSnapTarget(
+  rect: SnapRect,
+  pointer: SnapPoint,
+  carry: SnapCarry,
+): SnapTarget | null {
+  const zone = snapZone(rect, pointer);
+  if (zone === null) return null;
+  if (zone !== "center" || !carry.occupied) return { zone, action: "place" };
+  if (carry.canSwap) return { zone, action: "swap" };
+  return { zone: nearestEdge(rect, pointer), action: "place" };
+}
+
+/**
+ * The edge a point is closest to, in a fixed order so a pointer dead in the middle of a
+ * square resolves the same way for every viewer rather than by float noise.
+ */
+function nearestEdge(rect: SnapRect, pointer: SnapPoint): TileEdge {
+  const left = pointer.x - rect.x;
+  const right = rect.x + rect.width - pointer.x;
+  const top = pointer.y - rect.y;
+  const bottom = rect.y + rect.height - pointer.y;
+  const nearest = Math.min(left, right, top, bottom);
+  if (nearest === left) return "left";
+  if (nearest === right) return "right";
+  if (nearest === top) return "top";
+  return "bottom";
+}
+
 /**
  * The highlight rectangle for a zone: the half the dropped surface would occupy,
  * or the whole target for `center`. Coordinates match the input rect's space.

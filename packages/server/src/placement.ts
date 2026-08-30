@@ -146,6 +146,7 @@ export class PlaceExecutor {
         }
       case "tile":
         return this.executeAddTile(
+          surface,
           resolution.item,
           destination.padId,
           destination.targetTileId,
@@ -392,6 +393,15 @@ export class PlaceExecutor {
       // element MOVES between documents rather than being copied.
       return source.addressed === null ? null : { kind: "text", elementId: source.addressed };
     }
+    if (item.kind === "tile" && source.padId !== null && source.addressed !== null) {
+      /*
+        A leaf places WHAT IT HOLDS. The algebra classifies a leaf opaquely on purpose —
+        a browser dragging a leaf of a container it has not joined knows the placement and
+        not the occupant — so this is where the two views of one drag meet: the side that
+        owns the tree reads it, and every op downstream sees an ordinary tileable surface.
+       */
+      return this.rooms.get(source.padId)?.tileLayout()?.[source.addressed]?.surface ?? null;
+    }
     return null;
   }
 
@@ -424,6 +434,16 @@ export class PlaceExecutor {
   private surfaceLabel(item: PlacementItem, source: SourceLocation): string {
     if (item.kind === "terminal" && source.sessionId !== null) {
       return this.sessions.terminalLabel(source.sessionId, "terminal");
+    }
+    if (item.kind === "tile") {
+      // A leaf is called after what it HOLDS. Naming it "surface" would name the gesture
+      // that carried it, which is the one thing the operator did not put in the container.
+      const occupant = this.tileSurfaceFor(item, source);
+      if (occupant?.kind === "terminal") {
+        return this.sessions.terminalLabel(occupant.sessionId, "terminal");
+      }
+      if (occupant?.kind === "pad") return this.store.getPad(occupant.padId)?.name ?? "canvas";
+      if (occupant?.kind === "text") return "note";
     }
     if (item.kind === "text") return "note";
     if (item.containerId !== null) return this.store.getPad(item.containerId)?.name ?? "canvas";
@@ -540,8 +560,14 @@ export class PlaceExecutor {
    * home is repointed here so the canvases showing that terminal keep showing it, the
    * reference the gesture consumed is removed, and the emptied home retires. A second leaf
    * for a terminal already living here is simply another copy of it.
+   *
+   * CENTER MEANS THIS EXACT SPOT. A center placement onto an EMPTY leaf fills it — the
+   * ordinary add below — and onto an OCCUPIED one it is an EXCHANGE, which resolution
+   * cannot have known because occupancy is document state rather than a kind. That is the
+   * one place this executor decides which op ran, and it says so in its response.
    */
   private executeAddTile(
+    surface: PlacementSurface,
     item: PlacementItem,
     padId: string,
     targetTileId: string | null,
@@ -550,19 +576,205 @@ export class PlaceExecutor {
   ): PlaceOutcome {
     const view = this.rooms.get(padId);
     if (view === null) return { status: "failed", failure: "not_found" };
-    const surface = this.tileSurfaceFor(item, source);
-    if (surface === null) return { status: "failed", failure: "conflict" };
-    const note = surface.kind === "text" ? this.noteAt(source.padId, surface.elementId) : null;
-    if (surface.kind === "text" && note === null) {
+    const dragged = this.tileSurfaceFor(item, source);
+    if (dragged === null) return { status: "failed", failure: "conflict" };
+    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    // A leaf placed beside itself is the silent no-op the algebra refuses to have.
+    if (fromLeaf !== null && source.padId === padId && fromLeaf === targetTileId) {
+      return { status: "failed", failure: "conflict" };
+    }
+    if (edge === "center" && targetTileId !== null) {
+      const occupant = view.tileLayout()?.[targetTileId]?.surface ?? null;
+      if (occupant !== null) {
+        return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source);
+      }
+    }
+    // A note carried as an ELEMENT is read before the write, so a placement that cannot be
+    // carried out mutates neither document. One carried as a LEAF travels with the leaf.
+    const note =
+      fromLeaf === null && dragged.kind === "text"
+        ? this.noteAt(source.padId, dragged.elementId)
+        : null;
+    if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
-    const tileId = view.placeTile(surface, targetTileId, edge);
+    const tileId = view.placeTile(dragged, targetTileId, edge);
     if (tileId === null) return { status: "failed", failure: "conflict" };
-    if (surface.kind === "terminal" && source.homeId !== null && source.homeId !== padId) {
-      this.absorbHome(surface.sessionId, source, padId, tileId);
+    if (fromLeaf !== null) {
+      const moved = this.finishLeafMove(dragged, source, view, padId, tileId);
+      if (moved === null) return { status: "failed", failure: "conflict" };
+      return { status: "placed", result: { op: "add_tile", tileId: moved } };
+    }
+    if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== padId) {
+      this.absorbHome(dragged.sessionId, source, padId, tileId);
     }
     if (note !== null) this.adoptNote(source, note, view);
     return { status: "placed", result: { op: "add_tile", tileId } };
+  }
+
+  /**
+   * The second half of re-placing a LEAF: its old seat goes. That subtraction is the whole
+   * difference between moving a placement and authoring a second one, and it is why a leaf
+   * dropped on an edge rearranges a composition instead of duplicating into it.
+   *
+   * Crossing into another container hands the occupant over as well — a terminal's home
+   * follows it, a note's element travels — and a container the departure emptied is
+   * ABSORBED into the destination: every reference to it is repointed before it retires, so
+   * a canvas that was showing that item keeps showing it.
+   *
+   * Returns the leaf the occupant ended up in — read back, because pruning the old seat can
+   * collapse a split and promote its survivor into the root id — or null when the source
+   * vanished between resolution and the write, which the caller reports as a failure.
+   */
+  private finishLeafMove(
+    dragged: TileSurface,
+    source: SourceLocation,
+    view: Room,
+    padId: string,
+    tileId: string,
+  ): string | null {
+    const fromPadId = source.padId;
+    const fromTileId = source.addressed;
+    if (fromPadId === null || fromTileId === null) return null;
+    const from = this.rooms.get(fromPadId);
+    if (from === null) return null;
+    from.removeTileLeafById(fromTileId);
+    if (fromPadId !== padId) this.handOverOccupant(dragged, from, view);
+    // The read-back is why `tileId` is not simply returned: see the doc comment above.
+    const placementId = tileIdForSurface(view.tileLayout(), dragged) ?? tileId;
+    if (fromPadId !== padId) {
+      if (dragged.kind === "terminal") {
+        this.sessions.rebindSession(dragged.sessionId, fromPadId, padId, placementId);
+      }
+      this.retireEmptiedInto(fromPadId, padId);
+    }
+    this.afterLeaving(fromPadId);
+    return placementId;
+  }
+
+  /**
+   * A container that a departure left holding NOTHING was absorbed, not merely emptied: the
+   * canvases referencing it were showing the item that just left, so every reference is
+   * repointed at the container the item went to — keeping element ids, geometry and
+   * selections — and only then does the emptied container retire. A container that still
+   * holds something keeps its own references, because it still has something to show.
+   */
+  private retireEmptiedInto(fromPadId: string, toPadId: string): void {
+    const room = this.rooms.get(fromPadId);
+    if (room === null || room.census().items.length > 0) return;
+    this.retargetReferences(fromPadId, toPadId);
+    this.deleteIfEmptied(fromPadId);
+  }
+
+  /**
+   * The exchange a center drop on a taken leaf means: the carried surface takes the exact
+   * spot it was released on, and the occupant takes the seat the carry came from.
+   *
+   * A swap needs a SEAT to give back, which is the whole of why it is refused by name here
+   * rather than quietly becoming an edge split. An IDENTITY form — a sidebar row, a bare
+   * session id, a container named by its own id — names an item without naming any
+   * placement of it, so there is nowhere for the occupant to go; and a placement of another
+   * species (a canvas element) has a seat with no leaf in it, which is a move between
+   * disciplines rather than a trade. Both are `not_swappable`: the interface never offers
+   * the gesture for them (the center band dissolves into its nearest edge), and the rule is
+   * the backstop that keeps a hand-written request from getting a different answer.
+   */
+  private executeTileSwap(
+    surface: PlacementSurface,
+    dragged: TileSurface,
+    occupant: TileSurface,
+    padId: string,
+    targetTileId: string,
+    source: SourceLocation,
+  ): PlaceOutcome {
+    const fromPadId = source.padId;
+    const fromTileId = source.addressed;
+    if (source.layout !== "tiled" || fromPadId === null || fromTileId === null) {
+      return {
+        status: "denied",
+        denial: { rule: "not_swappable", surface, container: { kind: "view", padId } },
+      };
+    }
+    // Trading a leaf with itself is the silent no-op the algebra refuses to have.
+    if (fromPadId === padId && fromTileId === targetTileId) {
+      return { status: "failed", failure: "conflict" };
+    }
+    const target = this.rooms.get(padId);
+    const from = this.rooms.get(fromPadId);
+    if (target === null || from === null) return { status: "failed", failure: "not_found" };
+    if (fromPadId === padId) {
+      // One tree, one transaction: neither item changed the container it lives in, so
+      // there is no session to rebind and no note to move between documents.
+      if (!target.swapTileLeavesById(fromTileId, targetTileId)) {
+        return { status: "failed", failure: "conflict" };
+      }
+      return {
+        status: "placed",
+        result: { op: "swap", placementId: targetTileId, withPlacementId: fromTileId },
+      };
+    }
+
+    /*
+      Two trees. They cannot share a transaction, so each side is written on its own and
+      the second refusing rolls the first back — a swap that cannot complete must move
+      nothing, exactly like every other placement that fails its write.
+     */
+    if (!from.setTileSurface(fromTileId, occupant)) {
+      return { status: "failed", failure: "conflict" };
+    }
+    if (!target.setTileSurface(targetTileId, dragged)) {
+      from.setTileSurface(fromTileId, dragged);
+      return { status: "failed", failure: "conflict" };
+    }
+    // Both items changed the container they live in, so both are handed over before any id
+    // is read back: pruning a stale mirror can collapse a split and promote its survivor
+    // into the root id, which would make an id remembered from before the write a lie.
+    this.handOverOccupant(dragged, from, target);
+    this.handOverOccupant(occupant, target, from);
+    const placementId = tileIdForSurface(target.tileLayout(), dragged) ?? targetTileId;
+    const withPlacementId = tileIdForSurface(from.tileLayout(), occupant) ?? fromTileId;
+    if (dragged.kind === "terminal") {
+      this.sessions.rebindSession(dragged.sessionId, fromPadId, padId, placementId);
+    }
+    if (occupant.kind === "terminal") {
+      this.sessions.rebindSession(occupant.sessionId, padId, fromPadId, withPlacementId);
+    }
+    this.afterLeaving(fromPadId);
+    this.afterLeaving(padId);
+    return { status: "placed", result: { op: "swap", placementId, withPlacementId } };
+  }
+
+  /**
+   * Hands an occupant over to the container its leaf just landed in, whenever the two are
+   * DIFFERENT containers. Shared by the exchange and the plain leaf move, because "the item
+   * changed the container it lives in" is one situation however the gesture spelled it:
+   *
+   *   a TERMINAL lives in exactly one composition, so the mirrors its old container still
+   *     held for it go — a leaf naming a session that lives somewhere else is a reference
+   *     to a place the item no longer is, which is the state invariant 3 exists to forbid;
+   *   a NOTE is owned by the composition showing it, so its element travels between the two
+   *     documents, or the leaf would render text nobody in the new room can read or edit;
+   *   an embedded CANVAS is a reference and needs nothing: the pad keeps living where it
+   *     lives and only which tree points at it changed.
+   *
+   * References onto the SOURCE container are deliberately left alone here. A merge repoints
+   * them because the absorbed home stops existing; a container that survives the departure
+   * still has something to show, and `retireEmptiedInto` is what handles the one that does
+   * not. An exchange always leaves both alive, which is why it never repoints at all.
+   */
+  private handOverOccupant(surface: TileSurface, from: Room, to: Room): void {
+    if (surface.kind === "terminal") {
+      for (const leafId of terminalLeafIds(from.tileLayout(), surface.sessionId)) {
+        from.removeTileLeafById(leafId);
+      }
+      return;
+    }
+    if (surface.kind === "text") {
+      const note = from.element(surface.elementId);
+      if (note === null) return;
+      from.removeElementById(surface.elementId);
+      to.adoptElement(note, note.x, note.y);
+    }
   }
 
   /**
@@ -606,6 +818,12 @@ export class PlaceExecutor {
    * Dropping onto a reference to a SOLO composition merges: one new composition is born
    * absorbing both items, the target's element is repointed at it keeping its exact
    * geometry, and both emptied homes retire. The newborn is named after what went into it.
+   *
+   * CENTER MEANS THIS EXACT SPOT, and on a canvas the spot IS the target's rectangle, so a
+   * center release is not a merge at all: the two elements EXCHANGE seats. Ids, z-order,
+   * selections, portal targets and a note's collaborative text stay exactly where they
+   * are; only the two rectangles trade. That is why it is handled before anything about
+   * merging is decided.
    */
   private executeCompose(
     surface: PlacementSurface,
@@ -621,6 +839,12 @@ export class PlaceExecutor {
     if (room === null) return { status: "failed", failure: "not_found" };
     const target = room.element(destination.targetElementId);
     if (target === null) return { status: "failed", failure: "not_found" };
+    // Two seats trading contents, whatever species sits in them: the exchange is defined
+    // for any two canvas elements, so it is answered before the merge rules narrow the
+    // target down to a reference.
+    if (destination.edge === "center") {
+      return this.executeCanvasSwap(surface, destination, source);
+    }
     // Only a REFERENCE can be composed onto. Text and ink hold no item to merge with, and a
     // canvas has no terminal element to birth a composition around any more.
     if (target.type !== "portal") return { status: "failed", failure: "conflict" };
@@ -658,8 +882,14 @@ export class PlaceExecutor {
     if (targetSurface === null || dragged === null) {
       return { status: "failed", failure: "conflict" };
     }
-    const note = dragged.kind === "text" ? this.noteAt(source.padId, dragged.elementId) : null;
-    if (dragged.kind === "text" && note === null) {
+    // A note carried as an ELEMENT is read before the write; one carried as a LEAF travels
+    // with the leaf, so the same `fromLeaf` split the tile destination makes applies here.
+    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    const note =
+      fromLeaf === null && dragged.kind === "text"
+        ? this.noteAt(source.padId, dragged.elementId)
+        : null;
+    if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
 
@@ -708,14 +938,77 @@ export class PlaceExecutor {
     } else {
       this.moveNonTerminalLeaf(targetHomeId, view, viewId);
     }
-    if (dragged.kind === "terminal") {
+    const placedTileId =
+      fromLeaf === null
+        ? addedTileId
+        : // A leaf that merged onto a canvas widget MOVES: the same subtraction, hand-over
+          // and absorb-if-emptied a leaf gets at a tile destination, reached by the other
+          // door. Its old container is only retired when the departure left it holding
+          // nothing, which is what keeps a multi-tile source from being swallowed.
+          this.finishLeafMove(dragged, source, view, viewId, addedTileId);
+    if (placedTileId === null) return { status: "failed", failure: "conflict" };
+    if (fromLeaf === null && dragged.kind === "terminal") {
       this.absorbHome(dragged.sessionId, source, viewId, addedTileId);
     }
     // The note moves into the composition that now holds its leaf, exactly as it would for
     // a plain tile add: a merge is the same placement with a container born first.
     if (note !== null) this.adoptNote(source, note, view);
     this.rooms.evictIfIdle(destination.padId);
-    return { status: "placed", result: { op: "compose", viewId, tileId: addedTileId } };
+    return { status: "placed", result: { op: "compose", viewId, tileId: placedTileId } };
+  }
+
+  /**
+   * The canvas half of the center rule: two elements of ONE canvas exchange rectangles.
+   *
+   * The gesture must hold a canvas PLACEMENT of this canvas, because that placement is the
+   * seat the target's occupant moves into. A sidebar row, a bare session id or a tile of
+   * some composition names an item with no seat here to give back, so there is nothing to
+   * exchange and the request is refused by name — the interface dissolves the center band
+   * into its nearest edge for exactly those carries, and this rule is what keeps a
+   * hand-written request honest.
+   *
+   * Nothing about either item's home changes: a portal still points where it pointed and a
+   * note still lives in this document. Only the two rectangles move, which is why this is
+   * one patch of four fields per element and not a re-authoring of either.
+   */
+  private executeCanvasSwap(
+    surface: PlacementSurface,
+    destination: { readonly padId: string; readonly targetElementId: string },
+    source: SourceLocation,
+  ): PlaceOutcome {
+    if (
+      surface.kind !== "element" ||
+      source.layout !== "canvas" ||
+      source.padId !== destination.padId ||
+      source.addressed === null
+    ) {
+      return {
+        status: "denied",
+        denial: {
+          rule: "not_swappable",
+          surface,
+          container: { kind: "view", padId: destination.padId },
+        },
+      };
+    }
+    // Trading a seat with itself is the silent no-op the algebra refuses to have.
+    if (source.addressed === destination.targetElementId) {
+      return { status: "failed", failure: "conflict" };
+    }
+    const room = this.rooms.get(destination.padId);
+    if (room === null) return { status: "failed", failure: "not_found" };
+    if (!room.swapElementGeometry(source.addressed, destination.targetElementId)) {
+      return { status: "failed", failure: "not_found" };
+    }
+    this.rooms.evictIfIdle(destination.padId);
+    return {
+      status: "placed",
+      result: {
+        op: "swap",
+        placementId: source.addressed,
+        withPlacementId: destination.targetElementId,
+      },
+    };
   }
 
   /**

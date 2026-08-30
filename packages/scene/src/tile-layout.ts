@@ -249,6 +249,50 @@ function pruneFromParent(
   return next;
 }
 
+/**
+ * Exchange what two leaves hold. This is what CENTER means on an occupied target: the
+ * carried surface takes the exact spot it was released on and the occupant takes the seat
+ * the carry came from. Only the two `surface` fields move — ids, splits and ratios are
+ * untouched — so every collaborator's tree keeps the same shape and the same identities.
+ *
+ * Both ids must name LEAVES: a split holds structure, never content, so there is nothing
+ * in one to trade. Naming the same leaf twice is refused rather than answered with the
+ * layout unchanged, because an exchange with itself is exactly the silent no-op the
+ * placement algebra refuses to have.
+ */
+export function withTilesSwapped(
+  layout: TileLayout,
+  aTileId: string,
+  bTileId: string,
+): TileLayout | null {
+  if (aTileId === bTileId) return null;
+  const a = layout[aTileId];
+  const b = layout[bTileId];
+  if (a === undefined || b === undefined) return null;
+  if (a.dir !== null || b.dir !== null) return null;
+  return {
+    ...layout,
+    [aTileId]: { ...a, surface: b.surface },
+    [bTileId]: { ...b, surface: a.surface },
+  };
+}
+
+/**
+ * Replace one leaf's occupant. This is the half of a swap that CROSSES containers: two
+ * documents cannot share a transaction, so an exchange between two trees is written as
+ * one of these per side and each room fans its own update out. Within a single tree
+ * `withTilesSwapped` is the whole operation and this is not the way to spell it.
+ */
+export function withTileLeafSurface(
+  layout: TileLayout,
+  tileId: string,
+  surface: TileSurface | null,
+): TileLayout | null {
+  const node = layout[tileId];
+  if (node === undefined || node.dir !== null) return null;
+  return { ...layout, [tileId]: { ...node, surface } };
+}
+
 /** Resize a split; ratios must stay parallel to its children and strictly positive. */
 export function withTileRatios(
   layout: TileLayout,
@@ -301,6 +345,36 @@ export function removeTileLeaf(doc: Y.Doc, tileId: string, origin: unknown): boo
   const layout = readTileLayout(doc);
   if (layout === null) return false;
   const next = withoutTileLeaf(layout, tileId);
+  if (next === null) return false;
+  applyTileLayout(doc, next, origin);
+  return true;
+}
+
+/** Exchanges two leaves' occupants in one transaction; false when either refuses. */
+export function swapTileLeaves(
+  doc: Y.Doc,
+  aTileId: string,
+  bTileId: string,
+  origin: unknown,
+): boolean {
+  const layout = readTileLayout(doc);
+  if (layout === null) return false;
+  const next = withTilesSwapped(layout, aTileId, bTileId);
+  if (next === null) return false;
+  applyTileLayout(doc, next, origin);
+  return true;
+}
+
+/** Writes one leaf's occupant: the per-document half of a cross-container exchange. */
+export function writeTileLeafSurface(
+  doc: Y.Doc,
+  tileId: string,
+  surface: TileSurface | null,
+  origin: unknown,
+): boolean {
+  const layout = readTileLayout(doc);
+  if (layout === null) return false;
+  const next = withTileLeafSurface(layout, tileId, surface);
   if (next === null) return false;
   applyTileLayout(doc, next, origin);
   return true;

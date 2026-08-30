@@ -37,7 +37,13 @@ export type TileSurface = z.infer<typeof TileSurfaceSchema>;
 export const TileDirSchema = z.enum(["row", "column"]);
 export type TileDir = z.infer<typeof TileDirSchema>;
 
-/** Where a dropped surface lands relative to a target tile; `center` fills an empty leaf. */
+/**
+ * Where a dropped surface lands relative to a target tile. The four edges split the
+ * target; `center` means THIS EXACT SPOT — it fills the leaf when the leaf is empty and
+ * exchanges the two occupants when it is not. Which of the two a center drop turns out
+ * to be is document state, so the executor decides it and names the answer (`swap`) in
+ * its response rather than the request pretending to know.
+ */
 export const TileEdgeSchema = z.enum(["left", "right", "top", "bottom", "center"]);
 export type TileEdge = z.infer<typeof TileEdgeSchema>;
 

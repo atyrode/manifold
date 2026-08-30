@@ -30,6 +30,7 @@
 - One icon language across the app, drawn from Lucide: items (terminal, canvas, composition, note, machine, folder), titlebar controls, sidebar chrome, carry ghosts, and remote cursors all share it — the unicode glyphs, hand-drawn SVGs, and CSS shapes are gone. (#59)
 - Destruction is direct: no more two-step confirmations on delete or kill anywhere, killing a terminal removes it everywhere instantly (no lingering "exited" husk — a naturally-exited shell still shows its real code), and creating a canvas or composition is one click with an "Untitled" name you rename in place. (#59)
 - A composition widget on a canvas is now literally the composition renderer at a smaller scale: engage it and its tile dividers drag exactly like fullscreen; watching leaves them visibly inert. Composition and canvas icons refined (LayoutDashboard / dashed surface). (#59)
+- The center drop zone now means "this exact spot": over an empty tile it fills as before, over an occupied one it swaps the two placements — shown with an orange highlight and a swap glyph instead of yesterday's guaranteed-failure full highlight. Tiles gained edge-drop rearranging inside and across compositions (an edge moves the tile, center trades places), and drags that carry nothing to trade simply snap to the nearest edge. (#59)
 
 ### Fixed
 

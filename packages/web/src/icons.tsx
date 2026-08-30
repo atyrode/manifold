@@ -1,5 +1,6 @@
 import {
   ArrowDownToLine,
+  ArrowLeftRight,
   Check,
   ChevronDown,
   ChevronRight,
@@ -143,7 +144,12 @@ export type ControlKind =
   | "endSession"
   | "restart"
   | "sessionTree"
-  | "grip";
+  | "grip"
+  /**
+   * Two placements exchange seats. Worn by the drop preview when releasing on the exact
+   * spot of something already there, which trades the two rather than splitting the target.
+   */
+  | "swap";
 
 const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   /**
@@ -168,6 +174,7 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   restart: RotateCw,
   sessionTree: ListTree,
   grip: GripVertical,
+  swap: ArrowLeftRight,
 };
 
 export function ControlIcon({

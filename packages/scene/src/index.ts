@@ -31,14 +31,18 @@ export {
   removeTileLeaf,
   sameSurface,
   setTileRatios,
+  swapTileLeaves,
   tileIdForSurface,
   tileLeaf,
   tileLeafIds,
   tileParentId,
   withTileLeaf,
+  withTileLeafSurface,
   withTileRatios,
+  withTilesSwapped,
   withoutTileLeaf,
   writeTileLeaf,
+  writeTileLeafSurface,
   type TileInsert,
 } from "./tile-layout.ts";
 export * as Y from "yjs";

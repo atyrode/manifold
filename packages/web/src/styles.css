@@ -3221,3 +3221,28 @@ button.pad-sidebar-session.is-summary > small {
   display: inline-grid;
   place-items: center;
 }
+
+/* ── Center means this exact spot: the swap preview ───────────────────────────
+   A center release on an OCCUPIED target exchanges the two placements instead of
+   splitting the target, so it must not look like the blue "this half becomes
+   yours" highlight. Orange plus the swap glyph is the whole cue, in both
+   renderers, and both renderers set it only when the pipeline says the drop is
+   legal — a refusal wears `.is-denied` instead, so the two classes never meet and
+   neither has to out-specify the other. */
+.flow-compose-preview.is-swap,
+.tiled-snap-preview.is-swap {
+  border-color: rgb(255 146 43 / 85%);
+  background: rgb(255 146 43 / 18%);
+}
+
+/* Centred in the preview rect, which both renderers already make a containing
+   block. `pointer-events: none` rides on the preview box itself. */
+.flow-compose-preview__glyph,
+.tiled-snap-preview__glyph {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  inset: 0;
+  color: #ffd8a8;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+}

@@ -4,6 +4,7 @@ import {
   CONTAINER_KINDS,
   DESTINATION_KINDS,
   DESTINATION_OPS,
+  EXECUTION_ONLY_OPS,
   HOMING_MODES,
   ITEM_KINDS,
   PLACEMENT_DENIAL_RULES,
@@ -141,12 +142,19 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
     compose: "not_accepted",
     unplaced: "not_accepted",
   },
-  // A tile is addressable for extraction only; moving or releasing its occupant addresses
-  // the occupant, never the leaf.
+  /*
+    A leaf is a re-placeable PLACEMENT, not a one-way trip onto a canvas. Both composition
+    cells were `not_accepted` until the center-swap work, and the operator approved the
+    flip: a denied `tile -> tile` made rearranging a composition by dragging impossible,
+    which contradicts the one-grammar-everywhere rule the rest of the model is built on. An
+    edge MOVES the leaf, the exact spot of an occupied leaf EXCHANGES the two, and the
+    canvas door still extracts. Releasing the occupant still addresses the occupant, which
+    is why `unplaced` stays refused.
+   */
   tile: {
     canvas: "extract",
-    tile: "not_accepted",
-    compose: "not_accepted",
+    tile: "add_tile",
+    compose: "compose",
     unplaced: "not_accepted",
   },
 };
@@ -198,7 +206,7 @@ describe("placement matrix", () => {
     }
   });
 
-  test("every declared op is reachable from some declared pair", () => {
+  test("every op resolution can name is reachable, and only those", () => {
     const reached = new Set<PlacementOp>();
     for (const itemKind of itemKinds) {
       for (const destinationKind of destinationKinds) {
@@ -206,7 +214,35 @@ describe("placement matrix", () => {
         if (result.ok) reached.add(result.op);
       }
     }
-    expect([...reached].sort()).toEqual([...PLACEMENT_OPS].sort());
+    /*
+      Every op EXCEPT the execution-only ones. `swap` is deliberately unreachable here:
+      whether a center placement fills a spot or exchanges with what is in it depends on a
+      document, not on a kind, so resolution answers `add_tile`/`compose` and the executor
+      re-tags. Keeping that split enumerated — rather than written down in prose — is what
+      stops a future op from quietly becoming unreachable by accident.
+     */
+    const resolvable = PLACEMENT_OPS.filter(
+      (op) => !(EXECUTION_ONLY_OPS as readonly PlacementOp[]).includes(op),
+    );
+    expect([...reached].sort()).toEqual([...resolvable].sort());
+    expect(EXECUTION_ONLY_OPS.length).toBeGreaterThan(0);
+  });
+
+  test("a center placement resolves without consulting occupancy", () => {
+    // The lookup answers about kinds only — it has no way to say "that leaf is taken" —
+    // so both center forms come back as the ordinary op and the executor owns the branch.
+    const tiled = resolvePlacement(
+      SURFACES.terminal,
+      { kind: "tile", padId: "multi-1", targetTileId: "t1", edge: "center" },
+      lookup,
+    );
+    expect(tiled.ok && tiled.op).toBe("add_tile");
+    const composed = resolvePlacement(
+      SURFACES.terminal,
+      { kind: "compose", padId: "canvas-1", targetElementId: "el-portal-solo", edge: "center" },
+      lookup,
+    );
+    expect(composed.ok && composed.op).toBe("compose");
   });
 });
 
@@ -479,6 +515,9 @@ describe("placement wire shapes", () => {
       { op: "unplace", removed: 2 },
       { op: "add_tile", tileId: "t1" },
       { op: "compose", viewId: "v1", tileId: "t2" },
+      // An exchange names both seats it moved between, so a caller can repaint the pair
+      // without diffing a document to find out what the second one was.
+      { op: "swap", placementId: "t3", withPlacementId: "t4" },
     ];
     for (const response of responses) {
       expect(PlaceResponseSchema.parse(response)).toEqual(response);
@@ -493,6 +532,7 @@ describe("placement wire shapes", () => {
     });
     expect(PlaceResponseSchema.safeParse({ op: "unplace" }).success).toBe(false);
     expect(PlaceResponseSchema.safeParse({ op: "unplace", elementId: "e1" }).success).toBe(false);
+    expect(PlaceResponseSchema.safeParse({ op: "swap", placementId: "t1" }).success).toBe(false);
     expect(PlaceResponseSchema.safeParse({ op: "portal" }).success).toBe(false);
   });
 
@@ -561,6 +601,7 @@ describe("placement introspection", () => {
         "containers",
         "destinations",
         "ops",
+        "executionOnlyOps",
         "canvasOps",
         "destinationOps",
         "denialRules",
@@ -576,12 +617,19 @@ describe("placement introspection", () => {
     // it moves something or births its home.
     expect(published["homingModes"]).toEqual(HOMING_MODES);
     expect(published["denialRules"]).toEqual(PLACEMENT_DENIAL_RULES);
+    /*
+      An agent has to be able to learn, from the vocabulary alone, that a placement it
+      resolved as `add_tile` can come back tagged `swap`. Publishing the split is what
+      makes the center rule discoverable instead of folklore.
+     */
+    expect(published["executionOnlyOps"]).toEqual(EXECUTION_ONLY_OPS);
+    for (const op of EXECUTION_ONLY_OPS) expect(ops).toContain(op);
     // The generated payload is the source: a mod reads legality without reading prose.
     expect(JSON.stringify(published["items"])).toContain("tileable");
     expect(JSON.stringify(published["items"])).toContain("eager");
   });
 
-  test("the denial rules are one per guard plus identity and containment", () => {
+  test("the denial rules are one per guard plus identity, containment and the exchange", () => {
     const guardRules = Object.values(PLACEMENT_GUARDS).map((guard) => guard.rule);
     // Two guards sharing a rule would make a rendered refusal ambiguous.
     expect(new Set(guardRules).size).toBe(guardRules.length);
@@ -590,6 +638,13 @@ describe("placement introspection", () => {
       "not_accepted",
       "unknown_surface",
       "unknown_container",
+      /*
+        Not a guard: a guard is a property of a KIND, and this one is a property of the
+        gesture — whether the surface offered is a placement with a seat to trade, or an
+        identity form that names an item and nothing else. Only the executor can see the
+        occupancy that makes the question arise, so the rule lives here and is raised there.
+       */
+      "not_swappable",
     ];
     expect([...denialRules].sort()).toEqual([...expected].sort());
   });
