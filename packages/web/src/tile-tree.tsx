@@ -1,6 +1,15 @@
 import { ROOT_TILE_ID, type TileLayout, type TileNode } from "@manifold/protocol";
-import { Fragment, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
+import { surfaceKey } from "./tile-geometry.ts";
 import { dividerRatios, type DividerDrag } from "./tile-snap.ts";
 
 /**
@@ -11,9 +20,8 @@ import { dividerRatios, type DividerDrag } from "./tile-snap.ts";
  * any more, which is why an engaged widget's dividers drag exactly as fullscreen's do.
  *
  * What a host renderer still owns is the LEAF (`renderLeaf`) — a leaf's chrome is
- * discipline-specific (fullscreen leaves wear drop targets and a carry grip, a widget's
- * wear the engagement shield) — and the two policy answers this component takes as
- * arguments:
+ * discipline-specific (fullscreen leaves wear the carry grip, a widget's wear the
+ * engagement shield) — and the two policy answers this component takes as arguments:
  *
  *   `classes`     which class family the boxes wear, because both skins are proof
  *                 hooks: `.tiled-*` for the route, `.flow-portal__*` for the widget.
@@ -21,6 +29,16 @@ import { dividerRatios, type DividerDrag } from "./tile-snap.ts";
  *                 paints from a spectator socket whose writes the server refuses, so
  *                 its dividers render (the composition's shape is the information) and
  *                 do nothing: no pointer capture, no cursor, no doc write.
+ *
+ * PANE CONTENT SURVIVES STRUCTURAL EDITS. The recursive boxes are keyed by tile id,
+ * and a split substitutes a NEW wrapper id into its parent's children — so React
+ * discards and rebuilds boxes across a committed split. That must never tear down an
+ * xterm, so a leaf's content is not rendered inside its box at all: each occupied
+ * leaf's content renders exactly once through `createPortal` into a STABLE host
+ * element keyed by SURFACE IDENTITY (`surfaceKey`), and a layout effect appends that
+ * host into whatever box the current tree drew (the `appendChild` move flexlayout and
+ * dockview use). React never sees the move; the terminal's DOM, buffer and scrollback
+ * ride along untouched. Confirmed by `scripts/verify-tile-drop.ts`'s remount probe.
  *
  * There is deliberately no `scale` argument even though a widget draws its tree under a
  * `transform: scale()` (and under the canvas's own zoom). A divider drag is computed as
@@ -36,6 +54,11 @@ export interface TileTreeClasses {
   readonly pane: string;
   /** The grab band between two panes. Gets `is-inert` when not interactive. */
   readonly divider: string;
+  /**
+   * One divider's thickness in this skin's own layout px — the flex-basis its
+   * stylesheet declares — so drop geometry subtracts exactly what the tree draws.
+   */
+  readonly dividerPx: number;
 }
 
 /** The fullscreen route's skin. */
@@ -43,6 +66,8 @@ export const TILED_TREE_CLASSES: TileTreeClasses = {
   split: "tiled-split",
   pane: "tiled-pane",
   divider: "tiled-divider",
+  /** `.tiled-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
+  dividerPx: 5.6,
 };
 
 /** A container widget's skin, on a canvas. */
@@ -50,12 +75,12 @@ export const PORTAL_TREE_CLASSES: TileTreeClasses = {
   split: "flow-portal__split",
   pane: "flow-portal__slot",
   divider: "flow-portal__divider",
+  /** `.flow-portal__divider` is `flex: 0 0 0.5rem` = 8px at the root font size. */
+  dividerPx: 8,
 };
 
 export interface TileTreeProps {
   readonly layout: TileLayout;
-  /** Where to start; recursion passes the child id. Defaults to the tree's root. */
-  readonly tileId?: string;
   readonly classes: TileTreeClasses;
   /** False renders dividers as structure only — see the module note. */
   readonly interactive: boolean;
@@ -63,40 +88,121 @@ export interface TileTreeProps {
   readonly renderLeaf: (node: TileNode) => ReactNode;
 }
 
-/**
- * One node of the tree: a leaf hands off to the host, a split recurses. The structure —
- * never the ratios — decides React identity, so a divider drag is a style mutation on
- * boxes React already owns: no leaf unmounts and no xterm is reparented (which would
- * destroy the terminal).
- */
+/** Leaves in tree order, so duplicate-surface suffixes stay stable across renders. */
+function leafNodesInOrder(layout: TileLayout): readonly TileNode[] {
+  const out: TileNode[] = [];
+  const walk = (tileId: string): void => {
+    const node = layout[tileId];
+    if (node === undefined) return;
+    if (node.dir === null) {
+      out.push(node);
+      return;
+    }
+    for (const childId of node.children) walk(childId);
+  };
+  walk(ROOT_TILE_ID);
+  return out;
+}
+
 export function TileTree({
   layout,
-  tileId = ROOT_TILE_ID,
   classes,
   interactive,
   onRatios,
   renderLeaf,
 }: TileTreeProps): ReactNode {
-  const node = layout[tileId];
-  if (node === undefined) return null;
-  if (node.dir === null) return renderLeaf(node);
+  /** The outermost box the structure pass drew; content targeting is scoped to it. */
+  const rootRef = useRef<HTMLElement | null>(null);
+  /** Stable content hosts by surface identity; created once, MOVED between boxes. */
+  const [hosts] = useState(() => new Map<string, HTMLDivElement>());
+
+  const seen = new Map<string, number>();
+  const keyed = leafNodesInOrder(layout).map((node) => {
+    // An empty leaf has no identity to follow; its (contentless) hint may remount.
+    const base = surfaceKey(node.surface) ?? `empty:${node.id}`;
+    const nth = seen.get(base) ?? 0;
+    seen.set(base, nth + 1);
+    return { node, key: nth === 0 ? base : `${base}#${String(nth)}` };
+  });
+
+  // Created during render because `createPortal` needs its container immediately;
+  // idempotent, and the element stays detached until the layout effect seats it.
+  const hostFor = (key: string): HTMLDivElement => {
+    const existing = hosts.get(key);
+    if (existing !== undefined) return existing;
+    const host = document.createElement("div");
+    host.className = "tile-content-host";
+    hosts.set(key, host);
+    return host;
+  };
+
+  // Seat every content host in the box the CURRENT tree drew for its leaf, and drop
+  // hosts whose content React already unmounted (their key left the portal list).
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const live = new Set(keyed.map((entry) => entry.key));
+    for (const [key, host] of hosts) {
+      if (!live.has(key)) {
+        host.remove();
+        hosts.delete(key);
+      }
+    }
+    for (const { node, key } of keyed) {
+      const host = hosts.get(key);
+      if (host === undefined) continue;
+      const box =
+        root.getAttribute("data-tile-id") === node.id
+          ? root
+          : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(node.id)}"]`);
+      if (box !== null && host.parentElement !== box) box.appendChild(host);
+    }
+  });
+
+  const attachRoot = (element: HTMLElement | null): void => {
+    rootRef.current = element;
+  };
+
+  const renderChild = (childId: string): ReactNode => {
+    const child = layout[childId];
+    // A leaf child renders nothing HERE: its pane box is the seat its stable
+    // content host is appended into.
+    if (child === undefined || child.dir === null) return null;
+    return (
+      <TileSplit
+        node={child}
+        classes={classes}
+        interactive={interactive}
+        onRatios={onRatios}
+        renderChild={renderChild}
+      />
+    );
+  };
+
+  const root = layout[ROOT_TILE_ID];
+  if (root === undefined) return null;
   return (
-    <TileSplit
-      node={node}
-      classes={classes}
-      interactive={interactive}
-      onRatios={onRatios}
-      renderChild={(childId) => (
-        <TileTree
-          layout={layout}
-          tileId={childId}
+    <>
+      {root.dir === null ? (
+        // A single-leaf tree draws one full-size pane box for the root itself.
+        <div
+          className={classes.pane}
+          data-tile-id={ROOT_TILE_ID}
+          style={{ flexGrow: 1 }}
+          ref={attachRoot}
+        />
+      ) : (
+        <TileSplit
+          node={root}
           classes={classes}
           interactive={interactive}
           onRatios={onRatios}
-          renderLeaf={renderLeaf}
+          renderChild={renderChild}
+          attachRoot={attachRoot}
         />
       )}
-    />
+      {keyed.map(({ node, key }) => createPortal(renderLeaf(node), hostFor(key), key))}
+    </>
   );
 }
 
@@ -106,13 +212,22 @@ interface TileSplitProps {
   readonly interactive: boolean;
   readonly renderChild: (tileId: string) => ReactNode;
   readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
+  /** Set only on the tree's outermost split, for the content-seating scope. */
+  readonly attachRoot?: (element: HTMLElement | null) => void;
 }
 
 /**
  * One split. Children are laid out with `flex-grow`, so a ratio change is a style
  * mutation on boxes React already owns.
  */
-function TileSplit({ node, classes, interactive, renderChild, onRatios }: TileSplitProps) {
+function TileSplit({
+  node,
+  classes,
+  interactive,
+  renderChild,
+  onRatios,
+  attachRoot,
+}: TileSplitProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   /** Live divider state; kept in a ref so a drag never re-renders the terminals it moves. */
   const dragRef = useRef<DividerDrag | null>(null);
@@ -158,10 +273,18 @@ function TileSplit({ node, classes, interactive, renderChild, onRatios }: TileSp
   };
 
   return (
-    <div className={`${classes.split} is-${node.dir ?? "leaf"}`} ref={boxRef}>
+    <div
+      className={`${classes.split} is-${node.dir ?? "leaf"}`}
+      data-tile-id={node.id}
+      ref={(element) => {
+        boxRef.current = element;
+        attachRoot?.(element);
+      }}
+    >
       {node.children.map((childId, index) => (
         // Keyed by tile id, never by position: removing a leaf must not shift its
-        // siblings onto each other's keys, which would tear down live terminals.
+        // siblings onto each other's keys — and the CONTENT is immune either way,
+        // seated by surface identity from the portal list above.
         <Fragment key={childId}>
           {index === 0 ? null : (
             <div
@@ -180,7 +303,11 @@ function TileSplit({ node, classes, interactive, renderChild, onRatios }: TileSp
                 : {})}
             />
           )}
-          <div className={classes.pane} style={{ flexGrow: node.ratios[index] ?? 1 }}>
+          <div
+            className={classes.pane}
+            data-tile-id={childId}
+            style={{ flexGrow: node.ratios[index] ?? 1 }}
+          >
             {renderChild(childId)}
           </div>
         </Fragment>

@@ -149,12 +149,8 @@ const CASES: readonly {
     destination: { kind: "tile", padId: "comp-1", targetTileId: "t1", edge: "top" },
     expected: "A stroke does not go in a composition.",
   },
-  {
-    name: "a tile released on the index",
-    envelope: { kind: "tile", containerId: "comp-1", tileId: "t1" },
-    destination: { kind: "unplaced" },
-    expected: "A tile does not go in the index.",
-  },
+  // `tile → unplaced` is deliberately absent: the cell flipped to LEGAL when `tile`
+  // became `unplaceable` (the fullscreen tile-minimize now re-homes instead of toasting).
   {
     name: "a terminal tiled into a canvas",
     envelope: { kind: "terminal", sessionId: "s1" },

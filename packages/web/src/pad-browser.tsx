@@ -1886,6 +1886,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
                 navigate={navigate}
                 presence={displayedPresence}
                 onPadChanged={refreshActivePad}
+                soloOccupants={soloOccupants}
                 onCreateTerminalChange={publishTiledCreate}
               />
             </PadErrorBoundary>

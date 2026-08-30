@@ -460,7 +460,15 @@ export function TerminalView({
   };
 
   const stopFocusedWheel = (event: WheelEvent<HTMLDivElement>): void => {
-    if (focusedRef.current) event.stopPropagation();
+    /*
+      Plain scroll on a FOCUSED terminal belongs to its scrollback; pinch-zoom
+      (browsers report trackpad pinch as ctrl+wheel) belongs to the canvas even
+      there. The ctrl guard is load-bearing since the content-portal cutover in
+      `tile-tree.tsx`: React instruments every portal container with its own
+      listener set, so this handler now runs BEFORE React Flow's zoom listener —
+      an unconditional stop here would silently kill pinch-zoom over a terminal.
+    */
+    if (focusedRef.current && !event.ctrlKey) event.stopPropagation();
   };
 
   /**

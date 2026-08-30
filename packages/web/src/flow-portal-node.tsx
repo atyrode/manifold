@@ -1,21 +1,23 @@
-import type { Principal, TileLayout, TileNode } from "@manifold/protocol";
+import type { Principal, TileLayout, TileNode, TileSurface } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getPad } from "./api.ts";
 import { countRender } from "./debug-seam.ts";
 import {
-  COMPOSE_TARGET_CLASS,
   MIN_TERMINAL_HEIGHT,
   MIN_TERMINAL_WIDTH,
   useFlowPad,
   useFlowPadPresence,
 } from "./flow-terminal-node.tsx";
 import { ControlIcon, ItemIcon } from "./icons.tsx";
+import type { ItemEnvelope } from "./item-envelope.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
+import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
+import type { TileDropHost } from "./use-tile-drop.ts";
 import {
   createWidgetSocketSwitch,
   type WidgetRole,
@@ -523,12 +525,11 @@ function PortalLeaf({
 function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   countRender("portal-node");
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
-  // The canvas stamps the armed compose zone onto this node's data; dropping a
-  // surface on a widget adds a tile to the container it points at.
-  const composeTarget = typeof data["composeZone"] === "string";
   const pad = useFlowPad();
   const live = pad.depth < MAX_LIVE_DEPTH && containerId !== "";
   const rootRef = useRef<HTMLDivElement | null>(null);
+  /** The tile AREA: what drop geometry measures, so the strip is excluded by construction. */
+  const areaRef = useRef<HTMLDivElement | null>(null);
   /**
    * The engagement remembers WHICH container it was made in: a widget that stops
    * being live or starts pointing elsewhere derives back to spectator instead of
@@ -652,12 +653,56 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       />
     );
 
+  /**
+   * The widget is the only place its own layout is visible — the canvas holds no
+   * channel on that container — so aim resolution lives HERE: the overlay reads the
+   * canvas's pointer from the shared store, resolves against this tree, and publishes
+   * the destination back for the canvas to commit at release.
+   */
+  const dropHost = useMemo<TileDropHost>(
+    () => ({
+      areaRef,
+      layout,
+      containerId,
+      widget: { padId: pad.padId, elementId: id },
+      dividerPx: PORTAL_TREE_CLASSES.dividerPx,
+      assess: pad.assessDrop,
+    }),
+    [containerId, id, layout, pad.assessDrop, pad.padId],
+  );
+
+  /** What a displaced or carried surface is called, from this widget's own socket. */
+  const occupantLabel = useCallback(
+    (surface: TileSurface): string | null => {
+      if (surface.kind === "terminal") {
+        return client?.sessions.get(surface.sessionId)?.name ?? null;
+      }
+      return null;
+    },
+    [client],
+  );
+  const carryLabel = useCallback(
+    (envelope: ItemEnvelope): string | null =>
+      envelope.kind === "terminal"
+        ? (client?.sessions.get(envelope.sessionId)?.name ?? null)
+        : null,
+    [client],
+  );
+
+  const overlay = (
+    <TilePreviewOverlay
+      host={dropHost}
+      store={pad.dropStore}
+      surfaceLabel={occupantLabel}
+      carryLabel={carryLabel}
+    />
+  );
+
   const rootClass = [
     "flow-portal",
     mono === null ? "" : MONO_PORTAL_CLASS,
     interactive ? "flow-portal--engaged" : "",
     engaged && !interactive ? "flow-portal--engaging" : "",
-    composeTarget ? COMPOSE_TARGET_CLASS : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -715,18 +760,21 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         <div className="flow-portal__viewport">
           {mono !== null && solo !== null && client !== null ? (
             // 1:1, not the half-scale preview: this IS the terminal, not a picture of one.
-            <TileTree
-              layout={layout ?? {}}
-              classes={PORTAL_TREE_CLASSES}
-              interactive={interactive}
-              /*
-                A divider only drags in the ENGAGED state, and the socket being painted
-                then IS the occupant one — so this is the very write the fullscreen route
-                makes, over the channel this widget already holds.
-              */
-              onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
-              renderLeaf={renderLeaf(client)}
-            />
+            <div className="tile-area" ref={areaRef}>
+              <TileTree
+                layout={layout ?? {}}
+                classes={PORTAL_TREE_CLASSES}
+                interactive={interactive}
+                /*
+                  A divider only drags in the ENGAGED state, and the socket being painted
+                  then IS the occupant one — so this is the very write the fullscreen route
+                  makes, over the channel this widget already holds.
+                */
+                onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
+                renderLeaf={renderLeaf(client)}
+              />
+              {overlay}
+            </div>
           ) : client !== null && layout !== null ? (
             <div
               className="flow-portal__preview"
@@ -736,22 +784,35 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                 transform: `scale(${String(PREVIEW_SCALE)})`,
               }}
             >
-              <TileTree
-                layout={layout}
-                classes={PORTAL_TREE_CLASSES}
-                interactive={interactive}
-                onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
-                renderLeaf={renderLeaf(client)}
-              />
+              {/*
+                The area sits INSIDE the scale: its layout px match the tree's own
+                (divider math), while its client rect is the on-screen box (pointer
+                and ring math) — the overlay's unit space is indifferent to both.
+              */}
+              <div className="tile-area" ref={areaRef}>
+                <TileTree
+                  layout={layout}
+                  classes={PORTAL_TREE_CLASSES}
+                  interactive={interactive}
+                  onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
+                  renderLeaf={renderLeaf(client)}
+                />
+                {overlay}
+              </div>
             </div>
           ) : (
-            <div className="flow-portal__card">
-              <span className="flow-portal__card-glyph" aria-hidden="true">
-                <ItemIcon kind="composition" size={22} />
-              </span>
-              <span className="flow-portal__card-hint">
-                {live ? "opening composition…" : "nested composition — open it to work inside"}
-              </span>
+            // The card form still hosts the overlay: a widget whose layout this canvas
+            // cannot see keeps the canvas door, so drops on it stay targetable.
+            <div className="tile-area" ref={areaRef}>
+              <div className="flow-portal__card">
+                <span className="flow-portal__card-glyph" aria-hidden="true">
+                  <ItemIcon kind="composition" size={22} />
+                </span>
+                <span className="flow-portal__card-hint">
+                  {live ? "opening composition…" : "nested composition — open it to work inside"}
+                </span>
+              </div>
+              {overlay}
             </div>
           )}
         </div>

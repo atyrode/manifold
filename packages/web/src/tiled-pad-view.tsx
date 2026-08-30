@@ -3,9 +3,7 @@ import {
   type MachineSummary,
   type Pad,
   type PadPresence,
-  type PlacementDestination,
   type PlacementItem,
-  type TileEdge,
   type TileLayout,
   type TileNode,
   type TileSurface,
@@ -35,13 +33,8 @@ import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cur
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { TextSurface } from "./flow-text-node.tsx";
 import { ControlIcon, ItemIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
-import {
-  createPlacementLookup,
-  denialMessage,
-  useItemDrop,
-  type ItemDropAssessment,
-} from "./item-drop.ts";
-import { carriedItem, carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import { createPlacementLookup, denialMessage, useItemDrop } from "./item-drop.ts";
+import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import {
   browserMachineStorage,
   chooseDefaultMachine,
@@ -51,8 +44,10 @@ import {
 import { sessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar } from "./node-titlebar.tsx";
 import { TerminalView } from "./terminal-view.tsx";
-import { previewRect, resolveSnapTarget, type SnapAction, type SnapTarget } from "./tile-snap.ts";
+import { createTileDropStore } from "./tile-drop-store.ts";
+import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
+import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
 import { useToast } from "./toast.tsx";
 import { carryGhosts } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
@@ -70,28 +65,6 @@ import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cur
  * enforce container discipline and the bubble lifecycle; only the high-frequency,
  * purely geometric ratio write goes straight into the doc.
  */
-
-/** The tile currently under a drag, with the zone its pointer resolved to. */
-interface TileDropTarget {
-  readonly tileId: string;
-  readonly zone: TileEdge;
-  /**
-   * What releasing here would DO. `swap` is a center release on a leaf that is already
-   * taken: the two occupants trade seats. It rides beside the zone because the WIRE
-   * carries the same `center` edge either way — the server owns the occupancy branch —
-   * so this is the only place that knows to paint the exchange rather than a fill.
-   */
-  readonly action: SnapAction;
-  /**
-   * What the placement pipeline says about the live carry at this zone: null when
-   * nothing is being carried, `denial: null` when the drop is legal. The leaf paints
-   * itself from this and from nothing else — no rule is decided here.
-   */
-  readonly assessment: ItemDropAssessment | null;
-}
-
-/** Percent-space rect for the snap overlay: the leaf box is its own coordinate system. */
-const LEAF_BOX = { x: 0, y: 0, width: 100, height: 100 } as const;
 
 /** The fallbacks the canvas's note node uses, for the frame between a leaf and its element. */
 const NOTE_FALLBACK_FONT_SIZE = 20;
@@ -153,6 +126,13 @@ interface TiledPadViewProps {
   /** Pin and splits harden a bubble; the sidebar refetches the row to drop the italics. */
   readonly onPadChanged: () => void;
   /**
+   * The index's solo-composition fold, handed down the way the canvas already gets it:
+   * only the index can see the arity of a container this route merely references, and
+   * without it a sidebar terminal row (a solo composition) dropped here would deny
+   * `not_solo` instead of merging.
+   */
+  readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
+  /**
    * Publishes this view's "new terminal" action to the sidebar's Machines section, the
    * way a canvas publishes its whole workspace state — a view has no canvas to author
    * into, so the action must come from the room that will hold the tile. Cleared on
@@ -169,6 +149,7 @@ export function TiledPadView({
   navigate,
   presence,
   onPadChanged,
+  soloOccupants = NO_SOLO_OCCUPANTS,
   onCreateTerminalChange,
 }: TiledPadViewProps) {
   const padId = pad.id;
@@ -179,7 +160,9 @@ export function TiledPadView({
   const [layout, setLayout] = useState<TileLayout | null>(null);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   const [focusedTileId, setFocusedTileId] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<TileDropTarget | null>(null);
+  const areaRef = useRef<HTMLDivElement | null>(null);
+  /** The per-frame channel to the preview overlay; only the overlay re-renders on it. */
+  const [dropStore] = useState(createTileDropStore);
   /**
    * The element table's version. A note tiled here is an ELEMENT of this room, so its
    * text (and the placement lookup that reads it) needs a reason to re-render.
@@ -518,15 +501,19 @@ export function TiledPadView({
         terminalHomes: new Map(
           [...client.sessions.values()].map((session) => [session.id, session.padId] as const),
         ),
-        // This composition can answer the arity question about ITSELF and nothing else:
-        // a foreign container's layout belongs to a room this browser has not joined, and
-        // absent is the honest answer — resolution then denies `not_solo` rather than
-        // merging something invisible.
-        soloOccupants: soloOccupancy(padId, client.layout()),
+        // The index answers the arity question for every OTHER container (it is the
+        // only party that can), and this room answers for ITSELF from its live layout —
+        // its own answer wins, because the index's poll can lag a structural write.
+        soloOccupants: (() => {
+          const merged = new Map(soloOccupants);
+          merged.delete(padId);
+          for (const [id, item] of soloOccupancy(padId, client.layout())) merged.set(id, item);
+          return merged;
+        })(),
       }),
     // `sceneRevision` is the element table's version: the lookup reads it live, and this
     // dependency is what makes a preview see a note that arrived a moment ago.
-    [client, pads, padId, sceneRevision],
+    [client, pads, padId, sceneRevision, soloOccupants],
   );
 
   const drop = useItemDrop({
@@ -560,29 +547,34 @@ export function TiledPadView({
   );
 
   /**
-   * The zone a pointer resolves to over one leaf, and what releasing there would do.
-   *
-   * Only a carried TILE can swap: it is a placement of the same species as the target, so
-   * the occupant has a leaf to move into. Everything else — a sidebar row, a session id, a
-   * canvas element — names an item with no leaf to give back, and for those the center band
-   * dissolves into its nearest edge rather than offering an exchange the server would
-   * refuse (`not_swappable`).
+   * ONE drop pipeline for the whole area, shared with the preview overlay. This
+   * instance exists so the RELEASE can re-resolve from its own pointer against the
+   * live layout — never trusting the painted state, which is a frame old by then.
    */
-  const targetAt = (
-    tileId: string,
-    target: HTMLDivElement,
-    pointer: { readonly clientX: number; readonly clientY: number },
-  ): SnapTarget | null => {
-    const bounds = target.getBoundingClientRect();
-    return resolveSnapTarget(
-      { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height },
-      { x: pointer.clientX, y: pointer.clientY },
-      {
-        occupied: (layout?.[tileId]?.surface ?? null) !== null,
-        canSwap: carriedItem()?.kind === "tile",
-      },
-    );
-  };
+  const dropHost = useMemo<TileDropHost>(
+    () => ({
+      areaRef,
+      layout,
+      containerId: padId,
+      widget: null,
+      dividerPx: TILED_TREE_CLASSES.dividerPx,
+      assess: drop.assess,
+    }),
+    [drop.assess, layout, padId],
+  );
+  const tileDrop = useTileDrop(dropHost);
+
+  const clearDrop = useCallback((): void => {
+    dropStore.set({ pointer: null, armedElementId: null, aim: null });
+    tileDrop.clear();
+  }, [dropStore, tileDrop]);
+
+  /** A drag that ends anywhere else must not leave the area armed. */
+  useEffect(() => {
+    const onDragEnd = (): void => clearDrop();
+    window.addEventListener("dragend", onDragEnd);
+    return () => window.removeEventListener("dragend", onDragEnd);
+  }, [clearDrop]);
 
   /**
    * Every carry crossing this view gets a ghost: unlike a canvas, a composition cannot
@@ -635,77 +627,56 @@ export function TiledPadView({
   });
 
   /**
-   * The destination one leaf means. Geometry is all this renderer contributes: the zone
-   * comes from the pointer, and every question about what may land there belongs to the
-   * pipeline — which is why there is no rule in either handler below.
-   *
-   * A swap travels as the same `center` edge a fill does. Occupancy is the server's to
-   * read — its tree is the authority — so the wire says WHERE and the executor says what
-   * that turned out to mean.
+   * The area's drag transport: one handler set on `.tile-area`, replacing N per-leaf
+   * sets. Geometry is all this renderer contributes — the pointer goes into the store
+   * for the overlay to preview, and every question about what may land where belongs
+   * to the pipeline — which is why there is no rule in any handler below.
    */
-  const destinationFor = (tileId: string, zone: TileEdge): PlacementDestination => ({
-    kind: "tile",
-    padId,
-    targetTileId: tileId,
-    edge: zone,
-  });
-
-  const dropProps = (tileId: string) => ({
+  const areaDropProps = {
     onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
-      // Claimed even when refused: keeping the gesture is what lets the leaf paint the
-      // declared RULE, instead of the browser showing a bare no-drop cursor that explains
-      // nothing. The `dropEffect` still says "none", so the cursor stays honest.
+      // Claimed even when refused: keeping the gesture is what lets the overlay paint
+      // the declared RULE, instead of the browser showing a bare no-drop cursor that
+      // explains nothing. The `dropEffect` still says "none", so the cursor stays honest.
       event.preventDefault();
       event.stopPropagation();
-      const snap = targetAt(tileId, event.currentTarget, event);
       // The carry streams from every frame that crosses this view, whether it began on
       // a leaf here or on a row in the sidebar — motion is the same concept either way.
       const at = bodyFraction(event.clientX, event.clientY);
       if (at !== null) carry.track(at);
-      if (snap === null) {
-        event.dataTransfer.dropEffect = "none";
-        setDropTarget((current) => (current?.tileId === tileId ? null : current));
-        return;
-      }
-      const assessment = drop.assess(destinationFor(tileId, snap.zone));
-      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
-      setDropTarget((current) => {
-        // Compared by RULE rather than by assessment identity: `assess` hands back a fresh
-        // object every frame, and a drag fires this handler per pointer move.
-        if (
-          current?.tileId === tileId &&
-          current.zone === snap.zone &&
-          current.action === snap.action &&
-          (current.assessment?.denial?.rule ?? null) === (assessment?.denial?.rule ?? null)
-        ) {
-          return current;
-        }
-        return { tileId, zone: snap.zone, action: snap.action, assessment };
+      const state = tileDrop.aimAt(event.clientX, event.clientY);
+      // Arm delay 0: the route previews on the first dragover frame.
+      dropStore.set({
+        pointer: { clientX: event.clientX, clientY: event.clientY },
+        armedElementId: null,
+        aim: dropStore.get().aim,
       });
+      event.dataTransfer.dropEffect =
+        state !== null && state.assessment?.denial == null ? "move" : "none";
     },
     onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) return;
-      setDropTarget((current) => (current?.tileId === tileId ? null : current));
+      clearDrop();
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
       event.preventDefault();
       event.stopPropagation();
-      // The drop's own pointer decides the edge. Reading the highlight state instead
-      // would race the render that painted it, and a drop is a one-shot event.
-      const snap = targetAt(tileId, event.currentTarget, event);
-      setDropTarget(null);
+      // The drop's own pointer decides the destination, re-resolved against the live
+      // layout. Reading the painted state instead would race the render that drew it.
+      const state = tileDrop.aimAt(event.clientX, event.clientY);
       const at = bodyFraction(event.clientX, event.clientY);
       // The ghost is retired before the write: the payload is in the transfer, so
       // ending the carry here cannot cost the drop its envelope.
       carry.end(at ?? undefined);
       setCarriedTileId(null);
-      // Released between zones: aborting with no mutation is the documented escape.
-      if (snap === null) return;
-      drop.commit(event.dataTransfer, destinationFor(tileId, snap.zone));
+      clearDrop();
+      // Released between zones (a divider, the carry's own leaf): aborting with no
+      // mutation and no toast is the documented escape.
+      if (state === null) return;
+      drop.commit(event.dataTransfer, state.destination);
     },
-  });
+  };
 
   /**
    * A leaf's occupant. One arm per tileable species, and the switch is exhaustive on
@@ -855,66 +826,51 @@ export function TiledPadView({
     }
   };
 
-  const renderLeaf = (node: TileNode): ReactNode => {
-    const highlight = dropTarget?.tileId === node.id ? dropTarget : null;
-    const zone = highlight?.zone ?? null;
-    const assessment = highlight?.assessment ?? null;
-    const denied = assessment?.denial != null;
-    // A legal exchange wears its own colour and glyph: releasing here trades the two
-    // occupants rather than splitting the leaf, and nothing else in the frame says so.
-    const swapping = highlight?.action === "swap" && !denied;
-    const preview = zone === null ? null : previewRect(LEAF_BOX, zone);
-    return (
-      <div
-        className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
-          zone === null || denied ? "" : " is-drop-target"
-        }${carriedTileId === node.id ? " is-carried" : ""}`}
-        onPointerDownCapture={() => setFocusedTileId(node.id)}
-        {...dropProps(node.id)}
-        // Empty while the drop is legal, so the refusal cue exists only when refusing.
-        {...drop.refusalProps(assessment)}
-      >
-        {renderSurface(node, node.surface)}
-        {node.surface === null ? null : (
-          /*
-            The grip is this leaf's chrome-as-handle. A terminal tile's own titlebar
-            cannot be it — xterm needs the bar for rename and the frame swallows
-            pointerdown — so every species wears the same corner handle the widget's
-            tiles wear on a canvas, and the gesture behind it is the same carry.
-          */
-          <div
-            className="tiled-leaf__grip"
-            title="Drag to move this tile — onto a canvas to pull it out"
-            {...gripProps(node.id, surfaceLabel(node.surface))}
-          >
-            <ControlIcon kind="grip" size={12} />
-          </div>
-        )}
-        {preview === null ? null : (
-          <div
-            className={`tiled-snap-preview${denied ? " is-denied" : ""}${
-              swapping ? " is-swap" : ""
-            }`}
-            aria-hidden="true"
-            style={{
-              left: `${preview.x}%`,
-              top: `${preview.y}%`,
-              width: `${preview.width}%`,
-              height: `${preview.height}%`,
-            }}
-          >
-            {swapping ? (
-              <span className="tiled-snap-preview__glyph">
-                <ControlIcon kind="swap" size={28} />
-              </span>
-            ) : null}
-            {assessment?.message == null ? null : (
-              <span className="drop-denial-note">{assessment.message}</span>
-            )}
-          </div>
-        )}
-      </div>
-    );
+  const renderLeaf = (node: TileNode): ReactNode => (
+    <div
+      className={`tiled-leaf${focusedTileId === node.id ? " is-focused" : ""}${
+        carriedTileId === node.id ? " is-carried" : ""
+      }`}
+      onPointerDownCapture={() => setFocusedTileId(node.id)}
+    >
+      {renderSurface(node, node.surface)}
+      {node.surface === null ? null : (
+        /*
+          The grip is this leaf's chrome-as-handle. A terminal tile's own titlebar
+          cannot be it — xterm needs the bar for rename and the frame swallows
+          pointerdown — so every species wears the same corner handle the widget's
+          tiles wear on a canvas, and the gesture behind it is the same carry.
+        */
+        <div
+          className="tiled-leaf__grip"
+          title="Drag to move this tile — onto a canvas to pull it out"
+          {...gripProps(node.id, surfaceLabel(node.surface))}
+        >
+          <ControlIcon kind="grip" size={12} />
+        </div>
+      )}
+    </div>
+  );
+
+  /** The slot chip names what is in flight, the way a carry ghost does. */
+  const carryLabel = (envelope: ItemEnvelope): string | null => {
+    switch (envelope.kind) {
+      case "terminal":
+        return client.sessions.get(envelope.sessionId)?.name ?? null;
+      case "tile":
+        return envelope.containerId === padId
+          ? surfaceLabel(layout?.[envelope.tileId]?.surface ?? null)
+          : null;
+      case "canvas":
+      case "composition":
+        return padNameFor(envelope.padId);
+      case "element":
+        return null;
+      default: {
+        const exhaustive: never = envelope;
+        return exhaustive;
+      }
+    }
   };
 
   const body =
@@ -969,7 +925,21 @@ export function TiledPadView({
         ref={bodyRef}
         onPointerMoveCapture={(event) => emitCursor(event.clientX, event.clientY)}
       >
-        {body}
+        {/*
+          The tile AREA: the one DOM object drop geometry measures (chrome excluded by
+          construction), the drag transport's single handler set, and the overlay's
+          unambiguous root — its `firstElementChild` is the tree, which is what the
+          FLIP falls back to when a single-leaf tree renders no pane box.
+        */}
+        <div className="tile-area" ref={areaRef} {...areaDropProps}>
+          {body}
+          <TilePreviewOverlay
+            host={dropHost}
+            store={dropStore}
+            surfaceLabel={surfaceLabel}
+            carryLabel={carryLabel}
+          />
+        </div>
         <div className="tiled-presence-layer" aria-hidden="true">
           {remoteCursors.cursors.map((cursor) => {
             const color = remoteCursors.colorFor(cursor);

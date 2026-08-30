@@ -875,20 +875,27 @@ try {
   await moveTo(browser, zone);
   await sleep(120);
   await moveTo(browser, { x: zone.x + 1, y: zone.y });
+  /*
+    The armed cue moved with the drop-pipeline cutover: the canvas no longer stamps
+    view chrome onto the node (`.flow-node--compose-target`) or paints a flow-space
+    half-rect (`.flow-compose-preview`). The armed WIDGET's own overlay resolves the
+    zone now — `.tile-area` wears `is-previewing` and the landing slot is a
+    `.tile-preview` inside it — so the proof hooks are the widget's.
+  */
   const morphed = await settles(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.react-flow__node[data-id="${anchor.id}"] .flow-node--compose-target') !== null`,
+        `document.querySelector('.react-flow__node[data-id="${anchor.id}"] .tile-area.is-previewing') !== null`,
       ),
     6_000,
   );
   const snapPreview = await browser.evaluate<boolean>(
-    "document.querySelector('.flow-compose-preview') !== null",
+    `document.querySelector('.react-flow__node[data-id="${anchor.id}"] .tile-preview') !== null`,
   );
   check(
-    "holding a terminal over another arms view chrome and a snap preview",
+    "holding a terminal over another arms the target's live drop preview",
     morphed && snapPreview,
-    `morph=${String(morphed)} preview=${String(snapPreview)}`,
+    `previewing=${String(morphed)} slot=${String(snapPreview)}`,
   );
   await releaseAt(browser, { x: zone.x + 1, y: zone.y });
 

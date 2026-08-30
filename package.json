@@ -16,6 +16,7 @@
     "verify:public": "bun scripts/verify-public.ts",
     "verify:terminal-selection": "bun scripts/verify-terminal-selection.ts",
     "verify:terminal-mirror": "bun scripts/verify-terminal-mirror.ts",
+    "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",
@@ -25,7 +26,7 @@
     "dev:server": "MANIFOLD_ANNOUNCE_KEY=1 bun --watch packages/server/src/main.ts",
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
-    "gate": "bun run changelog:check && bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence && bun run verify:terminal-selection && bun run verify:terminal-mirror"
+    "gate": "bun run changelog:check && bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence && bun run verify:terminal-selection && bun run verify:terminal-mirror && bun run verify:tile-drop"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

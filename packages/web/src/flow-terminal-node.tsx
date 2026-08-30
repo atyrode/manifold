@@ -1,8 +1,10 @@
-import type { MachineSummary, PadPresence } from "@manifold/protocol";
+import type { MachineSummary, PadPresence, PlacementDestination } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext } from "react";
 import type { CarryController } from "./use-carry.ts";
 import type { CanvasTool } from "./canvas-tool.ts";
+import type { ItemDropAssessment } from "./item-drop.ts";
+import type { TileDropStore } from "./tile-drop-store.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
@@ -92,6 +94,20 @@ export interface FlowPadContextValue {
    * into modules that must stay renderer-agnostic.
    */
   readonly notify: (message: string) => void;
+  /** The canvas's own container id: the pad these nodes are elements OF. */
+  readonly padId: string;
+  /**
+   * The per-frame drop channel between the canvas's drag transports and its widgets'
+   * preview overlays. The canvas writes `{pointer, armedElementId}`; the armed
+   * widget's overlay resolves the aim and publishes `{destination, containerId}`
+   * back, which is what the canvas commits at release.
+   */
+  readonly dropStore: TileDropStore;
+  /**
+   * The canvas's placement assessment, so a widget's overlay judges a prospective
+   * drop with the same lookup the canvas's own commit will use.
+   */
+  readonly assessDrop: (destination: PlacementDestination) => ItemDropAssessment | null;
 }
 
 /**
@@ -156,10 +172,3 @@ export const TERMINAL_DRAG_HANDLE = ".terminal-titlebar";
 /** Keeps a resize from collapsing a terminal below a usable shell. */
 export const MIN_TERMINAL_WIDTH = 320;
 export const MIN_TERMINAL_HEIGHT = 200;
-
-/**
- * Painted on the node a dragged surface is hovering over, long enough to mean it
- * (see COMPOSE_ARM_MS): the frame morphs into view chrome so the release reads as
- * "these two become one view", not as a move that happens to end on top.
- */
-export const COMPOSE_TARGET_CLASS = "flow-node--compose-target";

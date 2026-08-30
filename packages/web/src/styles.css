@@ -2319,11 +2319,6 @@ button.pad-sidebar-session.is-summary > small {
   outline-offset: -1px;
 }
 
-.tiled-leaf.is-drop-target {
-  outline: 1px solid #748ffc;
-  outline-offset: -1px;
-}
-
 .tiled-empty {
   display: flex;
   width: 100%;
@@ -2342,20 +2337,6 @@ button.pad-sidebar-session.is-summary > small {
   display: inline-grid;
   place-items: center;
   color: #495057;
-}
-
-/* The snap preview is painted in the leaf's own percentage space (see LEAF_BOX). */
-.tiled-snap-preview {
-  position: absolute;
-  z-index: 40;
-  border: 1px solid #748ffc;
-  background: rgb(92 124 250 / 22%);
-  pointer-events: none;
-  transition:
-    left 90ms ease,
-    top 90ms ease,
-    width 90ms ease,
-    height 90ms ease;
 }
 
 /* ── Portal widgets and canvas composition (Phase 3 / 3b) ─────────────────────
@@ -2614,38 +2595,6 @@ button.pad-sidebar-session.is-summary > small {
 .flow-portal__card-hint {
   padding-inline: 0.6rem;
   text-align: center;
-}
-
-/* The compose morph: a node about to become a view already wears view chrome, so
-   the release reads as composition and not as a move that ended on top. */
-.flow-node--compose-target {
-  border-radius: 0.5rem;
-  outline: 2px solid #748ffc;
-  outline-offset: 2px;
-  box-shadow: 0 0 0 6px rgb(116 143 252 / 18%);
-}
-
-/* The half the dropped surface would claim, drawn in flow space (see previewRect)
-   inside the presence layer, so it tracks pan and zoom with the scene. */
-.flow-compose-preview {
-  position: absolute;
-  z-index: 45;
-  border: 1px solid #748ffc;
-  border-radius: 0.35rem;
-  background: rgb(116 143 252 / 22%);
-  pointer-events: none;
-  animation: flow-compose-pulse 900ms ease-in-out infinite;
-}
-
-@keyframes flow-compose-pulse {
-  0%,
-  100% {
-    opacity: 0.6;
-  }
-
-  50% {
-    opacity: 1;
-  }
 }
 
 /* ── Remote cursors in the tiled discipline ───────────────────────────────────
@@ -2945,21 +2894,15 @@ button.pad-sidebar-session.is-summary > small {
    a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its
    preview box, and the named rule rides in the element's `title`. The prose badge
    is the human half of the same denial. Legal targets keep the existing highlights
-   (`.pad-sidebar-row--terminal-target`, `.tiled-leaf.is-drop-target`). */
+   (`.pad-sidebar-row--terminal-target`, `.tile-preview`). */
 [data-drop-denial] {
   outline: 1px dashed rgb(255 107 107 / 55%);
   outline-offset: -2px;
   cursor: not-allowed;
 }
 
-.flow-compose-preview.is-denied,
-.tiled-snap-preview.is-denied {
-  border-color: rgb(255 107 107 / 60%);
-  background: rgb(255 107 107 / 10%);
-}
-
-/* Absolute inside its preview box: both `.flow-compose-preview` (flow space) and
-   `.tiled-leaf` (percentage leaf space) already establish a containing block. */
+/* Absolute inside its preview box: `.tile-preview` (the tile area's percentage
+   space) establishes a containing block. */
 .drop-denial-note {
   position: absolute;
   inset-inline: 0;
@@ -3222,27 +3165,104 @@ button.pad-sidebar-session.is-summary > small {
   place-items: center;
 }
 
-/* ── Center means this exact spot: the swap preview ───────────────────────────
-   A center release on an OCCUPIED target exchanges the two placements instead of
-   splitting the target, so it must not look like the blue "this half becomes
-   yours" highlight. Orange plus the swap glyph is the whole cue, in both
-   renderers, and both renderers set it only when the pipeline says the drop is
-   legal — a refusal wears `.is-denied` instead, so the two classes never meet and
-   neither has to out-specify the other. */
-.flow-compose-preview.is-swap,
-.tiled-snap-preview.is-swap {
-  border-color: rgb(255 146 43 / 85%);
-  background: rgb(255 146 43 / 18%);
+/* ── Live split preview (tile-preview-overlay) ────────────────────────────────
+   One drop pipeline for both hosts: the tile AREA is the geometry's reference box,
+   the overlay draws the landing slot in its percentage space, and the REAL panes
+   glide into their prospective places with transform only — no reflow, no PTY
+   resize, no doc write. Appended as one block; nothing above is restyled. */
+.tile-area {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
-/* Centred in the preview rect, which both renderers already make a containing
-   block. `pointer-events: none` rides on the preview box itself. */
-.flow-compose-preview__glyph,
-.tiled-snap-preview__glyph {
+/* The landing slot: percent-positioned in the area, gliding between zones. */
+.tile-preview {
+  position: absolute;
+  z-index: 45;
+  border: 1px solid #748ffc;
+  background: rgb(92 124 250 / 22%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease,
+    opacity 80ms ease;
+}
+
+/* Armed with nothing to say (a divider, the carry's own leaf): the slot stays
+   mounted at its last rect, so re-entering a zone animates instead of popping. */
+.tile-preview.is-idle {
+  opacity: 0;
+}
+
+/* Centred in the slot; `pointer-events: none` rides on the slot itself. */
+.tile-preview__glyph {
   position: absolute;
   display: grid;
   place-items: center;
   inset: 0;
-  color: #ffd8a8;
+  gap: 0.2rem;
+  color: #bac8ff;
   filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+}
+
+.tile-preview__caption {
+  overflow: hidden;
+  max-width: 90%;
+  font-size: 0.68rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* CENTER MEANS THIS EXACT SPOT: a legal exchange wears the established swap
+   orange on the slot AND its partner, so "the two trade seats" never looks like
+   "this half becomes yours". */
+.tile-preview.is-swap {
+  border-color: rgb(255 146 43 / 85%);
+  background: rgb(255 146 43 / 18%);
+}
+
+.tile-preview.is-swap .tile-preview__glyph {
+  color: #ffd8a8;
+}
+
+/* A seatless carry taking an occupied leaf: the occupant is re-homed, not lost.
+   Violet — distinct from legal-blue, swap-orange and denied-red — with the park
+   glyph, because park already means "the representation leaves; the object keeps
+   running elsewhere". */
+.tile-preview.is-replace {
+  border-color: rgb(174 62 201 / 85%);
+  background: rgb(174 62 201 / 18%);
+}
+
+.tile-preview.is-replace .tile-preview__glyph {
+  color: #eebefa;
+}
+
+.tile-preview.is-denied {
+  border-color: rgb(255 107 107 / 60%);
+  background: rgb(255 107 107 / 10%);
+}
+
+/* The FLIP: panes glide as transforms the overlay writes imperatively. 120ms for
+   the larger pane travel; the slot's own rect moves at 90ms above. */
+.tile-area.is-previewing [data-tile-id] {
+  transition: transform 120ms ease;
+}
+
+/* The stable seat a pane's content rides in between structural edits (see
+   tile-tree.tsx): MOVED with appendChild, never re-created, so a committed split
+   cannot tear an xterm down. */
+.tile-content-host {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }

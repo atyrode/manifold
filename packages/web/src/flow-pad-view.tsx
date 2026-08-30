@@ -7,7 +7,6 @@ import {
   type PadPresence,
   type PlacementDestination,
   type PlacementItem,
-  type TileEdge,
 } from "@manifold/protocol";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
@@ -43,14 +42,9 @@ import {
 } from "./flow-scene.ts";
 import { TextNode } from "./flow-text-node.tsx";
 import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
-import { ControlIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
-import {
-  createPlacementLookup,
-  denialMessage,
-  useItemDrop,
-  type ItemDropAssessment,
-} from "./item-drop.ts";
-import { carriedItem, carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import { RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
+import { createPlacementLookup, denialMessage, useItemDrop } from "./item-drop.ts";
+import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
 import { sessionMachine } from "./machine-visibility.ts";
 import {
   browserMachineStorage,
@@ -65,13 +59,8 @@ import { loadViewport, saveViewport } from "./viewport-memory.ts";
 import { buildSessionRows } from "./session-inventory.ts";
 import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
-import {
-  composeTargetAt,
-  previewRect,
-  resolveSnapTarget,
-  type SnapAction,
-  type SnapTarget,
-} from "./tile-snap.ts";
+import { createTileDropStore } from "./tile-drop-store.ts";
+import { composeTargetAt } from "./tile-snap.ts";
 import { useToast } from "./toast.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
@@ -100,9 +89,11 @@ const PRO_OPTIONS = Object.freeze({ hideAttribution: true });
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 30;
 /**
- * How long a dragged surface must hover a node before the canvas offers to compose.
- * Long enough that dragging a terminal PAST another one on the way somewhere else
- * never arms; short enough that deliberately holding it there feels immediate.
+ * How long a dragged surface must hover a node before the canvas arms it as a drop
+ * target. Long enough that dragging a terminal PAST another one on the way somewhere
+ * else never arms; short enough that deliberately holding it there feels immediate.
+ * The armed widget's own overlay resolves WHICH zone and WHAT releasing means; the
+ * canvas only decides WHICH widget is armed. Once armed, zone changes are immediate.
  */
 const COMPOSE_ARM_MS = 150;
 
@@ -130,24 +121,6 @@ function gesturePoints(points: readonly number[]): number[] {
   return points
     .slice(-MAX_GESTURE_POINT_VALUES)
     .map((value) => Math.round(value * ROUND_GESTURE_COORDINATE) / ROUND_GESTURE_COORDINATE);
-}
-
-/**
- * The armed drop: the node that morphed into composition chrome, the zone it will split
- * on, what releasing there would DO, and what the pipeline says about it. A REFUSED arm is
- * still armed — the target wears the refusal instead of the preview, so the viewer learns
- * the rule before releasing.
- */
-interface ComposeArmed {
-  readonly elementId: string;
-  readonly zone: TileEdge;
-  /**
-   * `swap` is a center release: on a canvas the exact spot IS the target's rectangle, so
-   * the two elements trade seats instead of merging. The wire carries the same `center`
-   * edge either way — the executor owns that branch — so this exists only to paint it.
-   */
-  readonly action: SnapAction;
-  readonly assessment: ItemDropAssessment | null;
 }
 
 interface FlowPadViewProps {
@@ -275,17 +248,17 @@ export function FlowPadView({
     readonly pointerId: number;
     readonly points: number[];
   } | null>(null);
-  const [composeArmed, setComposeArmed] = useState<ComposeArmed | null>(null);
   /**
-   * The compose gesture runs off refs, not state: it is driven by drag frames and
-   * read by the release handler, and re-rendering the canvas on every hover frame
-   * would put the xterm subtrees back into the drag hot path. Only the armed drop
-   * — a rare, deliberate transition — reaches React state, where it stamps the
-   * hovered node's data and paints the preview overlay.
+   * The per-frame drop channel to this canvas's widget overlays. The compose gesture
+   * runs off refs and this store, never React state: it is driven by drag frames, and
+   * re-rendering the canvas on every hover frame would put the xterm subtrees back
+   * into the drag hot path. Arming only flips `armedElementId`, which repaints the one
+   * armed widget's overlay and nothing else.
    */
-  const composeArmedRef = useRef<ComposeArmed | null>(null);
+  const [dropStore] = useState(createTileDropStore);
+  /** Which widget is armed right now; mirrored into the store with each frame. */
+  const armedElementIdRef = useRef<string | null>(null);
   const composeCandidateRef = useRef<string | null>(null);
-  const composeSnapRef = useRef<SnapTarget | null>(null);
   const composeTimerRef = useRef<number | null>(null);
   /** True while a gesture is over this canvas; the WHAT lives in the carry register. */
   const carryingRef = useRef(false);
@@ -461,26 +434,6 @@ export function FlowPadView({
   );
 
   /**
-   * The half the dropped surface would take over on the armed target, drawn in flow
-   * coordinates beside the other presence overlays so it tracks pan and zoom for free.
-   * A REFUSED arm paints the same box in the refusal style with the rule's prose in it,
-   * so the viewer reads why before releasing rather than after — and an EXCHANGE paints
-   * the whole rectangle in its own colour with the swap glyph in the middle, because
-   * "the two trade seats" and "the surface takes this half" must not look alike.
-   */
-  const composePreview = useMemo(() => {
-    if (composeArmed === null) return null;
-    const target = projected.find((element) => element.id === composeArmed.elementId);
-    if (target === undefined) return null;
-    const rect = previewRect(
-      { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
-      composeArmed.zone,
-    );
-    const denied = composeArmed.assessment?.message ?? null;
-    return { rect, denied, swapping: composeArmed.action === "swap" && denied === null };
-  }, [composeArmed, projected]);
-
-  /**
    * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
    * node React Flow is dragging or resizing verbatim, so the pointer is tracked by React
    * Flow's own array and this memo only rebuilds when the scene or highlight actually moves.
@@ -507,14 +460,9 @@ export function FlowPadView({
               dragHandle: `${PORTAL_DRAG_HANDLE}, ${MONO_PORTAL_CLASS_SELECTOR} ${TERMINAL_DRAG_HANDLE}`,
             }
           : {}),
-        // The armed compose zone rides in node data so only the hovered node
-        // re-renders into view chrome (`reconcileNodes` reuses every other object).
-        data:
-          composeArmed?.elementId === element.id
-            ? { ...element.data, composeZone: composeArmed.zone }
-            : element.data,
+        data: element.data,
       })),
-    [composeArmed, highlightedId, projected],
+    [highlightedId, projected],
   );
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
@@ -592,33 +540,19 @@ export function FlowPadView({
     }
     carryingRef.current = false;
     composeCandidateRef.current = null;
-    composeSnapRef.current = null;
-    composeArmedRef.current = null;
-    setComposeArmed(null);
-  }, []);
-
-  /**
-   * The destination an armed drop on `elementId` means. Always `compose`: the executor
-   * turns a drop on a WIDGET into a plain tile add against the composition it points at,
-   * so "compositions never nest" stays a declaration instead of a branch here.
-   */
-  const composeDestination = useCallback(
-    (elementId: string, zone: TileEdge): PlacementDestination => ({
-      kind: "compose",
-      padId,
-      targetElementId: elementId,
-      edge: zone,
-    }),
-    [padId],
-  );
+    armedElementIdRef.current = null;
+    dropStore.set({ pointer: null, armedElementId: null, aim: null });
+  }, [dropStore]);
 
   /**
    * One frame of the compose gesture: find the node under the pointer, hold it for
-   * COMPOSE_ARM_MS, then arm the drop. Moving to another node restarts the hold and
-   * leaving every node disarms, so dragging PAST a terminal never composes onto it.
+   * COMPOSE_ARM_MS, then arm it. Moving to another node restarts the hold and leaving
+   * every node disarms, so dragging PAST a terminal never composes onto it — and panes
+   * never fly around inside every widget a drag merely crosses.
    *
-   * An arm carries the pipeline's verdict, so a refused pair still arms and shows the
-   * declared rule rather than pretending the gesture is available.
+   * The canvas decides only WHICH widget is armed. The armed widget's own overlay is
+   * the side that can see its layout, so it resolves the zone, paints the preview, and
+   * publishes the destination back into the store for the release handlers to commit.
    */
   const trackCompose = useCallback(
     (clientX: number, clientY: number, sourceElementId: string | null): void => {
@@ -626,67 +560,46 @@ export function FlowPadView({
       if (flow === null || !carryingRef.current) return;
       const point = flow.screenToFlowPosition({ x: clientX, y: clientY });
       const target = composeTargetAt(projectedRef.current, point, sourceElementId);
+      const publish = (): void => {
+        const armedElementId = armedElementIdRef.current;
+        dropStore.set({
+          pointer: { clientX, clientY },
+          armedElementId,
+          // The aim is the armed overlay's answer; disarming retires it with the arm.
+          aim: armedElementId === null ? null : dropStore.get().aim,
+        });
+      };
       if (target === null) {
-        if (composeCandidateRef.current === null) return;
         if (composeTimerRef.current !== null) {
           window.clearTimeout(composeTimerRef.current);
           composeTimerRef.current = null;
         }
         composeCandidateRef.current = null;
-        composeSnapRef.current = null;
-        composeArmedRef.current = null;
-        setComposeArmed(null);
+        armedElementIdRef.current = null;
+        publish();
         return;
       }
-      /*
-        A canvas element always OCCUPIES its rectangle, so the center band over one is
-        never a fill: it is an exchange, and only when the carry holds a placement of this
-        canvas to give the occupant back. A sidebar row or a tile of some composition has
-        no seat here, so for those the band dissolves into its nearest edge instead of
-        offering a trade the executor would refuse (`not_swappable`).
-       */
-      const carried = carriedItem();
-      const snap = resolveSnapTarget(
-        { x: target.position.x, y: target.position.y, width: target.width, height: target.height },
-        point,
-        {
-          occupied: true,
-          canSwap: carried?.kind === "element" && carried.padId === padId,
-        },
-      );
-      if (snap === null) return;
-      composeSnapRef.current = snap;
-      const arm = (held: SnapTarget): ComposeArmed => ({
-        elementId: target.id,
-        zone: held.zone,
-        action: held.action,
-        assessment: drop.assess(composeDestination(target.id, held.zone)),
-      });
       if (composeCandidateRef.current === target.id) {
-        const armed = composeArmedRef.current;
-        if (armed === null || (armed.zone === snap.zone && armed.action === snap.action)) return;
-        const rezoned = arm(snap);
-        composeArmedRef.current = rezoned;
-        setComposeArmed(rezoned);
+        // Held or already armed: stream the pointer either way, so the armed overlay
+        // re-resolves its zone immediately (arming is delayed; zone changes are not).
+        publish();
         return;
       }
       composeCandidateRef.current = target.id;
-      composeArmedRef.current = null;
-      setComposeArmed(null);
+      armedElementIdRef.current = null;
+      publish();
       if (composeTimerRef.current !== null) window.clearTimeout(composeTimerRef.current);
       // The hold is timed, not sampled: a pointer that stops moving over a target
       // still arms, because drag frames stop arriving the moment it settles.
       composeTimerRef.current = window.setTimeout(() => {
         composeTimerRef.current = null;
-        const held = composeSnapRef.current;
         if (!carryingRef.current || composeCandidateRef.current !== target.id) return;
-        if (held === null) return;
-        const armed = arm(held);
-        composeArmedRef.current = armed;
-        setComposeArmed(armed);
+        armedElementIdRef.current = target.id;
+        // The pointer already in the store is the one the drag settled on.
+        dropStore.set({ ...dropStore.get(), armedElementId: target.id });
       }, COMPOSE_ARM_MS);
     },
-    [composeDestination, drop, padId],
+    [dropStore],
   );
 
   /**
@@ -757,7 +670,7 @@ export function FlowPadView({
   const handleNodeDragStop = useCallback(
     (event: MouseEvent | TouchEvent, node: Node): void => {
       const element = client.elements.get(node.id);
-      const armed = composeArmedRef.current;
+      const aim = dropStore.get().aim;
       if (
         element === undefined ||
         !Number.isFinite(node.position.x) ||
@@ -768,11 +681,12 @@ export function FlowPadView({
       }
       const point = dragPoint(event);
       const release = { x: node.position.x, y: node.position.y };
-      // Composed: the server rewrites both placements (the target becomes a portal, this
-      // element is consumed), so the geometry this drag produced is dropped. A REFUSED arm
-      // reports its rule and mutates nothing — the pipeline decides, not this handler.
-      if (armed !== null) {
-        drop.commit(null, composeDestination(armed.elementId, armed.zone));
+      // Aimed at a widget: the armed overlay resolved and published the destination —
+      // the very state it previewed — so the geometry this drag produced is dropped. A
+      // REFUSED aim still commits and reports its rule; the pipeline decides, not this
+      // handler.
+      if (aim !== null) {
+        drop.commit(null, aim.destination);
         clearCompose();
         carry.end(release);
         return;
@@ -797,7 +711,7 @@ export function FlowPadView({
       }
       carry.end(release);
     },
-    [carry, clearCompose, client, composeDestination, drop, isOverSidebar],
+    [carry, clearCompose, client, drop, dropStore, isOverSidebar],
   );
 
   const handleResize = useCallback(
@@ -1132,11 +1046,17 @@ export function FlowPadView({
       openClient,
       navigate,
       notify,
+      padId,
+      dropStore,
+      assessDrop: drop.assess,
     }),
     [
       carry,
       client,
       notify,
+      drop.assess,
+      dropStore,
+      padId,
       depth,
       editingId,
       handleResize,
@@ -1303,8 +1223,8 @@ export function FlowPadView({
           // it enters this canvas — the same motion a node drag broadcasts.
           if (at !== null) carry.track(at);
           trackCompose(event.clientX, event.clientY, null);
-          const armed = composeArmedRef.current;
-          const verdict = armed?.assessment ?? pane;
+          const aim = dropStore.get().aim;
+          const verdict = aim !== null ? drop.assess(aim.destination) : pane;
           event.dataTransfer.dropEffect = verdict?.denial == null ? "move" : "none";
         }}
         onDragLeave={(event) => {
@@ -1317,7 +1237,7 @@ export function FlowPadView({
           event.preventDefault();
           const flow = flowRef.current;
           if (flow === null) return;
-          const armed = composeArmedRef.current;
+          const aim = dropStore.get().aim;
           const transfer = event.dataTransfer;
           clearCompose();
           const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
@@ -1325,8 +1245,8 @@ export function FlowPadView({
           // item hover over a canvas it has already landed on. The payload lives in the
           // transfer, so ending the carry cannot cost the drop its envelope.
           carry.end(at);
-          if (armed !== null) {
-            drop.commit(transfer, composeDestination(armed.elementId, armed.zone));
+          if (aim !== null) {
+            drop.commit(transfer, aim.destination);
             return;
           }
           // Bare canvas is the one POLYMORPHIC door: a terminal portals, a container
@@ -1445,27 +1365,6 @@ export function FlowPadView({
           >
             <ViewportPortal>
               <div className="flow-presence-layer" style={{ zIndex: presenceZIndex }}>
-                {composePreview === null ? null : (
-                  <div
-                    className={`flow-compose-preview${
-                      composePreview.denied === null ? "" : " is-denied"
-                    }${composePreview.swapping ? " is-swap" : ""}`}
-                    style={{
-                      height: composePreview.rect.height,
-                      transform: `translate(${String(composePreview.rect.x)}px, ${String(composePreview.rect.y)}px)`,
-                      width: composePreview.rect.width,
-                    }}
-                  >
-                    {composePreview.swapping ? (
-                      <span className="flow-compose-preview__glyph">
-                        <ControlIcon kind="swap" size={32} />
-                      </span>
-                    ) : null}
-                    {composePreview.denied === null ? null : (
-                      <span className="drop-denial-note">{composePreview.denied}</span>
-                    )}
-                  </div>
-                )}
                 {activeStrokePoints === null ? null : (
                   <svg className="flow-stroke-preview" overflow="visible">
                     <path

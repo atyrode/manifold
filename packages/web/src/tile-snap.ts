@@ -178,27 +178,6 @@ function nearestEdge(rect: SnapRect, pointer: SnapPoint): TileEdge {
 }
 
 /**
- * The highlight rectangle for a zone: the half the dropped surface would occupy,
- * or the whole target for `center`. Coordinates match the input rect's space.
- */
-export function previewRect(rect: SnapRect, zone: TileEdge): SnapRect {
-  const halfWidth = rect.width / 2;
-  const halfHeight = rect.height / 2;
-  switch (zone) {
-    case "left":
-      return { x: rect.x, y: rect.y, width: halfWidth, height: rect.height };
-    case "right":
-      return { x: rect.x + halfWidth, y: rect.y, width: halfWidth, height: rect.height };
-    case "top":
-      return { x: rect.x, y: rect.y, width: rect.width, height: halfHeight };
-    case "bottom":
-      return { x: rect.x, y: rect.y + halfHeight, width: rect.width, height: halfHeight };
-    case "center":
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  }
-}
-
-/**
  * Lifts a single surface into the one-leaf tile tree the preview and compose
  * layers reason over. Nothing is stored: a canvas terminal element only becomes
  * a real layout tree when the server composes a view around it.

@@ -7,7 +7,6 @@ import {
   composeTargetAt,
   dividerRatios,
   MIN_TILE_FRACTION,
-  previewRect,
   resizeRatios,
   resolveSnapTarget,
   snapZone,
@@ -181,26 +180,6 @@ describe("resolveSnapTarget", () => {
         null,
       );
     }
-  });
-});
-
-describe("previewRect", () => {
-  test("edges preview the half the dropped surface takes", () => {
-    expect(previewRect(rect, "left")).toEqual({ x: 100, y: 200, width: 200, height: 300 });
-    expect(previewRect(rect, "right")).toEqual({ x: 300, y: 200, width: 200, height: 300 });
-    expect(previewRect(rect, "top")).toEqual({ x: 100, y: 200, width: 400, height: 150 });
-    expect(previewRect(rect, "bottom")).toEqual({ x: 100, y: 350, width: 400, height: 150 });
-  });
-
-  test("center previews the whole target", () => {
-    expect(previewRect(rect, "center")).toEqual({ ...rect });
-  });
-
-  test("opposite halves tile the target exactly", () => {
-    const left = previewRect(rect, "left");
-    const right = previewRect(rect, "right");
-    expect(left.x + left.width).toBe(right.x);
-    expect(left.width + right.width).toBe(rect.width);
   });
 });
 
