@@ -1,8 +1,147 @@
-import { ServerMessageSchema, type RuntimeDeps, type ServerMessage } from "@manifold/protocol";
+import {
+  ServerMessageBodySchema,
+  ServerMessageSchema,
+  type PlaceResponse,
+  type PlacementSurface,
+  type RuntimeDeps,
+  type ServerMessage,
+  type ServerMessageBody,
+  type TileEdge,
+  type TileSurface,
+} from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
+import type { PlaceExecutor, PlaceOutcome } from "../src/placement.ts";
 import type { RoomTimers } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
 import { ServerStore } from "../src/stores.ts";
+
+/**
+ * The retired verbs, expressed over `place()`.
+ *
+ * The executor has one envelope, not a method per gesture, but these ARE the gestures the
+ * lifecycle tests are about — so naming them here keeps those tests readable while proving
+ * the envelope covers every one. Nothing in `src/` depends on this file: it is test
+ * vocabulary, not a shim.
+ */
+
+function placed(outcome: PlaceOutcome): PlaceResponse | string {
+  if (outcome.status === "placed") return outcome.result;
+  return outcome.status === "denied" ? `denied:${outcome.denial.rule}` : outcome.failure;
+}
+
+/**
+ * One reference to an item goes; the item stays in the composition it lives in. This is
+ * what park became: there is nowhere to park TO, so releasing is subtractive.
+ */
+export function unplaceElement(
+  placement: PlaceExecutor,
+  padId: string,
+  elementId: string,
+): { readonly removed: number } | string {
+  const result = placed(
+    placement.place({
+      surface: { kind: "element", padId, elementId },
+      destination: { kind: "unplaced" },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "unplace" ? { removed: result.removed } : `unexpected:${result.op}`;
+}
+
+/** Every reference to an item goes, named by the item's own identity rather than a copy. */
+export function unplaceTerminal(
+  placement: PlaceExecutor,
+  sessionId: string,
+): { readonly removed: number } | string {
+  const result = placed(
+    placement.place({
+      surface: { kind: "terminal", sessionId },
+      destination: { kind: "unplaced" },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "unplace" ? { removed: result.removed } : `unexpected:${result.op}`;
+}
+
+/** A tileable surface joins a composition. */
+export function placeTile(
+  placement: PlaceExecutor,
+  padId: string,
+  surface: TileSurface,
+  targetTileId: string | null,
+  edge: TileEdge | null,
+): { readonly tileId: string } | string {
+  const result = placed(
+    placement.place({
+      surface: tileSurfaceAsPlacement(surface, padId),
+      destination: { kind: "tile", padId, targetTileId, edge },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "add_tile" ? { tileId: result.tileId } : `unexpected:${result.op}`;
+}
+
+/**
+ * A leaf's occupant leaves the composition and lands on `destinationPadId`. A terminal is
+ * re-homed into a fresh solo composition and referenced from there, so the returned element
+ * is a portal — never an element carrying a session.
+ */
+export function extractTile(
+  placement: PlaceExecutor,
+  containerId: string,
+  tileId: string,
+  destinationPadId: string,
+  x: number,
+  y: number,
+): { readonly elementId: string } | string {
+  const result = placed(
+    placement.place({
+      surface: { kind: "tile", containerId, tileId },
+      destination: { kind: "canvas", padId: destinationPadId, x, y },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "extract" ? { elementId: result.elementId } : `unexpected:${result.op}`;
+}
+
+/** Two references on one canvas merge into a new composition holding both items. */
+export function composeOnCanvas(
+  placement: PlaceExecutor,
+  padId: string,
+  targetElementId: string,
+  surface: PlacementSurface,
+  edge: TileEdge,
+): { readonly viewId: string; readonly tileId: string } | string {
+  const result = placed(
+    placement.place({
+      surface,
+      destination: { kind: "compose", padId, targetElementId, edge },
+    }),
+  );
+  if (typeof result === "string") return result;
+  return result.op === "compose"
+    ? { viewId: result.viewId, tileId: result.tileId }
+    : `unexpected:${result.op}`;
+}
+
+/**
+ * Storage surfaces name items the way a LEAF does; placement surfaces name them the way a
+ * GESTURE does. A note is the one form where they differ, so it is translated here.
+ */
+function tileSurfaceAsPlacement(surface: TileSurface, padId: string): PlacementSurface {
+  switch (surface.kind) {
+    case "terminal":
+      return { kind: "terminal", sessionId: surface.sessionId };
+    case "pad":
+      return { kind: "pad", padId: surface.padId };
+    case "text":
+      return { kind: "element", padId, elementId: surface.elementId };
+    default: {
+      const exhaustive: never = surface;
+      return exhaustive;
+    }
+  }
+}
 
 /** Seeded id/time boundary for deterministic server unit tests. */
 export class FakeRuntime implements RuntimeDeps {
@@ -86,8 +225,23 @@ export class FakeSocket implements RawSocket {
     this.closed = { code, reason };
   }
 
-  /** Parses captured frames with the authoritative session-server schema. */
-  messages(): ServerMessage[] {
+  /**
+   * Captured frames as channel-agnostic BODIES: multiplexing added a routing id to every
+   * channel frame, and a test about presence or terminal output is not a test about
+   * routing. Both shapes are schema-validated, so a body view can never hide a malformed
+   * wire frame; `frames()` is the routing view.
+   */
+  messages(): ServerMessageBody[] {
+    return this.sent.map((frame) => {
+      const raw = JSON.parse(frame) as Record<string, unknown>;
+      ServerMessageSchema.parse(raw);
+      delete raw["ch"];
+      return ServerMessageBodySchema.parse(raw);
+    });
+  }
+
+  /** Captured frames exactly as they went out, routing id included. */
+  frames(): ServerMessage[] {
     return this.sent.map((frame) => ServerMessageSchema.parse(JSON.parse(frame)));
   }
 

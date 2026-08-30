@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 13;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -22,8 +22,47 @@ export const PROTOCOL_VERSION = 4;
  * v3 -> v4: agent wire gained OPTIONAL `exitCode` on advertised sessions
  * (hello). Absence ≡ the old `null` adoption semantics, so v2/v3 agents stay
  * accepted; they merely keep reporting disconnect-window exits as null.
+ * v4 -> v5: session-channel scene records became strict native terminal
+ * records. The machine wire is identical, so v2/v3/v4 agents stay accepted.
+ * v5 -> v6: session-channel scene frames became Yjs document updates. The
+ * machine wire is byte-identical, so existing agents stay accepted.
+ * v6 -> v7: session-channel roster states gained required `connIds` so viewers
+ * can retire a closed tab's cursor. The machine wire is byte-identical, so
+ * existing agents stay accepted.
+ * v7 -> v8: session-channel cursor frames dropped the never-rendered `tool`
+ * field. The machine wire is byte-identical, so existing agents stay accepted.
+ * v8 -> v9: session-channel SessionInfo.padId became nullable and session_event
+ * gained "parked". The machine wire is byte-identical, so existing agents stay
+ * accepted.
+ * v9 -> v10: session-channel SessionInfo gained a nullable name and session_event
+ * gained "renamed". The machine wire is byte-identical, so existing agents stay
+ * accepted.
+ * v10 -> v11: pads gained layout/transient and tiled containers store a layout
+ * tree; scene elements gained portal; the session `join` frame gained an OPTIONAL
+ * `spectator` flag so a portal widget's preview socket can watch a room without
+ * occupying it (absent ≡ occupant, the pre-flag semantics); `terminal_open` gained
+ * an OPTIONAL `placement: "tile"` (absent ≡ the opener authors a canvas element)
+ * and `terminal_opened` an OPTIONAL `ref` echoing it, so a view can birth a
+ * terminal the server places as a tile; SessionInfo and PadSessionSummary DROPPED
+ * `elementId`, because a session holds many placements at once (canvas mirrors,
+ * tile leaves) and consumers read placement from the doc's elements and layout
+ * tree instead. The machine wire is byte-identical, so existing agents stay
+ * accepted.
+ * v11 -> v12: session-channel frames became MULTIPLEXED — every channel-level frame
+ * carries a `ch` routing id, `join`/`leave` are per-channel ops on one socket, and
+ * per-channel epoch/resume hints ride each channel's own join, so one tab holds exactly
+ * one TCP connection no matter how many rooms it renders. ping/pong stay
+ * connection-level. The machine wire is byte-identical, so existing agents stay
+ * accepted.
+ * v12 -> v13: session-channel only. Tile placement destinations gained an OPTIONAL
+ * `between` flag (absent ≡ split-the-target, the pre-bump semantics) so a seam-band
+ * drop can mean "wedge between both neighbors" on the wire; gesture `carry` payloads
+ * gained an OPTIONAL `aim` so collaborators can re-derive a producer's live split
+ * preview. The machine wire is byte-identical, so existing agents stay accepted.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this

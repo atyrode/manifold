@@ -3,13 +3,13 @@ import type { MachineSummary, SessionInfo } from "@manifold/protocol";
 /** One row of the sessions janitor panel: a PTY session and how it is bound. */
 export interface SessionRow {
   readonly id: string;
+  /** Durable user-given terminal name; null falls back to machine labeling. */
+  readonly name: string | null;
   readonly machineName: string | null;
   readonly machineOnline: boolean | null;
   readonly status: SessionInfo["status"];
   readonly exitCode: number | null;
-  /** Running but no live (non-deleted) terminal element references it anymore. */
-  readonly orphaned: boolean;
-  /** Every live canvas mirror in Excalidraw's stable scene order. */
+  /** Every live canvas mirror in stable scene order. */
   readonly boundElementIds: readonly string[];
   readonly isController: boolean;
   /** Self can terminate directly, or can claim an unbound session before terminating it. */
@@ -26,8 +26,9 @@ export interface SessionInventoryInput {
 }
 
 /**
- * Projects wire sessions + canvas bindings into janitor rows. Pure so the
- * orphan-detection policy stays unit-testable outside Excalidraw.
+ * Projects wire sessions + canvas bindings into janitor rows. Pure so the binding
+ * policy stays unit-testable outside a renderer. A session with no pad binding is
+ * not in this inventory at all: it lives in the workspace terminal pool.
  */
 export function buildSessionRows(input: SessionInventoryInput): readonly SessionRow[] {
   const machineById = new Map(
@@ -42,16 +43,21 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
       const isController = input.selfId !== null && session.controllerId === input.selfId;
       return {
         id: session.id,
+        name: session.name,
         machineName: machine?.name ?? null,
         machineOnline: machine === undefined ? null : machine.online,
         status: session.status,
         exitCode: session.exitCode,
-        orphaned: session.status === "running" && boundElementIds.length === 0,
         boundElementIds,
         isController,
+        // A running session is killable by its controller, a root, or (unbound) any
+        // terminal writer; an EXITED session is dismissable by anyone who can write —
+        // the server sweeps it totally either way, and a lease on a dead PTY is not
+        // a thing (kill and dismiss are one verb).
         canKill:
-          session.status === "running" &&
-          (isController || isRoot || (boundElementIds.length === 0 && canWriteTerminals)),
+          session.status === "running"
+            ? isController || isRoot || (boundElementIds.length === 0 && canWriteTerminals)
+            : canWriteTerminals || isRoot,
       } satisfies SessionRow;
     })
     .filter(
@@ -59,12 +65,10 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
       // cannot be restarted in place, and has no remaining user action.
       (row) => row.status === "running" || row.boundElementIds.length > 0,
     );
-  const statusRank = (row: SessionRow): number =>
-    row.status === "running" ? (row.orphaned ? 0 : 1) : 2;
+  const statusRank = (row: SessionRow): number => (row.status === "running" ? 0 : 1);
   return rows.sort((left, right) => {
     const byStatus = statusRank(left) - statusRank(right);
     if (byStatus !== 0) return byStatus;
-    if (left.orphaned !== right.orphaned) return left.orphaned ? -1 : 1;
     return left.id.localeCompare(right.id);
   });
 }

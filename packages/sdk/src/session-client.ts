@@ -1,178 +1,153 @@
 import {
-  ClientMessageSchema,
-  MAX_ELEMENTS_PER_UPDATE,
-  type Cap,
-  MAX_SESSION_FRAME_BYTES,
+  ClientMessageBodySchema,
+  HttpErrorSchema,
+  MAX_DOC_UPDATE_BYTES,
   PROTOCOL_VERSION,
-  ServerMessageSchema,
-  applyAccepted,
-  reconcile,
-  reconnectDelayMs,
-  type ClientMessage,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
+  type Cap,
+  type ClientMessageBody,
+  type Gesture,
+  type PlaceResponse,
+  type PlacementDenial,
+  type PlacementDestination,
+  type PlacementSurface,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type SceneElement,
-  type ServerMessage,
+  type ServerMessageBody,
   type SessionInfo,
-  SERVER_MESSAGE_TYPES,
+  type TileLayout,
 } from "@manifold/protocol";
+import {
+  LOCAL_ORIGIN,
+  Y,
+  REMOTE_ORIGIN,
+  changedElementIds,
+  createSceneDoc,
+  decodeUpdate,
+  elementText as sceneElementText,
+  elementsMap,
+  encodeUpdate,
+  layoutMap,
+  nextZIndex,
+  patchElement,
+  readElement,
+  readTileLayout,
+  removeElement,
+  setTileRatios as sceneSetTileRatios,
+  writeElement,
+  type ScenePatch,
+} from "@manifold/scene";
 import { bytesToBase64, textToBase64 } from "./base64.ts";
+import {
+  acquireChannel,
+  type ChannelFrame,
+  type JoinBody,
+  type PooledChannel,
+} from "./connection-pool.ts";
 
 /**
- * THE session-channel client. Browsers, tests, and tools all speak to the server through
- * this state machine — never through a second WebSocket implementation (AGENTS.md
- * invariant). It owns: the join handshake, reconnect with rejoin, epoch/rev tracking,
- * gap-triggered resync, optimistic local reconciliation, and offline-edit rebase.
+ * THE per-room session client. Browsers, tests, and tools all speak to the server
+ * through this state machine — never through a second WebSocket implementation (AGENTS.md
+ * invariant). It owns everything a ROOM means: the join handshake, epoch/rev tracking,
+ * gap-triggered resync, optimistic local reconciliation, offline-edit rebase, and the
+ * terminal subscription refcounts.
+ *
+ * What it no longer owns is the SOCKET. Since v12 the transport is multiplexed: this
+ * client is a channel handle on a pooled connection keyed by (url, token), so a tab
+ * rendering a canvas plus five portal widgets holds ONE TCP connection with six channels.
+ * The public surface is unchanged — construct one per room, `connect()`, subscribe — and
+ * reconnect, keepalive, and rejoin-every-channel live one layer down in
+ * `connection-pool.ts`.
  */
-
-const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
-
-type ClassifiedFrame =
-  | { kind: "message"; message: ServerMessage }
-  | { kind: "unknown_type" }
-  | { kind: "malformed"; detail: string };
-
-/**
- * Frame policy (CONTRACTS.md): unknown `type` values are ignored for forward
- * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors —
- * the caller closes the socket (4002) and heals via reconnect → fresh init.
- */
-type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "terminal_snapshot" }>;
-
-function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
-  const type = Reflect.get(raw, "type");
-  const sessionId = Reflect.get(raw, "sessionId");
-  const seq = Reflect.get(raw, "seq");
-  const data = Reflect.get(raw, "data");
-  return (
-    (type === "terminal_output" || type === "terminal_snapshot") &&
-    typeof sessionId === "string" &&
-    sessionId.length > 0 &&
-    typeof seq === "number" &&
-    Number.isInteger(seq) &&
-    seq >= 0 &&
-    typeof data === "string" &&
-    data.length <= 700_000
-  );
-}
-
-function classifyServerFrame(data: unknown): ClassifiedFrame {
-  if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return { kind: "malformed", detail: "invalid JSON" };
-  }
-  if (raw === null || typeof raw !== "object" || typeof Reflect.get(raw, "type") !== "string") {
-    return { kind: "malformed", detail: "missing type discriminator" };
-  }
-  const type = Reflect.get(raw, "type") as string;
-  if (!KNOWN_SERVER_TYPES.has(type)) return { kind: "unknown_type" };
-  if (type === "terminal_output" || type === "terminal_snapshot") {
-    return isTerminalDataFrame(raw)
-      ? { kind: "message", message: raw }
-      : { kind: "malformed", detail: `invalid ${type} frame` };
-  }
-  const parsed = ServerMessageSchema.safeParse(raw);
-  if (!parsed.success) return { kind: "malformed", detail: `invalid ${type} frame` };
-  return { kind: "message", message: parsed.data };
-}
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
-type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
+/**
+ * Subscribers see channel-agnostic BODIES: a handle already knows which room it is, so
+ * making every listener carry a routing id would be noise. Wire frames satisfy these
+ * types structurally, which is why nothing downstream had to change for v12.
+ */
+type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
-export interface SceneUpdateRejection {
-  readonly element: SceneElement;
-  readonly reason: "element_too_large" | "element_not_serializable" | "server_rejected";
-  readonly serializedBytes: number | null;
-  readonly limitBytes: number;
+export interface SceneTx {
+  create(element: SceneElement): void;
+  patch(id: string, patch: ScenePatch): boolean;
+  remove(id: string): boolean;
+  text(id: string): Y.Text | null;
+  nextZIndex(): number;
 }
 
 export interface SessionEvents {
   /** Server messages, by type. */
-  message: (msg: ServerMessage) => void;
+  message: (msg: ServerMessageBody) => void;
   status: (status: ConnectionStatus) => void;
-  /** Scene replaced wholesale (first init, resync, or reconnect). */
+  /** Scene document was replaced after an epoch change or full state adoption. */
   scene_reset: () => void;
-  /** Scene changed incrementally (accepted records applied). */
-  scene_changed: (elements: readonly SceneElement[], by: string) => void;
-  /** Local records refused before apply or rejected by the server after optimistic apply. */
-  scene_rejected: (rejections: readonly SceneUpdateRejection[]) => void;
+  /** Validated element projections changed inside the Yjs document. */
+  elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
+  /**
+   * A tiled container's layout tree changed. The tree is small and read whole, so
+   * subscribers re-read `layout()` rather than diffing tile ids.
+   */
+  layout_changed: (origin: "local" | "remote" | "undo") => void;
   roster_changed: () => void;
   sessions_changed: () => void;
 }
 
-type EventKey = ServerMessage["type"] | keyof SessionEvents;
+type EventKey = ChannelFrame["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
+
+/**
+ * What `place()` answers: the placement it executed, or the declared RULE that refused
+ * it. A refusal is data — never an exception — because a client renders it.
+ */
+export type PlaceOutcome =
+  | { readonly ok: true; readonly result: PlaceResponse }
+  | { readonly ok: false; readonly denial: PlacementDenial };
 
 export interface SessionClientOptions {
   /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
   url: string;
   padId: string;
   token: string;
-  /** Reconnect on unexpected close (default true). */
+  /**
+   * Joins as a spectator: this channel watches the room (state, doc updates, terminal
+   * output) without occupying it. It is absent from the roster and from pad presence,
+   * and the server rejects any write it sends. Live previews of a container use it;
+   * anything a user acts in does not.
+   */
+  spectator?: boolean;
+  /**
+   * Reconnect on unexpected close (default true). Reconnect belongs to the shared
+   * CONNECTION, so the first client to open a given (url, token) transport sets it.
+   */
   reconnect?: boolean;
-  /** DI seam for tests. */
+  /**
+   * DI seam for tests. It is also part of the pool key: two clients sharing a factory
+   * (and url and token) share one socket, while a test handing each client its own
+   * socket double keeps them genuinely separate.
+   */
   webSocketFactory?: (url: string) => WebSocket;
-  /** Backoff schedule cap in ms (default 8000). */
+  /** Backoff schedule cap in ms (default 8000); a connection-level policy. */
   backoffCapMs?: number;
+  /**
+   * HTTP origin for placement writes; defaults to the origin `url` implies (same host,
+   * ws(s) mapped to http(s)), which is what a same-origin deployment wants.
+   */
+  apiUrl?: string;
 }
 
 const OUTBOX_LIMIT = 256;
-const KEEPALIVE_INTERVAL_MS = 45_000;
-const MALFORMED_FRAME_CLOSE_CODE = 4002;
-const TERMINAL_CLOSE_CODE_MIN = 4400;
-const TERMINAL_CLOSE_CODE_MAX = 4499;
-// Reserve 25% of the wire limit for the scene_update envelope and future metadata.
-const SCENE_UPDATE_ELEMENTS_BYTE_BUDGET = (MAX_SESSION_FRAME_BYTES * 3) / 4;
-
-/**
- * Counts the UTF-8 bytes of one element's JSON without allocating another full-size
- * encoded buffer. Large freedraw records make that otherwise significant transient memory.
- */
-function serializedElementByteLength(element: SceneElement): number | null {
-  let serialized: string | undefined;
-  try {
-    serialized = JSON.stringify(element);
-  } catch {
-    return null;
-  }
-  if (serialized === undefined) return null;
-
-  let bytes = 0;
-  for (let index = 0; index < serialized.length; index += 1) {
-    const code = serialized.charCodeAt(index);
-    if (code <= 0x7f) {
-      bytes += 1;
-    } else if (code <= 0x7ff) {
-      bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff) {
-      const next = serialized.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        index += 1;
-      } else {
-        bytes += 3;
-      }
-    } else {
-      bytes += 3;
-    }
-  }
-  return bytes;
-}
-interface InflightSceneElement {
-  readonly element: SceneElement;
-  readonly stamp: string;
-}
 
 export class SessionClient {
-  /** Local scene truth: canonical after init, optimistic between acks. */
-  readonly scene = new Map<string, SceneElement>();
   readonly roster = new Map<string, PresenceState>();
   readonly sessions = new Map<string, SessionInfo>();
+  private readonly elementsState = new Map<string, SceneElement>();
+  readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
   /** Live view refcounts per attached session (see attachTerminal). */
   private readonly attachCounts = new Map<string, number>();
   epoch = "";
@@ -184,25 +159,81 @@ export class SessionClient {
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
     SessionClientOptions;
-  private socket: WebSocket | null = null;
+  /** This room's channel on the shared socket; null before connect and after close. */
+  private channel: PooledChannel | null = null;
   private listeners = new Map<EventKey, Set<Handler>>();
-  private outbox: ClientMessage[] = [];
-  private attempts = 0;
-  private closedIntentionally = false;
-  private updateCounter = 0;
-  private readonly inflightUpdates = new Map<string, readonly InflightSceneElement[]>();
-  private readonly rejectedSceneStamps = new Set<string>();
-  private reconnectTimer: Timer | null = null;
-  private keepaliveTimer: Timer | null = null;
+  private outbox: ClientMessageBody[] = [];
   private closeError: Error | null = null;
+  private currentDoc = createSceneDoc();
+  private undoManager!: Y.UndoManager;
+  private hasLocalEdits = false;
 
   constructor(opts: SessionClientOptions) {
     this.opts = opts;
+    this.installDoc(this.currentDoc);
+  }
+
+  /**
+   * The pooled connection carrying this room, or null before `connect()`. Two handles
+   * reporting the same id ARE sharing one socket — the multiplex invariant, observable
+   * without reaching into the transport.
+   */
+  get transportId(): string | null {
+    return this.channel?.transportId ?? null;
+  }
+
+  /** This room's channel id on that connection; it appears in every frame it exchanges. */
+  get channelId(): string | null {
+    return this.channel?.id ?? null;
+  }
+
+  private installDoc(doc: Y.Doc): void {
+    const map = elementsMap(doc);
+    this.undoManager = new Y.UndoManager(map, {
+      trackedOrigins: new Set([LOCAL_ORIGIN]),
+      captureTimeout: 400,
+    });
+    map.observeDeep((events, transaction) => {
+      const ids = changedElementIds(events as unknown as readonly Y.YEvent<never>[]);
+      for (const id of ids) {
+        const element = readElement(doc, id);
+        if (element === null) this.elementsState.delete(id);
+        else this.elementsState.set(id, element);
+      }
+      if (ids.length > 0) this.emit("elements_changed", ids, this.classifyOrigin(transaction));
+    });
+    // Canvas containers never write tiles, so this observer stays silent for them and
+    // a tiled container needs no second subscription path.
+    layoutMap(doc).observeDeep((_events, transaction) => {
+      this.emit("layout_changed", this.classifyOrigin(transaction));
+    });
+    doc.on("update", (update, origin) => {
+      if (origin === REMOTE_ORIGIN) return;
+      this.hasLocalEdits = true;
+      this.send({ type: "doc_update", update: encodeUpdate(update) });
+    });
+  }
+
+  /** Both projection observers report provenance the same way. */
+  private classifyOrigin(transaction: Y.Transaction): "local" | "remote" | "undo" {
+    if (transaction.origin === LOCAL_ORIGIN) return "local";
+    if (transaction.origin === this.undoManager) return "undo";
+    return "remote";
+  }
+
+  private replaceDoc(): void {
+    this.currentDoc.destroy();
+    this.elementsState.clear();
+    this.currentDoc = createSceneDoc();
+    this.installDoc(this.currentDoc);
   }
 
   // ------------------------------------------------------------------ events
 
-  on<T extends ServerMessage["type"]>(type: T, fn: (msg: ServerMessageOf<T>) => void): () => void;
+  on<T extends ServerMessageBody["type"]>(
+    type: T,
+    fn: (msg: ServerMessageOf<T>) => void,
+  ): () => void;
   on<K extends keyof SessionEvents>(type: K, fn: SessionEvents[K]): () => void;
   on(type: EventKey, fn: Handler): () => void {
     let set = this.listeners.get(type);
@@ -215,10 +246,9 @@ export class SessionClient {
   }
 
   /**
-   * One listener's failure must never starve its siblings: state (scene, rev) advances
-   * BEFORE emission, and a duplicate echo reconciles to zero accepted records, so a
-   * swallowed `scene_changed` would desynchronize a consumer unrecoverably. Errors are
-   * still reported (never-swallow rule) — they are just not allowed to propagate.
+   * One listener's failure must never starve its siblings: document state advances
+   * before projection events are emitted. Errors remain observable without propagating
+   * into the Yjs transaction or starving later listeners.
    */
   private emit(type: EventKey, ...args: unknown[]): void {
     const set = this.listeners.get(type);
@@ -240,9 +270,12 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ lifecycle
 
-  /** Resolves on the first successful init. Reconnects keep running afterwards. */
+  /**
+   * Resolves on the first successful init; reconnects keep running afterwards. Calling it
+   * on a handle that already holds a channel is an explicit "reconnect now": the shared
+   * transport redials and every room on it rejoins.
+   */
   connect(): Promise<void> {
-    this.closedIntentionally = false;
     this.closeError = null;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const offInit = this.on("init", () => {
@@ -257,159 +290,94 @@ export class SessionClient {
         reject(this.closeError ?? new Error("session closed before init"));
       }
     });
-    this.dial();
+    if (this.channel === null) this.attach();
+    else this.channel.redial();
     return promise;
   }
 
-  private startKeepalive(): void {
-    this.stopKeepalive();
-    const timer = setInterval(() => {
-      if (this.keepaliveTimer !== timer) return;
-      this.send({ type: "ping" });
-    }, KEEPALIVE_INTERVAL_MS);
-    this.keepaliveTimer = timer;
-  }
-
-  private stopKeepalive(): void {
-    if (this.keepaliveTimer === null) return;
-    clearInterval(this.keepaliveTimer);
-    this.keepaliveTimer = null;
-  }
-
   close(): void {
-    this.closedIntentionally = true;
     this.closeError = null;
-    this.inflightUpdates.clear();
-    this.rejectedSceneStamps.clear();
-    this.stopKeepalive();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    const socket = this.socket;
-    this.socket = null;
-    socket?.close(1000);
+    const channel = this.channel;
+    this.channel = null;
+    // Releasing is the whole story: it leaves this room and, when this was the tab's last
+    // room, closes the socket — a close IS a leave, so no extra frame is spent.
+    channel?.release();
     this.setStatus("closed");
   }
 
-  private dial(): void {
-    this.stopKeepalive();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.inflightUpdates.clear();
+  /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
+  private joinBody(): JoinBody {
+    return {
+      type: "join",
+      padId: this.opts.padId,
+      token: this.opts.token,
+      protocolVersion: PROTOCOL_VERSION,
+      // Omitted rather than sent as false: the flag's absence IS the occupant case, and
+      // every join must re-declare it because the server tracks it per channel.
+      ...(this.opts.spectator === true ? { spectator: true } : {}),
+      ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
+    };
+  }
 
-    // Fence every callback from the prior socket before asking it to close. Native close
-    // events may arrive after the replacement has already opened.
-    const previousSocket = this.socket;
-    this.socket = null;
-    previousSocket?.close(1000);
-
-    this.setStatus(this.attempts === 0 ? "connecting" : "reconnecting");
-    const factory = this.opts.webSocketFactory ?? ((url: string) => new WebSocket(url));
-    const socket = factory(this.opts.url);
-    this.socket = socket;
-
-    socket.onopen = () => {
-      if (this.socket !== socket) return;
-      const join: ClientMessage = {
-        type: "join",
-        padId: this.opts.padId,
+  /** Acquires this room's channel on the pooled connection its (url, token) names. */
+  private attach(): void {
+    this.channel = acquireChannel(
+      {
+        url: this.opts.url,
         token: this.opts.token,
-        protocolVersion: PROTOCOL_VERSION,
-        ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
-      };
-      socket.send(JSON.stringify(join));
-    };
-
-    socket.onmessage = (ev: MessageEvent) => {
-      if (this.socket !== socket) return;
-      const classified = classifyServerFrame(ev.data);
-      switch (classified.kind) {
-        case "message":
-          this.handle(classified.message);
-          return;
-        case "unknown_type":
-          return; // forward compatibility: newer servers may emit types we don't know
-        case "malformed":
-          // A malformed KNOWN frame means version skew or corruption — local state is no
-          // longer provable. Close with an application protocol error and heal through
-          // the normal reconnect → fresh init path (CONTRACTS.md).
-          console.error("manifold-sdk: malformed server frame", classified.detail);
-          socket.close(MALFORMED_FRAME_CLOSE_CODE, "malformed server frame");
-          return;
-      }
-    };
-
-    socket.onclose = (event: CloseEvent) => {
-      if (this.socket !== socket) return; // superseded socket
-      this.socket = null;
-      this.stopKeepalive();
-      this.inflightUpdates.clear();
-
-      // 44xx codes are permanent session rejections. Retrying them cannot succeed without
-      // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
-      const terminalClose =
-        event.code !== MALFORMED_FRAME_CLOSE_CODE &&
-        event.code >= TERMINAL_CLOSE_CODE_MIN &&
-        event.code <= TERMINAL_CLOSE_CODE_MAX;
-      if (terminalClose) {
-        this.closedIntentionally = true;
-        const reason = event.reason.trim();
-        this.closeError = new Error(
-          reason === ""
-            ? `session rejected with close code ${event.code}`
-            : `session rejected with close code ${event.code}: ${reason}`,
-        );
-        this.setStatus("closed");
-        return;
-      }
-
-      if (this.closedIntentionally || this.opts.reconnect === false) {
-        this.setStatus("closed");
-        return;
-      }
-      const cap = this.opts.backoffCapMs ?? 8000;
-      const delay = reconnectDelayMs(this.attempts, 250, cap);
-      this.attempts += 1;
-      const timer = setTimeout(() => {
-        // clearTimeout cannot retract a callback already queued by the event loop. The
-        // identity check fences such stale callbacks after close() or a manual connect().
-        if (this.reconnectTimer !== timer) return;
-        this.reconnectTimer = null;
-        if (!this.closedIntentionally && this.socket === null) this.dial();
-      }, delay);
-      this.reconnectTimer = timer;
-      this.setStatus("reconnecting");
-    };
+        ...(this.opts.reconnect !== undefined ? { reconnect: this.opts.reconnect } : {}),
+        ...(this.opts.backoffCapMs !== undefined ? { backoffCapMs: this.opts.backoffCapMs } : {}),
+        ...(this.opts.webSocketFactory !== undefined
+          ? { webSocketFactory: this.opts.webSocketFactory }
+          : {}),
+      },
+      {
+        joinBody: () => this.joinBody(),
+        receive: (body) => {
+          this.handle(body);
+        },
+        transportPhase: (phase) => {
+          this.setStatus(phase);
+        },
+        channelClosed: (code, reason, terminal) => {
+          if (!terminal) {
+            // The connection is rejoining this room on backoff; from this handle's point
+            // of view that is exactly a reconnect, and its outbox waits for the fresh init.
+            this.setStatus("reconnecting");
+            return;
+          }
+          this.channel = null;
+          this.closeError = new Error(
+            reason.trim() === ""
+              ? `session rejected with close code ${code}`
+              : `session rejected with close code ${code}: ${reason.trim()}`,
+          );
+          this.setStatus("closed");
+        },
+        transportClosed: (error) => {
+          this.channel = null;
+          this.closeError = error;
+          this.setStatus("closed");
+        },
+      },
+    );
   }
 
   // ------------------------------------------------------------------ incoming
 
-  private handle(msg: ServerMessage): void {
+  private handle(msg: ChannelFrame): void {
     switch (msg.type) {
       case "init":
       case "resync": {
-        this.attempts = 0;
-        // First epoch adoption and same-epoch reconnects rebase optimistic edits. Only a
-        // lineage change fences local records from being re-stamped into the new epoch.
-        const rebaseEligible = this.epoch === "" || this.epoch === msg.epoch;
-        if (this.epoch !== msg.epoch) this.inflightUpdates.clear();
-        const localBefore = rebaseEligible
-          ? [...this.scene.values()].filter(
-              (element) =>
-                !this.rejectedSceneStamps.has(
-                  JSON.stringify([element.id, element.version, element.versionNonce]),
-                ),
-            )
-          : [];
-        this.rejectedSceneStamps.clear();
-        this.scene.clear();
-        for (const el of msg.elements) this.scene.set(el.id, el);
+        const previousSelfConnId = this.selfConnId;
+        const lineageChanged = this.epoch !== "" && this.epoch !== msg.epoch;
+        if (lineageChanged) {
+          this.outbox = this.outbox.filter((queued) => queued.type !== "doc_update");
+          this.replaceDoc();
+        }
+        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.doc), REMOTE_ORIGIN);
         this.epoch = msg.epoch;
         this.rev = msg.rev;
-        const previousSelfConnId = this.selfConnId;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
         this.selfCaps = msg.selfCaps;
@@ -418,8 +386,20 @@ export class SessionClient {
         this.sessions.clear();
         for (const s of msg.sessions) this.sessions.set(s.id, s);
         this.setStatus("open");
-        this.startKeepalive();
+        // Keepalive belongs to the socket, which the pooled connection owns and pings.
         this.flushOutbox();
+        if (this.hasLocalEdits) {
+          const state = Y.encodeStateAsUpdate(this.currentDoc);
+          if (state.byteLength <= MAX_DOC_UPDATE_BYTES) {
+            this.send({ type: "doc_update", update: encodeUpdate(state) });
+          } else {
+            console.error(
+              "evt=doc_state_too_large",
+              `bytes=${state.byteLength}`,
+              `limit=${MAX_DOC_UPDATE_BYTES}`,
+            );
+          }
+        }
         // Re-subscribe views only after a real reconnect: the server's viewer registry is
         // connection-scoped, while a same-connection resync preserves those subscriptions.
         if (previousSelfConnId !== null && previousSelfConnId !== msg.selfConnId) {
@@ -429,31 +409,14 @@ export class SessionClient {
             }
           }
         }
-        if (rebaseEligible) {
-          const rebase = reconcile(this.scene, localBefore).accepted;
-          if (rebase.length > 0) this.updateScene(rebase);
-        }
         this.emit(msg.type, msg);
         this.emit("scene_reset");
         this.emit("roster_changed");
         this.emit("sessions_changed");
         break;
       }
-      case "scene_applied": {
-        if (msg.rev > this.rev + 1) {
-          // Missed a broadcast: converge via resync rather than guessing.
-          this.send({ type: "resync_request" });
-        }
-        const { accepted } = reconcile(this.scene, msg.elements);
-        applyAccepted(this.scene, accepted);
-        this.rev = Math.max(this.rev, msg.rev);
-        this.emit(msg.type, msg);
-        if (accepted.length > 0) this.emit("scene_changed", accepted, msg.by);
-        break;
-      }
-      case "scene_ack": {
-        this.inflightUpdates.delete(msg.updateId);
-        this.rev = Math.max(this.rev, msg.rev);
+      case "doc_update": {
+        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.update), REMOTE_ORIGIN);
         this.emit(msg.type, msg);
         break;
       }
@@ -483,6 +446,15 @@ export class SessionClient {
         break;
       }
       case "session_event": {
+        if (msg.kind === "parked") {
+          // A departure notice: the session is no longer in THIS room, so it is no longer
+          // reachable over this channel. It either re-homed into another composition (a
+          // merge or an extraction) or it was killed and left every room.
+          this.sessions.delete(msg.sessionId);
+          this.emit(msg.type, msg);
+          this.emit("sessions_changed");
+          break;
+        }
         const session = this.sessions.get(msg.sessionId);
         if (session) {
           const next: SessionInfo = { ...session };
@@ -495,6 +467,7 @@ export class SessionClient {
             if (msg.cols !== undefined) next.cols = msg.cols;
             if (msg.rows !== undefined) next.rows = msg.rows;
           }
+          if (msg.kind === "renamed") next.name = msg.name ?? null;
           this.sessions.set(msg.sessionId, next);
         }
         this.emit(msg.type, msg);
@@ -502,36 +475,18 @@ export class SessionClient {
         break;
       }
       case "error": {
-        let resyncRequested = false;
-        if (msg.ref !== undefined) {
-          const rejected = this.inflightUpdates.get(msg.ref);
-          if (rejected !== undefined) {
-            this.inflightUpdates.delete(msg.ref);
-            for (const { stamp } of rejected) this.rejectedSceneStamps.add(stamp);
-            this.send({ type: "resync_request" });
-            resyncRequested = true;
-            this.emit(
-              "scene_rejected",
-              rejected.map(({ element }) => ({
-                element,
-                reason: "server_rejected",
-                serializedBytes: null,
-                limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-              })),
-            );
-          }
-        }
-        if (msg.code === "epoch_mismatch" && !resyncRequested) {
-          this.send({ type: "resync_request" });
-        }
         this.emit(msg.type, msg);
         break;
       }
       case "cursor":
+      case "gesture":
       case "terminal_snapshot":
-      case "terminal_output":
-      case "saved":
-      case "pong": {
+      case "terminal_output": {
+        this.emit(msg.type, msg);
+        break;
+      }
+      case "saved": {
+        this.rev = Math.max(this.rev, msg.rev);
         this.emit(msg.type, msg);
         break;
       }
@@ -545,18 +500,19 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ outgoing
 
-  private send(msg: ClientMessage): void {
-    if (this.socket !== null && this.socket.readyState === 1 && this.status === "open") {
-      // Development guard: never put an invalid frame on the wire. The two high-volume
-      // frame types are constructed entirely by this SDK, so repeating schema validation
-      // here only rescans their payloads.
-      if (msg.type !== "cursor" && msg.type !== "terminal_input") {
-        ClientMessageSchema.parse(msg);
+  private send(msg: ClientMessageBody): void {
+    if (this.channel !== null && this.channel.isOpen() && this.status === "open") {
+      // Development guard: never put an invalid frame on the wire. High-volume binary
+      // frame types are constructed entirely by this SDK, so avoid rescanning their payloads.
+      if (msg.type !== "cursor" && msg.type !== "doc_update" && msg.type !== "terminal_input") {
+        ClientMessageBodySchema.parse(msg);
       }
-      this.socket.send(JSON.stringify(msg));
+      this.channel.send(msg);
       return;
     }
-    if (msg.type === "cursor" || msg.type === "ping") return; // droppable while away
+    // High-rate ephemera is never worth replaying: a stale cursor or gesture is noise.
+    // Liveness is not here at all — the pooled connection owns the socket's ping.
+    if (msg.type === "cursor" || msg.type === "gesture") return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }
@@ -564,114 +520,134 @@ export class SessionClient {
   private flushOutbox(): void {
     const queued = this.outbox;
     this.outbox = [];
-    for (const msg of queued) {
-      // First adoption rebases optimistic state into the adopted epoch, so its queued
-      // empty-epoch frames are superseded and still dropped here. Only lineage changes fence
-      // old scene history; same-epoch state is replayed by the normal outbox/rebase path.
-      if (msg.type === "scene_update" && msg.epoch !== this.epoch) continue;
-      this.send(msg);
-    }
+    for (const msg of queued) this.send(msg);
+  }
+
+  transact(fn: (tx: SceneTx) => void): void {
+    this.currentDoc.transact(() => {
+      fn({
+        create: (element) => writeElement(this.currentDoc, element, LOCAL_ORIGIN),
+        patch: (id, patch) => patchElement(this.currentDoc, id, patch, LOCAL_ORIGIN),
+        remove: (id) => removeElement(this.currentDoc, id, LOCAL_ORIGIN),
+        text: (id) => sceneElementText(this.currentDoc, id),
+        nextZIndex: () => nextZIndex(this.currentDoc),
+      });
+    }, LOCAL_ORIGIN);
+  }
+
+  undo(): void {
+    this.undoManager.undo();
+  }
+
+  redo(): void {
+    this.undoManager.redo();
+  }
+
+  elementText(id: string): Y.Text | null {
+    return sceneElementText(this.currentDoc, id);
   }
 
   /**
-   * Applies elements optimistically to the local scene and submits them.
-   * Oversized records are reported through scene_rejected and left unapplied.
-   * Returns every queued updateId (each echoed in scene_ack), or null if none were queued.
+   * The tiled container's node table, or null for a canvas — and also for a tree that
+   * fails validation, including one that tiles this very container: an unusable tree is
+   * never handed to the renderer. Read whole on every `layout_changed`.
    */
-  updateScene(elements: readonly SceneElement[]): readonly string[] | null {
-    const { accepted } = reconcile(this.scene, elements);
-    if (accepted.length === 0) return null;
+  layout(): TileLayout | null {
+    return readTileLayout(this.currentDoc, this.opts.padId);
+  }
 
-    const chunks: SceneElement[][] = [];
-    const rejected: SceneUpdateRejection[] = [];
-    let chunk: SceneElement[] = [];
-    let chunkBytes = 0;
+  /**
+   * The only layout mutation the SDK owns: a divider drag is high-frequency and purely
+   * geometric. Structural writes (splits, removals, extraction) stay on HTTP so the
+   * server can enforce discipline and the composition lifecycle — a leaf that leaves
+   * re-homes its terminal, and a composition emptied by the move is retired.
+   */
+  setTileRatios(splitId: string, ratios: readonly number[]): void {
+    sceneSetTileRatios(this.currentDoc, splitId, ratios, LOCAL_ORIGIN);
+  }
 
-    for (const element of accepted) {
-      const elementBytes = serializedElementByteLength(element);
-      if (elementBytes === null) {
-        rejected.push({
-          element,
-          reason: "element_not_serializable",
-          serializedBytes: null,
-          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-        });
-        continue;
-      }
-      if (elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET) {
-        rejected.push({
-          element,
-          reason: "element_too_large",
-          serializedBytes: elementBytes,
-          limitBytes: SCENE_UPDATE_ELEMENTS_BYTE_BUDGET,
-        });
-        continue;
-      }
-
-      const separatorBytes = chunk.length === 0 ? 0 : 1;
-      if (
-        chunk.length === MAX_ELEMENTS_PER_UPDATE ||
-        chunkBytes + separatorBytes + elementBytes > SCENE_UPDATE_ELEMENTS_BYTE_BUDGET
-      ) {
-        chunks.push(chunk);
-        chunk = [];
-        chunkBytes = 0;
-      }
-      if (chunk.length > 0) chunkBytes += 1;
-      chunk.push(element);
-      chunkBytes += elementBytes;
+  /**
+   * THE placement call: put an item in a container. One envelope, one endpoint, and a
+   * refusal that names the RULE which refused it — legality lives in the protocol's
+   * placement declarations, so a caller never has to know which verb this used to be.
+   *
+   * It is HTTP rather than a socket message because placement crosses containers: this
+   * client is joined to ONE room, and the write may touch two.
+   */
+  async place(surface: PlacementSurface, destination: PlacementDestination): Promise<PlaceOutcome> {
+    const request = PlaceRequestSchema.parse({ surface, destination });
+    const response = await fetch(`${this.apiOrigin()}/api/place`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.opts.token}`,
+      },
+      body: JSON.stringify(request),
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`place returned a non-JSON response (${response.status})`);
     }
-    if (chunk.length > 0) chunks.push(chunk);
+    if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(payload) };
+    const denied = PlacementDeniedResponseSchema.safeParse(payload);
+    // A denial is an ANSWER, not a failure: the caller renders the rule (and its drag
+    // preview already asked `resolvePlacement` the same question locally).
+    if (denied.success) return { ok: false, denial: denied.data.error.denial };
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success ? failure.data.error.message : `place failed (${response.status})`,
+    );
+  }
 
-    if (rejected.length > 0) this.emit("scene_rejected", rejected);
-    if (chunks.length === 0) return null;
+  /** The HTTP origin this session's socket URL implies; `apiUrl` overrides it. */
+  private apiOrigin(): string {
+    if (this.opts.apiUrl !== undefined) return this.opts.apiUrl.replace(/\/+$/, "");
+    const url = new URL(this.opts.url);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    return url.origin;
+  }
 
-    const updateIds: string[] = [];
-    for (const acceptedChunk of chunks) {
-      const updateId = `u${++this.updateCounter}`;
+  sendGesture(gesture: Gesture): void {
+    this.send({ type: "gesture", ...gesture });
+  }
 
-      // Validate and queue each bounded frame before exposing its optimistic state. If a
-      // later chunk fails, the scene still exactly reflects the frames already queued.
-      this.send({
-        type: "scene_update",
-        updateId,
-        epoch: this.epoch,
-        baseRev: this.rev,
-        elements: acceptedChunk,
-      });
-      this.inflightUpdates.set(
-        updateId,
-        acceptedChunk.map((element) => ({
-          element,
-          stamp: JSON.stringify([element.id, element.version, element.versionNonce]),
-        })),
-      );
-      applyAccepted(this.scene, acceptedChunk);
-      this.emit("scene_changed", acceptedChunk, this.self?.id ?? "local");
-      updateIds.push(updateId);
-    }
-    return updateIds;
+  outboxSize(): number {
+    return this.outbox.length;
   }
 
   sendPresence(payload: PresencePayload): void {
     this.send({ type: "presence", payload });
   }
 
-  sendCursor(x: number, y: number, tool?: "pointer" | "laser"): void {
-    this.send({ type: "cursor", x, y, ...(tool !== undefined ? { tool } : {}) });
+  sendCursor(x: number, y: number): void {
+    this.send({ type: "cursor", x, y });
   }
 
   requestResync(): void {
     this.send({ type: "resync_request" });
   }
 
-  /** Opens a terminal and resolves with its session once the server confirms. */
+  /**
+   * Opens a terminal and resolves with its session once the server confirms.
+   *
+   * A terminal is born into a COMPOSITION of its own, and `session.padId` names it. Under
+   * the default placement the caller is a canvas, so `elementId` is both the correlation
+   * token and the id the caller authors its own element under — a `portal` onto
+   * `session.padId`, never a terminal element, because a canvas only ever references the
+   * container a terminal lives in. `placement: "tile"` is how a TILED container births
+   * one: that container IS the home, so the server writes the tile leaf itself and the
+   * caller authors nothing. Read the leaf from `layout()` (`tileIdForSurface`) once this
+   * resolves; the doc update precedes the confirmation on the same socket.
+   */
   openTerminal(opts: {
     elementId: string;
     cols: number;
     rows: number;
     cwd?: string;
     machineId?: string;
+    placement?: "tile";
     timeoutMs?: number;
   }): Promise<SessionInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<SessionInfo>();
@@ -687,7 +663,9 @@ export class SessionClient {
       opts.timeoutMs ?? 15_000,
     );
     const offOpened = this.on("terminal_opened", (msg) => {
-      if (msg.elementId !== opts.elementId) return;
+      // A server-placed reply echoes the token as `ref`, because its `elementId` is a
+      // tile id this caller never chose.
+      if ((msg.ref ?? msg.elementId) !== opts.elementId) return;
       settle(() => resolve(msg.session));
     });
     const offError = this.on("error", (msg) => {
@@ -706,6 +684,7 @@ export class SessionClient {
       rows: opts.rows,
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       ...(opts.machineId !== undefined ? { machineId: opts.machineId } : {}),
+      ...(opts.placement !== undefined ? { placement: opts.placement } : {}),
     });
     return promise;
   }

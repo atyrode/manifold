@@ -1,7 +1,7 @@
 # 0004 — Excalidraw patch: collaborator cursors honor principal color
 
 Date: 2026-08-25
-Status: mechanism superseded by 0005 (semantics unchanged, now source-level in the fork)
+Status: superseded by the React Flow and native scene-record cutover (#15)
 
 ## Context
 

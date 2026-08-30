@@ -1,9 +1,9 @@
-import { Button } from "@excalidraw/excalidraw";
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionStatus } from "@manifold/sdk";
 import type { MachineSummary } from "@manifold/protocol";
 import type { RosterRow } from "./roster-model.ts";
 import type { SessionRow } from "./session-inventory.ts";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import { machineColor } from "./machine-visibility.ts";
 
 const MAX_AVATARS = 4;
@@ -13,42 +13,12 @@ function initials(name: string): string {
   return first === undefined ? "?" : first.toUpperCase();
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2.1 12s3.6-7 9.9-7 9.9 7 9.9 7-3.6 7-9.9 7-9.9-7-9.9-7Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function RestoreIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 12a9 9 0 1 0 3-7.7L3 7" />
-      <path d="M3 3v4h4" />
-    </svg>
-  );
-}
-
-function PowerIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2v10" />
-      <path d="M6.4 5.6a8 8 0 1 0 11.2 0" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="m19 6-1 14H6L5 6" />
-      <path d="M10 11v5M14 11v5" />
-    </svg>
-  );
+/**
+ * A dead terminal reports the code it died with, or nothing. "Code unknown" was noise
+ * dressed as information: the absence of a number already says the shell never gave one.
+ */
+function exitedLabel(exitCode: number | null): string {
+  return exitCode === null ? "Exited" : `Exited ${String(exitCode)}`;
 }
 
 /** One presence surface: avatar stack collapsing into a roster popover. */
@@ -132,7 +102,6 @@ export interface WorkspaceSidebarState {
   readonly onCreateTerminal: (machine?: MachineSummary) => void;
   readonly onFocus: (elementId: string) => void;
   readonly onKill: (sessionId: string) => void;
-  readonly onRestore: (sessionId: string) => void;
   readonly onRemoveCopy: (sessionId: string, elementId: string) => void;
   readonly onRemoveAllCopies: (sessionId: string) => void;
   readonly onHighlight: (elementId: string | null) => void;
@@ -142,7 +111,6 @@ interface WorkspaceSessionRowProps {
   readonly row: SessionRow;
   readonly onFocus: (elementId: string) => void;
   readonly onKill: (sessionId: string) => void;
-  readonly onRestore: (sessionId: string) => void;
   readonly onRemoveCopy: (sessionId: string, elementId: string) => void;
   readonly onRemoveAllCopies: (sessionId: string) => void;
   readonly onHighlight: (elementId: string | null) => void;
@@ -152,7 +120,6 @@ export function WorkspaceSessionRow({
   row,
   onFocus,
   onKill,
-  onRestore,
   onRemoveCopy,
   onRemoveAllCopies,
   onHighlight,
@@ -161,10 +128,9 @@ export function WorkspaceSessionRow({
   const boundElementId = row.boundElementIds[0] ?? null;
   const copyCount = row.boundElementIds.length;
   const hasMultipleCopies = copyCount > 1;
-  const locationLabel = row.orphaned
-    ? "Unbound"
-    : row.status === "exited"
-      ? `Exited${row.exitCode === null ? "" : ` ${row.exitCode}`}`
+  const locationLabel =
+    row.status === "exited"
+      ? exitedLabel(row.exitCode)
       : row.machineOnline === false
         ? "Machine offline"
         : "Bound to canvas";
@@ -173,60 +139,49 @@ export function WorkspaceSessionRow({
 
   return (
     <div className="workspace-session-group">
-      <div
-        className={`workspace-session-row${row.orphaned ? " is-orphaned" : ""}${row.status === "exited" ? " is-exited" : ""}`}
-      >
+      <div className={`workspace-session-row${row.status === "exited" ? " is-exited" : ""}`}>
         <span
           className={`session-state ${row.status === "running" ? "is-running" : ""}`}
           title={row.status}
         >
-          {row.status === "running" ? "●" : "○"}
+          <ItemIcon kind="terminal" size={13} />
         </span>
         <span className="workspace-session-label">
-          <strong>{row.machineName ?? "Unknown machine"}</strong>
+          <strong>{row.name ?? row.machineName ?? "Unknown machine"}</strong>
           <span>{detailLabel}</span>
         </span>
         <span className="workspace-session-actions">
           {hasMultipleCopies ? (
-            <Button
+            <button
               className="workspace-action workspace-copies-toggle"
-              onSelect={() => setCopiesOpen((value) => !value)}
-              selected={copiesOpen}
+              onClick={() => setCopiesOpen((value) => !value)}
+              aria-pressed={copiesOpen}
               aria-expanded={copiesOpen}
               aria-label={`${copiesOpen ? "Hide" : "Show"} ${copyCount} terminal copies`}
               title={`${copiesOpen ? "Hide" : "Show"} individual terminal copies`}
             >
               <span>{copyCount}</span>
               <span className="workspace-copy-chevron" aria-hidden="true" />
-            </Button>
+            </button>
           ) : boundElementId !== null ? (
-            <Button
+            <button
               className="workspace-action is-reveal"
               onPointerEnter={() => onHighlight(boundElementId)}
               onPointerLeave={() => onHighlight(null)}
-              onSelect={() => {
+              onClick={() => {
                 onHighlight(null);
                 onFocus(boundElementId);
               }}
               title="Reveal terminal on canvas"
               aria-label="Reveal terminal on canvas"
             >
-              <EyeIcon />
-            </Button>
-          ) : row.status === "running" ? (
-            <Button
-              className="workspace-action is-restore"
-              onSelect={() => onRestore(row.id)}
-              title="Restore running session to canvas"
-              aria-label="Restore running session to canvas"
-            >
-              <RestoreIcon />
-            </Button>
+              <ControlIcon kind="reveal" size={13} />
+            </button>
           ) : null}
           {hasMultipleCopies && row.status === "exited" ? (
-            <Button
+            <button
               className="workspace-action is-remove"
-              onSelect={() => {
+              onClick={() => {
                 setCopiesOpen(false);
                 onHighlight(null);
                 onRemoveAllCopies(row.id);
@@ -234,27 +189,27 @@ export function WorkspaceSessionRow({
               title={removeAllLabel}
               aria-label={removeAllLabel}
             >
-              <TrashIcon />
-            </Button>
+              <ControlIcon kind="discard" size={13} />
+            </button>
           ) : !hasMultipleCopies && row.status === "exited" && boundElementId !== null ? (
-            <Button
+            <button
               className="workspace-action is-remove"
-              onSelect={() => onRemoveCopy(row.id, boundElementId)}
+              onClick={() => onRemoveCopy(row.id, boundElementId)}
               title="Remove exited terminal"
               aria-label="Remove exited terminal"
             >
-              <TrashIcon />
-            </Button>
+              <ControlIcon kind="discard" size={13} />
+            </button>
           ) : null}
           {row.canKill ? (
-            <Button
+            <button
               className="workspace-action is-end-session"
-              onSelect={() => onKill(row.id)}
+              onClick={() => onKill(row.id)}
               title="End shared session — all terminal copies will exit"
               aria-label="End shared terminal session"
             >
-              <PowerIcon />
-            </Button>
+              <ControlIcon kind="endSession" size={13} />
+            </button>
           ) : null}
         </span>
       </div>
@@ -269,28 +224,28 @@ export function WorkspaceSessionRow({
                   {copyLabel}
                 </span>
                 <span className="workspace-session-actions">
-                  <Button
+                  <button
                     className="workspace-action is-reveal"
                     onPointerEnter={() => onHighlight(elementId)}
                     onPointerLeave={() => onHighlight(null)}
-                    onSelect={() => {
+                    onClick={() => {
                       onHighlight(null);
                       onFocus(elementId);
                     }}
                     title={`Reveal ${copyLabel.toLowerCase()} on canvas`}
                     aria-label={`Reveal ${copyLabel.toLowerCase()} on canvas`}
                   >
-                    <EyeIcon />
-                  </Button>
-                  <Button
+                    <ControlIcon kind="reveal" size={13} />
+                  </button>
+                  <button
                     className="workspace-action is-remove"
-                    onSelect={() => onRemoveCopy(row.id, elementId)}
+                    onClick={() => onRemoveCopy(row.id, elementId)}
                     onPointerEnter={() => onHighlight(null)}
                     title={`Remove ${copyLabel.toLowerCase()} from canvas`}
                     aria-label={`Remove ${copyLabel.toLowerCase()} from canvas`}
                   >
-                    <TrashIcon />
-                  </Button>
+                    <ControlIcon kind="discard" size={13} />
+                  </button>
                 </span>
               </div>
             );
@@ -301,54 +256,55 @@ export function WorkspaceSessionRow({
   );
 }
 
-/** First-class machine inventory, positioned beside pad navigation. */
+/**
+ * Machine inventory body. The collapsible section shell around it is supplied by the sidebar's
+ * uniform `SidebarSection`, so this renders rows only.
+ */
 export function MachinesSection({
   machines,
   onCreateTerminal,
-}: Pick<WorkspaceSidebarState, "machines" | "onCreateTerminal">) {
-  const availableMachines = machines?.filter((machine) => machine.online).length ?? 0;
+}: Pick<WorkspaceSidebarState, "machines"> & {
+  /** Absent on surfaces without a canvas to author into (tiled routes, workspace root). */
+  readonly onCreateTerminal?: WorkspaceSidebarState["onCreateTerminal"] | undefined;
+}) {
   return (
-    <details className="workspace-sidebar-section" data-testid="machines-section" open>
-      <summary>
-        <span>Machines</span>
-        <span>
-          {availableMachines}/{machines?.length ?? 0} online
-        </span>
-      </summary>
-      <div className="workspace-sidebar-section-content">
-        <div className="workspace-list" data-testid="machines-rail">
-          {machines === null ? (
-            <span className="workspace-empty">Loading machines…</span>
-          ) : machines.length === 0 ? (
-            <span className="workspace-empty">No machines enrolled</span>
-          ) : (
-            machines.map((machine) => (
-              <div
-                className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
-                key={machine.id}
+    <div className="workspace-list" data-testid="machines-rail">
+      {machines === null ? (
+        <span className="workspace-empty">Loading machines…</span>
+      ) : machines.length === 0 ? (
+        <span className="workspace-empty">No machines enrolled</span>
+      ) : (
+        machines.map((machine) => (
+          <div
+            className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
+            key={machine.id}
+          >
+            {/* Two marks, two jobs: the coloured pip is STATUS (and the machine's identity
+                colour, which an icon cannot carry), the icon says what kind of thing this
+                row is — the same `machine` mark the rest of the app uses. */}
+            <span
+              className={`machine-dot${machine.online ? "" : " is-offline"}`}
+              style={{ backgroundColor: machineColor(machine.id) }}
+            />
+            <span className="workspace-machine-mark" aria-hidden="true">
+              <ItemIcon kind="machine" size={14} />
+            </span>
+            <strong>{machine.name}</strong>
+            <span>{machine.online ? "Online" : "Offline"}</span>
+            {machine.online && onCreateTerminal !== undefined ? (
+              <button
+                className="workspace-machine-create"
+                aria-label={`New terminal on ${machine.name}`}
+                title={`New terminal on ${machine.name}`}
+                onClick={() => onCreateTerminal(machine)}
               >
-                <span
-                  className={`machine-dot${machine.online ? "" : " is-offline"}`}
-                  style={{ backgroundColor: machineColor(machine.id) }}
-                />
-                <strong>{machine.name}</strong>
-                <span>{machine.online ? "Online" : "Offline"}</span>
-                {machine.online ? (
-                  <Button
-                    className="workspace-machine-create"
-                    aria-label={`New terminal on ${machine.name}`}
-                    title={`New terminal on ${machine.name}`}
-                    onSelect={() => onCreateTerminal(machine)}
-                  >
-                    <span aria-hidden="true">+</span>
-                  </Button>
-                ) : null}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </details>
+                <ControlIcon kind="add" size={13} />
+              </button>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
@@ -376,13 +332,4 @@ export function WorkspaceStatus({
       </span>
     </div>
   );
-}
-
-interface PadTopRightProps {
-  readonly rows: readonly RosterRow[];
-}
-
-/** Presence remains in Excalidraw's native top-right UI slot. */
-export function PadTopRight({ rows }: PadTopRightProps) {
-  return <PresenceIsland rows={rows} />;
 }

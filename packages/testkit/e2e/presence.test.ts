@@ -89,11 +89,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
     const receivedCursors: Cursor[] = [];
     const offCursor = clientB.on("cursor", (message) => {
       if (message.principalId !== alice.principal.id) return;
-      receivedCursors.push({
-        x: message.x,
-        y: message.y,
-        ...(message.tool !== undefined ? { tool: message.tool } : {}),
-      });
+      receivedCursors.push({ x: message.x, y: message.y });
     });
     const firstCursor = nextMessage(
       clientB,
@@ -102,7 +98,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
       (message) => message.principalId === alice.principal.id,
     );
     for (let index = 0; index < 50; index += 1) {
-      clientA.sendCursor(index, index * 2, "pointer");
+      clientA.sendCursor(index, index * 2);
       // This integration contract explicitly requires real 10ms wire pacing; fake timers
       // cannot advance the independently running server's backpressure/throttle clock.
       if (index < 49) await Bun.sleep(10);
@@ -125,7 +121,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
       expect(current.x).toBeGreaterThan(previous.x);
       expect(current.y).toBeGreaterThan(previous.y);
     }
-    expect(receivedCursors.at(-1)).toEqual({ x: 49, y: 98, tool: "pointer" });
+    expect(receivedCursors.at(-1)).toEqual({ x: 49, y: 98 });
 
     clientA.sendPresence({ selection: ["el-selected"] });
     clientA.sendPresence({ status: "working" });

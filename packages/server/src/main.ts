@@ -8,6 +8,7 @@ import { openDatabase } from "./db.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
+import { PlaceExecutor } from "./placement.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-peer.ts";
 import { SessionGateway } from "./session-ws.ts";
@@ -71,6 +72,8 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  broker.setPlacement(placement);
   const sessions = new SessionGateway(auth, rooms, broker, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,
@@ -81,7 +84,17 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime.newId(),
     runtime,
   );
-  const http = new HttpApp(config, store, auth, rooms, broker, machines, runtime, logger);
+  const http = new HttpApp(
+    config,
+    store,
+    auth,
+    rooms,
+    broker,
+    placement,
+    machines,
+    runtime,
+    logger,
+  );
 
   const server = Bun.serve<WebSocketData>({
     port: config.port,

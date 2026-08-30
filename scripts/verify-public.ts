@@ -121,9 +121,9 @@ try {
     }
     await browser.goto(`${origin}/p/${padId}`);
     await until(
-      () => browser.evaluate<boolean>("document.querySelector('.excalidraw') !== null"),
+      () => browser.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
       20_000,
-      "excalidraw mount",
+      "React Flow mount",
     );
     await until(
       () =>
@@ -141,70 +141,6 @@ try {
     const path = await browser.evaluate<string>("location.pathname");
     if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
     return `canvas mounted at ${path}, session open, seam active`;
-  });
-
-  await step("freedraw stroke survives its own sync round-trip", async () => {
-    // Regression for the multiplayer revert bug: the web layer used to repaint the canvas
-    // from the canonical scene on every flush echo, reverting an in-flight gesture to the
-    // first throttled partial ("only a dot") and dropping the final stroke entirely.
-    const toolSelected = await browser.evaluate<boolean>(
-      "(() => { const b = document.querySelector('[data-testid=toolbar-freedraw]'); if (!b) return false; b.click(); return true; })()",
-    );
-    if (!toolSelected) throw new Error("freedraw tool button not found");
-    await sleep(300);
-    // One ~600ms gesture spanning many scene-flush windows.
-    const canvasLeft = await browser.evaluate<number>(
-      "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
-    );
-    const points = Array.from({ length: 40 }, (_, i) => ({
-      x: canvasLeft + 360 + i * 12,
-      y: 320 + Math.round(Math.sin(i / 4) * 80),
-    }));
-    await browser.drag(points, 15);
-    const observer = newViewer(padId);
-    await observer.connect();
-    try {
-      let observed = 0;
-      await until(
-        () => {
-          observed = 0;
-          for (const element of observer.scene.values()) {
-            if (element["type"] !== "freedraw" || element.isDeleted) continue;
-            const pts = element["points"];
-            if (Array.isArray(pts)) observed = Math.max(observed, pts.length);
-          }
-          return observed >= 20;
-        },
-        15_000,
-        "canonical freedraw stroke carrying the full gesture (>=20 points)",
-      );
-      // The drawer's OWN canvas must hold the stroke at the canonical stamp: canonical-only
-      // assertions cannot see a canvas-side revert (server keeps the stroke, drawer loses it).
-      await until(
-        async () => {
-          const canvasStamps = await browser.evaluate<readonly [string, number, number][]>(
-            "window.__manifold.canvas().map((e) => [e.id, e.version, e.versionNonce])",
-          );
-          for (const [id, version, versionNonce] of canvasStamps) {
-            const canonical = observer.scene.get(id);
-            if (
-              canonical !== undefined &&
-              canonical["type"] === "freedraw" &&
-              canonical.version === version &&
-              canonical.versionNonce === versionNonce
-            ) {
-              return true;
-            }
-          }
-          return false;
-        },
-        10_000,
-        "drawer canvas holding the stroke at the canonical stamp",
-      );
-      return `canonical stroke carries ${String(observed)} points; drawer canvas at canonical stamp`;
-    } finally {
-      observer.close();
-    }
   });
 
   await step("embedded terminal opens and runs a command in the browser", async () => {
@@ -225,9 +161,11 @@ try {
       30_000,
       "xterm mount",
     );
-    // Focus xterm's hidden textarea: that is where keystrokes actually land.
+    // Focus = engage: a real user's click both focuses xterm and escalates the mono
+    // portal to an occupant channel on the terminal's home composition. Synthetic
+    // pointer events alone never produce a click, so dispatch one explicitly.
     await browser.evaluate(
-      "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); t?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); t?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); document.querySelector('.xterm-helper-textarea')?.focus(); })()",
+      "(() => { const t = document.querySelector('.xterm-screen') ?? document.querySelector('.xterm'); for (const type of ['pointerdown', 'pointerup', 'click']) t?.dispatchEvent(new (type === 'click' ? MouseEvent : PointerEvent)(type, { bubbles: true })); document.querySelector('.xterm-helper-textarea')?.focus(); })()",
     );
     await sleep(400);
     await browser.typeText(`printf '${marker}_BROWSER\\n'\n`);
@@ -243,13 +181,22 @@ try {
   });
 
   await step("two simultaneous public WebSocket viewers share one terminal", async () => {
-    const viewerA = newViewer(padId);
-    const viewerB = newViewer(padId);
-    await viewerA.connect();
-    await viewerB.connect();
-    const running = [...viewerA.sessions.values()].find((s) => s.status === "running");
+    // Sessions live in their HOME composition, never in a canvas: find the home over
+    // HTTP, then both viewers hold a channel on it — the same thing the widget does.
+    const res = await fetch(`${origin}/api/terminals`, {
+      headers: { authorization: `Bearer ${ownerKey}` },
+    });
+    if (!res.ok) throw new Error(`terminal listing failed: ${res.status}`);
+    const listed = (await res.json()) as {
+      terminals: readonly { id: string; homeId: string; status: string }[];
+    };
+    const running = listed.terminals.find((t) => t.status === "running");
     if (running === undefined) throw new Error("no running session visible over the public origin");
     sessionId = running.id;
+    const viewerA = newViewer(running.homeId);
+    const viewerB = newViewer(running.homeId);
+    await viewerA.connect();
+    await viewerB.connect();
     const seenA: string[] = [];
     const seenB: string[] = [];
     for (const [viewer, sink] of [
@@ -274,7 +221,17 @@ try {
 
   await step("terminal session survives all viewers disconnecting", async () => {
     await sleep(2500);
-    const rejoin = newViewer(padId);
+    const res = await fetch(`${origin}/api/terminals`, {
+      headers: { authorization: `Bearer ${ownerKey}` },
+    });
+    const listed = (await res.json()) as {
+      terminals: readonly { id: string; homeId: string; status: string }[];
+    };
+    const survivor = listed.terminals.find((t) => t.id === sessionId);
+    if (survivor === undefined || survivor.status !== "running") {
+      throw new Error("session did not survive viewer disconnect");
+    }
+    const rejoin = newViewer(survivor.homeId);
     await rejoin.connect();
     const session = rejoin.sessions.get(sessionId);
     if (session === undefined || session.status !== "running") {
@@ -296,28 +253,26 @@ try {
   await step("scene persists across a public-origin reconnect", async () => {
     const client = newViewer(padId);
     await client.connect();
-    const before = client.scene.size;
-    client.updateScene([
-      {
+    const before = client.elements.size;
+    client.transact((tx) => {
+      tx.create({
         id: `verify-${marker}`,
-        type: "rectangle",
+        type: "portal",
+        containerId: `verify-container-${marker}`,
         x: 40,
         y: 40,
         width: 120,
         height: 80,
-        version: 1,
-        versionNonce: 11,
-        isDeleted: false,
-        index: "a0",
-      },
-    ]);
-    await until(() => client.rev > 0, 10_000, "scene accepted");
+        zIndex: 0,
+      });
+    });
+    await until(() => client.elements.has(`verify-${marker}`), 10_000, "scene accepted");
     client.close();
     await sleep(2500);
     const after = newViewer(padId);
     await after.connect();
-    const present = after.scene.has(`verify-${marker}`);
-    const size = after.scene.size;
+    const present = after.elements.has(`verify-${marker}`);
+    const size = after.elements.size;
     after.close();
     if (!present) throw new Error("element missing after reconnect");
     return `scene ${before} -> ${size}, element persisted`;

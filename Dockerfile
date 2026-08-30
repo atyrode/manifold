@@ -5,9 +5,10 @@ FROM oven/bun:1 AS build
 WORKDIR /app
 ARG MANIFOLD_BUILD=dev
 
-# Full-source install: the web workspace depends on a GitHub-release tarball
-# (@excalidraw/excalidraw fork) that bun links correctly only with the real
-# workspace tree present — manifest-only installs leave it unlinked.
+# Full-source install: every runtime workspace dependency (@manifold/protocol,
+# @manifold/scene, @manifold/sdk) is consumed from source through `workspace:*`,
+# so bun can only link them with the real workspace tree present — a
+# manifest-only install leaves those symlinks dangling.
 COPY . .
 RUN bun install --frozen-lockfile
 RUN VITE_MANIFOLD_WEB_BUILD="${MANIFOLD_BUILD}" bun run build:web

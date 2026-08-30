@@ -5,19 +5,28 @@ import {
   HttpErrorSchema,
   MachinesResponseSchema,
   MovePadTreeItemRequestSchema,
-  PadTreeResponseSchema,
   PadPresenceResponseSchema,
-  PadSessionsResponseSchema,
   PadSchema,
+  PadSessionsResponseSchema,
+  PadTreeResponseSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
   RenamePadRequestSchema,
+  RenameTerminalRequestSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
   type PadPresence,
-  type PadTreeItem,
   type PadSessionSummary,
+  type PadTreeItem,
+  type PlacementDestination,
+  type PlacementSurface,
   type Principal,
+  type TerminalSummary,
 } from "@manifold/protocol";
+import type { PlaceOutcome } from "@manifold/sdk";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
 export interface StoredIdentity {
@@ -79,17 +88,7 @@ export async function createPrincipal(
   return { token: grant.token, principal: grant.principal };
 }
 
-/** Loads every pad visible to the current principal. */
-export async function listPads(token: string): Promise<Pad[]> {
-  const body = await requestJson("/api/pads", {
-    headers: authHeaders(token, false),
-  });
-  const pads = fieldFromObject(body, "pads");
-  if (!Array.isArray(pads)) throw new Error("Server returned an invalid pad list");
-  return pads.map((pad) => PadSchema.parse(pad));
-}
-
-/** Loads a pad so direct `/p/:padId` navigation still has its display name. */
+/** Loads one container so a direct `/p/:id` deep-link still has its name and discipline. */
 export async function getPad(token: string, padId: string): Promise<Pad> {
   const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
     headers: authHeaders(token, false),
@@ -97,9 +96,9 @@ export async function getPad(token: string, padId: string): Promise<Pad> {
   return PadSchema.parse(fieldFromObject(body, "pad"));
 }
 
-/** Creates a pad through the protocol-owned request schema. */
-export async function createPad(token: string, name: string): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name });
+/** Creates a pad through the protocol-owned request schema; `layout` picks the discipline. */
+export async function createPad(token: string, name: string, layout?: Pad["layout"]): Promise<Pad> {
+  const request = CreatePadRequestSchema.parse({ name, layout });
   const body = await requestJson("/api/pads", {
     method: "POST",
     headers: authHeaders(token, true),
@@ -194,6 +193,71 @@ export async function getPadSessions(token: string): Promise<readonly PadSession
   return PadSessionsResponseSchema.parse(body).sessions;
 }
 
+/**
+ * Every terminal in the workspace (`GET /api/terminals`). There is no pool and no parked
+ * variant: each row carries the composition it lives in (`homeId`) and whether anything
+ * references that home (`unplaced`), which is what puts it at the index's top level.
+ */
+export async function listTerminals(token: string): Promise<readonly TerminalSummary[]> {
+  const body = await requestJson("/api/terminals", {
+    headers: authHeaders(token, false),
+  });
+  return TerminalsResponseSchema.parse(body).terminals;
+}
+
+/**
+ * THE placement call for anything outside a room: put an item in a container
+ * (`POST /api/place`). One envelope replaces bind, park, add-tile, compose and extract,
+ * and a refusal comes back as DATA — the declared rule that refused it — because a client
+ * renders the rule rather than parsing prose.
+ *
+ * The sidebar has no room socket (it indexes containers, it does not join them), so this
+ * token-bound path exists beside `SessionClient.place`, which is the same request made from
+ * inside a room. Both hit the one endpoint.
+ */
+export async function placeItem(
+  token: string,
+  surface: PlacementSurface,
+  destination: PlacementDestination,
+): Promise<PlaceOutcome> {
+  const request = PlaceRequestSchema.parse({ surface, destination });
+  const response = await fetch("/api/place", {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+  const body = await readBody(response);
+  if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(body) };
+  const denied = PlacementDeniedResponseSchema.safeParse(body);
+  if (denied.success) return { ok: false, denial: denied.data.error.denial };
+  throw errorFromBody(response.status, body);
+}
+
+/** Renames a terminal session (`PATCH /api/terminals/:id`), placed or not. */
+export async function renameTerminal(
+  token: string,
+  sessionId: string,
+  name: string,
+): Promise<void> {
+  const request = RenameTerminalRequestSchema.parse({ name });
+  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * Kills a terminal's PTY (`DELETE /api/terminals/:id`). Nothing survives it: with no pool
+ * to fall back into, a terminal's home composition is emptied and deleted with it.
+ */
+export async function killTerminal(token: string, sessionId: string): Promise<void> {
+  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
+}
+
 /** Loads the enrolled machines with live online state (`GET /api/machines`). */
 export async function getMachines(token: string): Promise<readonly MachineSummary[]> {
   const body = await requestJson("/api/machines", {
@@ -205,6 +269,26 @@ export async function getMachines(token: string): Promise<readonly MachineSummar
 /** Deletes a pad (server enforces root authority); resolves when the server confirms. */
 export async function deletePad(token: string, padId: string): Promise<void> {
   await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token, false),
+  });
+}
+
+/*
+ * Two calls retired with the solo-composition cutover and left no successor here.
+ * `expandTerminal` had nothing to create — every terminal already lives in a composition,
+ * so entering one is `navigate("/p/" + homeId)`. `pinPad` had nothing to claim once no
+ * container dissolved under anybody. Reordering an unplaced terminal is `movePadTreeItem`
+ * on its home, because the pool's separate ordering folded into the one index.
+ */
+
+/**
+ * Removes one leaf from a composition (`DELETE /api/pads/:id/tiles/:tileId`). Removal is
+ * the one tile gesture that is NOT a placement — nothing accepts "nowhere" — so it keeps
+ * its own route while every MOVE of a leaf's occupant goes through `placeItem`.
+ */
+export async function removePadTile(token: string, padId: string, tileId: string): Promise<void> {
+  await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}`, {
     method: "DELETE",
     headers: authHeaders(token, false),
   });

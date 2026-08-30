@@ -1,4 +1,5 @@
 import {
+  ContainersResponseSchema,
   CreatePadRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
@@ -9,6 +10,7 @@ import {
   PadPresenceResponseSchema,
   PadResponseSchema,
   PadsResponseSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   type HttpError,
   type MintTokenRequest,
@@ -83,6 +85,8 @@ export interface ConnectOptions {
   readonly lastEpoch?: string;
   readonly lastRev?: number;
   readonly reconnect?: boolean;
+  /** Joins as a read-only watcher: no roster entry, no presence, no vote in the bubble rule. */
+  readonly spectator?: boolean;
 }
 
 /** A protocol parser is supplied per endpoint so ownerFetch never returns unchecked JSON. */
@@ -102,6 +106,15 @@ const RESPONSE_SCHEMA_BY_REQUEST: Record<string, ResponseSchema<unknown>> = {
   "GET /api/pads": PadsResponseSchema,
   "GET /api/pad-presence": PadPresenceResponseSchema,
   "POST /api/pads": PadResponseSchema,
+  /*
+    The terminal INDEX: every terminal, each with the composition it lives in. There is no
+    pool route beside it any more, and no per-terminal verb (`expand`, `pin`) either — the
+    gestures that used to be endpoints are destinations of `POST /api/place`, whose response
+    is discriminated by op and so is always passed explicitly by its callers.
+   */
+  "GET /api/terminals": TerminalsResponseSchema,
+  /** The containment graph: what each container holds and what it points at. */
+  "GET /api/containers": ContainersResponseSchema,
   "POST /api/tokens": TokenGrantSchema,
   "POST /api/tokens/revoke": OkResponseSchema,
 };
@@ -456,8 +469,15 @@ export async function enrollMachine(
 }
 
 /** Creates a pad through the owner boundary and returns only its protocol-validated record. */
-export async function createPad(server: TestServer, name: string): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name });
+export async function createPad(
+  server: TestServer,
+  name: string,
+  layout?: "canvas" | "tiled",
+): Promise<Pad> {
+  const request = CreatePadRequestSchema.parse({
+    name,
+    ...(layout === undefined ? {} : { layout }),
+  });
   const response = await ownerFetch(server, "/api/pads", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -474,6 +494,7 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
     padId: options.padId,
     token: options.token,
     ...(options.reconnect !== undefined ? { reconnect: options.reconnect } : {}),
+    ...(options.spectator === true ? { spectator: true } : {}),
   });
   if (options.lastEpoch !== undefined || options.lastRev !== undefined) {
     if (options.lastEpoch === undefined || options.lastRev === undefined) {

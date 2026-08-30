@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { OkResponseSchema, PadSessionsResponseSchema } from "@manifold/protocol";
+import {
+  OkResponseSchema,
+  PadSessionsResponseSchema,
+  TerminalsResponseSchema,
+} from "@manifold/protocol";
+import { tileIdForSurface } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -18,7 +23,7 @@ import {
   closeClients,
   e2eFailure,
   nextMessage,
-  sceneElement,
+  openTerminalAt,
   stopProcesses,
   waitForTerminalText,
   type TerminalCapture,
@@ -47,57 +52,54 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     agents.push(agent);
     expect(agent.machineId).toBe(enrolled.machineId);
 
+    // Workspace-scoped grants: a terminal is born into a composition of its own, and driving
+    // it means joining that composition — an id no pad-scoped token could name.
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Alice", color: "#aa3344" },
       caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const bob = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Bob", color: "#3355cc" },
       caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
-    const clientA = await connect(server, { padId: pad.id, token: alice.token });
-    clients.push(clientA);
-    if (clientA.self === null) throw new Error("terminal opener lacks self");
+    const canvas = await connect(server, { padId: pad.id, token: alice.token });
+    clients.push(canvas);
+    if (canvas.self === null) throw new Error("terminal opener lacks self");
 
-    const session = await clientA.openTerminal({
+    // The canvas owns the spawn gesture; the composition the server births owns the PTY, so
+    // `clientA` and every viewer below are rooms of that composition.
+    const { session, homeClient: clientA } = await openTerminalAt(canvas, server, {
       elementId: "el-term-1",
-      cols: 80,
-      rows: 24,
+      token: alice.token,
+      portalAt: { x: 120, y: 90 },
     });
-    expect(session.status).toBe("running");
+    clients.push(clientA);
     expect(session.controllerId).toBe(alice.principal.id);
+    expect(session.padId).not.toBe(pad.id);
+    // What the canvas got is a REFERENCE to that composition, never the session itself.
+    expect(canvas.elements.get("el-term-1")).toMatchObject({
+      type: "portal",
+      containerId: session.padId,
+      x: 120,
+      y: 90,
+    });
     const inventory = await ownerFetch(server, "/api/pad-sessions", {
       responseSchema: PadSessionsResponseSchema,
     });
     const listedSession = inventory.sessions.find((candidate) => candidate.id === session.id);
     expect(listedSession).toMatchObject({
       id: session.id,
-      padId: pad.id,
+      padId: session.padId,
       machineId: enrolled.machineId,
-      elementId: "el-term-1",
       status: "running",
       exitCode: null,
     });
     expect(listedSession?.createdAt).toBeNumber();
-    const terminalElementAck = nextMessage(clientA, "scene_ack", 10_000, (message) =>
-      message.acceptedIds.includes("el-term-1"),
-    );
-    expect(
-      clientA.updateScene([
-        {
-          ...sceneElement("el-term-1"),
-          customData: { kind: "terminal", sessionId: session.id },
-        },
-      ]),
-    ).not.toBeNull();
-    await terminalElementAck;
-    const clientB = await connect(server, { padId: pad.id, token: bob.token });
+
+    const clientB = await connect(server, { padId: session.padId, token: bob.token });
     clients.push(clientB);
     if (clientB.self === null) throw new Error("terminal viewer lacks self");
-    expect(clientB.scene.has("el-term-1")).toBe(true);
-    expect(clientB.sessions.get(session.id)?.status).toBe("running");
+    await waitFor(() => clientB.sessions.get(session.id)?.status === "running", 10_000, 20);
 
     const captureA = captureTerminal(clientA, session.id);
     const captureB = captureTerminal(clientB, session.id);
@@ -117,7 +119,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     const viewers: SessionClient[] = [];
     const viewerCaptures: TerminalCapture[] = [];
     for (let index = 0; index < 10; index += 1) {
-      const viewer = await connect(server, { padId: pad.id, token: bob.token });
+      const viewer = await connect(server, { padId: session.padId, token: bob.token });
       viewers.push(viewer);
       clients.push(viewer);
       const capture = captureTerminal(viewer, session.id);
@@ -237,23 +239,29 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       throw new Error("resized PTY did not report the requested geometry", { cause: error });
     });
 
-    const exited = nextMessage(
+    // A kill is DESTRUCTION, so the home hears a departure rather than an exit: the terminal
+    // is gone, not dead, and every viewer drops the row at once instead of keeping a corpse.
+    const departed = nextMessage(
       clientA,
       "session_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     clientB.killTerminal(session.id);
-    const exitEvent = await exited;
-    expect(exitEvent.kind).toBe("exited");
+    expect((await departed).kind).toBe("parked");
     await waitFor(
       () =>
-        clientA.sessions.get(session.id)?.status === "exited" &&
-        clientB.sessions.get(session.id)?.status === "exited",
+        clientA.sessions.get(session.id) === undefined &&
+        clientB.sessions.get(session.id) === undefined,
       10_000,
       20,
     );
-    expect(clientA.sessions.get(session.id)?.status).toBe("exited");
+    // The canvas's widget goes with it: a reference never outlives what it references.
+    await waitFor(() => !canvas.elements.has("el-term-1"), 10_000, 20);
+    const afterKill = await ownerFetch(server, "/api/pad-sessions", {
+      responseSchema: PadSessionsResponseSchema,
+    });
+    expect(afterKill.sessions.find((candidate) => candidate.id === session.id)).toBeUndefined();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -263,7 +271,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   }
 }, 90_000);
 
-test("an exited terminal rejects input, resize, take, and kill with conflict", async () => {
+test("an exited terminal refuses to be driven, but dismissing it destroys it", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -281,24 +289,33 @@ test("an exited terminal rejects input, resize, take, and kill with conflict", a
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
-    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
-    clients.push(client);
-    const session = await client.openTerminal({
+    const canvas = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    clients.push(canvas);
+    // No portal is authored — this grant holds no `scene:write` — because the gates under
+    // test are the terminal's own, and an exited terminal keeps its leaf and its home either
+    // way: the exit stays visible where the terminal lives.
+    const { session, homeClient: client } = await openTerminalAt(canvas, server, {
       elementId: "el-exited-gates",
-      cols: 80,
-      rows: 24,
+      token: grant.token,
     });
+    clients.push(client);
+    // The PTY stops ON ITS OWN, which is the only way to REACH the exited state: asking for
+    // it would destroy the terminal, and then there would be nothing left to gate.
     const exited = nextMessage(
       client,
       "session_event",
       10_000,
       (message) => message.sessionId === session.id && message.kind === "exited",
     );
-    client.killTerminal(session.id);
-    expect((await exited).kind).toBe("exited");
+    client.sendTerminalInput(session.id, "exit 3\n");
+    const exitEvent = await exited;
+    expect(exitEvent.kind).toBe("exited");
+    if (exitEvent.kind !== "exited") throw new Error("unreachable");
+    // The REAL code the shell named, carried end to end from the PTY.
+    expect(exitEvent.exitCode).toBe(3);
     await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    expect(client.sessions.get(session.id)?.exitCode).toBe(3);
 
     const inputConflict = nextMessage(
       client,
@@ -336,17 +353,22 @@ test("an exited terminal rejects input, resize, take, and kill with conflict", a
     client.takeTerminal(session.id);
     expect((await takeConflict).code).toBe("conflict");
 
-    const killConflict = nextMessage(
+    // Dismissing it is not a conflict. A lease is a claim on a LIVE PTY, so an exited
+    // terminal has no controller to win, and clearing it is the same verb as killing a
+    // running one: the home hears a departure and the terminal leaves the world.
+    const departed = nextMessage(
       client,
-      "error",
-      5_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === session.id &&
-        message.message === "session has exited",
+      "session_event",
+      10_000,
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     client.killTerminal(session.id);
-    expect((await killConflict).code).toBe("conflict");
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => client.sessions.get(session.id) === undefined, 10_000, 20);
+    const remaining = await ownerFetch(server, "/api/terminals", {
+      responseSchema: TerminalsResponseSchema,
+    });
+    expect(remaining.terminals).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -383,7 +405,6 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Picker", color: "#287c69" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -411,24 +432,24 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     expect((await ambiguousError).code).toBe("no_machine");
     expect(await ambiguousOpen).toBe("rejected");
 
-    const session = await client.openTerminal({
+    const { session, homeClient: home } = await openTerminalAt(client, server, {
       elementId: "el-explicit-machine",
-      cols: 80,
-      rows: 24,
+      token: grant.token,
       machineId: secondEnrollment.machineId,
     });
+    clients.push(home);
     expect(session.machineId).toBe(secondEnrollment.machineId);
-    expect(session.status).toBe("running");
 
-    const exited = nextMessage(
-      client,
+    // Killing it destroys it, so the home hears a departure and the row disappears.
+    const departed = nextMessage(
+      home,
       "session_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
-    client.killTerminal(session.id);
-    expect((await exited).kind).toBe("exited");
-    await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
+    home.killTerminal(session.id);
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => home.sessions.get(session.id) === undefined, 10_000, 20);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -437,7 +458,7 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
   }
 }, 45_000);
 
-test("deleting a pad with a running terminal kills its agent-owned PTY", async () => {
+test("deleting the composition a terminal lives in kills its agent-owned PTY", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -455,7 +476,6 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Pad Deleter", color: "#a04b39" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -465,8 +485,11 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
       rows: 24,
     });
     expect(session.status).toBe("running");
+    // The terminal lives in the composition born with it, not on the canvas that spawned it,
+    // so THAT is the container whose deletion reaps the PTY.
+    expect(session.padId).not.toBe(pad.id);
 
-    const deleted = await ownerFetch(server, `/api/pads/${pad.id}`, {
+    const deleted = await ownerFetch(server, `/api/pads/${session.padId}`, {
       method: "DELETE",
       responseSchema: OkResponseSchema,
     });
@@ -482,6 +505,67 @@ test("deleting a pad with a running terminal kills its agent-owned PTY", async (
       20,
     );
     expect(agent.proc.exitCode).toBeNull();
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 45_000);
+
+test("the Machines + on a view births a terminal the server places as a tile, and it streams", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const view = await createPad(server, "tiled view", "tiled");
+    expect(view.layout).toBe("tiled");
+    const enrolled = await enrollMachine(server, "tiled-open-agent");
+    const agent = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "tiled-open-agent",
+    });
+    agents.push(agent);
+
+    const grant = await mintToken(server, {
+      principal: { kind: "human", name: "Tile Opener", color: "#557799" },
+      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
+      padId: view.id,
+    });
+    const client = await connect(server, { padId: view.id, token: grant.token });
+    clients.push(client);
+    if (client.self === null) throw new Error("terminal opener lacks self");
+
+    // A view has no canvas to author an element on: the "+" hands placement to the
+    // container, and the leaf the server wrote is read back out of the layout tree —
+    // the session record carries no placement id to trust.
+    const session = await client.openTerminal({
+      elementId: "correlation-only",
+      placement: "tile",
+      cols: 80,
+      rows: 24,
+    });
+    expect(session.status).toBe("running");
+    expect(session.padId).toBe(view.id);
+    expect(session.controllerId).toBe(grant.principal.id);
+
+    const surface = { kind: "terminal" as const, sessionId: session.id };
+    await waitFor(() => tileIdForSurface(client.layout(), surface) !== null, 10_000, 20);
+    const tileId = tileIdForSurface(client.layout(), surface);
+    // The opener never chose this id: the container did.
+    expect(tileId).not.toBe("correlation-only");
+    expect(client.layout()?.[tileId ?? ""]?.surface).toEqual(surface);
+
+    const capture = captureTerminal(client, session.id);
+    captures.push(capture);
+    client.attachTerminal(session.id);
+    await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
+    client.sendTerminalInput(session.id, "printf 'TILE_%s\\n' ok\n");
+    await waitForTerminalText(capture, "TILE_ok", 10_000);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

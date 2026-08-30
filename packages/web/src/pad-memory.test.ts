@@ -21,8 +21,8 @@ function storage(initial: Record<string, string> = {}): PadMemoryStorage & {
 }
 
 const PADS: readonly Pad[] = [
-  { id: "first", name: "First", createdAt: 1 },
-  { id: "latest", name: "Latest", createdAt: 2 },
+  { id: "first", name: "First", createdAt: 1, layout: "canvas" },
+  { id: "latest", name: "Latest", createdAt: 2, layout: "canvas" },
 ];
 
 describe("pad memory", () => {

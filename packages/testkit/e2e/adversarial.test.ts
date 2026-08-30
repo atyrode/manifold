@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
-import { PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
+import { MAX_DOC_UPDATE_BYTES, PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
+import {
+  Y,
+  createSceneDoc,
+  decodeUpdate,
+  elementsMap,
+  encodeUpdate,
+  readElements,
+} from "@manifold/scene";
 import {
   connect,
   createPad,
@@ -10,10 +18,11 @@ import {
   waitFor,
   type TestServer,
 } from "../src/index.ts";
-import { closeClients, e2eFailure, nextMessage, sceneElement, stopProcesses } from "./helpers.ts";
+import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.ts";
 import {
   rawMachineSocket,
   rawSessionSocket,
+  sessionFrame,
   type AdversarialMachineSocket,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
@@ -25,7 +34,7 @@ async function joinRaw(
   padId: string,
   token: string,
 ): Promise<InitMessage> {
-  socket.sendRaw(JSON.stringify({ type: "join", padId, token, protocolVersion: PROTOCOL_VERSION }));
+  socket.sendRaw(sessionFrame({ type: "join", padId, token, protocolVersion: PROTOCOL_VERSION }));
   const message = await waitFor(
     () => socket.frames.find((frame) => frame.type === "init"),
     5_000,
@@ -64,44 +73,13 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     expect(wrongFirstClose.reason).toBe("first frame must be join");
     expect(wrongFirstClose.initiatedBy).toBe("REMOTE");
 
-    const epochMismatch = await rawSessionSocket(server);
-    sockets.push(epochMismatch);
-    const epochInit = await joinRaw(epochMismatch, pad.id, grant.token);
-    expect(epochInit.rev).toBe(0);
-    epochMismatch.sendRaw(
-      JSON.stringify({
-        type: "scene_update",
-        updateId: "wrong-epoch",
-        epoch: "WRONG",
-        baseRev: 0,
-        elements: [sceneElement("el-wrong-epoch")],
-      }),
-    );
-    await waitFor(
-      () =>
-        epochMismatch.frames.some(
-          (frame) => frame.type === "error" && frame.code === "epoch_mismatch",
-        ) && epochMismatch.frames.some((frame) => frame.type === "resync"),
-      5_000,
-      20,
-    );
-    expect(
-      epochMismatch.frames.some(
-        (frame) => frame.type === "error" && frame.code === "epoch_mismatch",
-      ),
-    ).toBe(true);
-    expect(epochMismatch.frames.some((frame) => frame.type === "resync")).toBe(true);
-
     const malformedKnown = await rawSessionSocket(server);
     sockets.push(malformedKnown);
-    const malformedInit = await joinRaw(malformedKnown, pad.id, grant.token);
+    await joinRaw(malformedKnown, pad.id, grant.token);
     malformedKnown.sendRaw(
-      JSON.stringify({
-        type: "scene_update",
-        updateId: "malformed-elements",
-        epoch: malformedInit.epoch,
-        baseRev: malformedInit.rev,
-        elements: "nope",
+      sessionFrame({
+        type: "doc_update",
+        update: "not base64",
       }),
     );
     const malformedClose = await waitFor(() => malformedKnown.closeInfo, 5_000, 20);
@@ -112,26 +90,21 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     const unknownType = await rawSessionSocket(server);
     sockets.push(unknownType);
     await joinRaw(unknownType, pad.id, grant.token);
-    unknownType.sendRaw(JSON.stringify({ type: "zorp" }));
+    unknownType.sendRaw(sessionFrame({ type: "zorp" }));
     unknownType.sendRaw(JSON.stringify({ type: "ping" }));
     await waitFor(() => unknownType.frames.some((frame) => frame.type === "pong"), 5_000, 20);
     expect(unknownType.readyState).toBe(WebSocket.OPEN);
 
     const oversized = await rawSessionSocket(server);
     sockets.push(oversized);
-    const oversizedInit = await joinRaw(oversized, pad.id, grant.token);
+    await joinRaw(oversized, pad.id, grant.token);
     const frameStart = oversized.frames.length;
     oversized.sendRaw(
-      JSON.stringify({
-        type: "scene_update",
-        updateId: "oversized-batch",
-        epoch: oversizedInit.epoch,
-        baseRev: oversizedInit.rev,
-        elements: Array.from({ length: 129 }, (_, index) => sceneElement(`el-big-${index}`)),
+      sessionFrame({
+        type: "doc_update",
+        update: encodeUpdate(new Uint8Array(MAX_DOC_UPDATE_BYTES + 1)),
       }),
     );
-    // The scene limit says "rejected" while the known-malformed policy says policy-close.
-    // The target explicitly permits either an `invalid` error or that close, but never acceptance.
     const oversizedOutcome = await waitFor(
       () => {
         const invalid = oversized.frames
@@ -145,13 +118,46 @@ test("raw adversarial frames prove join ordering and frame-classification policy
       20,
     );
     expect(["invalid", "closed"]).toContain(oversizedOutcome);
-    expect(
-      oversized.frames.some(
-        (frame) =>
-          frame.type === "scene_applied" &&
-          frame.elements.some((element) => element.id.startsWith("el-big-")),
-      ),
-    ).toBe(false);
+    expect(oversized.frames.slice(frameStart).some((frame) => frame.type === "doc_update")).toBe(
+      false,
+    );
+
+    const repaired = await rawSessionSocket(server);
+    sockets.push(repaired);
+    await joinRaw(repaired, pad.id, grant.token);
+    const invalidDoc = createSceneDoc();
+    const invalidElement = new Y.Map<unknown>();
+    invalidElement.set("id", "invalid-element");
+    invalidElement.set("type", "terminal");
+    elementsMap(invalidDoc).set("invalid-element", invalidElement);
+    const repairStart = repaired.frames.length;
+    repaired.sendRaw(
+      sessionFrame({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(invalidDoc)),
+      }),
+    );
+    const repairFrames = await waitFor(
+      () => {
+        const updates = repaired.frames
+          .slice(repairStart)
+          .filter((frame) => frame.type === "doc_update");
+        return updates.length >= 2 ? updates : false;
+      },
+      5_000,
+      20,
+    );
+    expect(repairFrames.map((frame) => frame.by)).toEqual([grant.principal.id, "server"]);
+    repaired.sendRaw(sessionFrame({ type: "resync_request" }));
+    const resync = await waitFor(
+      () => repaired.frames.slice(repairStart).find((frame) => frame.type === "resync"),
+      5_000,
+      20,
+    );
+    if (resync.type !== "resync") throw new Error("missing repaired resync");
+    const repairedDoc = createSceneDoc();
+    Y.applyUpdate(repairedDoc, decodeUpdate(resync.doc));
+    expect(readElements(repairedDoc).has("invalid-element")).toBe(false);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {
@@ -210,10 +216,11 @@ test("a reused machine token fences the old socket before routing later commands
     expect(superseded.initiatedBy).toBe("REMOTE");
 
     const pad = await createPad(server, "machine fence");
+    // Workspace-scoped: killing the terminal is a message to the composition it lives in,
+    // and that composition's id is minted by the server as the PTY lands.
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Fence User", color: "#4777b8" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
     clients.push(client);
@@ -234,14 +241,23 @@ test("a reused machine token fences the old socket before routing later commands
     expect(session.machineId).toBe(enrolled.machineId);
     expect(first.frames).toHaveLength(firstFrameCount);
 
-    const exited = nextMessage(
-      client,
+    const home = await connect(server, {
+      padId: session.padId,
+      token: grant.token,
+      reconnect: false,
+    });
+    clients.push(home);
+    await waitFor(() => home.sessions.has(session.id), 5_000, 20);
+    // A kill destroys the terminal, so the home hears a departure rather than an exit; what
+    // this test is about is WHICH socket the kill frame reaches.
+    const departed = nextMessage(
+      home,
       "session_event",
       5_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.sessionId === session.id && message.kind === "parked",
     );
     const killStart = second.frames.length;
-    client.killTerminal(session.id);
+    home.killTerminal(session.id);
     const kill = await waitFor(
       () =>
         second.frames
@@ -251,8 +267,11 @@ test("a reused machine token fences the old socket before routing later commands
       20,
     );
     if (kill.type !== "kill") throw new Error("active machine did not receive kill");
+    expect((await departed).kind).toBe("parked");
+    // The machine answers the kill the only way it can. The session is already gone, so the
+    // frame changes nothing — and must not resurrect it as an exited row.
     second.send({ type: "exited", sessionId: session.id, exitCode: 0 });
-    expect((await exited).kind).toBe("exited");
+    await waitFor(() => home.sessions.get(session.id) === undefined, 5_000, 20);
     expect(first.frames).toHaveLength(firstFrameCount);
   } catch (error) {
     throw e2eFailure(error, servers);

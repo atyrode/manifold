@@ -72,7 +72,14 @@ describe("machine hello reconciliation", () => {
     const store = testStore();
     const auth = new AuthService(store, "c".repeat(64), runtime);
     const root = auth.authenticate("c".repeat(64));
-    const pad: Pad = { id: runtime.newId(), name: "hello pad", createdAt: runtime.now() };
+    // A session's `padId` names the composition it LIVES in, and only a composition can
+    // home a terminal, so the durable fixture row needs a tiled container.
+    const pad: Pad = {
+      id: runtime.newId(),
+      name: "hello composition",
+      createdAt: runtime.now(),
+      layout: "tiled",
+    };
     store.createPad(pad);
     const enrollment = auth.enrollMachine("agent", root);
     const sessionGrant = auth.mintSessionAgentToken("missing-session", pad.id, root.principal.id);
@@ -80,7 +87,6 @@ describe("machine hello reconciliation", () => {
       id: "missing-session",
       machineId: enrollment.machine.id,
       padId: pad.id,
-      elementId: "terminal",
       createdBy: root.principal.id,
       agentPrincipalId: sessionGrant.principal.id,
       createdAt: runtime.now(),
@@ -188,7 +194,12 @@ describe("machine hello reconciliation", () => {
     const store = testStore();
     const auth = new AuthService(store, "f".repeat(64), runtime);
     const root = auth.authenticate("f".repeat(64));
-    const pad: Pad = { id: runtime.newId(), name: "legacy pad", createdAt: runtime.now() };
+    const pad: Pad = {
+      id: runtime.newId(),
+      name: "legacy composition",
+      createdAt: runtime.now(),
+      layout: "tiled",
+    };
     store.createPad(pad);
     const enrollment = auth.enrollMachine("agent", root);
     const sessionGrant = auth.mintSessionAgentToken("legacy-session", pad.id, root.principal.id);
@@ -196,7 +207,6 @@ describe("machine hello reconciliation", () => {
       id: "legacy-session",
       machineId: enrollment.machine.id,
       padId: pad.id,
-      elementId: "terminal",
       createdBy: root.principal.id,
       agentPrincipalId: sessionGrant.principal.id,
       createdAt: runtime.now(),

@@ -29,7 +29,12 @@ function authFixture() {
   const ownerKey = "a".repeat(64);
   const auth = new AuthService(store, ownerKey, runtime);
   const root = auth.authenticate(ownerKey);
-  const pad: Pad = { id: runtime.newId(), name: "auth pad", createdAt: runtime.now() };
+  const pad: Pad = {
+    id: runtime.newId(),
+    name: "auth pad",
+    createdAt: runtime.now(),
+    layout: "canvas",
+  };
   store.createPad(pad);
   return { runtime, store, auth, root, pad };
 }

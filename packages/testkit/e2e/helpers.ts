@@ -1,8 +1,15 @@
-import type { SceneElement, ServerMessage } from "@manifold/protocol";
+import type { SceneElement, ServerMessageBody, SessionInfo } from "@manifold/protocol";
 import { base64ToText, type SessionClient } from "@manifold/sdk";
-import { waitFor, type ProcessOutput, type TestAgent, type TestServer } from "../src/index.ts";
+import {
+  connect,
+  waitFor,
+  type ProcessOutput,
+  type TestAgent,
+  type TestServer,
+} from "../src/index.ts";
 
-type ServerMessageOf<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
+// The SDK hands subscribers channel-agnostic bodies: a room handle already knows its room.
+type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 /** A terminal capture keeps snapshot and post-snapshot output separate for seq-exact checks. */
 export interface TerminalCapture {
@@ -15,7 +22,7 @@ export interface TerminalCapture {
 }
 
 /** Waits for one typed SDK message without leaving an event listener behind on timeout. */
-export function nextMessage<T extends ServerMessage["type"]>(
+export function nextMessage<T extends ServerMessageBody["type"]>(
   client: SessionClient,
   type: T,
   timeoutMs = 10_000,
@@ -33,6 +40,27 @@ export function nextMessage<T extends ServerMessage["type"]>(
   const timer = setTimeout(() => {
     off();
     reject(new Error(`timed out waiting for ${type} after ${timeoutMs}ms`));
+  }, timeoutMs);
+  return promise;
+}
+
+/**
+ * Waits for the next tiled-container layout change, resolving with its provenance. Structural
+ * tile writes are server-authored, so a joined renderer must observe them as remote updates.
+ */
+export function nextLayoutChange(
+  client: SessionClient,
+  timeoutMs = 10_000,
+): Promise<"local" | "remote" | "undo"> {
+  const { promise, resolve, reject } = Promise.withResolvers<"local" | "remote" | "undo">();
+  const off = client.on("layout_changed", (origin) => {
+    clearTimeout(timer);
+    off();
+    resolve(origin);
+  });
+  const timer = setTimeout(() => {
+    off();
+    reject(new Error(`timed out waiting for layout_changed after ${timeoutMs}ms`));
   }, timeoutMs);
   return promise;
 }
@@ -76,19 +104,146 @@ export async function waitForTerminalText(
   await waitFor(() => (capture.snapshotText + capture.outputText).includes(text), timeoutMs, 20);
 }
 
-/** Produces the smallest protocol-valid scene record so tests vary only relevant LWW fields. */
-export function sceneElement(
+/** Attaches one client to a session and returns its capture once the snapshot has landed. */
+export async function attachedCapture(
+  client: SessionClient,
+  sessionId: string,
+  timeoutMs = 10_000,
+): Promise<TerminalCapture> {
+  const capture = captureTerminal(client, sessionId);
+  client.attachTerminal(sessionId);
+  try {
+    await waitFor(() => capture.snapshotSeq !== null, timeoutMs, 20);
+  } catch (error) {
+    capture.stop();
+    throw error;
+  }
+  return capture;
+}
+
+type PortalElement = Extract<SceneElement, { type: "portal" }>;
+
+/**
+ * The one way a canvas references a container — including the composition a terminal lives
+ * in, which is why no element carries a session id any more.
+ */
+export function portalElement(
   id: string,
-  version = 1,
-  versionNonce = 100,
-  isDeleted = false,
+  containerId: string,
+  patch: Partial<Omit<PortalElement, "id" | "type" | "containerId">> = {},
 ): SceneElement {
-  return { id, version, versionNonce, isDeleted };
+  return {
+    id,
+    type: "portal",
+    containerId,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+    ...patch,
+  };
+}
+
+/** What a canvas birth needs to say; every field but the element id and grant has a default. */
+export interface OpenTerminalOptions {
+  readonly elementId: string;
+  /**
+   * The grant the HOME client joins with. It has to be workspace-scoped: the composition a
+   * terminal is born into is server-minted, so no pad-scoped token could ever name it.
+   */
+  readonly token: string;
+  readonly cols?: number;
+  readonly rows?: number;
+  readonly machineId?: string;
+  /** Where to author the canvas's own portal onto the new home; omitted authors none. */
+  readonly portalAt?: { readonly x: number; readonly y: number };
+}
+
+export interface OpenedTerminal {
+  readonly session: SessionInfo;
+  /**
+   * A client on the terminal's home composition. Every terminal message is gated on
+   * `session.padId === peer.padId`, so the canvas that spawned the PTY cannot drive it — and
+   * since `SessionClient` pools one socket per (url, token), this second room costs no
+   * second connection, exactly as it costs none in the browser.
+   */
+  readonly homeClient: SessionClient;
+}
+
+/**
+ * The whole canvas spawn gesture, once: open the PTY from the canvas, author the canvas's
+ * portal onto the composition the server gave it, and join that composition so the terminal
+ * can actually be driven.
+ */
+export async function openTerminalAt(
+  canvas: SessionClient,
+  server: TestServer,
+  options: OpenTerminalOptions,
+): Promise<OpenedTerminal> {
+  const session = await canvas.openTerminal({
+    elementId: options.elementId,
+    cols: options.cols ?? 80,
+    rows: options.rows ?? 24,
+    ...(options.machineId === undefined ? {} : { machineId: options.machineId }),
+  });
+  if (session.status !== "running") {
+    throw new Error(`terminal ${session.id} was born ${session.status}`);
+  }
+  const portalAt = options.portalAt;
+  if (portalAt !== undefined) {
+    canvas.transact((tx) => {
+      tx.create(portalElement(options.elementId, session.padId, portalAt));
+    });
+    await waitFor(() => canvas.elements.has(options.elementId), 10_000, 20);
+  }
+  const homeClient = await connect(server, {
+    padId: session.padId,
+    token: options.token,
+    reconnect: false,
+  });
+  try {
+    await waitFor(() => homeClient.sessions.get(session.id)?.status === "running", 10_000, 20);
+  } catch (error) {
+    homeClient.close();
+    throw error;
+  }
+  return { session, homeClient };
+}
+
+export function textElement(id: string, text: string): SceneElement {
+  return {
+    id,
+    type: "text",
+    text,
+    x: 0,
+    y: 0,
+    width: 240,
+    height: 48,
+    zIndex: 0,
+    fontSize: 20,
+    color: "#f8f9fa",
+  };
+}
+
+export function drawElement(id: string, points: number[]): SceneElement {
+  return {
+    id,
+    type: "draw",
+    points,
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    zIndex: 0,
+    strokeWidth: 3,
+    color: "#2563eb",
+  };
 }
 
 /** Canonicalizes scene values by id for convergence comparisons independent of Map insertion order. */
 export function sortedScene(client: SessionClient): SceneElement[] {
-  return [...client.scene.values()].sort((left, right) => left.id.localeCompare(right.id));
+  return [...client.elements.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function canonicalJson(value: unknown): string | undefined {

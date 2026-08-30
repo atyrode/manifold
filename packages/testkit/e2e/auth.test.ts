@@ -23,6 +23,7 @@ import { closeClients, e2eFailure, nextMessage, stopProcesses } from "./helpers.
 import {
   rawMachineSocket,
   rawSessionSocket,
+  sessionFrame,
   type AdversarialMachineSocket,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
@@ -79,7 +80,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const garbage = await rawSessionSocket(server);
     rawSockets.push(garbage);
     garbage.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: "garbage-token",
@@ -97,7 +98,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const wrongPad = await rawSessionSocket(server);
     rawSockets.push(wrongPad);
     wrongPad.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padY.id,
         token: scoped.token,
@@ -224,7 +225,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const revokedSocket = await rawSessionSocket(server);
     rawSockets.push(revokedSocket);
     revokedSocket.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: revokee.token,
@@ -243,12 +244,9 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     });
     try {
       revokedSocket.sendRaw(
-        JSON.stringify({
-          type: "scene_update",
-          updateId: "revoked-write",
-          epoch: init.epoch,
-          baseRev: init.rev,
-          elements: [{ id: "el-revoked-write", version: 1, versionNonce: 1, isDeleted: false }],
+        sessionFrame({
+          type: "doc_update",
+          update: "AAA=",
         }),
       );
     } catch (error) {
@@ -260,12 +258,12 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const resynced = nextMessage(observer, "resync", 5_000);
     observer.requestResync();
     await resynced;
-    expect(observer.scene.has("el-revoked-write")).toBe(false);
+    expect(observer.elements.has("el-revoked-write")).toBe(false);
 
     const reconnectRevoked = await rawSessionSocket(server);
     rawSockets.push(reconnectRevoked);
     reconnectRevoked.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
         padId: padX.id,
         token: revokee.token,
@@ -309,15 +307,15 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     if (welcome.type !== "welcome") throw new Error("machine did not receive welcome");
     expect(welcome.machineId).toBe(enrolled.machineId);
 
+    // Both grants are workspace-scoped: attaching to a terminal means joining the
+    // composition it lives in, and the server mints that container's id with the PTY.
     const openerGrant = await mintToken(server, {
       principal: { kind: "human", name: "Attach Opener", color: "#3c6db0" },
       caps: ["pads:read", "terminal:spawn", "terminal:write"],
-      padId: pad.id,
     });
     const viewerGrant = await mintToken(server, {
       principal: { kind: "human", name: "Attach Revokee", color: "#b84d68" },
       caps: ["pads:read"],
-      padId: pad.id,
     });
     const opener = await connect(server, {
       padId: pad.id,
@@ -340,20 +338,26 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     if (create.type !== "create") throw new Error("machine did not receive create");
     machine.send({ type: "created", sessionId: create.sessionId });
     const session = await opening;
+    const openerHome = await connect(server, {
+      padId: session.padId,
+      token: openerGrant.token,
+      reconnect: false,
+    });
+    clients.push(openerHome);
 
     const viewer = await rawSessionSocket(server);
     rawSockets.push(viewer);
     viewer.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
-        padId: pad.id,
+        padId: session.padId,
         token: viewerGrant.token,
         protocolVersion: PROTOCOL_VERSION,
       }),
     );
     await waitFor(() => viewer.frames.find((frame) => frame.type === "init"), 5_000, 20);
     const firstSnapshotRequestStart = machine.frames.length;
-    viewer.sendRaw(JSON.stringify({ type: "terminal_attach", sessionId: session.id }));
+    viewer.sendRaw(sessionFrame({ type: "terminal_attach", sessionId: session.id }));
     const firstSnapshotRequest = await waitFor(
       () =>
         machine.frames
@@ -396,7 +400,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       seq: 1,
       data: textToBase64("AFTER_REVOKE_1"),
     });
-    opener.attachTerminal(session.id);
+    openerHome.attachTerminal(session.id);
     const secondSnapshotRequest = await waitFor(
       () =>
         machine.frames
@@ -410,7 +414,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     }
     expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);
     const openerSnapshot = nextMessage(
-      opener,
+      openerHome,
       "terminal_snapshot",
       5_000,
       (message) => message.sessionId === session.id && message.seq === 1,
@@ -424,7 +428,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     expect((await openerSnapshot).seq).toBe(1);
 
     const openerOutput = nextMessage(
-      opener,
+      openerHome,
       "terminal_output",
       5_000,
       (message) => message.sessionId === session.id && message.seq === 2,
@@ -444,7 +448,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     ).toHaveLength(0);
 
     const exited = nextMessage(
-      opener,
+      openerHome,
       "session_event",
       5_000,
       (message) => message.sessionId === session.id && message.kind === "exited",

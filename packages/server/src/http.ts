@@ -5,6 +5,7 @@ import {
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
   EnrollMachineRequestSchema,
+  ContainersResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
@@ -12,26 +13,35 @@ import {
   MintTokenRequestSchema,
   MovePadTreeItemRequestSchema,
   OkResponseSchema,
+  PLACEMENT_DENIED_CODE,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
-  PadTreeResponseSchema,
-  PadSessionsResponseSchema,
   PadResponseSchema,
+  PadSessionsResponseSchema,
+  PadTreeResponseSchema,
   PadsResponseSchema,
+  PlaceRequestSchema,
+  PlaceResponseSchema,
+  PlacementDeniedResponseSchema,
   RenamePadRequestSchema,
+  RenameTerminalRequestSchema,
   RevokeRequestSchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
   type Cap,
   type HttpError,
   type Pad,
+  type PadSessionSummary,
   type RuntimeDeps,
+  type TerminalsResponse,
 } from "@manifold/protocol";
 import { ZodError } from "zod";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { MachineGateway } from "./machine-ws.ts";
+import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
@@ -117,6 +127,16 @@ function requireRoot(context: AuthContext): void {
   if (!context.isRoot) throw new RequestError("forbidden", "root capability required");
 }
 
+/** Decodes one path segment, mapping a missing or malformed escape to a 400. */
+function decodePathSegment(encoded: string | undefined, label: string): string {
+  if (encoded === undefined) throw new RequestError("invalid", `${label} is missing`);
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    throw new RequestError("invalid", `${label} is invalid`);
+  }
+}
+
 /** Bun fetch handler implementing the complete JSON API and SPA fallback contract. */
 export class HttpApp {
   constructor(
@@ -125,6 +145,7 @@ export class HttpApp {
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
+    private readonly placement: PlaceExecutor,
     private readonly machines: MachineGateway,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
@@ -258,14 +279,7 @@ export class HttpApp {
 
     const folderMatch = /^\/api\/pad-folders\/([^/]+)$/.exec(pathname);
     if (folderMatch !== null) {
-      const encodedId = folderMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "folder id is missing");
-      let folderId: string;
-      try {
-        folderId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "folder id is invalid");
-      }
+      const folderId = decodePathSegment(folderMatch[1], "folder id");
       const context = this.authenticate(request);
       this.requireCap(context, "pads:write");
       if (context.padScope !== null) {
@@ -297,19 +311,71 @@ export class HttpApp {
     if (request.method === "GET" && pathname === "/api/pad-sessions") {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");
-      const sessions = this.store
-        .listSessions()
-        .filter((session) => context.padScope === null || session.padId === context.padScope)
-        .map((session) => ({
+      const sessions: PadSessionSummary[] = [];
+      for (const session of this.store.listSessions()) {
+        if (context.padScope !== null && session.padId !== context.padScope) continue;
+        sessions.push({
           id: session.id,
           padId: session.padId,
           machineId: session.machineId,
-          elementId: session.elementId,
           createdAt: session.createdAt,
           status: session.status,
           exitCode: session.exitCode,
-        }));
+        });
+      }
       return jsonResponse(PadSessionsResponseSchema.parse({ sessions }));
+    }
+
+    if (request.method === "GET" && pathname === "/api/terminals") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot read workspace terminals");
+      }
+      return jsonResponse(this.terminalsPayload());
+    }
+
+    /*
+      The index's whole input: what every container holds and what it points at. One route
+      rather than a field on each of the pad routes, because the INDEX VISIBILITY RULE needs
+      the containment GRAPH — a row is top-level exactly when no other container references
+      it — and a graph cannot be assembled from rows fetched one at a time.
+     */
+    if (request.method === "GET" && pathname === "/api/containers") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot read the container index");
+      }
+      return jsonResponse(ContainersResponseSchema.parse({ containers: this.rooms.censuses() }));
+    }
+
+    const terminalMatch = /^\/api\/terminals\/([^/]+)$/.exec(pathname);
+    if (terminalMatch !== null) {
+      const sessionId = decodePathSegment(terminalMatch[1], "terminal id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot act on workspace terminals");
+      }
+      if (request.method === "DELETE") {
+        // Kill means gone: the session, its home composition and every portal onto that home
+        // in one write. An already-exited terminal is swept the same way — dismissing a dead
+        // terminal and killing a live one are one verb, so there is no conflict to report.
+        if (this.broker.killById(sessionId) === "not_found") {
+          throw new RequestError("not_found", "terminal not found");
+        }
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
+      if (request.method === "PATCH") {
+        const input = parseRequest(RenameTerminalRequestSchema, await parseJsonBody(request));
+        const name = input.name.trim();
+        if (name.length === 0) throw new RequestError("invalid", "name is empty");
+        if (this.broker.rename(sessionId, name) === "not_found") {
+          throw new RequestError("not_found", "terminal not found");
+        }
+        return jsonResponse(OkResponseSchema.parse({ ok: true }));
+      }
     }
 
     if (request.method === "POST" && pathname === "/api/pads") {
@@ -323,6 +389,7 @@ export class HttpApp {
         id: this.runtime.newId(),
         name: input.name,
         createdAt: this.runtime.now(),
+        layout: input.layout ?? "canvas",
       };
       this.store.createPad(pad);
       return jsonResponse(PadResponseSchema.parse({ pad }));
@@ -330,14 +397,7 @@ export class HttpApp {
 
     const padMatch = /^\/api\/pads\/([^/]+)$/.exec(pathname);
     if (padMatch !== null) {
-      const encodedId = padMatch[1];
-      if (encodedId === undefined) throw new RequestError("invalid", "pad id is missing");
-      let padId: string;
-      try {
-        padId = decodeURIComponent(encodedId);
-      } catch {
-        throw new RequestError("invalid", "pad id is invalid");
-      }
+      const padId = decodePathSegment(padMatch[1], "pad id");
       const context = this.authenticate(request);
       if (request.method === "GET") {
         this.requireCap(context, "pads:read", padId);
@@ -348,20 +408,73 @@ export class HttpApp {
       if (request.method === "PATCH") {
         this.requireCap(context, "pads:write", padId);
         const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
-        const pad = this.store.renamePad(padId, input.name);
-        if (pad === null) throw new RequestError("not_found", "pad not found");
-        return jsonResponse(PadResponseSchema.parse({ pad }));
+        const renamed = this.store.renamePad(padId, input.name);
+        if (renamed === null) throw new RequestError("not_found", "pad not found");
+        return jsonResponse(PadResponseSchema.parse({ pad: renamed }));
       }
       if (request.method === "DELETE") {
         requireRoot(context);
         if (this.store.getPad(padId) === null) {
           throw new RequestError("not_found", "pad not found");
         }
-        this.broker.dropPad(padId);
-        this.rooms.drop(padId);
-        this.store.deletePad(padId);
+        // One path for retiring a container: it also removes every reference to it, which a
+        // route doing its own row deletion would leave behind as widgets onto nothing.
+        this.placement.deleteContainer(padId);
         return jsonResponse(OkResponseSchema.parse({ ok: true }));
       }
+    }
+
+    const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
+    if (tileMatch !== null && request.method === "DELETE") {
+      const padId = decodePathSegment(tileMatch[1], "pad id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot remove tiles");
+      }
+      // Leaf removal is NOT a placement: nothing accepts "nowhere" as a destination for a
+      // LEAF, so a leaf is addressed directly here while every MOVE of its occupant goes
+      // through `POST /api/place`. Removing a terminal's last leaf closes the terminal.
+      const tileId = decodePathSegment(tileMatch[2], "tile id");
+      const removed = this.placement.removeTile(padId, tileId);
+      if (removed === "not_found") throw new RequestError("not_found", "tile not found");
+      if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
+      return jsonResponse(OkResponseSchema.parse({ ok: true }));
+    }
+
+    if (request.method === "POST" && pathname === "/api/place") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:write");
+      if (context.padScope !== null) {
+        // Same gate the verb routes carry: a placement moves items between containers, so
+        // a token scoped to one container can never authorize it.
+        throw new RequestError("forbidden", "scoped tokens cannot place items");
+      }
+      const input = parseRequest(PlaceRequestSchema, await parseJsonBody(request));
+      const outcome = this.placement.place(input);
+      if (outcome.status === "placed") {
+        return jsonResponse(PlaceResponseSchema.parse(outcome.result));
+      }
+      if (outcome.status === "denied") {
+        // A refusal is DATA: the rule that refused travels with the surface it refused and
+        // the container that refused it, so a client renders the rule instead of a string.
+        return jsonResponse(
+          PlacementDeniedResponseSchema.parse({
+            error: {
+              code: PLACEMENT_DENIED_CODE,
+              message: `placement refused by rule: ${outcome.denial.rule}`,
+              denial: outcome.denial,
+            },
+          }),
+          409,
+        );
+      }
+      throw new RequestError(
+        outcome.failure,
+        outcome.failure === "not_found"
+          ? "placement surface or container not found"
+          : "placement could not be carried out",
+      );
     }
 
     if (request.method === "POST" && pathname === "/api/principals") {
@@ -442,6 +555,31 @@ export class HttpApp {
     }
 
     throw new RequestError("not_found", "route not found");
+  }
+
+  /**
+   * Every terminal, with the composition it lives in and whether anything references that
+   * composition. `unplaced` is DERIVED from the containment graph on every read rather than
+   * stored: the pool's durable position was the last piece of state describing where a
+   * terminal was NOT, and the whole point of retiring it is that this question now has
+   * exactly one answer and no way to go stale.
+   */
+  private terminalsPayload(): TerminalsResponse {
+    const referenced = new Set<string>();
+    for (const census of this.rooms.censuses()) {
+      for (const reference of census.references) referenced.add(reference);
+    }
+    const terminals = this.store.listSessions().map((session) => ({
+      id: session.id,
+      machineId: session.machineId,
+      name: session.name,
+      createdAt: session.createdAt,
+      status: session.status,
+      exitCode: session.exitCode,
+      homeId: session.padId,
+      unplaced: !referenced.has(session.padId),
+    }));
+    return TerminalsResponseSchema.parse({ terminals });
   }
 
   private staticFile(pathname: string): Response {

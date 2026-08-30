@@ -34,7 +34,7 @@ function peerFor(socket: RawSocket): SessionPeer {
     isRoot: true,
     tokenId: null,
   };
-  return new SessionPeer("peer", socket, auth, "pad");
+  return new SessionPeer("peer", socket, auth, "pad", "c1");
 }
 
 describe("SessionPeer Bun send status handling", () => {
@@ -42,8 +42,8 @@ describe("SessionPeer Bun send status handling", () => {
     const socket = new StatusSocket([-1, 8]);
     const peer = peerFor(socket);
 
-    expect(peer.send({ type: "pong" })).toBe(true);
-    expect(peer.send({ type: "pong" })).toBe(true);
+    expect(peer.send({ type: "saved", rev: 1, at: 0 })).toBe(true);
+    expect(peer.send({ type: "saved", rev: 2, at: 0 })).toBe(true);
     expect(socket.sent).toHaveLength(2);
     expect(socket.closed).toBeNull();
   });
@@ -52,8 +52,8 @@ describe("SessionPeer Bun send status handling", () => {
     const socket = new StatusSocket([0]);
     const peer = peerFor(socket);
 
-    expect(peer.send({ type: "pong" })).toBe(false);
-    expect(peer.send({ type: "pong" })).toBe(false);
+    expect(peer.send({ type: "saved", rev: 1, at: 0 })).toBe(false);
+    expect(peer.send({ type: "saved", rev: 2, at: 0 })).toBe(false);
     expect(socket.sent).toHaveLength(1);
     expect(socket.closed).toMatchObject({ code: 1013 });
   });
@@ -71,7 +71,7 @@ describe("SessionPeer authoritative queue collapse", () => {
           protocolVersion: PROTOCOL_VERSION,
           epoch: "epoch",
           rev,
-          elements: [],
+          doc: "AAA=",
           self: peer.auth.principal,
           selfConnId: peer.id,
           selfCaps: ["*"],
@@ -92,5 +92,88 @@ describe("SessionPeer authoritative queue collapse", () => {
       type: "resync",
       rev: 299,
     });
+  });
+});
+
+describe("SessionPeer channel scope", () => {
+  test("every frame is tagged with the channel that owns it", () => {
+    const socket = new StatusSocket([]);
+    const peer = peerFor(socket);
+
+    peer.send({ type: "saved", rev: 3, at: 7 });
+
+    const frame = socket.sent[0];
+    if (frame === undefined) throw new Error("missing frame");
+    expect(ServerMessageSchema.parse(JSON.parse(frame))).toEqual({
+      type: "saved",
+      ch: "c1",
+      rev: 3,
+      at: 7,
+    });
+  });
+
+  test("closing a channel announces it and leaves the socket carrying its siblings", () => {
+    const socket = new StatusSocket([]);
+    const peer = peerFor(socket);
+
+    peer.close(4404, "pad deleted");
+
+    expect(socket.closed).toBeNull();
+    const frame = socket.sent.at(-1);
+    if (frame === undefined) throw new Error("missing channel_closed");
+    expect(ServerMessageSchema.parse(JSON.parse(frame))).toEqual({
+      type: "channel_closed",
+      ch: "c1",
+      code: 4404,
+      reason: "pad deleted",
+    });
+    // A dead channel accepts nothing more.
+    expect(peer.send({ type: "saved", rev: 1, at: 0 })).toBe(false);
+    expect(peer.isClosed).toBe(true);
+  });
+
+  test("an overflowing channel is dropped alone; a failed transport takes the socket", () => {
+    const overflowing = new StatusSocket([]);
+    overflowing.bufferedAmount = 1;
+    const peer = peerFor(overflowing);
+    let queued = 0;
+    while (peer.send({ type: "doc_update", update: "A".repeat(8_000), by: "peer" })) {
+      queued += 1;
+      if (queued > 1_000) throw new Error("queue never overflowed");
+    }
+    expect(overflowing.closed).toBeNull();
+    expect(overflowing.sent.at(-1)).toContain('"channel_closed"');
+
+    const failing = new StatusSocket([0]);
+    const dropped = peerFor(failing);
+    expect(dropped.send({ type: "saved", rev: 1, at: 0 })).toBe(false);
+    expect(failing.closed).toMatchObject({ code: 1013 });
+  });
+
+  test("a peer whose channel is retired reports it exactly once", () => {
+    const socket = new StatusSocket([]);
+    const principal: Principal = {
+      id: "principal",
+      kind: "human",
+      name: "tester",
+      color: "#2563eb",
+    };
+    const auth: AuthContext = {
+      principal,
+      caps: ["*"],
+      padScope: null,
+      isRoot: true,
+      tokenId: null,
+    };
+    const retired: string[] = [];
+    const peer = new SessionPeer("peer", socket, auth, "pad", "c1", false, (closing) => {
+      retired.push(closing.channel);
+    });
+
+    peer.close(1013, "outbound queue overflow");
+    peer.close(1013, "outbound queue overflow");
+    peer.closeConnection(1001, "server shutting down");
+
+    expect(retired).toEqual(["c1"]);
   });
 });

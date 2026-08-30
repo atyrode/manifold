@@ -5,13 +5,12 @@ import {
   PadSchema,
   PadTreeItemSchema,
   PrincipalSchema,
-  SceneElementSchema,
   type Cap,
   type Pad,
   type PadTreeItem,
   type Principal,
-  type SceneElement,
 } from "@manifold/protocol";
+import { Y } from "@manifold/scene";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_PAD = 10_000;
@@ -22,6 +21,7 @@ interface PadRow {
   id: string;
   name: string;
   created_at: number;
+  layout: string;
 }
 interface PadTreeRow {
   kind: "pad" | "folder";
@@ -30,6 +30,7 @@ interface PadTreeRow {
   created_at: number;
   parent_id: string | null;
   sort_order: number;
+  layout: string;
 }
 interface TreeRef {
   kind: "pad" | "folder";
@@ -55,13 +56,13 @@ interface TokenRow {
   revoked_at: number | null;
 }
 
-interface SnapshotRow {
+interface DocRow {
   pad_id: string;
   epoch: string;
   rev: number;
   ts: number;
   hash: string;
-  blob: string;
+  doc: Uint8Array;
 }
 
 interface MachineRow {
@@ -80,10 +81,10 @@ interface MachineAuthRow extends MachineRow {
 interface SessionDbRow {
   id: string;
   machine_id: string;
-  pad_id: string;
-  element_id: string;
+  pad_id: string | null;
   created_by: string;
   agent_principal_id: string | null;
+  name: string | null;
   status: string;
   exit_code: number | null;
   created_at: number;
@@ -109,18 +110,18 @@ export interface TokenRecord {
   revokedAt: number | null;
 }
 
-/** Latest canonical scene snapshot loaded into a room. */
-export interface SnapshotRecord {
+/** Latest canonical Yjs document loaded into a room. */
+export interface DocRecord {
   padId: string;
   epoch: string;
   rev: number;
   ts: number;
   hash: string;
-  elements: readonly SceneElement[];
+  doc: Uint8Array;
 }
 
-/** Safe identity logged when a corrupt snapshot is skipped during fallback loading. */
-export interface InvalidSnapshot {
+/** Safe identity logged when a corrupt document row is skipped during fallback loading. */
+export interface InvalidDoc {
   epoch: string;
   rev: number;
 }
@@ -143,10 +144,11 @@ export interface MachineAuthRecord extends MachineRecord {
 export interface StoredSession {
   id: string;
   machineId: string;
+  /** The composition this terminal lives in. Never null: a terminal is `homed: "eager"`. */
   padId: string;
-  elementId: string;
   createdBy: string;
   agentPrincipalId: string | null;
+  name: string | null;
   status: "running" | "exited";
   exitCode: number | null;
   createdAt: number;
@@ -157,14 +159,13 @@ export interface NewStoredSession {
   id: string;
   machineId: string;
   padId: string;
-  elementId: string;
   createdBy: string;
   agentPrincipalId: string;
   createdAt: number;
 }
 
-/** SHA-256 hex encoding used for bearer secrets and snapshot integrity hashes. */
-export function sha256Hex(value: string): string {
+/** SHA-256 hex encoding used for bearer secrets and document integrity hashes. */
+export function sha256Hex(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -187,17 +188,39 @@ function toMachine(row: MachineRow): MachineRecord {
   return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
 }
 
+/**
+ * A pad row IS the container: `layout` selects which of its two disciplines it wears. There
+ * is no lifecycle flag beside it any more — nothing dissolves under anybody, so there is
+ * nothing to mark as provisional and no return address to remember.
+ */
+function toPad(row: {
+  readonly id: string;
+  readonly name: string;
+  readonly created_at: number;
+  readonly layout: string;
+}): Pad {
+  if (row.layout !== "canvas" && row.layout !== "tiled") {
+    throw new Error(`invalid persisted pad layout: ${row.layout}`);
+  }
+  return { id: row.id, name: row.name, createdAt: row.created_at, layout: row.layout };
+}
+
 function toSession(row: SessionDbRow): StoredSession {
   if (row.status !== "running" && row.status !== "exited") {
     throw new Error(`invalid persisted session status: ${row.status}`);
+  }
+  if (row.pad_id === null) {
+    // Migration 9 gave every session a home and nothing since can take it away: a session
+    // is deleted, never unbound. A null here means a write went around the broker.
+    throw new Error(`session ${row.id} has no home composition`);
   }
   return {
     id: row.id,
     machineId: row.machine_id,
     padId: row.pad_id,
-    elementId: row.element_id,
     createdBy: row.created_by,
     agentPrincipalId: row.agent_principal_id,
+    name: row.name,
     status: row.status,
     exitCode: row.exit_code,
     createdAt: row.created_at,
@@ -239,12 +262,13 @@ export class ServerStore {
   listPadTree(): PadTreeItem[] {
     return this.db
       .query<PadTreeRow, []>(
-        `SELECT kind, id, name, created_at, parent_id, sort_order
+        `SELECT kind, id, name, created_at, parent_id, sort_order, layout
          FROM (
-           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order
+           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order, layout
            FROM pads
            UNION ALL
-           SELECT 'folder' AS kind, id, name, created_at, parent_folder_id AS parent_id, sort_order
+           SELECT 'folder' AS kind, id, name, created_at, parent_folder_id AS parent_id, sort_order,
+                  'canvas' AS layout
            FROM pad_folders
          )
          ORDER BY COALESCE(parent_id, ''), sort_order, created_at, id`,
@@ -254,7 +278,7 @@ export class ServerStore {
         row.kind === "pad"
           ? PadTreeItemSchema.parse({
               kind: "pad",
-              pad: { id: row.id, name: row.name, createdAt: row.created_at },
+              pad: toPad(row),
               parentId: row.parent_id,
               sortOrder: row.sort_order,
             })
@@ -277,11 +301,9 @@ export class ServerStore {
 
   getPad(id: string): Pad | null {
     const row = this.db
-      .query<PadRow, [string]>("SELECT id, name, created_at FROM pads WHERE id = ?")
+      .query<PadRow, [string]>("SELECT id, name, created_at, layout FROM pads WHERE id = ?")
       .get(id);
-    return row === null
-      ? null
-      : PadSchema.parse({ id: row.id, name: row.name, createdAt: row.created_at });
+    return row === null ? null : PadSchema.parse(toPad(row));
   }
 
   private siblingRefs(parentId: string | null): TreeRef[] {
@@ -316,14 +338,15 @@ export class ServerStore {
     siblings.forEach((item, index) => this.setTreePosition(item, parentId, index));
   }
 
+  /** Persists a container at the top level of the index. */
   createPad(pad: Pad): void {
     PadSchema.parse(pad);
-    const sortOrder = this.siblingRefs(null).length;
     this.db
-      .query<void, [string, string, number, number]>(
-        "INSERT INTO pads(id, name, created_at, sort_order, folder_id) VALUES (?, ?, ?, ?, NULL)",
+      .query<void, [string, string, number, number, string]>(
+        `INSERT INTO pads(id, name, created_at, sort_order, folder_id, layout)
+         VALUES (?, ?, ?, ?, NULL, ?)`,
       )
-      .run(pad.id, pad.name, pad.createdAt, sortOrder);
+      .run(pad.id, pad.name, pad.createdAt, this.siblingRefs(null).length, pad.layout);
   }
 
   createPadFolder(
@@ -433,7 +456,7 @@ export class ServerStore {
           item.kind === "pad" && item.pad.id === id,
       );
       if (current === undefined) return false;
-      this.db.query<void, [string]>("DELETE FROM snapshots WHERE pad_id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM scene_docs WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM events WHERE pad_id = ?").run(id);
       this.db.query<void, [string]>("DELETE FROM sessions WHERE pad_id = ?").run(id);
       const removed = this.db.query<void, [string]>("DELETE FROM pads WHERE id = ?").run(id);
@@ -448,66 +471,61 @@ export class ServerStore {
     })();
   }
 
-  latestSnapshot(
+  latestDoc(
     padId: string,
-    onInvalid?: (error: Error, snapshot: InvalidSnapshot) => void,
-  ): SnapshotRecord | null {
+    onInvalid?: (error: Error, record: InvalidDoc) => void,
+  ): DocRecord | null {
     const rows = this.db
-      .query<SnapshotRow, [string]>(
-        `SELECT pad_id, epoch, rev, ts, hash, blob FROM snapshots
+      .query<DocRow, [string]>(
+        `SELECT pad_id, epoch, rev, ts, hash, doc FROM scene_docs
          WHERE pad_id = ? ORDER BY ts DESC, rev DESC LIMIT 30`,
       )
       .all(padId);
     for (const row of rows) {
       try {
-        if (sha256Hex(row.blob) !== row.hash) {
-          throw new Error(`snapshot hash mismatch for pad ${padId}`);
+        if (sha256Hex(row.doc) !== row.hash) {
+          throw new Error(`scene document hash mismatch for pad ${padId}`);
         }
-        const parsed: unknown = JSON.parse(row.blob);
+        const probe = new Y.Doc();
+        Y.applyUpdate(probe, row.doc);
+        probe.destroy();
         return {
           padId: row.pad_id,
           epoch: row.epoch,
           rev: row.rev,
           ts: row.ts,
           hash: row.hash,
-          elements: SceneElementSchema.array().parse(parsed),
+          doc: new Uint8Array(row.doc),
         };
       } catch (error) {
-        const failure = error instanceof Error ? error : new Error("invalid snapshot");
+        const failure = error instanceof Error ? error : new Error("invalid scene document");
         onInvalid?.(failure, { epoch: row.epoch, rev: row.rev });
       }
     }
     return null;
   }
 
-  saveSnapshot(
-    padId: string,
-    epoch: string,
-    rev: number,
-    ts: number,
-    elements: readonly SceneElement[],
-  ): SnapshotRecord {
-    const blob = JSON.stringify(elements);
-    const hash = sha256Hex(blob);
+  saveDoc(padId: string, epoch: string, rev: number, ts: number, doc: Uint8Array): DocRecord {
+    const hash = sha256Hex(doc);
     const save = this.db.transaction(() => {
       this.db
-        .query<void, [string, string, number, number, string, string]>(
-          `INSERT OR REPLACE INTO snapshots(pad_id, epoch, rev, ts, hash, blob)
+        .query<void, [string, string, number, number, string, Uint8Array]>(
+          `INSERT OR REPLACE INTO scene_docs(pad_id, epoch, rev, ts, hash, doc)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(padId, epoch, rev, ts, hash, blob);
+        .run(padId, epoch, rev, ts, hash, doc);
       this.db
         .query<void, [string, string]>(
-          `DELETE FROM snapshots
+          `DELETE FROM scene_docs
            WHERE pad_id = ? AND rowid NOT IN (
-             SELECT rowid FROM snapshots WHERE pad_id = ?
+             SELECT rowid FROM scene_docs WHERE pad_id = ?
              ORDER BY ts DESC, rev DESC LIMIT 30
            )`,
         )
         .run(padId, padId);
     });
     save();
-    return { padId, epoch, rev, ts, hash, elements: [...elements] };
+    return { padId, epoch, rev, ts, hash, doc: new Uint8Array(doc) };
   }
 
   createPrincipal(principal: Principal, createdAt: number): void {
@@ -746,30 +764,30 @@ export class ServerStore {
 
   createSession(session: NewStoredSession): void {
     this.db
-      .query<void, [string, string, string, string, string, string, string, null, number]>(
+      .query<void, [string, string, string, string, string, string, null, number, null]>(
         `INSERT INTO sessions(
-           id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-           status, exit_code, created_at
+           id, machine_id, pad_id, created_by, agent_principal_id,
+           status, exit_code, created_at, name
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
         session.machineId,
         session.padId,
-        session.elementId,
         session.createdBy,
         session.agentPrincipalId,
         "running",
         null,
         session.createdAt,
+        null,
       );
   }
 
   getSession(id: string): StoredSession | null {
     const row = this.db
       .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name
          FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -779,8 +797,8 @@ export class ServerStore {
   listSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name
          FROM sessions ORDER BY created_at, id`,
       )
       .all()
@@ -790,8 +808,8 @@ export class ServerStore {
   listRunningSessionsForMachine(machineId: string): StoredSession[] {
     return this.db
       .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name
          FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
@@ -800,8 +818,8 @@ export class ServerStore {
   listRunningSessions(): StoredSession[] {
     return this.db
       .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, element_id, created_by, agent_principal_id,
-                status, exit_code, created_at
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name
          FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
       )
       .all()
@@ -820,5 +838,34 @@ export class ServerStore {
         )
         .run(exitCode, id).changes > 0
     );
+  }
+
+  /**
+   * Moves a session to a different home composition. A session is never unbound: it is
+   * deleted, or it lives somewhere. Which is why this takes no null.
+   */
+  updateSessionPad(id: string, padId: string): void {
+    this.db
+      .query<void, [string, string]>("UPDATE sessions SET pad_id = ? WHERE id = ?")
+      .run(padId, id);
+  }
+
+  /** Sets or clears a session's operator-assigned display name. */
+  updateSessionName(id: string, name: string | null): void {
+    this.db
+      .query<void, [string | null, string]>("UPDATE sessions SET name = ? WHERE id = ?")
+      .run(name, id);
+  }
+
+  /** Sessions homed in one container, in creation order. */
+  listSessionsForPad(padId: string): StoredSession[] {
+    return this.db
+      .query<SessionDbRow, [string]>(
+        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name
+         FROM sessions WHERE pad_id = ? ORDER BY created_at, id`,
+      )
+      .all(padId)
+      .map(toSession);
   }
 }

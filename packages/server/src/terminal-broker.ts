@@ -2,13 +2,14 @@ import {
   hasCap,
   type AdvertisedSession,
   type AgentMessage,
-  type ClientMessage,
+  type ClientMessageBody,
   type RuntimeDeps,
   type ServerToAgentMessage,
   type SessionInfo,
 } from "@manifold/protocol";
 import type { AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
+import type { PlaceExecutor, SessionPlacementPort } from "./placement.ts";
 import type { RoomManager, RoomTimers } from "./room.ts";
 import {
   serializeServerMessage,
@@ -17,13 +18,17 @@ import {
 } from "./session-peer.ts";
 import type { ServerStore } from "./stores.ts";
 
-type TerminalOpen = Extract<ClientMessage, { type: "terminal_open" }>;
-type TerminalAttach = Extract<ClientMessage, { type: "terminal_attach" }>;
-type TerminalDetach = Extract<ClientMessage, { type: "terminal_detach" }>;
-type TerminalInput = Extract<ClientMessage, { type: "terminal_input" }>;
-type TerminalResize = Extract<ClientMessage, { type: "terminal_resize" }>;
-type TerminalTake = Extract<ClientMessage, { type: "terminal_take" }>;
-type TerminalKill = Extract<ClientMessage, { type: "terminal_kill" }>;
+/**
+ * The broker answers a PEER, and a peer IS one channel, so its payload types are the
+ * channel-agnostic bodies: routing was already consumed by the gateway.
+ */
+type TerminalOpen = Extract<ClientMessageBody, { type: "terminal_open" }>;
+type TerminalAttach = Extract<ClientMessageBody, { type: "terminal_attach" }>;
+type TerminalDetach = Extract<ClientMessageBody, { type: "terminal_detach" }>;
+type TerminalInput = Extract<ClientMessageBody, { type: "terminal_input" }>;
+type TerminalResize = Extract<ClientMessageBody, { type: "terminal_resize" }>;
+type TerminalTake = Extract<ClientMessageBody, { type: "terminal_take" }>;
+type TerminalKill = Extract<ClientMessageBody, { type: "terminal_kill" }>;
 type OutputFrame = Extract<AgentMessage, { type: "output" }>;
 type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" }>;
 
@@ -57,8 +62,27 @@ interface RuntimeSession {
 
 interface PendingOpen {
   sessionId: string;
+  /** The container the gesture happened in: where the reply goes and residency is held. */
   padId: string;
-  elementId: string;
+  /**
+   * The composition this terminal will LIVE in, minted before the PTY so the agent's token
+   * and `MANIFOLD_PAD` are scoped to it from the first byte. For a tiled opener that is the
+   * composition it was opened in; for a canvas opener it is a solo composition born with
+   * the terminal, and the canvas gets a portal onto it.
+   */
+  homeId: string;
+  /**
+   * The opener's correlation token (`terminal_open.elementId`): every error and the
+   * `terminal_opened.ref` echo carry it back. Under `placement: "element"` it is also
+   * the id the opener authors its canvas portal under.
+   */
+  ref: string;
+  /**
+   * Who authors the canvas reference. `"element"`: the opener does, on its canvas, once
+   * this resolves — it portals onto `homeId`, which the reply hands it. `"tile"`: nobody
+   * does, because the opener IS the composition the terminal lives in.
+   */
+  placement: "element" | "tile";
   machineId: string;
   createdBy: string;
   createdAt: number;
@@ -69,11 +93,21 @@ interface PendingOpen {
   cancelDeadline: (() => void) | null;
 }
 
-/** Routes terminal lifecycle/control while preserving the snapshot-plus-tail attach invariant. */
-export class TerminalBroker {
+/**
+ * Routes terminal lifecycle/control while preserving the snapshot-plus-tail attach
+ * invariant. PLACEMENT is not here: `placement.ts` owns where items live, and this class
+ * implements `SessionPlacementPort` for it — sessions, PTYs and their fan-out.
+ */
+export class TerminalBroker implements SessionPlacementPort {
   private readonly machines = new Map<string, MachineChannel>();
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly pendingOpens = new Map<string, PendingOpen>();
+  /**
+   * Circular startup wiring, same shape as `RoomManager`'s providers: a terminal born
+   * directly into a tiled container hardens the container it composed, and that rule lives
+   * with the rest of container lifecycle.
+   */
+  private placement: PlaceExecutor | null = null;
 
   constructor(
     private readonly store: ServerStore,
@@ -88,7 +122,7 @@ export class TerminalBroker {
       const info: SessionInfo = {
         id: row.id,
         padId: row.padId,
-        elementId: row.elementId,
+        name: row.name,
         machineId: row.machineId,
         status: row.status,
         exitCode: row.exitCode,
@@ -107,6 +141,11 @@ export class TerminalBroker {
     }
   }
 
+  /** Installs the placement executor after circular startup wiring completes. */
+  setPlacement(placement: PlaceExecutor): void {
+    this.placement = placement;
+  }
+
   /** Registers the currently fenced socket for a machine id. */
   setMachineOnline(channel: MachineChannel): void {
     this.machines.set(channel.machineId, channel);
@@ -123,7 +162,7 @@ export class TerminalBroker {
         type: "error",
         code: "no_machine",
         message: "machine disconnected while opening terminal",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
       this.pendingOpens.delete(sessionId);
@@ -227,7 +266,7 @@ export class TerminalBroker {
     }
   }
 
-  /** Re-registers a surviving PTY only against its persisted pad/element binding. */
+  /** Re-registers a surviving PTY only against its persisted pad binding. */
   adoptSession(machineId: string, advertised: AdvertisedSession): boolean {
     const stored = this.store.getSession(advertised.sessionId);
     if (stored === null || stored.machineId !== machineId) return false;
@@ -236,7 +275,7 @@ export class TerminalBroker {
       const info: SessionInfo = {
         id: stored.id,
         padId: stored.padId,
-        elementId: stored.elementId,
+        name: stored.name,
         machineId: stored.machineId,
         status: stored.status,
         exitCode: stored.exitCode,
@@ -269,12 +308,15 @@ export class TerminalBroker {
       rows: advertised.rows,
     };
     session.snapshotRequestOutstanding = false;
-    this.rooms.live(session.info.padId)?.broadcast({
-      type: "session_event",
-      sessionId: session.info.id,
-      kind: "controller_changed",
-      controllerId: session.info.controllerId,
-    });
+    const adoptedPadId = session.info.padId;
+    if (adoptedPadId !== null) {
+      this.rooms.live(adoptedPadId)?.broadcast({
+        type: "session_event",
+        sessionId: session.info.id,
+        kind: "controller_changed",
+        controllerId: session.info.controllerId,
+      });
+    }
     if (session.viewers.size > 0) {
       for (const [peer, viewer] of session.viewers) {
         viewer.state = "PENDING";
@@ -324,6 +366,23 @@ export class TerminalBroker {
       });
       return;
     }
+    // Discipline decides who authors the placement, so a mismatch is refused instead of
+    // spawning a PTY no surface would ever show: a canvas opener that forgot to author an
+    // element, or a tiled opener that thinks it can.
+    const pad = this.store.getPad(peer.padId);
+    const placement = message.placement ?? "element";
+    if ((pad?.layout === "tiled") !== (placement === "tile")) {
+      peer.send({
+        type: "error",
+        code: "conflict",
+        message:
+          placement === "tile"
+            ? 'placement "tile" requires a tiled container'
+            : 'a tiled container places terminals server-side: send placement "tile"',
+        ref: message.elementId,
+      });
+      return;
+    }
     const machine = this.selectMachine(message.machineId);
     if (machine === null) {
       peer.send({
@@ -336,11 +395,21 @@ export class TerminalBroker {
     }
 
     const sessionId = this.runtime.newId();
-    const grant = this.auth.mintSessionAgentToken(sessionId, peer.padId, peer.auth.principal.id);
+    /*
+      The home is decided here, before the PTY exists, because the agent token and the
+      `MANIFOLD_PAD` a program inside the terminal reads both have to name the container the
+      terminal LIVES in — and a canvas is never that. A tiled opener already is the home; a
+      canvas opener gets a solo composition, whose ROW is created when the PTY lands so a
+      create that fails leaves nothing behind to clean up.
+     */
+    const homeId = placement === "tile" ? peer.padId : this.runtime.newId();
+    const grant = this.auth.mintSessionAgentToken(sessionId, homeId, peer.auth.principal.id);
     const pending: PendingOpen = {
       sessionId,
       padId: peer.padId,
-      elementId: message.elementId,
+      homeId,
+      ref: message.elementId,
+      placement,
       machineId: machine.machineId,
       createdBy: peer.auth.principal.id,
       createdAt: this.runtime.now(),
@@ -361,7 +430,7 @@ export class TerminalBroker {
         type: "error",
         code: "no_machine",
         message: "terminal creation timed out",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.logger.warn("terminal_create_timeout", {
         machineId: machine.machineId,
@@ -377,8 +446,11 @@ export class TerminalBroker {
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
       env: {
         MANIFOLD_URL: this.publicUrl(),
-        MANIFOLD_PAD: peer.padId,
-        MANIFOLD_ELEMENT: message.elementId,
+        // The container the terminal LIVES in, which is what a program inside it should see
+        // when it asks where it is. `MANIFOLD_ELEMENT` is only meaningful for a canvas
+        // opener, which authors its portal under exactly that id.
+        MANIFOLD_PAD: homeId,
+        ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
         MANIFOLD_TOKEN: grant.token,
       },
     });
@@ -396,25 +468,51 @@ export class TerminalBroker {
     }
   }
 
-  /** Commits a created PTY, replies to its opener, and publishes durable lifecycle state. */
+  /**
+   * Commits a created PTY, replies to its opener, and publishes durable lifecycle state.
+   *
+   * This is where `homed: "eager"` is actually paid for: with the PTY in hand, the terminal's
+   * home leaf is written before its session row exists, so there is no instant at which a
+   * live terminal has nowhere to live. A tiled opener IS the home and only needs a leaf; a
+   * canvas opener gets a whole solo composition, and its own portal element — authored
+   * client-side under the ref it chose — points at the id this reply hands back.
+   */
   onCreated(machineId: string, sessionId: string): void {
     const pending = this.pendingOpens.get(sessionId);
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(sessionId);
     pending.cancelDeadline?.();
+    const home =
+      pending.placement === "tile"
+        ? (this.rooms.get(pending.homeId)?.placeTerminalTile(sessionId, null, null) ?? null)
+        : (this.placement?.createHome(pending.homeId, sessionId, this.bornLabel(machineId)) ??
+          null);
+    if (home === null) {
+      // Nothing durable exists yet, so the PTY is the only thing to undo.
+      this.machines.get(machineId)?.send({ type: "kill", sessionId });
+      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      pending.opener.send({
+        type: "error",
+        code: "conflict",
+        message: "this terminal could not be given a home",
+        ref: pending.ref,
+      });
+      this.logger.warn("terminal_home_failed", { padId: pending.padId, sessionId });
+      this.rooms.evictIfIdle(pending.padId);
+      return;
+    }
     this.store.createSession({
       id: sessionId,
       machineId,
-      padId: pending.padId,
-      elementId: pending.elementId,
+      padId: pending.homeId,
       createdBy: pending.createdBy,
       agentPrincipalId: pending.agentPrincipalId,
       createdAt: pending.createdAt,
     });
     const info: SessionInfo = {
       id: sessionId,
-      padId: pending.padId,
-      elementId: pending.elementId,
+      padId: pending.homeId,
+      name: null,
       machineId,
       status: "running",
       exitCode: null,
@@ -430,20 +528,40 @@ export class TerminalBroker {
       snapshotGeneration: 0,
       snapshotRequestOutstanding: false,
     });
-    pending.opener.send({ type: "terminal_opened", elementId: pending.elementId, session: info });
-    const room = this.rooms.live(pending.padId);
-    room?.broadcast(
-      { type: "terminal_opened", elementId: pending.elementId, session: info },
+    /*
+      The reply carries the home LEAF for a tiled opener and the opener's own ref for a
+      canvas one, because those are the ids each of them will render under; `session.padId`
+      carries the home either way, which is what a canvas opener portals onto.
+
+      The fan-out goes to the HOME's room, not the opener's: after this cutover nothing
+      about a session is canvas state. A canvas learns about the new terminal the same way
+      it learns about anything else on it — the portal element arriving in its document.
+     */
+    pending.opener.send({
+      type: "terminal_opened",
+      elementId: pending.placement === "tile" ? home : pending.ref,
+      session: info,
+      ...(pending.placement === "tile" ? { ref: pending.ref } : {}),
+    });
+    const homeRoom = this.rooms.live(pending.homeId);
+    homeRoom?.broadcast(
+      { type: "terminal_opened", elementId: home, session: info },
       false,
       pending.opener,
     );
-    room?.broadcast({ type: "session_event", sessionId, kind: "opened" });
-    this.store.addEvent(pending.padId, this.runtime.now(), pending.createdBy, "session_opened", {
+    homeRoom?.broadcast({ type: "session_event", sessionId, kind: "opened" });
+    this.store.addEvent(pending.homeId, this.runtime.now(), pending.createdBy, "session_opened", {
       sessionId,
       machineId,
-      elementId: pending.elementId,
+      elementId: home,
     });
     this.rooms.evictIfIdle(pending.padId);
+    if (pending.homeId !== pending.padId) this.rooms.evictIfIdle(pending.homeId);
+  }
+
+  /** The label a newborn terminal's home takes: its machine's name, else a plain noun. */
+  private bornLabel(machineId: string): string {
+    return this.store.getMachine(machineId)?.name ?? "terminal";
   }
 
   /** Resolves a rejected PTY create without exposing agent diagnostics to clients. */
@@ -457,7 +575,7 @@ export class TerminalBroker {
       type: "error",
       code: "conflict",
       message: "terminal creation failed",
-      ref: pending.elementId,
+      ref: pending.ref,
     });
     this.logger.warn("terminal_create_failed", { machineId, sessionId });
     this.rooms.evictIfIdle(pending.padId);
@@ -736,24 +854,33 @@ export class TerminalBroker {
   }
 
   /**
-   * Requests PTY termination from the current controller principal, or from any
-   * holder of the wildcard capability (owner janitor: pruning an orphaned session
-   * whose canvas element is gone must not require winning the controller lease).
+   * A terminal stops in exactly one of two ways, and the whole difference is INTENT.
+   *
+   *   KILLED — somebody ASKED for it to stop: `terminal_kill`, `DELETE /api/terminals/:id`,
+   *     or closing its last tile. The request is the intent, so the terminal leaves the
+   *     world: the PTY, the session row, its home composition and every portal onto that
+   *     home go together and at once. Afterwards there is no exited row to find and no exit
+   *     code to report, because nothing is left to report it on.
+   *   EXITED — the PTY stopped on its own (`onExited`). That is INFORMATION the operator may
+   *     want, so NOTHING is deleted: the row keeps its real exit code, its home keeps its
+   *     leaf, and every portal onto that home keeps rendering it until somebody kills it.
+   *
+   * The predicate is structural rather than a flag: a killed session is out of
+   * `this.sessions` before the machine's `exit` frame can arrive, so `onExited` finds nothing
+   * and is a no-op for it. Nothing has to remember which door was used, and no third status
+   * exists to propagate — a terminal is running, exited on its own, or gone.
+   *
+   * This door additionally needs the controller principal, or any holder of the wildcard
+   * capability (owner janitor: sweeping a terminal whose widget is already gone must not
+   * require winning the lease).
    */
   kill(peer: SessionPeer, message: TerminalKill): void {
     const session = this.sessionFor(peer, message.sessionId);
     if (session === null) return;
-    if (session.info.status !== "running") {
-      peer.send({
-        type: "error",
-        code: "conflict",
-        message: "session has exited",
-        ref: message.sessionId,
-      });
-      return;
-    }
+    // A lease is a claim on a LIVE PTY. An exited terminal has no controller, so there is
+    // nothing to win and no reason to make dismissing it harder than closing its tile.
     const isController = session.info.controllerId === peer.auth.principal.id;
-    if (!isController && !peer.auth.isRoot) {
+    if (session.info.status === "running" && !isController && !peer.auth.isRoot) {
       peer.send({
         type: "error",
         code: "forbidden",
@@ -771,20 +898,50 @@ export class TerminalBroker {
       });
       return;
     }
-    const machine = this.machines.get(session.info.machineId);
-    if (machine === undefined) {
-      // A kill is durable even while the machine is offline. Persisting the exit
-      // prevents this stale row from surviving forever; if the PTY later reconnects,
-      // hello reconciliation sees the exited record and explicitly kills it.
-      this.onExited(session.info.machineId, message.sessionId, null);
-      return;
-    }
-    if (!machine.send({ type: "kill", sessionId: message.sessionId })) {
-      this.onExited(session.info.machineId, message.sessionId, null);
-    }
+    this.destroyTerminal(message.sessionId);
   }
 
-  /** Persists and broadcasts terminal exit without storing terminal bytes. */
+  /**
+   * Owner-authorized kill for HTTP callers (`DELETE /api/terminals/:id`), which hold no
+   * session peer and therefore no controller lease to win. An already-exited terminal is no
+   * conflict here: sweeping it is precisely what the caller asked for.
+   */
+  killById(sessionId: string): "ok" | "not_found" {
+    if (!this.sessions.has(sessionId)) return "not_found";
+    this.destroyTerminal(sessionId);
+    return "ok";
+  }
+
+  /**
+   * The KILLED half of the predicate above. Containers are `placement.ts`'s business and a
+   * home IS a container, so the removal is authored there: pulling the terminal's leaves is
+   * what empties its home, and an emptied home takes every portal onto it along. The PTY and
+   * the row come back through `reapSession`, so the two halves cannot drift apart.
+   */
+  private destroyTerminal(sessionId: string): void {
+    if (this.placement !== null) {
+      this.placement.killTerminal(sessionId);
+      return;
+    }
+    // Only reachable before startup wiring completes. A kill must still not leave the
+    // session behind, even if its home outlives it by a moment.
+    this.reapSession(sessionId);
+  }
+
+  /**
+   * Asks a machine to stop a PTY. Best effort by design: every kill deletes the session row,
+   * so a PTY that outlives the request is killed by hello reconciliation the moment its
+   * machine reconnects and finds no row for it. Persisting an exit to keep a stale row
+   * honest is the OTHER path's business, and this path has no row left to keep honest.
+   */
+  private sendPtyStop(session: RuntimeSession): void {
+    this.machines.get(session.info.machineId)?.send({ type: "kill", sessionId: session.info.id });
+  }
+
+  /**
+   * The EXITED half of the predicate: a PTY that stopped on its own. Persists and broadcasts
+   * it without storing terminal bytes, and deletes nothing.
+   */
   onExited(machineId: string, sessionId: string, exitCode: number | null): void {
     const session = this.sessions.get(sessionId);
     if (session === undefined || session.info.machineId !== machineId) return;
@@ -793,7 +950,11 @@ export class TerminalBroker {
     session.viewers.clear();
     session.info = { ...session.info, status: "exited", exitCode, controllerId: null };
     this.store.markSessionExited(sessionId, exitCode);
-    this.rooms.live(session.info.padId)?.broadcast({
+    // The exit is announced in the terminal's HOME, the room every viewer of it is joined
+    // to. Nothing is deleted: the leaf stays, the portals onto the home stay, and the exit
+    // code stays visible until somebody deliberately kills the terminal.
+    const padId = session.info.padId;
+    this.rooms.live(padId)?.broadcast({
       type: "session_event",
       sessionId,
       kind: "exited",
@@ -803,28 +964,128 @@ export class TerminalBroker {
     if (stored !== null && stored.agentPrincipalId !== null) {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
     }
-    this.store.addEvent(
-      session.info.padId,
-      this.runtime.now(),
-      session.info.createdBy,
-      "session_exited",
-      { sessionId, machineId, exitCode },
-    );
-    this.rooms.evictIfIdle(session.info.padId);
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_exited", {
+      sessionId,
+      machineId,
+      exitCode,
+    });
+    this.rooms.evictIfIdle(padId);
   }
 
   /**
-   * Deletes exited sessions whose canvas element no longer references them. This is
-   * explicitly invoked at exit and before init/resync; ordinary roster reads stay pure.
+   * Renames a terminal. Names are session state, not container state, so the new label is
+   * published into the terminal's home, where every viewer's titlebar and session row picks
+   * it up without a refetch.
    */
-  pruneExitedUnreferencedForPad(padId: string): void {
+  rename(sessionId: string, name: string): "ok" | "not_found" {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return "not_found";
+    session.info = { ...session.info, name };
+    this.store.updateSessionName(sessionId, name);
+    const padId = session.info.padId;
+    this.rooms.live(padId)?.broadcast({ type: "session_event", sessionId, kind: "renamed", name });
+    this.store.addEvent(padId, this.runtime.now(), session.info.createdBy, "session_renamed", {
+      sessionId,
+      name,
+    });
+    return "ok";
+  }
+
+  /**
+   * `SessionPlacementPort`: the placement-relevant slice of live session state. Only the
+   * home matters to placement — geometry, viewers and controller leases are this class's
+   * business.
+   */
+  placedSession(sessionId: string): { readonly padId: string } | null {
+    const session = this.sessions.get(sessionId);
+    return session === undefined ? null : { padId: session.info.padId };
+  }
+
+  /**
+   * `SessionPlacementPort`: publishes a session's move from one composition to another. The
+   * executor has already written the new leaf and removed the old one; this is the fan-out.
+   * The old room hears `parked` — the session genuinely left it — and the new room hears
+   * `terminal_opened` with the leaf that now holds it.
+   */
+  rebindSession(sessionId: string, fromPadId: string, toPadId: string, placementId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined || fromPadId === toPadId) return;
+    session.info = { ...session.info, padId: toPadId };
+    this.store.updateSessionPad(sessionId, toPadId);
+    // Viewers attached through the old room can no longer reach the session: every session
+    // message is gated on the peer's own container.
+    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    session.viewers.clear();
+    this.rooms.live(fromPadId)?.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    this.rooms
+      .live(toPadId)
+      ?.broadcast({ type: "terminal_opened", elementId: placementId, session: session.info });
+    this.store.addEvent(toPadId, this.runtime.now(), session.info.createdBy, "session_bound", {
+      sessionId,
+      elementId: placementId,
+    });
+  }
+
+  /**
+   * `SessionPlacementPort`: the session half of a deliberate kill — the PTY is asked to stop
+   * and the row is forgotten. Called for a terminal whose last home leaf is gone, which is
+   * the same event however it was addressed: closing its tile, killing it by id, or deleting
+   * the composition it lived in.
+   *
+   * No exit is persisted on the way out. The row is being deleted, so an exit record would
+   * exist for the length of one statement and, worse, would broadcast an `exited` event for
+   * a terminal the operator asked to be RID of — the one thing the killed half of the
+   * lifecycle predicate promises never to show. What the home hears instead is `parked`,
+   * which already means exactly "this session left THIS room" and is what makes every
+   * viewer's session listing drop the row at once instead of at its next resync.
+   */
+  reapSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    if (session.info.status === "running") this.sendPtyStop(session);
+    for (const viewer of session.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    session.viewers.clear();
+    this.sessions.delete(sessionId);
+    this.rooms
+      .live(session.info.padId)
+      ?.broadcast({ type: "session_event", sessionId, kind: "parked" });
+    // The injected agent token is scoped to this session, so it dies with it. A natural exit
+    // revokes in `onExited`; a kill never goes through there, and a live token for a terminal
+    // that no longer exists would be the one piece of it left in the world.
+    const stored = this.store.getSession(sessionId);
+    if (stored !== null && stored.agentPrincipalId !== null) {
+      this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, session.info.createdBy);
+    }
+    this.store.deleteSession(sessionId);
+  }
+
+  /**
+   * `SessionPlacementPort`: a terminal's operator-visible label — its own name, else its
+   * machine's, else `fallback`. Composition names views from it.
+   */
+  terminalLabel(sessionId: string, fallback: string): string {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return fallback;
+    return session.info.name ?? this.store.getMachine(session.info.machineId)?.name ?? fallback;
+  }
+
+  /**
+   * Collects exited terminals their composition no longer holds a leaf for, and retires the
+   * composition when the terminal was the last thing in it. Invoked at exit and before
+   * init/resync; ordinary roster reads stay pure.
+   *
+   * This replaces the two janitors the pool needed. There is one rule now — a terminal
+   * exists as long as some composition holds a leaf for it — and it needs no unbound state
+   * to sweep, because there is no unbound state.
+   */
+  pruneExitedUnhomedForPad(padId: string): void {
     const room = this.rooms.live(padId);
     if (room === null) return;
     for (const [sessionId, session] of this.sessions) {
       if (
         session.info.padId !== padId ||
         session.info.status !== "exited" ||
-        room.referencesSession(sessionId)
+        room.homesSession(sessionId)
       ) {
         continue;
       }
@@ -832,6 +1093,7 @@ export class TerminalBroker {
       session.viewers.clear();
       this.sessions.delete(sessionId);
       this.store.deleteSession(sessionId);
+      this.placement?.retireHome(padId);
     }
   }
 
@@ -854,7 +1116,7 @@ export class TerminalBroker {
         type: "error",
         code: "not_found",
         message: "pad deleted while opening terminal",
-        ref: pending.elementId,
+        ref: pending.ref,
       });
       this.pendingOpens.delete(sessionId);
     }

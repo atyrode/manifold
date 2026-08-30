@@ -2,7 +2,8 @@ export { base64ToBytes, base64ToText, bytesToBase64, textToBase64 } from "./base
 export {
   SessionClient,
   type ConnectionStatus,
+  type PlaceOutcome,
   type SessionClientOptions,
-  type SceneUpdateRejection,
+  type SceneTx,
   type SessionEvents,
 } from "./session-client.ts";
