@@ -122,6 +122,33 @@ export function withTileLeaf(
   targetTileId: string,
   edge: TileEdge,
 ): TileInsert | null {
+  return insertLeaf(layout, surface, targetTileId, edge);
+}
+
+/**
+ * The layout that would result from dropping SOMETHING at `edge` of `targetTileId`,
+ * with the landing leaf left EMPTY. Preview-only: the same tree surgery `withTileLeaf`
+ * performs — one private implementation, two public entry points — so a preview can
+ * never describe a shape the write would not produce. `withTileLeaf` keeps its
+ * non-null `surface` on purpose: it underlies the server's only structural tile
+ * write, and a nullable surface must never be able to reach a doc write.
+ */
+export function withTileSlot(
+  layout: TileLayout,
+  targetTileId: string,
+  edge: TileEdge,
+): { readonly layout: TileLayout; readonly slotId: string } | null {
+  const inserted = insertLeaf(layout, null, targetTileId, edge);
+  return inserted === null ? null : { layout: inserted.layout, slotId: inserted.tileId };
+}
+
+/** The one tree surgery behind both entry points above. */
+function insertLeaf(
+  layout: TileLayout,
+  surface: TileSurface | null,
+  targetTileId: string,
+  edge: TileEdge,
+): TileInsert | null {
   const target = layout[targetTileId];
   if (target === undefined) return null;
 

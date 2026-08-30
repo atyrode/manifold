@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ROOT_TILE_ID, type TileLayout, type TileSurface } from "@manifold/protocol";
+import {
+  ROOT_TILE_ID,
+  validateTileLayout,
+  type TileLayout,
+  type TileSurface,
+} from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
   SERVER_PLACE_ORIGIN,
@@ -19,6 +24,7 @@ import {
   withTileLeaf,
   withTileLeafSurface,
   withTileRatios,
+  withTileSlot,
   withTilesSwapped,
   withoutTileLeaf,
   writeTileLeaf,
@@ -97,6 +103,43 @@ describe("tile layout pure math", () => {
     expect(layout[wrapper ?? ""]?.dir).toBe("column");
     expect(layout[ROOT_TILE_ID]?.children).toContain(wrapper ?? "");
     expect(Object.values(surfaces(layout))).toEqual([terminal("s1"), terminal("s2"), pad("p1")]);
+  });
+
+  test("withTileSlot performs the same surgery with the landing leaf left empty", () => {
+    const seeded = withTileLeaf(emptyTileLayout(), terminal("s1"), ROOT_TILE_ID, "center")?.layout;
+    const split = withTileLeaf(seeded ?? {}, terminal("s2"), ROOT_TILE_ID, "right");
+    const layout = split?.layout ?? {};
+    const target = split?.tileId ?? "";
+
+    // A non-root leaf: the target keeps its id, the slot is the fresh sibling.
+    const beside = withTileSlot(layout, target, "bottom");
+    expect(beside).not.toBeNull();
+    expect(validateTileLayout(beside?.layout ?? {})).toBe(true);
+    expect(beside?.layout[beside?.slotId ?? ""]?.surface).toBeNull();
+    expect(beside?.layout[target]?.surface).toEqual(terminal("s2"));
+
+    // The root: its content moves to a fresh id and the slot joins the new split.
+    const atRoot = withTileSlot(layout, ROOT_TILE_ID, "top");
+    expect(atRoot).not.toBeNull();
+    expect(validateTileLayout(atRoot?.layout ?? {})).toBe(true);
+    expect(atRoot?.layout[atRoot?.slotId ?? ""]?.surface).toBeNull();
+    expect(atRoot?.layout[ROOT_TILE_ID]?.children[0]).toBe(atRoot?.slotId ?? "");
+
+    // A nested leaf: the surgery matches withTileLeaf's shape exactly, minus the occupant.
+    const nested = withTileLeaf(beside?.layout ?? {}, pad("p1"), beside?.slotId ?? "", "center");
+    const deepTarget = beside?.slotId ?? "";
+    const slotted = withTileSlot(nested?.layout ?? {}, deepTarget, "right");
+    const placed = withTileLeaf(nested?.layout ?? {}, terminal("s3"), deepTarget, "right");
+    expect(slotted).not.toBeNull();
+    expect(validateTileLayout(slotted?.layout ?? {})).toBe(true);
+    expect(slotted?.layout[slotted?.slotId ?? ""]?.surface).toBeNull();
+    expect(slotted?.slotId).toBe(placed?.tileId ?? "");
+    expect(Object.keys(slotted?.layout ?? {}).sort()).toEqual(
+      Object.keys(placed?.layout ?? {}).sort(),
+    );
+
+    // Center only fills an EMPTY leaf in place; an occupied target refuses.
+    expect(withTileSlot(layout, target, "center")).toBeNull();
   });
 
   test("removing a leaf collapses the split it leaves behind", () => {

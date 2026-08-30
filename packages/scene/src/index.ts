@@ -39,6 +39,7 @@ export {
   withTileLeaf,
   withTileLeafSurface,
   withTileRatios,
+  withTileSlot,
   withTilesSwapped,
   withoutTileLeaf,
   writeTileLeaf,
