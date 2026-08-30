@@ -112,6 +112,18 @@ const NO_SOURCE: SourceLocation = {
   homeId: null,
 };
 
+/**
+ * A leaf's occupant, moved aside so the leaf can be given to something else: the surface
+ * that was in it, the fresh solo composition built to keep it alive, and its leaf in there.
+ * Both ids are null when nothing had to be built — an embedded canvas is a reference, and
+ * the pad it points at already lives in the index on its own.
+ */
+interface EvictedOccupant {
+  readonly surface: TileSurface;
+  readonly homeId: string | null;
+  readonly leafId: string | null;
+}
+
 export class PlaceExecutor {
   constructor(
     private readonly store: ServerStore,
@@ -139,7 +151,7 @@ export class PlaceExecutor {
           case "move_element":
             return this.executeMoveElement(surface, destination, source);
           case "extract":
-            return this.executeExtract(destination, source);
+            return this.executeExtract(surface, destination, source);
           default:
             // Unreachable: `CANVAS_OPS` maps every item kind to one of the three above.
             return { status: "failed", failure: "conflict" };
@@ -406,6 +418,73 @@ export class PlaceExecutor {
   }
 
   /**
+   * Moves a leaf's occupant ASIDE — never away — so the leaf itself becomes available.
+   *
+   * The occupant's new home is built BEFORE anything is taken from it, which is the order
+   * extraction has always used and the reason rollback is trivial: a caller that cannot
+   * finish drops one fresh pad row, and the occupant has never been anywhere but where it
+   * already was. Nothing is destroyed here — a displaced terminal keeps running in a solo
+   * composition of its own, and an embedded canvas keeps living in the index.
+   *
+   * Deliberately narrow: it neither rebinds the session nor removes the old leaf. A
+   * displacement RE-SEATS that leaf and a release REMOVES it, so each caller does both at
+   * its own correct moment rather than undoing this one's guess.
+   *
+   * A `text` occupant is refused by name. A note's element lives in this composition's own
+   * document and has nowhere else to be, so displacing it could only mean deleting it.
+   */
+  private evictLeaf(
+    view: Room,
+    containerId: string,
+    tileId: string,
+    surface: PlacementSurface,
+  ): EvictedOccupant | PlaceOutcome {
+    const occupant = view.tileLayout()?.[tileId]?.surface ?? null;
+    // An empty leaf holds no item, so there is nothing to move aside and the caller was
+    // asking about a spot that is not actually taken.
+    if (occupant === null) return { status: "failed", failure: "conflict" };
+    if (occupant.kind === "text") {
+      return {
+        status: "denied",
+        denial: {
+          rule: "not_displaceable",
+          surface,
+          container: { kind: "view", padId: containerId },
+        },
+      };
+    }
+    if (occupant.kind === "pad") return { surface: occupant, homeId: null, leafId: null };
+    const homeId = this.runtime.newId();
+    this.store.createPad({
+      id: homeId,
+      name: this.sessions
+        .terminalLabel(occupant.sessionId, "terminal")
+        .slice(0, MAX_CONTAINER_NAME),
+      createdAt: this.runtime.now(),
+      layout: "tiled",
+    });
+    const home = this.rooms.get(homeId);
+    const leafId = home?.placeTerminalTile(occupant.sessionId, null, null) ?? null;
+    if (home === null || leafId === null) {
+      this.rooms.drop(homeId);
+      this.store.deletePad(homeId);
+      return { status: "failed", failure: "conflict" };
+    }
+    return { surface: occupant, homeId, leafId };
+  }
+
+  /**
+   * Undoes the home `evictLeaf` built, for a caller whose own write then refused. Nothing
+   * durable has moved at that point — the occupant is still in its leaf — so the newborn
+   * row goes away with the failure.
+   */
+  private dropEvictedHome(evicted: EvictedOccupant): void {
+    if (evicted.homeId === null) return;
+    this.rooms.drop(evicted.homeId);
+    this.store.deletePad(evicted.homeId);
+  }
+
+  /**
    * The note behind a `text` surface, read before anything is written so a placement that
    * cannot be carried out mutates neither document. Null when the element is gone or was
    * never a note.
@@ -529,12 +608,52 @@ export class PlaceExecutor {
    *
    * A gesture that grabbed ONE reference releases that one; naming the item by identity
    * releases all of them. Zero removed is a legal answer — it was already unplaced.
+   *
+   * A LEAF releases differently, because a leaf is not a reference: its occupant is only
+   * ever in this composition, so the leaf goes and the occupant is RE-HOMED rather than
+   * dropped. That is what the fullscreen route's tile-minimize asks for, and it is why the
+   * branch comes first — a leaf classifies with no container id of its own, so the guard
+   * below used to swallow the whole gesture before it could be carried out.
    */
   private executeUnplace(
     surface: PlacementSurface,
     item: PlacementItem,
     source: SourceLocation,
   ): PlaceOutcome {
+    if (surface.kind === "tile") {
+      const view = this.rooms.get(surface.containerId);
+      if (view === null) return { status: "failed", failure: "not_found" };
+      const occupant = view.tileLayout()?.[surface.tileId]?.surface ?? null;
+      // An empty leaf holds no item: releasing it would remove nothing, which is exactly
+      // the silent no-op the algebra refuses to have.
+      if (occupant === null) return { status: "failed", failure: "conflict" };
+      // A composition of ONE is that item, so releasing its only leaf releases the
+      // COMPOSITION. The terminal stays exactly where it lives and nothing is re-homed —
+      // the same answer extraction gives a solo source, reached by the other door.
+      if (occupant.kind === "terminal" && view.census().items.length === 1) {
+        return {
+          status: "placed",
+          result: { op: "unplace", removed: this.removeReferences(surface.containerId) },
+        };
+      }
+      const evicted = this.evictLeaf(view, surface.containerId, surface.tileId, surface);
+      if ("status" in evicted) return evicted;
+      if (!view.removeTileLeafById(surface.tileId)) {
+        this.dropEvictedHome(evicted);
+        return { status: "failed", failure: "conflict" };
+      }
+      if (occupant.kind === "terminal" && evicted.homeId !== null && evicted.leafId !== null) {
+        this.sessions.rebindSession(
+          occupant.sessionId,
+          surface.containerId,
+          evicted.homeId,
+          evicted.leafId,
+        );
+      }
+      this.deleteIfEmptied(surface.containerId);
+      this.afterLeaving(surface.containerId);
+      return { status: "placed", result: { op: "unplace", removed: 1 } };
+    }
     const containerId = item.containerId;
     if (containerId === null) return { status: "failed", failure: "conflict" };
     if (surface.kind === "element" && source.padId !== null && source.addressed !== null) {
@@ -562,9 +681,11 @@ export class PlaceExecutor {
    * for a terminal already living here is simply another copy of it.
    *
    * CENTER MEANS THIS EXACT SPOT. A center placement onto an EMPTY leaf fills it — the
-   * ordinary add below — and onto an OCCUPIED one it is an EXCHANGE, which resolution
-   * cannot have known because occupancy is document state rather than a kind. That is the
-   * one place this executor decides which op ran, and it says so in its response.
+   * ordinary add below — and onto an OCCUPIED one the occupant has to move, which
+   * resolution cannot have known because occupancy is document state rather than a kind.
+   * This is the one place this executor decides which op ran, and it says so in its
+   * response: an EXCHANGE when the gesture holds a seat to trade back, and a DISPLACEMENT
+   * when it does not.
    */
   private executeAddTile(
     surface: PlacementSurface,
@@ -586,7 +707,19 @@ export class PlaceExecutor {
     if (edge === "center" && targetTileId !== null) {
       const occupant = view.tileLayout()?.[targetTileId]?.surface ?? null;
       if (occupant !== null) {
-        return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source);
+        /*
+          What the gesture HOLDS decides between the two, not what it carries. A carry
+          seated in a leaf of some composition has a seat to give the occupant back, so the
+          two trade. A seatless carry — a sidebar row, a bare session id, a canvas element —
+          has none, and a composition can always re-home what it displaces, so the leaf is
+          given away and its occupant moves out into a place of its own. Which is why a
+          tile destination never answers `not_swappable`: only the canvas door does.
+         */
+        const seated =
+          source.layout === "tiled" && source.padId !== null && source.addressed !== null;
+        return seated
+          ? this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source)
+          : this.executeReplace(surface, dragged, occupant, padId, targetTileId, source);
       }
     }
     // A note carried as an ELEMENT is read before the write, so a placement that cannot be
@@ -670,14 +803,13 @@ export class PlaceExecutor {
    * The exchange a center drop on a taken leaf means: the carried surface takes the exact
    * spot it was released on, and the occupant takes the seat the carry came from.
    *
-   * A swap needs a SEAT to give back, which is the whole of why it is refused by name here
-   * rather than quietly becoming an edge split. An IDENTITY form — a sidebar row, a bare
-   * session id, a container named by its own id — names an item without naming any
-   * placement of it, so there is nowhere for the occupant to go; and a placement of another
-   * species (a canvas element) has a seat with no leaf in it, which is a move between
-   * disciplines rather than a trade. Both are `not_swappable`: the interface never offers
-   * the gesture for them (the center band dissolves into its nearest edge), and the rule is
-   * the backstop that keeps a hand-written request from getting a different answer.
+   * A swap needs a SEAT to give back, and `executeAddTile` only routes here when the
+   * gesture has one, so the guard below is a BACKSTOP rather than the door's answer: a
+   * seatless carry over an occupied leaf is a `replace`, not a refusal. `not_swappable`
+   * belongs to the canvas/compose door now, where an element's seat cannot be re-homed and
+   * the exchange really is the only thing a center release could have meant. The rule
+   * still lives here so a hand-written request naming a carry with no placement at all
+   * cannot slip past into a half-defined trade.
    */
   private executeTileSwap(
     surface: PlacementSurface,
@@ -742,6 +874,75 @@ export class PlaceExecutor {
     this.afterLeaving(fromPadId);
     this.afterLeaving(padId);
     return { status: "placed", result: { op: "swap", placementId, withPlacementId } };
+  }
+
+  /**
+   * The other thing a center drop on a taken leaf can mean: the carry holds no seat to
+   * trade back, so instead of refusing it, the leaf is GIVEN to the carry and the occupant
+   * is displaced into a place of its own. A composition can always re-home what it
+   * displaces — a terminal into a fresh solo composition, an embedded canvas into the index
+   * it already lives in — which is why the tile door has no `not_swappable` to raise. Only
+   * a note cannot be displaced, and `evictLeaf` refuses that one by name before any write.
+   *
+   * The ORDER is what makes this atomic:
+   *
+   *   the occupant's new home is built before the target tree is touched, so a refusal
+   *     leaves the occupant exactly where it was rather than nowhere;
+   *   the target leaf is RE-SEATED, never removed, so the container is never momentarily
+   *     empty — `reapSession` can never fire on the displaced terminal, and neither
+   *     `deleteIfEmptied` nor `retireEmptiedInto` can race on this side;
+   *   the displaced session rebinds only once its new leaf is real and its old one is not.
+   *
+   * Everything after that is the ordinary add's carry-side bookkeeping, unchanged: this op
+   * differs from `add_tile` in what happens to the OCCUPANT, never in what happens to the
+   * thing the operator was carrying.
+   */
+  private executeReplace(
+    surface: PlacementSurface,
+    dragged: TileSurface,
+    occupant: TileSurface,
+    padId: string,
+    targetTileId: string,
+    source: SourceLocation,
+  ): PlaceOutcome {
+    const view = this.rooms.get(padId);
+    if (view === null) return { status: "failed", failure: "not_found" };
+    // A note carried as an ELEMENT is read before anything is written, so a placement that
+    // cannot be carried out mutates neither document. One carried as a LEAF travels with it.
+    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    const note =
+      fromLeaf === null && dragged.kind === "text"
+        ? this.noteAt(source.padId, dragged.elementId)
+        : null;
+    if (fromLeaf === null && dragged.kind === "text" && note === null) {
+      return { status: "failed", failure: "not_found" };
+    }
+    const evicted = this.evictLeaf(view, padId, targetTileId, surface);
+    if ("status" in evicted) return evicted;
+    if (!view.setTileSurface(targetTileId, dragged)) {
+      this.dropEvictedHome(evicted);
+      return { status: "failed", failure: "conflict" };
+    }
+    if (occupant.kind === "terminal" && evicted.homeId !== null && evicted.leafId !== null) {
+      this.sessions.rebindSession(occupant.sessionId, padId, evicted.homeId, evicted.leafId);
+    }
+    let tileId = targetTileId;
+    if (fromLeaf !== null) {
+      // Defensive: a carry seated in a leaf resolves to `executeTileSwap`, so this arm is
+      // only reachable if that dispatch ever loosens. It is the same subtraction a leaf
+      // gets everywhere else, and the id is read back because pruning the old seat can
+      // collapse a split and rename the one just written.
+      const moved = this.finishLeafMove(dragged, source, view, padId, targetTileId);
+      if (moved === null) return { status: "failed", failure: "conflict" };
+      tileId = moved;
+    } else if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== padId) {
+      this.absorbHome(dragged.sessionId, source, padId, targetTileId);
+    }
+    if (note !== null) this.adoptNote(source, note, view);
+    return {
+      status: "placed",
+      result: { op: "replace", tileId, displacedContainerId: evicted.homeId },
+    };
   }
 
   /**
@@ -967,6 +1168,11 @@ export class PlaceExecutor {
    * into its nearest edge for exactly those carries, and this rule is what keeps a
    * hand-written request honest.
    *
+   * This is the door `not_swappable` belongs to, and after the displacement work the only
+   * one that raises it. A canvas seat cannot be re-homed the way a leaf's occupant can: an
+   * element IS its position on this canvas, so there is no "somewhere else" to put the
+   * thing that was here, and the refusal is the honest answer rather than a `replace`.
+   *
    * Nothing about either item's home changes: a portal still points where it pointed and a
    * note still lives in this document. Only the two rectangles move, which is why this is
    * one patch of four fields per element and not a re-authoring of either.
@@ -1049,6 +1255,7 @@ export class PlaceExecutor {
    * A composition emptied by the extraction retires.
    */
   private executeExtract(
+    surface: PlacementSurface,
     destination: { readonly padId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
   ): PlaceOutcome {
@@ -1072,27 +1279,14 @@ export class PlaceExecutor {
         this.rooms.evictIfIdle(destination.padId);
         return { status: "placed", result: { op: "extract", elementId } };
       }
-      // The new home is built BEFORE the old leaf goes, so a tree that refuses the write
-      // leaves the terminal exactly where it was rather than nowhere.
-      const homeId = this.runtime.newId();
-      this.store.createPad({
-        id: homeId,
-        name: this.sessions
-          .terminalLabel(occupant.sessionId, "terminal")
-          .slice(0, MAX_CONTAINER_NAME),
-        createdAt: this.runtime.now(),
-        layout: "tiled",
-      });
-      const home = this.rooms.get(homeId);
-      const leafId = home?.placeTerminalTile(occupant.sessionId, null, null) ?? null;
-      if (home === null || leafId === null) {
-        this.rooms.drop(homeId);
-        this.store.deletePad(homeId);
-        return { status: "failed", failure: "conflict" };
-      }
-      if (!view.removeTileLeafById(tileId)) {
-        this.rooms.drop(homeId);
-        this.store.deletePad(homeId);
+      // The re-homing itself: the new home is built BEFORE the old leaf goes, so a tree
+      // that refuses the write leaves the terminal where it was rather than nowhere. It is
+      // the same displacement a center drop makes, reached by the canvas door.
+      const evicted = this.evictLeaf(view, containerId, tileId, surface);
+      if ("status" in evicted) return evicted;
+      const { homeId, leafId } = evicted;
+      if (homeId === null || leafId === null || !view.removeTileLeafById(tileId)) {
+        this.dropEvictedHome(evicted);
         return { status: "failed", failure: "conflict" };
       }
       this.sessions.rebindSession(occupant.sessionId, containerId, homeId, leafId);
@@ -1122,9 +1316,10 @@ export class PlaceExecutor {
   }
 
   /**
-   * Removes one leaf (`DELETE /api/pads/:id/tiles/:tileId`). Removal is NOT a placement:
-   * nothing accepts "nowhere" as a destination for a LEAF, which is why the declarations
-   * refuse `tile -> unplaced` — unplacing or moving its occupant addresses the occupant.
+   * Removes one leaf (`DELETE /api/pads/:id/tiles/:tileId`). Removal is NOT a placement,
+   * and it is deliberately not what `tile -> unplaced` means: releasing a leaf RE-HOMES its
+   * occupant, while closing one DESTROYS it. Two verbs, two doors, and the destructive one
+   * is never reached by a drag.
    *
    * Removing a terminal's LAST home leaf destroys the terminal. That is deliberate and it
    * is the only honest reading of the model: a terminal lives in exactly one composition,

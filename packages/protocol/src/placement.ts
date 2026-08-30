@@ -148,8 +148,14 @@ export const ITEM_KINDS = {
    * leaf exchanges the two. The executor resolves what the leaf HOLDS at execution time,
    * because only the side owning the tree can see into it — a browser dragging a leaf of a
    * container it has not joined knows the placement and not the occupant.
+   *
+   * It is `unplaceable` too, because a leaf's occupant can leave the container without
+   * ceasing to exist: the executor re-homes it — a terminal into a fresh solo composition,
+   * an embedded canvas back to the index it already lives in. That is what the fullscreen
+   * tile-minimize asks for, and it sends `{kind:"tile"} -> {kind:"unplaced"}`, so while
+   * this group was missing the button could only ever toast a refusal.
    */
-  tile: { groups: ["tileable", "extractable"], guards: [], homed: "inline" },
+  tile: { groups: ["tileable", "extractable", "unplaceable"], guards: [], homed: "inline" },
 } as const satisfies Record<string, ItemDeclaration>;
 export type ItemKind = keyof typeof ITEM_KINDS;
 
@@ -243,6 +249,18 @@ export const PLACEMENT_OPS = [
    * wire at all instead of hiding inside the two it re-tags.
    */
   "swap",
+  /**
+   * Re-seat an occupied leaf and RE-HOME what was in it. The middle of an occupied leaf
+   * asks for an exchange, but a carry holding no tile seat has nothing to trade back —
+   * so instead of refusing, the carried item takes the leaf and the displaced occupant is
+   * re-homed into a fresh solo composition, which appears at the top level of the index.
+   * Nothing is destroyed: the displaced terminal keeps running, the embedded canvas keeps
+   * existing, and the operator finds either one where everything unreferenced already is.
+   *
+   * Like `swap`, occupancy is document state, so `resolvePlacement` never names this op:
+   * a center placement resolves to `add_tile` and the executor re-tags it here.
+   */
+  "replace",
 ] as const;
 export type PlacementOp = (typeof PLACEMENT_OPS)[number];
 
@@ -250,10 +268,10 @@ export type PlacementOp = (typeof PLACEMENT_OPS)[number];
  * Ops no resolution ever names, because document state — not a kind — decides them. The
  * executor re-tags a resolved op to one of these at execution time, and publishing the
  * list is what keeps that honest: an agent reading the vocabulary learns that a center
- * placement can come back as a `swap` instead of discovering it from a response it did
- * not expect.
+ * placement can come back as a `swap` or a `replace` instead of discovering it from a
+ * response it did not expect.
  */
-export const EXECUTION_ONLY_OPS = ["swap"] as const satisfies readonly PlacementOp[];
+export const EXECUTION_ONLY_OPS = ["swap", "replace"] as const satisfies readonly PlacementOp[];
 export type ExecutionOnlyOp = (typeof EXECUTION_ONLY_OPS)[number];
 
 /** What landing on a canvas MEANS per item kind; a canvas is the one polymorphic door. */
@@ -276,20 +294,30 @@ export const DESTINATION_OPS = {
 /**
  * Denial rules: one per guard (derived from `PLACEMENT_GUARDS`), one for failed group
  * containment, two for identity — an id that resolves to nothing is a denial too, so no
- * request can fall through to a silent no-op — and one for the exchange a center drop
- * asks for when the gesture holds no seat to give back.
+ * request can fall through to a silent no-op — and two for what a center drop asks of an
+ * occupied spot: the exchange it cannot make, and the occupant it cannot move aside.
  */
 export const PLACEMENT_DENIAL_RULES = [
   "not_accepted",
   "unknown_surface",
   "unknown_container",
   /**
-   * The spot a center drop pointed at is taken, and the surface offered is an IDENTITY
-   * form — a sidebar row, a bare session id — which names an item without naming any
-   * placement of it. There is nowhere for the occupant to go, so the exchange is refused
-   * by name rather than quietly becoming a different placement.
+   * The CANVAS/COMPOSE door only. The element a center drop pointed at is taken, and the
+   * surface offered is an IDENTITY form — a sidebar row, a bare session id — which names
+   * an item without naming any canvas seat of it. There is nowhere for the occupant to
+   * go, so the exchange is refused by name rather than quietly becoming a merge.
+   *
+   * A TILE destination answers differently: a seatless carry over an occupied leaf is a
+   * `replace`, because a composition can always re-home what it displaces.
    */
   "not_swappable",
+  /**
+   * A `replace` cannot re-home what it would displace, because the occupant is a `text`
+   * surface: a note's element lives in the composition's own document and has nowhere
+   * else to be. So the exchange is refused BY NAME before anything moves, rather than
+   * deleting a note the operator only meant to push aside.
+   */
+  "not_displaceable",
   PLACEMENT_GUARDS["no-self-embed"].rule,
   PLACEMENT_GUARDS["discipline-match"].rule,
   PLACEMENT_GUARDS["solo-only"].rule,
@@ -410,10 +438,11 @@ export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
 /**
  * What an executed placement RETURNS, tagged by the op that ran — which is the op that
  * ACTUALLY ran, not the one resolution predicted: a center placement onto a taken spot
- * comes back as `swap`. Each op yields exactly the id its caller needs to keep rendering:
- * the placement it authored (`elementId` / `tileId`), the container a composition was born
- * into (`viewId`), the two seats an exchange moved between, or the number of references a
- * release removed. `POST /api/place` serves this shape verbatim.
+ * comes back as `swap` or `replace`. Each op yields exactly the id its caller needs to
+ * keep rendering: the placement it authored (`elementId` / `tileId`), the container a
+ * composition was born into (`viewId`), the two seats an exchange moved between, the home
+ * a displaced occupant went to, or the number of references a release removed.
+ * `POST /api/place` serves this shape verbatim.
  */
 export const PlaceResponseSchema = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("portal"), elementId: z.string().min(1) }),
@@ -447,6 +476,18 @@ export const PlaceResponseSchema = z.discriminatedUnion("op", [
     placementId: z.string().min(1),
     /** The placement now holding what was there: the seat the carry came from. */
     withPlacementId: z.string().min(1),
+  }),
+  z.strictObject({
+    op: z.literal("replace"),
+    /** The leaf now holding the carried surface: the exact spot the drop pointed at. */
+    tileId: z.string().min(1),
+    /**
+     * The fresh solo composition the displaced occupant was re-homed into, so a caller can
+     * reveal where the thing it pushed aside went. Null when the occupant needed no new
+     * home — an embedded canvas is a REFERENCE, and the pad it points at already lives in
+     * the index on its own.
+     */
+    displacedContainerId: z.string().min(1).nullable(),
   }),
 ]);
 export type PlaceResponse = z.infer<typeof PlaceResponseSchema>;
@@ -600,9 +641,9 @@ export function placementItemFor(
  *
  * It answers about KINDS, never about the contents of a document, which is why a center
  * placement resolves to `add_tile` or `compose` here whatever occupies the target: the
- * executor holds the tree and re-tags the result `swap` when the spot turns out to be
- * taken (see `EXECUTION_ONLY_OPS`). Keeping the occupancy branch out of this function is
- * what lets a browser predict legality from props alone.
+ * executor holds the tree and re-tags the result `swap` or `replace` when the spot turns
+ * out to be taken (see `EXECUTION_ONLY_OPS`). Keeping the occupancy branch out of this
+ * function is what lets a browser predict legality from props alone.
  */
 export function resolvePlacement(
   surface: PlacementSurface,

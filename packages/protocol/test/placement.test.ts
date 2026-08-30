@@ -148,14 +148,19 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
     flip: a denied `tile -> tile` made rearranging a composition by dragging impossible,
     which contradicts the one-grammar-everywhere rule the rest of the model is built on. An
     edge MOVES the leaf, the exact spot of an occupied leaf EXCHANGES the two, and the
-    canvas door still extracts. Releasing the occupant still addresses the occupant, which
-    is why `unplaced` stays refused.
+    canvas door still extracts.
+
+    `unplaced` flipped from `not_accepted` for the same reason, and it fixes a DEAD
+    affordance: the fullscreen route's tile-minimize button sends exactly
+    `{kind:"tile"} -> {kind:"unplaced"}`, which was refused here, so the button could only
+    ever raise a toast. Unplacing a leaf re-homes its occupant — a terminal into a fresh
+    solo composition — instead of destroying it, so "nowhere" is a place a leaf can go.
    */
   tile: {
     canvas: "extract",
     tile: "add_tile",
     compose: "compose",
-    unplaced: "not_accepted",
+    unplaced: "unplace",
   },
 };
 
@@ -518,6 +523,9 @@ describe("placement wire shapes", () => {
       // An exchange names both seats it moved between, so a caller can repaint the pair
       // without diffing a document to find out what the second one was.
       { op: "swap", placementId: "t3", withPlacementId: "t4" },
+      // A displacement names the leaf the carry took and the home its occupant was moved
+      // to, so a caller can reveal where the thing it pushed aside actually went.
+      { op: "replace", tileId: "t1", displacedContainerId: "pad-1" },
     ];
     for (const response of responses) {
       expect(PlaceResponseSchema.parse(response)).toEqual(response);
@@ -534,6 +542,12 @@ describe("placement wire shapes", () => {
     expect(PlaceResponseSchema.safeParse({ op: "unplace", elementId: "e1" }).success).toBe(false);
     expect(PlaceResponseSchema.safeParse({ op: "swap", placementId: "t1" }).success).toBe(false);
     expect(PlaceResponseSchema.safeParse({ op: "portal" }).success).toBe(false);
+    // An embedded canvas needed no new home — the pad already lives in the index — so the
+    // null is a real answer, not a missing field.
+    expect(
+      PlaceResponseSchema.parse({ op: "replace", tileId: "t1", displacedContainerId: null }),
+    ).toEqual({ op: "replace", tileId: "t1", displacedContainerId: null });
+    expect(PlaceResponseSchema.safeParse({ op: "replace", tileId: "t1" }).success).toBe(false);
   });
 
   test("a denied placement carries its code and the denial itself", () => {
@@ -619,8 +633,8 @@ describe("placement introspection", () => {
     expect(published["denialRules"]).toEqual(PLACEMENT_DENIAL_RULES);
     /*
       An agent has to be able to learn, from the vocabulary alone, that a placement it
-      resolved as `add_tile` can come back tagged `swap`. Publishing the split is what
-      makes the center rule discoverable instead of folklore.
+      resolved as `add_tile` can come back tagged `swap` or `replace`. Publishing the split
+      is what makes the center rule discoverable instead of folklore.
      */
     expect(published["executionOnlyOps"]).toEqual(EXECUTION_ONLY_OPS);
     for (const op of EXECUTION_ONLY_OPS) expect(ops).toContain(op);
@@ -629,7 +643,7 @@ describe("placement introspection", () => {
     expect(JSON.stringify(published["items"])).toContain("eager");
   });
 
-  test("the denial rules are one per guard plus identity, containment and the exchange", () => {
+  test("the denial rules are one per guard plus identity, containment and the two center refusals", () => {
     const guardRules = Object.values(PLACEMENT_GUARDS).map((guard) => guard.rule);
     // Two guards sharing a rule would make a rendered refusal ambiguous.
     expect(new Set(guardRules).size).toBe(guardRules.length);
@@ -645,6 +659,12 @@ describe("placement introspection", () => {
         occupancy that makes the question arise, so the rule lives here and is raised there.
        */
       "not_swappable",
+      /*
+        Also not a guard, and about neither the carry nor the destination's kind: it is
+        about what happens to be SITTING in the spot. A note has nowhere but this
+        composition's document to live, so displacing it is refused by name.
+       */
+      "not_displaceable",
     ];
     expect([...denialRules].sort()).toEqual([...expected].sort());
   });

@@ -491,13 +491,16 @@ describe("the placement algebra, executed", () => {
       "draw -> compose=denied:not_accepted",
       "draw -> unplaced=denied:not_accepted",
       "tile -> canvas=extract",
-      // A leaf is a re-placeable PLACEMENT: both cells were `denied:not_accepted` until the
-      // center-swap work, and the operator approved the flip. An edge MOVES the leaf into
-      // the destination, the exact spot of an occupied leaf EXCHANGES the two, and merging
-      // onto a canvas widget is that same move reached through the compose door.
+      // A leaf is a re-placeable PLACEMENT: both composition cells were
+      // `denied:not_accepted` until the center-swap work, and the operator approved the
+      // flip. An edge MOVES the leaf into the destination, the exact spot of an occupied
+      // leaf EXCHANGES or DISPLACES, and merging onto a canvas widget is that same move
+      // reached through the compose door.
       "tile -> tile=add_tile",
       "tile -> compose=compose",
-      "tile -> unplaced=denied:not_accepted",
+      // And releasing a leaf re-homes its occupant instead of destroying it, which is what
+      // makes the fullscreen tile-minimize button do something at last.
+      "tile -> unplaced=unplace",
     ]);
   });
 
@@ -823,22 +826,14 @@ describe("center means this exact spot", () => {
     expect(readElements(canvas.doc).size).toBe(5);
   });
 
-  test("a surface with no placement of its own is refused by name, not coerced", () => {
+  test("a carry with no CANVAS seat of its own is refused by name, not coerced", () => {
     const fixture = placementFixture();
-    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
-    const before = occupants(fixture, fixture.view.id);
+    const canvas = roomFor(fixture, fixture.canvas.id);
 
-    // A sidebar row names an ITEM. There is no seat to give the occupant back, so the
-    // exchange is refused by rule rather than quietly becoming a split.
-    const identityAtLeaf = fixture.placement.place({
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: {
-        kind: "tile",
-        padId: fixture.view.id,
-        targetTileId: occupied,
-        edge: "center",
-      },
-    });
+    // A sidebar row names an ITEM. On a canvas an element IS its rectangle, so there is no
+    // seat anywhere to give the target's occupant back and the exchange is refused by rule
+    // rather than quietly becoming a merge. The tile door answers differently — see the
+    // displacement suite below — because a composition can re-home what it pushes aside.
     const identityAtWidget = fixture.placement.place({
       surface: { kind: "terminal", sessionId: fixture.loose },
       destination: {
@@ -849,19 +844,16 @@ describe("center means this exact spot", () => {
       },
     });
 
-    expect([identityAtLeaf, identityAtWidget].map(ruleOrStatus)).toEqual([
-      "denied:not_swappable",
-      "denied:not_swappable",
-    ]);
-    if (identityAtLeaf.status !== "denied") return;
-    expect(identityAtLeaf.denial).toEqual({
+    expect(ruleOrStatus(identityAtWidget)).toBe("denied:not_swappable");
+    if (identityAtWidget.status !== "denied") return;
+    expect(identityAtWidget.denial).toEqual({
       rule: "not_swappable",
       surface: { kind: "terminal", sessionId: fixture.loose },
-      container: { kind: "view", padId: fixture.view.id },
+      container: { kind: "view", padId: fixture.canvas.id },
     });
     // A refusal mutates nothing on either side.
-    expect(occupants(fixture, fixture.view.id)).toEqual(before);
-    expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.view.id);
+    expect(canvas.element("el-portal-solo")).toMatchObject({ containerId: fixture.residentHome });
+    expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.residentHome);
   });
 
   test("an EDGE release moves the leaf instead of trading it", () => {
@@ -922,6 +914,233 @@ describe("center means this exact spot", () => {
     expect(roomFor(fixture, fixture.view.id).homesSession(fixture.occupant)).toBe(false);
     expect(fixture.store.getPad(fixture.view.id)).not.toBeNull();
     expect(fixture.store.getPad(fixture.residentHome)).toBeNull();
+  });
+});
+
+/** A note, moved out of the canvas and into a leaf of `padId`, so it can be a target. */
+function noteLeafId(fixture: PlacementFixture, padId: string): string {
+  const added = fixture.placement.place({
+    surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-text" },
+    destination: { kind: "tile", padId, targetTileId: null, edge: null },
+  });
+  if (added.status !== "placed" || added.result.op !== "add_tile") {
+    throw new Error(`the note did not tile: ${ruleOrStatus(added)}`);
+  }
+  return added.result.tileId;
+}
+
+describe("a center drop with nothing to trade displaces instead", () => {
+  test("the occupant is re-homed into a fresh solo composition and keeps running", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const view = roomFor(fixture, fixture.view.id);
+    const itemsBefore = view.census().items.length;
+    const looseHome = homeOf(fixture, fixture.loose);
+
+    // A sidebar row holds no leaf to trade back, so the exact spot is GIVEN to it and what
+    // was there moves out — the refusal the tile door used to answer with is gone.
+    const outcome = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: occupied,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed" || outcome.result.op !== "replace") {
+      throw new Error(`expected a displacement: ${ruleOrStatus(outcome)}`);
+    }
+    expect(outcome.result.tileId).toBe(occupied);
+    const displaced = outcome.result.displacedContainerId;
+    if (displaced === null) throw new Error("a displaced terminal needs a home of its own");
+    // Nothing was destroyed: the session is alive and now lives in a composition that is
+    // its own, which is a top-level row of the index like any other unreferenced container.
+    expect(fixture.broker.placedSession(fixture.occupant)).not.toBeNull();
+    expect(homeOf(fixture, fixture.occupant)).toBe(displaced);
+    expect(fixture.store.getPad(displaced)).toMatchObject({ layout: "tiled" });
+    expect(roomFor(fixture, displaced).homesSession(fixture.occupant)).toBe(true);
+    // The leaf was RE-SEATED, never removed: the target held something at every moment, so
+    // its census never dipped and no reaping or retiring could fire on this side.
+    expect(occupants(fixture, fixture.view.id)[occupied]).toEqual({
+      kind: "terminal",
+      sessionId: fixture.loose,
+    });
+    expect(view.census().items.length).toBe(itemsBefore);
+    // The carry is bookkept exactly as an ordinary add: its solo home was absorbed.
+    expect(homeOf(fixture, fixture.loose)).toBe(fixture.view.id);
+    expect(fixture.store.getPad(looseHome)).toBeNull();
+  });
+
+  test("displacing an EMBEDDED CANVAS needs no new home, and says so with a null", () => {
+    const fixture = placementFixture();
+    const embedded = padLeafId(fixture, fixture.view.id, fixture.spare.id);
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: embedded,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed" || outcome.result.op !== "replace") {
+      throw new Error(`expected a displacement: ${ruleOrStatus(outcome)}`);
+    }
+    // A leaf holding a canvas is a REFERENCE: the pad it points at already lives in the
+    // index on its own, so losing the leaf costs it nothing and no home is born for it.
+    expect(outcome.result.displacedContainerId).toBeNull();
+    expect(fixture.store.getPad(fixture.spare.id)).not.toBeNull();
+    expect(occupants(fixture, fixture.view.id)[embedded]).toEqual({
+      kind: "terminal",
+      sessionId: fixture.loose,
+    });
+  });
+
+  test("a NOTE cannot be displaced, and the refusal moves nothing", () => {
+    const fixture = placementFixture();
+    const noteTile = noteLeafId(fixture, fixture.view.id);
+    const before = occupants(fixture, fixture.view.id);
+    const padsBefore = fixture.store.listPads().length;
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: noteTile,
+        edge: "center",
+      },
+    });
+
+    // A note's element lives in this composition's own document, so there is nowhere to
+    // put it and the exchange is refused BY NAME instead of deleting it.
+    expect(ruleOrStatus(outcome)).toBe("denied:not_displaceable");
+    if (outcome.status !== "denied") return;
+    expect(outcome.denial).toEqual({
+      rule: "not_displaceable",
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      container: { kind: "view", padId: fixture.view.id },
+    });
+    // Refused BEFORE anything moved: no leaf changed hands and no home was born.
+    expect(occupants(fixture, fixture.view.id)).toEqual(before);
+    expect(fixture.store.listPads()).toHaveLength(padsBefore);
+    expect(roomFor(fixture, fixture.view.id).element("el-text")).not.toBeNull();
+    expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.view.id);
+  });
+
+  test("a carry that DOES hold a leaf still trades, so nothing is displaced", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const foreignTile = padLeafId(fixture, fixture.otherView.id, fixture.other.id);
+    const padsBefore = fixture.store.listPads().length;
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.otherView.id, tileId: foreignTile },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: occupied,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    // The dispatch turns on what the GESTURE holds: a seated carry has a seat to give back,
+    // so the two exchange and no composition is born to catch a displaced occupant.
+    expect(outcome.result.op).toBe("swap");
+    expect(fixture.store.listPads()).toHaveLength(padsBefore);
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.otherView.id);
+  });
+});
+
+describe("releasing a leaf re-homes its occupant", () => {
+  test("a terminal leaf of a MULTI composition survives being unplaced", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+
+    // The fullscreen route's tile-minimize, on the wire. It was refused `not_accepted`
+    // before the leaf became `unplaceable`, so the button could only ever raise a toast.
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: occupied },
+      destination: { kind: "unplaced" },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result).toEqual({ op: "unplace", removed: 1 });
+    // Re-homed, not reaped: releasing a leaf is subtractive about the PLACEMENT and says
+    // nothing at all about the item.
+    const home = homeOf(fixture, fixture.occupant);
+    expect(home).not.toBe(fixture.view.id);
+    expect(fixture.broker.placedSession(fixture.occupant)).not.toBeNull();
+    expect(fixture.store.getPad(home)).toMatchObject({ layout: "tiled" });
+    expect(roomFor(fixture, home).homesSession(fixture.occupant)).toBe(true);
+    // The old container let the leaf go and survives on what it still holds.
+    expect(roomFor(fixture, fixture.view.id).homesSession(fixture.occupant)).toBe(false);
+    expect(Object.keys(occupants(fixture, fixture.view.id))).toHaveLength(1);
+    expect(fixture.store.getPad(fixture.view.id)).not.toBeNull();
+  });
+
+  test("a leaf holding an embedded canvas releases the leaf and keeps the pad", () => {
+    const fixture = placementFixture();
+    const embedded = padLeafId(fixture, fixture.view.id, fixture.spare.id);
+    const padsBefore = fixture.store.listPads().length;
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: embedded },
+      destination: { kind: "unplaced" },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result).toEqual({ op: "unplace", removed: 1 });
+    // No home had to be born: the canvas already lives in the index on its own.
+    expect(fixture.store.listPads()).toHaveLength(padsBefore);
+    expect(fixture.store.getPad(fixture.spare.id)).not.toBeNull();
+    expect(Object.keys(occupants(fixture, fixture.view.id))).toHaveLength(1);
+  });
+
+  test("the ONLY leaf of a solo composition releases the composition, re-homing nothing", () => {
+    const fixture = placementFixture();
+    const leafId = terminalLeafId(fixture, fixture.residentHome, fixture.resident);
+    const padsBefore = fixture.store.listPads().length;
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.residentHome, tileId: leafId },
+      destination: { kind: "unplaced" },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    // A composition of ONE is that item, so its widget is the reference that goes — the
+    // terminal stays exactly where it lives and no second home is invented for it.
+    expect(outcome.result).toEqual({ op: "unplace", removed: 1 });
+    expect(homeOf(fixture, fixture.resident)).toBe(fixture.residentHome);
+    expect(fixture.store.listPads()).toHaveLength(padsBefore);
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toBeNull();
+  });
+
+  test("a NOTE leaf is refused by the same rule a displacement is", () => {
+    const fixture = placementFixture();
+    const noteTile = noteLeafId(fixture, fixture.view.id);
+    const before = occupants(fixture, fixture.view.id);
+
+    const outcome = fixture.placement.place({
+      surface: { kind: "tile", containerId: fixture.view.id, tileId: noteTile },
+      destination: { kind: "unplaced" },
+    });
+
+    // Releasing a note's leaf would strand its element, which is the one thing re-homing
+    // cannot do for it, so both doors answer with the same named refusal.
+    expect(ruleOrStatus(outcome)).toBe("denied:not_displaceable");
+    expect(occupants(fixture, fixture.view.id)).toEqual(before);
   });
 });
 
