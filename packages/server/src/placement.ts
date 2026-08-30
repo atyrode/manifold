@@ -709,17 +709,26 @@ export class PlaceExecutor {
       if (occupant !== null) {
         /*
           What the gesture HOLDS decides between the two, not what it carries. A carry
-          seated in a leaf of some composition has a seat to give the occupant back, so the
-          two trade. A seatless carry — a sidebar row, a bare session id, a canvas element —
-          has none, and a composition can always re-home what it displaces, so the leaf is
-          given away and its occupant moves out into a place of its own. Which is why a
-          tile destination never answers `not_swappable`: only the canvas door does.
+          seated in a leaf of some composition has a seat to give the occupant back, so
+          the two trade — and a canvas ELEMENT holding a terminal is seated too (#62):
+          the element is a window onto the terminal's solo home, which empties the
+          instant the carry merges here, so the occupant moves INTO that home and the
+          element keeps pointing at it — the widget simply starts showing the displaced
+          terminal, same id, same geometry, no repointing at all. A carry with no seat
+          anywhere — a sidebar row, a bare session id, a portal holding a pad — leaves
+          the occupant to be re-homed instead. Which is why a tile destination never
+          answers `not_swappable`: only the canvas door does.
          */
         const seated =
           source.layout === "tiled" && source.padId !== null && source.addressed !== null;
-        return seated
-          ? this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source)
-          : this.executeReplace(surface, dragged, occupant, padId, targetTileId, source);
+        if (seated) {
+          return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source);
+        }
+        const homeSeat = this.elementHomeSeat(surface, source);
+        if (homeSeat !== null) {
+          return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, homeSeat);
+        }
+        return this.executeReplace(surface, dragged, occupant, padId, targetTileId, source);
       }
     }
     // A note carried as an ELEMENT is read before the write, so a placement that cannot be
@@ -743,6 +752,34 @@ export class PlaceExecutor {
     }
     if (note !== null) this.adoptNote(source, note, view);
     return { status: "placed", result: { op: "add_tile", tileId } };
+  }
+
+  /**
+   * The tiled seat a canvas-element carry implicitly holds (#62): a portal element
+   * showing a terminal is a window onto the terminal's SOLO home composition, so the
+   * home's own leaf is a seat the occupant of a center drop can move into — the
+   * cross-container exchange `executeTileSwap` already performs. Null for every carry
+   * that truly has no seat: notes, ink, portals onto pads or multi compositions
+   * (multi never reaches the executor — `not_solo` refuses it at resolution).
+   */
+  private elementHomeSeat(
+    surface: PlacementSurface,
+    source: SourceLocation,
+  ): SourceLocation | null {
+    if (surface.kind !== "element" || source.sessionId === null || source.homeId === null) {
+      return null;
+    }
+    const home = this.rooms.get(source.homeId);
+    if (home === null) return null;
+    const leafId = terminalLeafIds(home.tileLayout(), source.sessionId)[0] ?? null;
+    if (leafId === null) return null;
+    return {
+      padId: source.homeId,
+      layout: "tiled",
+      addressed: leafId,
+      sessionId: source.sessionId,
+      homeId: source.homeId,
+    };
   }
 
   /**

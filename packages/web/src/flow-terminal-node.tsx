@@ -108,6 +108,13 @@ export interface FlowPadContextValue {
    * drop with the same lookup the canvas's own commit will use.
    */
   readonly assessDrop: (destination: PlacementDestination) => ItemDropAssessment | null;
+  /**
+   * Whether a canvas ELEMENT carry holds a seat to trade at an occupied tile center
+   * (#62): true for a portal showing a terminal — the element is a window onto its
+   * solo home, whose leaf the displaced occupant moves into — so widget overlays
+   * paint the swap cue exactly where the executor will trade.
+   */
+  readonly elementSeat: (padId: string, elementId: string) => boolean;
 }
 
 /**

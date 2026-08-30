@@ -1002,6 +1002,50 @@ describe("a center drop with nothing to trade displaces instead", () => {
     });
   });
 
+  test("a CANVAS TERMINAL carry trades instead: its widget starts showing the occupant (#62)", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.view.id, fixture.occupant);
+    const view = roomFor(fixture, fixture.view.id);
+    const itemsBefore = view.census().items.length;
+    const padsBefore = fixture.store.listPads().length;
+
+    // The element is a window onto the resident's solo home — a seat the occupant can
+    // move into the instant the resident merges away — so this carry is SEATED and the
+    // exact spot trades rather than displacing anyone to the top of the index.
+    const outcome = fixture.placement.place({
+      surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-portal-solo" },
+      destination: {
+        kind: "tile",
+        padId: fixture.view.id,
+        targetTileId: occupied,
+        edge: "center",
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed" || outcome.result.op !== "swap") {
+      throw new Error(`expected a trade: ${ruleOrStatus(outcome)}`);
+    }
+    expect(outcome.result.placementId).toBe(occupied);
+    // The carried terminal took the exact spot it was released on…
+    expect(occupants(fixture, fixture.view.id)[occupied]).toEqual({
+      kind: "terminal",
+      sessionId: fixture.resident,
+    });
+    expect(homeOf(fixture, fixture.resident)).toBe(fixture.view.id);
+    // …and the occupant took the seat the carry came from: the widget's own home.
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.residentHome);
+    expect(roomFor(fixture, fixture.residentHome).homesSession(fixture.occupant)).toBe(true);
+    // The canvas element never moved or repointed: same id, same target, and the
+    // container it shows now holds the displaced terminal — the widget just changed face.
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toMatchObject({
+      containerId: fixture.residentHome,
+    });
+    // Nothing was born, nothing destroyed, and the target never dipped empty.
+    expect(fixture.store.listPads()).toHaveLength(padsBefore);
+    expect(view.census().items.length).toBe(itemsBefore);
+  });
+
   test("a NOTE cannot be displaced, and the refusal moves nothing", () => {
     const fixture = placementFixture();
     const noteTile = noteLeafId(fixture, fixture.view.id);

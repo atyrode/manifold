@@ -44,6 +44,13 @@ export interface TileDropHost {
   /** One divider's thickness in the tree's own layout px (`TileTreeClasses.dividerPx`). */
   readonly dividerPx: number;
   readonly assess: (destination: PlacementDestination) => ItemDropAssessment | null;
+  /**
+   * True when a canvas ELEMENT carry holds a seat to trade (#62): a portal showing a
+   * terminal is a window onto its solo home, whose leaf the displaced occupant can
+   * move into. Only a canvas host can answer (it owns the element table); the route
+   * omits it, and every element carry stays seatless there.
+   */
+  readonly elementSeat?: (padId: string, elementId: string) => boolean;
 }
 
 export interface TileDropState {
@@ -117,7 +124,7 @@ export function useTileDrop(host: TileDropHost): {
   readonly clear: () => void;
 } {
   const cacheRef = useRef<AimCache | null>(null);
-  const { areaRef, layout, containerId, widget, dividerPx, assess } = host;
+  const { areaRef, layout, containerId, widget, dividerPx, assess, elementSeat } = host;
 
   const aimAt = useCallback(
     (clientX: number, clientY: number): TileDropState | null => {
@@ -168,7 +175,10 @@ export function useTileDrop(host: TileDropHost): {
               envelope?.kind === "tile" && envelope.containerId === containerId
                 ? envelope.tileId
                 : null,
-            holdsTileSeat: envelope?.kind === "tile",
+            holdsTileSeat:
+              envelope?.kind === "tile" ||
+              (envelope?.kind === "element" &&
+                (elementSeat?.(envelope.padId, envelope.elementId) ?? false)),
           },
           dividers,
           ring,
@@ -255,7 +265,7 @@ export function useTileDrop(host: TileDropHost): {
       cacheRef.current = { layout, envelope, state };
       return state;
     },
-    [areaRef, assess, containerId, dividerPx, layout, widget],
+    [areaRef, assess, containerId, dividerPx, elementSeat, layout, widget],
   );
 
   const clear = useCallback((): void => {

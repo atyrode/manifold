@@ -300,7 +300,11 @@ function TileSplit({
                     onPointerUp: endDrag,
                     onPointerCancel: endDrag,
                   }
-                : {})}
+                : {
+                    // An inert seam looks identical to a live one minus the cursor —
+                    // which reads as "resize broke", not "you are watching". Say so.
+                    title: "Click a tile to work in this composition; dividers drag then",
+                  })}
             />
           )}
           <div

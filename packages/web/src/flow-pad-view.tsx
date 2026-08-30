@@ -2,6 +2,7 @@ import {
   CURSOR_MIN_INTERVAL_MS,
   MAX_GESTURE_POINT_VALUES,
   VIEWPORT_MIN_INTERVAL_MS,
+  placementItemFor,
   type MachineSummary,
   type Pad,
   type PadPresence,
@@ -1062,11 +1063,17 @@ export function FlowPadView({
       padId,
       dropStore,
       assessDrop: drop.assess,
+      // A portal element showing a terminal is a seated carry: its solo home's leaf
+      // is the seat a displaced occupant trades into (#62).
+      elementSeat: (elementPadId, elementId) =>
+        placementItemFor({ kind: "element", padId: elementPadId, elementId }, lookup)?.kind ===
+        "terminal",
     }),
     [
       carry,
       client,
       notify,
+      lookup,
       drop.assess,
       dropStore,
       padId,

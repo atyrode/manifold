@@ -3267,11 +3267,34 @@ button.pad-sidebar-session.is-summary > small {
   min-height: 0;
 }
 
-/* While a drop target is armed, the node IN HAND steps almost out of the way so the
-   live preview underneath stays readable. React Flow marks the dragged node with
+/* While a drop target is armed, the node IN HAND fades almost away so the live
+   preview underneath stays readable. React Flow marks the dragged node with
    `.dragging`; the canvas root wears `is-composing` only while a target is armed,
-   both written imperatively (arming never touches React state — drag hot path). */
+   both written imperatively (arming never touches React state — drag hot path).
+   The transition lives on `.dragging` itself so the fade runs BOTH ways — easing
+   in when a target arms and back out when it disarms — reading as a deliberate
+   "stepping aside", never as the held item vanishing. */
+.flow-pad-canvas .react-flow__node.dragging {
+  transition: opacity 160ms ease;
+}
+
 .flow-pad-canvas.is-composing .react-flow__node.dragging {
   opacity: 0.15;
-  transition: opacity 120ms ease;
+}
+
+/* A seam's PAINT stays slim; its GRAB does not. Under the widget's 0.5 preview
+   scale and any canvas zoom, an 8px divider can shrink to a couple of on-screen
+   pixels — pseudo-elements extend the pointer target without moving any layout.
+   Pseudo hit-testing belongs to the divider element, so drags, seam drop aims and
+   the resize cursor all gain the widened band together. */
+.tiled-divider,
+.flow-portal__divider {
+  position: relative;
+}
+
+.tiled-divider::after,
+.flow-portal__divider::after {
+  position: absolute;
+  content: "";
+  inset: -6px;
 }

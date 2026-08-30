@@ -667,8 +667,9 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       widget: { padId: pad.padId, elementId: id },
       dividerPx: PORTAL_TREE_CLASSES.dividerPx,
       assess: pad.assessDrop,
+      elementSeat: pad.elementSeat,
     }),
-    [containerId, id, layout, pad.assessDrop, pad.padId],
+    [containerId, id, layout, pad.assessDrop, pad.elementSeat, pad.padId],
   );
 
   /** What a displaced or carried surface is called, from this widget's own socket. */
