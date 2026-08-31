@@ -109,8 +109,22 @@ function SectionShell({
 
 export function SidebarPanel({ host }: PanelProps): ReactElement {
   const composition = useComposition();
-  const shell = useWorkspaceShell();
-  const { identity, sidebarOpen, workspace } = shell;
+  /*
+    Every field this panel reads is taken ONCE, here: `registerSidebarElement` is a ref
+    callback, and reading further properties off the same object afterwards would be reading
+    through a ref during render. The shell hands out plain values; naming them plainly is
+    what keeps that true.
+  */
+  const {
+    createContainer,
+    createFolder,
+    creating,
+    identity,
+    registerSidebarElement,
+    setSidebarOpen,
+    sidebarOpen,
+    workspace,
+  } = useWorkspaceShell();
   /*
    * Per-section disclosure is in-memory only. The sidebar's four private storage keys are gone
    * with the rest of its device-only state (D13): a section's ORDER now comes from
@@ -140,7 +154,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   const submitFolder = async (name: string): Promise<void> => {
     setCreatingFolder(true);
     try {
-      await shell.createFolder(name);
+      await createFolder(name);
       setFolderName(null);
     } finally {
       setCreatingFolder(false);
@@ -159,7 +173,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
 
   return (
     <>
-      <aside className="pad-sidebar" aria-label="Sidebar" ref={shell.registerSidebarElement}>
+      <aside className="pad-sidebar" aria-label="Sidebar" ref={registerSidebarElement}>
         <header className="pad-sidebar-header">
           <span className="pad-sidebar-brand">
             <span className="pad-sidebar-mark" aria-hidden="true">
@@ -185,7 +199,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             type="button"
             title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            onClick={() => shell.setSidebarOpen(!sidebarOpen)}
+            onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />
           </button>
@@ -198,10 +212,10 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             title="New canvas"
             aria-label="New canvas"
             onClick={() => {
-              if (!sidebarOpen) shell.setSidebarOpen(true);
-              shell.createContainer("canvas");
+              if (!sidebarOpen) setSidebarOpen(true);
+              createContainer("canvas");
             }}
-            disabled={shell.creating}
+            disabled={creating}
           >
             <ControlIcon kind="add" />
             {sidebarOpen ? <span>New canvas</span> : null}
@@ -212,10 +226,10 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             title="New composition"
             aria-label="New composition"
             onClick={() => {
-              if (!sidebarOpen) shell.setSidebarOpen(true);
-              shell.createContainer("tiled");
+              if (!sidebarOpen) setSidebarOpen(true);
+              createContainer("tiled");
             }}
-            disabled={shell.creating}
+            disabled={creating}
           >
             <ItemIcon kind="composition" />
             {sidebarOpen ? <span>New composition</span> : null}
@@ -226,7 +240,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             title="New folder"
             aria-label="New folder"
             onClick={() => {
-              if (!sidebarOpen) shell.setSidebarOpen(true);
+              if (!sidebarOpen) setSidebarOpen(true);
               setFolderName("");
             }}
           >

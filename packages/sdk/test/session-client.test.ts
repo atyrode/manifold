@@ -1114,3 +1114,85 @@ describe("terminal opening", () => {
     await expect(opening).rejects.toThrow("session closed before terminal opened");
   });
 });
+
+/**
+ * THE CONNECTION-LEVEL ROSTER FRAME (D3).
+ *
+ * Every other server frame is channelized, and the pool drops frames whose channel it does
+ * not recognise — which is exactly what a `ch`-less roster frame would look like to it. This
+ * suite pins the one exception: registration is workspace-global shared state, so it addresses
+ * the SOCKET, reaches every handle riding it, and never masquerades as room traffic.
+ *
+ * The frames below are handed over as raw JSON text, deliberately: the harness stamps a
+ * channel onto object frames, and stamping this one would test the opposite of the contract.
+ */
+describe("the plugin roster frame", () => {
+  /** A one-plugin roster, the smallest thing that proves the frame arrived intact. */
+  const roster = (id: string, enabled: boolean) => [
+    {
+      manifest: {
+        id,
+        version: "0.1.0",
+        title: id,
+        description: "",
+        capabilities: [],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      enabled,
+      source: "builtin",
+      actions: [],
+    },
+  ];
+
+  test("a roster frame carrying no channel is delivered, not dropped", () => {
+    const { client, socket } = connected();
+    const seen: unknown[] = [];
+    client.onPlugins((next) => {
+      seen.push(next);
+    });
+
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(roster("core.draw", true));
+
+    // A disable arrives the same way, which is what makes hot enablement reload-free (D4).
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a late subscriber is replayed the last roster, so a plugin mounting late composes", () => {
+    const { client, socket } = connected();
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+
+    const seen: unknown[] = [];
+    const off = client.onPlugins((next) => {
+      seen.push(next);
+    });
+
+    // The frame lands on socket open, long before a panel deep in the tree subscribes. With
+    // no replay that panel would render placeholders until the next enable/disable.
+    expect(seen).toEqual([roster("core.draw", false)]);
+
+    off();
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+    expect(seen).toHaveLength(1);
+  });
+
+  test("the roster is not room traffic: it never reaches `message`, and moves no revision", () => {
+    const { client, socket } = connected();
+    const messages: string[] = [];
+    client.on("message", (msg) => {
+      messages.push(msg.type);
+    });
+    const revBefore = client.rev;
+
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+
+    // A room's frame stream is its document's history; injecting workspace news into it
+    // would make every consumer that switches on frame type handle a frame about no room.
+    expect(messages).toEqual([]);
+    expect(client.rev).toBe(revBefore);
+    expect(client.status).toBe("open");
+  });
+});

@@ -758,7 +758,10 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         }
       }
     },
-    [client, containerId, layout, occupantLabel, pad.padName],
+    // `pad`, not `pad.padName`: the name lookup is CALLED here, so the receiver is what this
+    // callback actually closes over — and the context object hands out a fresh lookup with
+    // every rebuild anyway, so the two move together.
+    [client, containerId, layout, occupantLabel, pad],
   );
 
   /**

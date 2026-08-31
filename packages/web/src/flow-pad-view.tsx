@@ -28,12 +28,7 @@ import { deletePad, getMachines } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { FLOOR_TOOLS, toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
-import {
-  debugSeamEnabled,
-  lastSpotlight,
-  renderCounts,
-  toElementSnapshot,
-} from "./debug-seam.ts";
+import { debugSeamEnabled, lastSpotlight, renderCounts, toElementSnapshot } from "./debug-seam.ts";
 import { remoteCursorSocketId } from "./cursor-identity.ts";
 import {
   PluginPlaceholder,
@@ -121,17 +116,22 @@ function componentTag(component: ComponentType<never> | null): string {
 }
 
 /**
- * What a change in the element registry MEANS for React Flow: the ordered list of element
- * types, whether each is enabled, and which component is attached. Toggling an unrelated
- * plugin (`core.machines`, say) leaves this string identical, which is what keeps a terminal
- * from being remounted — and reattached — by an administrator flipping a sidebar section.
+ * What a change in the element registry MEANS for React Flow: which element types exist,
+ * whether each is enabled, and which component is attached. Toggling an unrelated plugin
+ * (`core.machines`, say) leaves this string identical, which is what keeps a terminal from
+ * being remounted — and reattached — by an administrator flipping a sidebar section.
+ *
+ * Sorted, because the SET is what React Flow cares about: the node-type map is keyed by
+ * type, so two rosters listing the same renderers in a different order compose the identical
+ * map. Ordering the parts is what stops a reshuffled roster from paying for that agreement
+ * with a remount of every live PTY on the board.
  */
 function elementRegistrySignature(elements: ReadonlyMap<string, WebElement>): string {
   const parts: string[] = [];
   for (const [type, element] of elements) {
     parts.push(`${type}:${element.enabled ? "1" : "0"}:${componentTag(element.Component)}`);
   }
-  return parts.join("|");
+  return parts.sort().join("|");
 }
 
 /**
@@ -200,6 +200,33 @@ function buildNodeTypes(
   // happens to declare their wire type (D5 refuses plugin/plugin collisions; this refuses
   // plugin-over-engine shadowing at the one place it could bite).
   return { ...contributed, ...FLOOR_NODE_TYPES };
+}
+
+/**
+ * One `NodeTypes` object per element-registry signature, for the life of the tab.
+ *
+ * React Flow remounts every node when this object's identity changes — reattaching every
+ * live PTY on the board — so the map may NOT be rebuilt per render, and it may not be keyed
+ * on the composition either: hiding a sidebar section would then reattach the terminals.
+ * The signature IS the key, and the cache is module-level and pure precisely so that no
+ * hook, ref or render order is involved in answering "have I built this vocabulary before".
+ * It grows by one entry per distinct registry shape a session ever sees — a handful.
+ *
+ * Placeholder titles come from `pluginTitle` and are NOT part of the key: a manifest's title
+ * is fixed for the roster that declared it, so a title cannot move under a stable signature.
+ */
+const nodeTypesBySignature = new Map<string, NodeTypes>();
+
+export function nodeTypesFor(
+  elements: ReadonlyMap<string, WebElement>,
+  pluginTitle: (id: string) => string | null,
+): NodeTypes {
+  const signature = elementRegistrySignature(elements);
+  const cached = nodeTypesBySignature.get(signature);
+  if (cached !== undefined) return cached;
+  const built = buildNodeTypes(elements, pluginTitle);
+  nodeTypesBySignature.set(signature, built);
+  return built;
 }
 /**
  * A canvas cannot DERIVE solo occupancy: it holds elements, not tile layouts, and the
@@ -357,7 +384,8 @@ export function FlowPadView({
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  const [tool, setTool] = useState<CanvasTool>("select");
+  /** What the viewer PICKED; the tool actually in force is derived below, against the roster. */
+  const [heldTool, setTool] = useState<CanvasTool>("select");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<readonly number[] | null>(null);
   const connectStartedRef = useRef(false);
@@ -399,24 +427,24 @@ export function FlowPadView({
   const composition = useComposition();
   /** Stable for the host gate's lifetime, so registering is an ordinary effect. */
   const registerViewport = useViewportRegistration();
-  const elementSignature = elementRegistrySignature(composition.elements);
   /*
-    A derived cache, deliberately not a memo: React Flow remounts every node when
-    `nodeTypes` changes identity, and a dependency array containing `composition` would do
-    exactly that on any unrelated toggle — reattaching every live PTY on the board because
-    somebody hid a sidebar section. The signature IS the dependency.
+    Pure and module-cached (see {@link nodeTypesFor}): the same registered vocabulary hands
+    back the same object, so React Flow keeps every node — and every attached PTY — mounted
+    across renders and across toggles of plugins that contribute no elements.
   */
-  const nodeTypesRef = useRef<{ signature: string; value: NodeTypes }>({
-    signature: elementSignature,
-    value: buildNodeTypes(composition.elements, composition.pluginTitle),
-  });
-  if (nodeTypesRef.current.signature !== elementSignature) {
-    nodeTypesRef.current = {
-      signature: elementSignature,
-      value: buildNodeTypes(composition.elements, composition.pluginTitle),
-    };
-  }
-  const nodeTypes = nodeTypesRef.current.value;
+  const nodeTypes = nodeTypesFor(composition.elements, composition.pluginTitle);
+  /*
+    A tool the composition no longer offers cannot stay in the viewer's hand: disabling
+    `core.draw` while its tool is held would otherwise leave a pointer authoring elements
+    whose renderer is now a placeholder. So the held tool is a REQUEST and the tool in force
+    is derived from it — the hand falls back to select the instant the tool leaves the
+    vocabulary, live and without a reload (R3), and takes it back if the plugin returns.
+  */
+  const tool =
+    FLOOR_TOOLS.includes(heldTool) ||
+    composition.tools.some((candidate) => candidate.enabled && candidate.id === heldTool)
+      ? heldTool
+      : "select";
 
   /**
    * VIEW STATE, published (A2). One subscription, declared FIRST so the mount-time writes
@@ -443,17 +471,6 @@ export function FlowPadView({
     if (depth !== 1) return;
     setViewState({ editingElementId: editingId });
   }, [depth, editingId]);
-
-  /*
-    A tool the composition no longer offers cannot stay in the viewer's hand: disabling
-    `core.draw` while its tool is held would otherwise leave a pointer authoring elements
-    whose renderer is now a placeholder. The hand falls back to select, live (R3).
-  */
-  useEffect(() => {
-    if (FLOOR_TOOLS.includes(tool)) return;
-    if (composition.tools.some((candidate) => candidate.enabled && candidate.id === tool)) return;
-    setTool("select");
-  }, [composition, tool]);
 
   useEffect(() => {
     const invalidate = (): void => setSceneRevision((value) => value + 1);
@@ -695,8 +712,13 @@ export function FlowPadView({
         // drag preview agree with the write the server performs.
         soloOccupants,
       }),
-    // `sceneRevision` is the element table's version: the lookup reads it live, and this
-    // dependency is what makes a preview see an element authored a moment ago.
+    /*
+      `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
+      loud — leave it anyway: the session client's tables mutate in place, so the version
+      counter is the only value that moves when the scene does, and the terminal-home map
+      above is a SNAPSHOT of one of them. Drop this dependency and a terminal created a
+      moment ago has no home here, which reads as a placement denial mid-drag.
+    */
     [client, pads, padId, sceneRevision, soloOccupants],
   );
 
@@ -1361,6 +1383,7 @@ export function FlowPadView({
       machines,
       navigate,
       onDeleteContainer,
+      onPark,
       onRenameTerminal,
       openClient,
       removeElement,
@@ -1383,14 +1406,7 @@ export function FlowPadView({
       rows: sessionRows,
       onCreateTerminal: (machine) => void createTerminal(machine),
     });
-  }, [
-    createTerminal,
-    onWorkspaceChange,
-    savedAt,
-    sceneRevision,
-    sessionRows,
-    status,
-  ]);
+  }, [createTerminal, onWorkspaceChange, savedAt, sceneRevision, sessionRows, status]);
 
   useEffect(() => () => onWorkspaceChange(null), [onWorkspaceChange]);
 

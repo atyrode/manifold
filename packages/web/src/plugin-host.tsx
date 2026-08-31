@@ -295,9 +295,7 @@ export function CompositionProvider({
   const publish = useCallback((roster: PluginRoster): void => {
     const digest = JSON.stringify(roster);
     setState((previous) =>
-      previous.digest === digest
-        ? previous
-        : { roster, revision: previous.revision + 1, digest },
+      previous.digest === digest ? previous : { roster, revision: previous.revision + 1, digest },
     );
   }, []);
 
@@ -346,10 +344,7 @@ interface HostServicesProviderProps {
 }
 
 /** Publishes the one host surface plugin code is allowed to touch (`@manifold/plugin`). */
-export function HostServicesProvider({
-  value,
-  children,
-}: HostServicesProviderProps): ReactElement {
+export function HostServicesProvider({ value, children }: HostServicesProviderProps): ReactElement {
   return <HostServicesContext.Provider value={value}>{children}</HostServicesContext.Provider>;
 }
 
@@ -529,11 +524,7 @@ export interface PluginPlaceholderProps {
  * The remove control commits a pruned workspace tree through `core.layout.set`, which is why
  * a disable can never brick a layout (D4, `[R: layout-lock blocker]`).
  */
-export function PluginPlaceholder({
-  name,
-  state,
-  onRemove,
-}: PluginPlaceholderProps): ReactElement {
+export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
   return (
     <div className="plugin-placeholder" data-plugin-state={state}>
       <strong className="plugin-placeholder__name">{name}</strong>

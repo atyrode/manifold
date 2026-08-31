@@ -133,11 +133,7 @@ export function useWorkspaceShell(): WorkspaceShell {
   return shell;
 }
 
-export function PadBrowser({
-  identity,
-  requestedPadId,
-  navigate,
-}: PadBrowserProps): ReactElement {
+export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserProps): ReactElement {
   const host = useHostServices();
   const registerAuthoring = useAuthoringRegistration();
   const { notify } = useToast();

@@ -1,10 +1,5 @@
 import type { PanelProps } from "@manifold/plugin";
-import type {
-  MachineSummary,
-  Pad,
-  PadPresence,
-  PlacementItem,
-} from "@manifold/protocol";
+import type { MachineSummary, Pad, PadPresence, PlacementItem } from "@manifold/protocol";
 import { createContext, useContext, type ReactElement, type ReactNode } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";

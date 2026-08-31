@@ -1,8 +1,8 @@
 import {
-  CONNECTION_LEVEL_MESSAGE_TYPES,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   reconnectDelayMs,
+  type CONNECTION_LEVEL_MESSAGE_TYPES,
   type ClientMessageBody,
   type ServerMessage,
   type ServerMessageBody,

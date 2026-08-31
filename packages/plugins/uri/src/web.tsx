@@ -1,6 +1,6 @@
 import type { HostServices } from "@manifold/plugin";
 import { formatManifoldUri, parseManifoldUri } from "@manifold/protocol";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 /**
  * `/uri/<encoded manifold:// address>` — the deep-link route `core.uri` contributes.
@@ -16,9 +16,53 @@ import { useEffect, useState } from "react";
  * taken to the container that holds it.
  */
 
-type Outcome =
-  | { readonly state: "working" }
-  | { readonly state: "failed"; readonly reason: string };
+/**
+ * What an address ASKS FOR, decided from the address alone. Reading a link is a pure
+ * question — decode, parse, classify — so it is answered during render; only the two
+ * genuinely external steps (navigating the shell, asking the server where a terminal
+ * lives) belong to an effect.
+ */
+type Target =
+  | { readonly state: "failed"; readonly reason: string }
+  | { readonly state: "open"; readonly uri: string; readonly center: boolean }
+  | { readonly state: "terminal"; readonly sessionId: string };
+
+function resolveTarget(rest: string): Target {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rest);
+  } catch {
+    return { state: "failed", reason: "This link is not a valid address." };
+  }
+  const ref = parseManifoldUri(decoded);
+  if (ref === null) {
+    return { state: "failed", reason: `${decoded} is not a manifold:// address.` };
+  }
+  switch (ref.kind) {
+    case "pad":
+      return { state: "open", uri: decoded, center: false };
+    case "element":
+    case "tile":
+      return { state: "open", uri: decoded, center: true };
+    case "terminal":
+      // Every terminal lives in a composition of its own — `homeId`, solo from birth — and
+      // the URI names only the session, so the index is what answers "where is it".
+      return { state: "terminal", sessionId: ref.sessionId };
+    case "principal":
+    case "plugin":
+    case "action":
+      // Addressable, but not places: there is nowhere to send a browser for a capability
+      // holder, a plugin or a verb. Naming the form is more useful than a blank screen.
+      return {
+        state: "failed",
+        reason: `${decoded} names a ${ref.kind}, which is not a place to open.`,
+      };
+    default: {
+      const exhaustive: never = ref;
+      return exhaustive;
+    }
+  }
+}
 
 export interface UriRouteProps {
   /** Everything after `/uri/`, still percent-encoded. */
@@ -27,85 +71,67 @@ export interface UriRouteProps {
 }
 
 export function UriRoute({ rest, host }: UriRouteProps): React.ReactElement {
-  const [outcome, setOutcome] = useState<Outcome>({ state: "working" });
+  const target = useMemo(() => resolveTarget(rest), [rest]);
+  /*
+    The one failure the address cannot predict: a syntactically perfect terminal link whose
+    session is gone. It is stamped with the address it answered for, so a second link
+    rendered by this same route starts clean without an effect reaching in to clear it.
+  */
+  const [lookupFailure, setLookupFailure] = useState<{
+    readonly rest: string;
+    readonly reason: string;
+  } | null>(null);
 
   useEffect(() => {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(rest);
-    } catch {
-      setOutcome({ state: "failed", reason: "This link is not a valid address." });
-      return;
-    }
-    const ref = parseManifoldUri(decoded);
-    if (ref === null) {
-      setOutcome({ state: "failed", reason: `${decoded} is not a manifold:// address.` });
+    if (target.state === "failed") return;
+    if (target.state === "open") {
+      host.navigate(target.uri);
+      // Lands immediately when the addressed pad is already on screen; after a route change
+      // the shell's own navigation owns the centering, because this route is gone by then.
+      if (target.center) host.viewport?.centerOn(target.uri);
       return;
     }
     let cancelled = false;
-    switch (ref.kind) {
-      case "pad":
-        host.navigate(decoded);
-        return;
-      case "element":
-      case "tile":
-        host.navigate(decoded);
-        // Lands immediately when the addressed pad is already on screen; after a route change
-        // the shell's own navigation owns the centering, because this route is gone by then.
-        host.viewport?.centerOn(decoded);
-        return;
-      case "terminal": {
-        // Every terminal lives in a composition of its own — `homeId`, solo from birth — and
-        // the URI names only the session, so the index is what answers "where is it".
-        void host.client
-          .terminals()
-          .then((terminals) => {
-            if (cancelled) return;
-            const session = terminals.find((candidate) => candidate.id === ref.sessionId);
-            if (session === undefined) {
-              setOutcome({ state: "failed", reason: "That terminal no longer exists." });
-              return;
-            }
-            host.navigate(formatManifoldUri({ kind: "pad", padId: session.homeId }));
-          })
-          .catch((reason: unknown) => {
-            if (cancelled) return;
-            setOutcome({
-              state: "failed",
-              reason: reason instanceof Error ? reason.message : "Could not look up that terminal.",
-            });
-          });
-        return () => {
-          cancelled = true;
-        };
-      }
-      case "principal":
-      case "plugin":
-      case "action":
-        // Addressable, but not places: there is nowhere to send a browser for a capability
-        // holder, a plugin or a verb. Naming the form is more useful than a blank screen.
-        setOutcome({
-          state: "failed",
-          reason: `${decoded} names a ${ref.kind}, which is not a place to open.`,
+    void host.client
+      .terminals()
+      .then((terminals) => {
+        if (cancelled) return;
+        const session = terminals.find((candidate) => candidate.id === target.sessionId);
+        if (session === undefined) {
+          setLookupFailure({ rest, reason: "That terminal no longer exists." });
+          return;
+        }
+        host.navigate(formatManifoldUri({ kind: "pad", padId: session.homeId }));
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setLookupFailure({
+          rest,
+          reason: reason instanceof Error ? reason.message : "Could not look up that terminal.",
         });
-        return;
-      default: {
-        const exhaustive: never = ref;
-        return exhaustive;
-      }
-    }
-  }, [host, rest]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [host, rest, target]);
+
+  const failure =
+    target.state === "failed"
+      ? target.reason
+      : lookupFailure?.rest === rest
+        ? lookupFailure.reason
+        : null;
 
   return (
     <main className="gate-screen" data-uri-route={rest}>
       <section className="gate-card">
         <p className="eyebrow">manifold link</p>
-        {outcome.state === "working" ? (
+        {failure === null ? (
           <h1>Opening this address…</h1>
         ) : (
           <>
             <h1>This link goes nowhere</h1>
-            <p>{outcome.reason}</p>
+            <p>{failure}</p>
             <button
               className="primary-button"
               type="button"

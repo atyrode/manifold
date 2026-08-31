@@ -1,6 +1,6 @@
 import {
-  CONNECTION_LEVEL_MESSAGE_TYPES,
   ServerMessageBodySchema,
+  type CONNECTION_LEVEL_MESSAGE_TYPES,
   type ServerMessageBody,
 } from "@manifold/protocol";
 import type { AuthContext } from "./auth.ts";

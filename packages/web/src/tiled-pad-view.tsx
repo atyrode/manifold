@@ -22,13 +22,7 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  deletePad,
-  getMachines,
-  removePadTile,
-  renamePad,
-  type StoredIdentity,
-} from "./api.ts";
+import { deletePad, getMachines, removePadTile, renamePad, type StoredIdentity } from "./api.ts";
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { TextSurface } from "./flow-text-node.tsx";
@@ -253,7 +247,10 @@ export function TiledPadView({
       });
     });
     return () => client.close();
-  }, [client]);
+    // `notify` is the toast provider's own stable callback, so naming it here is honest
+    // without arming a reconnect: this effect connects exactly once per client (the ref
+    // guard), and a dependency that never moves can never trip that guard.
+  }, [client, notify]);
 
   useEffect(() => {
     let cancelled = false;
@@ -530,8 +527,14 @@ export function TiledPadView({
           return merged;
         })(),
       }),
-    // `sceneRevision` is the element table's version: the lookup reads it live, and this
-    // dependency is what makes a preview see a note that arrived a moment ago.
+    /*
+      `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
+      loud — leave it anyway: this room's session table and layout tree mutate in place, and
+      both snapshots above (terminal homes, merged solo occupancy) are taken HERE. Drop this
+      dependency and a preview answers from the tree as it stood at the last unrelated
+      re-render, which is exactly the disagreement with the server this lookup exists to
+      prevent.
+    */
     [client, pads, padId, sceneRevision, soloOccupants],
   );
 
