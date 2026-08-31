@@ -82,23 +82,36 @@ export const SceneElementPayloadValueSchema = z.union([
 export type SceneElementPayloadValue = z.infer<typeof SceneElementPayloadValueSchema>;
 
 /**
- * The payload as its own schema, so the bounds have one statement. The ceilings are the UNION
- * of the ceilings the three retired union members carried (`MAX_TEXT_LENGTH` for prose,
- * `MAX_STROKE_POINT_VALUES` for a coordinate run), which is what makes this an opening rather
- * than a wire break: every record that validated against the discriminated union validates
- * against the envelope, and every document on disk validates unchanged.
+ * THE payload discipline, as a factory: a FLAT record of bounded scalars, bounded in key
+ * length, key count and value size. The ceilings are the UNION of the ceilings the three
+ * retired element union members carried (`MAX_TEXT_LENGTH` for prose,
+ * `MAX_STROKE_POINT_VALUES` for a coordinate run), which is what made the envelope an opening
+ * rather than a wire break: every record that validated against the discriminated union
+ * validates against it, and every document on disk validates unchanged.
+ *
+ * It is a FACTORY because the element plane stopped being its only inhabitant: an event's
+ * payload rides these exact bounds (ADR 0012), and two statements of "what a bounded flat
+ * record is" is how two planes come to give two answers about one discipline. `noun` names the
+ * offending plane in the refusal, so a reader of the message learns which payload broke it.
  */
-export const SceneElementPayloadSchema = z
-  .record(z.string().min(1).max(MAX_ELEMENT_PAYLOAD_KEY_LENGTH), SceneElementPayloadValueSchema)
-  .check((ctx) => {
-    const keys = Object.keys(ctx.value);
-    if (keys.length <= MAX_ELEMENT_PAYLOAD_KEYS) return;
-    ctx.issues.push({
-      code: "custom",
-      input: ctx.value,
-      message: `element payload carries ${String(keys.length)} keys, at most ${String(MAX_ELEMENT_PAYLOAD_KEYS)} are allowed`,
+export function boundedPayloadSchema(
+  noun: string,
+): z.ZodType<Record<string, SceneElementPayloadValue>> {
+  return z
+    .record(z.string().min(1).max(MAX_ELEMENT_PAYLOAD_KEY_LENGTH), SceneElementPayloadValueSchema)
+    .check((ctx) => {
+      const keys = Object.keys(ctx.value);
+      if (keys.length <= MAX_ELEMENT_PAYLOAD_KEYS) return;
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        message: `${noun} payload carries ${String(keys.length)} keys, at most ${String(MAX_ELEMENT_PAYLOAD_KEYS)} are allowed`,
+      });
     });
-  });
+}
+
+/** The payload as its own schema, so the element plane's bounds have one statement. */
+export const SceneElementPayloadSchema = boundedPayloadSchema("element");
 export type SceneElementPayload = z.infer<typeof SceneElementPayloadSchema>;
 
 /**

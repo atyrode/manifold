@@ -110,8 +110,11 @@ A fourth plane — **events**: declared notifications emitted by the engine at t
 topics are nodes, which never mutate anything (reacting to one means calling an action) and
 which carry no queue semantics (no offsets, no consumer groups; catch-up is reading state) —
 is designed in
-[`docs/decisions/0012-event-plane.md`](docs/decisions/0012-event-plane.md) and implemented in
-wave 2. Wave-1 code touches it only through the manifest's reserved `contributes.events`.
+[`docs/decisions/0012-event-plane.md`](docs/decisions/0012-event-plane.md) and **landed in wave
+2** (#72, #73): protocol v17's `subscribe`/`unsubscribe`/`event` frames, emission at every
+commit point the engine already owns, and `contributes.events` with live consumers. A plugin
+joins it by declaring the kinds it originates and emitting through `ctx.emit` at its own action's
+door; the ADR's "Landed" section records the shapes that shipped.
 
 ## Roadmap
 
@@ -141,12 +144,18 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   (invariant 10). Plus `AXIOMS.md` (including §Foundation law and §Lexicon law), `REGISTRY.md`
   (the lexicon rows, the `cssFamilies` register and the pillar inventory), `AGENTS.md`
   invariants 12–16, and `verify:axioms` in the gate.
-- **Wave 2 — the event plane** (ADR 0012). A subscribe door, emission at the existing doors
-  (actions, placement, lifecycle, roster), and real consumers for `contributes.events`. It
-  replaces the Machines and Index sections' HTTP polling: one fetch line per section becomes a
-  subscription and the moved section UI is untouched. The wave-1 roster frame may later be
-  re-expressed as an always-on subscription over the mechanism it itself pioneered; the frame
-  shape is unchanged either way.
+- **Wave 2 — the event plane** (ADR 0012, #72 / #73). Landed: protocol v17 (`subscribe`,
+  `unsubscribe`, `event` — connection-level, structured `ManifoldRef` topics, snake_case declared
+  kinds), emission at the doors the engine already owns (action dispatch staged behind the
+  handler's own success, placement, node lifecycle, roster and attendance change), read-grant
+  admission discharged at subscribe AND at delivery, and real consumers for `contributes.events`.
+  It replaced the HTTP polling of all five shared feeds — the container index, both terminal
+  listings, attendance and the machine roster — each becoming ONE subscription on the owning
+  plugin's collection node, with the moved section UI untouched and only the feed's options
+  changed. `REGISTRY.md` §Budgets network ceilings are now zero at idle and `verify:axioms` R10
+  puts a stopwatch on the claim. The wave-1 roster frame may later be re-expressed as an
+  always-on subscription over the mechanism it itself pioneered; the frame shape is unchanged
+  either way.
 - **Wave 3 — cross-instance sharing** (A4, riding wave 2's pipes). Instance dialing that
   generalizes the machine channel, share minting bound to subtree grants, principal `origin` in
   the schema. Wave 1 reserves the structural room: SDK pool channels are conceptually keyed by

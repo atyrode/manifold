@@ -43,8 +43,18 @@ export const shellManifest: PluginManifest = {
  * and "the tree" and "the panels that fill it" are two concepts even when one package ships
  * both.
  *
- * It contributes nothing: no panel, no section, no element. Disabling it stops layout writes
+ * It contributes no panel, no section and no element. Disabling it stops layout writes
  * and placements without taking the shell's panels down with it.
+ *
+ * The two events it declares are its two doors' commit points, and each is addressed to the
+ * node it actually changed. `layout_set` is announced on the CALLER'S PRINCIPAL node, because a
+ * workspace tree is per principal (`setWorkspaceLayout(principal.id, ...)`) and no other node
+ * describes it. `item_placed` is announced on the destination CONTAINER, so a socket watching a
+ * canvas or composition learns something landed in it — once per gesture, at the drop, never
+ * per frame of the drag (`AXIOMS.md` §Axioms, the plane rule's commit point). Both are also
+ * DELIVERED at this plugin's own node, which is how the workspace-wide readings a placement
+ * moves — the index's top level, both terminal rosters — hear a commit in a room they cannot
+ * name in advance (ADR 0012 §2b). That is delivery, not a second emission: one row, one frame.
  */
 export const spaceManifest: PluginManifest = {
   id: "core.space",
@@ -53,7 +63,16 @@ export const spaceManifest: PluginManifest = {
   description:
     "Stores each principal's workspace tile tree, and places items into the containers they compose.",
   capabilities: ["containers:write"],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    events: [
+      { id: "layout_set", title: "Workspace layout written" },
+      { id: "item_placed", title: "Item placed" },
+    ],
+  },
 };
 
 export const spaceActions = [

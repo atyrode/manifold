@@ -29,7 +29,22 @@ export const machinesManifest: PluginManifest = {
     sections: [{ id: "machines", title: "Machines", order: 20 }],
     elements: [],
     tools: [],
-    events: [],
+    /*
+      THE FLEET'S NEWS (ADR 0012). A machine has no `manifold://` form of its own — the
+      grammar's seven forms address containers, their contents, principals, plugins and
+      actions, and a machine is none of them — so all three are addressed to this plugin's own
+      node, which is the node that publishes the roster and the one subscription the Machines
+      section needs to stop polling. WHICH machine moved is the payload.
+
+      `machine_enrolled` is emitted by this plugin's own door below; the online pair is emitted
+      by the FLOOR, because only the socket registry knows when a machine's connection appears
+      or dies. That is ADR 0012 §1 exactly: the engine emits, the plugin declares.
+     */
+    events: [
+      { id: "machine_enrolled", title: "Machine enrolled" },
+      { id: "machine_online", title: "Machine online" },
+      { id: "machine_offline", title: "Machine offline" },
+    ],
   },
 };
 

@@ -48,6 +48,7 @@ import {
   enginePluginsManifest,
   type Assembly,
 } from "../packages/plugin/src/index.ts";
+import { INDEX_RESOURCE, type PolledFeedReport } from "../packages/plugin/src/polled-resource.ts";
 import {
   ActionOutcomeSchema,
   ActionSummarySchema,
@@ -64,6 +65,8 @@ import {
   TokenGrantSchema,
   formatManifoldUri,
   type LogEvent,
+  type ManifoldRef,
+  type ServerEvent,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "../packages/server/src/assembly.ts";
@@ -99,6 +102,17 @@ const list = (values: Iterable<string>): string => {
 interface FloorRow {
   readonly glob: string;
   readonly why: string;
+}
+
+/**
+ * One pillar of the foundation (§Pillar inventory). `verdict` carries the row's reason exactly
+ * as `why` does elsewhere, so a pillar asserted without one is discarded here — and the floor
+ * files it would have owned then fall out of S9 as unowned rather than being quietly blessed.
+ */
+interface PillarRow {
+  readonly id: string;
+  readonly globs: readonly string[];
+  readonly verdict: string;
 }
 
 interface DeviceLocalRow {
@@ -143,12 +157,14 @@ function justified(row: unknown, field: string): string | null {
  */
 function axiomRegistries(): {
   readonly floor: readonly FloorRow[];
+  readonly pillars: readonly PillarRow[];
   readonly deviceLocal: readonly DeviceLocalRow[];
   readonly gateContracts: readonly GateContractRow[];
   readonly cssFamilies: readonly CssFamilyRow[];
 } {
   const text = readFileSync(join(repoRoot, "REGISTRY.md"), "utf8");
   const floor: FloorRow[] = [];
+  const pillars: PillarRow[] = [];
   const deviceLocal: DeviceLocalRow[] = [];
   const gateContracts: GateContractRow[] = [];
   const cssFamilies: CssFamilyRow[] = [];
@@ -162,6 +178,25 @@ function axiomRegistries(): {
       for (const row of parsed.floor) {
         const glob = justified(row, "glob");
         if (glob !== null) floor.push({ glob, why: String(Reflect.get(row as object, "why")) });
+      }
+    }
+    if ("pillars" in parsed && Array.isArray(parsed.pillars)) {
+      for (const row of parsed.pillars) {
+        if (row === null || typeof row !== "object") continue;
+        const id: unknown = Reflect.get(row, "id");
+        const verdict: unknown = Reflect.get(row, "verdict");
+        const globs: unknown = Reflect.get(row, "globs");
+        // A pillar's reason is its `verdict`, which is what `why` is everywhere else: a row
+        // that asserts ownership without stating the litmus finding is not law and is dropped,
+        // so the files it would have owned surface as unowned in S9.
+        if (typeof id !== "string" || id === "") continue;
+        if (typeof verdict !== "string" || verdict === "") continue;
+        if (!Array.isArray(globs) || globs.length === 0) continue;
+        const owned = globs.filter(
+          (glob): glob is string => typeof glob === "string" && glob !== "",
+        );
+        if (owned.length !== globs.length) continue;
+        pillars.push({ id, globs: owned, verdict });
       }
     }
     if ("gateContracts" in parsed && Array.isArray(parsed.gateContracts)) {
@@ -205,7 +240,8 @@ function axiomRegistries(): {
   if (cssFamilies.length === 0) {
     throw new Error("REGISTRY.md carries no fenced `cssFamilies` registry");
   }
-  return { floor, deviceLocal, gateContracts, cssFamilies };
+  if (pillars.length === 0) throw new Error("REGISTRY.md carries no fenced `pillars` inventory");
+  return { floor, pillars, deviceLocal, gateContracts, cssFamilies };
 }
 
 // ─────────────────────────────────────────────────────────── source scanning
@@ -530,6 +566,13 @@ const webRegistrations: WebRegistration[] = [];
 
 const registries = axiomRegistries();
 const floorFiles = new Set<string>();
+/**
+ * Every FILE the floor registry claims — stylesheets included, tests excluded. The import walk
+ * wants source; S9 asks which pillar owns each floor file, and `packages/web/src/styles.css` is
+ * as much a floor file as `main.tsx` is (§Foundation names both, and the pillar inventory claims
+ * both by name).
+ */
+const floorPaths = new Set<string>();
 const emptyGlobs: string[] = [];
 for (const row of registries.floor) {
   const matched = sourcesMatching(row.glob);
@@ -538,6 +581,10 @@ for (const row of registries.floor) {
   const anything = [...new Bun.Glob(row.glob).scanSync({ cwd: repoRoot, onlyFiles: true })];
   if (anything.length === 0) emptyGlobs.push(row.glob);
   for (const path of matched) floorFiles.add(path);
+  for (const hit of anything) {
+    const path = hit.split("\\").join("/");
+    if (!TEST_SOURCE.test(path)) floorPaths.add(path);
+  }
 }
 
 {
@@ -907,6 +954,174 @@ const ROUTE_ALLOWLIST: readonly string[] = [
     parsedStranger.success
       ? `an unclaimed "${strangerType}" record validates on the envelope's bounds alone`
       : `the envelope refused an unclaimed type, which is the closed union it replaced`,
+  );
+}
+
+// ────────────────────────────────────── S9: pillar exhaustiveness
+
+/**
+ * EVERY FLOOR FILE HAS AN OWNER.
+ *
+ * `AXIOMS.md` §Foundation law says the foundation is a small set of PILLARS, each admitted by
+ * the litmus test — not "the code we did not convert". The floor registry is the file-level
+ * view of that claim, and until this check existed the two halves could disagree in silence: a
+ * file could be floor with no pillar answering for it. That is exactly how
+ * `packages/web/src/stroke.ts` happened — plugin-domain geometry sitting in the floor tree,
+ * inside no pillar, therefore invisible to the import walk and to registry liveness alike.
+ *
+ * The rule the registry states, mechanized: a floor file falls inside exactly ONE pillar's
+ * globs; where two pillars overlap the MOST SPECIFIC glob owns the file (longest literal prefix
+ * wins, which is why `packages/server/src/placement.ts` belongs to `placement-algebra` and not
+ * to the `packages/server/src/*.ts` neighbourhood around it); and two pillars claiming one file
+ * at EQUAL specificity is itself an error, because then the registry does not say who answers.
+ *
+ * An unmatched file is RED and is NAMED. There is no exception list and there must not be one:
+ * §Foundation law admits no third state between floor and plugin territory, so the way a file
+ * leaves the unmatched set is by moving into its plugin or by a pillar claiming it in the same
+ * commit — never by the gate being taught to tolerate it.
+ */
+{
+  /** How specific a glob is: the literal head before its first wildcard. */
+  const specificity = (glob: string): number => {
+    const wildcard = glob.search(/[*?[{]/);
+    return wildcard === -1 ? glob.length : wildcard;
+  };
+
+  interface Claim {
+    readonly pillar: string;
+    readonly glob: string;
+    readonly specificity: number;
+  }
+  const claims = new Map<string, Claim[]>();
+  const deadGlobs: string[] = [];
+  for (const pillar of registries.pillars) {
+    for (const glob of pillar.globs) {
+      let reached = 0;
+      for (const hit of new Bun.Glob(glob).scanSync({ cwd: repoRoot, onlyFiles: true })) {
+        const path = hit.split("\\").join("/");
+        if (!floorPaths.has(path)) continue;
+        reached += 1;
+        const bucket = claims.get(path);
+        const claim: Claim = { pillar: pillar.id, glob, specificity: specificity(glob) };
+        if (bucket === undefined) claims.set(path, [claim]);
+        else bucket.push(claim);
+      }
+      /*
+        A pillar glob claiming no floor file is either a stale row or a pillar reaching outside
+        the floor registry, and both are the S6 failure wearing the other registry's clothes.
+        The gate-and-registries pillar is the deliberate exception the law itself names: the
+        constitution and this script are that pillar's subject and carry no floor row, because
+        §Foundation puts `scripts/` outside floor and plugin territory alike.
+      */
+      if (reached === 0 && pillar.id !== "gate-and-registries") {
+        deadGlobs.push(`${pillar.id} claims ${glob}, which matches no floor file`);
+      }
+    }
+  }
+
+  const unowned: string[] = [];
+  const contested: string[] = [];
+  const byPillar = new Map<string, number>();
+  for (const path of [...floorPaths].sort()) {
+    const bucket = claims.get(path) ?? [];
+    if (bucket.length === 0) {
+      unowned.push(path);
+      continue;
+    }
+    const best = Math.max(...bucket.map((claim) => claim.specificity));
+    const winners = bucket.filter((claim) => claim.specificity === best);
+    const owners = new Set(winners.map((claim) => claim.pillar));
+    if (owners.size > 1) {
+      contested.push(
+        `${path} is claimed at equal specificity by ${list(owners)} (${list(
+          winners.map((claim) => claim.glob),
+        )})`,
+      );
+      continue;
+    }
+    const owner = winners[0]?.pillar ?? "";
+    byPillar.set(owner, (byPillar.get(owner) ?? 0) + 1);
+  }
+
+  const faults = [...unowned.map((path) => `${path} falls inside no pillar`), ...contested];
+  check(
+    "S9 pillar exhaustiveness",
+    faults.length === 0 && deadGlobs.length === 0,
+    faults.length === 0 && deadGlobs.length === 0
+      ? `${String(floorPaths.size)} floor files, each owned by exactly one of ${String(
+          registries.pillars.length,
+        )} pillars: ${[...byPillar]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([pillar, owned]) => `${pillar} ${String(owned)}`)
+          .join(", ")}`
+      : list([...faults, ...deadGlobs]),
+  );
+}
+
+// ────────────────────────────────────── S10: the residual carve-out, published
+
+/**
+ * THE ONE CARVE-OUT FROM THE DISABLE RULE, WRITTEN DOWN WHERE A DIFF WILL SHOW IT.
+ *
+ * `cleanup: true` is the action plane's whole residual mechanism (ADR 0013 §9, `REGISTRY.md`
+ * §Disable semantics): the door stays dispatchable while its plugin is off, so an administrator
+ * turning a plugin off can never lock anybody out of removing what it created (D12). It is a
+ * carve-out from a rule, and an open-ended carve-out is an open-ended hole — so the obligation
+ * both records place on this gate is PUBLICATION: the list is printed, and growth of it is a
+ * line in a gate diff and a question in review rather than a discovery months later.
+ *
+ * Publication alone cannot go RED, so the two things that make the list mean what it says are
+ * asserted beside it:
+ *
+ *   A cleanup door is a REMOVAL door. The verb is the claim — `kill`, `revoke`,
+ *   `deleteContainer` — and the script's verb list is the deliberate half, exactly as S7's
+ *   route allowlist is. `core.terminals` already makes this ruling by hand in a comment
+ *   ("claiming a lease is administration, not tidying up: NOT `cleanup`"); this is that ruling
+ *   mechanized, so the next author cannot widen removal into administration by adding a flag.
+ *
+ *   A cleanup door belongs to a PLUGIN. An engine door publishes `source: "builtin"` and has no
+ *   toggle at all (`builtin` is a named refusal class), so a residual from a disable it can
+ *   never suffer is a contradiction, not a carve-out.
+ */
+const REMOVAL_VERBS: readonly string[] = [
+  "clear",
+  "close",
+  "delete",
+  "discard",
+  "kill",
+  "purge",
+  "remove",
+  "revoke",
+  "unplace",
+];
+
+{
+  const builtins = new Set(
+    composed.roster.filter((entry) => entry.source === "builtin").map((entry) => entry.manifest.id),
+  );
+  const published: string[] = [];
+  const faults: string[] = [];
+  for (const [name, action] of [...composed.actions].sort(([a], [b]) => a.localeCompare(b))) {
+    if (action.def.cleanup !== true) continue;
+    published.push(name);
+    const verb = action.def.name;
+    if (!REMOVAL_VERBS.some((removal) => verb.toLowerCase().startsWith(removal))) {
+      faults.push(
+        `${name} declares cleanup: true but its verb is not removal (${list(REMOVAL_VERBS)})`,
+      );
+    }
+    if (builtins.has(action.plugin.id)) {
+      faults.push(
+        `${name} declares cleanup: true on ${action.plugin.id}, an engine door with no toggle`,
+      );
+    }
+  }
+  check(
+    "S10 residual carve-out",
+    faults.length === 0,
+    faults.length === 0
+      ? `${String(published.length)} cleanup actions survive a disable: ${list(published)}`
+      : list(faults),
   );
 }
 
@@ -1899,6 +2114,18 @@ const actionLog: ActionLogLine[] = [];
  * compiler already does.
  */
 const ACTION_EVT: LogEvent = "action";
+/**
+ * The second one, for the same reason: R10's negative rung needs to know a subscription was
+ * REFUSED rather than merely unmatched, and the plane deliberately sends no refusal frame — a
+ * per-topic answer would make the event plane a permission oracle. The refusal is therefore
+ * only ever observable in the log, which is where the self-description obligation puts it.
+ */
+const SUBSCRIBE_FORBIDDEN_EVT: LogEvent = "session_subscribe_forbidden";
+interface SubscribeRefusal {
+  readonly principal: string;
+  readonly topics: number;
+}
+const subscribeRefusals: SubscribeRefusal[] = [];
 let origin = "";
 
 /** Reads the server's JSONL forever: the ready URL once, then every action it dispatches. */
@@ -1918,7 +2145,15 @@ async function consumeServerLog(): Promise<void> {
       if (!line.startsWith("{")) continue;
       try {
         const record: unknown = JSON.parse(line);
-        if (Reflect.get(record as object, "evt") !== ACTION_EVT) continue;
+        const evt: unknown = Reflect.get(record as object, "evt");
+        if (evt === SUBSCRIBE_FORBIDDEN_EVT) {
+          subscribeRefusals.push({
+            principal: String(Reflect.get(record as object, "principal")),
+            topics: Number(Reflect.get(record as object, "topics")),
+          });
+          continue;
+        }
+        if (evt !== ACTION_EVT) continue;
         actionLog.push({
           name: String(Reflect.get(record as object, "name")),
           outcome: String(Reflect.get(record as object, "outcome")),
@@ -2935,6 +3170,192 @@ try {
         ? `${String(passes)} audits (${String(sweepWidths.length)} widths × ${String(auditRoots.length)} roots) under adversarial content: no undeclared overflow, no clip without ellipsis, no child escapes, no sibling overlap`
         : list(broken),
     );
+  }
+
+  // ─────────────────────────────────────────── R10: the plane is live
+
+  /**
+   * THE EVENT PLANE, END TO END, WITH A STOPWATCH.
+   *
+   * A2 says every capability is reachable identically by a human and an agent, and wave 1
+   * broke it with a timer: a polled surface tells an agent "the world may have changed up to
+   * five seconds ago", so two principals watching one workspace observed two different
+   * instants. Wave 2's claim is that they now observe the same one. That claim is only
+   * falsifiable with THREE real connections and a clock:
+   *
+   *   the BROWSER, whose feeds hold subscriptions and whose sidebar is the UI under test;
+   *   an SDK peer, subscribed to the same node, which is where the FRAME itself is read;
+   *   a third principal, mutating through the HTTP action door — so `actor` names somebody
+   *     neither observer could have confused with itself.
+   *
+   * What makes this more than "the UI updated": the feed's own report seam says HOW it
+   * updated. `reads.event` moving while `reads.timer` stays at zero is the difference between
+   * a subscription and a poll that happened to be fast, and no DOM assertion can tell them
+   * apart. A timer tick anywhere in the window fails this check even if the pixels are right.
+   *
+   * The negative rung is the admission half. Subscribing is a READ-GRANT question answered by
+   * the same authority the resolve door uses, and a collection (`manifold://plugin/<owner>`)
+   * has no container above it — so it is in nobody's subtree, and a container-scoped token
+   * asking for one is refused. It is refused SILENTLY: no refusal frame, because a per-topic
+   * answer would turn the plane into a permission oracle, and no socket close, because the
+   * ask is legal to make. "Received nothing" alone would also be true of a subscription that
+   * merely never matched, so the refusal is read where the plane actually states it — the
+   * structured log.
+   */
+  {
+    const INDEX_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
+    const indexUri = formatManifoldUri(INDEX_TOPIC);
+
+    /* Connection two: an SDK peer that asked for the same node the browser's feed asked for. */
+    const peer = new SessionClient({
+      url: wsUrl,
+      containerId: canvasContainerId,
+      token: ownerKey,
+    });
+    await peer.connect();
+    const heard: ServerEvent[] = [];
+    const releasePeer = peer.subscribe([INDEX_TOPIC], (event) => {
+      heard.push(event);
+    });
+
+    /* Connection three: a scoped token, whose subscription must be refused and stay silent. */
+    const confined = await mint({
+      principal: { name: "axiom-confined", kind: "agent" },
+      caps: ["containers:read", "containers:write"],
+      containerId: canvasContainerId,
+    });
+    const intruder = new SessionClient({
+      url: wsUrl,
+      containerId: canvasContainerId,
+      token: confined.token,
+    });
+    await intruder.connect();
+    const overheard: ServerEvent[] = [];
+    const releaseIntruder = intruder.subscribe([INDEX_TOPIC], (event) => {
+      overheard.push(event);
+    });
+    const refusalsBefore = subscribeRefusals.length;
+
+    /* The mutator: a third principal, so `actor` is somebody's name and not an assumption. */
+    const mutator = await mint({
+      principal: { name: "axiom-mutator", kind: "agent" },
+      caps: ["containers:read", "containers:write"],
+    });
+
+    /* The browser back on a container page, with the index section painted and the feeds up. */
+    await browser.goto(`${origin}/p/${canvasContainerId}`);
+    await until(
+      () => browser!.evaluate<boolean>("window.__manifoldFeeds !== undefined"),
+      20_000,
+      "R10 feed report seam installed",
+    );
+    /*
+      A feed's key is `<resource>|<restartKey>` — a feed partitioned by route is a different
+      feed — so the join is on the head, which is the name the budget table and the feed
+      vocabulary both use.
+    */
+    const FEED_REPORT = `window.__manifoldFeeds().filter((feed) => feed.key.split("|")[0] === ${JSON.stringify(INDEX_RESOURCE)})`;
+    const indexFeed = async (): Promise<PolledFeedReport | null> =>
+      await browser!.evaluate<PolledFeedReport | null>(
+        `${FEED_REPORT}.find((feed) => feed.subscribers > 0) ?? ${FEED_REPORT}[0] ?? null`,
+      );
+    const subscribed = await settles(async () => {
+      const feed = await indexFeed();
+      return feed !== null && feed.mode === "events" && feed.topics.includes(indexUri);
+    }, 20_000);
+    const armed = await indexFeed();
+    check(
+      "R10 the browser subscribes instead of polling",
+      subscribed && armed !== null && armed.intervalMs === null && armed.reads.initial >= 1,
+      armed === null
+        ? `no live ${INDEX_RESOURCE} feed on an open container page`
+        : `mode ${armed.mode}, topics ${list(armed.topics)}, interval ${String(armed.intervalMs)}, reads ${JSON.stringify(armed.reads)}`,
+    );
+
+    const timersBefore = armed?.reads.timer ?? 0;
+    const eventsBefore = armed?.reads.event ?? 0;
+    const name = `axiom-plane-${crypto.randomUUID().slice(0, 8)}`;
+    const nameLiteral = JSON.stringify(name);
+    const painted = `[...document.querySelectorAll('[data-testid="sidebar-list"] .index-item')].some((row) => (row.textContent ?? '').includes(${nameLiteral}))`;
+    check(
+      "R10 the row is not there yet",
+      !(await browser.evaluate<boolean>(painted)),
+      `no sidebar row reads "${name}" before anybody creates it`,
+    );
+
+    const opened = Date.now();
+    const created = ActionOutcomeSchema.parse(
+      await dispatch("core.index.createContainer", { name }, mutator.token),
+    );
+    if (!created.ok) throw new Error(`R10 createContainer refused: ${created.denial.message}`);
+    const createdId = ContainerResponseSchema.parse(created.result).container.id;
+
+    const frameArrived = await settles(() => heard.length > 0, 2_000);
+    const frame = heard[0];
+    const frameRight =
+      frameArrived &&
+      frame !== undefined &&
+      formatManifoldUri(frame.topic) === indexUri &&
+      frame.kind === "container_created" &&
+      frame.actor === mutator.principal.id;
+    check(
+      "R10 the event frame arrives",
+      frameRight && heard.length === 1,
+      frame === undefined
+        ? "an SDK peer subscribed to core.index heard nothing when a container was created"
+        : `${String(heard.length)} frame(s): topic ${formatManifoldUri(frame.topic)}, kind ${frame.kind}, actor ${String(frame.actor)} (mutator is ${mutator.principal.id})`,
+    );
+
+    /*
+      ONE SECOND, and the clock starts at the dispatch rather than at the frame: what A2 owes
+      an operator is the interval between somebody acting and everybody seeing it, not the
+      interval between two pieces of manifold's own plumbing.
+    */
+    const reflected = await settles(() => browser!.evaluate<boolean>(painted), 1_000);
+    const elapsed = Date.now() - opened;
+    const after = await indexFeed();
+    const noTimerTick = after !== null && after.reads.timer === timersBefore;
+    const byEvent = after !== null && after.reads.event > eventsBefore;
+    check(
+      "R10 the UI reflects it inside a second, on an event",
+      reflected && noTimerTick && byEvent,
+      after === null
+        ? "the index feed vanished mid-check"
+        : `painted ${reflected ? "in" : "NOT within"} ${String(elapsed)}ms; reads.event ${String(eventsBefore)} → ${String(after.reads.event)}, reads.timer ${String(timersBefore)} → ${String(after.reads.timer)}`,
+    );
+
+    /*
+      The negative. The scoped socket asked for the same collection and was refused at the
+      subscribe door, so the second mutation reaches it not at all — while the peer that WAS
+      admitted hears it, which is what makes this a refusal rather than a dead plane.
+    */
+    heard.length = 0;
+    const renamed = ActionOutcomeSchema.parse(
+      await dispatch(
+        "core.index.renameContainer",
+        { containerId: createdId, name: `${name}-again` },
+        mutator.token,
+      ),
+    );
+    if (!renamed.ok) throw new Error(`R10 renameContainer refused: ${renamed.denial.message}`);
+    const peerHeardAgain = await settles(() => heard.length > 0, 3_000);
+    const refused = subscribeRefusals
+      .slice(refusalsBefore)
+      .some((refusal) => refusal.principal === confined.principal.id && refusal.topics >= 1);
+    check(
+      "R10 a scoped token is refused a foreign collection, silently",
+      overheard.length === 0 && refused && peerHeardAgain && intruder.status === "open",
+      overheard.length > 0
+        ? `a token scoped to one container heard ${String(overheard.length)} event(s) on ${indexUri}`
+        : refused
+          ? `refused at subscribe and logged; socket still ${intruder.status}, and the admitted peer heard ${String(heard.length)} frame(s)`
+          : `no ${SUBSCRIBE_FORBIDDEN_EVT} for ${confined.principal.id}: the subscription may have been accepted and merely unmatched`,
+    );
+
+    releasePeer();
+    releaseIntruder();
+    peer.close();
+    intruder.close();
   }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

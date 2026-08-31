@@ -28,7 +28,32 @@ export const terminalsManifest: PluginManifest = {
   title: "Terminals",
   description: "Owns terminal creation policy, naming, killing, and the terminal indexes.",
   capabilities: ["containers:read", "terminals:spawn", "terminals:write"],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    /*
+      A TERMINAL'S LIFE, declared here and emitted by the FLOOR (ADR 0012 §1: the engine emits,
+      the plugin declares). Every one of these is a fact only the broker holds — a PTY that
+      came up, stopped on its own, was renamed, was rebound into another composition, or was
+      deliberately destroyed — and the broker may not name a plugin, so it emits under whichever
+      plugin `assembly.ts` says owns terminal vocabulary. This manifest is that owner.
+
+      Four of the five are addressed to the terminal's own node. `terminal_killed` is addressed
+      to its former HOME CONTAINER, because a killed terminal's address stops resolving the
+      instant its row is gone: it is the same distinction between KILLED and EXITED that the
+      broker's own predicate is built on — an exit leaves a node standing to be news about, a
+      kill does not.
+     */
+    events: [
+      { id: "terminal_opened", title: "Terminal opened" },
+      { id: "terminal_exited", title: "Terminal exited" },
+      { id: "terminal_renamed", title: "Terminal renamed" },
+      { id: "terminal_bound", title: "Terminal rehomed" },
+      { id: "terminal_killed", title: "Terminal killed" },
+    ],
+  },
 };
 
 /** A terminal's geometry, with the wire's own bounds: the door is asked the whole question. */

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { EventKindSchema } from "./events.ts";
 import { DEFAULT_ELEMENT_PLACEMENT_TRAITS, PlacementTraitsSchema } from "./placement.ts";
 
 /**
@@ -89,9 +90,19 @@ const ContributesSchema = z.strictObject({
     .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
     .max(8)
     .default([]),
-  /** reserved: event plane, wave 2 (ADR 0012); no wave-1 consumer */
+  /**
+   * THE EVENT PLANE's vocabulary half (ADR 0012): the kinds this plugin ORIGINATES. Declaring
+   * one claims the word globally — assembly refuses a second claimant (D5) — and it is the
+   * only way an emission is legal: the engine emits at its doors, and an emission whose kind
+   * this list does not hold is refused by name rather than fanned out. So the mechanism is
+   * closed while the vocabulary stays open, which is the whole shape of the plane.
+   *
+   * `id` is an {@link EventKindSchema}, not a `LocalNameSchema`: a kind is snake_case because
+   * the durable history and `terminal_event.kind` already spell it that way, and one concept
+   * gets one spelling on every plane.
+   */
   events: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
+    .array(z.strictObject({ id: EventKindSchema, title: TitleSchema }))
     .max(16)
     .default([]),
 });

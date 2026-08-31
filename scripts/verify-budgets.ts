@@ -20,10 +20,19 @@
  *
  * Shape: real server, real agent, real chromium, a real canvas holding a live terminal, notes
  * and strokes. Boot, settle, then watch. Self-contained; env: MANIFOLD_CHROMIUM.
+ *
+ * WAVE 2 (ADR 0012). The `network` ceilings are all ZERO now: the five feeds subscribe on the
+ * session channel instead of running timers, so a steady workspace asks nothing. A table of
+ * zeroes is the easiest table in the world to pass by breaking the feature, so the zero is not
+ * measured alone — before the window this gate reads the feeds' own report seam and requires
+ * each declared row to have a LIVE, subscription-backed feed with an initial read behind it and
+ * no armed timer. A dead feed and a subscribed one are both silent on the network; only the feed
+ * can tell them apart, so it is asked.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PolledFeedReport as FeedReport } from "../packages/plugin/src/polled-resource.ts";
 import { ActionOutcomeSchema, type SceneElement } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
@@ -31,9 +40,16 @@ import { Browser, sleep, until } from "./cdp.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 
-/** One declared ceiling. `resource` is a poll key or an endpoint path; `perMin` is the cap. */
+/**
+ * One declared ceiling. `resource` is what the NETWORK layer sees — an action name or an
+ * endpoint path — and `feed` is what the browser calls the same collection in the feed
+ * vocabulary (`packages/plugin/src/polled-resource.ts`). The two spellings differ for exactly
+ * one row (`/api/attendance` is fetched by the `attendance` feed), which is why the join is
+ * declared in the registry rather than guessed from the string.
+ */
 interface NetworkBudget {
   readonly resource: string;
+  readonly feed: string;
   readonly perMin: number;
   readonly why: string;
 }
@@ -222,6 +238,23 @@ try {
     "server health",
   );
 
+  /*
+    The canvas under measurement holds a LIVE terminal, and a terminal needs a machine. The
+    spawned agent dials in a moment after the server answers `healthz`, so opening one straight
+    after the health probe is a race the gate lost intermittently ("no unambiguous online
+    machine") — the roster is the thing to wait on, not the port.
+  */
+  await until(
+    async () => {
+      const { machines } = (await ownerAction("core.machines.list", {})) as {
+        machines: readonly { online: boolean }[];
+      };
+      return machines.some((machine) => machine.online);
+    },
+    30_000,
+    "local agent online",
+  );
+
   const containerId = await seedCanvas();
 
   browser = new Browser();
@@ -282,6 +315,12 @@ try {
   browser.on("Network.webSocketFrameSent", countFrame);
 
   await browser.goto(`${origin}/#key=${ownerKey}`);
+  /*
+    The feed report seam rides the same opt-in flag as the canvas probe. Set BEFORE the identity
+    gate is crossed, so the flag is already in place when the shell mounts and the first feed is
+    created — the seam is installed once, by whichever feed comes first.
+  */
+  await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   await browser.typeInto('input[name="name"], input', "budget");
   await browser.clickTestId("identity-enter");
   await browser.goto(`${origin}/p/${encodeURIComponent(containerId)}`);
@@ -292,9 +331,76 @@ try {
     30_000,
     "canvas nodes painted",
   );
-  // Settle: boot fetches, the first poll of every feed, and the terminal's attach and
-  // snapshot all land here. What the budget governs is the STEADY state after that.
+  /*
+    Settle: boot fetches, each feed's ONE initial read (plus its catch-up read if the socket
+    reached open after the mount read), and the terminal's attach and snapshot all land here.
+    What the budget governs is the STEADY state after that, which is now zero.
+  */
   await sleep(8_000);
+
+  /*
+    THE ZERO'S POSITIVE CONTROL, taken before the window rather than after: a feed that died
+    reads zero exactly like a feed that subscribed, so the table's collapse to zero is only
+    meaningful if every declared row still has a live feed behind it. `mode: "events"` and a
+    null interval are the same statement said twice on purpose — the first is the feed's own
+    verdict, the second is the absence of the machinery that would make it false.
+  */
+  /*
+    The seam's absence ANSWERS instead of throwing. A pre-swap bundle has no feed report at
+    all, and a gate that aborts there reports one opaque timeout instead of the five rows and
+    the five rates that say what actually regressed.
+  */
+  const seamDeadline = Date.now() + 20_000;
+  let seam = false;
+  while (!seam && Date.now() < seamDeadline) {
+    seam = await page.evaluate<boolean>("window.__manifoldFeeds !== undefined");
+    if (!seam) await sleep(250);
+  }
+  const feedReport = async (): Promise<readonly FeedReport[]> =>
+    seam ? await page.evaluate<readonly FeedReport[]>("window.__manifoldFeeds()") : [];
+  /*
+    A feed's key is `<resource>|<restartKey>`, because a feed partitioned by route is a
+    different feed (the attendance answer is per container). The budget names the RESOURCE, so
+    the join is on the head of the key, and where a resource has several partitions the one
+    with subscribers is the one under measurement.
+  */
+  const resourceOf = (key: string): string => key.split("|")[0] ?? key;
+  const pick = (report: readonly FeedReport[], resource: string): FeedReport | undefined => {
+    const partitions = report.filter((feed) => resourceOf(feed.key) === resource);
+    return partitions.find((feed) => feed.subscribers > 0) ?? partitions[0];
+  };
+  const settled = await feedReport();
+  const timersAtStart = new Map(settled.map((feed) => [feed.key, feed.reads.timer]));
+  for (const row of budgets.network) {
+    const feed = pick(settled, row.feed);
+    const subscribed =
+      feed !== undefined &&
+      feed.mode === "events" &&
+      feed.live &&
+      feed.intervalMs === null &&
+      feed.topics.length > 0 &&
+      feed.reads.initial >= 1;
+    check(
+      `budget ${row.resource} is subscribed`,
+      subscribed,
+      feed === undefined
+        ? seam
+          ? `no live feed named "${row.feed}" on an open canvas — a zero row with no feed behind it is a corpse, not a budget`
+          : "the page installs no feed report seam: this tree's feeds are not subscription-backed"
+        : `mode ${feed.mode}, live ${String(feed.live)}, ${String(feed.subscribers)} subscriber(s), topics [${feed.topics.join(", ")}], interval ${String(feed.intervalMs)}, reads ${JSON.stringify(feed.reads)}`,
+    );
+  }
+
+  await browser.send("Performance.enable", {});
+  const scriptSeconds = async (): Promise<number> => {
+    const frame = await page.send("Performance.getMetrics", {});
+    const metrics = (frame.result?.["metrics"] ?? []) as readonly {
+      name?: string;
+      value?: number;
+    }[];
+    return metrics.find((metric) => metric.name === "ScriptDuration")?.value ?? 0;
+  };
+  const scriptAtStart = await scriptSeconds();
 
   const WINDOW_MS = 60_000;
   await browser.evaluate(
@@ -368,9 +474,55 @@ try {
   );
 
   /*
-    A backgrounded tab spends NOTHING. This is the one budget with a hard zero, because a
-    workspace nobody is looking at has no reason to ask anything — and because "we poll" is a
-    ratified interim only for as long as it stops when the operator looks away.
+    THE WAVE'S CLAIM, stated by the feed rather than inferred from a rate: no timer RAN. Zero
+    requests could also be a timer that fired and was answered from a cache; the feed counts
+    its reads by reason, so a tick is visible even when it costs nothing on the wire. A timer
+    beside a live subscription is RED at any rate the table would otherwise admit.
+  */
+  const afterWindow = await feedReport();
+  const ticked: string[] = [];
+  for (const row of budgets.network) {
+    const feed = pick(afterWindow, row.feed);
+    if (feed === undefined) {
+      ticked.push(seam ? `${row.feed} vanished during the window` : `${row.feed} has no feed`);
+      continue;
+    }
+    const before = timersAtStart.get(feed.key) ?? 0;
+    if (feed.reads.timer !== before) {
+      ticked.push(
+        `${row.feed} timer reads ${String(before)} → ${String(feed.reads.timer)} (mode ${feed.mode}, interval ${String(feed.intervalMs)})`,
+      );
+    }
+  }
+  check(
+    "budget no timer ticked",
+    ticked.length === 0,
+    ticked.length === 0
+      ? `${String(budgets.network.length)} subscription-backed feeds, not one timer read in ${(elapsedMin * 60).toFixed(0)}s`
+      : ticked.join(", "),
+  );
+
+  /*
+    Script time, which the table has declared since it was written and nothing measured until
+    now. `ScriptDuration` is cumulative seconds of JS execution as the browser accounts for it,
+    so the window's spend is a difference — the one number that catches a busy loop cheap enough
+    to miss every long-task threshold.
+  */
+  const scriptMsPer30s =
+    ((await scriptSeconds()) - scriptAtStart) * 1000 * (30 / (elapsedMin * 60));
+  check(
+    "budget idle script time",
+    scriptMsPer30s <= budgets.idleCanvas.scriptMsPer30s,
+    `${scriptMsPer30s.toFixed(0)}ms of script per 30s against a ceiling of ${String(budgets.idleCanvas.scriptMsPer30s)}ms`,
+  );
+
+  /*
+    A backgrounded tab spends NOTHING, and always did. The rule used to rest on polling being a
+    ratified interim only for as long as it stopped when the operator looked away; with the
+    cadence demoted to a reconnect-gap fallback it rests on the weaker and more durable thing —
+    a tab nobody is looking at asks nothing. Last, deliberately: returning it to visible fires
+    one catch-up read per feed, so every report above is taken before this leg touches the
+    lifecycle.
   */
   observations.length = 0;
   watching = true;

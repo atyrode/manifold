@@ -19,6 +19,7 @@ import {
   TokenGrantSchema,
   placementContainerFor,
   placementRefusalRule,
+  topicMatches,
   type ActionDenial,
   type ActionOutcome,
   type BootstrapPrincipalRequest,
@@ -31,6 +32,7 @@ import {
   type Attendance,
   type ContainerTerminalSummary,
   type IndexEntry,
+  type ManifoldRef,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementDestination,
@@ -41,6 +43,7 @@ import {
   type Principal,
   type RevokeResult,
   type SceneElement,
+  type ServerEvent,
   type ServerMessageBody,
   type TerminalInfo,
   type TerminalSummary,
@@ -144,6 +147,17 @@ export interface SessionEvents {
   plugins_changed: (roster: PluginRoster) => void;
 }
 
+/**
+ * One live subscription on this handle: the nodes it named, the handler that hears them, and
+ * the pool-level refcount release — null while this handle holds no channel, because a
+ * subscription outlives the sockets that carry it while a refcount cannot.
+ */
+interface TopicSubscription {
+  readonly topics: readonly ManifoldRef[];
+  readonly handler: (event: ServerEvent) => void;
+  release: (() => void) | null;
+}
+
 type EventKey = ChannelFrame["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
 
@@ -223,6 +237,12 @@ export class SessionClient {
    * subscriber. A roster is workspace state, so the newest one is the whole truth.
    */
   private pluginRoster: PluginRoster | null = null;
+  /**
+   * Live event subscriptions. A Set rather than a keyed table: two callers may name the same
+   * node for different reasons, and each holds its own release — so identity is the record
+   * itself, never the topics it happens to share.
+   */
+  private readonly subscriptions = new Set<TopicSubscription>();
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
   private hasLocalEdits = false;
@@ -368,6 +388,12 @@ export class SessionClient {
     this.closeError = null;
     const channel = this.channel;
     this.channel = null;
+    // Subscriptions are refcounted on the SOCKET, which may outlive this room: dropping this
+    // handle's share is what keeps a sibling's subscription alive and this one's from leaking.
+    for (const record of this.subscriptions) {
+      record.release?.();
+      record.release = null;
+    }
     // Releasing is the whole story: it leaves this room and, when this was the tab's last
     // room, closes the socket — a close IS a leave, so no extra frame is spent.
     channel?.release();
@@ -418,6 +444,7 @@ export class SessionClient {
             this.setStatus("reconnecting");
             return;
           }
+          this.forgetSubscriptions();
           this.channel = null;
           this.closeError = new Error(
             reason.trim() === ""
@@ -427,28 +454,96 @@ export class SessionClient {
           this.setStatus("closed");
         },
         transportClosed: (error) => {
+          this.forgetSubscriptions();
           this.channel = null;
           this.closeError = error;
           this.setStatus("closed");
         },
       },
     );
+    // A handle may declare interest before it ever holds a channel, and it holds a NEW one
+    // after a terminal close. Either way the declarations go out here, once, against the
+    // connection that will carry them; the pool re-declares them on every redial of that
+    // socket, so a reconnect is not this layer's business.
+    for (const record of this.subscriptions) record.release = this.channel.subscribe(record.topics);
+  }
+
+  /**
+   * Drops this handle's refcounts WITHOUT withdrawing them on the wire: the connection they
+   * were counted on is gone, so there is nothing to tell and nobody to tell it. The
+   * subscriptions themselves survive — `attach` re-declares them on the next socket, which is
+   * what makes a subscription outlive a transport it never knew about.
+   */
+  private forgetSubscriptions(): void {
+    for (const record of this.subscriptions) record.release = null;
   }
 
   // ------------------------------------------------------------------ incoming
 
   /**
    * A frame addressed to the SOCKET this room rides. It never touches epoch/rev, never
-   * queues, and never reaches `message`: the roster describes the workspace, not the room,
-   * and every handle on the connection hears the same one.
-   *
-   * `plugins` is the only connection-level category v14 defines, so the body is read
-   * directly; a second category makes `body.attendance` a type error, which is exactly the
-   * prompt to fan the categories out here.
+   * queues, and never reaches `message`: a roster describes the workspace and an event
+   * describes a node, neither of which is this room's traffic, and every handle on the
+   * connection hears the same one.
    */
   private handleConnection(body: ConnectionFrame): void {
-    this.pluginRoster = body.roster;
-    this.emit("plugins_changed", body.roster);
+    switch (body.type) {
+      case "plugins":
+        this.pluginRoster = body.roster;
+        this.emit("plugins_changed", body.roster);
+        return;
+      case "event":
+        this.deliverEvent(body);
+        return;
+      default: {
+        const exhaustive: never = body;
+        return exhaustive;
+      }
+    }
+  }
+
+  /**
+   * Hands one event to the subscriptions that named its node. The match is
+   * `topicMatches` — the protocol's own relation, the same one the server fans out by — so a
+   * frame this socket was sent can never fail to find the handler that asked for it.
+   *
+   * A subscription that named several topics still hears one delivery per event: a handler
+   * asked about a set of nodes, not about a set of matches.
+   */
+  private deliverEvent(event: ServerEvent): void {
+    for (const record of [...this.subscriptions]) {
+      if (!record.topics.some((topic) => topicMatches(topic, event.topic))) continue;
+      try {
+        record.handler(event);
+      } catch (error) {
+        console.error("evt=terminal_listener_failed", "event", error);
+      }
+    }
+  }
+
+  /**
+   * THE event-plane door: declares interest in a set of nodes and answers the release.
+   *
+   * Topics are REFS, never `manifold://` strings — the address is compiler-joined, which is
+   * why the topic namespace needs no registry (`REGISTRY.md` §Runtime-joined namespaces). What
+   * arrives is a notification: a subscriber that needs the new state READS it, through the
+   * same door a fresh client uses, because there is no offset to resume from and nothing is
+   * replayed. That is the whole contract, and it is why a feed can trade its timer for a
+   * subscription without changing what it does when it wakes up.
+   *
+   * The wire declaration is refcounted onto the SOCKET one layer down, so two panels watching
+   * one container cost one `subscribe`, and neither can cancel the other by releasing first.
+   * Subscribing before `connect()` is legal: the declaration goes out with the join.
+   */
+  subscribe(topics: readonly ManifoldRef[], handler: (event: ServerEvent) => void): () => void {
+    const record: TopicSubscription = { topics: [...topics], handler, release: null };
+    this.subscriptions.add(record);
+    if (this.channel !== null) record.release = this.channel.subscribe(record.topics);
+    return () => {
+      if (!this.subscriptions.delete(record)) return;
+      record.release?.();
+      record.release = null;
+    };
   }
 
   /**

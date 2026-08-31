@@ -9,6 +9,7 @@ import {
   type Assembly,
   type AssemblyDelta,
   type AssemblyEnv,
+  type EmitEvent,
   type LifecycleCtx,
   type PluginDef,
   type PluginMigration,
@@ -20,6 +21,9 @@ import type {
   ActionOutcome,
   BootstrapPrincipalRequest,
   Cap,
+  EventKind,
+  EventPayload,
+  ManifoldRef,
   MintTokenRequest,
   PluginLifecycleState,
   PluginPurgeResult,
@@ -31,6 +35,7 @@ import type {
 } from "@manifold/protocol";
 import { ServiceError } from "./auth.ts";
 import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
+import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
@@ -233,6 +238,21 @@ export interface ActionCtx {
    * creates.
    */
   newId(): string;
+  /**
+   * ONE NOTIFICATION, STAGED. The door this handler IS commits the change; this records that
+   * it happened, on the `manifold://` node it happened to, under one of the kinds this
+   * plugin's manifest declared (`contributes.events`).
+   *
+   * Staged, not sent: the buffer is flushed only when the dispatch resolves `{ ok: true }`,
+   * so a handler that mutates and then refuses — or throws, or fails its own result schema —
+   * publishes nothing. That is ADR 0012's "an event is emitted at the commit point" made
+   * mechanical instead of left to handler discipline, and it is why a handler may call this
+   * before it knows its own verdict.
+   *
+   * A kind this plugin did not declare is REFUSED at the hub (logged, dropped) rather than
+   * fanned out: the declared vocabulary would be unfalsifiable at runtime otherwise.
+   */
+  readonly emit: EmitEvent;
 }
 
 /**
@@ -336,6 +356,7 @@ export class PluginHost {
     private readonly machines: MachineLiveness,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
+    private readonly events: EventHub,
     options: { readonly lifecycleTimeoutMs?: number } = {},
   ) {
     this.defs = [...ENGINE_BUILTIN_DEFS, ...defs];
@@ -532,6 +553,25 @@ export class PluginHost {
     };
     await this.fanOut(delta, wasEnabled);
     this.publish();
+    /*
+      THE COMMIT POINT, announced. Not staged like a handler's emission: this method IS the
+      commit, it has already returned every refusal it can, and it is reached both through
+      `core.plugins.setEnabled` and directly by an embedder — so the emission belongs to the
+      transition rather than to one of its callers (invariant 14: one door onto "the roster
+      changed").
+
+      The topic is `engine.plugins`' OWN node, not the toggled plugin's: a plugin may not be
+      the subject of another plugin's emission (`emitterMayEmit`), and enablement is the
+      engine's ledger about a plugin rather than the plugin's own news. Which plugin moved is
+      the payload.
+     */
+    this.events.emit(
+      enginePluginsManifest.id,
+      { kind: "plugin", pluginId: enginePluginsManifest.id },
+      enabled ? "plugin_enabled" : "plugin_disabled",
+      changedBy,
+      { plugin: id },
+    );
     return { ok: true };
   }
 
@@ -577,6 +617,14 @@ export class PluginHost {
       rows: removedRows,
       types: releasedTypes,
     });
+    // Same commit point, same ledger node, same reason as the enablement pair above.
+    this.events.emit(
+      enginePluginsManifest.id,
+      { kind: "plugin", pluginId: enginePluginsManifest.id },
+      "plugin_purged",
+      purgedBy,
+      { plugin: id, rows: removedRows, types: releasedTypes },
+    );
     return {
       id,
       removed: {
@@ -592,6 +640,16 @@ export class PluginHost {
       pluginId,
       storage: this.storage(pluginId),
       now: () => this.runtime.now(),
+      /*
+        A lifecycle hook's emission is NOT staged: the transition that called the hook has
+        already committed (ADR 0013 §2 — a hook has no vote), so there is no verdict left to
+        withhold it for. `actor` is null because a hook runs on the engine's behalf: the
+        principal who flipped the toggle is the actor of the `plugin_enabled` event above, not
+        of whatever the plugin chooses to announce about its own state afterwards.
+       */
+      emit: (ref, kind, payload) => {
+        this.events.emit(pluginId, ref, kind, null, payload ?? {});
+      },
     };
   }
 
@@ -754,6 +812,17 @@ export class PluginHost {
       // caller's problem: it must be reported as a server failure, not as a denial.
       throw new Error(`action "${fullName}" has no server handler`);
     }
+    /*
+      THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
+      this dispatch has answered `{ ok: true }` — so a handler that mutates and then refuses,
+      throws, or fails its own result schema publishes nothing, and "refusals are not events"
+      is a property of this function rather than a convention every handler has to remember.
+
+      It is also what makes ONE EMISSION PER COMMIT checkable: whatever a handler stages, the
+      flush below runs exactly once per successful dispatch, so a gesture that commits once
+      (a drag arriving as one `core.space.place`) can produce one event and not one per frame.
+     */
+    const staged: { ref: ManifoldRef; kind: EventKind; payload: EventPayload }[] = [];
     const ctx: ActionCtx = {
       principal: auth.principal,
       auth: {
@@ -787,6 +856,9 @@ export class PluginHost {
       storage: this.storage(pluginId),
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
+      emit: (ref, kind, payload) => {
+        staged.push({ ref, kind, payload: payload ?? {} });
+      },
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     const produced = await invoke(ctx, parsed.data);
@@ -798,7 +870,13 @@ export class PluginHost {
     }
     // A result that fails its published schema is a broken door, not a refused request:
     // the roster promised this shape to every reader, so the failure belongs in the logs.
-    return { ok: true, result: entry.def.result.parse(produced) };
+    // It runs BEFORE the flush for the same reason the flush exists: a door that cannot
+    // publish its own answer has not committed anything worth announcing.
+    const result = entry.def.result.parse(produced);
+    for (const event of staged) {
+      this.events.emit(pluginId, event.ref, event.kind, auth.principal.id, event.payload);
+    }
+    return { ok: true, result };
   }
 
   enabled(id: string): boolean {

@@ -6,12 +6,14 @@ import type {
   Attendance,
   ContainerTerminalSummary,
   IndexEntry,
+  ManifoldRef,
   PlaceResponse,
   PlacementDenial,
   PlacementDestination,
   PlacementRef,
   Principal,
   PluginRoster,
+  ServerEvent,
   TerminalSummary,
 } from "@manifold/protocol";
 import type { ScenePatch, Y } from "@manifold/scene";
@@ -25,6 +27,15 @@ import type { ScenePatch, Y } from "@manifold/scene";
 export type PlaceOutcome =
   | { readonly ok: true; readonly result: PlaceResponse }
   | { readonly ok: false; readonly denial: PlacementDenial };
+
+/**
+ * How live the session channel is, restated over the SDK's own five states for the same
+ * reason every other member of {@link SessionHandle} is restated: the engine may not import
+ * the SDK. It exists on this ref because the EVENT plane has a liveness question the other
+ * doors do not — a subscription only delivers while a socket is up, so a consumer that traded
+ * its timer for one has to know when the trade is off (ADR 0012 §5: catch-up is reading state).
+ */
+export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
 /**
  * The terminal ref a plugin is handed. It is deliberately the SDK's own ref described
@@ -72,6 +83,18 @@ export interface SessionHandle {
    * every MOVE of a leaf's occupant goes through `place`.
    */
   removeContainerTile(containerId: string, tileId: string): Promise<void>;
+  /**
+   * THE event-plane door (ADR 0012). Declares interest in a set of NODES and answers the
+   * release; the handler is a notification, never a payload to apply — a consumer that needs
+   * the new state reads it through the door above, which is what makes the plane free of
+   * queue semantics. Subscribing before the socket is open is legal: the declaration goes out
+   * with the join, and it is re-declared after a reconnect.
+   */
+  subscribe(topics: readonly ManifoldRef[], handler: (event: ServerEvent) => void): () => void;
+  /** Whether the channel that carries subscriptions is up right now. */
+  readonly status: SessionStatus;
+  /** Transitions of {@link SessionHandle.status}; returns the release. */
+  on(event: "status", fn: (status: SessionStatus) => void): () => void;
 }
 
 /**
@@ -128,6 +151,32 @@ export interface AssemblyFacet {
 }
 
 /**
+ * WHICH NODE each workspace-wide feed is addressed by (ADR 0012). The four collections the
+ * sidebar reads — the index, the terminal listing, the attendance roster, the machine
+ * fleet — are news about a COLLECTION, not about any room, so each is one subscription on
+ * the owning plugin's node rather than one per container.
+ *
+ * The members are CONCEPTS, exactly like the server's `FloorEventOwners`, and for the same
+ * reason: a topic is `manifold://plugin/<owner>`, so spelling one is naming a plugin, and
+ * the only file in `packages/web/src` allowed to do that is its `assembly.ts` (AXIOMS.md
+ * §Foundation, neutrality criterion; `verify:axioms` S2). The floor shell and the sections
+ * both read the answer from here, so swapping a stranger's terminals plugin in is one line
+ * in one file and no consumer notices.
+ */
+export interface FeedTopics {
+  /**
+   * Each member is every node that MOVES that concept's reading — not only its owner's:
+   * the index and terminal readings change when a PLACEMENT commits (a compose births a
+   * container, an unplace re-flags a terminal), so those lists carry the spatial door's
+   * node beside the owner's. A feed subscribes to the whole list.
+   */
+  readonly index: readonly ManifoldRef[];
+  readonly terminals: readonly ManifoldRef[];
+  readonly attendance: readonly ManifoldRef[];
+  readonly machines: readonly ManifoldRef[];
+}
+
+/**
  * Everything a plugin may touch outside itself, all of it addressed: talk to the server
  * (`client`), send the viewer somewhere by `manifold://` URI (`navigate`), move the mounted
  * container's viewport (`viewport`), author into it (`authoring`), and read the assembly
@@ -161,6 +210,11 @@ export interface HostServices {
   readonly viewport: ViewportHandle | null;
   readonly authoring: AuthoringHandle | null;
   readonly assembly: AssemblyFacet;
+  /**
+   * The nodes the shared feeds subscribe to. Handed down rather than spelled here: see
+   * {@link FeedTopics}.
+   */
+  readonly topics: FeedTopics;
 }
 
 /** A contributed panel: a tile-ref leaf, including the workspace shell's own two. */

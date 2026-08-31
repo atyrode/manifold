@@ -744,17 +744,26 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v16 RESETS the acceptance set, because the agent wire itself moved", () => {
+  test("v17 ADDS to the acceptance set, because the agent wire did not move", () => {
     /*
-      The verdict a bump owes: v15 -> v16 is the lexicon cut, and it renamed the MACHINE
-      wire — `sessionId` became `terminalId` on every agent frame, `hello.sessions` became
-      `hello.terminals`, and the injected PTY environment carries `MANIFOLD_CONTAINER`. A
-      v15 agent can neither be understood nor understand this server, so the set is reset
-      to `{16}` and the upgrade is a coordinated fleet restart. Every earlier bump left the
-      agent wire byte-identical (or additive-optional) and therefore ADDED; this one is the
-      first that could not.
+      The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
+      the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
+      `hello.sessions` became `hello.terminals` — so a v15 agent could neither be understood
+      nor understand this server, and the upgrade was a coordinated fleet restart.
+
+      v16 -> v17 is the event plane, and it is the other case. Three connection-level SESSION
+      frames arrive (`subscribe`, `unsubscribe`, `event`); `AgentMessage` and
+      `ServerToAgentMessage` gained, lost and renamed nothing, and an agent sees neither a
+      session frame nor a manifest. So the invariant's first clause applies verbatim — a bump
+      that leaves the agent wire identical ADDS — and a v16 agent keeps its terminals across
+      this deploy instead of being locked out by a version check for a change it cannot see.
+
+      Both halves are asserted: the running version must be accepted (or every agent is
+      refused), and the PREDECESSOR must still be accepted (or this is a reset wearing an
+      additive bump's clothes, and somebody owes the fleet a restart).
     */
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
-    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION]);
+    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
+    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION - 1, PROTOCOL_VERSION]);
   });
 });

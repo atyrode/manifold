@@ -1,3 +1,4 @@
+import type { Assembly } from "@manifold/plugin";
 import {
   ServerMessageBodySchema,
   ServerMessageSchema,
@@ -9,9 +10,10 @@ import {
   type TileEdge,
   type TileRef,
 } from "@manifold/protocol";
-import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
+import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
+import { EventHub } from "../src/event-hub.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import {
   PlaceExecutor,
@@ -271,6 +273,28 @@ export function testStore(): ServerStore {
 }
 
 /**
+ * The real event plane, in a test — for the same reason `testPluginHost` assembles the real
+ * defs: a hub validating emissions against a hand-written vocabulary would accept kinds the
+ * production assembly refuses by name.
+ */
+export function testEventHub(
+  store: ServerStore,
+  auth: AuthService,
+  broker: TerminalBroker,
+  assembly: () => Assembly,
+  runtime: RuntimeDeps,
+  logger: Logger = silentLogger,
+): EventHub {
+  return new EventHub(
+    { assembly, terminals: broker, owners: FLOOR_EVENT_OWNERS },
+    auth,
+    store,
+    runtime,
+    logger,
+  );
+}
+
+/**
  * The real assembly, in a test. Tests assemble the SAME defs production does — a fixture
  * with a hand-written plugin list would let the action door pass here and refuse in the
  * server, which is exactly the divergence the registry exists to prevent.
@@ -287,13 +311,20 @@ export function testPluginHost(
     readonly machines?: MachineLiveness;
     /** A sink, for cases that assert what a dispatch DOES and does not record. */
     readonly logger?: Logger;
+    /**
+     * The event plane. Supplied when a test drives subscriptions itself; otherwise one is
+     * built here and installed on the broker and the rooms exactly as `main.ts` does, so a
+     * fixture that never mentions events still exercises the production emission path.
+     */
+    readonly events?: EventHub;
   } = {},
 ): PluginHost {
   /*
     The executor and the host are mutually dependent — the executor resolves legality against
     the live assembly, and an assembled action drives the executor — which is exactly what
     the roster THUNK exists for. Resolving it lazily through the host reproduces the
-    production wiring instead of freezing a roster a reassembly would invalidate.
+    production wiring instead of freezing a roster a reassembly would invalidate. The hub
+    reads the assembly the same way and for the same reason.
   */
   let host: PluginHost | null = null;
   const placement = new PlaceExecutor(
@@ -304,6 +335,19 @@ export function testPluginHost(
     assemblyElementTraits(() => host?.roster() ?? []),
     assemblyItemNouns(() => host?.roster() ?? []),
   );
+  const events =
+    options.events ??
+    testEventHub(
+      store,
+      auth,
+      broker,
+      () => {
+        if (host === null) throw new Error("the event plane read the assembly before the host");
+        return host.assembly();
+      },
+      runtime,
+      options.logger ?? silentLogger,
+    );
   host = new PluginHost(
     SERVER_PLUGIN_DEFS,
     store,
@@ -314,7 +358,12 @@ export function testPluginHost(
     options.machines ?? { isOnline: () => false },
     runtime,
     options.logger ?? silentLogger,
+    events,
     options,
   );
+  if (options.events === undefined) {
+    broker.setEvents(events);
+    rooms.setEvents(events);
+  }
   return host;
 }

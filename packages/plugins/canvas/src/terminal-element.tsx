@@ -42,10 +42,12 @@ export interface CanvasContextValue {
   /** Renames the terminal behind an element from its titlebar title. */
   readonly onRenameTerminal: (terminalId: string, name: string) => void;
   /**
-   * Drops an element from this canvas without touching what it points at: the
-   * portal portal's minimize, which puts a shared view away rather than ending it.
+   * Puts a reference away: the element leaves this canvas and what it points at is
+   * untouched — the portal's minimize. It is a PLACEMENT (`-> unplaced`), never a document
+   * delete, because removing the last reference to a container is what makes its terminal
+   * unplaced and every workspace-wide reading is derived from that graph.
    */
-  readonly removeElement: (elementId: string) => void;
+  readonly unplaceElement: (elementId: string) => void;
   /**
    * Deletes the container a portal points at AND the portal onto it — the view is
    * gone, so a portal left behind would point at nothing.

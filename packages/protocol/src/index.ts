@@ -8,6 +8,18 @@ export { reconnectDelayMs } from "./backoff.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
 export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";
 export {
+  EVENT_KIND_PATTERN,
+  EventKindSchema,
+  EventPayloadSchema,
+  MAX_EVENT_KIND_LENGTH,
+  MAX_SUBSCRIBE_TOPICS,
+  MAX_SUBSCRIPTIONS_PER_CONNECTION,
+  eventVocabulary,
+  topicMatches,
+  type EventKind,
+  type EventPayload,
+} from "./events.ts";
+export {
   HEX_COLOR,
   MAX_DOC_UPDATE_BYTES,
   MAX_ELEMENT_PAYLOAD_KEYS,
@@ -22,6 +34,7 @@ export {
   SceneElementPayloadSchema,
   SceneElementPayloadValueSchema,
   SceneElementSchema,
+  boundedPayloadSchema,
   compareElements,
   elementNumber,
   elementNumbers,
@@ -194,6 +207,7 @@ export {
   CHANNEL_ID_PATTERN,
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
+  CLIENT_CONNECTION_BODIES,
   CONNECTION_BODIES,
   CONNECTION_LEVEL_MESSAGE_TYPES,
   ChannelIdSchema,
@@ -211,6 +225,7 @@ export {
   type ClientMessageBody,
   type ErrorCode,
   type Gesture,
+  type ServerEvent,
   type ServerGesture,
   type ServerMessage,
   type ServerMessageBody,

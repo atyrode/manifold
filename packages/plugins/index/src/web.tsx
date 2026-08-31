@@ -78,11 +78,13 @@ import { useHeadlessTree } from "./use-headless-tree.ts";
  * too. What used to be 900 lines fused into the shell is now a plugin the shell only knows
  * the ORDER of.
  *
- * The index has no event channel yet, so it polls; when the event plane lands (wave 2) the
- * four `usePolledResource` calls below become four subscriptions and nothing else moves.
+ * The index reads four collections, and each one is a SUBSCRIPTION on the collection's own
+ * node (ADR 0012, wave 2): it reads once at mount and then only when an event says the world
+ * moved. The topics arrive on `host.topics` because a `manifold://plugin/<id>` topic names a
+ * plugin, and a plugin may not name another one.
  */
 
-/** Index cadence, matching what the shell used to poll on the section's behalf. */
+/** The fallback cadence, paid only while there is no session channel to carry an event. */
 const INDEX_POLL_MS = 2_000;
 
 /** Device-local presentation memory. Both keys are listed in the REGISTRY.md register. */
@@ -197,12 +199,17 @@ export function IndexSection({ host }: SectionProps): ReactElement {
 
   /**
    * The one question that tells a tree gesture apart from everything else. While a row is
-   * held, the tree owns its own DOM and its own idea of the index: a poll that committed
-   * underneath would rebuild the rows out from under the pointer. Held responses are dropped,
-   * not queued — the tick after the gesture settles carries the truth.
+   * held, the tree owns its own DOM and its own idea of the index: a refresh that committed
+   * underneath would rebuild the rows out from under the pointer. A held answer is not lost —
+   * with no cadence behind an event there would be no next tick, so the feed re-offers it
+   * until the gesture ends.
    */
   const treeOwnsDrag = useCallback(
-    (): boolean => treeInstanceRef.current?.getState().dnd != null,
+    // OWN row-reorder only: `draggedItems` is set exactly when the tree itself started the
+    // drag. A FOREIGN carry (a canvas row dragged over the index) also populates `dnd`
+    // (`draggingOverItem`/`dragTarget`) and may leave it behind when it drops elsewhere —
+    // holding the shared feeds on that state starved them for good once, gate-caught.
+    (): boolean => (treeInstanceRef.current?.getState().dnd?.draggedItems?.length ?? 0) > 0,
     [],
   );
 
@@ -213,6 +220,8 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   } = usePolledResource<readonly IndexEntry[] | null>(fetchTree, INDEX_POLL_MS, {
     key: INDEX_RESOURCE,
     initial: null,
+    topics: host.topics.index,
+    events: client,
     hold: treeOwnsDrag,
     equal: (current, incoming) =>
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
@@ -221,18 +230,28 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   const { value: terminalsByContainer } = usePolledResource(fetchByContainer, INDEX_POLL_MS, {
     key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,
+    topics: host.topics.terminals,
+    events: client,
     hold: treeOwnsDrag,
   });
   const { value: presence } = usePolledResource(fetchPresence, INDEX_POLL_MS, {
     key: ATTENDANCE_RESOURCE,
     initial: NO_PRESENCE,
+    topics: host.topics.attendance,
+    events: client,
     hold: treeOwnsDrag,
     restartKey: activeContainerId,
   });
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
     INDEX_POLL_MS,
-    { key: TERMINALS_RESOURCE, initial: NO_TERMINALS, hold: treeOwnsDrag },
+    {
+      key: TERMINALS_RESOURCE,
+      initial: NO_TERMINALS,
+      topics: host.topics.terminals,
+      events: client,
+      hold: treeOwnsDrag,
+    },
   );
 
   /**
@@ -468,9 +487,8 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     data.set("root", { item: SIDEBAR_ROOT_ITEM, children: addNodes(roots) });
     return data;
   }, [indexedTreeItems]);
-  const treeDataRef = useRef(treeData);
 
-  const tree = useHeadlessTree<IndexEntry>({
+  const tree = useHeadlessTree<IndexEntry>(treeData, {
     initialState: { expandedItems: initialExpandedItems },
     // Core owns drag targeting; this paints its state without routing ItemInstance objects
     // through React, which tears down the tree during native drags in React 19.
@@ -485,13 +503,19 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           : data.name;
     },
     isItemFolder: (item) => item.getItemData().kind === "folder",
+    /*
+      Closes over THIS render's data rather than a ref: the config is re-supplied on every
+      render (`setConfig`, `use-headless-tree.ts`), so the closure is exactly as fresh as a
+      ref would be — and the rebuild that reads it runs during the same render, where a ref
+      written in an effect would still be describing the previous answer.
+     */
     dataLoader: {
       getItem: (itemId) => {
-        const entry = treeDataRef.current.get(itemId);
+        const entry = treeData.get(itemId);
         if (entry === undefined) throw new Error(`Unknown sidebar tree item: ${itemId}`);
         return entry.item;
       },
-      getChildren: (itemId) => treeDataRef.current.get(itemId)?.children ?? [],
+      getChildren: (itemId) => treeData.get(itemId)?.children ?? [],
     },
     indent: 16,
     canReorder: true,
@@ -543,7 +567,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       // The tree renders every stored sibling, so the insertion index needs no translation.
       const index = isOrderedDragTarget(target)
         ? target.insertionIndex
-        : (treeDataRef.current.get(target.item.getId())?.children.length ?? 0);
+        : (treeData.get(target.item.getId())?.children.length ?? 0);
       const item = { kind: moved.kind, id: treeItemId(moved) } as const;
       const previousTreeItems = treeItems;
       const optimisticTreeItems = projectIndexMove(treeItems, item, parentId, index);
@@ -576,14 +600,18 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     ],
   });
 
+  /**
+   * The tree instance, published to the callbacks that ask it what a gesture is doing. The
+   * REBUILD that makes new data reach `tree.getItems()` is not here: it happens during render,
+   * inside the adapter, because the rows are painted in the same pass
+   * (`use-headless-tree.ts`).
+   */
   useEffect(() => {
     treeInstanceRef.current = tree;
-    treeDataRef.current = treeData;
-    tree.rebuildTree();
     return () => {
       treeInstanceRef.current = null;
     };
-  }, [tree, treeData]);
+  }, [tree]);
 
   /**
    * A row's mark: the object's own species icon, the same one it wears in its titlebar. A solo

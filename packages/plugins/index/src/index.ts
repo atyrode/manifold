@@ -39,7 +39,26 @@ export const indexManifest: PluginManifest = {
     sections: [{ id: "index", title: "Index", order: 10 }],
     elements: [],
     tools: [],
-    events: [],
+    /*
+      THE INDEX'S OWN NEWS (ADR 0012). Every one of these is addressed to this plugin's own
+      node — `manifold://plugin/core.index` — rather than to the row that moved, and that is
+      the collection rule rather than laziness: a container that does not exist yet cannot be
+      subscribed to in advance, and a container that was just deleted has no address left to
+      be a topic. The index is a view OF the collection, so the collection is the topic, and a
+      section that used to poll `core.index.read` now holds exactly one subscription.
+
+      Folders have no `manifold://` form at all (the grammar's seven do not include one), which
+      makes the collection topic the only honest address for their three kinds.
+     */
+    events: [
+      { id: "container_created", title: "Container created" },
+      { id: "container_renamed", title: "Container renamed" },
+      { id: "container_deleted", title: "Container deleted" },
+      { id: "folder_created", title: "Folder created" },
+      { id: "folder_renamed", title: "Folder renamed" },
+      { id: "folder_deleted", title: "Folder deleted" },
+      { id: "index_moved", title: "Index entry moved" },
+    ],
   },
 };
 

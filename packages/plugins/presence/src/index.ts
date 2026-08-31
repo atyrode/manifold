@@ -20,7 +20,33 @@ export const presenceManifest: PluginManifest = {
   description:
     "Publishes each principal's view state and delivers consent-guarded spotlight requests.",
   capabilities: ["scenes:write"],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    /*
+      ATTENDANCE, declared here and emitted by the FLOOR — the room owns the roster and may not
+      name a plugin, so it emits under whichever plugin `assembly.ts` says owns presence
+      vocabulary (ADR 0012 §1).
+
+      A principal ARRIVING is not the same concept as its presence PAYLOAD, and only the first
+      one is here. A cursor or a viewport is continuous per-connection state that dies with the
+      socket and rides the presence frames above; joining and leaving a room are discrete
+      transitions a section outside the room wants to hear about, which is exactly the gap the
+      event plane fills and exactly what `/api/attendance` was being polled for.
+
+      Both are addressed to the presence COLLECTION, not to the container: `/api/attendance`
+      is read workspace-wide by chrome that sits outside every room it reports on, so one
+      subscription replaces the poll where a container-addressed topic would have cost that
+      chrome one per container. The container travels in the payload and as the audit trail's
+      scope, and the principal who arrived or left is the event's actor rather than its topic.
+     */
+    events: [
+      { id: "principal_joined", title: "Principal joined a container" },
+      { id: "principal_left", title: "Principal left a container" },
+    ],
+  },
 };
 
 /**

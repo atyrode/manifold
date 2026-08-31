@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
+import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./events.ts";
 import {
   CarrySchema,
   GestureKindSchema,
@@ -9,16 +10,19 @@ import {
 } from "./presence.ts";
 import { PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
+import { ManifoldRefSchema } from "./uri.ts";
 
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v16) — one socket per tab, many rooms. Every frame is either
+ * FRAME GRAMMAR (v17) — one socket per tab, many rooms. Every frame is either
  * connection-level or channel-level:
  *
  *   connection-level   client → server  {"type":"ping"}
+ *                      client → server  {"type":"subscribe","topics":[…]}
  *                      server → client  {"type":"pong"}
  *                      server → client  {"type":"plugins","roster":[…]}
+ *                      server → client  {"type":"event","topic":{…},"kind":"…",…}
  *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
  *
  * A CHANNEL is one client-chosen handle onto one room. `ch` is opaque to the server,
@@ -28,8 +32,9 @@ import { PrincipalSchema } from "./principal.ts";
  * collides. `join` binds a fresh `ch` to a container, `leave` frees it, and every other
  * channel frame routes by it.
  * Liveness is a property of the socket, not of a room, so ping/pong carry no `ch`; neither
- * does the plugin roster, which describes the whole workspace rather than any one room (see
- * CONNECTION_BODIES).
+ * does the plugin roster, which describes the whole workspace rather than any one room, nor
+ * the event plane, whose topics are NODES and therefore routinely name something no channel
+ * on this socket has joined (see CONNECTION_BODIES and CLIENT_CONNECTION_BODIES).
  *
  * Handshake: the FIRST client frame on a connection MUST be `join` (ten-second
  * deadline, re-armed whenever the last channel leaves); the server answers `init` on
@@ -234,6 +239,43 @@ const CLIENT_BODIES = {
 const ClientPingSchema = z.strictObject({ type: z.literal("ping") });
 
 /**
+ * CONNECTION-LEVEL client frames with a payload: the subscription pair (ADR 0012).
+ *
+ * They carry no `ch` because a TOPIC IS A NODE, and a node is not a room: a client watching
+ * the machine roster or a terminal in a container it never joined has no channel to tag, and
+ * tagging one would tie a subscription's lifetime to a room membership that has nothing to do
+ * with it. Subscriptions are presence-class state — they live on the socket, die with it, and
+ * are never persisted.
+ *
+ * A topic travels STRUCTURED, never as a `manifold://` string, and that is a mechanism rather
+ * than a preference: a topic namespace joined at runtime would need its own registry
+ * (`REGISTRY.md` §Runtime-joined namespaces), and a wire that cannot carry a hand-typed topic
+ * has no such namespace to police. `formatManifoldUri` remains the one joiner, used by each
+ * side to key its own index.
+ *
+ * There is NO acknowledgement frame, in either direction. A subscribe is a declaration of
+ * interest, exactly as a presence frame is: the server subscribes the topics this credential
+ * may read and silently declines the rest, because a per-topic refusal would turn the event
+ * plane into an oracle answering "does this node exist and may I read it?" one probe at a
+ * time. A client learns its authority from `selfCaps`, never by subscribing.
+ *
+ * Ordering is the socket's: the credential arrives on `join`, so a `subscribe` before the
+ * first join has nothing to authorize against and is refused with the frame grammar's
+ * existing 4002. A socket holding subscriptions is NOT idle, however many channels it has
+ * left.
+ */
+export const CLIENT_CONNECTION_BODIES = {
+  subscribe: z.strictObject({
+    type: z.literal("subscribe"),
+    topics: z.array(ManifoldRefSchema).min(1).max(MAX_SUBSCRIBE_TOPICS),
+  }),
+  unsubscribe: z.strictObject({
+    type: z.literal("unsubscribe"),
+    topics: z.array(ManifoldRefSchema).min(1).max(MAX_SUBSCRIBE_TOPICS),
+  }),
+} as const;
+
+/**
  * One frame's payload, independent of routing. The server constructs and validates
  * bodies (a broadcast serializes ONE body and tags it per peer), and an SDK channel
  * handle hands bodies to its subscribers — the channel is implicit in the handle.
@@ -254,6 +296,8 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   CLIENT_BODIES.terminal_take,
   CLIENT_BODIES.terminal_kill,
   ClientPingSchema,
+  CLIENT_CONNECTION_BODIES.subscribe,
+  CLIENT_CONNECTION_BODIES.unsubscribe,
 ]);
 export type ClientMessageBody = z.infer<typeof ClientMessageBodySchema>;
 
@@ -274,6 +318,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   channelized(CLIENT_BODIES.terminal_take),
   channelized(CLIENT_BODIES.terminal_kill),
   ClientPingSchema,
+  // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
+  CLIENT_CONNECTION_BODIES.subscribe,
+  CLIENT_CONNECTION_BODIES.unsubscribe,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 
@@ -398,7 +445,7 @@ const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
 /**
  * CONNECTION-LEVEL server frames: they address the SOCKET, not a channel, so they carry no
  * `ch` at all. Until v14 the only such frames were the liveness pair, whose bodies are a
- * bare type; this is the first category with a payload, and it exists because plugin
+ * bare type; the roster was the first category with a payload, and it exists because plugin
  * REGISTRATION is workspace-global — the roster is not a property of any room, so tagging
  * it with one room's channel would be an id pun and fanning it out per channel would send
  * one fact N times.
@@ -406,11 +453,45 @@ const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
  * A roster frame is delivered on socket open (before any `join`) and again on every change,
  * which is what lets a client rebuild its assembly live instead of reloading.
  *
+ * An `event` frame is the same category for the same reason: its topic is a NODE, which may
+ * be a container nobody on this socket joined, a principal, or a plugin's own node. It is
+ * delivered to the sockets subscribed AT THE INSTANT OF EMISSION and to no others — there is
+ * no offset, no acknowledgement and no replay, because catch-up is reading state back through
+ * the door a fresh client already uses (ADR 0012 §5).
+ *
  * Kept as a keyed table so routing can look a frame's parser up by type. `pong` stays a
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
   plugins: z.strictObject({ type: z.literal("plugins"), roster: PluginRosterSchema }),
+  /**
+   * ONE thing happened to ONE node, emitted at the door that committed it — once, at the
+   * commit point, never per frame of the gesture that led there.
+   *
+   * `topic` is the node it happened to and `kind` is what happened: the pair is the whole
+   * addressing story, which is why no kind is ever qualified by its emitter. The two `kind`
+   * words in this frame are one canon word at two depths — `topic.kind` discriminates the
+   * ADDRESS FORM (the closed union in `uri.ts`), `kind` names the event class exactly as
+   * `terminal_event.kind` already does for a PTY.
+   *
+   * `actor` is the principal whose action committed the change, or null when the engine acted
+   * with no principal behind it (an agent socket dying, a migration, a timer). It is stated
+   * rather than implied so a subscriber can suppress the echo of its own mutation without
+   * correlating anything.
+   *
+   * `payload` is REQUIRED and may be empty. An absent-versus-empty distinction on a
+   * notification would be a fact nobody can act on, and every consumer would pay for the
+   * branch; the emitter sends `{}` and the reader indexes.
+   */
+  event: z.strictObject({
+    type: z.literal("event"),
+    topic: ManifoldRefSchema,
+    kind: EventKindSchema,
+    /** Server clock, ms since epoch — the same stamp `saved.at` carries. */
+    at: z.number().int().nonnegative(),
+    actor: z.string().min(1).nullable(),
+    payload: EventPayloadSchema,
+  }),
 } as const;
 
 export const ServerMessageBodySchema = z.discriminatedUnion("type", [
@@ -430,6 +511,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.channel_closed,
   ServerPongSchema,
   CONNECTION_BODIES.plugins,
+  CONNECTION_BODIES.event,
 ]);
 export type ServerMessageBody = z.infer<typeof ServerMessageBodySchema>;
 
@@ -451,6 +533,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   ServerPongSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CONNECTION_BODIES.plugins,
+  CONNECTION_BODIES.event,
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
@@ -460,6 +543,13 @@ export type ServerMessage = z.infer<typeof ServerMessageSchema>;
  * written once against the body and works for any channel.
  */
 export type ServerGesture = Extract<ServerMessageBody, { type: "gesture" }>;
+
+/**
+ * Event frames as CONSUMERS see them, the same way {@link ServerGesture} is: an SDK hands its
+ * subscribers this body, and a subscriber matches it by formatting `topic` through
+ * `formatManifoldUri` — never by comparing address strings it built itself.
+ */
+export type ServerEvent = Extract<ServerMessageBody, { type: "event" }>;
 
 // ---------------------------------------------------------------------------- type inventories
 
@@ -486,6 +576,7 @@ export const SERVER_MESSAGE_TYPES = [
   "channel_closed",
   "pong",
   "plugins",
+  "event",
 ] as const satisfies readonly ServerMessage["type"][];
 
 export const CLIENT_MESSAGE_TYPES = [
@@ -504,15 +595,25 @@ export const CLIENT_MESSAGE_TYPES = [
   "terminal_take",
   "terminal_kill",
   "ping",
+  "subscribe",
+  "unsubscribe",
 ] as const satisfies readonly ClientMessage["type"][];
 
 /**
- * Frames that carry no `ch`: the socket's own liveness pair, plus the server frames that
- * describe the CONNECTION's world rather than a room's (the plugin roster). Routing reads
- * this to tell a connection-level frame from a channel-level one without a second
- * discriminator, and a channel handle is never handed one of these.
+ * Frames that carry no `ch`: the socket's own liveness pair, plus every frame that describes
+ * the CONNECTION's world rather than a room's — the plugin roster, and the event plane's
+ * subscription pair and notification. Routing reads this to tell a connection-level frame
+ * from a channel-level one without a second discriminator, and a channel handle is never
+ * handed one of these.
  */
-export const CONNECTION_LEVEL_MESSAGE_TYPES = ["ping", "pong", "plugins"] as const;
+export const CONNECTION_LEVEL_MESSAGE_TYPES = [
+  "ping",
+  "pong",
+  "plugins",
+  "subscribe",
+  "unsubscribe",
+  "event",
+] as const;
 
 type MissingServerType = Exclude<ServerMessage["type"], (typeof SERVER_MESSAGE_TYPES)[number]>;
 type MissingClientType = Exclude<ClientMessage["type"], (typeof CLIENT_MESSAGE_TYPES)[number]>;
@@ -522,12 +623,27 @@ type UnclassifiedConnectionType = Exclude<
   (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number]
 >;
 type UnwiredConnectionType = Exclude<keyof typeof CONNECTION_BODIES, ServerMessage["type"]>;
+/**
+ * The same pair for the CLIENT half. Both tables are checked rather than one, because a
+ * connection-level frame that routing does not classify would be handed to a channel handle
+ * that has no room to apply it to — the failure mode is silence, which no test notices.
+ */
+type UnclassifiedClientConnectionType = Exclude<
+  keyof typeof CLIENT_CONNECTION_BODIES,
+  (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number]
+>;
+type UnwiredClientConnectionType = Exclude<
+  keyof typeof CLIENT_CONNECTION_BODIES,
+  ClientMessage["type"]
+>;
 const serverInventoryComplete: MissingServerType extends never ? true : never = true;
 const clientInventoryComplete: MissingClientType extends never ? true : never = true;
-const connectionInventoryComplete: [UnclassifiedConnectionType, UnwiredConnectionType] extends [
-  never,
-  never,
-]
+const connectionInventoryComplete: [
+  UnclassifiedConnectionType,
+  UnwiredConnectionType,
+  UnclassifiedClientConnectionType,
+  UnwiredClientConnectionType,
+] extends [never, never, never, never]
   ? true
   : never = true;
 void serverInventoryComplete;

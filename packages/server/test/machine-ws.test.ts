@@ -191,11 +191,16 @@ describe("machine hello reconciliation", () => {
   });
 
   test("a pre-reset hello is refused, so its durable terminal is neither adopted nor reaped", () => {
-    // v16 RESET the machine wire, so the compat set is exactly the current version and no
-    // older hello is welcome any more. Refusal is decided at NEGOTIATION, ahead of
-    // reconciliation, which is what leaves the advertised PTY's durable row untouched: the
-    // machine is expected to come back speaking v16 and be reconciled then.
-    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION]);
+    // v16 RESET the machine wire, so no PRE-reset hello is welcome any more. v17 rode along
+    // additively — the event plane is session-side and left `AgentMessage` and
+    // `ServerToAgentMessage` byte-identical — so the compat set admits both and this deploy
+    // owes no fleet restart (invariant 10, first clause). What the reset means is that
+    // everything below v16 is refused, and that is what this asserts rather than the set's
+    // exact size, which every additive version would otherwise have to come and edit.
+    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(15)).toBe(false);
+    // Refusal is decided at NEGOTIATION, ahead of reconciliation, which is what leaves the
+    // advertised PTY's durable row untouched: the machine is expected to come back speaking a
+    // version in the set and be reconciled then.
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);
     const store = testStore();
@@ -253,7 +258,9 @@ describe("machine hello reconciliation", () => {
         token: enrollment.machineToken,
         name: "agent",
         agentVersion: "test-pre-reset",
-        protocolVersion: PROTOCOL_VERSION - 1,
+        // Below the v16 reset, not merely below the current version: v17 is additive, so
+        // `PROTOCOL_VERSION - 1` is a version this server still welcomes.
+        protocolVersion: 15,
         terminals: [
           { terminalId: "pre-reset-terminal", cols: 120, rows: 40, alive: true, seq: 42 },
         ],

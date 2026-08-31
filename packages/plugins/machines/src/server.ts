@@ -1,4 +1,6 @@
+import type { EmitEvent } from "@manifold/plugin";
 import { identityColorFor } from "@manifold/protocol";
+import { machinesManifest } from "./index.ts";
 
 /**
  * The slice of the host this plugin touches, declared locally (D1): two narrow store reads,
@@ -33,6 +35,12 @@ interface MachinesCtx {
     enrollMachine(name: string): IdentityResult<Enrollment>;
     rotateMachineToken(machine: MachineRow): IdentityResult<Enrollment>;
   };
+  /**
+   * The fleet's news, staged on the engine and published only if this dispatch commits. Only
+   * enrolment is this plugin's to announce; the online pair belongs to the socket registry,
+   * which is floor and emits under this plugin's declared vocabulary (ADR 0012 §1).
+   */
+  readonly emit: EmitEvent;
 }
 
 /** A machine as the wire carries it: the row, its derived dot, and — for the list — liveness. */
@@ -106,6 +114,20 @@ export const machinesHandlers = {
         ? ctx.identity.enrollMachine(args.name)
         : ctx.identity.rotateMachineToken(existing);
     if (!outcome.ok) return { refused: outcome.message };
+    /*
+      ONE EMISSION PER COMMIT, and the commit here is an ENROLMENT rather than a call.
+      Enrolment is idempotent by name (issue #40): a re-run provision flow answers with the
+      existing row and mints nothing, and it returned above without reaching this line. A
+      `rotateToken: true` recovery is the other non-event — the machine did not join the fleet,
+      its secret changed — so the announcement is gated on the row having actually been born.
+      The token itself never enters a payload; only the identity does.
+     */
+    if (existing === null) {
+      ctx.emit({ kind: "plugin", pluginId: machinesManifest.id }, "machine_enrolled", {
+        machineId: outcome.value.machine.id,
+        name: outcome.value.machine.name,
+      });
+    }
     return { machine: dot(outcome.value.machine), machineToken: outcome.value.machineToken };
   },
 };

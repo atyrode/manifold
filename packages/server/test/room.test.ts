@@ -124,9 +124,11 @@ function roomFixture(
   };
   const socket = new FakeSocket();
   const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
-  // The eighth argument is the element-payload boundary (ADR 0013 §16). These fixtures compose
-  // no plugins, so nothing declares a payload schema and the honest stand-in accepts every
-  // record — which is also what an unwired production room does until the assembly arrives.
+  // The eighth argument is the element-payload boundary (ADR 0013 §16) and the ninth is the
+  // attendance announcement (ADR 0012). These fixtures compose no plugins, so nothing declares
+  // a payload schema and the honest stand-in accepts every record; the announcement writes
+  // straight to the durable trail, which is what an unwired production room does until the
+  // assembly and the event plane arrive.
   const room = new Room(
     container.id,
     store,
@@ -136,6 +138,9 @@ function roomFixture(
     () => [],
     () => {},
     payloadRefusal,
+    (containerId, principalId, kind) => {
+      store.addEvent(containerId, runtime.now(), principalId, kind, {});
+    },
   );
   room.join(peer);
   socket.clear();
@@ -181,6 +186,9 @@ describe("Room Yjs document consistency", () => {
       () => [],
       () => {},
       () => null,
+      (containerId, principalId, kind) => {
+        store.addEvent(containerId, runtime.now(), principalId, kind, {});
+      },
     );
     room.join(peer);
 

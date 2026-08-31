@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -110,8 +110,28 @@ export const PROTOCOL_VERSION = 16;
  * every enrolled agent. An old agent dialing in is refused at machine-ws
  * version negotiation (close 4409) instead of silently exchanging frames whose
  * field names no longer exist.
+ * v16 -> v17: THE EVENT PLANE (ADR 0012), session-channel only and ADDITIVE.
+ * Three connection-level frames arrive — client `subscribe`/`unsubscribe`
+ * ({ topics: ManifoldRef[] }) and server `event` ({ topic, kind, at, actor,
+ * payload }) — and nothing existing changes shape: every v16 frame parses
+ * byte-for-byte as it did, and a v16 client that never sends `subscribe`
+ * receives no `event` and therefore observes a v16 server exactly. The plugin
+ * manifest's reserved `contributes.events` gains its first consumer and its
+ * `id` narrows from a local name to an event KIND (snake_case), which breaks no
+ * manifest because no manifest in the tree declares an event and the wave that
+ * writes the first one writes it in the narrowed spelling.
+ *
+ * The machine wire is BYTE-IDENTICAL: an agent holds PTYs and speaks
+ * `AgentMessage`/`ServerToAgentMessage`, neither of which gained, lost or
+ * renamed a field — `machine.ts` imports exactly one constant from the rest of
+ * the protocol (`MAX_SESSION_BASE64_CHARS`, unchanged), and an agent never sees
+ * a session frame or a manifest. So invariant 10's first clause applies
+ * verbatim: a bump that leaves the agent wire identical ADDS the new version
+ * rather than resetting the set. The set is `{16, 17}` and NO fleet restart is
+ * owed; an enrolled v16 agent keeps its terminals across this server deploy,
+ * which is the exact outcome the invariant exists to protect.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this

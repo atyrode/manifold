@@ -3,10 +3,11 @@ import type { ServerWebSocket } from "bun";
 import { elementPayloadGuard, workspaceLayout } from "@manifold/plugin";
 import { defaultRuntime, type RuntimeDeps } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
-import { SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "./assembly.ts";
+import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
+import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
@@ -105,6 +106,27 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime,
   );
   /*
+    THE EVENT PLANE, before the host and after everything it reads from — the same thunk
+    treatment the placement executor gets above, and for the same reason: the hub validates an
+    emission against the ASSEMBLY and the host that owns the assembly needs the hub, so the
+    roster arrives as a function read at emission time rather than a table captured here.
+
+    `owners` comes from `assembly.ts` because it names plugins and no floor file may
+    (`FLOOR_EVENT_OWNERS`); `terminals` is the broker, which is the only thing that knows which
+    container a terminal currently lives in — the one hop the topic tree resolves from state.
+   */
+  const events = new EventHub(
+    {
+      assembly: () => plugins.assembly(),
+      terminals: broker,
+      owners: FLOOR_EVENT_OWNERS,
+    },
+    auth,
+    store,
+    runtime,
+    logger,
+  );
+  /*
     The assembly, and the host that answers for it. It is built BEFORE the gateways
     that consult it: the session gateway pushes the roster and refuses terminal
     creation for a disabled terminals plugin, and the HTTP app serves the action door.
@@ -119,6 +141,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     machines,
     runtime,
     logger,
+    events,
   );
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
@@ -129,7 +152,24 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     boot and exactly what the envelope already does for a type nobody claims.
   */
   rooms.setElementPayloadGuard(elementPayloadGuard(() => plugins.assembly()));
-  const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
+  /*
+    The two floor doors that announce on the plane, installed rather than constructed for the
+    reason directly above: the broker and the rooms are both upstream of the assembly the hub
+    reads. Until these lines run, each writes its durable `events` row itself and fans nothing
+    out — the correct behaviour during boot, since nobody can be subscribed yet.
+   */
+  broker.setEvents(events);
+  rooms.setEvents(events);
+  const sessions = new SessionGateway(
+    auth,
+    rooms,
+    broker,
+    plugins,
+    timers,
+    logger,
+    runtime,
+    events,
+  );
   const http = new HttpApp(
     config,
     store,

@@ -8,12 +8,21 @@ import {
 } from "@manifold/protocol";
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
 import { AuthService } from "../src/auth.ts";
+import type { EventHub } from "../src/event-hub.ts";
 import { silentLogger } from "../src/log.ts";
+import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testPluginHost, testStore } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testEventHub,
+  testPluginHost,
+  testStore,
+} from "./helpers.ts";
 
 /** Tests that are not about routing drive one channel per socket, exactly as v11 did. */
 const CH = "c1";
@@ -29,6 +38,7 @@ interface GatewayFixture {
   readonly secondContainer: (name: string) => Container;
   readonly rooms: RoomManager;
   readonly gateway: SessionGateway;
+  readonly events: EventHub;
 }
 
 function gatewayFixture(): GatewayFixture {
@@ -56,8 +66,35 @@ function gatewayFixture(): GatewayFixture {
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
-  const gateway = new SessionGateway(auth, rooms, broker, plugins, clock, silentLogger, runtime);
+  /*
+    The plane, built the way `main.ts` builds it: BEFORE the host, reading the assembly through
+    a thunk, then installed on the two floor doors. The fixture owns the hub because the
+    subscription tests drive it directly.
+   */
+  let plugins: PluginHost | null = null;
+  const events = testEventHub(
+    store,
+    auth,
+    broker,
+    () => {
+      if (plugins === null) throw new Error("the event plane read the assembly before the host");
+      return plugins.assembly();
+    },
+    runtime,
+  );
+  plugins = testPluginHost(store, auth, rooms, broker, runtime, { events });
+  broker.setEvents(events);
+  rooms.setEvents(events);
+  const gateway = new SessionGateway(
+    auth,
+    rooms,
+    broker,
+    plugins,
+    clock,
+    silentLogger,
+    runtime,
+    events,
+  );
   const secondContainer = (name: string): Container => {
     const created: Container = {
       id: runtime.newId(),
@@ -68,7 +105,18 @@ function gatewayFixture(): GatewayFixture {
     store.createContainer(created);
     return created;
   };
-  return { runtime, clock, store, ownerKey, auth, container, secondContainer, rooms, gateway };
+  return {
+    runtime,
+    clock,
+    store,
+    ownerKey,
+    auth,
+    container,
+    secondContainer,
+    rooms,
+    gateway,
+    events,
+  };
 }
 
 /** Sends one channel-tagged client frame. */

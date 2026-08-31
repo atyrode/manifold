@@ -724,7 +724,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       : {
           // Minimize: the representation leaves this canvas. Nothing else references the
           // terminal's home afterwards, which is exactly what "unplaced" means now.
-          onPark: () => container.removeElement(id),
+          onPark: () => container.unplaceElement(id),
           // Close: the composition goes, and the shell it holds goes with it.
           onClose: () => container.onDeleteContainer(containerId, id),
           onExpand: enter,
@@ -892,7 +892,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                 <OccupantAvatars occupants={roomOccupants} selfId={selfId} />
               )
             }
-            onMinimize={() => container.removeElement(id)}
+            onMinimize={() => container.unplaceElement(id)}
             minimizeLabel={`Put away composition ${name ?? containerId}`}
             minimizeTooltip="Remove this portal from the canvas (the composition keeps running)"
             onMaximize={enter}
