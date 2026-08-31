@@ -3348,3 +3348,45 @@ button.pad-sidebar-session.is-summary > small {
   height: 100%;
   pointer-events: none;
 }
+
+/* ── Inert plugin contributions (.plugin-placeholder) ─────────────────────────
+   The one surface for a contribution that cannot render: a disabled plugin, an id
+   nothing composed, or a declared panel whose web half is absent. It is deliberately
+   the `.flow-portal__empty` idiom — dashed, muted, centred, filling whatever box it
+   is handed — so the same element reads correctly as a workspace pane and as a canvas
+   node without a second skin. It NAMES what is missing; a blank tile is the bug this
+   block exists to prevent. `data-plugin-state` carries the reason for the gate. */
+.plugin-placeholder {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  align-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  color: #868e96;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.plugin-placeholder__name {
+  color: #dee2e6;
+  font-size: 0.76rem;
+}
+
+.plugin-placeholder__remove {
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  background: transparent;
+  padding: 0.2rem 0.5rem;
+  color: #adb5bd;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.plugin-placeholder__remove:hover {
+  border-color: #495057;
+  color: #dee2e6;
+}
