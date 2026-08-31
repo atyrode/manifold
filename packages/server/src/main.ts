@@ -3,12 +3,14 @@ import type { ServerWebSocket } from "bun";
 import { defaultRuntime, type RuntimeDeps } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
 import { AuthService } from "./auth.ts";
+import { SERVER_PLUGIN_DEFS } from "./composition.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
 import { PlaceExecutor } from "./placement.ts";
+import { PluginHost } from "./plugin-host.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-peer.ts";
 import { SessionGateway } from "./session-ws.ts";
@@ -74,7 +76,21 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
   const placement = new PlaceExecutor(store, rooms, broker, runtime);
   broker.setPlacement(placement);
-  const sessions = new SessionGateway(auth, rooms, broker, timers, logger, runtime);
+  /*
+    The composition, and the host that answers for it. It is built BEFORE the gateways
+    because both consult it: the session gateway pushes the roster and refuses terminal
+    creation for a disabled terminals plugin, and the HTTP app serves the action door.
+   */
+  const plugins = new PluginHost(
+    SERVER_PLUGIN_DEFS,
+    store,
+    auth,
+    rooms,
+    broker,
+    runtime,
+    logger,
+  );
+  const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,
     store,
@@ -92,6 +108,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     broker,
     placement,
     machines,
+    plugins,
     runtime,
     logger,
   );

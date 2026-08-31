@@ -6,6 +6,11 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@manifold-plugin/plugin-manager": "workspace:*",
+    "@manifold-plugin/presence": "workspace:*",
+    "@manifold-plugin/shell": "workspace:*",
+    "@manifold-plugin/terminals": "workspace:*",
+    "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "yjs": "13.6.32",

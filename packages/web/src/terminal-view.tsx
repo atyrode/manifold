@@ -56,7 +56,7 @@ interface TerminalViewProps {
    */
   readonly onExpand?: () => void;
   /**
-   * Renames this session (`PATCH /api/terminals/:id`) from the titlebar title.
+   * Renames this session (`core.terminals.rename`) from the titlebar title.
    * Omitted in preview chrome and wherever the caller holds no token.
    */
   readonly onRenameTitle?: (name: string) => void;

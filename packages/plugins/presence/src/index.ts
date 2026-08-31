@@ -1,0 +1,43 @@
+import { defineAction } from "@manifold/plugin";
+import { type PluginManifest } from "@manifold/protocol";
+import { z } from "zod";
+
+/**
+ * The presence domain, as one plugin: cursors, roster, status, published view state and
+ * spotlights are facets of a single concept — what a principal is doing right now, visible
+ * to everyone sharing the room and gone when the connection dies.
+ *
+ * This wave delivers the view-state slice and the one door presence needs: a request that
+ * another principal look at a node. Cursor overlay and roster rendering are still floor
+ * code, tagged in the foundation registry as owing their move here.
+ */
+export const presenceManifest: PluginManifest = {
+  id: "core.presence",
+  version: "1.0.0",
+  title: "Presence",
+  description:
+    "Publishes each principal's view state and delivers consent-guarded spotlight requests.",
+  capabilities: ["scene:write"],
+  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+};
+
+/**
+ * "Look at this." `scene:write` because it DRIVES another principal's client — the same
+ * authority that lets a caller move things in a room lets it point somebody in that room at
+ * a node, and nothing weaker would do, since a viewport yank is an interruption.
+ *
+ * The handler additionally requires a shared room and rate-limits the pair, so consent is
+ * structural (you are already together) rather than a preference nobody set.
+ */
+export const presenceActions = [
+  defineAction({
+    name: "focus",
+    title: "Ask a principal to look at a node",
+    caps: ["scene:write"],
+    input: z.strictObject({
+      targetPrincipalId: z.string().min(1),
+      uri: z.string().min(1).max(512),
+    }),
+    result: z.strictObject({}),
+  }),
+];

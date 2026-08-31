@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
-import { ContainerLayoutSchema } from "./layout.ts";
+import { ContainerLayoutSchema, TileLayoutSchema } from "./layout.ts";
 import { ITEM_KIND_NAMES } from "./placement.ts";
+import { PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 
@@ -161,12 +162,6 @@ export const TerminalsResponseSchema = z.strictObject({
 });
 export type TerminalsResponse = z.infer<typeof TerminalsResponseSchema>;
 
-/** Rename: set a terminal's display name. */
-export const RenameTerminalRequestSchema = z.strictObject({
-  name: z.string().min(1).max(120),
-});
-export type RenameTerminalRequest = z.infer<typeof RenameTerminalRequestSchema>;
-
 /**
  * One item a container holds, classified with the placement algebra's own vocabulary so a
  * census answer and a placement resolution can never disagree about what something is.
@@ -260,3 +255,19 @@ export const ResolveResponseSchema = z.strictObject({
   title: z.string().nullable(),
 });
 export type ResolveResponse = z.infer<typeof ResolveResponseSchema>;
+
+/**
+ * `GET /api/plugins` — the workspace's composition as every principal sees it. The same
+ * roster arrives unsolicited on the connection-level `plugins` session frame whenever it
+ * changes; this door is how a client that has not opened a socket yet (or holds no room to
+ * join) learns the vocabulary.
+ */
+export const PluginsResponseSchema = z.strictObject({ plugins: PluginRosterSchema });
+export type PluginsResponse = z.infer<typeof PluginsResponseSchema>;
+
+/**
+ * `GET /api/layout` — the CALLER's workspace tree. Self-scoped by construction: a layout is
+ * per principal, so the door takes no id and `core.layout.set` writes only the caller's own.
+ */
+export const LayoutResponseSchema = z.strictObject({ layout: TileLayoutSchema });
+export type LayoutResponse = z.infer<typeof LayoutResponseSchema>;

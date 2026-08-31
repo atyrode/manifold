@@ -191,7 +191,7 @@ export function composeRoster(
       const local = LocalNameSchema.safeParse(action.name);
       if (!local.success) {
         problems.push(
-          `plugin "${manifest.id}" declares action name "${action.name}", which is not a local name (lowercase, dashed, <=32 chars)`,
+          `plugin "${manifest.id}" declares action name "${action.name}", which is not a local name (starts lowercase, no dots, <=32 chars)`,
         );
         continue;
       }

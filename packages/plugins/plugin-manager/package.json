@@ -1,0 +1,17 @@
+{
+  "name": "@manifold-plugin/plugin-manager",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "@manifold/plugin": "workspace:*",
+    "@manifold/protocol": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2"
+  }
+}

@@ -24,8 +24,12 @@ export type PluginId = z.infer<typeof PluginIdSchema>;
  * Exported because the composition engine validates every action's local name against this
  * exact rule before it builds a full name: one door per concept, so a local name is legal
  * here and there or nowhere.
+ *
+ * Interior capitals are allowed because the ratified vocabulary uses them where the name is
+ * a verb phrase (`core.plugins.setEnabled`); a name still starts lowercase and carries no
+ * dot, so the segment boundary in a full name stays unambiguous.
  */
-export const LOCAL_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+export const LOCAL_NAME_PATTERN = /^[a-z][a-zA-Z0-9-]*$/;
 export const LocalNameSchema = z.string().regex(LOCAL_NAME_PATTERN).max(32);
 export type LocalName = z.infer<typeof LocalNameSchema>;
 

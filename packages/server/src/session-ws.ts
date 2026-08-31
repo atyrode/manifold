@@ -1,6 +1,7 @@
 import {
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
+  CONNECTION_BODIES,
   CURSOR_MIN_INTERVAL_MS,
   ClientMessageSchema,
   GESTURE_MIN_INTERVAL_MS,
@@ -12,6 +13,7 @@ import {
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
+import type { PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
 import { SessionPeer, serializeServerMessage, type RawSocket } from "./session-peer.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
@@ -128,17 +130,25 @@ function classifyClientFrame(data: unknown): ClassifiedFrame {
 export class SessionGateway {
   private readonly connections = new Map<string, SessionConnection>();
   private readonly removeRevocationListener: () => void;
+  private readonly removeRosterListener: () => void;
 
   constructor(
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
+    private readonly plugins: PluginHost,
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly runtime: RuntimeDeps,
   ) {
     this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
       this.revokePrincipal(principalId, padId);
+    });
+    this.removeRosterListener = plugins.onRosterChange((roster) => {
+      const frame = JSON.stringify(CONNECTION_BODIES.plugins.parse({ type: "plugins", roster }));
+      for (const connection of this.connections.values()) {
+        if (!connection.closed) connection.socket.send(frame);
+      }
     });
   }
 
@@ -155,6 +165,18 @@ export class SessionGateway {
     };
     this.armJoinDeadline(connection);
     this.connections.set(id, connection);
+    /*
+      The roster, before anything else and before any join. It is CONNECTION-level state:
+      it describes the workspace's vocabulary rather than any one room, so it is written
+      straight to the socket like `pong` and never passes through channel serialization —
+      a peer cannot tag it with a room, and a client with no room yet still learns what
+      exists. Delivered here on open and again on every change (D3).
+     */
+    socket.send(
+      JSON.stringify(
+        CONNECTION_BODIES.plugins.parse({ type: "plugins", roster: this.plugins.roster() }),
+      ),
+    );
   }
 
   /**
@@ -480,6 +502,19 @@ export class SessionGateway {
         this.sendResyncIfDue(connection, channel);
         return;
       case "terminal_open":
+        // Creation dies with the plugin, cleanup does not: a disabled terminals plugin
+        // refuses NEW terminals here, while attach, input, detach and kill of sessions that
+        // already exist keep working — nobody is locked out of removing things by an
+        // administrator turning a plugin off (D12).
+        if (!this.plugins.composition().enabled("core.terminals")) {
+          peer.send({
+            type: "error",
+            code: "forbidden",
+            message: "terminals plugin disabled",
+            ref: message.elementId,
+          });
+          return;
+        }
         this.broker.open(peer, message);
         return;
       case "terminal_attach":
@@ -562,6 +597,7 @@ export class SessionGateway {
   /** Closes all session sockets and unregisters auth fanout during graceful shutdown. */
   shutdown(): void {
     this.removeRevocationListener();
+    this.removeRosterListener();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();
       connection.socket.close(1001, "server shutting down");

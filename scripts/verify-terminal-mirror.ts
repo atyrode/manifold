@@ -41,6 +41,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
   PadResponseSchema,
   PadsResponseSchema,
   TerminalsResponseSchema,
@@ -272,17 +273,19 @@ try {
     ).terminals;
   /**
    * A canvas element names the CONTAINER a terminal lives in, never the terminal, so the
-   * id `PATCH /api/terminals/:id` takes is read back from the home index.
+   * id `core.terminals.rename` takes is read back from the home index.
    */
   const terminalHomedIn = async (containerId: string): Promise<string> =>
     (await listTerminals()).find((terminal) => terminal.homeId === containerId)?.id ?? "";
   const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
-    const renamed = await fetch(`${origin}/api/terminals/${terminalId}`, {
-      method: "PATCH",
+    const renamed = await fetch(`${origin}/api/actions/core.terminals.rename`, {
+      method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ sessionId: terminalId, name }),
     });
-    if (!renamed.ok) throw new Error(`could not name the terminal ${name}`);
+    // The action door answers 200 even for a refusal, so the outcome decides, not the status.
+    const outcome = ActionOutcomeSchema.parse(await renamed.json());
+    if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
   };
 
   const created = await fetch(`${origin}/api/pads`, {

@@ -1,6 +1,8 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { DEFAULT_WORKSPACE_LAYOUT } from "@manifold/plugin";
 import {
+  ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
@@ -8,6 +10,7 @@ import {
   ContainersResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
+  LayoutResponseSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
@@ -23,14 +26,18 @@ import {
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
+  PluginsResponseSchema,
   RenamePadRequestSchema,
-  RenameTerminalRequestSchema,
+  ResolveResponseSchema,
   RevokeRequestSchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
   buildProtocolJsonSchema,
+  formatManifoldUri,
+  parseManifoldUri,
   type Cap,
   type HttpError,
+  type ManifoldRef,
   type Pad,
   type PadSessionSummary,
   type RuntimeDeps,
@@ -42,6 +49,7 @@ import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { MachineGateway } from "./machine-ws.ts";
 import type { PlaceExecutor } from "./placement.ts";
+import type { PluginHost } from "./plugin-host.ts";
 import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
@@ -147,6 +155,7 @@ export class HttpApp {
     private readonly broker: TerminalBroker,
     private readonly placement: PlaceExecutor,
     private readonly machines: MachineGateway,
+    private readonly plugins: PluginHost,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
   ) {}
@@ -166,7 +175,15 @@ export class HttpApp {
         );
       }
       if (request.method === "GET" && url.pathname === "/api/protocol") {
-        return jsonResponse(buildProtocolJsonSchema());
+        // The description publishes the LIVE vocabulary: every composed action with its
+        // schemas, and the roster that says which plugin owns each one. A stranger's agent
+        // reads this document and knows every door it may knock on.
+        return jsonResponse(
+          buildProtocolJsonSchema({
+            actions: this.plugins.roster().flatMap((entry) => entry.actions),
+            plugins: this.plugins.roster(),
+          }),
+        );
       }
       if (url.pathname.startsWith("/api")) return await this.api(request, url.pathname);
       if (
@@ -350,32 +367,58 @@ export class HttpApp {
       return jsonResponse(ContainersResponseSchema.parse({ containers: this.rooms.censuses() }));
     }
 
-    const terminalMatch = /^\/api\/terminals\/([^/]+)$/.exec(pathname);
-    if (terminalMatch !== null) {
-      const sessionId = decodePathSegment(terminalMatch[1], "terminal id");
+    /*
+      THE ACTION DOOR. One route for every mutation any plugin declares, because a door per
+      feature is how a workspace ends up with thirty of them and no published vocabulary.
+
+      Authentication only here: the caps an action requires are the ACTION's declaration, so
+      the ladder inside `dispatch` is the single place authority is decided (and the single
+      place a pad-scoped token is refused). A denial answers 200 carrying `ok: false`, the
+      shape `POST /api/place` already uses — a refusal is an answer about authority or state,
+      never a transport failure.
+     */
+    const actionMatch = /^\/api\/actions\/([^/]+)$/.exec(pathname);
+    if (actionMatch !== null && request.method === "POST") {
+      const name = decodePathSegment(actionMatch[1], "action name");
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot act on workspace terminals");
-      }
-      if (request.method === "DELETE") {
-        // Kill means gone: the session, its home composition and every portal onto that home
-        // in one write. An already-exited terminal is swept the same way — dismissing a dead
-        // terminal and killing a live one are one verb, so there is no conflict to report.
-        if (this.broker.killById(sessionId) === "not_found") {
-          throw new RequestError("not_found", "terminal not found");
-        }
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
-      if (request.method === "PATCH") {
-        const input = parseRequest(RenameTerminalRequestSchema, await parseJsonBody(request));
-        const name = input.name.trim();
-        if (name.length === 0) throw new RequestError("invalid", "name is empty");
-        if (this.broker.rename(sessionId, name) === "not_found") {
-          throw new RequestError("not_found", "terminal not found");
-        }
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
+      const outcome = await this.plugins.dispatch(context, name, await parseJsonBody(request));
+      return jsonResponse(ActionOutcomeSchema.parse(outcome));
+    }
+
+    if (request.method === "GET" && pathname === "/api/plugins") {
+      // Any authenticated token, pad-scoped included — the same precedent as
+      // `GET /api/machines`: the roster is VOCABULARY, and a scoped viewer still has to
+      // render panels and know which plugin owns the placeholder it is looking at.
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      return jsonResponse(PluginsResponseSchema.parse({ plugins: this.plugins.roster() }));
+    }
+
+    if (request.method === "GET" && pathname === "/api/layout") {
+      // Self-scoped by construction: a workspace tree belongs to one principal, so the door
+      // takes no id and answers the caller's own — the default until they write one.
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      const layout = this.store.workspaceLayout(context.principal.id) ?? DEFAULT_WORKSPACE_LAYOUT;
+      return jsonResponse(LayoutResponseSchema.parse({ layout }));
+    }
+
+    if (request.method === "GET" && pathname === "/api/resolve") {
+      const context = this.authenticate(request);
+      this.requireCap(context, "pads:read");
+      const raw = new URL(request.url).searchParams.get("uri");
+      if (raw === null) throw new RequestError("invalid", "uri query parameter is required");
+      const ref = parseManifoldUri(raw);
+      // An address this server cannot parse is a bad REQUEST; an address that parses and
+      // points at nothing is a legitimate answer carrying `exists: false`.
+      if (ref === null) throw new RequestError("invalid", "uri is not a manifold:// address");
+      return jsonResponse(
+        ResolveResponseSchema.parse({
+          uri: formatManifoldUri(ref),
+          ref,
+          ...this.resolveRef(ref, context),
+        }),
+      );
     }
 
     if (request.method === "POST" && pathname === "/api/pads") {
@@ -555,6 +598,59 @@ export class HttpApp {
     }
 
     throw new RequestError("not_found", "route not found");
+  }
+
+  /**
+   * Existence and display title for one parsed address, asked of whichever side owns that
+   * kind of node. Container-addressed forms re-check `pads:read` FOR THAT PAD, so a
+   * pad-scoped token cannot use the resolver as a window onto the rest of the workspace;
+   * workspace-wide forms (principal, plugin, action) are vocabulary every reader already
+   * holds.
+   */
+  private resolveRef(
+    ref: ManifoldRef,
+    context: AuthContext,
+  ): { exists: boolean; title: string | null } {
+    switch (ref.kind) {
+      case "terminal": {
+        const session = this.store.getSession(ref.sessionId);
+        if (session === null) return { exists: false, title: null };
+        this.requireCap(context, "pads:read", session.padId);
+        return { exists: true, title: session.name };
+      }
+      case "pad": {
+        this.requireCap(context, "pads:read", ref.padId);
+        const pad = this.store.getPad(ref.padId);
+        return { exists: pad !== null, title: pad?.name ?? null };
+      }
+      case "element":
+        this.requireCap(context, "pads:read", ref.padId);
+        // An element and a tile have no name of their own: they are addressed THROUGH the
+        // container that gives them identity, and it is the container that has a title.
+        return { exists: this.rooms.holdsElement(ref.padId, ref.elementId), title: null };
+      case "tile":
+        this.requireCap(context, "pads:read", ref.padId);
+        return { exists: this.rooms.holdsTile(ref.padId, ref.tileId), title: null };
+      case "principal": {
+        const principal = this.store.getPrincipal(ref.principalId);
+        return { exists: principal !== null, title: principal?.name ?? null };
+      }
+      case "plugin": {
+        const entry = this.plugins
+          .roster()
+          .find((candidate) => candidate.manifest.id === ref.pluginId);
+        return { exists: entry !== undefined, title: entry?.manifest.title ?? null };
+      }
+      case "action": {
+        const action = this.plugins.composition().actions.get(ref.actionName);
+        return { exists: action !== undefined, title: action?.def.title ?? null };
+      }
+      default: {
+        const exhaustive: never = ref;
+        void exhaustive;
+        return { exists: false, title: null };
+      }
+    }
   }
 
   /**

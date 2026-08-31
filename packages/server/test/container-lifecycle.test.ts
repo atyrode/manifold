@@ -41,6 +41,7 @@ import {
   FakeRuntime,
   FakeSocket,
   placeTile,
+  testPluginHost,
   testStore,
   unplaceElement,
   unplaceTerminal,
@@ -190,6 +191,7 @@ function lifecycleFixture(): LifecycleFixture {
     broker,
     placement,
     machines,
+    testPluginHost(store, auth, rooms, broker, runtime),
     runtime,
     silentLogger,
   );
@@ -603,10 +605,12 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     fixture.rooms.evictIfIdle(board.id);
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
 
     expect(killed.status).toBe(200);
-    expect(killed.payload).toEqual({ ok: true });
+    expect(killed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
     // The session, its home, and every reference to that home. No exited row survives the
     // request, so there is nothing left for anybody to dismiss.
@@ -623,7 +627,9 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
     // The machine answers the kill the only way it can: by reporting the exit. That frame is
     // how the two halves of the lifecycle predicate could quietly become one, and the whole
     // reason the predicate is structural — a killed session is gone before it can arrive.
@@ -641,18 +647,25 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 5);
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
-    const again = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
+    const again = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
 
     // Dismissing a dead terminal and killing a live one are ONE verb, so an exited terminal
     // is no conflict — and there is no PTY left to ask anything of.
-    expect(killed.status).toBe(200);
+    expect(killed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.machine.sent).toEqual([]);
     expect(fixture.store.getSession(born.sessionId)).toBeNull();
     expect(fixture.store.getPad(born.homeId)).toBeNull();
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
     // Gone is gone: the second request finds no terminal rather than a tombstone.
-    expect(again.status).toBe(404);
+    expect(again.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "terminal not found" },
+    });
   });
 
   test("killing one occupant of a composition takes its tile and leaves the composition", async () => {
@@ -668,9 +681,11 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     );
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${first.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: first.sessionId,
+    });
 
-    expect(killed.status).toBe(200);
+    expect(killed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: first.sessionId }]);
     expect(fixture.store.getSession(first.sessionId)).toBeNull();
     // The composition is shared with whatever else lives in it, so killing an occupant is
@@ -711,9 +726,10 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     );
     const identityKilled = await call(
       byIdentity,
-      "DELETE",
-      `/api/terminals/${identityBorn.sessionId}`,
+      "POST",
+      "/api/actions/core.terminals.kill",
       OWNER_KEY,
+      { sessionId: identityBorn.sessionId },
     );
 
     // Two doors, one rule. If these ever diverge, closing a tile and pressing X stop meaning

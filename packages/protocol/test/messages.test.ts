@@ -9,7 +9,6 @@ import {
   PROTOCOL_VERSION,
   PadSchema,
   ROOT_TILE_ID,
-  RenameTerminalRequestSchema,
   ServerMessageSchema,
   SceneElementSchema,
   TerminalsResponseSchema,
@@ -447,12 +446,6 @@ describe("http schemas", () => {
     ).toBe(false);
   });
 
-  test("terminal rename shapes round-trip", () => {
-    expect(RenameTerminalRequestSchema.parse({ name: "build" })).toEqual({ name: "build" });
-    expect(RenameTerminalRequestSchema.safeParse({ name: "" }).success).toBe(false);
-    expect(RenameTerminalRequestSchema.safeParse({ name: "x".repeat(121) }).success).toBe(false);
-    expect(RenameTerminalRequestSchema.safeParse({}).success).toBe(false);
-  });
 
   test("pads carry a container discipline and nothing about bubbles", () => {
     const pad = {

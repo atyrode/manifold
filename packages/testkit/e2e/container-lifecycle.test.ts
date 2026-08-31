@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  ActionOutcomeSchema,
   ContainersResponseSchema,
   OkResponseSchema,
   PadsResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  RenameTerminalRequestSchema,
   TerminalsResponseSchema,
   censusSolo,
   type CensusItem,
@@ -168,14 +168,20 @@ async function waitForTileCount(client: SessionClient, count: number): Promise<T
   return layout;
 }
 
+/** Invokes one action over the real door and insists it succeeded. */
+async function invokeAction(server: TestServer, name: string, args: unknown): Promise<void> {
+  const outcome = await ownerFetch(server, `/api/actions/${name}`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(args),
+    responseSchema: ActionOutcomeSchema,
+  });
+  if (!outcome.ok) throw new Error(`${name} refused: ${outcome.denial.message}`);
+}
+
 /** Renames a terminal so a merged composition's auto-name is exact rather than machine-derived. */
 async function renameTerminal(server: TestServer, sessionId: string, name: string): Promise<void> {
-  await ownerFetch(server, `/api/terminals/${sessionId}`, {
-    method: "PATCH",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(RenameTerminalRequestSchema.parse({ name })),
-    responseSchema: OkResponseSchema,
-  });
+  await invokeAction(server, "core.terminals.rename", { sessionId, name });
 }
 
 test("a terminal is born into a solo composition, and placing a portal onto it flips unplaced", async () => {
@@ -636,11 +642,7 @@ test("killing a terminal by id removes it, its home, and every portal onto it", 
     homeClient.sendTerminalInput(session.id, mark.command);
     await waitForTerminalText(capture, mark.text, 10_000);
 
-    const killed = await ownerFetch(server, `/api/terminals/${session.id}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
-    });
-    expect(killed.ok).toBe(true);
+    await invokeAction(server, "core.terminals.kill", { sessionId: session.id });
 
     // The PTY really stopped: the agent, not the server, says so.
     await waitFor(
@@ -725,11 +727,7 @@ test("a terminal that exits on its own keeps its real code, its home and its por
 
     // And only a deliberate kill destroys it: the same terminal, dismissed, poofs like any
     // other — which is the contrast this test exists to draw.
-    const dismissed = await ownerFetch(server, `/api/terminals/${session.id}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
-    });
-    expect(dismissed.ok).toBe(true);
+    await invokeAction(server, "core.terminals.kill", { sessionId: session.id });
     await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
     await waitFor(() => !canvas.elements.has("el-exit"), 10_000, 20);
     expect((await listPads(server)).map((row) => row.id)).toEqual([pad.id]);

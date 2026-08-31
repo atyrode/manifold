@@ -130,7 +130,14 @@ export class AuthService {
     return machine;
   }
 
-  /** Checks a capability and, when supplied, enforces the token's pad scope. */
+  /**
+   * Checks a capability and, when supplied, enforces the token's pad scope.
+   *
+   * THE AUTHORITY SEAM. This one call is where the permission waterfall lands (ADR 0011):
+   * flat caps plus an optional pad scope are the degenerate case of grants on the node tree,
+   * so the evaluator replaces this body and every caller — including the action door's
+   * declared-cap intersection — keeps asking the same question.
+   */
   allows(context: AuthContext, cap: Exclude<Cap, "*">, padId?: string): boolean {
     if (!hasCap(context.caps, cap)) return false;
     if (padId !== undefined && context.padScope !== null && context.padScope !== padId)

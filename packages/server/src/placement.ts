@@ -1400,7 +1400,7 @@ export class PlaceExecutor {
   }
 
   /**
-   * Removes a terminal from the world. `DELETE /api/terminals/:id`, `terminal_kill` and a
+   * Removes a terminal from the world. `core.terminals.kill`, `terminal_kill` and a
    * titlebar close all land here, and all three mean the same thing: a DELIBERATE kill is
    * total and it is one step — every leaf its home holds for it, the session and its PTY,
    * and, when the terminal was the last thing its home held, the home itself along with

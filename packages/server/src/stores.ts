@@ -5,17 +5,25 @@ import {
   PadSchema,
   PadTreeItemSchema,
   PrincipalSchema,
+  TileLayoutSchema,
+  validateTileLayout,
   type Cap,
   type Pad,
   type PadTreeItem,
   type Principal,
+  type TileLayout,
 } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
+import { z } from "zod";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_PAD = 10_000;
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
+
+/** Workspace-global plugin enablement and per-principal shells live in `meta`. */
+const PLUGINS_DISABLED_META = "plugins:disabled";
+const DisabledPluginsSchema = z.array(z.string().min(1)).max(256);
 
 interface PadRow {
   id: string;
@@ -257,6 +265,62 @@ export class ServerStore {
     this.db
       .query<void, [string, string]>("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)")
       .run(key, value);
+  }
+
+  /**
+   * Which plugins an administrator turned off, workspace-globally. Stored as the DISABLED
+   * set rather than the enabled one so a plugin that ships later is on by default and no
+   * write is owed when the composition grows. A corrupt row reads as "nothing disabled":
+   * the alternative is a workspace that boots with every plugin dark because one meta value
+   * lost its brackets.
+   */
+  disabledPlugins(): ReadonlySet<string> {
+    const raw = this.getMeta(PLUGINS_DISABLED_META);
+    if (raw === null) return new Set();
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return new Set();
+    }
+    const parsed = DisabledPluginsSchema.safeParse(decoded);
+    return new Set(parsed.success ? parsed.data : []);
+  }
+
+  setPluginEnabled(id: string, enabled: boolean): void {
+    const disabled = new Set(this.disabledPlugins());
+    if (enabled) disabled.delete(id);
+    else disabled.add(id);
+    this.setMeta(PLUGINS_DISABLED_META, JSON.stringify([...disabled].sort()));
+  }
+
+  /**
+   * One principal's workspace tree — the shell itself, as a tile composition. Null means
+   * "never written", which the door answers with the default layout; an unreadable or
+   * structurally invalid stored tree ALSO reads as null, because a principal whose stored
+   * shell went bad must get a working workspace back rather than a blank screen.
+   */
+  workspaceLayout(principalId: string): TileLayout | null {
+    const raw = this.getMeta(`layout:${principalId}`);
+    if (raw === null) return null;
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    const parsed = TileLayoutSchema.safeParse(decoded);
+    if (!parsed.success || !validateTileLayout(parsed.data)) return null;
+    return parsed.data;
+  }
+
+  /** Refuses to persist a tree the reader would then have to reject. */
+  setWorkspaceLayout(principalId: string, layout: TileLayout): void {
+    const parsed = TileLayoutSchema.parse(layout);
+    if (!validateTileLayout(parsed)) {
+      throw new Error("workspace layout is not a valid tile tree");
+    }
+    this.setMeta(`layout:${principalId}`, JSON.stringify(parsed));
   }
 
   listPadTree(): PadTreeItem[] {

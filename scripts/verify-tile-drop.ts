@@ -34,6 +34,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
   MachinesResponseSchema,
   ROOT_TILE_ID,
   TerminalsResponseSchema,
@@ -260,12 +261,14 @@ try {
       await (await fetch(`${origin}/api/terminals`, { headers: httpHeaders })).json(),
     ).terminals;
   const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
-    const renamed = await fetch(`${origin}/api/terminals/${terminalId}`, {
-      method: "PATCH",
+    const renamed = await fetch(`${origin}/api/actions/core.terminals.rename`, {
+      method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ sessionId: terminalId, name }),
     });
-    if (!renamed.ok) throw new Error(`could not name the terminal ${name}`);
+    // The action door answers 200 even for a refusal, so the outcome decides, not the status.
+    const outcome = ActionOutcomeSchema.parse(await renamed.json());
+    if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
   };
   const place = async (surface: unknown, destination: unknown): Promise<Response> =>
     await fetch(`${origin}/api/place`, {

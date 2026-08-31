@@ -856,7 +856,7 @@ export class TerminalBroker implements SessionPlacementPort {
   /**
    * A terminal stops in exactly one of two ways, and the whole difference is INTENT.
    *
-   *   KILLED — somebody ASKED for it to stop: `terminal_kill`, `DELETE /api/terminals/:id`,
+   *   KILLED — somebody ASKED for it to stop: `terminal_kill`, `core.terminals.kill`,
    *     or closing its last tile. The request is the intent, so the terminal leaves the
    *     world: the PTY, the session row, its home composition and every portal onto that
    *     home go together and at once. Afterwards there is no exited row to find and no exit
@@ -902,9 +902,9 @@ export class TerminalBroker implements SessionPlacementPort {
   }
 
   /**
-   * Owner-authorized kill for HTTP callers (`DELETE /api/terminals/:id`), which hold no
-   * session peer and therefore no controller lease to win. An already-exited terminal is no
-   * conflict here: sweeping it is precisely what the caller asked for.
+   * Owner-authorized kill for callers with no session peer (`core.terminals.kill`), which
+   * therefore hold no controller lease to win. An already-exited terminal is no conflict
+   * here: sweeping it is precisely what the caller asked for.
    */
   killById(sessionId: string): "ok" | "not_found" {
     if (!this.sessions.has(sessionId)) return "not_found";

@@ -1,16 +1,15 @@
 import { expect, test } from "bun:test";
 import {
+  ActionOutcomeSchema,
   HttpErrorSchema,
-  OkResponseSchema,
   PlaceRequestSchema,
-  RenameTerminalRequestSchema,
   TerminalsResponseSchema,
+  type ActionOutcome,
   type HttpError,
   type TerminalSummary,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
-  HttpResponseError,
   connect,
   createPad,
   enrollMachine,
@@ -72,6 +71,20 @@ async function terminalRow(
   sessionId: string,
 ): Promise<TerminalSummary | undefined> {
   return (await listTerminals(server)).find((terminal) => terminal.id === sessionId);
+}
+
+/** Invokes one action over the real door, returning the outcome envelope verbatim. */
+async function invokeAction(
+  server: TestServer,
+  name: string,
+  args: unknown,
+): Promise<ActionOutcome> {
+  return await ownerFetch(server, `/api/actions/${name}`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(args),
+    responseSchema: ActionOutcomeSchema,
+  });
 }
 
 test("the terminal index lists every terminal, placed or not, and renames and kills through it", async () => {
@@ -140,12 +153,11 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
       10_000,
       (message) => message.sessionId === loose.session.id && message.kind === "renamed",
     );
-    await ownerFetch(server, `/api/terminals/${loose.session.id}`, {
-      method: "PATCH",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(RenameTerminalRequestSchema.parse({ name: "build box" })),
-      responseSchema: OkResponseSchema,
+    const renameOutcome = await invokeAction(server, "core.terminals.rename", {
+      sessionId: loose.session.id,
+      name: "build box",
     });
+    expect(renameOutcome).toEqual({ ok: true, result: {} });
     expect((await renamed).name).toBe("build box");
     await waitFor(
       () => loose.homeClient.sessions.get(loose.session.id)?.name === "build box",
@@ -162,11 +174,10 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
       15_000,
       (message) => message.sessionId === loose.session.id && message.kind === "parked",
     );
-    const killed = await ownerFetch(server, `/api/terminals/${loose.session.id}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
+    const killed = await invokeAction(server, "core.terminals.kill", {
+      sessionId: loose.session.id,
     });
-    expect(killed.ok).toBe(true);
+    expect(killed).toEqual({ ok: true, result: {} });
     expect((await departed).kind).toBe("parked");
     await waitFor(
       async () => (await terminalRow(server, loose.session.id)) === undefined,
@@ -190,17 +201,10 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
     expect((await terminalRow(server, placed.session.id))?.status).toBe("running");
 
     // Gone is gone: a second kill finds no terminal rather than a tombstone to conflict with.
-    const secondKill = await ownerFetch(server, `/api/terminals/${loose.session.id}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
-    }).then(
-      () => null,
-      (error: unknown) => error,
-    );
-    if (!(secondKill instanceof HttpResponseError)) {
-      throw new Error("killing a terminal that no longer exists must fail with a protocol error");
-    }
-    expect(secondKill.code).toBe("not_found");
+    // The door answers 200 with the refusal as data — a denial is an answer, not a failure.
+    expect(
+      await invokeAction(server, "core.terminals.kill", { sessionId: loose.session.id }),
+    ).toEqual({ ok: false, denial: { rule: "refused", message: "terminal not found" } });
 
     // Pad-scoped tokens are refused before any surface lookup: reading the index or placing
     // anything crosses containers, and a token scoped to one container cannot authorize that.

@@ -13,7 +13,7 @@ import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, FakeSocket, testPluginHost, testStore } from "./helpers.ts";
 
 /** Tests that are not about routing drive one channel per socket, exactly as v11 did. */
 const CH = "c1";
@@ -56,7 +56,8 @@ function gatewayFixture(): GatewayFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const gateway = new SessionGateway(auth, rooms, broker, clock, silentLogger, runtime);
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const gateway = new SessionGateway(auth, rooms, broker, plugins, clock, silentLogger, runtime);
   const secondPad = (name: string): Pad => {
     const created: Pad = {
       id: runtime.newId(),
@@ -118,7 +119,9 @@ function join(
 ): void {
   gateway.open(id, socket);
   send(gateway, id, CH, { type: "join", padId, token, protocolVersion: PROTOCOL_VERSION });
-  expect(socket.messages()[0]?.type).toBe("init");
+  // The roster comes first and belongs to the SOCKET: a connection learns the workspace's
+  // vocabulary before it carries any room, so the join's `init` is the second frame.
+  expect(socket.messages().map((message) => message.type)).toEqual(["plugins", "init"]);
   socket.clear();
 }
 
@@ -138,7 +141,7 @@ function joinSpectator(
     protocolVersion: PROTOCOL_VERSION,
     spectator: true,
   });
-  expect(socket.messages()[0]?.type).toBe("init");
+  expect(socket.messages().map((message) => message.type)).toEqual(["plugins", "init"]);
   socket.clear();
 }
 

@@ -398,12 +398,43 @@ export class Room {
     return true;
   }
 
-  /** Merges ephemeral presence while stamping the authenticated principal id. */
+  /**
+   * Merges ephemeral presence while stamping the authenticated principal id.
+   *
+   * `spotlight` is SERVER-WRITTEN ONLY and is dropped here whatever a client sends. It says
+   * "another principal asked you to look at this", and its whole value is that the ask
+   * carried an authority check — `core.presence.focus` verified a shared room and
+   * `scene:write` before writing one. A peer allowed to set it on itself could set it on
+   * anybody by claiming a principal it is not, so the field simply never crosses inbound.
+   */
   updatePresence(peer: SessionPeer, payload: PresencePayload): void {
     const principalId = peer.auth.principal.id;
+    const client: PresencePayload = { ...payload };
+    delete client.spotlight;
     const current = this.presences.get(principalId) ?? {};
-    this.presences.set(principalId, { ...current, ...payload });
-    this.broadcast({ type: "presence", principalId, connId: peer.id, payload });
+    this.presences.set(principalId, { ...current, ...client });
+    this.broadcast({ type: "presence", principalId, connId: peer.id, payload: client });
+  }
+
+  /** Whether a principal currently OCCUPIES this room; a spectator never does. */
+  hasPrincipal(principalId: string): boolean {
+    return this.connections.has(principalId);
+  }
+
+  /**
+   * Writes a spotlight into one occupant's presence and fans it out. Nobody is excluded —
+   * least of all the target, which is the peer that has to act on it — and the frame is
+   * attributed to the target's own first connection because presence is principal-level
+   * state and there is no reporting socket behind a server write.
+   */
+  writeSpotlight(principalId: string, spotlight: { uri: string; from: string }): boolean {
+    const peers = this.connections.get(principalId);
+    const first = peers?.values().next().value;
+    if (first === undefined) return false;
+    const current = this.presences.get(principalId) ?? {};
+    this.presences.set(principalId, { ...current, spotlight });
+    this.broadcast({ type: "presence", principalId, connId: first.id, payload: { spotlight } });
+    return true;
   }
 
   /** Relays high-rate cursor motion with droppable delivery under socket pressure. */
@@ -910,6 +941,46 @@ export class RoomManager {
       if (principals.length > 0) pads.push({ padId: room.padId, principals });
     }
     return pads.sort((left, right) => left.padId.localeCompare(right.padId));
+  }
+
+  /**
+   * Pads where BOTH principals are currently joined. This is the consent gate behind
+   * "look at this": one principal may steer another's view only where they are already
+   * together, so the reach of a spotlight is exactly the reach of shared presence, and it
+   * is computed from live membership rather than from anything the caller claims.
+   */
+  sharedPadIds(left: string, right: string): string[] {
+    const shared: string[] = [];
+    for (const room of this.rooms.values()) {
+      if (room.hasPrincipal(left) && room.hasPrincipal(right)) shared.push(room.padId);
+    }
+    return shared.sort((first, second) => first.localeCompare(second));
+  }
+
+  /** Writes server-owned presence into a live room; false when nobody is there to receive it. */
+  setSpotlight(
+    padId: string,
+    principalId: string,
+    spotlight: { uri: string; from: string },
+  ): boolean {
+    return this.rooms.get(padId)?.writeSpotlight(principalId, spotlight) ?? false;
+  }
+
+  /**
+   * Whether a container currently holds a given element or tile — the existence half of
+   * `GET /api/resolve` for the two addresses that live INSIDE a document. It materializes
+   * the room exactly as a join would, because the answer is in the document and a stale
+   * snapshot would report a note somebody just deleted as still there.
+   */
+  holdsElement(padId: string, elementId: string): boolean {
+    const room = this.get(padId);
+    return room !== null && readElement(room.doc, elementId) !== null;
+  }
+
+  holdsTile(padId: string, tileId: string): boolean {
+    const room = this.get(padId);
+    if (room === null) return false;
+    return readTileLayout(room.doc, padId)?.[tileId] !== undefined;
   }
 
   /** Rechecks an idle resident after its last running terminal exits. */

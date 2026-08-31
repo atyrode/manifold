@@ -1,4 +1,5 @@
 import {
+  ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
   CreatePadFolderRequestSchema,
   CreatePadRequestSchema,
@@ -13,7 +14,6 @@ import {
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
   RenamePadRequestSchema,
-  RenameTerminalRequestSchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
   type MachineSummary,
@@ -233,29 +233,36 @@ export async function placeItem(
   throw errorFromBody(response.status, body);
 }
 
-/** Renames a terminal session (`PATCH /api/terminals/:id`), placed or not. */
+/**
+ * Invokes one action (`POST /api/actions/:name`). Denials are DATA — the door answers 200
+ * with `ok: false` — so a refusal becomes an Error carrying the reason the door gave rather
+ * than a status code the caller would have to interpret.
+ */
+async function invokeAction(token: string, name: string, args: unknown): Promise<void> {
+  const body = await requestJson(`/api/actions/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(args),
+  });
+  const outcome = ActionOutcomeSchema.parse(body);
+  if (!outcome.ok) throw new Error(outcome.denial.message);
+}
+
+/** Renames a terminal session (`core.terminals.rename`), placed or not. */
 export async function renameTerminal(
   token: string,
   sessionId: string,
   name: string,
 ): Promise<void> {
-  const request = RenameTerminalRequestSchema.parse({ name });
-  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
+  await invokeAction(token, "core.terminals.rename", { sessionId, name });
 }
 
 /**
- * Kills a terminal's PTY (`DELETE /api/terminals/:id`). Nothing survives it: with no pool
- * to fall back into, a terminal's home composition is emptied and deleted with it.
+ * Kills a terminal's PTY (`core.terminals.kill`). Nothing survives it: with no pool to fall
+ * back into, a terminal's home composition is emptied and deleted with it.
  */
 export async function killTerminal(token: string, sessionId: string): Promise<void> {
-  await requestJson(`/api/terminals/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-    headers: authHeaders(token, false),
-  });
+  await invokeAction(token, "core.terminals.kill", { sessionId });
 }
 
 /** Loads the enrolled machines with live online state (`GET /api/machines`). */

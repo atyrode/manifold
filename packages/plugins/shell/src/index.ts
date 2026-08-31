@@ -1,0 +1,65 @@
+import { defineAction } from "@manifold/plugin";
+import { TileLayoutSchema, type PluginManifest } from "@manifold/protocol";
+import { z } from "zod";
+
+/**
+ * The shell: the sidebar and the pad view, as plugin panels. A principal's workspace is a
+ * tile tree whose leaves name these two panel ids, rendered by the same component every
+ * tiled container uses — which is why the shell is a composition rather than a frame with
+ * plugin holes cut in it (D2).
+ *
+ * ESSENTIAL: nothing else can draw the workspace, so disabling it is refused rather than
+ * obeyed. It declares no actions and no capabilities — chrome is not authority.
+ */
+export const shellManifest: PluginManifest = {
+  id: "core.shell",
+  version: "1.0.0",
+  title: "Workspace Shell",
+  description:
+    "The workspace itself: the sidebar panel and the pad-view panel every layout is built from.",
+  capabilities: [],
+  essential: true,
+  contributes: {
+    panels: [
+      { id: "sidebar", title: "Sidebar" },
+      { id: "pad-view", title: "Pad View" },
+    ],
+    sections: [],
+    elements: [],
+    tools: [],
+    events: [],
+  },
+};
+
+/**
+ * The workspace layout, as a door. It lives in the shell's package because it is the
+ * shell's own state, but it is a SEPARATE plugin id so the ratified action name stays
+ * `core.layout.set` — a plugin id is a namespace, and "the tree" and "the panels that fill
+ * it" are two concepts even when one package ships both.
+ *
+ * It contributes nothing: no panel, no section, no element. Disabling it stops layout
+ * writes without taking the shell's panels down with it.
+ */
+export const layoutManifest: PluginManifest = {
+  id: "core.layout",
+  version: "1.0.0",
+  title: "Workspace Layout",
+  description: "Stores each principal's workspace tile tree and the panels its leaves name.",
+  capabilities: [],
+  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+};
+
+/**
+ * Writing a layout needs no capability: dispatch already refuses pad-scoped tokens, and a
+ * workspace tree is per principal — the only tree this door can write is the caller's own,
+ * so there is nothing to attenuate. A layout is chrome that happens to be shared state.
+ */
+export const layoutActions = [
+  defineAction({
+    name: "set",
+    title: "Set workspace layout",
+    caps: [],
+    input: z.strictObject({ layout: TileLayoutSchema }),
+    result: z.strictObject({}),
+  }),
+];

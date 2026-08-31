@@ -43,7 +43,14 @@ import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, placeTile, testStore } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  placeTile,
+  testPluginHost,
+  testStore,
+} from "./helpers.ts";
 
 const OWNER_KEY = "f".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -187,6 +194,7 @@ function placementFixture(): PlacementFixture {
     broker,
     placement,
     machines,
+    testPluginHost(store, auth, rooms, broker, runtime),
     runtime,
     silentLogger,
   );

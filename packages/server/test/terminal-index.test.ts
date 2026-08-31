@@ -33,6 +33,7 @@ import {
   FakeRuntime,
   FakeSocket,
   placeTile,
+  testPluginHost,
   testStore,
   unplaceTerminal,
 } from "./helpers.ts";
@@ -151,6 +152,7 @@ function indexFixture(): IndexFixture {
   const machine = new FakeMachine(auth.enrollMachine(MACHINE_NAME, root).machine.id);
   broker.setMachineOnline(machine);
   const opener = new SessionPeer(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
   const app = new HttpApp(
     config,
     store,
@@ -159,6 +161,7 @@ function indexFixture(): IndexFixture {
     broker,
     placement,
     machines,
+    plugins,
     runtime,
     silentLogger,
   );
@@ -384,7 +387,7 @@ describe("GET /api/terminals", () => {
   });
 });
 
-describe("PATCH /api/terminals/:id", () => {
+describe("core.terminals.rename", () => {
   test("a rename is published into the terminal's home, not the canvas showing it", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
@@ -396,12 +399,13 @@ describe("PATCH /api/terminals/:id", () => {
     const onCanvas = joinPeer(fixture, fixture.canvas.id);
     const inHome = joinPeer(fixture, born.homeId);
 
-    const renamed = await call(fixture, "PATCH", `/api/terminals/${born.sessionId}`, OWNER_KEY, {
+    const renamed = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
+      sessionId: born.sessionId,
       name: "  build  ",
     });
 
     expect(renamed.status).toBe(200);
-    expect(renamed.payload).toEqual({ ok: true });
+    expect(renamed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.store.getSession(born.sessionId)?.name).toBe("build");
     // A name is session state, so it is published where every viewer of the terminal is
     // already joined: its home. A canvas learns about it through the widget it renders.
@@ -411,21 +415,30 @@ describe("PATCH /api/terminals/:id", () => {
     expect(bodiesOfType(onCanvas.socket, "session_event")).toEqual([]);
   });
 
-  test("a blank name is invalid and an unknown terminal is not found", async () => {
+  test("a blank name and an unknown terminal are refusals, not transport failures", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
 
-    const blank = await call(fixture, "PATCH", `/api/terminals/${born.sessionId}`, OWNER_KEY, {
+    const blank = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
+      sessionId: born.sessionId,
       name: "   ",
     });
-    const missing = await call(fixture, "PATCH", "/api/terminals/missing", OWNER_KEY, {
+    const missing = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
+      sessionId: "missing",
       name: "build",
     });
 
-    expect(blank.status).toBe(400);
-    expect(blank.payload).toMatchObject({ error: { code: "invalid" } });
-    expect(missing.status).toBe(404);
-    expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
+    // The door always answers 200: a denial is DATA about authority or state, and the rule
+    // that refused travels with it instead of being flattened into a status code.
+    expect([blank.status, missing.status]).toEqual([200, 200]);
+    expect(blank.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "name is empty" },
+    });
+    expect(missing.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "terminal not found" },
+    });
     expect(fixture.broker.rename("missing-session", "build")).toBe("not_found");
   });
 
@@ -456,7 +469,8 @@ describe("PATCH /api/terminals/:id", () => {
     const born = openTerminal(fixture);
     const token = padScopedToken(fixture);
 
-    const renamed = await call(fixture, "PATCH", `/api/terminals/${born.sessionId}`, token, {
+    const renamed = await call(fixture, "POST", "/api/actions/core.terminals.rename", token, {
+      sessionId: born.sessionId,
       name: "build",
     });
     // Reordering a terminal IS moving its home in the one index, so the gate that refuses it
@@ -467,12 +481,17 @@ describe("PATCH /api/terminals/:id", () => {
       index: 0,
     });
 
-    expect([renamed.status, moved.status]).toEqual([403, 403]);
+    // The action door refuses a scoped token as DATA; the pad-tree route still answers 403.
+    expect(renamed.payload).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+    });
+    expect(moved.status).toBe(403);
     expect(fixture.store.getSession(born.sessionId)?.name).toBeNull();
   });
 });
 
-describe("DELETE /api/terminals/:id", () => {
+describe("core.terminals.kill", () => {
   test("killing a terminal drops its row and its home from the index at once", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
@@ -481,25 +500,33 @@ describe("DELETE /api/terminals/:id", () => {
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
     // The machine answers a kill by reporting the exit; the row it would have updated is
     // already gone, so this cannot resurrect it as an exited entry.
     fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
     const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-    const again = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
-    const missing = await call(fixture, "DELETE", "/api/terminals/missing", OWNER_KEY);
+    const again = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: born.sessionId,
+    });
+    const missing = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      sessionId: "missing",
+    });
 
-    expect(killed.status).toBe(200);
-    expect(killed.payload).toEqual({ ok: true });
+    expect(killed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
     // A kill removes the terminal from the world, so the index has no row to show and the
     // home it lived in is gone with it. There is no tombstone state between the two.
     expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
     expect(fixture.store.getSession(born.sessionId)).toBeNull();
     expect(fixture.store.getPad(born.homeId)).toBeNull();
-    expect([again.status, missing.status]).toEqual([404, 404]);
-    expect(again.payload).toMatchObject({ error: { code: "not_found" } });
-    expect(missing.payload).toMatchObject({ error: { code: "not_found" } });
+    // Gone is gone: a second kill and an id that never existed refuse identically.
+    expect(again.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "terminal not found" },
+    });
+    expect(missing.payload).toEqual(again.payload);
   });
 
   test("a pad-scoped token cannot kill a terminal", async () => {
@@ -508,12 +535,16 @@ describe("DELETE /api/terminals/:id", () => {
 
     const response = await call(
       fixture,
-      "DELETE",
-      `/api/terminals/${born.sessionId}`,
+      "POST",
+      "/api/actions/core.terminals.kill",
       padScopedToken(fixture),
+      { sessionId: born.sessionId },
     );
 
-    expect(response.status).toBe(403);
+    expect(response.payload).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+    });
     expect(fixture.store.getSession(born.sessionId)?.status).toBe("running");
   });
 });

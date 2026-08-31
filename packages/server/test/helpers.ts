@@ -9,11 +9,16 @@ import {
   type TileEdge,
   type TileSurface,
 } from "@manifold/protocol";
+import type { AuthService } from "../src/auth.ts";
+import { SERVER_PLUGIN_DEFS } from "../src/composition.ts";
 import { openDatabase } from "../src/db.ts";
+import { silentLogger } from "../src/log.ts";
 import type { PlaceExecutor, PlaceOutcome } from "../src/placement.ts";
-import type { RoomTimers } from "../src/room.ts";
+import { PluginHost } from "../src/plugin-host.ts";
+import type { RoomManager, RoomTimers } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
 import { ServerStore } from "../src/stores.ts";
+import type { TerminalBroker } from "../src/terminal-broker.ts";
 
 /**
  * The retired verbs, expressed over `place()`.
@@ -258,4 +263,19 @@ export class FakeSocket implements RawSocket {
 /** Opens a migrated isolated in-memory persistence store. */
 export function testStore(): ServerStore {
   return new ServerStore(openDatabase(":memory:"));
+}
+
+/**
+ * The real composition, in a test. Tests compose the SAME defs production does — a fixture
+ * with a hand-written plugin list would let the action door pass here and refuse in the
+ * server, which is exactly the divergence the registry exists to prevent.
+ */
+export function testPluginHost(
+  store: ServerStore,
+  auth: AuthService,
+  rooms: RoomManager,
+  broker: TerminalBroker,
+  runtime: RuntimeDeps,
+): PluginHost {
+  return new PluginHost(SERVER_PLUGIN_DEFS, store, auth, rooms, broker, runtime, silentLogger);
 }
