@@ -1,3 +1,15 @@
+/**
+ * The character-level merge policy behind collaborative note editing.
+ *
+ * A `<textarea>` reports a whole new string; a `Y.Text` wants the smallest edit that produced
+ * it. Turning one into the other is what keeps two people typing in the same note from
+ * clobbering each other: replacing the whole text would delete and re-insert every character,
+ * so a peer's concurrent insert would land inside a range that no longer exists.
+ *
+ * The cursor is the tie-breaker, not a hint. `abcabc` → `abcXabc` is ambiguous — the `X` could
+ * have been typed at index 3 or at index 4 — and only the caret knows which; bounding the
+ * common prefix by it is what makes the derived edit match what the human actually did.
+ */
 export interface TextDiff {
   readonly index: number;
   readonly remove: number;

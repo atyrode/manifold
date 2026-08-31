@@ -290,6 +290,7 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
    * polls, and every write goes through `place` — the same door the canvas and the composition
    * renderer use, from a plugin that owns none of them.
    */
+  const roster = host.composition.roster();
   const lookup = useMemo(
     () =>
       createPlacementLookup({
@@ -298,8 +299,9 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
         elements: EMPTY_ELEMENTS,
         terminalHomes: new Map(terminals.map((terminal) => [terminal.id, terminal.homeId])),
         soloOccupants,
+        roster,
       }),
-    [pads, soloOccupants, terminals],
+    [pads, roster, soloOccupants, terminals],
   );
   const drop = useItemDrop({
     lookup,
@@ -738,7 +740,9 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
           type="button"
           aria-label={`Save name for ${label}`}
           title="Save"
-          {...(isTerminal ? { "data-action": "core.terminals.rename" } : {})}
+          {...(isTerminal
+            ? { "data-action": "core.terminals.rename" }
+            : { "data-action": "core.views.renamePad" })}
           disabled={renaming || renameName.trim() === "" || renameName.trim() === label}
           onClick={() => void submitRename(pad)}
         >
@@ -785,7 +789,9 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
               className="is-danger"
               type="button"
               role="menuitem"
-              {...(isTerminal ? { "data-action": "core.terminals.kill" } : {})}
+              {...(isTerminal
+                ? { "data-action": "core.terminals.kill" }
+                : { "data-action": "core.views.deletePad" })}
               disabled={deletingId !== null}
               onClick={() => void destroyRow(pad)}
             >
@@ -945,7 +951,11 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
         >
           Cancel
         </button>
-        <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>
+        <button
+          type="submit"
+          data-action="core.views.createFolder"
+          disabled={creatingFolder || folderName.trim() === ""}
+        >
           {creatingFolder ? "Creating…" : "Create"}
         </button>
       </div>
@@ -980,6 +990,7 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
             className="pad-sidebar-inline-action is-primary"
             type="button"
             aria-label={`Save name for ${folder.name}`}
+            data-action="core.views.renameFolder"
             disabled={folderRenameName.trim() === ""}
             onClick={() => void submitFolderRename(folder)}
           >
@@ -1060,6 +1071,7 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
                   className="is-danger"
                   type="button"
                   role="menuitem"
+                  data-action="core.views.deleteFolder"
                   disabled={deletingFolderId === folder.id}
                   onClick={() => {
                     setActionPadId(null);

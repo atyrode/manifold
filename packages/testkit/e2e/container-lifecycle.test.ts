@@ -6,14 +6,12 @@ import {
   PadsResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  TerminalsResponseSchema,
   censusSolo,
   type CensusItem,
   type ContainerCensus,
   type Pad,
   type PlaceRequest,
   type PlaceResponse,
-  type TerminalSummary,
   type TileLayout,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
@@ -21,7 +19,9 @@ import {
   connect,
   createPad,
   enrollMachine,
+  listTerminals,
   mintToken,
+  ownerAction,
   ownerFetch,
   startAgent,
   startServer,
@@ -98,28 +98,18 @@ async function startWorkspace(
 
 /**
  * The ONE placement call. Every gesture this file exercises — merge, extract, unplace — is
- * the same envelope with a different destination, and the returned `op` says which placement
- * the declarations chose, so each caller asserts the op it expected.
+ * the same envelope with a different destination dispatched through `core.layout.place`, and
+ * the returned `op` says which placement the declarations chose, so each caller asserts the
+ * op it expected.
  */
 async function place(server: TestServer, request: PlaceRequest): Promise<PlaceResponse> {
-  return await ownerFetch(server, "/api/place", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(PlaceRequestSchema.parse(request)),
-    responseSchema: PlaceResponseSchema,
-  });
+  return PlaceResponseSchema.parse(
+    await ownerAction(server, "core.layout.place", PlaceRequestSchema.parse(request)),
+  );
 }
 
 async function listPads(server: TestServer): Promise<readonly Pad[]> {
-  const listing = await ownerFetch(server, "/api/pads", { responseSchema: PadsResponseSchema });
-  return listing.pads;
-}
-
-async function listTerminals(server: TestServer): Promise<readonly TerminalSummary[]> {
-  const listing = await ownerFetch(server, "/api/terminals", {
-    responseSchema: TerminalsResponseSchema,
-  });
-  return listing.terminals;
+  return PadsResponseSchema.parse(await ownerAction(server, "core.views.list", {})).pads;
 }
 
 /** The whole containment graph: one census per container, which is the index's only input. */

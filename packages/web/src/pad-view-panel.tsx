@@ -5,7 +5,7 @@ import type { StoredIdentity } from "./api.ts";
 import { PadErrorBoundary } from "./error-boundary.tsx";
 import { FlowPadView } from "./flow-pad-view.tsx";
 import { TiledPadView } from "./tiled-pad-view.tsx";
-import type { WorkspaceSidebarState } from "./top-right.tsx";
+import type { WorkspaceSidebarState } from "./pad-browser.tsx";
 
 /**
  * The `core.shell.pad-view` panel — FLOOR, tagged `"until": "core.canvas"` /

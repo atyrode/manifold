@@ -13,6 +13,12 @@
  *
  * Exit 0 only if every check passes.
  */
+import {
+  ActionOutcomeSchema,
+  PadResponseSchema,
+  TerminalsResponseSchema,
+  type TerminalSummary,
+} from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
@@ -33,13 +39,30 @@ const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "appl
 const marker = `PUBLIC_${Date.now().toString(36).toUpperCase()}`;
 const results: { name: string; ok: boolean; detail: string }[] = [];
 
+/**
+ * THE terminal index, through its door (`core.terminals.list`). The public gate reads it to
+ * find the composition a session lives in, because a canvas widget only ever names the home.
+ */
+async function listTerminals(): Promise<readonly TerminalSummary[]> {
+  const res = await fetch(`${origin}/api/actions/core.terminals.list`, {
+    method: "POST",
+    headers: httpHeaders,
+    body: "{}",
+  });
+  if (!res.ok) throw new Error(`terminal listing failed: ${res.status}`);
+  const outcome = ActionOutcomeSchema.parse(await res.json());
+  if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
+  return TerminalsResponseSchema.parse(outcome.result).terminals;
+}
+
 /** Every run creates a pad on the PRODUCTION origin; never leave it behind. */
 async function cleanupPad(): Promise<void> {
   if (padId === "") return;
   try {
-    const res = await fetch(`${origin}/api/pads/${encodeURIComponent(padId)}`, {
-      method: "DELETE",
+    const res = await fetch(`${origin}/api/actions/core.views.deletePad`, {
+      method: "POST",
       headers: httpHeaders,
+      body: JSON.stringify({ padId }),
     });
     if (!res.ok) console.log(`WARN  evt=verify_pad_cleanup_failed status=${res.status}`);
   } catch (error) {
@@ -97,13 +120,15 @@ try {
   });
 
   await step("owner creates a pad through public origin", async () => {
-    const res = await fetch(`${origin}/api/pads`, {
+    const res = await fetch(`${origin}/api/actions/core.views.createPad`, {
       method: "POST",
       headers: httpHeaders,
       body: JSON.stringify({ name: `public-verify ${new Date().toISOString()}` }),
     });
     if (!res.ok) throw new Error(`status ${res.status}`);
-    padId = ((await res.json()) as { pad: { id: string } }).pad.id;
+    const outcome = ActionOutcomeSchema.parse(await res.json());
+    if (!outcome.ok) throw new Error(`createPad refused: ${outcome.denial.message}`);
+    padId = PadResponseSchema.parse(outcome.result).pad.id;
     return `pad ${padId}`;
   });
 
@@ -183,14 +208,8 @@ try {
   await step("two simultaneous public WebSocket viewers share one terminal", async () => {
     // Sessions live in their HOME composition, never in a canvas: find the home over
     // HTTP, then both viewers hold a channel on it — the same thing the widget does.
-    const res = await fetch(`${origin}/api/terminals`, {
-      headers: { authorization: `Bearer ${ownerKey}` },
-    });
-    if (!res.ok) throw new Error(`terminal listing failed: ${res.status}`);
-    const listed = (await res.json()) as {
-      terminals: readonly { id: string; homeId: string; status: string }[];
-    };
-    const running = listed.terminals.find((t) => t.status === "running");
+    const listed = await listTerminals();
+    const running = listed.find((terminal) => terminal.status === "running");
     if (running === undefined) throw new Error("no running session visible over the public origin");
     sessionId = running.id;
     const viewerA = newViewer(running.homeId);
@@ -221,13 +240,7 @@ try {
 
   await step("terminal session survives all viewers disconnecting", async () => {
     await sleep(2500);
-    const res = await fetch(`${origin}/api/terminals`, {
-      headers: { authorization: `Bearer ${ownerKey}` },
-    });
-    const listed = (await res.json()) as {
-      terminals: readonly { id: string; homeId: string; status: string }[];
-    };
-    const survivor = listed.terminals.find((t) => t.id === sessionId);
+    const survivor = (await listTerminals()).find((terminal) => terminal.id === sessionId);
     if (survivor === undefined || survivor.status !== "running") {
       throw new Error("session did not survive viewer disconnect");
     }

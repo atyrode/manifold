@@ -6,8 +6,8 @@ import {
   expireGestures,
   stepGestures,
   type GestureOverride,
-} from "./remote-gestures";
-import { GESTURE_HALF_LIFE_MS } from "./interpolate.ts";
+} from "../src/remote-gestures";
+import { GESTURE_HALF_LIFE_MS } from "../src/interpolate.ts";
 
 /** A carried tile always classifies to this, wherever the grab happened. */
 const TILE_ITEM = { kind: "tile", containerId: null } as const;

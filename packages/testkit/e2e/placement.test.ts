@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
-import { PadsResponseSchema, TerminalsResponseSchema, type TileLayout } from "@manifold/protocol";
+import type { TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createPad,
   enrollMachine,
+  listPads,
+  listTerminals,
   mintToken,
-  ownerFetch,
   startAgent,
   startServer,
   waitFor,
@@ -88,10 +89,7 @@ test("client.place() unplaces one real terminal and then merges it into a compos
     if (!unplaced.ok) throw new Error(`unplace was refused: ${unplaced.denial.rule}`);
     expect(unplaced.result).toEqual({ op: "unplace", removed: 1 });
     await waitFor(() => !canvas.elements.has("el-place-1"), 10_000, 20);
-    const released = await ownerFetch(server, "/api/terminals", {
-      responseSchema: TerminalsResponseSchema,
-    });
-    expect(released.terminals).toEqual([
+    expect(await listTerminals(server)).toEqual([
       {
         id: session.id,
         machineId: enrolled.machineId,
@@ -130,10 +128,8 @@ test("client.place() unplaces one real terminal and then merges it into a compos
     // The composition the terminal was born into held nothing else, so it is gone.
     await waitFor(
       async () => {
-        const listing = await ownerFetch(server, "/api/pads", {
-          responseSchema: PadsResponseSchema,
-        });
-        return listing.pads.every((row) => row.id !== bornHome);
+        const pads = await listPads(server);
+        return pads.every((row) => row.id !== bornHome);
       },
       10_000,
       50,

@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe("bounded HTTP request bodies", () => {
   test("an oversized body without content-length is rejected while streaming", async () => {
-    const request = new Request("http://localhost/api/pads", {
+    const request = new Request("http://localhost/api/actions/core.views.createPad", {
       method: "POST",
       body: JSON.stringify({ payload: "x".repeat(MAX_HTTP_BODY_BYTES) }),
     });

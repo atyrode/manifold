@@ -1,7 +1,7 @@
 import { ROOT_TILE_ID, type TileSurface } from "@manifold/protocol";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { ControlIcon, SurfaceIcon } from "./icons.tsx";
+import { ControlIcon, SurfaceIcon } from "@manifold/plugin/ui";
 import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
 import type { TileDropPipeline, TileDropState } from "./use-tile-drop.ts";
 
@@ -24,8 +24,8 @@ import type { TileDropPipeline, TileDropState } from "./use-tile-drop.ts";
  * The motion is written imperatively as `transform` on the boxes `TileTree` already
  * owns, never through React state, so the tree does not re-render and no xterm is
  * touched. `transform` changes no layout box: the `ResizeObserver` in
- * `terminal-view.tsx` observes the terminal's own container (a descendant), never
- * fires, so `fit()` never runs and no `resizeTerminal` reaches the real PTY —
+ * `@manifold-plugin/terminals/web` observes the terminal's own container (a descendant),
+ * never fires, so `fit()` never runs and no `resizeTerminal` reaches the real PTY —
  * transform-not-reflow is the protection, and it covers the fullscreen route's
  * controller socket too. Percentage translate resolves against the element's OWN box,
  * which is the `from` rect, so the numbers are scale-invariant: correct under the

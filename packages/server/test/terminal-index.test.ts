@@ -3,14 +3,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
   PadSessionsResponseSchema,
   PadTreeResponseSchema,
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
   type Pad,
+  type PadSessionSummary,
+  type PadTreeItem,
   type SceneElement,
   type ServerMessageBody,
   type ServerToAgentMessage,
+  type TerminalSummary,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -23,7 +27,8 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor } from "../src/placement.ts";
+import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
+import { OUTSIDE_SCOPE_REFUSAL } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -51,7 +56,7 @@ import {
  *   - `unplaced` round-trips with nothing but the graph: place a terminal and it is false,
  *     release it and it is true again, with no state left over to go stale.
  *   - Reordering an unplaced terminal is not a terminal operation at all. It is
- *     `PUT /api/pad-tree` on that terminal's HOME, because the top level of the one index is
+ *     `core.views.move` on that terminal's HOME, because the top level of the one index is
  *     where the unreferenced already live.
  */
 
@@ -138,7 +143,16 @@ function indexFixture(): IndexFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  // The composition first: the executor resolves contributed element traits against it
+  // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    compositionElementTraits(() => plugins.roster()),
+  );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
     auth,
@@ -152,7 +166,6 @@ function indexFixture(): IndexFixture {
   const machine = new FakeMachine(auth.enrollMachine(MACHINE_NAME, root).machine.id);
   broker.setMachineOnline(machine);
   const opener = new SessionPeer(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
-  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
   const app = new HttpApp(
     config,
     store,
@@ -162,7 +175,6 @@ function indexFixture(): IndexFixture {
     placement,
     machines,
     plugins,
-    runtime,
     silentLogger,
   );
   const fixture: IndexFixture = {
@@ -194,6 +206,13 @@ function homeOf(fixture: IndexFixture, sessionId: string): string {
   const padId = fixture.store.getSession(sessionId)?.padId;
   if (padId === undefined) throw new Error(`session ${sessionId} has no row`);
   return padId;
+}
+
+/** The index an action answered with: the outcome envelope, then the tree inside it. */
+function actionItems(payload: unknown): readonly PadTreeItem[] {
+  const outcome = ActionOutcomeSchema.parse(payload);
+  if (!outcome.ok) throw new Error(`action refused: ${outcome.denial.message}`);
+  return PadTreeResponseSchema.parse(outcome.result).items;
 }
 
 /** A terminal, born from the canvas into a solo composition of its own. */
@@ -263,6 +282,33 @@ async function call(
   return { status: response.status, payload: await response.json() };
 }
 
+/**
+ * The index and the per-container listing, through their doors. Reads are actions too now,
+ * so a test asking "what does the index say" asks it the way the browser and a stranger's
+ * agent do — one door, one denial vocabulary, no route left to drift from it.
+ */
+async function indexRows(
+  fixture: IndexFixture,
+  token: string = OWNER_KEY,
+): Promise<readonly TerminalSummary[]> {
+  const response = await call(fixture, "POST", "/api/actions/core.terminals.list", token, {});
+  expect(response.status).toBe(200);
+  const outcome = ActionOutcomeSchema.parse(response.payload);
+  if (!outcome.ok) throw new Error(`index refused: ${outcome.denial.message}`);
+  return TerminalsResponseSchema.parse(outcome.result).terminals;
+}
+
+async function sessionRows(
+  fixture: IndexFixture,
+  token: string = OWNER_KEY,
+): Promise<readonly PadSessionSummary[]> {
+  const response = await call(fixture, "POST", "/api/actions/core.terminals.sessions", token, {});
+  expect(response.status).toBe(200);
+  const outcome = ActionOutcomeSchema.parse(response.payload);
+  if (!outcome.ok) throw new Error(`listing refused: ${outcome.denial.message}`);
+  return PadSessionsResponseSchema.parse(outcome.result).sessions;
+}
+
 function padScopedToken(fixture: IndexFixture): string {
   return fixture.auth.mintToken(
     {
@@ -280,17 +326,14 @@ afterEach(() => {
   }
 });
 
-describe("GET /api/terminals", () => {
+describe("core.terminals.list", () => {
   test("the index lists every terminal with the composition it lives in", async () => {
     const fixture = indexFixture();
     const running = openTerminal(fixture);
     const exited = openTerminal(fixture);
     fixture.broker.onExited(fixture.machine.machineId, exited.sessionId, 3);
 
-    const response = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-
-    expect(response.status).toBe(200);
-    const terminals = TerminalsResponseSchema.parse(response.payload).terminals;
+    const terminals = await indexRows(fixture);
     // The pool listed only the UNBOUND terminals and swept the exited ones. There is nothing
     // to be unbound from now, so this is simply every terminal — and an exited one is still a
     // terminal until somebody dismisses its last leaf.
@@ -322,12 +365,8 @@ describe("GET /api/terminals", () => {
   test("unplaced round-trips off the containment graph, leaving no state behind", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    const unplacedOf = async (): Promise<boolean[]> => {
-      const response = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-      return TerminalsResponseSchema.parse(response.payload).terminals.map(
-        (terminal) => terminal.unplaced,
-      );
-    };
+    const unplacedOf = async (): Promise<boolean[]> =>
+      (await indexRows(fixture)).map((terminal) => terminal.unplaced);
 
     expect(await unplacedOf()).toEqual([true]);
 
@@ -364,10 +403,9 @@ describe("GET /api/terminals", () => {
     );
     if (typeof added === "string") throw new Error(`placement failed: ${added}`);
 
-    const response = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
     // `homeId` follows the terminal into the composition it joined, and `unplaced` is about
     // that composition being referenced — not about the terminal itself being pointed at.
-    expect(TerminalsResponseSchema.parse(response.payload).terminals).toEqual([
+    expect(await indexRows(fixture)).toEqual([
       expect.objectContaining({
         id: born.sessionId,
         homeId: composition.id,
@@ -380,10 +418,22 @@ describe("GET /api/terminals", () => {
   test("a pad-scoped token cannot read the terminal index", async () => {
     const fixture = indexFixture();
 
-    const response = await call(fixture, "GET", "/api/terminals", padScopedToken(fixture));
+    const response = await call(
+      fixture,
+      "POST",
+      "/api/actions/core.terminals.list",
+      padScopedToken(fixture),
+      {},
+    );
 
-    expect(response.status).toBe(403);
-    expect(response.payload).toMatchObject({ error: { code: "forbidden" } });
+    // The route answered 403; the door answers 200 with the rung that refused, which is the
+    // same fact in the vocabulary every other caller already reads. Workspace-grade by
+    // declaration: the INDEX is the workspace's, and a token scoped to one container has no
+    // business enumerating it.
+    expect(response.payload).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+    });
   });
 });
 
@@ -464,29 +514,36 @@ describe("core.terminals.rename", () => {
     });
   });
 
-  test("a pad-scoped token cannot rename a terminal or organize the index", async () => {
+  test("a pad-scoped token can rename only inside its own container", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
     const token = padScopedToken(fixture);
 
+    // Renaming is pad-graded (`scope: "pad"`), because a terminal belongs to a container and
+    // the per-terminal agent token is scoped to one. What the scope rung cannot check is
+    // WHICH container the named session lives in — this terminal is homed in its own solo
+    // composition, not in the pad this token is scoped to — so the handler refuses it.
     const renamed = await call(fixture, "POST", "/api/actions/core.terminals.rename", token, {
       sessionId: born.sessionId,
       name: "build",
     });
     // Reordering a terminal IS moving its home in the one index, so the gate that refuses it
-    // is the pad-tree gate rather than a terminal-pool gate that no longer exists.
-    const moved = await call(fixture, "PUT", "/api/pad-tree", token, {
+    // is the index's own door rather than a terminal-pool gate that no longer exists.
+    const moved = await call(fixture, "POST", "/api/actions/core.views.move", token, {
       item: { kind: "pad", id: born.homeId },
       parentId: null,
       index: 0,
     });
 
-    // The action door refuses a scoped token as DATA; the pad-tree route still answers 403.
     expect(renamed.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: OUTSIDE_SCOPE_REFUSAL },
+    });
+    // Organizing the index stays workspace-grade: it moves things BETWEEN containers.
+    expect(moved.payload).toEqual({
       ok: false,
       denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
     });
-    expect(moved.status).toBe(403);
     expect(fixture.store.getSession(born.sessionId)?.name).toBeNull();
   });
 });
@@ -506,7 +563,7 @@ describe("core.terminals.kill", () => {
     // The machine answers a kill by reporting the exit; the row it would have updated is
     // already gone, so this cannot resurrect it as an exited entry.
     fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
-    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
+    const listed = await indexRows(fixture);
     const again = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
       sessionId: born.sessionId,
     });
@@ -518,7 +575,7 @@ describe("core.terminals.kill", () => {
     expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
     // A kill removes the terminal from the world, so the index has no row to show and the
     // home it lived in is gone with it. There is no tombstone state between the two.
-    expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
+    expect(listed).toEqual([]);
     expect(fixture.store.getSession(born.sessionId)).toBeNull();
     expect(fixture.store.getPad(born.homeId)).toBeNull();
     // Gone is gone: a second kill and an id that never existed refuse identically.
@@ -529,7 +586,7 @@ describe("core.terminals.kill", () => {
     expect(missing.payload).toEqual(again.payload);
   });
 
-  test("a pad-scoped token cannot kill a terminal", async () => {
+  test("a pad-scoped token cannot kill a terminal in another container", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
 
@@ -541,39 +598,39 @@ describe("core.terminals.kill", () => {
       { sessionId: born.sessionId },
     );
 
+    // Killing is pad-graded — an agent must be able to clean up its own terminal — so the
+    // refusal comes from the containment the handler owes rather than from the scope rung.
     expect(response.payload).toEqual({
       ok: false,
-      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+      denial: { rule: "refused", message: OUTSIDE_SCOPE_REFUSAL },
     });
     expect(fixture.store.getSession(born.sessionId)?.status).toBe("running");
   });
 });
 
-describe("PUT /api/pad-tree is how an unplaced terminal is reordered", () => {
+describe("core.views.move is how an unplaced terminal is reordered", () => {
   test("a solo composition moves into a folder and reads back under it", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    const created = await call(fixture, "POST", "/api/pad-folders", OWNER_KEY, {
+    const created = await call(fixture, "POST", "/api/actions/core.views.createFolder", OWNER_KEY, {
       name: "machines",
     });
     expect(created.status).toBe(200);
-    const folder = PadTreeResponseSchema.parse(created.payload).items.find(
-      (item) => item.kind === "folder",
-    );
+    const folder = actionItems(created.payload).find((item) => item.kind === "folder");
     if (folder?.kind !== "folder") throw new Error("missing folder");
 
-    const moved = await call(fixture, "PUT", "/api/pad-tree", OWNER_KEY, {
+    const moved = await call(fixture, "POST", "/api/actions/core.views.move", OWNER_KEY, {
       item: { kind: "pad", id: born.homeId },
       parentId: folder.id,
       index: 0,
     });
-    const listed = await call(fixture, "GET", "/api/pad-tree", OWNER_KEY);
+    const listed = await call(fixture, "POST", "/api/actions/core.views.tree", OWNER_KEY, {});
 
     expect(moved.status).toBe(200);
     // The terminal was never reordered: its HOME was. That is the whole of what replaced the
     // pool's durable sort order, and it is why organizing terminals needs no terminal route.
     for (const payload of [moved.payload, listed.payload]) {
-      const home = PadTreeResponseSchema.parse(payload).items.find(
+      const home = actionItems(payload).find(
         (item) => item.kind === "pad" && item.pad.id === born.homeId,
       );
       expect(home).toEqual({
@@ -588,7 +645,7 @@ describe("PUT /api/pad-tree is how an unplaced terminal is reordered", () => {
   });
 });
 
-describe("GET /api/pad-sessions", () => {
+describe("core.terminals.sessions", () => {
   test("the pad session listing reports each terminal under its home", async () => {
     const fixture = indexFixture();
     const solo = openTerminal(fixture);
@@ -603,10 +660,7 @@ describe("GET /api/pad-sessions", () => {
     );
     if (typeof added === "string") throw new Error(`placement failed: ${added}`);
 
-    const response = await call(fixture, "GET", "/api/pad-sessions", OWNER_KEY);
-
-    expect(response.status).toBe(200);
-    const sessions = PadSessionsResponseSchema.parse(response.payload).sessions;
+    const sessions = await sessionRows(fixture);
     // Every session has a pad, so nothing is omitted here any more: the listing is a join of
     // terminals onto the containers they live in.
     expect([...sessions.map((session) => session.id)].sort()).toEqual(

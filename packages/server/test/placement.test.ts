@@ -3,19 +3,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
+  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DESTINATION_KINDS,
   ITEM_KINDS,
-  PLACEMENT_DENIED_CODE,
   PlaceResponseSchema,
-  PlacementDeniedResponseSchema,
   ServerToAgentMessageSchema,
   censusSolo,
+  placementContainerFor,
   placementItemFor,
+  placementRefusalRule,
   resolvePlacement,
+  type ActionOutcome,
   type ContainerLayout,
   type DestinationKind,
-  type ItemKind,
   type Pad,
+  type PlacementDenial,
   type PlacementDestination,
   type PlacementItem,
   type PlacementLookup,
@@ -24,6 +27,7 @@ import {
   type ServerToAgentMessage,
   type TileSurface,
 } from "@manifold/protocol";
+import { rosterElementTraits } from "@manifold/plugin";
 import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
@@ -38,7 +42,8 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, type PlaceOutcome } from "../src/placement.ts";
+import { compositionElementTraits, PlaceExecutor, type PlaceOutcome } from "../src/placement.ts";
+import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -84,6 +89,8 @@ interface PlacementFixture {
   rooms: RoomManager;
   broker: TerminalBroker;
   placement: PlaceExecutor;
+  /** The real composition, so a test can read the traits the algebra resolves against. */
+  plugins: PluginHost;
   machine: FakeMachine;
   opener: SessionPeer;
   app: HttpApp;
@@ -172,7 +179,20 @@ function placementFixture(): PlacementFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  /*
+    The composition first, because the executor resolves CONTRIBUTED element traits against
+    it (ADR 0013 §12): `text` and `draw` have no rows in `ITEM_KINDS` any more, so a fixture
+    that skipped this would judge a note by the engine's default instead of core.notes'
+    declaration. The roster arrives as a thunk, exactly as production wires it.
+   */
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    compositionElementTraits(() => plugins.roster()),
+  );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
     auth,
@@ -194,8 +214,7 @@ function placementFixture(): PlacementFixture {
     broker,
     placement,
     machines,
-    testPluginHost(store, auth, rooms, broker, runtime),
-    runtime,
+    plugins,
     silentLogger,
   );
   const partial = {
@@ -206,6 +225,7 @@ function placementFixture(): PlacementFixture {
     rooms,
     broker,
     placement,
+    plugins,
     machine,
     opener,
     app,
@@ -335,9 +355,10 @@ function terminalLeafId(fixture: PlacementFixture, padId: string, sessionId: str
 }
 
 /**
- * The SAME four questions the executor asks its state, asked here from the test's side.
+ * The SAME five questions the executor asks its state, asked here from the test's side.
  * `PlacementLookup` being pure is what lets this file predict the executor's answer without
- * reaching into it — and what lets the browser predict it during a drag.
+ * reaching into it — and what lets the browser predict it during a drag. The fifth question
+ * is the composition's: which traits a CONTRIBUTED element kind declared (ADR 0013 §12).
  */
 function lookupFor(fixture: PlacementFixture): PlacementLookup {
   return {
@@ -368,10 +389,16 @@ function lookupFor(fixture: PlacementFixture): PlacementLookup {
         containerId: solo.kind === "terminal" ? padId : solo.containerId,
       };
     },
+    itemTraits: (kind) => rosterElementTraits(fixture.plugins.roster()).get(kind) ?? null,
   };
 }
 
-function surfaces(fixture: PlacementFixture): Readonly<Record<ItemKind, PlacementSurface>> {
+/**
+ * One surface per placeable kind: the floor's own, plus the element kinds this composition
+ * contributes. The keys are asserted against the declarations below, so a kind that appears
+ * on either side without a surface here fails the matrix rather than going unexercised.
+ */
+function surfaces(fixture: PlacementFixture): Readonly<Record<string, PlacementSurface>> {
   return {
     terminal: { kind: "terminal", sessionId: fixture.loose },
     "canvas-pad": { kind: "pad", padId: fixture.other.id },
@@ -440,8 +467,15 @@ afterEach(() => {
 });
 
 describe("the placement algebra, executed", () => {
-  test("every declared item kind x destination is executed or refused by a named rule", () => {
-    const itemKinds = Object.keys(ITEM_KINDS) as ItemKind[];
+  test("every placeable kind x destination is executed or refused by a named rule", () => {
+    /*
+      The kinds come from BOTH halves of the vocabulary now: the floor's structural kinds and
+      the element kinds the real composition contributes (ADR 0013 §12). Deriving them rather
+      than listing them is what keeps this matrix exhaustive as plugins take ownership of
+      kinds — a contributed kind with no surface above fails here.
+     */
+    const contributed = [...rosterElementTraits(placementFixture().plugins.roster()).keys()];
+    const itemKinds = [...Object.keys(ITEM_KINDS), ...contributed];
     const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
     const answers: string[] = [];
     for (const itemKind of itemKinds) {
@@ -451,6 +485,8 @@ describe("the placement algebra, executed", () => {
         const fixture = placementFixture();
         const surface = surfaces(fixture)[itemKind];
         const destination = destinations(fixture)[destinationKind];
+        if (surface === undefined) throw new Error(`no surface for ${itemKind}`);
+        if (destination === undefined) throw new Error(`no destination for ${destinationKind}`);
         const predicted = resolvePlacement(surface, destination, lookupFor(fixture));
         const outcome = fixture.placement.place({ surface, destination });
         const label = `${itemKind} -> ${destinationKind}`;
@@ -470,60 +506,64 @@ describe("the placement algebra, executed", () => {
         }
       }
     }
-    // Exhaustive by construction: the declarations decide the pair count, not this file.
+    // Exhaustive by construction: the declarations decide the pair count, not this file. The
+    // ORDER is the vocabulary's, which is the roster's for contributed kinds, so the golden
+    // rows are compared as a set — the pairs are the contract, not their sequence.
     expect(answers).toHaveLength(itemKinds.length * destinationKinds.length);
-    expect(answers).toEqual([
-      // A terminal landing on a canvas authors a PORTAL onto the composition it lives in.
-      // That is the whole of what `bind` became: one op, shared with every container.
-      "terminal -> canvas=portal",
-      "terminal -> tile=add_tile",
-      "terminal -> compose=compose",
-      // And `park` became `unplace`: there is nowhere to park TO, so releasing is
-      // subtractive and the terminal stays in the composition it lives in.
-      "terminal -> unplaced=unplace",
-      "canvas-pad -> canvas=portal",
-      "canvas-pad -> tile=add_tile",
-      "canvas-pad -> compose=compose",
-      // An embedded canvas is `unplaceable` too: the pad outlives every reference to it.
-      "canvas-pad -> unplaced=unplace",
-      "view -> canvas=portal",
-      // "Compositions merge, never nest" is now the `solo-only` guard rather than a missing
-      // group: a composition still classified AS a composition holds several items, so
-      // there is nothing for another composition to absorb.
-      "view -> tile=denied:not_solo",
-      "view -> compose=denied:not_solo",
-      "view -> unplaced=unplace",
-      "text -> canvas=move_element",
-      "text -> tile=add_tile",
-      "text -> compose=compose",
-      "text -> unplaced=denied:not_accepted",
-      "draw -> canvas=move_element",
-      "draw -> tile=denied:not_accepted",
-      "draw -> compose=denied:not_accepted",
-      "draw -> unplaced=denied:not_accepted",
-      "tile -> canvas=extract",
-      // A leaf is a re-placeable PLACEMENT: both composition cells were
-      // `denied:not_accepted` until the center-swap work, and the operator approved the
-      // flip. An edge MOVES the leaf into the destination, the exact spot of an occupied
-      // leaf EXCHANGES or DISPLACES, and merging onto a canvas widget is that same move
-      // reached through the compose door.
-      "tile -> tile=add_tile",
-      "tile -> compose=compose",
-      // And releasing a leaf re-homes its occupant instead of destroying it, which is what
-      // makes the fullscreen tile-minimize button do something at last.
-      "tile -> unplaced=unplace",
-      /*
+    expect([...answers].sort()).toEqual(
+      [
+        // A terminal landing on a canvas authors a PORTAL onto the composition it lives in.
+        // That is the whole of what `bind` became: one op, shared with every container.
+        "terminal -> canvas=portal",
+        "terminal -> tile=add_tile",
+        "terminal -> compose=compose",
+        // And `park` became `unplace`: there is nowhere to park TO, so releasing is
+        // subtractive and the terminal stays in the composition it lives in.
+        "terminal -> unplaced=unplace",
+        "canvas-pad -> canvas=portal",
+        "canvas-pad -> tile=add_tile",
+        "canvas-pad -> compose=compose",
+        // An embedded canvas is `unplaceable` too: the pad outlives every reference to it.
+        "canvas-pad -> unplaced=unplace",
+        "view -> canvas=portal",
+        // "Compositions merge, never nest" is now the `solo-only` guard rather than a missing
+        // group: a composition still classified AS a composition holds several items, so
+        // there is nothing for another composition to absorb.
+        "view -> tile=denied:not_solo",
+        "view -> compose=denied:not_solo",
+        "view -> unplaced=unplace",
+        "text -> canvas=move_element",
+        "text -> tile=add_tile",
+        "text -> compose=compose",
+        "text -> unplaced=denied:not_accepted",
+        "draw -> canvas=move_element",
+        "draw -> tile=denied:not_accepted",
+        "draw -> compose=denied:not_accepted",
+        "draw -> unplaced=denied:not_accepted",
+        "tile -> canvas=extract",
+        // A leaf is a re-placeable PLACEMENT: both composition cells were
+        // `denied:not_accepted` until the center-swap work, and the operator approved the
+        // flip. An edge MOVES the leaf into the destination, the exact spot of an occupied
+        // leaf EXCHANGES or DISPLACES, and merging onto a canvas widget is that same move
+        // reached through the compose door.
+        "tile -> tile=add_tile",
+        "tile -> compose=compose",
+        // And releasing a leaf re-homes its occupant instead of destroying it, which is what
+        // makes the fullscreen tile-minimize button do something at last.
+        "tile -> unplaced=unplace",
+        /*
         A panel has no wire SURFACE form at all: a principal's workspace layout is written
         whole by `core.layout.set`, so the placement door can never be handed one. The
         matrix still has to ask, and the honest answer from THIS side is that the address
         resolves to nothing — the algebra's own panel rules are exercised in
         `packages/protocol/test/placement.test.ts`, where a lookup can produce a panel item.
        */
-      "panel -> canvas=denied:unknown_surface",
-      "panel -> tile=denied:unknown_surface",
-      "panel -> compose=denied:unknown_surface",
-      "panel -> unplaced=denied:unknown_surface",
-    ]);
+        "panel -> canvas=denied:unknown_surface",
+        "panel -> tile=denied:unknown_surface",
+        "panel -> compose=denied:unknown_surface",
+        "panel -> unplaced=denied:unknown_surface",
+      ].sort(),
+    );
   });
 
   test("an element naming a portal onto a SOLO composition places the TERMINAL inside it", () => {
@@ -1270,15 +1310,36 @@ describe("releasing a leaf re-homes its occupant", () => {
   });
 });
 
-describe("POST /api/place", () => {
+/**
+ * THE PLACEMENT DOOR (ADR 0013 §14). The algebra is mechanism and stays floor; the verb is
+ * `core.layout.place`, so placing a thing answers through the same published vocabulary,
+ * capability declaration and denial ladder as every other mutation. There is no
+ * `POST /api/place` any more, and these cases are the old route's cases carried over rung by
+ * rung — same caps, same refusals, same results — which is what makes this a move rather
+ * than a rewrite.
+ */
+describe("core.layout.place", () => {
+  const dispatch = async (
+    fixture: PlacementFixture,
+    token: string,
+    args: unknown,
+    action = "core.layout.place",
+  ): Promise<ActionOutcome> => {
+    const response = await call(fixture, "POST", `/api/actions/${action}`, token, args);
+    // Every rung answers 200: a refusal is DATA, never a transport failure.
+    expect(response.status).toBe(200);
+    return ActionOutcomeSchema.parse(response.payload);
+  };
+
   test("serves the op-tagged result for every executed placement", async () => {
     const fixture = placementFixture();
-    const portaled = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+    const portaled = await dispatch(fixture, OWNER_KEY, {
       surface: { kind: "terminal", sessionId: fixture.loose },
       destination: { kind: "canvas", padId: fixture.canvas.id, x: 44, y: 55 },
     });
-    expect(portaled.status).toBe(200);
-    const result = PlaceResponseSchema.parse(portaled.payload);
+    expect(portaled.ok).toBe(true);
+    if (!portaled.ok) throw new Error("portal expected");
+    const result = PlaceResponseSchema.parse(portaled.result);
     expect(result.op).toBe("portal");
     if (result.op !== "portal") throw new Error("portal response expected");
     const looseHome = homeOf(fixture, fixture.loose);
@@ -1291,96 +1352,179 @@ describe("POST /api/place", () => {
       y: 55,
     });
 
-    const unplaced = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+    const unplaced = await dispatch(fixture, OWNER_KEY, {
       surface: { kind: "element", padId: fixture.canvas.id, elementId: result.elementId },
       destination: { kind: "unplaced" },
     });
-    expect(unplaced.status).toBe(200);
+    expect(unplaced.ok).toBe(true);
+    if (!unplaced.ok) throw new Error("unplace expected");
     // The op reports HOW MANY references it removed; the terminal itself never moved.
-    expect(PlaceResponseSchema.parse(unplaced.payload)).toEqual({ op: "unplace", removed: 1 });
+    expect(PlaceResponseSchema.parse(unplaced.result)).toEqual({ op: "unplace", removed: 1 });
     expect(homeOf(fixture, fixture.loose)).toBe(looseHome);
     expect(fixture.store.getPad(looseHome)).not.toBeNull();
   });
 
-  test("an unplace that removes nothing is a 200 carrying zero, not an error", async () => {
+  test("an unplace that removes nothing is a success carrying zero, not a refusal", async () => {
     const fixture = placementFixture();
 
-    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+    const outcome = await dispatch(fixture, OWNER_KEY, {
       surface: { kind: "terminal", sessionId: fixture.loose },
       destination: { kind: "unplaced" },
     });
 
-    expect(response.status).toBe(200);
-    expect(PlaceResponseSchema.parse(response.payload)).toEqual({ op: "unplace", removed: 0 });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(PlaceResponseSchema.parse(outcome.result)).toEqual({ op: "unplace", removed: 0 });
   });
 
-  test("serves a denial as data: 409 with the rule that refused it", async () => {
+  /**
+   * THE DENIAL ROUND TRIP. The `refused` rung carries one string, so the string leads with
+   * the algebra's own rule and the caller rebuilds the denial it was sent: it holds the
+   * surface (it sent it) and derives the container from the destination. That is exactly what
+   * `client.place()` does, which is why `not_accepted` has one wording on the wire.
+   */
+  test("a refused placement carries the algebra's rule, and rebuilds into the same denial", async () => {
     const fixture = placementFixture();
-    const nested = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "pad", padId: fixture.otherView.id },
-      destination: { kind: "tile", padId: fixture.view.id, targetTileId: null, edge: null },
-    });
-    expect(nested.status).toBe(409);
-    const denied = PlacementDeniedResponseSchema.parse(nested.payload);
-    expect(denied.error.code).toBe(PLACEMENT_DENIED_CODE);
-    // Compositions merge, never nest, and the wire says WHY in a machine-readable way.
-    expect(denied.error.denial).toEqual({
-      rule: "not_solo",
-      surface: { kind: "pad", padId: fixture.otherView.id },
-      container: { kind: "view", padId: fixture.view.id },
-    });
+    const surface: PlacementSurface = { kind: "pad", padId: fixture.otherView.id };
+    const destination: PlacementDestination = {
+      kind: "tile",
+      padId: fixture.view.id,
+      targetTileId: null,
+      edge: null,
+    };
 
-    const selfEmbed = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "pad", padId: fixture.canvas.id },
-      destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
-    });
-    const discipline = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "canvas", padId: fixture.view.id, x: 0, y: 0 },
-    });
-    const unknownContainer = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "tile", padId: "ghost", targetTileId: null, edge: null },
-    });
-    const unknownSurface = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: "ghost" },
-      destination: { kind: "unplaced" },
-    });
-    expect([
-      selfEmbed.status,
-      discipline.status,
-      unknownContainer.status,
-      unknownSurface.status,
-    ]).toEqual([409, 409, 409, 409]);
-    expect(
-      [selfEmbed, discipline, unknownContainer, unknownSurface].map(
-        (response) => PlacementDeniedResponseSchema.parse(response.payload).error.denial.rule,
-      ),
-    ).toEqual(["self_embed", "discipline", "unknown_container", "unknown_surface"]);
+    const outcome = await dispatch(fixture, OWNER_KEY, { surface, destination });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.denial.rule).toBe("refused");
+    // Compositions merge, never nest — and the rule the algebra named survives the rung.
+    const rule = placementRefusalRule(outcome.denial.message);
+    expect(rule).toBe("not_solo");
+    if (rule === null) return;
+    const rebuilt: PlacementDenial = {
+      rule,
+      surface,
+      container: placementContainerFor(destination),
+    };
+    const predicted = resolvePlacement(surface, destination, lookupFor(fixture));
+    expect(predicted.ok).toBe(false);
+    if (predicted.ok) return;
+    expect(rebuilt).toEqual(predicted.denial);
   });
 
-  test("a leaf that names nothing is the one operational 404 left", async () => {
+  test("every refusal the algebra can name reaches the caller by name", async () => {
+    const fixture = placementFixture();
+    const cases: readonly { readonly args: unknown; readonly rule: string }[] = [
+      {
+        args: {
+          surface: { kind: "pad", padId: fixture.canvas.id },
+          destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
+        },
+        rule: "self_embed",
+      },
+      {
+        args: {
+          surface: { kind: "terminal", sessionId: fixture.loose },
+          destination: { kind: "canvas", padId: fixture.view.id, x: 0, y: 0 },
+        },
+        rule: "discipline",
+      },
+      {
+        args: {
+          surface: { kind: "terminal", sessionId: fixture.loose },
+          destination: { kind: "tile", padId: "ghost", targetTileId: null, edge: null },
+        },
+        rule: "unknown_container",
+      },
+      {
+        args: {
+          surface: { kind: "terminal", sessionId: "ghost" },
+          destination: { kind: "unplaced" },
+        },
+        rule: "unknown_surface",
+      },
+    ];
+    const seen: string[] = [];
+    for (const { args } of cases) {
+      const outcome = await dispatch(fixture, OWNER_KEY, args);
+      if (outcome.ok) throw new Error("refusal expected");
+      expect(outcome.denial.rule).toBe("refused");
+      seen.push(placementRefusalRule(outcome.denial.message) ?? "unnamed");
+    }
+    expect(seen).toEqual(cases.map((entry) => entry.rule));
+  });
+
+  test("a legal placement that cannot be carried out refuses by the failure's name", async () => {
     const fixture = placementFixture();
 
-    const response = await call(fixture, "POST", "/api/place", OWNER_KEY, {
+    const outcome = await dispatch(fixture, OWNER_KEY, {
       surface: { kind: "tile", containerId: fixture.view.id, tileId: "t99" },
       destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
     });
 
-    expect(response.status).toBe(404);
-    expect(response.payload).toMatchObject({ error: { code: "not_found" } });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    // Not a statement about what composes, so NOT a placement rule: a caller reading the
+    // class learns this was operational, and `client.place()` throws on it exactly as it
+    // threw on the 404 this replaces.
+    expect(outcome.denial.rule).toBe("refused");
+    expect(outcome.denial.message).toBe("not_found: placement surface or container not found");
+    expect(placementRefusalRule(outcome.denial.message)).toBeNull();
   });
 
-  test("rejects malformed envelopes and tokens that cannot place", async () => {
+  /**
+   * THE FUSION, THROUGH THE DOOR (ADR 0013 §12). Neither `text` nor `draw` has a row in
+   * `ITEM_KINDS`: their traits are manifest data resolved onto the composition, and the
+   * resolver reads them from there. So these two placements prove a contributed element kind
+   * places — one by traits its plugin declared (`text` is `tileable`), one by the engine's
+   * default for a contribution that declares none (`draw` is canvas furniture).
+   */
+  test("a contributed element kind places by the traits its manifest declared", async () => {
     const fixture = placementFixture();
-    const malformed = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "canvas", padId: fixture.canvas.id },
+    const contributed = rosterElementTraits(fixture.plugins.roster());
+    expect(Object.keys(ITEM_KINDS)).not.toContain("text");
+    expect(Object.keys(ITEM_KINDS)).not.toContain("draw");
+    expect(contributed.get("text")?.groups).toContain("tileable");
+    expect(contributed.get("draw")).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
+
+    const tiled = await dispatch(fixture, OWNER_KEY, {
+      surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-text" },
+      destination: { kind: "tile", padId: fixture.view.id, targetTileId: null, edge: null },
     });
-    const retired = await call(fixture, "POST", "/api/place", OWNER_KEY, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "pool", index: 0 },
+    expect(tiled.ok).toBe(true);
+    if (!tiled.ok) throw new Error("add_tile expected");
+    expect(PlaceResponseSchema.parse(tiled.result).op).toBe("add_tile");
+
+    const moved = await dispatch(fixture, OWNER_KEY, {
+      surface: { kind: "element", padId: fixture.canvas.id, elementId: "el-draw" },
+      destination: { kind: "canvas", padId: fixture.other.id, x: 12, y: 34 },
     });
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) throw new Error("move_element expected");
+    const result = PlaceResponseSchema.parse(moved.result);
+    expect(result.op).toBe("move_element");
+    if (result.op !== "move_element") return;
+    expect(roomFor(fixture, fixture.other.id).element(result.elementId)).toMatchObject({
+      type: "draw",
+      x: 12,
+      y: 34,
+    });
+  });
+
+  test("the whole ladder, in order: unknown, disabled, scope, caps, args, then the handler", async () => {
+    const fixture = placementFixture();
+    const legal = {
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
+    };
+
+    const unknown = await dispatch(fixture, OWNER_KEY, legal, "core.layout.plaice");
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.denial.rule).toBe("unknown_action");
+
+    // A pad-scoped token is refused for its SCOPE before any cap is considered — the exact
+    // gate the deleted route carried, now one rung of the shared ladder (D11).
     const scoped = fixture.auth.mintToken(
       {
         principal: { name: "pad guest", kind: "human" },
@@ -1389,24 +1533,55 @@ describe("POST /api/place", () => {
       },
       fixture.root,
     ).token;
-    const scopedPlace = await call(fixture, "POST", "/api/place", scoped, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
-    });
+    const scopedPlace = await dispatch(fixture, scoped, legal);
+    expect(scopedPlace.ok).toBe(false);
+    if (!scopedPlace.ok) {
+      expect(scopedPlace.denial.rule).toBe("forbidden");
+      expect(scopedPlace.denial.message).toBe("scoped tokens cannot invoke workspace actions");
+    }
+
+    // `pads:write` is the cap the route required, declared by the action now.
     const readOnly = fixture.auth.mintToken(
       { principal: { name: "reader", kind: "human" }, caps: ["pads:read"] },
       fixture.root,
     ).token;
-    const readOnlyPlace = await call(fixture, "POST", "/api/place", readOnly, {
-      surface: { kind: "terminal", sessionId: fixture.loose },
-      destination: { kind: "canvas", padId: fixture.canvas.id, x: 0, y: 0 },
-    });
+    const readOnlyPlace = await dispatch(fixture, readOnly, legal);
+    expect(readOnlyPlace.ok).toBe(false);
+    if (!readOnlyPlace.ok) {
+      expect(readOnlyPlace.denial.rule).toBe("forbidden");
+      expect(readOnlyPlace.denial.message).toBe("pads:write capability required");
+    }
 
-    // A retired destination kind is a schema rejection, not a 409: `pool` is not a place the
-    // algebra can refuse by rule any more, it is a word the wire no longer knows.
-    expect([malformed.status, retired.status, scopedPlace.status, readOnlyPlace.status]).toEqual([
-      400, 400, 403, 403,
-    ]);
+    const malformed = await dispatch(fixture, OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: { kind: "canvas", padId: fixture.canvas.id },
+    });
+    expect(malformed.ok).toBe(false);
+    if (!malformed.ok) expect(malformed.denial.rule).toBe("invalid_args");
+
+    // A retired destination kind is an argument rejection, not a rule: `pool` is not a place
+    // the algebra can refuse by name any more, it is a word the wire no longer knows.
+    const retired = await dispatch(fixture, OWNER_KEY, {
+      surface: { kind: "terminal", sessionId: fixture.loose },
+      destination: { kind: "pool", index: 0 },
+    });
+    expect(retired.ok).toBe(false);
+    if (!retired.ok) expect(retired.denial.rule).toBe("invalid_args");
+
+    // Nothing above the handler's rung wrote anything.
     expect(readElements(roomFor(fixture, fixture.canvas.id).doc).size).toBe(5);
+
+    // And with the plugin off, the door is gone rather than silent: a disabled plugin's
+    // action reports `plugin_disabled`, which is a different truth from a wrong name.
+    const disabled = await dispatch(
+      fixture,
+      OWNER_KEY,
+      { id: "core.layout", enabled: false },
+      "engine.plugins.setEnabled",
+    );
+    expect(disabled.ok).toBe(true);
+    const afterDisable = await dispatch(fixture, OWNER_KEY, legal);
+    expect(afterDisable.ok).toBe(false);
+    if (!afterDisable.ok) expect(afterDisable.denial.rule).toBe("plugin_disabled");
   });
 });

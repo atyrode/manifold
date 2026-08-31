@@ -116,49 +116,47 @@ real origins without re-keying anything (`AXIOMS.md` §Roadmap).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                        | Auth cap              | Req → Res                                                                                                                                                                                                      |
-| ---------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                                                                      |
-| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                                                                         |
-| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                                                                                     |
-| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                                                                                        |
-| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                                                                                 |
-| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                                                                                    |
-| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                                                                                         |
-| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                                                                                |
-| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                                                                      |
-| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. The placement door TODAY; superseded by the action `core.layout.place` (see §Containers, placement, and the index) |
-| POST /api/actions/:name            | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                                                                 |
-| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                                                                                      |
-| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                                                                                    |
-| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                                                      |
-| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                                                                                      |
-| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                                                                                        |
-| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                                                                                    |
-| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                                                                                |
-| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                                                                                            |
-| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                                                                                        |
-| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                                                                                   |
-| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                                                                                       |
-| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                                                                                             |
-| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                                                                                      |
-| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                                                                                   |
-| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash                                                                  |
-| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                                                                                           |
-| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                                                                                             |
+| Method+Path                        | Auth cap              | Req → Res                                                                                                                                      |
+| ---------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                      |
+| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                         |
+| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                        |
+| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
+| POST /api/actions/:name            | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
+| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                      |
+| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                    |
+| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
+| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                      |
+| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                             |
 
 `PadTreeItem` is either `{ kind:"pad", pad:{ id, name, createdAt }, parentId:
 string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
 parentId: string|null, sortOrder: nonnegative integer }`. A pad-tree move's `item` is exactly
 `{ kind:"pad", id }` or `{ kind:"folder", id }`, and `index` is a nonnegative integer.
 Every WORKSPACE-WIDE door rejects pad-scoped tokens even when they hold the cap: pad-tree
-organization (`PUT /api/pad-tree` and folder create/rename/delete), the terminal index, the
-container census, `POST /api/place`, leaf removal, and — this wave — every action
-(`POST /api/actions/:name` refuses `padScope !== null` with denial `forbidden`, message
-"scoped tokens cannot invoke workspace actions"). A placement moves items between containers,
-so a token scoped to one container can never authorize it; finer per-node scoping arrives with
-the permission waterfall (§Authority (planned)). `GET /api/plugins` and `GET /api/layout` are
-the two exceptions by construction: the roster is global vocabulary, and a layout read is
+organization, the terminal index, the container census, the placement door, leaf removal, and every
+action whose `scope` is `"workspace"` (`POST /api/actions/:name` refuses `padScope !== null` with
+denial `forbidden`, message "scoped tokens cannot invoke workspace actions"). A placement moves
+items between containers, so a token scoped to one container can never authorize it; finer per-node
+scoping arrives with the permission waterfall (§Authority (planned)).
+
+**But a door's audience is declared, not inferred from whether it mutates.** An action declares
+`scope: "pad"` if and only if the door it replaces was reachable by a pad-scoped token — reads
+(`core.views.tree`, `core.terminals.sessions`, `core.machines.list`) and mutations
+(`core.terminals.open`/`rename`/`kill`, `core.views.renamePad`, `core.access.mintToken`/`revokeToken`)
+alike. `scope: "pad"` skips ladder rung 3 and creates an obligation with an exact division of
+labour: the ladder proves the caller's caps hold for the caller's OWN pad, and only the handler can
+prove the thing NAMED in the arguments lives there. That check is the ENGINE's, called once per
+handler — `ctx.outsideScope(padId)` answers the canonical refusal `OUTSIDE_SCOPE_REFUSAL`
+("outside this token's container") or `null` — so one concept has one wording a client can switch
+on. It never names the target pad (a scoped caller learns nothing about a container it may not
+reach), and a `null` pad is refused for a scoped caller while passing for a workspace-grade one.
+Two other discharges are legitimate: the mechanism itself (attenuation already refuses a mint that
+widens its minter's scope), or vacuous when nothing in the answer is pad-addressed (the machine
+list) — but any door whose arguments or payload name a pad-addressed node owes the check.
+Conversion may never narrow who may call a door
+(`docs/decisions/0013-plugin-behavioral-contract.md` §15). `GET /api/plugins` and `GET /api/layout`
+are open to scoped tokens by construction: the roster is global vocabulary, and a layout read is
 self-scoped.
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
@@ -173,8 +171,9 @@ Machine enrollment requires `machines:mint`; ordinary `scene:write`/`terminal:wr
 tokens must be rejected (covered by e2e: owner succeeds, `machines:mint` token succeeds,
 delegated scene/terminal token is denied).
 Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `forbidden`,
-`not_found`, `invalid`, `conflict`, `internal`. A refused PLACEMENT is its own 409 shape
-(`placement_denied`, below) because it carries the rule that refused as data.
+`not_found`, `invalid`, `conflict`, `internal`. A refused PLACEMENT is not an HTTP shape at all any
+more: it is the action door's `refused` rung, carrying the rule that refused as the message's
+leading class (below).
 
 ## Containers, placement, and the index
 
@@ -185,14 +184,13 @@ The verb routes it replaced (bind, park, add-tile, compose, extract, expand, pin
 deprecated: expand had nothing left to create once every terminal already lived in a composition,
 and pin had nothing left to claim once no container dissolved under anybody.
 
-> **Transition note.** The door is currently the bespoke route `POST /api/place` with the identical
-> request, response and refusal vocabulary. `core.layout.place` superseding it is ratified design
-> (`docs/decisions/0013-plugin-behavioral-contract.md` §14: the algebra is mechanism, the verb is a
-> plugin), and the **conversion batch** performs the cutover — action added, every caller migrated,
-> route deleted in the same change, no alias. Until that lands, read every `POST /api/place`
-> reference below as naming the same door under its old name. The refusal vocabulary does not fork:
-> the placement rule that refused travels in the action's `refused` denial, so `not_accepted` keeps
-> one wording.
+Legality is data and the executor is floor; the VERB is a plugin's (`core.layout.place`, cap
+`pads:write`, `scope: "workspace"` — a placement genuinely spans containers). `POST /api/place` is
+deleted, not aliased, and the refusal vocabulary did not fork: the placement rule that refused
+travels in the action's denial, so `not_accepted` keeps one wording
+(`docs/decisions/0013-plugin-behavioral-contract.md` §14). Leaf removal is not a placement —
+nothing accepts "nowhere" as a destination for a leaf — so a leaf is still addressed directly by
+its own door while every MOVE of its occupant goes through the action.
 
 **Vocabulary.** Item kinds declare the capability GROUPS they belong to, container kinds
 declare the groups they accept, and the only imperative rules are three enumerated guards.
@@ -202,8 +200,12 @@ declaration — and every refusal names the declaration that refused it. A plugi
 element kind declares the same three traits (`groups`, `guards`, `homed`) in its manifest, and
 `composeRoster` resolves them into the element registry (defaulting to
 `DEFAULT_ELEMENT_PLACEMENT_TRAITS`), so the table below is the closed union's rows in the same
-shape a contribution uses. Fusing composed kinds INTO the union is the conversion batch's work; the
-canvas operation stays a floor table (`CANVAS_OPS`), never a manifest field.
+shape a contribution uses. The fusion has landed: `ITEM_KINDS` and `CANVAS_OPS` keep FLOOR kinds
+only (`terminal`, `canvas-pad`, `view`, `tile`, `panel` — the `text` and `draw` rows are deleted),
+`PlacementItem.kind` and `CensusItem.kind` are open strings, and resolution reads
+`ITEM_KINDS[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`. A non-floor
+kind's canvas op is `move_element`, decided by `canvasOpFor` — the canvas operation stays a floor
+table, never manifest data.
 
 | Item kind    | Groups                                                   | Guards                   | Homing   |
 | ------------ | -------------------------------------------------------- | ------------------------ | -------- |
@@ -249,11 +251,17 @@ home.
   `{ removed }`. Zero removed is a legal, meaningful answer — the item was already unplaced —
   and that is the difference between "already so" and the silent no-op the algebra refuses to
   have.
-- A refusal is DATA: HTTP 409 with
-  `{ error: { code:"placement_denied", message, denial: { rule, surface, container } } }`.
-  Rules are `not_accepted` (group containment failed), `self_embed`, `discipline`,
-  `not_solo`, `unknown_surface`, `unknown_container`. Clients render the RULE; nobody parses
-  the message. Operational impossibilities (a vanished session, a tree that rejects a write)
+- A refusal is DATA, and it travels on the action door's `refused` rung: the message is
+  `"<rule>: <surface kind> -> <container kind>"` (e.g. `not_accepted: terminal -> canvas`), whose
+  leading class is a member of the published `PLACEMENT_DENIAL_RULES` and is read back by
+  `placementRefusalRule(message)`. Rules are `not_accepted` (group containment failed),
+  `self_embed`, `discipline`, `not_solo`, `unknown_surface`, `unknown_container`. Clients switch on
+  the RULE; nobody parses the remainder. The SDK's `place()` keeps its signature and rebuilds the
+  full `PlacementDenial` from the rule plus the surface it sent and `placementContainerFor(destination)`,
+  because the caller already holds those. `PLACEMENT_DENIED_CODE`,
+  `PlacementDeniedResponseSchema` and `ITEM_KIND_NAMES` are DELETED with the route — no
+  `placement_denied` code exists anywhere. Operational impossibilities (a vanished session, a tree
+  that rejects a write)
   travel as ordinary `not_found` / `conflict`, because they are not statements about what
   composes.
 
@@ -278,7 +286,7 @@ across every container yields:
 > references is top-level; one with parents renders as a collapsed child under each of them.
 
 A terminal is the only item with an index row of its own today (its home composition), and
-`unplaced` from `GET /api/terminals` is the server's own answer to "does anything reference
+`unplaced` from `core.terminals.list` is the server's own answer to "does anything reference
 this?". `censusSolo(census)` — the item a container of ONE holds, else null — is exported
 rather than inlined because that one line IS the paradigm: chrome, merging, and the index all
 read it, and three subsystems deciding it separately is how they would come to disagree.
@@ -393,14 +401,14 @@ fan-out order.
 object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
 stops at the first rule that fires:
 
-| Order | `rule`            | Fires when                                                                                                                                                                     |
-| ----- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1     | `unknown_action`  | no composed action carries that name                                                                                                                                           |
-| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant) |
-| 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave                                |
-| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                          |
-| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                     |
-| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                    |
+| Order | `rule`            | Fires when                                                                                                                                                                                                                                                      |
+| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `unknown_action`  | no composed action carries that name                                                                                                                                                                                                                            |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                  |
+| 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "pad"` skips this rung; its handler MUST honour `ctx.padScope` |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                           |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                      |
+| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                     |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
@@ -489,14 +497,107 @@ and those leaves render placeholders whose chrome offers a remove control that c
 tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.layout.set` at the commit point, never one per frame.
 
-**Deleted with this wave, with no aliases and no dual paths:** `PATCH /api/terminals/:id` and
-`DELETE /api/terminals/:id`. Their replacements are the actions
-`core.terminals.rename { sessionId, name }` and `core.terminals.kill { sessionId }`, both cap
-`pads:write` (exactly the routes' own requirement), with the routes' semantics verbatim — the
-rename broadcasts `session_event { kind:"renamed", name }` into the home; the kill sweeps the
-session, its home, and every portal onto that home. `GET /api/terminals` stays. Mutating
-affordances in the DOM carry `data-action="<action name>"`, which is how the gate proves the UI
-and the API share one door.
+**Terminal administration (`core.terminals`).** `PATCH /api/terminals/:id`,
+`DELETE /api/terminals/:id`, `GET /api/terminals` and `GET /api/pad-sessions` are deleted, with no
+aliases and no dual paths. `core.terminals.rename { sessionId, name }` and `kill { sessionId }`
+carry `terminal:write` at `scope: "pad"` — the authority the session channel's own `terminal_kill`
+verb has always enforced, and the one the browser's `canKill` rule is computed from. The deleted
+routes asked for `pads:write` instead: two doors onto one concept answering differently, which is
+exactly what invariant 14 forbids, so the cutover took the channel's answer rather than the route's.
+`kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
+`session_event { kind:"renamed", name }` into the home, and the kill sweeps the session, its home,
+and every portal onto that home. `open` carries `terminal:spawn` at `scope: "pad"`, because a
+terminal is born inside one container and the per-terminal agent token minted for it is pad-scoped
+with that cap — a workspace-graded creation door would have quietly ended agents spawning their own
+terminals. The reads are doors too: `sessions` is `scope: "pad"` (the pad-sessions route answered a
+scoped token with its own pad's rows), while `list` keeps the default because the terminal index it
+replaces refused scoped tokens outright. Mutating affordances in the DOM carry
+`data-action="<action name>"`, which is how the gate proves the UI and the API share one door.
+
+Two things about that door are worth stating because they are what "one door per concept" cost here.
+The session channel now DISPATCHES the action rather than duplicating its authority:
+`terminal_open` calls `core.terminals.open` first and only then asks the broker (a create is a
+machine round trip whose reply is socket traffic, so the PTY is still born on the channel), and
+`terminal_kill` dispatches `core.terminals.kill` — `broker.kill(peer, …)` is deleted, so one door
+answers for both surfaces and the surviving rule is the stricter one: an exited terminal is
+dismissable by any `terminal:write` holder, a running one only by its controller or the wildcard.
+The broker's own `terminal:spawn` check is deleted too; authority lives at the door and nowhere
+else. And containment behaves differently by shape: it FILTERS a listing (`sessions` answers a
+scoped reader its own container's rows) and REFUSES on the four doors that name one terminal, all
+through `ctx.outsideScope`.
+
+**Index and container administration (`core.views`).** `GET`/`POST /api/pads`,
+`GET`/`PATCH`/`DELETE /api/pads/:id`, `GET`/`PUT /api/pad-tree` and the three `/api/pad-folders`
+routes are deleted; `DELETE /api/pads/:id/tiles/:tileId` survives as leaf removal, which is not a
+placement. The doors, with the routes' own request schemas as their inputs:
+
+| Action                    | Caps       | Scope     | Args → Result                           |
+| ------------------------- | ---------- | --------- | --------------------------------------- |
+| `core.views.tree`         | pads:read  | pad       | `{}` → `{ items: PadTreeItem[] }`       |
+| `core.views.list`         | pads:read  | pad       | `{}` → `{ pads: Pad[] }`                |
+| `core.views.pad`          | pads:read  | pad       | `{ padId }` → `{ pad }`                 |
+| `core.views.createPad`    | pads:write | workspace | `{ name, layout? }` → `{ pad }`         |
+| `core.views.renamePad`    | pads:write | pad       | `{ padId, name }` → `{ pad }`           |
+| `core.views.deletePad`    | `*`        | workspace | `{ padId }` → `{}` — `cleanup: true`    |
+| `core.views.createFolder` | pads:write | workspace | `{ name, parentId }` → `{ items }`      |
+| `core.views.renameFolder` | pads:write | workspace | `{ folderId, name }` → `{ items }`      |
+| `core.views.deleteFolder` | pads:write | workspace | `{ folderId }` → `{}` — `cleanup: true` |
+
+What CHANGED rather than moved: `deletePad`'s `requireRoot` became a declared `*` cap evaluated at
+ladder rung 4, so its refusal is `forbidden: * capability required` instead of an HTTP 403; every
+404 and 409 became a `refused` carrying the route's own sentence verbatim ("pad not found",
+"pad folder not found", "parent folder changed while creating a folder", "sidebar tree changed while
+moving an item"); `deletePad` and `deleteFolder` are `cleanup: true`, so removal outlives a disable
+of `core.views` while its reads and other writes answer `plugin_disabled` (D12); `pad` and
+`renamePad` discharge containment through `ctx.outsideScope`; and `createPad`, which refused
+pad-scoped tokens by hand, now does so at rung 3 — same outcome, named rung. What did NOT change:
+`deleteFolder` still moves children up rather than cascading, a move still refuses cycles through
+the store's ancestor walk, and `deletePad` still routes through the placement executor so no portal
+or leaf is left pointing at a dead container.
+
+**Machine administration (`core.machines`).** `POST /api/machines` and `GET /api/machines` are
+deleted. `core.machines.enroll { name, rotateToken? }` carries `machines:mint` at the default
+workspace scope (the route refused pad-scoped callers itself) and answers
+`{ machine: { id, name, color? }, machineToken? }`; it is idempotent by name, and
+`rotateToken: true` is the lost-token-file recovery path — it revokes the old secret, fences the
+live socket at 4403, and mints once. `core.machines.list {}` carries `pads:read` at `scope: "pad"`
+because `GET /api/machines` answered any authenticated token including a scoped one (a share-link
+viewer still has to paint the machine badge on the terminal in front of it); its containment
+obligation is vacuous, since nothing in a fleet-wide answer is addressed by pad.
+
+A machine summary now carries an optional **`color`**, derived server-side by `identityColorFor`
+over the shared `IDENTITY_COLORS` palette — both exported from `@manifold/protocol`
+(`packages/protocol/src/principal.ts`), with the web layer re-exporting the palette rather than
+declaring a second copy. Presentation that was derived per client is wire data now, which is what
+lets any principal render the same badge.
+
+**Access administration (`core.access`).** `POST /api/principals`, `POST /api/tokens` and
+`POST /api/tokens/revoke` are deleted; the identity MECHANISM (hashing, bearer authentication,
+attenuation, the revocation fence) stays floor and unchanged. The three doors:
+
+| Action                        | Caps          | Scope     | Args → Result                                                          |
+| ----------------------------- | ------------- | --------- | ---------------------------------------------------------------------- |
+| `core.access.createPrincipal` | `*`           | workspace | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `padId: null`) |
+| `core.access.mintToken`       | `tokens:mint` | pad       | `{ principal \| principalId, caps, padId? }` → `TokenGrant`            |
+| `core.access.revokeToken`     | `tokens:mint` | pad       | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**       |
+
+`createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
+because the mechanism did. Both of those are `scope: "pad"` (§Actions rung 3) because
+`POST /api/tokens` authenticated any token and let the mechanism attenuate: a pad-scoped agent
+holding `tokens:mint` may mint inside its own container and revoke what it minted there, and the
+mechanism performs the containment check — a mint may not widen its minter's pad scope, and a
+scoped revocation reaches only that pad's tokens. Attenuation failures are `refused` denials
+carrying the mechanism's own wording verbatim (`cannot mint capability <cap>`, `cannot widen pad
+scope`, `principal not found`, `cannot revoke another principal`); a cap the caller does not hold
+is `forbidden` at the door, one rung earlier.
+
+`revokeToken` is `cleanup: true`: revocation is what somebody reaches for when a secret has
+leaked, so disabling `core.access` must not keep a compromised token alive (ADR 0013 §9). Its
+result is an exhaustive count rather than `{ ok }` — `0` means "there was nothing left to
+revoke", which the deleted route could not say. `core.access` is NOT `essential`: the owner key
+authenticates outside the token system, so no disable can lock the owner out. The A5 evaluator
+(ADR 0011) later replaces what happens BENEATH these doors; their published vocabulary does not
+move.
 
 **`manifold://` addressing.** One canonical serialization of the addressing algebra, bijective
 with the structured wire forms (`parseManifoldUri` / `formatManifoldUri`,
@@ -646,8 +747,8 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   references resolve, nothing is reachable twice, ratios stay parallel to children, surfaces
   sit on leaves only, and a container never tiles itself; unreachable nodes are inert garbage
   the next structural write prunes. Ratio drags are CRDT writes (`setTileRatios` through the
-  SDK); every STRUCTURAL mutation is HTTP — `POST /api/place` and the one leaf-removal
-  route — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
+  SDK); every STRUCTURAL mutation goes through a door — the action `core.layout.place` and the one
+  leaf-removal route — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
 - **Portal elements.** A canvas record `{ type:"portal", containerId, ...geometry }` renders
   another container in place. This is also how a TERMINAL appears on a canvas: the portal
   points at the composition the session lives in, so one element kind covers both. Nesting
@@ -734,8 +835,8 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   goes to the HOME's room, never the opener's — nothing about a session is canvas state any
   more. A canvas opener then authors ONE portal element onto `session.padId` through
   `client.transact`: the server never authors an element for `terminal_open`. Placement is
-  the one place the server DOES write canvas elements, and it does so only through
-  `POST /api/place`, under `SERVER_PLACE_ORIGIN`.
+  the one place the server DOES write canvas elements, and it does so only through the placement
+  executor behind `core.layout.place`, under `SERVER_PLACE_ORIGIN`.
 - **Terminal frames travel over the home composition's channel.** Every terminal frame
   (`terminal_attach`, `terminal_input`, `terminal_resize`, `terminal_take`, `terminal_kill`)
   resolves its session only when `session.padId === peer.padId`; anything else is

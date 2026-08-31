@@ -266,11 +266,20 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  /** The whole terminal index, which is where "unplaced" is answered from. */
-  const listTerminals = async (): Promise<readonly TerminalSummary[]> =>
-    TerminalsResponseSchema.parse(
-      await (await fetch(`${origin}/api/terminals`, { headers: httpHeaders })).json(),
-    ).terminals;
+  /**
+   * The whole terminal index, which is where "unplaced" is answered from — and a DOOR, like
+   * every other read in the wave: `core.terminals.list` answers an outcome envelope.
+   */
+  const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
+    const listed = await fetch(`${origin}/api/actions/core.terminals.list`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: "{}",
+    });
+    const outcome = ActionOutcomeSchema.parse(await listed.json());
+    if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
+    return TerminalsResponseSchema.parse(outcome.result).terminals;
+  };
   /**
    * A canvas element names the CONTAINER a terminal lives in, never the terminal, so the
    * id `core.terminals.rename` takes is read back from the home index.
@@ -288,12 +297,18 @@ try {
     if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
   };
 
-  const created = await fetch(`${origin}/api/pads`, {
-    method: "POST",
-    headers: httpHeaders,
-    body: JSON.stringify({ name: "terminal-mirror-gate" }),
-  });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const createContainer = async (name: string, layout?: "tiled"): Promise<string> => {
+    const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: JSON.stringify({ name, ...(layout === undefined ? {} : { layout }) }),
+    });
+    const outcome = ActionOutcomeSchema.parse(await created.json());
+    if (!outcome.ok) throw new Error(`createPad refused: ${outcome.denial.message}`);
+    return PadResponseSchema.parse(outcome.result).pad.id;
+  };
+
+  const padId = await createContainer("terminal-mirror-gate");
 
   browser = new Browser();
   await browser.launch(9345);
@@ -611,18 +626,6 @@ try {
     );
     return listed.pads.find((pad) => pad.name === name)?.id ?? "";
   };
-  const createPad = async (name: string): Promise<string> => {
-    const created = PadResponseSchema.parse(
-      await (
-        await fetch(`${origin}/api/pads`, {
-          method: "POST",
-          headers: httpHeaders,
-          body: JSON.stringify({ name }),
-        })
-      ).json(),
-    );
-    return created.pad.id;
-  };
   const enterWorkspace = async (target: Browser, displayName: string): Promise<void> => {
     await target.goto(`${origin}/#key=${ownerKey}`);
     if (await target.evaluate<boolean>("document.querySelector('input') !== null")) {
@@ -666,7 +669,7 @@ try {
   //    real React Flow instance for a pad surface, not a name card. Every terminal is
   //    homed in a tiled composition from birth, so the source terminal's own home is the
   //    container this round drops into — no expand step has to manufacture one.
-  const embeddedPadId = await createPad("mirror-gate-embedded");
+  const embeddedPadId = await createContainer("mirror-gate-embedded");
   embedded = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
     padId: embeddedPadId,
@@ -752,7 +755,7 @@ try {
   //    painting them LIVE, entering it walks into its own renderer, and dragging a tile
   //    back out re-homes that terminal into a fresh solo composition the canvas portals
   //    at the drop point.
-  const composePadId = await createPad("mirror-gate-compose");
+  const composePadId = await createContainer("mirror-gate-compose");
   composed = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
     padId: composePadId,

@@ -1,10 +1,9 @@
-import type { PadViewportHandle } from "@manifold/plugin";
+import { recordSpotlight, type PadViewportHandle } from "@manifold/plugin";
 import type { SessionClient } from "@manifold/sdk";
 import { useCallback, useEffect, useState } from "react";
-import { recordSpotlight } from "./debug-seam.ts";
 
 /**
- * "Look at this", received (AXIOMS.md A2 — floor, `"until": "core.presence"`).
+ * "Look at this", received — `core.presence`'s receiving half (AXIOMS.md A2).
  *
  * `core.presence.focus` is the door: the server checked that the asker shares this room and
  * holds `scene:write` there, throttled the pair, and wrote `spotlight {uri, from}` into this

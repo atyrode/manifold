@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
   ContainersResponseSchema,
   PadResponseSchema,
   ROOT_TILE_ID,
@@ -13,6 +14,7 @@ import {
   type SceneElement,
   type ServerMessageBody,
   type ServerToAgentMessage,
+  type TerminalSummary,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -29,7 +31,7 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor } from "../src/placement.ts";
+import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -168,7 +170,16 @@ function lifecycleFixture(): LifecycleFixture {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  // The composition first: the executor resolves contributed element traits against it
+  // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    compositionElementTraits(() => plugins.roster()),
+  );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
     auth,
@@ -191,8 +202,7 @@ function lifecycleFixture(): LifecycleFixture {
     broker,
     placement,
     machines,
-    testPluginHost(store, auth, rooms, broker, runtime),
-    runtime,
+    plugins,
     silentLogger,
   );
   const fixture: LifecycleFixture = {
@@ -384,6 +394,22 @@ async function call(
   );
   const response = await fixture.app.fetch(request);
   return { status: response.status, payload: await response.json() };
+}
+
+/** The container an action answered with: the outcome envelope, then the row inside it. */
+function actionPad(payload: unknown): Pad {
+  const outcome = ActionOutcomeSchema.parse(payload);
+  if (!outcome.ok) throw new Error(`action refused: ${outcome.denial.message}`);
+  return PadResponseSchema.parse(outcome.result).pad;
+}
+
+/** The terminal index, through the door that owns it (`core.terminals.list`). */
+async function indexRows(fixture: LifecycleFixture): Promise<readonly TerminalSummary[]> {
+  const response = await call(fixture, "POST", "/api/actions/core.terminals.list", OWNER_KEY, {});
+  expect(response.status).toBe(200);
+  const outcome = ActionOutcomeSchema.parse(response.payload);
+  if (!outcome.ok) throw new Error(`index refused: ${outcome.denial.message}`);
+  return TerminalsResponseSchema.parse(outcome.result).terminals;
 }
 
 afterEach(() => {
@@ -619,8 +645,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     expect(fixture.broker.introspect()).toEqual([]);
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
     expect(room(fixture, board.id).portalIdsTo(born.homeId)).toEqual([]);
-    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-    expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
+    expect(await indexRows(fixture)).toEqual([]);
   });
 
   test("an exit frame arriving after a kill finds nothing, so no exited row comes back", async () => {
@@ -767,12 +792,12 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
 
   test("a composition that never held anything survives having its empty root removed", async () => {
     const fixture = lifecycleFixture();
-    const created = await call(fixture, "POST", "/api/pads", OWNER_KEY, {
+    const created = await call(fixture, "POST", "/api/actions/core.views.createPad", OWNER_KEY, {
       name: "new composition",
       layout: "tiled",
     });
     expect(created.status).toBe(200);
-    const emptyId = PadResponseSchema.parse(created.payload).pad.id;
+    const emptyId = actionPad(created.payload).id;
     expect(leafIds(fixture, emptyId)).toEqual([ROOT_TILE_ID]);
 
     const refused = await call(
@@ -1134,9 +1159,11 @@ describe("L8 delete container: reaps what lives there, removes what points at it
     );
     fixture.machine.clear();
 
-    const deleted = await call(fixture, "DELETE", `/api/pads/${composition.id}`, OWNER_KEY);
+    const deleted = await call(fixture, "POST", "/api/actions/core.views.deletePad", OWNER_KEY, {
+      padId: composition.id,
+    });
 
-    expect(deleted.status).toBe(200);
+    expect(deleted.payload).toEqual({ ok: true, result: {} });
     expect(fixture.store.getPad(composition.id)).toBeNull();
     const killed: string[] = [];
     for (const message of fixture.machine.sent) {
@@ -1183,31 +1210,23 @@ describe("the container index reads the same containment graph placement does", 
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    const unreferenced = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-    expect(TerminalsResponseSchema.parse(unreferenced.payload)).toEqual({
-      terminals: [
-        {
-          id: born.sessionId,
-          machineId: fixture.machine.machineId,
-          name: null,
-          createdAt: 0,
-          status: "running",
-          exitCode: null,
-          homeId: born.homeId,
-          unplaced: true,
-        },
-      ],
-    });
+    expect(await indexRows(fixture)).toEqual([
+      {
+        id: born.sessionId,
+        machineId: fixture.machine.machineId,
+        name: null,
+        createdAt: 0,
+        status: "running",
+        exitCode: null,
+        homeId: born.homeId,
+        unplaced: true,
+      },
+    ]);
 
     writeElement(canvasDoc(fixture), portalElement("widget-1", born.homeId, 0, 0), LOCAL_ORIGIN);
-    const referenced = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
 
     // `unplaced` is derived from the containment graph on every read, so placing and
     // releasing a terminal leaves no state behind that could go stale.
-    expect(
-      TerminalsResponseSchema.parse(referenced.payload).terminals.map(
-        (terminal) => terminal.unplaced,
-      ),
-    ).toEqual([false]);
+    expect((await indexRows(fixture)).map((terminal) => terminal.unplaced)).toEqual([false]);
   });
 });

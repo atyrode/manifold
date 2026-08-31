@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Gesture } from "@manifold/protocol";
-import { createGestureStream } from "./gesture-stream";
+import { createGestureStream } from "../src/gesture-stream";
 
 function move(x: number, phase: "active" | "end" = "active"): Gesture {
   return { kind: "move", phase, elementId: "element", x, y: 0 };

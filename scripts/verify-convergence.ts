@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import {
+  ActionOutcomeSchema,
   PadResponseSchema,
   MachinesResponseSchema,
   type SceneElement,
@@ -182,12 +183,16 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  // `core.views.createPad` replaced `POST /api/pads`: the index owns its own doors, and a
+  // denial is data inside the outcome envelope rather than a status.
+  const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "convergence-gate" }),
   });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const createdOutcome = ActionOutcomeSchema.parse(await created.json());
+  if (!createdOutcome.ok) throw new Error(`createPad refused: ${createdOutcome.denial.message}`);
+  const padId = PadResponseSchema.parse(createdOutcome.result).pad.id;
 
   // ---------------------------------------------------------------- clients
 
@@ -481,9 +486,17 @@ try {
   let machineId = "";
   await until(
     async () => {
-      const listed = MachinesResponseSchema.parse(
-        await (await fetch(`${origin}/api/machines`, { headers: httpHeaders })).json(),
+      const outcome = ActionOutcomeSchema.parse(
+        await (
+          await fetch(`${origin}/api/actions/core.machines.list`, {
+            method: "POST",
+            headers: httpHeaders,
+            body: "{}",
+          })
+        ).json(),
       );
+      if (!outcome.ok) throw new Error(`machines list refused: ${outcome.denial.message}`);
+      const listed = MachinesResponseSchema.parse(outcome.result);
       machineId = listed.machines.find((machine) => machine.online)?.id ?? "";
       return machineId !== "";
     },
@@ -1567,7 +1580,7 @@ try {
   // needs the animation frame to ease a cursor toward each new position, so the
   // live-motion assertions have to watch the browser that was never frozen.
   try {
-    const viewResponse = await fetch(`${origin}/api/pads`, {
+    const viewResponse = await fetch(`${origin}/api/actions/core.views.createPad`, {
       method: "POST",
       headers: httpHeaders,
       body: JSON.stringify({ name: "convergence-view", layout: "tiled" }),
@@ -1575,7 +1588,9 @@ try {
     if (!viewResponse.ok) {
       throw new Error(`tiled view creation failed with ${String(viewResponse.status)}`);
     }
-    const viewId = PadResponseSchema.parse(await viewResponse.json()).pad.id;
+    const viewOutcome = ActionOutcomeSchema.parse(await viewResponse.json());
+    if (!viewOutcome.ok) throw new Error(`createPad refused: ${viewOutcome.denial.message}`);
+    const viewId = PadResponseSchema.parse(viewOutcome.result).pad.id;
 
     // Parked on the sidebar, outside the tile area: the receiver must not emit cursors
     // of its own, or the sender's own overlay could no longer prove the absence of a

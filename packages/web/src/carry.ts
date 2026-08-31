@@ -8,7 +8,7 @@ import type {
   TileSurface,
 } from "@manifold/protocol";
 import { envelopeSurface, type ItemEnvelope } from "@manifold/plugin/hooks";
-import type { GestureOverride } from "./remote-gestures.ts";
+import type { GestureOverride } from "@manifold-plugin/presence/web";
 
 /**
  * The dynamic half of the placement algebra, as pure functions.

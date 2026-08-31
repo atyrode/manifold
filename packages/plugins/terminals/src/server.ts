@@ -1,46 +1,189 @@
+import type { PadSessionSummary, TerminalSummary } from "@manifold/protocol";
+
+/** A durable terminal row, as this plugin needs to read it. */
+interface StoredTerminal {
+  readonly id: string;
+  readonly machineId: string;
+  /** The composition the terminal lives in. Never null: a terminal is `homed: "eager"`. */
+  readonly padId: string;
+  readonly name: string | null;
+  readonly status: "running" | "exited";
+  readonly exitCode: number | null;
+  readonly createdAt: number;
+}
+
+/** The live policy facts a kill is judged by: where it lives, and who is holding it. */
+interface LiveTerminal {
+  readonly padId: string;
+  readonly status: "running" | "exited";
+  readonly controllerId: string | null;
+}
+
 /**
- * The slice of the host this plugin touches, declared locally (D1): two broker calls,
- * exactly the two the deleted routes made. The broker's own return vocabulary comes with
- * them, because "there is no such terminal" is an answer this plugin has to relay, not one
- * it can invent.
+ * The slice of the host this plugin touches, declared locally (D1). It is deliberately
+ * small and deliberately READ-ONLY except for the two broker verbs: naming and killing are
+ * the only mutations terminals own, and everything else here is the state the doors judge
+ * by. The broker's own return vocabulary comes with it, because "there is no such terminal"
+ * is an answer this plugin has to relay, not one it can invent.
  */
 interface TerminalsCtx {
+  /** The caller's own container when its token is pad-scoped; null for a workspace token. */
+  readonly padScope: string | null;
+  /**
+   * The engine's own discharge of the containment obligation `scope: "pad"` carries. The
+   * scope rung proves the caller's caps hold at the caller's OWN pad; only a handler can
+   * resolve which container the session its arguments name actually lives in, and this is
+   * where that answer is judged — in one wording, shared by every plugin, so a client can
+   * switch on the refusal instead of parsing four variants of it.
+   */
+  outsideScope(padId: string | null): { readonly refused: string } | null;
+  readonly principal: { readonly id: string };
+  readonly auth: { readonly isRoot: boolean };
+  readonly store: { listSessions(): readonly StoredTerminal[] };
+  readonly rooms: { censuses(): readonly { readonly references: readonly string[] }[] };
   readonly broker: {
     rename(sessionId: string, name: string): "ok" | "not_found";
     killById(sessionId: string): "ok" | "not_found";
+    liveSession(sessionId: string): LiveTerminal | null;
   };
 }
 
-/** Either the empty result the action publishes, or a refusal the door turns into a denial. */
-type Outcome = { refused: string } | Record<string, never>;
+/** Either the result the action publishes, or a refusal the door turns into a denial. */
+type Outcome<T> = { refused: string } | T;
 
-/**
- * These are the bodies of `PATCH /api/terminals/:id` and `DELETE /api/terminals/:id`,
- * moved verbatim in meaning:
- *
- * - a name is trimmed and an all-whitespace name is refused, so a titlebar edit cannot
- *   leave a terminal with an invisible label;
- * - a missing session is refused rather than silently accepted — the route answered 404,
- *   and the outcome envelope's equivalent of 404 is a refusal carrying the reason;
- * - a kill is total and idempotent: killing a terminal that already exited is precisely
- *   what a caller dismissing a dead terminal asked for, which is why both verbs are one
- *   and there is no conflict to report. The second kill of the same id refuses (`terminal
- *   not found`) because by then there is nothing left to name.
- */
 export const terminalsHandlers = {
-  async rename(ctx: TerminalsCtx, args: { sessionId: string; name: string }): Promise<Outcome> {
+  /**
+   * CREATION POLICY, and the only door that mutates nothing: the PTY is born on the session
+   * channel (see the action's own comment), so this answers the question and the transport
+   * does the work. What is left for the handler once the ladder has run is the containment
+   * obligation — a pad-scoped opener may only be born where its token lives.
+   */
+  async open(
+    ctx: TerminalsCtx,
+    args: { padId: string; elementId: string; cols: number; rows: number },
+  ): Promise<Outcome<Record<string, never>>> {
+    const outside = ctx.outsideScope(args.padId);
+    if (outside !== null) return outside;
+    return {};
+  },
+
+  /**
+   * Naming, as `PATCH /api/terminals/:id` meant it: a trimmed name, an all-whitespace name
+   * refused so a titlebar edit cannot leave a terminal with an invisible label, and a
+   * missing session refused rather than silently accepted — the route answered 404, and the
+   * outcome envelope's equivalent of 404 is a refusal carrying the reason.
+   */
+  async rename(
+    ctx: TerminalsCtx,
+    args: { sessionId: string; name: string },
+  ): Promise<Outcome<Record<string, never>>> {
     const name = args.name.trim();
     if (name.length === 0) return { refused: "name is empty" };
+    const live = ctx.broker.liveSession(args.sessionId);
+    if (live === null) return { refused: "terminal not found" };
+    const outside = ctx.outsideScope(live.padId);
+    if (outside !== null) return outside;
     if (ctx.broker.rename(args.sessionId, name) === "not_found") {
       return { refused: "terminal not found" };
     }
     return {};
   },
 
-  async kill(ctx: TerminalsCtx, args: { sessionId: string }): Promise<Outcome> {
+  /**
+   * Killing, unified. Two doors used to answer this and they disagreed: the session
+   * channel's `terminal_kill` demanded the controller lease (or the wildcard) for a LIVE
+   * terminal, while `DELETE /api/terminals/:id` demanded neither. One concept, one answer
+   * (invariant 14), and the answer keeps the lease where the lease means something:
+   *
+   * - an EXITED terminal has no controller and nothing left to protect, so dismissing it
+   *   needs only the `terminal:write` the ladder already proved. Kill and dismiss are one
+   *   verb, and refusing here would leave dead terminals nobody could clear.
+   * - a RUNNING terminal may only be killed by the principal holding its lease, or by the
+   *   wildcard: pulling a live PTY out from under somebody working in it is not a janitorial
+   *   act. Nobody is locked out by this — `terminal_take` claims the lease, and claiming
+   *   before destroying is the whole point.
+   *
+   * The index route this replaced asked for neither, which is precisely the disagreement
+   * invariant 14 forbids; the stricter answer is the surviving one, and the browser's own
+   * `canKill` is computed from the same rule so no affordance offers what the door refuses.
+   *
+   * Idempotent by construction: the second kill of the same id refuses `terminal not found`,
+   * because by then there is nothing left to name.
+   */
+  async kill(
+    ctx: TerminalsCtx,
+    args: { sessionId: string },
+  ): Promise<Outcome<Record<string, never>>> {
+    const live = ctx.broker.liveSession(args.sessionId);
+    if (live === null) return { refused: "terminal not found" };
+    const outside = ctx.outsideScope(live.padId);
+    if (outside !== null) return outside;
+    const heldByAnother = live.status === "running" && live.controllerId !== ctx.principal.id;
+    if (heldByAnother && !ctx.auth.isRoot) {
+      return { refused: "controller lease or owner capability required" };
+    }
     if (ctx.broker.killById(args.sessionId) === "not_found") {
       return { refused: "terminal not found" };
     }
     return {};
+  },
+
+  /**
+   * THE terminal index: every terminal, with the composition it lives in and whether
+   * anything references that composition. `unplaced` is DERIVED from the containment graph
+   * on every read rather than stored — the pool's durable position was the last piece of
+   * state describing where a terminal was NOT, and the whole point of retiring it is that
+   * this question now has exactly one answer and no way to go stale.
+   */
+  async list(
+    ctx: TerminalsCtx,
+    _args: Record<string, never>,
+  ): Promise<{
+    terminals: readonly TerminalSummary[];
+  }> {
+    const referenced = new Set<string>();
+    for (const census of ctx.rooms.censuses()) {
+      for (const reference of census.references) referenced.add(reference);
+    }
+    const terminals = ctx.store.listSessions().map((session) => ({
+      id: session.id,
+      machineId: session.machineId,
+      name: session.name,
+      createdAt: session.createdAt,
+      status: session.status,
+      exitCode: session.exitCode,
+      homeId: session.padId,
+      unplaced: !referenced.has(session.padId),
+    }));
+    return { terminals };
+  },
+
+  /**
+   * Per-container session rows, for the counts the workspace tree paints. `scope: "pad"`
+   * carries the filter the replaced route applied by hand: a pad-scoped reader sees its own
+   * container's terminals and learns nothing about any other.
+   *
+   * A LISTING is the one place containment filters rather than refuses. Every other door
+   * here is asked about one named terminal, so naming somebody else's is a refusal; this door
+   * is asked "what is in reach", and the honest answer for a scoped reader is its own
+   * container's rows — which is exactly what the route it replaces returned.
+   */
+  async sessions(
+    ctx: TerminalsCtx,
+    _args: Record<string, never>,
+  ): Promise<{ sessions: readonly PadSessionSummary[] }> {
+    const sessions: PadSessionSummary[] = [];
+    for (const session of ctx.store.listSessions()) {
+      if (ctx.outsideScope(session.padId) !== null) continue;
+      sessions.push({
+        id: session.id,
+        padId: session.padId,
+        machineId: session.machineId,
+        createdAt: session.createdAt,
+        status: session.status,
+        exitCode: session.exitCode,
+      });
+    }
+    return { sessions };
   },
 };

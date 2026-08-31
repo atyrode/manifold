@@ -1,3 +1,4 @@
+import { rosterElementTraits } from "@manifold/plugin";
 import {
   censusSolo,
   resolvePlacement,
@@ -8,6 +9,8 @@ import {
   type PlacementItem,
   type PlacementLookup,
   type PlacementSurface,
+  type PlacementTraits,
+  type PluginRoster,
   type RuntimeDeps,
   type SceneElement,
   type TileEdge,
@@ -17,6 +20,32 @@ import {
 import { tileIdForSurface, tileLeafIds } from "@manifold/scene";
 import type { Room, RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
+
+/**
+ * The contributed half of the placement vocabulary, as the executor asks for it: element
+ * type → the traits its manifest declared (ADR 0013 §12).
+ *
+ * The roster arrives as a THUNK because the two objects are mutually dependent — the
+ * executor resolves legality against the composition, and an action handler in the
+ * composition drives the executor — and because enablement is hot: a recompose replaces the
+ * roster, and a table captured once would answer for a vocabulary that no longer exists. The
+ * derived table is cached on roster IDENTITY, which is stable per composition, so a
+ * placement costs one map lookup and a recompose costs one rebuild.
+ */
+export function compositionElementTraits(
+  roster: () => PluginRoster,
+): (kind: string) => PlacementTraits | null {
+  let composed: PluginRoster | null = null;
+  let traits: ReadonlyMap<string, PlacementTraits> = new Map();
+  return (kind) => {
+    const current = roster();
+    if (current !== composed) {
+      composed = current;
+      traits = rosterElementTraits(current);
+    }
+    return traits.get(kind) ?? null;
+  };
+}
 
 /**
  * THE placement executor. One entry point — `place(surface, destination)` — for every way
@@ -130,6 +159,13 @@ export class PlaceExecutor {
     private readonly rooms: RoomManager,
     private readonly sessions: SessionPlacementPort,
     private readonly runtime: RuntimeDeps,
+    /**
+     * The composition's contributed element traits (`compositionElementTraits`). It is a
+     * constructor dependency rather than a lookup the executor builds, because the algebra's
+     * vocabulary is half floor and half plugin: the rules engine is this module's business,
+     * the kinds are the roster's.
+     */
+    private readonly elementTraits: (kind: string) => PlacementTraits | null,
   ) {}
 
   /**
@@ -153,7 +189,7 @@ export class PlaceExecutor {
           case "extract":
             return this.executeExtract(surface, destination, source);
           default:
-            // Unreachable: `CANVAS_OPS` maps every item kind to one of the three above.
+            // Unreachable: `canvasOpFor` maps every kind to one of the three above.
             return { status: "failed", failure: "conflict" };
         }
       case "tile":
@@ -189,28 +225,23 @@ export class PlaceExecutor {
       elementItem: (padId, elementId): PlacementItem | null => {
         const element = this.rooms.get(padId)?.element(elementId) ?? null;
         if (element === null) return null;
-        switch (element.type) {
-          case "portal": {
-            // A portal places the container it points at, so that container's discipline
-            // decides the kind — and a portal onto a deleted container places nothing.
-            const layout = this.store.getPad(element.containerId)?.layout ?? null;
-            if (layout === null) return null;
-            return {
-              kind: layout === "canvas" ? "canvas-pad" : "view",
-              containerId: element.containerId,
-            };
-          }
-          case "text":
-            return { kind: "text", containerId: null };
-          case "draw":
-            return { kind: "draw", containerId: null };
-          default: {
-            const exhaustive: never = element;
-            return exhaustive;
-          }
+        if (element.type === "portal") {
+          // A portal places the container it points at, so that container's discipline
+          // decides the kind — and a portal onto a deleted container places nothing.
+          const layout = this.store.getPad(element.containerId)?.layout ?? null;
+          if (layout === null) return null;
+          return {
+            kind: layout === "canvas" ? "canvas-pad" : "view",
+            containerId: element.containerId,
+          };
         }
+        // Every other element places ITS OWN TYPE, whoever contributed it. There is no arm
+        // per element kind here any more: that switch was the floor holding a list of
+        // plugin-owned names, which is exactly what the trait fusion removes (§12).
+        return { kind: element.type, containerId: null };
       },
       soloOccupant: (padId) => this.soloOccupant(padId)?.item ?? null,
+      itemTraits: (kind) => this.elementTraits(kind),
     };
   }
 

@@ -64,16 +64,16 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
 
 ## Map
 
-| Package              | Role                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/protocol`  | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message.                             |
-| `packages/sdk`       | THE typed client (session + machine channels). Web, tests, tools all use it.                                                                         |
-| `packages/server`    | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                                             |
-| `packages/agent`     | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                                                |
-| `packages/web`       | Vite + React 19 + React Flow canvas + xterm terminals + presence UI.                                                                                 |
-| `packages/testkit`   | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                                                      |
-| `packages/plugin`    | the plugin engine: manifest/action definitions, composition and its named refusals, host contracts, the default workspace layout.                    |
-| `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `composition.ts` files, live at `GET /api/plugins` — never a prose list. |
+| Package              | Role                                                                                                                                                                                                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/protocol`  | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message.                                                                                                                                                         |
+| `packages/sdk`       | THE typed client (session + machine channels). Web, tests, tools all use it.                                                                                                                                                                                                     |
+| `packages/server`    | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                                                                                                                                                                         |
+| `packages/agent`     | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                                                                                                                                                                            |
+| `packages/web`       | Vite + React 19: the browser plugin host, the shell composition, and the floor renderers (React Flow canvas, tiled route) still awaiting conversion. Terminal and presence UI live in their plugins.                                                                             |
+| `packages/testkit`   | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                                                                                                                                                                                  |
+| `packages/plugin`    | the plugin engine: manifest/action definitions, composition and its named refusals, host contracts, the default workspace layout — plus `/hooks` (browser plane mechanism) and `/ui` (the plugin-facing standard library: glyphs, node titlebar, notice hook, view-state store). |
+| `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `composition.ts` files, live at `GET /api/plugins` — never a prose list.                                                                                                                             |
 
 `AXIOMS.md` is the constitution: the five axioms, the plane rule, the machine-readable
 floor and device-local registries, and the ratified wave roadmap. It — not this file —

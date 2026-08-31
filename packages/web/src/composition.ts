@@ -1,5 +1,6 @@
 import { drawWebPlugin } from "@manifold-plugin/draw/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
+import { notesWebPlugin } from "@manifold-plugin/notes/web";
 import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
 import { ViewsSection } from "@manifold-plugin/views/web";
@@ -26,12 +27,19 @@ import type { WebPluginDef } from "./plugin-host.tsx";
  * would blank those panes exactly like any other plugin's.
  *
  * Three composed plugins register NOTHING here, and that is the registry working rather than
- * failing: `core.layout` contributes no panel, section, element or tool — it is one action
- * door over the workspace tree — while `core.terminals` and `core.presence` contribute only
- * actions this wave. Their affordances are floor chrome that dispatches those actions BY NAME,
- * which is why the door is vocabulary and not a component; the registry tags that chrome
- * `"until": "core.terminals"` / `"until": "core.presence"` so the remaining migration stays
- * visible.
+ * failing: a registration attaches COMPONENTS, and these three contribute none. `core.layout`
+ * is one action door over the workspace tree. `core.presence` owns a package full of browser
+ * code — the cursor overlay, remote gesture overrides, the roster island, the spotlight
+ * receipt — but every piece of it is a module the canvas and tiled renderers IMPORT, not a
+ * panel, section, element or tool the composition mounts; those renderers are themselves floor
+ * until `core.canvas` and `core.compositions`, and their imports of
+ * `@manifold-plugin/presence/web` are the visible remainder of that migration rather than a
+ * design. `core.terminals` is now exactly the same shape: its browser half
+ * (`@manifold-plugin/terminals/web` — the terminal viewer, the janitor projection, machine
+ * choice) is imported by those same two renderers, and its doors are dispatched by name from
+ * the chrome around them. Neither plugin contributes a mountable slot, so neither has a row
+ * below; when `core.canvas` and `core.compositions` land, both sets of imports become
+ * plugin-to-plugin questions instead of floor-to-plugin ones.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   { id: "core.shell", panels: { sidebar: SidebarPanel, "pad-view": PadViewPanel } },
@@ -39,5 +47,6 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   { id: "core.machines", sections: { machines: MachinesSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },
   drawWebPlugin,
+  notesWebPlugin,
   uriWebPlugin,
 ];

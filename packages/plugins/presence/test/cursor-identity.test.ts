@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON, FRACTION_SNAP_EPSILON } from "./interpolate.ts";
+import {
+  CURSOR_HALF_LIFE_MS,
+  FLOW_SNAP_EPSILON,
+  FRACTION_SNAP_EPSILON,
+} from "../src/interpolate.ts";
 import {
   clampCursorFraction,
   cursorFraction,
@@ -9,7 +13,7 @@ import {
   remoteCursorSocketId,
   stepRemoteCursors,
   type RemoteCursor,
-} from "./cursor-identity.ts";
+} from "../src/cursor-identity.ts";
 
 describe("connection-scoped cursor identity", () => {
   test("filters only this connection's echo and retains a same-principal sibling", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MachineSummary, SessionInfo } from "@manifold/protocol";
-import { buildSessionRows } from "./session-inventory.ts";
+import { buildSessionRows } from "../src/session-inventory.ts";
 
 function session(overrides: Partial<SessionInfo>): SessionInfo {
   return {
@@ -98,7 +98,13 @@ describe("buildSessionRows", () => {
     expect(rows[0]?.canKill).toBe(false);
   });
 
-  test("terminal writer can claim and kill an unbound foreign session", () => {
+  test("a terminal writer cannot kill a RUNNING foreign session, bound or not", () => {
+    // The rule this defends is the kill door's, not this projection's: a live PTY belongs to
+    // whoever holds its lease, and `terminal_take` is how a writer becomes that principal.
+    // The old branch here granted kill on any UNBOUND running session to any terminal writer,
+    // which was computed from `DELETE /api/terminals/:id` — the laxer of the two doors that
+    // used to answer kill. That door is gone; offering a kill the surviving door refuses is
+    // strictly worse than offering nothing, so bindings no longer enter the question at all.
     const rows = buildSessionRows({
       ...BASE,
       liveBindings: new Map(),
@@ -106,7 +112,18 @@ describe("buildSessionRows", () => {
       selfId: "someone-else",
       sessions: [session({ controllerId: "another" })],
     });
-    expect(rows[0]).toMatchObject({ isController: false, canKill: true });
+    expect(rows[0]).toMatchObject({ isController: false, canKill: false });
+
+    // Same caller, same terminal, once it has exited: nothing left to protect, and only the
+    // `terminal:write` the ladder already proved is asked for.
+    const dead = buildSessionRows({
+      ...BASE,
+      liveBindings: new Map([["s1", ["el1"]]]),
+      selfCaps: ["pads:read", "terminal:write"],
+      selfId: "someone-else",
+      sessions: [session({ controllerId: "another", status: "exited", exitCode: 0 })],
+    });
+    expect(dead[0]?.canKill).toBe(true);
   });
 
   test("offline machine surfaces through the row", () => {

@@ -20,6 +20,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActionOutcomeSchema, PadResponseSchema } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
@@ -93,12 +94,16 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       "bench server healthz",
     );
     const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
-    const created = await fetch(`${origin}/api/pads`, {
+    // `core.views.createPad` replaced `POST /api/pads`: the door answers an ActionOutcome,
+    // so the created record arrives inside a validated envelope.
+    const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
       method: "POST",
       headers: { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" },
       body: JSON.stringify({ name: `bench-${String(cadenceMs)}ms` }),
     });
-    const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+    const outcome = ActionOutcomeSchema.parse(await created.json());
+    if (!outcome.ok) throw new Error(`createPad refused: ${outcome.denial.message}`);
+    const padId = PadResponseSchema.parse(outcome.result).pad.id;
 
     const debugPort = 9700 + Math.floor(Math.random() * 200);
     for (const [browser, offset, name] of [

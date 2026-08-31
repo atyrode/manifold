@@ -1,4 +1,4 @@
-import { PrincipalSchema } from "@manifold/protocol";
+import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPrincipal, type StoredIdentity } from "./api.ts";
 
@@ -7,17 +7,12 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 
-/** The one color scheme: principals pick from it, machine dots hash into it. */
-export const IDENTITY_COLORS = [
-  "#e03131",
-  "#f08c00",
-  "#2f9e44",
-  "#1971c2",
-  "#6741d9",
-  "#c2255c",
-  "#0c8599",
-  "#495057",
-] as const;
+/**
+ * The one color scheme: principals pick from it, machine dots hash into it. It lives in the
+ * protocol now, because the server derives `MachineSummary.color` from the same palette and
+ * two ends agreeing on a list of colors makes it vocabulary rather than styling.
+ */
+export { IDENTITY_COLORS };
 
 /** Captures the one permitted URL-secret carrier before React renders, then cleans the URL. */
 export function captureOwnerKeyFromFragment(): void {

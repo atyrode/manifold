@@ -1,8 +1,20 @@
+/**
+ * The terminal VIEWER — `core.terminals`' browser surface for one PTY.
+ *
+ * The PTY plane below it stays floor and always will (the broker, the attach refcount, the
+ * no-gap snapshot invariant, the byte frames); what lives here is everything that has an
+ * answer a principal could argue with: which controls a viewer is offered, what a rename
+ * dispatches, when a spectator socket may not write, and what an exited shell looks like.
+ *
+ * Chrome comes from `@manifold/plugin/ui` — the titlebar, the glyphs, the one notice surface,
+ * the published view-state store — so this file owns no drawing and no notification mechanism
+ * of its own.
+ */
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { base64ToBytes, type SessionClient } from "@manifold/sdk";
-import type { Principal } from "@manifold/protocol";
+import type { MachineSummary, Principal } from "@manifold/protocol";
 import {
   useEffect,
   useReducer,
@@ -13,11 +25,14 @@ import {
   type ReactNode,
   type WheelEvent,
 } from "react";
-import { ControlIcon, ItemIcon } from "./icons.tsx";
-import type { SessionMachine } from "./machine-visibility.ts";
-import { NodeTitleBar, TITLEBAR_ACTIONS_CLASS } from "./node-titlebar.tsx";
-import { useToast } from "./toast.tsx";
-import { currentViewState } from "./view-presence.ts";
+import {
+  ControlIcon,
+  ItemIcon,
+  NodeTitleBar,
+  TITLEBAR_ACTIONS_CLASS,
+  currentViewState,
+  useToast,
+} from "@manifold/plugin/ui";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
@@ -31,8 +46,13 @@ interface TerminalViewProps {
   readonly active: boolean;
   /** Session-panel hover target; highlights this copy without changing the viewport. */
   readonly panelHighlighted: boolean;
-  /** Resolved machine of this session; null before the first machines fetch. */
-  readonly machine: SessionMachine | null;
+  /**
+   * This session's machine as the wire publishes it (`core.machines.list`); null before the
+   * first fetch resolves, so the badge never flashes before it knows. The dot's colour is
+   * `MachineSummary.color` — DERIVED SERVER-SIDE from the machine id over the shared identity
+   * palette, so every viewer paints the same dot and no client re-implements the hash.
+   */
+  readonly machine: MachineSummary | null;
   /**
    * `preview` is the read-only chrome a WATCHED portal widget paints inside a canvas:
    * the titlebar keeps the name and the machine badge, while the control cluster and
@@ -440,9 +460,19 @@ export function TerminalView({
 
   const showViewOnly = viewOnlyError && !isController;
 
-  // Focus presence — other principals whose ephemeral focus is on THIS terminal.
-  // Distinct from controllerId (the write lease): this is "who is looking/typing
-  // here right now", the signal that veils the terminal for everyone else.
+  /*
+    Focus presence — other principals whose ephemeral focus is on THIS terminal. Distinct
+    from controllerId (the write lease): this is "who is looking/typing here right now", the
+    signal that veils the terminal for everyone else.
+
+    A local projection over the roster on purpose, and not a borrowed one: `core.presence`
+    answers roster ROWS (who is here, what each holds) and nothing in the tree asks
+    "who has focus on this element" anywhere but here, so this stays exactly one
+    implementation. S2 forbids plugin→plugin imports outright, so the alternative would be
+    growing the foundation to host a four-line filter — which fails the floor litmus on its
+    face. If a second consumer ever appears, the shape to reach for is a presence
+    contribution, not an engine export.
+  */
   const selfPrincipalId = client.self?.id ?? null;
   const remoteFocusers: Principal[] = [];
   for (const state of client.roster.values()) {
@@ -456,7 +486,7 @@ export function TerminalView({
   const handleFocus = (): void => {
     if (readOnly || focusedRef.current) return;
     focusedRef.current = true;
-    // The view rides every presence payload (`view-presence.ts`), so a focus frame also
+    // The view rides every presence payload (`@manifold/plugin/ui` view state), so a focus
     // re-publishes what this device is holding.
     client.sendPresence({ focus: { elementId }, view: currentViewState() });
   };
@@ -574,7 +604,9 @@ export function TerminalView({
         middle={
           machine === null ? null : (
             <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
-              <span className="machine-dot" style={{ backgroundColor: machine.color }} />
+              {machine.color === undefined ? null : (
+                <span className="machine-dot" style={{ backgroundColor: machine.color }} />
+              )}
               {machine.name}
             </span>
           )

@@ -7,7 +7,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor } from "../src/placement.ts";
+import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionPeer } from "../src/session-peer.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
@@ -60,7 +60,17 @@ function openingFixture() {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  broker.setPlacement(new PlaceExecutor(store, rooms, broker, runtime));
+  // Terminals are a FLOOR item kind, so this fixture needs no contributed traits: it never
+  // places a plugin-owned element, and an empty roster is the honest input for that.
+  broker.setPlacement(
+    new PlaceExecutor(
+      store,
+      rooms,
+      broker,
+      runtime,
+      compositionElementTraits(() => []),
+    ),
+  );
   const enrollment = auth.enrollMachine("fake", root);
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
@@ -151,7 +161,7 @@ describe("TerminalBroker attach handoff", () => {
 });
 
 describe("TerminalBroker controller lease", () => {
-  test("gates input resize and kill until terminal_take transfers control", () => {
+  test("gates input and resize until terminal_take transfers control", () => {
     const fixture = brokerFixture();
     const grant = fixture.auth.mintToken(
       {
@@ -182,17 +192,13 @@ describe("TerminalBroker controller lease", () => {
       cols: 100,
       rows: 30,
     });
-    fixture.broker.kill(second, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
     expect(fixture.machine.sent).toEqual([]);
     expect(
       secondSocket
         .messages()
         .filter((message) => message.type === "error")
         .map((message) => message.code),
-    ).toEqual(["not_controller", "not_controller", "forbidden"]);
+    ).toEqual(["not_controller", "not_controller"]);
 
     fixture.broker.take(second, {
       type: "terminal_take",
@@ -222,12 +228,11 @@ describe("TerminalBroker controller lease", () => {
       code: "not_controller",
     });
 
-    // Kill comes last because it is DESTRUCTION: it needs the lease the take just moved, and
-    // once it lands there is no session left for anything else to be gated on.
-    fixture.broker.kill(second, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
+    // The kill comes last because it is DESTRUCTION, and it no longer goes through this
+    // class's own door: `core.terminals.kill` is the only one, and the lease rule it applies
+    // is tested where it now lives (packages/server/test/plugin-host.test.ts). What the
+    // broker still owes is the mechanism — the PTY is asked to stop.
+    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
     expect(fixture.machine.sent.map((message) => message.type)).toEqual([
       "input",
       "resize",
@@ -235,29 +240,6 @@ describe("TerminalBroker controller lease", () => {
     ]);
     expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
     expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
-    fixture.store.close();
-  });
-
-  test("owner wildcard capability kills without the controller lease", () => {
-    const fixture = brokerFixture();
-    const grant = fixture.auth.mintToken(
-      { principal: { name: "owner janitor", kind: "human" }, caps: ["*"] },
-      fixture.root,
-    );
-    const janitorSocket = new FakeSocket();
-    const janitor = new SessionPeer(
-      fixture.runtime.newId(),
-      janitorSocket,
-      fixture.auth.authenticate(grant.token),
-      fixture.pad.id,
-      "c2",
-    );
-    fixture.broker.kill(janitor, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
-    expect(fixture.machine.sent.map((message) => message.type)).toEqual(["kill"]);
-    expect(janitorSocket.messages().filter((message) => message.type === "error")).toEqual([]);
     fixture.store.close();
   });
 
@@ -269,10 +251,7 @@ describe("TerminalBroker controller lease", () => {
     fixture.socket.clear();
     fixture.broker.setMachineOffline(fixture.machine);
 
-    fixture.broker.kill(fixture.opener, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
+    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
 
     // Undeliverable is not a reason to keep the terminal. The request was the whole intent,
     // so the session, its row and the home it was the last occupant of all go, and nobody is
@@ -644,10 +623,7 @@ describe("TerminalBroker live stream and control contracts", () => {
         .map((message) => message.code),
     ).toEqual(["conflict", "conflict", "conflict"]);
 
-    fixture.broker.kill(fixture.opener, {
-      type: "terminal_kill",
-      sessionId: fixture.create.sessionId,
-    });
+    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
 
     // Killing one is not. A lease is a claim on a LIVE PTY, so an exited terminal has no
     // controller to win and dismissing it is the same verb as killing a running one — which

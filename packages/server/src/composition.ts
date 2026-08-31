@@ -1,5 +1,9 @@
+import { accessActions, accessManifest } from "@manifold-plugin/access";
+import { accessHandlers } from "@manifold-plugin/access/server";
 import { drawManifest } from "@manifold-plugin/draw";
-import { machinesManifest } from "@manifold-plugin/machines";
+import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
+import { machinesHandlers } from "@manifold-plugin/machines/server";
+import { notesManifest } from "@manifold-plugin/notes";
 import { pluginManagerManifest } from "@manifold-plugin/plugin-manager";
 import { presenceActions, presenceManifest } from "@manifold-plugin/presence";
 import { presenceHandlers } from "@manifold-plugin/presence/server";
@@ -8,7 +12,8 @@ import { layoutHandlers } from "@manifold-plugin/shell/server";
 import { terminalsActions, terminalsManifest } from "@manifold-plugin/terminals";
 import { terminalsHandlers } from "@manifold-plugin/terminals/server";
 import { uriManifest } from "@manifold-plugin/uri";
-import { viewsManifest } from "@manifold-plugin/views";
+import { viewsActions, viewsManifest } from "@manifold-plugin/views";
+import { viewsHandlers } from "@manifold-plugin/views/server";
 import type { ServerPluginDef } from "./plugin-host.ts";
 
 /**
@@ -33,6 +38,13 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: pluginManagerManifest, actions: [], handlers: {} },
   { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
+  { manifest: accessManifest, actions: accessActions, handlers: accessHandlers },
+  // The index owns both halves: the sidebar section that lists everything, and the doors
+  // that create, rename, delete and move it.
+  { manifest: viewsManifest, actions: viewsActions, handlers: viewsHandlers },
+  // The fleet owns both halves too: the section that lists it, and the doors that read the
+  // inventory and enroll into it.
+  { manifest: machinesManifest, actions: machinesActions, handlers: machinesHandlers },
   /*
     Browser-only plugins, registered here all the same: the ROSTER is what publishes a
     plugin's existence, its title and its contributions, and what an administrator toggles.
@@ -40,7 +52,6 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
     and its element type would read as "unknown plugin" on every canvas.
   */
   { manifest: drawManifest, actions: [], handlers: {} },
-  { manifest: machinesManifest, actions: [], handlers: {} },
-  { manifest: viewsManifest, actions: [], handlers: {} },
+  { manifest: notesManifest, actions: [], handlers: {} },
   { manifest: uriManifest, actions: [], handlers: {} },
 ];

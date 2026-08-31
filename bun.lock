@@ -30,6 +30,8 @@
       "name": "@manifold/plugin",
       "dependencies": {
         "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "lucide-react": "1.37.0",
         "zod": "4.4.3",
       },
       "devDependencies": {
@@ -37,6 +39,16 @@
       },
       "peerDependencies": {
         "react": "19.2.8",
+      },
+    },
+    "packages/plugins/access": {
+      "name": "@manifold-plugin/access",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
       },
     },
     "packages/plugins/draw": {
@@ -58,6 +70,20 @@
         "@manifold/protocol": "workspace:*",
         "lucide-react": "1.37.0",
         "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/notes": {
+      "name": "@manifold-plugin/notes",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "react": "19.2.8",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
@@ -71,7 +97,6 @@
         "@manifold/protocol": "workspace:*",
         "lucide-react": "1.37.0",
         "react": "19.2.8",
-        "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
@@ -83,10 +108,13 @@
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "react": "19.2.8",
         "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
       },
     },
     "packages/plugins/shell": {
@@ -105,10 +133,15 @@
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "@xterm/addon-fit": "0.11.0",
+        "@xterm/xterm": "6.0.0",
+        "react": "19.2.8",
         "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
       },
     },
     "packages/plugins/uri": {
@@ -131,6 +164,7 @@
         "@manifold/protocol": "workspace:*",
         "lucide-react": "1.37.0",
         "react": "19.2.8",
+        "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
@@ -163,8 +197,10 @@
     "packages/server": {
       "name": "@manifold/server",
       "dependencies": {
+        "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/draw": "workspace:*",
         "@manifold-plugin/machines": "workspace:*",
+        "@manifold-plugin/notes": "workspace:*",
         "@manifold-plugin/plugin-manager": "workspace:*",
         "@manifold-plugin/presence": "workspace:*",
         "@manifold-plugin/shell": "workspace:*",
@@ -198,6 +234,7 @@
       "dependencies": {
         "@manifold-plugin/draw": "workspace:*",
         "@manifold-plugin/machines": "workspace:*",
+        "@manifold-plugin/notes": "workspace:*",
         "@manifold-plugin/plugin-manager": "workspace:*",
         "@manifold-plugin/presence": "workspace:*",
         "@manifold-plugin/terminals": "workspace:*",
@@ -207,10 +244,7 @@
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",
         "@manifold/sdk": "workspace:*",
-        "@xterm/addon-fit": "0.11.0",
-        "@xterm/xterm": "6.0.0",
         "@xyflow/react": "12.11.5",
-        "lucide-react": "1.37.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
         "yjs": "13.6.32",
@@ -300,9 +334,13 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@manifold-plugin/access": ["@manifold-plugin/access@workspace:packages/plugins/access"],
+
     "@manifold-plugin/draw": ["@manifold-plugin/draw@workspace:packages/plugins/draw"],
 
     "@manifold-plugin/machines": ["@manifold-plugin/machines@workspace:packages/plugins/machines"],
+
+    "@manifold-plugin/notes": ["@manifold-plugin/notes@workspace:packages/plugins/notes"],
 
     "@manifold-plugin/plugin-manager": ["@manifold-plugin/plugin-manager@workspace:packages/plugins/plugin-manager"],
 

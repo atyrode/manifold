@@ -62,7 +62,9 @@ const packages = [
   "plugins/machines",
   "plugins/views",
   "plugins/draw",
+  "plugins/notes",
   "plugins/uri",
+  "plugins/access",
 ];
 
 /**

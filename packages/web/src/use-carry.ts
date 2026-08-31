@@ -3,10 +3,14 @@ import type { SessionClient } from "@manifold/sdk";
 import { useEffect, useRef, useState } from "react";
 import { carryFrame, carryPlacementId, type CarryPoint, type CarrySource } from "./carry.ts";
 import {
+  applyGestureFrame,
   createGestureStream,
+  expireGestures,
   gestureSendIntervalOverride,
+  stepGestures,
+  type GestureOverride,
   type GestureStream,
-} from "./gesture-stream.ts";
+} from "@manifold-plugin/presence/web";
 import {
   beginCarry,
   carriedItem,
@@ -15,12 +19,6 @@ import {
   startItemDrag,
   type ItemEnvelope,
 } from "@manifold/plugin/hooks";
-import {
-  applyGestureFrame,
-  expireGestures,
-  stepGestures,
-  type GestureOverride,
-} from "./remote-gestures.ts";
 
 /**
  * The carry lifecycle, in React. One grab is one carry whatever grabbed it — a React

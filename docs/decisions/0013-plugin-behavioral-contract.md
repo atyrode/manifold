@@ -260,6 +260,20 @@ Obsidian actually uses a component for — the owner is enabled but this node is
 — is a rendering-performance question, and if manifold ever wants it, it is a separate decision
 with its own name.
 
+Two consequences of engine ownership are worth stating because they are what makes the rule
+checkable rather than aspirational. First, the placeholder decision happens **before a plugin's
+component is constructed**, at every mount site, asking the same three questions in the same order:
+unknown contribution → `unknown`, owning plugin disabled → `disabled`, declared but no renderer
+registered → `unavailable`. A plugin implements nothing for dormancy and has no seam to implement it
+in — which is the C7 circularity closed by construction rather than by convention — and the state is
+mirrored to `data-plugin-state` so a gate can assert on it.
+
+Second, `hide` is for **chrome**, never for a node holding a user's work. A toolbar tool that
+vanishes costs a button; a hidden note record makes someone's prose invisible without deleting it,
+which is the one outcome worse than a placeholder and the exact failure A1's "a missing feature must
+be visible, not invisible" exists to forbid. The default therefore points the safe way, and silence
+in a manifest is a real declaration: `core.notes` ships no `dormant` field at all.
+
 ### 5. Dependencies, and ordering as a separate axis (C2, risk R6)
 
 The manifest gains:
@@ -562,9 +576,9 @@ refusal in §6 would be advisory.
 
 The engine's own workspace-level bookkeeping stays where it already was — `meta` rows beside
 `plugins:disabled` for enablement attribution (`plugins:attribution`) and element-type reservations
-(`plugins:element-owners`) — because those are facts about the composition, not data belonging to any
-one plugin, and putting them in a plugin's namespace would make them purgeable by the plugin they
-describe.
+(`plugins:element-owners`) — because those are facts about the composition, not data belonging to
+any one plugin, and putting them in a plugin's namespace would make them purgeable by the plugin
+they describe.
 
 This is Obsidian's `loadData`/`saveData` and Home Assistant's per-entry registry rows in manifold
 shape, and Factorio's `storage` table is the same idea with the same lifecycle coupling ("`storage`
@@ -577,11 +591,11 @@ the door writes through `ctx.storage`, and nothing else does.
 
 ### 12. Placement traits are manifest contribution data (G1)
 
-The placement algebra is currently a set of closed tables in `packages/protocol/src/placement.ts` —
-`ITEM_KINDS` enumerates `terminal`, `canvas-pad`, `view`, `text`, `draw`, `tile` with their groups,
-guards and homing, and `CANVAS_OPS` maps a kind to its canvas operation. Five of those six kinds
-resolve to floor-owned renderers today. As long as the tables are closed, every new element kind is
-an edit to the floor, which is A1's failure mode in its purest form: a plugin cannot contribute an
+The placement algebra was a set of closed tables in `packages/protocol/src/placement.ts` —
+`ITEM_KINDS` enumerated `terminal`, `canvas-pad`, `view`, `text`, `draw`, `tile` with their groups,
+guards and homing, and `CANVAS_OPS` mapped a kind to its canvas operation. Five of those six kinds
+resolved to floor-owned renderers. As long as the tables are closed, every new element kind is an
+edit to the floor, which is A1's failure mode in its purest form: a plugin cannot contribute an
 element without the engine learning its name.
 
 So the traits move into the manifest. An element contribution declares its **placement behavior** as
@@ -604,17 +618,24 @@ batch changes is the algebra's consumer — reading traits from the registry ins
 table — not the contract plugins were written against. That is the difference between a seam and a
 promise.
 
-This decision designs the schema now, in the protocol, because the schema is what the conversion
-batch consumes when `core.canvas`, `core.notes` and `core.compositions` take ownership of their
-kinds. The compiler already carries the proof that the traits are complete: `ITEM_KINDS` is typed
+This decision designed the schema in the protocol, because the schema is what the conversion
+consumes when `core.canvas`, `core.notes` and `core.compositions` take ownership of their kinds. The
+compiler carried the proof that the traits are complete: `ITEM_KINDS` is typed
 `satisfies Record<string, PlacementTraits>`, so the closed union's rows and a plugin's declaration
 are the same type, and nothing about a kind can live outside the traits without breaking the build.
-What remains for the conversion batch is fusing composed kinds INTO that union — this wave carries
-the traits without opening it. NeoForge's registry discipline is the caution to carry: registration
-happens in a lifecycle window and "Query operations are only safe to use after registration has
-finished. DO NOT QUERY REGISTRIES WHILE REGISTRATION IS STILL ONGOING!" manifold's equivalent is
-that trait tables are composed once per roster commit and read as immutable data thereafter — the
-composition is the freeze.
+
+The fusion has since landed, and it kept every boundary this section drew. `ITEM_KINDS` and
+`CANVAS_OPS` now hold FLOOR kinds only (`terminal`, `canvas-pad`, `view`, `tile`, `panel`; the
+`text` and `draw` rows are deleted), `PlacementItem.kind` and `CensusItem.kind` are open strings,
+and resolution reads `ITEM_KINDS[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`.
+A non-floor kind's canvas op is `move_element`, decided by `canvasOpFor` — still a floor table,
+never manifest data. `ITEM_KIND_NAMES` is gone with the closed enumeration it served: no schema
+enumerates kinds any more.
+
+NeoForge's registry discipline is the caution to carry: registration happens in a lifecycle window
+and "Query operations are only safe to use after registration has finished. DO NOT QUERY REGISTRIES
+WHILE REGISTRATION IS STILL ONGOING!" manifold's equivalent is that trait tables are composed once
+per roster commit and read as immutable data thereafter — the composition is the freeze.
 
 ### 13. The foundation litmus test (C9)
 
@@ -711,6 +732,83 @@ deferred. Under total conversion the two halves separate: the _evaluator_ (ADR 0
 mechanism is floor" does not make "POST /api/tokens" mechanism. A grant UI arriving later is a plugin
 gaining contributions, not a floor extraction repeated.
 
+### 15. Conversion never narrows who may call a door (`scope` on the action)
+
+Total conversion moves every remaining door onto the action plane, and that collided with a rule
+written when the plane held only administrative verbs. ADR 0010 rule 6 made actions
+workspace-grade — dispatch rung 3 refuses `padScope !== null` before capabilities are even
+consulted — with `POST /api/place` as its precedent: a placement moves items between containers, so
+a token scoped to one container can never authorize it. Applied unchanged to the doors being
+converted, the same rung silently revokes access that exists today. Reads first: `GET /api/pad-tree`
+filters to the scoped pad plus its ancestor folders, `GET /api/machines` and `GET /api/pad-sessions`
+answer scoped tokens, and the roster and layout reads were already carved out by hand for exactly
+this reason ("the roster is vocabulary and scoped viewers still render UI"). But not only reads:
+`POST /api/tokens` authenticated any token, so a pad-scoped agent holding `tokens:mint` could mint a
+further-attenuated token inside its own container — which is how a terminal agent delegates to a
+sub-agent — `PATCH /api/pads/:id` authorized `pads:write` AT the named pad, and the session
+channel's own terminal verbs have always been reachable by the pad-scoped token minted for that
+terminal.
+
+A principal who can no longer do through the new door what their grant already let them do through
+the old one has lost a capability. That is an A2 and A5 outcome, not a conversion detail, so the
+rule is stated as parity rather than as a taxonomy of verbs:
+
+**`ActionDef` gains `scope: "workspace" | "pad"`, defaulting to `"workspace"`.** Rung 3 refuses a
+pad-scoped caller only when the action's scope is `workspace`. **An action declares `scope: "pad"`
+if and only if the door it replaces was reachable by a pad-scoped token** — whether it reads or
+mutates. Everything owner- or workspace-only keeps the default, and `POST /api/place`'s successor
+keeps it too, because a placement genuinely spans containers.
+
+`scope: "pad"` carries an **obligation on the handler**, and the division of labour is exact: the
+ladder proves the caller's declared caps hold for the caller's OWN pad, and only a handler can ask
+whether the thing named in the arguments lives there. So a pad-scoped `renamePad` naming another
+container is refused inside the handler, a pad-scoped session read answers that container's rows and
+learns nothing about another, and a mint may not widen its minter's scope.
+
+The obligation is discharged **once, by the engine**: `ctx.outsideScope(padId)` returns the
+canonical refusal (`OUTSIDE_SCOPE_REFUSAL`, "outside this token's container") when the caller's
+scope excludes that pad and `null` when dispatch may proceed. That it is one call rather than a
+per-plugin convention was learned rather than assumed: the first pad-scoped handlers to land had
+three wordings for one concept — a shared local helper in one plugin, two differently-phrased
+hand-rolled checks in another — which is invariant 14 with the seams showing, and a client cannot
+switch on prose. Two decisions are baked into the shared call so no plugin re-litigates them: the
+refusal does **not** name the target pad (telling a scoped caller the id of a container it may not
+reach is a disclosure the refusal does not need), and a **null** pad is refused for a scoped caller
+while passing for a workspace-grade one (authority cannot be proven against a container nobody
+named).
+
+Two other discharges stay legitimate, and they are **not interchangeable with the first** — this is
+the loophole the rule has to close in writing, because "the mechanism handles it" is what a future
+author will reach for:
+
+1. **Handler discharge** — `ctx.outsideScope(padOfTheThingNamed)`. REQUIRED whenever the arguments
+   name a pad-addressed node: a session, an element, a folder, a layout, a pad.
+2. **Mechanism discharge** — legitimate ONLY when the mechanism refuses on the CALLER'S OWN SCOPE.
+   The identity mechanism qualifies: it refuses a mint that widens its minter's pad scope and
+   confines a scoped revocation to that pad's tokens, both by reading the caller's `padScope`.
+   **A mechanism discharges the obligation only if it refuses on the caller's own scope;
+   validating the argument is not confining it.** A check that only asks "is this well-formed" or
+   "does this row exist" discharges nothing, and calling it a discharge is how a door quietly
+   becomes reachable across containers.
+3. **Vacuous** — nothing in the answer is addressed by pad, as with a fleet-wide machine list. The
+   reason MUST be a comment on the handler, or the next reader adds a filter and breaks
+   share-link viewers; and any other door in that plugin whose arguments name a pad-addressed node
+   owes path 1 regardless.
+
+Three properties make this a narrowing of rule 6 rather than a hole in it. It is **declarative**, so
+a reviewer sees a door's audience in the definition instead of inferring it from a handler; it is
+**the same shape as `cleanup: true`** (§9) — a declared, published, gate-visible carve-out from one
+rung, not a second ladder; and it **cannot widen authority**, because rung 4's capability
+intersection still runs and a pad-scoped token still carries only its own caps. What it buys is that
+a token whose grant already covers a node may reach a door about that node, which is precisely the
+degenerate case ADR 0011's evaluator will express as a subtree grant — arriving early where the
+mismatch was doing damage.
+
+ADR 0010 rule 6 is therefore narrowed to **workspace-graded doors specifically**: an action that is
+genuinely about the workspace refuses scoped callers, and R8 keeps proving it on
+`engine.plugins.setEnabled`. What it no longer claims is that every action is workspace-grade by
+nature.
+
 ## Alternatives rejected
 
 - **Erase- or reset-on-disable (the draft's `retention`).** Rejected per §1: no surveyed platform
@@ -747,6 +845,15 @@ gaining contributions, not a floor extraction repeated.
 - **Keeping `POST /api/place` beside a placement action.** Rejected per §14: two doors onto one
   concept is invariant 14, and the exception's cost (no action vocabulary, no `data-action`
   traceability, a second refusal path) is exactly what total conversion exists to remove.
+- **Accepting the scoped-read regression and merely documenting it.** Rejected per §15: a deferral
+  may cost effort, never a capability a grant already implies, and "converted, therefore invisible
+  to the principal it was for" is exactly the axiom-violating state scope is not allowed to license
+  (`AXIOMS.md` §Change control).
+- **Keeping converted reads as bespoke plugin-owned HTTP routes until ADR 0011's evaluator lands.**
+  Rejected per §15: it preserves scoped readability by preserving a second door onto every read
+  (invariant 14), and it leaves the read vocabulary unpublished — no `ActionSummary`, no schemas at
+  `GET /api/protocol`, no `data-action` traceability. One declared field on the action buys the same
+  outcome inside the door that already exists.
 
 ## Protocol impact
 

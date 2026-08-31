@@ -12,7 +12,10 @@ export interface SessionRow {
   /** Every live canvas mirror in stable scene order. */
   readonly boundElementIds: readonly string[];
   readonly isController: boolean;
-  /** Self can terminate directly, or can claim an unbound session before terminating it. */
+  /**
+   * Whether `core.terminals.kill` would ACCEPT this row from this caller — computed from the
+   * door's own rule so no affordance offers what the door refuses.
+   */
   readonly canKill: boolean;
 }
 
@@ -50,14 +53,22 @@ export function buildSessionRows(input: SessionInventoryInput): readonly Session
         exitCode: session.exitCode,
         boundElementIds,
         isController,
-        // A running session is killable by its controller, a root, or (unbound) any
-        // terminal writer; an EXITED session is dismissable by anyone who can write —
-        // the server sweeps it totally either way, and a lease on a dead PTY is not
-        // a thing (kill and dismiss are one verb).
-        canKill:
-          session.status === "running"
-            ? isController || isRoot || (boundElementIds.length === 0 && canWriteTerminals)
-            : canWriteTerminals || isRoot,
+        /*
+          THE SAME RULE `core.terminals.kill` enforces, and only that rule. A RUNNING
+          terminal may be killed by the principal holding its lease or by the wildcard —
+          pulling a live PTY out from under somebody working in it is not a janitorial act,
+          and nobody is locked out because `terminal_take` claims the lease first. An EXITED
+          terminal has no controller and nothing left to protect, so dismissing it needs only
+          the `terminal:write` the door's ladder already proves (kill and dismiss are one
+          verb).
+
+          The "unbound running terminal, any terminal writer" branch that used to sit here is
+          GONE. It predated the unification: two doors answered kill and disagreed, and this
+          row was computed from the laxer one, so the affordance offered a kill the surviving
+          door refuses. An affordance that offers what the door refuses is worse than a
+          missing button — invariant 14 leaves exactly one reading, and this is it.
+        */
+        canKill: session.status === "running" ? isController || isRoot : canWriteTerminals,
       } satisfies SessionRow;
     })
     .filter(

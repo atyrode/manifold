@@ -10,7 +10,20 @@ import {
   type PlacementDestination,
   type PlacementItem,
 } from "@manifold/protocol";
-import type { PadViewportHandle } from "@manifold/plugin";
+import { lastSpotlight, type PadViewportHandle } from "@manifold/plugin";
+import {
+  carrierColor,
+  createGestureStream,
+  deriveRosterRows,
+  gestureSendIntervalOverride,
+  PresenceIsland,
+  remoteCursorSocketId,
+  REMOTE_CURSOR_FALLBACK_COLOR,
+  SpotlightChip,
+  useRemoteCursors,
+  useSpotlight,
+  type RosterRow,
+} from "@manifold-plugin/presence/web";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
   NodeResizer,
@@ -28,8 +41,7 @@ import { deletePad, getMachines } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { FLOOR_TOOLS, toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
-import { debugSeamEnabled, lastSpotlight, renderCounts, toElementSnapshot } from "./debug-seam.ts";
-import { remoteCursorSocketId } from "./cursor-identity.ts";
+import { debugSeamEnabled, renderCounts, toElementSnapshot } from "./debug-seam.ts";
 import {
   PluginPlaceholder,
   useComposition,
@@ -37,8 +49,21 @@ import {
   type PlaceholderState,
   type WebElement,
 } from "./plugin-host.tsx";
-import { SpotlightChip, useSpotlight } from "./spotlight.tsx";
-import { currentViewState, setViewState, subscribeViewState } from "./view-presence.ts";
+import {
+  RemoteCursorIcon,
+  SurfaceIcon,
+  currentViewState,
+  setViewState,
+  subscribeViewState,
+  useToast,
+} from "@manifold/plugin/ui";
+import {
+  browserMachineStorage,
+  buildSessionRows,
+  chooseDefaultMachine,
+  recallMachine,
+  rememberMachine,
+} from "@manifold-plugin/terminals/web";
 import { MONO_PORTAL_CLASS_SELECTOR, PORTAL_DRAG_HANDLE, PortalNode } from "./flow-portal-node.tsx";
 import {
   FlowPadProviders,
@@ -54,9 +79,6 @@ import {
   projectElements,
   type ProjectedNode,
 } from "./flow-scene.ts";
-import { TextNode } from "./flow-text-node.tsx";
-import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
-import { RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
 import {
   carriesItem,
   createPlacementLookup,
@@ -66,27 +88,13 @@ import {
   type ItemEnvelope,
 } from "@manifold/plugin/hooks";
 import { sessionMachine } from "./machine-visibility.ts";
-import {
-  browserMachineStorage,
-  chooseDefaultMachine,
-  recallMachine,
-  rememberMachine,
-} from "./machine-choice.ts";
-import { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 import { carryGhosts, remoteTileCarries } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
-import { buildSessionRows } from "./session-inventory.ts";
-import { PresenceIsland, type WorkspaceSidebarState } from "./top-right.tsx";
+import type { WorkspaceSidebarState } from "./pad-browser.tsx";
 import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
 import { createTileDropStore } from "./tile-drop-store.ts";
 import { composeTargetAt } from "./tile-snap.ts";
-import { useToast } from "./toast.tsx";
-import {
-  carrierColor,
-  REMOTE_CURSOR_FALLBACK_COLOR,
-  useRemoteCursors,
-} from "./use-remote-cursors.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
 /**
@@ -94,13 +102,21 @@ import type { WidgetRole } from "./widget-engagement.ts";
  * into React Flow nodes.
  */
 
-/** The node species the ENGINE renders. Everything else arrives from the composition. */
+/**
+ * The node species the ENGINE renders. Everything else arrives from the composition — as of
+ * `core.notes` that includes `text`, so the portal is the last floor species: it is addressing,
+ * not content, and a canvas that cannot render a reference cannot render anything.
+ */
 const FLOOR_NODE_TYPES: NodeTypes = {
-  text: TextNode,
   portal: PortalNode,
 };
 
-/** Contributed ink may shrink to a thumbnail, so the resize floor is deliberately tiny. */
+/**
+ * ONE resize floor for every contributed species, deliberately tiny: ink may shrink to a
+ * thumbnail, and a note that got dragged small is still clickable and still resizable back.
+ * A per-species minimum would be geometry policy travelling in a manifest, which is the
+ * element frame's whole reason not to exist twice.
+ */
 const MIN_PLUGIN_ELEMENT_SIZE = 16;
 
 /**
@@ -721,6 +737,13 @@ export function FlowPadView({
         // container this canvas merely points at. Handing it down is what lets a canvas
         // drag preview agree with the write the server performs.
         soloOccupants,
+        /*
+          The composed vocabulary, because a CONTRIBUTED element kind's placement traits live
+          in its manifest rather than in the closed floor table (ADR 0013 §12): without it a
+          note dragged into a composition would be refused by this preview and accepted by the
+          server, which is the one disagreement the local algebra exists to prevent.
+        */
+        roster: composition.roster,
       }),
     /*
       `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
@@ -729,7 +752,7 @@ export function FlowPadView({
       above is a SNAPSHOT of one of them. Drop this dependency and a terminal created a
       moment ago has no home here, which reads as a placement denial mid-drag.
     */
-    [client, pads, padId, sceneRevision, soloOccupants],
+    [client, pads, padId, sceneRevision, soloOccupants, composition.roster],
   );
 
   const drop = useItemDrop({
@@ -1414,7 +1437,7 @@ export function FlowPadView({
       status,
       savedAt,
       rev: sceneRevision,
-      rows: sessionRows,
+      sessionCount: sessionRows.length,
       onCreateTerminal: (machine) => void createTerminal(machine),
     });
   }, [createTerminal, onWorkspaceChange, savedAt, sceneRevision, sessionRows, status]);

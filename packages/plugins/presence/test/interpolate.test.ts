@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { FRACTION_SNAP_EPSILON, stepToward } from "./interpolate";
+import { FRACTION_SNAP_EPSILON, stepToward } from "../src/interpolate";
 
 describe("stepToward", () => {
   test("moves halfway to the target in one half-life", () => {

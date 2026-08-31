@@ -18,6 +18,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActionOutcomeSchema, PadResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
@@ -60,12 +61,14 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "terminal-selection-gate" }),
   });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const outcome = ActionOutcomeSchema.parse(await created.json());
+  if (!outcome.ok) throw new Error(`createPad refused: ${outcome.denial.message}`);
+  const padId = PadResponseSchema.parse(outcome.result).pad.id;
 
   browser = new Browser();
   await browser.launch(9340);

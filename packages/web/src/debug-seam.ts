@@ -67,7 +67,11 @@ export interface ManifoldDebugSeam {
    * MOVES, so a gate can assert that "look at this" actually landed.
    */
   readonly padViewport: () => DebugCamera | null;
-  /** The last spotlight this client APPLIED (a `manifold://` URI), or null. */
+  /**
+   * The last spotlight this client APPLIED (a `manifold://` URI), or null. The slot lives in
+   * `@manifold/plugin`: `core.presence` applies spotlights and records there, and a plugin
+   * and the floor may not import each other.
+   */
   readonly lastSpotlight: () => string | null;
   /**
    * Renders per node species since load. A context that churns is invisible in the DOM
@@ -103,21 +107,6 @@ export function countRender(kind: string): void {
 
 export function renderCounts(): Readonly<Record<string, number>> {
   return Object.fromEntries(renders);
-}
-
-let appliedSpotlight: string | null = null;
-
-/**
- * Records a spotlight this client acted on. Written where the viewport actually moves, so
- * the seam reports what HAPPENED rather than what arrived — a spotlight the viewer has
- * switched off never lands here.
- */
-export function recordSpotlight(uri: string): void {
-  appliedSpotlight = uri;
-}
-
-export function lastSpotlight(): string | null {
-  return appliedSpotlight;
 }
 
 /** Coerces a scene record into a geometry snapshot. */

@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -9,11 +7,17 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { ControlIcon } from "./icons.tsx";
+import {
+  ControlIcon,
+  ToastContext,
+  type ToastApi,
+  type ToastLifetime,
+  type ToastOptions,
+} from "@manifold/plugin/ui";
 
 /**
- * The one notice surface. Before this module the app had four independent notice
- * mechanisms with three persistence models plus four failures that only reached the
+ * The one notice surface, PROVIDER half. Before this module the app had four independent
+ * notice mechanisms with three persistence models plus four failures that only reached the
  * console, so "did the user see it?" depended on which file the failure happened in.
  * Now every transient message in the application lands in one bottom-center stack,
  * above every renderer and outside the sidebar's collapse subtree.
@@ -27,19 +31,14 @@ import { ControlIcon } from "./icons.tsx";
  *
  * `key` is what makes repeated failures readable: a poll that fails every 1.5s
  * replaces its own notice in place instead of building a wall of identical rows.
+ *
+ * THE OTHER HALF OF THIS DOOR IS `@manifold/plugin/ui`: the context object, `ToastApi` and
+ * `useToast` live there, because a plugin may not import a floor module and every plugin
+ * needs to be able to say "that was refused" into the same stack. This file supplies the
+ * value; nothing here is re-exported, so there is exactly one place to import a notice from
+ * whichever side of the boundary a caller sits on. The queue types below stay floor — nothing
+ * outside the provider may see a row.
  */
-
-export type ToastLifetime = "toast" | "sticky";
-
-export interface ToastOptions {
-  /** Defaults to `"toast"`. */
-  readonly lifetime?: ToastLifetime;
-  /**
-   * Supersession slot. A notice carrying a key that is already on screen REPLACES
-   * that row where it stands rather than stacking below it; the fade timer restarts.
-   */
-  readonly key?: string;
-}
 
 export interface ToastEntry {
   readonly id: string;
@@ -48,13 +47,6 @@ export interface ToastEntry {
   readonly key: string | null;
   /** Fading out: still occupies its slot for the animation, but is inert. */
   readonly leaving: boolean;
-}
-
-export interface ToastApi {
-  /** Shows a notice and returns its id. */
-  readonly notify: (message: string, options?: ToastOptions) => string;
-  /** Fades a notice out early; unknown ids are a no-op. */
-  readonly dismiss: (id: string) => void;
 }
 
 /** Beyond this the stack stops being readable, so the oldest row gives way. */
@@ -118,18 +110,6 @@ let sequence = 0;
 function nextToastId(): string {
   sequence += 1;
   return `toast-${sequence}`;
-}
-
-const ToastContext = createContext<ToastApi | null>(null);
-
-/**
- * Throws rather than degrading to a no-op: a notice nobody can see is exactly the
- * class of bug this module exists to end, so a missing provider must be loud.
- */
-export function useToast(): ToastApi {
-  const api = useContext(ToastContext);
-  if (api === null) throw new Error("useToast requires a <ToastProvider> ancestor");
-  return api;
 }
 
 interface ToastProviderProps {

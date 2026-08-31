@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Principal } from "@manifold/protocol";
-import { projectLocalPresence } from "./presence-projection.ts";
+import { projectLocalPresence } from "../src/presence-projection.ts";
 
 const self: Principal = {
   id: "self",

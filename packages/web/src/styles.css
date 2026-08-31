@@ -2589,7 +2589,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* ── The one node titlebar ────────────────────────────────────────────────────
-   Every container node wears the same bar (`node-titlebar.tsx`): a type icon, the
+   Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
    editable title, a modular middle slot, and a right-justified control cluster.
    Adopters keep their own class on the same element for drag handles and proof
    hooks, and override only what is genuinely theirs (the terminal bar floats, the
@@ -3093,7 +3093,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* ── The icon vocabulary ──────────────────────────────────────────────────────
-   Every glyph in the application is one lucide drawing rendered by `src/icons.tsx`
+   Every glyph in the application is one lucide drawing rendered by `@manifold/plugin/ui`
    (see docs/decisions/0009-lucide-icons.md), which owns size and stroke weight per
    call site. This block owns only PLACEMENT — the boxes icons sit in — and the rule
    that they inherit `currentColor`, which is what keeps every hover, focus, active

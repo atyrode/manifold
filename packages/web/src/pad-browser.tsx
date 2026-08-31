@@ -1,5 +1,7 @@
 import { DEFAULT_WORKSPACE_LAYOUT, samePadTreeItems } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
+import { setViewState, useToast } from "@manifold/plugin/ui";
+import { PadResponseSchema } from "@manifold/protocol";
 import type {
   MachineSummary,
   Pad,
@@ -11,6 +13,8 @@ import type {
   TileNode,
 } from "@manifold/protocol";
 import { withTileRatios, withoutTileLeaf } from "@manifold/scene";
+import type { ConnectionStatus } from "@manifold/sdk";
+import { projectLocalPresence } from "@manifold-plugin/presence/web";
 import {
   createContext,
   useCallback,
@@ -22,16 +26,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import {
-  createPad,
-  createPadFolder,
-  getPad,
-  getPadPresence,
-  getWorkspaceLayout,
-  listPadTree,
-  listTerminals,
-  type StoredIdentity,
-} from "./api.ts";
+import { getPad, getPadPresence, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
 import { browserPadStorage, chooseInitialPad, rememberPad } from "./pad-memory.ts";
 import { PadRouteProvider, type PadRoute } from "./pad-view-panel.tsx";
 import {
@@ -40,11 +35,7 @@ import {
   useAuthoringRegistration,
   useHostServices,
 } from "./plugin-host.tsx";
-import { projectLocalPresence } from "./presence-projection.ts";
 import { TileTree, WORKSPACE_TREE_CLASSES } from "./tile-tree.tsx";
-import { useToast } from "./toast.tsx";
-import type { WorkspaceSidebarState } from "./top-right.tsx";
-import { setViewState } from "./view-presence.ts";
 
 /**
  * THE workspace shell — and it is a composition, not a frame with plugin holes cut in it
@@ -103,6 +94,23 @@ interface PadBrowserProps {
   readonly identity: StoredIdentity;
   readonly requestedPadId: string | null;
   readonly navigate: (path: string, options?: NavigateOptions) => void;
+}
+
+/**
+ * What the MOUNTED pad renderer reports upward about itself. It lives with the shell because
+ * the shell is the only consumer: the sidebar renders the connection dot and the workspace
+ * index needs to know how many sessions the open container is holding.
+ *
+ * `sessionCount` rather than the rows themselves: a session row is `core.terminals`' shape,
+ * and floor may not name a plugin's type (AXIOMS §Foundation). Nothing here ever wanted the
+ * rows — only how many there are.
+ */
+export interface WorkspaceSidebarState {
+  readonly status: ConnectionStatus;
+  readonly savedAt: number | null;
+  readonly rev: number;
+  readonly sessionCount: number;
+  readonly onCreateTerminal: (machine?: MachineSummary) => void;
 }
 
 /**
@@ -301,9 +309,9 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   /** Shrink's return address: the last canvas the viewer was on, else the workspace root. */
   const [originPadId, setOriginPadId] = useState<string | null>(null);
 
-  const fetchTree = useCallback(() => listPadTree(identity.token), [identity.token]);
+  const fetchTree = useCallback(() => host.client.padTree(), [host.client]);
   const fetchPresence = useCallback(() => getPadPresence(identity.token), [identity.token]);
-  const fetchTerminals = useCallback(() => listTerminals(identity.token), [identity.token]);
+  const fetchTerminals = useCallback(() => host.client.terminals(), [host.client]);
 
   /** Set once an index exists, so a failing tick stops re-announcing what is still shown. */
   const indexLoadedRef = useRef(false);
@@ -338,7 +346,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     restartKey: requestedPadId,
   });
 
-  const activeSessionCount = workspace?.status === "open" ? workspace.rows.length : null;
+  const activeSessionCount = workspace?.status === "open" ? workspace.sessionCount : null;
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
     INDEX_POLL_MS,
@@ -476,8 +484,17 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     (containerLayout: Pad["layout"]): void => {
       if (creating) return;
       setCreating(true);
-      void createPad(identity.token, DEFAULT_CONTAINER_NAME, containerLayout)
-        .then((pad) => {
+      void host.client
+        .action("core.views.createPad", {
+          name: DEFAULT_CONTAINER_NAME,
+          layout: containerLayout,
+        })
+        .then((outcome) => {
+          if (!outcome.ok) {
+            notify(outcome.denial.message, { key: "container-create" });
+            return;
+          }
+          const { pad } = PadResponseSchema.parse(outcome.result);
           rememberPads([pad]);
           refreshTree();
           rememberPad(memory, identity.principal.id, pad.id);
@@ -495,8 +512,8 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     },
     [
       creating,
+      host.client,
       identity.principal.id,
-      identity.token,
       memory,
       navigate,
       notify,
@@ -508,7 +525,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
   const createFolder = useCallback(
     async (name: string): Promise<void> => {
       try {
-        await createPadFolder(identity.token, name, null);
+        const outcome = await host.client.action("core.views.createFolder", {
+          name,
+          parentId: null,
+        });
+        if (!outcome.ok) {
+          notify(outcome.denial.message, { key: "folder-create" });
+          return;
+        }
         refreshTree();
       } catch (reason: unknown) {
         notify(reason instanceof Error ? reason.message : "Could not create the folder", {
@@ -516,7 +540,7 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
         });
       }
     },
-    [identity.token, notify, refreshTree],
+    [host.client, notify, refreshTree],
   );
 
   /** Stable identity: the publishing effect inside the composition must not re-run per render. */

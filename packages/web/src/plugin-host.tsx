@@ -1,4 +1,7 @@
+import { ElementHostProvider } from "@manifold/plugin/hooks";
 import type {
+  ElementDocument,
+  ElementProps,
   HostServices,
   PadAuthoringHandle,
   PadViewportHandle,
@@ -61,9 +64,12 @@ export interface ToolContribution {
  * declared (`sidebar`, not `core.shell.sidebar`) — except `elements`, which are keyed by the
  * wire element type, because that string is what a scene document actually stores.
  *
- * `elements` are typed as opaque components: an element renderer is a React Flow node
- * component whose props are the renderer's private contract, so the flow paint boundary is
- * the one place that casts them into its own node-type map. Nothing else may look inside.
+ * `elements` are typed as opaque components even though the element contract IS published
+ * (`@manifold/plugin`'s `ElementProps`): a renderer declares only its identity and its stored
+ * `data`, while each MOUNT SITE hands it whatever its own frame demands — React Flow node
+ * props on a canvas, a plain render in a tile leaf. Keeping the registry opaque is what stops
+ * one frame's props from becoming the contract. Exactly two places cast: `nodeTypesFor` in
+ * `flow-pad-view.tsx` and {@link ElementOutlet} below.
  */
 export interface WebPluginDef {
   readonly id: string;
@@ -572,4 +578,72 @@ export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactEleme
   }
   const Panel = panel.Component;
   return <Panel host={host} />;
+}
+
+export interface ElementOutletProps {
+  /** The WIRE element type, exactly as the scene document stores it (`text`). */
+  readonly type: string;
+  readonly elementId: string;
+  /** The element's record, as this surface projected it; `{}` while the record is in flight. */
+  readonly data: Readonly<Record<string, unknown>>;
+  readonly doc: ElementDocument;
+  /** This surface's editing focus — one occupant of it is in its editor at a time. */
+  readonly editingElementId: string | null;
+  readonly onBeginEditing: (elementId: string) => void;
+  readonly onEndEditing: (elementId: string) => void;
+  /** True where an emptied element is litter (a canvas), false where it IS a leaf's occupant. */
+  readonly removeWhenEmpty: boolean;
+}
+
+/**
+ * Renders a contributed element OUTSIDE React Flow — a note occupying a tile leaf, today's one
+ * case. The canvas reaches the same registry through its own paint boundary
+ * (`nodeTypesFor`), because React Flow demands a `nodeTypes` map keyed by wire type and
+ * memoized on the element vocabulary; a composition simply renders. Two mount disciplines, one
+ * registry, one placeholder policy — the resolution rules below are the same three questions
+ * {@link PanelOutlet} asks, in the same order.
+ */
+export function ElementOutlet({
+  type,
+  elementId,
+  data,
+  doc,
+  editingElementId,
+  onBeginEditing,
+  onEndEditing,
+  removeWhenEmpty,
+}: ElementOutletProps): ReactElement {
+  const composition = useComposition();
+  const element = composition.elements.get(type);
+
+  if (element === undefined) {
+    return <PluginPlaceholder name={type} state="unknown" />;
+  }
+  const name = composition.pluginTitle(element.plugin) ?? element.plugin;
+  if (!element.enabled) {
+    return <PluginPlaceholder name={name} state="disabled" />;
+  }
+  if (element.Component === null) {
+    return <PluginPlaceholder name={name} state="unavailable" />;
+  }
+  /*
+    The cast at this boundary, and the reason `WebPluginDef.elements` is opaque: a renderer's
+    props are the ELEMENT contract (`@manifold/plugin`'s `ElementProps`), and only a mount site
+    may name them. The canvas's paint boundary performs the same cast into React Flow's node
+    props — these two are the whole list.
+   */
+  const Element = element.Component as unknown as ComponentType<ElementProps>;
+  return (
+    <ElementHostProvider
+      value={{
+        doc,
+        editingElementId,
+        beginEditing: onBeginEditing,
+        endEditing: onEndEditing,
+        removeWhenEmpty,
+      }}
+    >
+      <Element id={elementId} data={data} />
+    </ElementHostProvider>
+  );
 }

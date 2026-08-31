@@ -27,13 +27,18 @@ there was no single place to change how the application looks.
 
 ## Decision
 
-Add `lucide-react`, pinned to the exact version `1.37.0` in `packages/web/package.json`, and
-make `packages/web/src/icons.tsx` the only module that imports it. Call sites ask for
-manifold concepts — `<ItemIcon kind="composition" />`, `<ControlIcon kind="park" />` — never
-for a lucide name, so the drawing set is an implementation detail of one file and can be
-re-drawn without touching a single call site. One wrapper applies 16px and stroke weight 1.75
-by default and renders in `currentColor`, so hover, focus and disabled states keep working
-through the colour the button already sets.
+Add `lucide-react`, pinned to the exact version `1.37.0`, and make ONE module the only place in
+the tree that imports it. Call sites ask for manifold concepts —
+`<ItemIcon kind="composition" />`, `<ControlIcon kind="park" />` — never for a lucide name, so
+the drawing set is an implementation detail of one file and can be re-drawn without touching a
+single call site. One wrapper applies 16px and stroke weight 1.75 by default and renders in
+`currentColor`, so hover, focus and disabled states keep working through the colour the button
+already sets.
+
+That module was `packages/web/src/icons.tsx` when this was decided; the plugin conversion moved
+it verbatim to `@manifold/plugin/ui`, because plugins draw manifold's chrome too and a plugin
+may not import a floor module. The decision is unchanged — one module, one dependency, closed
+vocabularies — and the registry in `AXIOMS.md` is where its current home is recorded.
 
 Status stays out of the vocabulary: the machine pip, the running/exited tint and the
 connection dot are live state (and, for a machine, an identity colour), which a stroke icon

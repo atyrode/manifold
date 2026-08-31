@@ -7,9 +7,11 @@ import { z } from "zod";
  * spotlights are facets of a single concept — what a principal is doing right now, visible
  * to everyone sharing the room and gone when the connection dies.
  *
- * This wave delivers the view-state slice and the one door presence needs: a request that
- * another principal look at a node. Cursor overlay and roster rendering are still floor
- * code, tagged in the foundation registry as owing their move here.
+ * Both halves now live here: the browser surfaces (cursor overlay, remote gesture overrides,
+ * roster island, spotlight receipt) behind `@manifold-plugin/presence/web`, and the one door
+ * presence needs on the server — a request that another principal look at a node. The
+ * device's view-state store itself is engine mechanism (`@manifold/plugin`), because chrome
+ * that is not presence writes into it too; what presence owns is putting it on the wire.
  */
 export const presenceManifest: PluginManifest = {
   id: "core.presence",

@@ -10,19 +10,17 @@ import {
   useFlowPad,
   useFlowPadPresence,
 } from "./flow-terminal-node.tsx";
-import { ControlIcon, ItemIcon } from "./icons.tsx";
+import { ControlIcon, ItemIcon, NodeTitleBar, setViewState } from "@manifold/plugin/ui";
+import { TerminalView } from "@manifold-plugin/terminals/web";
 import { remoteTileCarries, surfaceDisplayLabel } from "./carry.ts";
 import type { ItemEnvelope } from "@manifold/plugin/hooks";
 import type { TileDropStore } from "./tile-drop-store.ts";
 import { useRemoteGestures } from "./use-carry.ts";
 import { sessionMachine } from "./machine-visibility.ts";
-import { NodeTitleBar } from "./node-titlebar.tsx";
-import { TerminalView } from "./terminal-view.tsx";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
-import { setViewState } from "./view-presence.ts";
 import {
   createWidgetSocketSwitch,
   type WidgetRole,

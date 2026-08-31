@@ -5,10 +5,11 @@ import type {
   PlacementDestination,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useMemo } from "react";
 import type { CarryController } from "./use-carry.ts";
 import type { CanvasTool } from "./canvas-tool.ts";
-import type { ItemDropAssessment } from "@manifold/plugin/hooks";
+import { ElementHostProvider, type ItemDropAssessment } from "@manifold/plugin/hooks";
+import type { ElementHost } from "@manifold/plugin";
 import type { TileDropStore } from "./tile-drop-store.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
@@ -149,9 +150,11 @@ const FlowPadContext = createContext<FlowPadContextValue | null>(null);
 const FlowPadPresenceContext = createContext<readonly PadPresence[] | null>(null);
 
 /**
- * One element for both providers. The canvas hands down two values with two very
- * different lifetimes, and nesting the raw providers at the call site would bury that
- * distinction in JSX indentation instead of stating it here.
+ * One element for every context a canvas node reads. Two of them are the canvas's own — a
+ * value whose lifetime is the canvas's mode, and polled presence that changes on a timer — and
+ * the third is the ENGINE's element-mount contract, which floor nodes ignore and contributed
+ * ones (a note) live on. Nesting the raw providers at the call site would bury those three
+ * very different lifetimes in JSX indentation instead of stating them here.
  */
 export function FlowPadProviders({
   value,
@@ -162,9 +165,28 @@ export function FlowPadProviders({
   readonly presence: readonly PadPresence[];
   readonly children: React.ReactNode;
 }): React.ReactElement {
+  /*
+    The canvas as a MOUNT SITE for contributed elements (`@manifold/plugin`'s `ElementHost`):
+    the room's document, this canvas's editing focus, and the one rule a canvas has that a tile
+    leaf does not — an emptied element is invisible litter here, so it goes. Derived from the
+    same value rather than assembled at the call site, because a fresh object would re-render
+    every contributed element on the board on every canvas render.
+   */
+  const elementHost = useMemo<ElementHost>(
+    () => ({
+      doc: value.client,
+      editingElementId: value.editingId,
+      beginEditing: value.beginTextEditing,
+      endEditing: value.endTextEditing,
+      removeWhenEmpty: true,
+    }),
+    [value],
+  );
   return (
     <FlowPadContext.Provider value={value}>
-      <FlowPadPresenceContext.Provider value={presence}>{children}</FlowPadPresenceContext.Provider>
+      <FlowPadPresenceContext.Provider value={presence}>
+        <ElementHostProvider value={elementHost}>{children}</ElementHostProvider>
+      </FlowPadPresenceContext.Provider>
     </FlowPadContext.Provider>
   );
 }

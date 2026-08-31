@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Principal, PresenceState } from "@manifold/protocol";
-import { deriveRosterRows } from "./roster-model.ts";
+import { deriveRosterRows } from "../src/roster-model.ts";
 
 function principal(id: string, name: string, kind: Principal["kind"] = "human"): Principal {
   return { id, kind, name, color: "#336699" };

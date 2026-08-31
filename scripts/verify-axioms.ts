@@ -56,6 +56,7 @@ import {
   SceneElementSchema,
   TokenGrantSchema,
   formatManifoldUri,
+  type TokenGrant,
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS } from "../packages/server/src/composition.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
@@ -497,13 +498,19 @@ for (const row of registries.floor) {
 }
 
 {
-  /** The four packages a plugin may name, plus the React half's subpath (AXIOMS §Plugin layer). */
+  /**
+   * The four packages a plugin may name, plus the engine's two browser subpaths — `/hooks`
+   * (plane mechanism: carry, drop, element host, polling) and `/ui` (the plugin-facing
+   * standard library: glyphs, titlebar, the notice consumer half, view state). See
+   * AXIOMS §Plugin layer.
+   */
   const ENGINE: Readonly<Record<string, true>> = {
     "@manifold/protocol": true,
     "@manifold/scene": true,
     "@manifold/sdk": true,
     "@manifold/plugin": true,
     "@manifold/plugin/hooks": true,
+    "@manifold/plugin/ui": true,
   };
   const offenders: string[] = [];
   let scanned = 0;
@@ -722,23 +729,11 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/containers",
   "/api/introspect",
   "/api/layout",
-  "/api/machines",
-  "/api/pad-folders",
-  "/api/pad-folders/:id",
   "/api/pad-presence",
-  "/api/pad-sessions",
-  "/api/pad-tree",
-  "/api/pads",
-  "/api/pads/:id",
   "/api/pads/:id/tiles/:id",
-  "/api/place",
   "/api/plugins",
-  "/api/principals",
   "/api/protocol",
   "/api/resolve",
-  "/api/terminals",
-  "/api/tokens",
-  "/api/tokens/revoke",
   "/healthz",
   "/ws",
 ];
@@ -923,7 +918,6 @@ try {
   );
 
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
-  const asOwner = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
   const getJson = async (path: string, token = ownerKey): Promise<unknown> =>
     await (
@@ -938,6 +932,13 @@ try {
         body: JSON.stringify(args),
       })
     ).json();
+
+  /** Mints a grant through the access door, which is where minting lives now. */
+  const mint = async (request: unknown): Promise<TokenGrant> => {
+    const outcome = ActionOutcomeSchema.parse(await dispatch("core.access.mintToken", request));
+    if (!outcome.ok) throw new Error(`mint refused: ${outcome.denial.message}`);
+    return TokenGrantSchema.parse(outcome.result);
+  };
 
   const setEnabled = async (id: string, enabled: boolean): Promise<boolean> => {
     const outcome = ActionOutcomeSchema.parse(
@@ -990,20 +991,18 @@ try {
 
   // ─────────────────────────────────────────── world setup
 
-  const canvasPadId = PadResponseSchema.parse(
-    await (
-      await fetch(`${origin}/api/pads`, {
-        method: "POST",
-        headers: asOwner,
-        body: JSON.stringify({ name: "axiom-gate" }),
-      })
-    ).json(),
-  ).pad.id;
+  const createdCanvas = ActionOutcomeSchema.parse(
+    await dispatch("core.views.createPad", { name: "axiom-gate" }),
+  );
+  if (!createdCanvas.ok) throw new Error(`createPad refused: ${createdCanvas.denial.message}`);
+  const canvasPadId = PadResponseSchema.parse(createdCanvas.result).pad.id;
 
   let machineId = "";
   await until(
     async () => {
-      const machines = MachinesResponseSchema.parse(await getJson("/api/machines")).machines;
+      const listed = ActionOutcomeSchema.parse(await dispatch("core.machines.list", {}));
+      if (!listed.ok) throw new Error(`machines list refused: ${listed.denial.message}`);
+      const { machines } = MachinesResponseSchema.parse(listed.result);
       machineId = machines.find((machine) => machine.online)?.id ?? "";
       return machineId !== "";
     },
@@ -1193,19 +1192,11 @@ try {
         : `focus was denied: ${outcome.ok ? "" : outcome.denial.message}`,
     );
 
-    const scoped = TokenGrantSchema.parse(
-      await (
-        await fetch(`${origin}/api/tokens`, {
-          method: "POST",
-          headers: asOwner,
-          body: JSON.stringify({
-            principal: { name: "axiom-scoped", kind: "agent" },
-            caps: ["pads:read", "pads:write", "scene:write"],
-            padId: canvasPadId,
-          }),
-        })
-      ).json(),
-    );
+    const scoped = await mint({
+      principal: { name: "axiom-scoped", kind: "agent" },
+      caps: ["pads:read", "pads:write", "scene:write"],
+      padId: canvasPadId,
+    });
     const refusedScoped = ActionOutcomeSchema.parse(
       await dispatch(
         "core.presence.focus",
@@ -1278,18 +1269,10 @@ try {
       at the gate. So the tree this drag edits is read with a token bound to that principal —
       asking as the owner would answer a different workspace and call the drag a no-op.
     */
-    const viewer = TokenGrantSchema.parse(
-      await (
-        await fetch(`${origin}/api/tokens`, {
-          method: "POST",
-          headers: asOwner,
-          body: JSON.stringify({
-            principalId: viewerPrincipalId,
-            caps: ["pads:read", "pads:write", "scene:write"],
-          }),
-        })
-      ).json(),
-    );
+    const viewer = await mint({
+      principalId: viewerPrincipalId,
+      caps: ["pads:read", "pads:write", "scene:write"],
+    });
     const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     const panelLeaves = Object.values(before).filter(
       (node) => node.surface !== null && node.surface.kind === "panel",
@@ -1332,18 +1315,10 @@ try {
         : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.layout.set dispatch(es)`,
     );
 
-    const other = TokenGrantSchema.parse(
-      await (
-        await fetch(`${origin}/api/tokens`, {
-          method: "POST",
-          headers: asOwner,
-          body: JSON.stringify({
-            principal: { name: "axiom-bystander", kind: "human" },
-            caps: ["pads:read"],
-          }),
-        })
-      ).json(),
-    );
+    const other = await mint({
+      principal: { name: "axiom-bystander", kind: "human" },
+      caps: ["pads:read"],
+    });
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
     const untouched =
       JSON.stringify(bystander["root"]?.ratios) ===
@@ -1484,6 +1459,11 @@ try {
     /*
       The refusal's SENTENCE rides the error frame, not the rejection: `openTerminal` rejects
       with the code alone, so the door's own words are read where the server put them.
+
+      And they ARE the door's words now. `terminal_open` dispatches `core.terminals.open`
+      before it touches the broker, so a disabled plugin refuses at rung 2 and the transport
+      carries that denial back verbatim — the gateway no longer authors a sentence about
+      terminals, which is the point of the verb going through the ladder.
     */
     const refusals: string[] = [];
     const offError = canvasClient.on("error", (frame) => {
@@ -1512,7 +1492,7 @@ try {
       "R3 core.terminals off (D12)",
       off &&
         creationRefused &&
-        refusals.includes("terminals plugin disabled") &&
+        refusals.includes('plugin "core.terminals" is disabled') &&
         !renameWhileOff.ok &&
         renameWhileOff.denial.rule === "plugin_disabled" &&
         killWhileOff.ok &&

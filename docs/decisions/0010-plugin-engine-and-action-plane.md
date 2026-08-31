@@ -79,10 +79,14 @@ pretence of one.
 5. **Collisions refuse, they never shadow.** Duplicate plugin ids, action names, panel ids,
    element types, or tool ids fail composition with a `CompositionError` naming every
    offender.
-6. **Actions are workspace-grade this wave.** Pad-scoped tokens are refused at the door
-   (`forbidden`, "scoped tokens cannot invoke workspace actions"), which is the exact
+6. **Workspace-graded actions refuse pad-scoped tokens.** A pad-scoped caller is refused at the
+   door (`forbidden`, "scoped tokens cannot invoke workspace actions"), which is the exact
    precedent of `POST /api/place` and every workspace route. Finer per-node scoping arrives
-   with the permission waterfall (ADR 0011).
+   with the permission waterfall (ADR 0011). **Narrowed 2026-08-31 by ADR 0013 §15**: total
+   conversion moves every remaining door onto this plane, so an action declares
+   `scope: "pad"` when the door it replaces was reachable by a pad-scoped token — reads and
+   mutations alike — and its handler then owes the confinement check the route performed. The
+   default stays `"workspace"`, and genuinely workspace-wide doors keep the refusal.
 
 ## Dependency verdicts
 

@@ -36,8 +36,11 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   MachinesResponseSchema,
+  PadResponseSchema,
+  PlaceResponseSchema,
   ROOT_TILE_ID,
   TerminalsResponseSchema,
+  type PlaceResponse,
   type TerminalSummary,
   type TileLayout,
 } from "../packages/protocol/src/index.ts";
@@ -256,10 +259,18 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const listTerminals = async (): Promise<readonly TerminalSummary[]> =>
-    TerminalsResponseSchema.parse(
-      await (await fetch(`${origin}/api/terminals`, { headers: httpHeaders })).json(),
-    ).terminals;
+  const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
+    // Reads are doors too: the index is `core.terminals.list`, so it answers an outcome
+    // envelope exactly as the rename below does.
+    const listed = await fetch(`${origin}/api/actions/core.terminals.list`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: "{}",
+    });
+    const outcome = ActionOutcomeSchema.parse(await listed.json());
+    if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
+    return TerminalsResponseSchema.parse(outcome.result).terminals;
+  };
   const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
     const renamed = await fetch(`${origin}/api/actions/core.terminals.rename`, {
       method: "POST",
@@ -270,27 +281,46 @@ try {
     const outcome = ActionOutcomeSchema.parse(await renamed.json());
     if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
   };
-  const place = async (surface: unknown, destination: unknown): Promise<Response> =>
-    await fetch(`${origin}/api/place`, {
+  /**
+   * THE placement door: the action `core.layout.place` (ADR 0013 §14). It answers 200 for
+   * every outcome, so the OUTCOME decides — a refusal here is a gate failure, because every
+   * placement this script asks for is one the algebra allows.
+   */
+  const place = async (surface: unknown, destination: unknown): Promise<PlaceResponse> => {
+    const response = await fetch(`${origin}/api/actions/core.layout.place`, {
       method: "POST",
       headers: httpHeaders,
       body: JSON.stringify({ surface, destination }),
     });
+    const outcome = ActionOutcomeSchema.parse(await response.json());
+    if (!outcome.ok) throw new Error(`placement refused: ${outcome.denial.message}`);
+    return PlaceResponseSchema.parse(outcome.result);
+  };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "tile-drop-gate" }),
   });
-  const canvasPadId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const createdOutcome = ActionOutcomeSchema.parse(await created.json());
+  if (!createdOutcome.ok) throw new Error(`createPad refused: ${createdOutcome.denial.message}`);
+  const canvasPadId = PadResponseSchema.parse(createdOutcome.result).pad.id;
 
   // The local agent must be enrolled and online before a terminal can be born.
   let machineId = "";
   await until(
     async () => {
-      const machines = MachinesResponseSchema.parse(
-        await (await fetch(`${origin}/api/machines`, { headers: httpHeaders })).json(),
-      ).machines;
+      const outcome = ActionOutcomeSchema.parse(
+        await (
+          await fetch(`${origin}/api/actions/core.machines.list`, {
+            method: "POST",
+            headers: httpHeaders,
+            body: "{}",
+          })
+        ).json(),
+      );
+      if (!outcome.ok) throw new Error(`machines list refused: ${outcome.denial.message}`);
+      const { machines } = MachinesResponseSchema.parse(outcome.result);
       machineId = machines.find((machine) => machine.online)?.id ?? "";
       return machineId !== "";
     },
@@ -322,12 +352,13 @@ try {
   const termC = await bornTerminal("gate-C");
   const viewId = termA.homeId;
 
-  // `A | B`: terminal B merges into A's home, absorbing B's own.
+  // `A | B`: terminal B merges into A's home, absorbing B's own. The helper throws on a
+  // refusal, so reaching the next line IS the assertion.
   const merged = await place(
     { kind: "terminal", sessionId: termB.id },
     { kind: "tile", padId: viewId, targetTileId: ROOT_TILE_ID, edge: "right" },
   );
-  if (!merged.ok) throw new Error("could not merge B into A's composition");
+  if (merged.op !== "add_tile") throw new Error(`merge came back as ${merged.op}`);
 
   viewClient = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
@@ -630,9 +661,8 @@ try {
     { kind: "pad", padId: viewId },
     { kind: "canvas", padId: canvasPadId, x: 160, y: 120 },
   );
-  const portalBody = (await portaled.json()) as { elementId?: string };
-  const widgetElementId = portalBody.elementId ?? "";
-  check("widget authored", portaled.ok && widgetElementId !== "", "portal onto the composition");
+  const widgetElementId = portaled.op === "portal" ? portaled.elementId : "";
+  check("widget authored", widgetElementId !== "", `portal onto the composition (${portaled.op})`);
 
   await browser.goto(`${origin}/p/${canvasPadId}`);
   const widgetSelector = `.react-flow__node[data-id="${widgetElementId}"]`;

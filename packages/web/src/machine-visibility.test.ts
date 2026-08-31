@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { MachineSummary } from "@manifold/protocol";
-import { IDENTITY_COLORS } from "./identity.tsx";
+import { IDENTITY_COLORS, identityColorFor, type MachineSummary } from "@manifold/protocol";
 import { machineColor, sessionMachine } from "./machine-visibility.ts";
 
 function machine(id: string, online: boolean): MachineSummary {
@@ -20,6 +19,18 @@ describe("machineColor", () => {
       Array.from({ length: 32 }, (_, index) => machineColor(`machine-${index}`)),
     );
     expect(colors.size).toBeGreaterThan(1);
+  });
+
+  test("agrees with the wire's own derivation, id for id", () => {
+    // `MachineSummary.color` is now computed server-side from the protocol's palette and
+    // hash, and this module still paints the dots the canvas draws until `core.canvas`
+    // takes them. The two must not disagree for a single machine, or the same fleet would
+    // be two different colors depending on which half of the app drew it.
+    for (let index = 0; index < 64; index++) {
+      const id = `machine-${String(index)}`;
+      expect(machineColor(id)).toBe(identityColorFor(id));
+    }
+    expect(machineColor("")).toBe(identityColorFor(""));
   });
 });
 

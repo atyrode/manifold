@@ -8,7 +8,10 @@ import {
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
+  type ActionDenialRule,
+  type ActionOutcome,
   type ClientMessage,
+  type ErrorCode,
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
@@ -36,6 +39,25 @@ const JOIN_DEADLINE_MS = 10_000;
 
 /** Connection-level liveness answer; it belongs to the socket, so it carries no channel. */
 const PONG_FRAME = JSON.stringify({ type: "pong" });
+
+/**
+ * How a denial reads on a socket. The action door's five rungs are the workspace's refusal
+ * vocabulary and the session channel's error codes are the socket's; this is the one place
+ * they meet, keyed by the rung union so a new rung cannot compile without an answer here.
+ *
+ * `unknown_action` and `plugin_disabled` both land on `forbidden` because from a client's
+ * seat they are the same fact — this workspace will not do that right now — and that is the
+ * code the gateway has always sent for a refused creation. An `invalid_args` is a malformed
+ * request, and a handler's `refused` is a policy conflict, which is exactly what the broker's
+ * own `conflict` has always meant.
+ */
+const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
+  unknown_action: "forbidden",
+  plugin_disabled: "forbidden",
+  forbidden: "forbidden",
+  invalid_args: "invalid",
+  refused: "conflict",
+};
 
 /**
  * Which frames a spectator channel may send. Reading is the whole point of a watching
@@ -447,6 +469,43 @@ export class SessionGateway {
     }, RESYNC_MIN_INTERVAL_MS - elapsed);
   }
 
+  /**
+   * Asks the action door a POLICY question on behalf of a socket, and answers the socket in
+   * its own vocabulary. Two things make this the whole bridge between the planes:
+   *
+   * - the denial travels back as the error frame the client already handles — same shape,
+   *   same `ref` correlation, and now the ladder's own message, so a refused terminal reads
+   *   the same whether it was refused over HTTP or over the wire;
+   * - it resolves to whether the caller may PROCEED, so a frame whose effect is still floor
+   *   work (a create) runs that work in the continuation, and a frame whose effect the
+   *   action itself performs (a kill) simply ignores the answer.
+   *
+   * A dispatch that THREW is a broken door rather than a denial: the host has already logged
+   * it, and the socket is told the request failed instead of being left waiting forever.
+   */
+  private async dispatchPolicy(
+    peer: SessionPeer,
+    action: string,
+    ref: string,
+    args: Record<string, unknown>,
+  ): Promise<boolean> {
+    let outcome: ActionOutcome;
+    try {
+      outcome = await this.plugins.dispatch(peer.auth, action, args);
+    } catch {
+      peer.send({ type: "error", code: "conflict", message: `${action} failed`, ref });
+      return false;
+    }
+    if (outcome.ok) return true;
+    peer.send({
+      type: "error",
+      code: DENIAL_ERROR_CODES[outcome.denial.rule],
+      message: outcome.denial.message,
+      ref,
+    });
+    return false;
+  }
+
   private dispatch(
     connection: SessionConnection,
     channel: SessionChannel,
@@ -502,20 +561,29 @@ export class SessionGateway {
         this.sendResyncIfDue(connection, channel);
         return;
       case "terminal_open":
-        // Creation dies with the plugin, cleanup does not: a disabled terminals plugin
-        // refuses NEW terminals here, while attach, input, detach and kill of sessions that
-        // already exist keep working — nobody is locked out of removing things by an
-        // administrator turning a plugin off (D12).
-        if (!this.plugins.composition().enabled("core.terminals")) {
-          peer.send({
-            type: "error",
-            code: "forbidden",
-            message: "terminals plugin disabled",
-            ref: message.elementId,
-          });
-          return;
-        }
-        this.broker.open(peer, message);
+        /*
+          POLICY THROUGH THE LADDER. Whether a terminal may be born here, now, by this
+          principal is `core.terminals`' question, and it is asked exactly the way every
+          other caller asks it — one dispatch, one denial vocabulary, one log line. The
+          transport keeps moving bytes and stops knowing why: the PTY itself is born
+          afterwards, on this channel, because a create is a round trip whose reply is
+          socket traffic (ADR 0013 — terminal policy is a plugin, terminal bytes are floor).
+
+          Creation dies with the plugin and cleanup does not, and now that is a property of
+          the ROSTER rather than of this file: `open` is an ordinary action, so a disabled
+          plugin refuses it at rung 2, while `kill` is declared `cleanup` and outlives the
+          disable — nobody is locked out of removing what already exists (D12).
+         */
+        void this.dispatchPolicy(peer, "core.terminals.open", message.elementId, {
+          padId: peer.padId,
+          elementId: message.elementId,
+          cols: message.cols,
+          rows: message.rows,
+          ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
+          ...(message.placement === undefined ? {} : { placement: message.placement }),
+        }).then((allowed) => {
+          if (allowed) this.broker.open(peer, message);
+        });
         return;
       case "terminal_attach":
         this.broker.attach(peer, message);
@@ -533,7 +601,12 @@ export class SessionGateway {
         this.broker.take(peer, message);
         return;
       case "terminal_kill":
-        this.broker.kill(peer, message);
+        // The kill is the ACTION's, whole: authority, the lease rule and the destruction all
+        // live behind one door, so this frame and the workspace index cannot answer
+        // differently about the same terminal (invariant 14).
+        void this.dispatchPolicy(peer, "core.terminals.kill", message.sessionId, {
+          sessionId: message.sessionId,
+        });
         return;
       default: {
         const exhaustive: never = message;

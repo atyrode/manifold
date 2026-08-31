@@ -1,0 +1,16 @@
+{
+  "name": "@manifold-plugin/access",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "@manifold/plugin": "workspace:*",
+    "@manifold/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2"
+  }
+}

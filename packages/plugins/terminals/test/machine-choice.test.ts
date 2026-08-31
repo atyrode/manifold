@@ -7,7 +7,7 @@ import {
   recallMachine,
   rememberMachine,
   type MachineStorage,
-} from "./machine-choice.ts";
+} from "../src/machine-choice.ts";
 
 function fakeStorage(initial: Record<string, string> = {}): MachineStorage & {
   data: Map<string, string>;

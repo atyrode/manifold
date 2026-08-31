@@ -204,18 +204,18 @@ A1 is not satisfied by a representative sample; it is satisfied when nothing abo
 still wired by hand. That is the wave-1 completion scope, not a later wave, so this table is a
 work list rather than a ledger of debt: every row lands in this change.
 
-| Was floor                                                   | Converts to                 | Ruling                                                         |
-| ----------------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
-| notes/text element renderer + the text tool                 | `core.notes`                | decomposes `core.shell.pad-view`                               |
-| canvas renderer, portal internals, canvas toolbar, viewport | `core.canvas`               | decomposes `core.shell.pad-view`; absorbs stroke geometry      |
-| tiled-route internals, tile drop gestures, carry previews   | `core.compositions`         | decomposes `core.shell.pad-view`                               |
-| machine enrollment + machine presentation helpers           | `core.machines`             | enrollment routes become actions                               |
-| pad/folder CRUD and pad-tree moves (bespoke HTTP routes)    | workspace-index actions     | routes deleted, callers migrated (D13)                         |
-| terminal pool/park rows, the terminal index, session rows   | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)        |
-| token and principal administration routes                   | `core.access`               | identity mechanism stays floor; administration converts now    |
-| cursor overlay + roster island rendering                    | `core.presence` completion  | the presence relay stays floor                                 |
-| `POST /api/place`                                           | `core.layout.place`         | mechanism/verb split; the route is deleted, not aliased        |
-| element placement traits (closed `ITEM_KINDS` tables)       | manifest contribution data  | the algebra becomes a trait-driven rules engine (ADR 0013 §12) |
+| Was floor                                                                  | Converts to                 | Ruling                                                           |
+| -------------------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------------- |
+| notes/text element renderer + its inline editor                            | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                 |
+| canvas renderer, portal internals, canvas toolbar, viewport                | `core.canvas`               | decomposes `core.shell.pad-view`; absorbs stroke geometry        |
+| tiled-route internals, tile drop gestures, carry previews                  | `core.compositions`         | decomposes `core.shell.pad-view`                                 |
+| machine enrollment + machine presentation helpers                          | `core.machines`             | enrollment and inventory become actions; color moves to the wire |
+| pad/folder CRUD, pad-tree moves, and the index reads (bespoke HTTP routes) | `core.views` actions        | routes deleted, callers migrated (D13); reads keep pad scope     |
+| terminal pool/park rows, the terminal index, session rows                  | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)          |
+| token and principal administration routes                                  | `core.access`               | identity mechanism stays floor; administration converts now      |
+| cursor overlay + roster island rendering                                   | `core.presence` completion  | the presence relay stays floor                                   |
+| `POST /api/place`                                                          | `core.layout.place`         | mechanism/verb split; the route is deleted, not aliased          |
+| element placement traits (closed `ITEM_KINDS` tables)                      | manifest contribution data  | the algebra becomes a trait-driven rules engine (ADR 0013 §12)   |
 
 `core.canvas`, `core.notes` and `core.compositions` together decompose today's
 `core.shell.pad-view` panel. Two rows reverse earlier scope notes, ruled in
@@ -226,12 +226,18 @@ token and principal administration verbs now, while the A5 evaluator (ADR 0011, 
 `effectiveCaps`) remains a later wave — "identity mechanism is floor" never made
 `POST /api/tokens` mechanism.
 
-**The `until` tag is gone.** The floor registry once carried an `"until": "<plugin>"` field on
-rows that were floor today and plugin territory tomorrow, and this table was its prose half. Total
-conversion empties that set: the field is removed from the registry vocabulary, and a row that
-still carries one is a file this change has not finished moving. Nothing replaces it — a file is
-floor because it passes the litmus test (§Foundation law), or it belongs to a plugin. There is no
-third state, and therefore no tag for one.
+**The `until` tag is gone, and the registry now says so.** The floor registry once carried an
+`"until": "<plugin>"` field on rows that were floor today and plugin territory tomorrow, and this
+table was its prose half. Every such field has been stripped; each deferral is folded into its row's
+`why` as "… — awaiting `<plugin>`". Nothing replaces the field — a file is floor because it passes
+the litmus test (§Foundation law), or it belongs to a plugin. There is no third state, and therefore
+no tag for one.
+
+Those **awaiting-rows are wave C's deletion list**: each names a file whose consumers the canvas,
+compositions, terminals and presence conversions absorb, and wave C deletes the file and its row
+together rather than re-annotating either. Integration verifies that the list has emptied before the
+gate run, so "awaiting" is a sentence in a `why` that a human reads during review — not a machine
+licence, and not a state a gate can be taught to tolerate.
 
 ## Taxonomy
 
@@ -332,11 +338,11 @@ pillars' globs overlap, the **most specific glob owns the file** (longest litera
 two pillars claiming the same file at equal specificity is itself an error. The gate wiring lands
 with the conversion batch; the registry below is written to be consumed by it.
 
-As this section is written, exactly the rows the conversion batch still owns fall outside every
-pillar — the 34 formerly `"until"`-tagged web files plus `packages/web/src/sidebar-panel.tsx`,
-which was floor and untagged. That is the intended reading of the check: the unmatched set IS the
-work list, it empties as each file moves into its plugin, and S9 turns green when it is empty
-rather than by being taught exceptions.
+As this section is written, the rows that fall outside every pillar are exactly the ones the
+conversion still owns: the web files whose `why` ends "awaiting `<plugin>`", plus any shell-panel
+file not yet moved into its plugin. That is the intended reading of the check — the unmatched set IS
+the work list, it empties as each file moves, and S9 turns green when it is empty rather than by
+being taught exceptions.
 
 ```json
 {
@@ -430,7 +436,6 @@ rather than by being taught exceptions.
         "packages/web/src/tile-tree.tsx",
         "packages/web/src/tile-geometry.ts",
         "packages/web/src/toast.tsx",
-        "packages/web/src/icons.tsx",
         "packages/web/src/styles.css",
         "packages/web/src/pad-memory.ts",
         "packages/web/src/web-version.ts",
@@ -472,10 +477,10 @@ are the sole exceptions — and packages under `packages/plugins/*` import only
 `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`, `@manifold/plugin` and their own
 sources.
 
-There is no `"until"` field. A row is floor because its pillar passes the litmus, not because its
-conversion is scheduled; rows in this registry that still carry the old tag are files the
-conversion batch has not finished moving (§Roadmap, full-conversion inventory), and the tag leaves
-with them.
+No row carries an `"until"` field; none may be added. A row is floor because its pillar passes the
+litmus, never because its conversion is scheduled. Where a file is still floor only until its
+consumers move, the row's `why` ends "awaiting `<plugin>`" — prose a reviewer reads, and wave C's
+list of rows to delete alongside their files (§Roadmap, full-conversion inventory).
 
 Test files (`*.test.ts`), `packages/testkit`, and `scripts/` are neither floor nor plugin
 territory: they exercise both and are governed by their subject. The two exceptions are named in
@@ -499,7 +504,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, composition, action definitions, host contracts, the default workspace layout"
+      "why": "the registry itself: manifests, composition, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, the notice consumer half, the published view-state store)"
     },
     {
       "glob": "packages/agent/src/**",
@@ -619,8 +624,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/pad-view-panel.tsx",
-      "why": "the core.shell.pad-view panel: the routed renderer switch, still holding the canvas and tiled routes",
-      "until": "core.canvas"
+      "why": "the core.shell.pad-view panel: the routed renderer switch, still holding the canvas and tiled routes — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/tile-tree.tsx",
@@ -632,11 +636,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/toast.tsx",
-      "why": "the shared transient-notification surface plugins and floor both raise"
-    },
-    {
-      "glob": "packages/web/src/icons.tsx",
-      "why": "shared icon set — floor-neutral UI utility"
+      "why": "the one notice stack's PROVIDER: the queue, its two lifetimes, eviction order and the layer it paints into. The consumer half — the context, ToastApi, useToast — is @manifold/plugin/ui, because a plugin may not import a floor module and every plugin raises notices into this same stack"
     },
     {
       "glob": "packages/web/src/styles.css",
@@ -660,168 +660,71 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/flow-pad-view.tsx",
-      "why": "canvas renderer: the React Flow projection boundary, node type map, viewport and gesture wiring",
-      "until": "core.canvas"
+      "why": "canvas renderer: the React Flow projection boundary, node type map, viewport and gesture wiring — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/flow-scene.ts",
-      "why": "canvas projection: SDK elements to renderer-owned nodes at the paint boundary",
-      "until": "core.canvas"
+      "why": "canvas projection: SDK elements to renderer-owned nodes at the paint boundary — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/flow-portal-node.tsx",
-      "why": "canvas renderer: portal widgets — the projection of one container inside another",
-      "until": "core.canvas"
+      "why": "canvas renderer: portal widgets — the projection of one container inside another — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/flow-terminal-node.tsx",
-      "why": "canvas renderer: the pad context a node reads plus terminal node chrome",
-      "until": "core.canvas"
+      "why": "canvas renderer: the pad context a node reads plus terminal node chrome — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/canvas-toolbar.tsx",
-      "why": "canvas chrome: the tool strip that renders composition-contributed tools",
-      "until": "core.canvas"
+      "why": "canvas chrome: the tool strip that renders composition-contributed tools — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/canvas-tool.ts",
-      "why": "canvas tool state machine (select/text are still engine tools this wave)",
-      "until": "core.canvas"
-    },
-    {
-      "glob": "packages/web/src/node-titlebar.tsx",
-      "why": "canvas/composition widget chrome shared by portals, terminals and tiles",
-      "until": "core.canvas"
+      "why": "canvas tool state machine (select/text are still engine tools this wave) — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/widget-engagement.ts",
-      "why": "canvas policy: when a watching widget swaps to an engaged channel",
-      "until": "core.canvas"
+      "why": "canvas policy: when a watching widget swaps to an engaged channel — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/viewport-memory.ts",
-      "why": "per-pad camera memory policy (register: manifold:viewport:<padId>)",
-      "until": "core.canvas"
-    },
-    {
-      "glob": "packages/web/src/flow-text-node.tsx",
-      "why": "notes: the text element renderer and its inline editor",
-      "until": "core.notes"
-    },
-    {
-      "glob": "packages/web/src/text-diff.ts",
-      "why": "notes: the character-level merge policy behind collaborative Y.Text editing",
-      "until": "core.notes"
+      "why": "per-pad camera memory policy (register: manifold:viewport:<padId>) — awaiting core.canvas"
     },
     {
       "glob": "packages/web/src/tiled-pad-view.tsx",
-      "why": "the tiled route's internals — a composition rendered as the routed surface",
-      "until": "core.compositions"
+      "why": "the tiled route's internals — a composition rendered as the routed surface — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/tile-snap.ts",
-      "why": "tile drop targeting: which leaf and which edge a gesture means",
-      "until": "core.compositions"
+      "why": "tile drop targeting: which leaf and which edge a gesture means — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/tile-drop-store.ts",
-      "why": "tile drop gesture state shared by canvas widgets and the tiled route",
-      "until": "core.compositions"
+      "why": "tile drop gesture state shared by canvas widgets and the tiled route — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/use-tile-drop.ts",
-      "why": "tile drop gesture hook: assessment through the pure placement algebra",
-      "until": "core.compositions"
+      "why": "tile drop gesture hook: assessment through the pure placement algebra — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/tile-preview-overlay.tsx",
-      "why": "tile drop preview rendering",
-      "until": "core.compositions"
+      "why": "tile drop preview rendering — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/tile-zone-debug.tsx",
-      "why": "tile drop zone debug overlay behind the debug seam",
-      "until": "core.compositions"
+      "why": "tile drop zone debug overlay behind the debug seam — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/carry.ts",
-      "why": "carry previews: the dynamic half of the placement algebra",
-      "until": "core.compositions"
+      "why": "carry previews: the dynamic half of the placement algebra — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/use-carry.ts",
-      "why": "carry/gesture subscription hooks for renderers",
-      "until": "core.compositions"
-    },
-    {
-      "glob": "packages/web/src/terminal-view.tsx",
-      "why": "xterm viewer: attach/detach pairing, snapshot geometry, terminal chrome",
-      "until": "core.terminals"
-    },
-    {
-      "glob": "packages/web/src/session-inventory.ts",
-      "why": "terminal index rows derived from sessions and machines",
-      "until": "core.terminals"
-    },
-    {
-      "glob": "packages/web/src/machine-choice.ts",
-      "why": "per-pad machine choice memory for terminal creation (register: manifold:machine:<padId>)",
-      "until": "core.terminals"
+      "why": "carry/gesture subscription hooks for renderers — awaiting core.compositions"
     },
     {
       "glob": "packages/web/src/machine-visibility.ts",
-      "why": "machine presentation: color and online derivation shared by chips and rows",
-      "until": "core.machines"
-    },
-    {
-      "glob": "packages/web/src/use-remote-cursors.ts",
-      "why": "presence rendering: remote cursor overlay state",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/cursor-identity.ts",
-      "why": "presence rendering: per-membership cursor identity and labels",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/presence-projection.ts",
-      "why": "presence projection: wire presence to renderable rows",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/remote-gestures.ts",
-      "why": "presence rendering: remote gesture overrides and their TTL",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/gesture-stream.ts",
-      "why": "presence rendering: the throttled local gesture publisher",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/interpolate.ts",
-      "why": "presence rendering: cursor motion smoothing",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/roster-model.ts",
-      "why": "presence rendering: roster rows derived from wire presence",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/top-right.tsx",
-      "why": "presence rendering: the roster island (avatars, statuses, view chips)",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/view-presence.ts",
-      "why": "presence writing: this device's published view state (tool, text edit, focused container, sidebar collapse) — the store every presence writer merges",
-      "until": "core.presence"
-    },
-    {
-      "glob": "packages/web/src/spotlight.tsx",
-      "why": "presence receiving: applies a spotlight to the mounted pad view, names the asker, and holds the device kill-switch (register: manifold:ignore-spotlight)",
-      "until": "core.presence"
+      "why": "machine presentation policy (color and online derivation) for the canvas chrome that still calls it; the derivation is superseded by MachineSummary.color on the wire, so wave C deletes this file with its consumers — awaiting core.canvas"
     }
   ]
 }
@@ -836,11 +739,17 @@ is a second door onto the concept "which plugins exist", and by invariant 14 tha
 
 A plugin package holds a manifest, its actions (server half) and its contributions (web half),
 and it imports only `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk` and
-`@manifold/plugin`. The engine ships two entry points on purpose: `@manifold/plugin` is
+`@manifold/plugin`. The engine ships three entry points on purpose. `@manifold/plugin` is
 platform-free (manifests, action definitions, composition, host contracts) and is what the
-server imports; `@manifold/plugin/hooks` carries the React half (`usePolledResource`), so a
-server typecheck never pulls React and a DOM lib into its type graph. A plugin reaches the host
-through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring guide.
+server imports. `@manifold/plugin/hooks` carries the plane mechanism a plugin needs in a
+browser (the carry/drop vocabulary, the element host, `usePolledResource`), so a server
+typecheck never pulls React and a DOM lib into its type graph. `@manifold/plugin/ui` is the
+plugin-facing standard library: the glyph vocabulary, the one node titlebar, the consumer half
+of the one notice surface, and this device's published view-state store — neutral chrome
+MECHANISM, every piece of it addressed by two parties that may not import each other, which is
+the litmus that puts a thing there rather than in whichever package used it first. A plugin
+reaches the host through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring
+guide.
 
 ## Device-local register
 
@@ -959,7 +868,7 @@ against the source tree, its browser half against a real server and a real brows
 | R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `view.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug seam; a pad-scoped token invoking it is `forbidden`.                                                                                                                                                                        |
 | R6    | Addressing: `GET /api/resolve` round-trips a terminal and a pad, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                              |
 | R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                        |
-| R8    | The denial ladder end to end, including a pad-scoped token on `engine.plugins.setEnabled` → `forbidden` (actions are workspace-grade this wave).                                                                                                                                                                                                                                            |
+| R8    | The denial ladder end to end, including a pad-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "pad"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                              |
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 

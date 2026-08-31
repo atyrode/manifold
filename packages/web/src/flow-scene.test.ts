@@ -1,13 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { SceneElement } from "@manifold/protocol";
-import type { GestureOverride } from "./remote-gestures";
+import type { GestureOverride } from "@manifold-plugin/presence/web";
 import {
   reconcileNodes,
   createDrawElement,
   createPortalElement,
   createTextElement,
   projectElements,
-  textHeightFor,
 } from "./flow-scene";
 
 // A terminal on a canvas IS a portal onto its home composition, so the terminal-shaped
@@ -75,7 +74,7 @@ describe("flow scene", () => {
     });
   });
 
-  test("creates normalized draw points and sizes multiline text", () => {
+  test("creates normalized draw points", () => {
     expect(draw).toMatchObject({
       x: 7,
       y: 17,
@@ -83,8 +82,6 @@ describe("flow scene", () => {
       height: 11,
       points: [3, 3, 23, 8],
     });
-    expect(textHeightFor("one", 20)).toBe(48);
-    expect(textHeightFor("one\ntwo", 20)).toBe(72);
   });
 
   test("carries runtime measurements across a re-projection without touching geometry", () => {

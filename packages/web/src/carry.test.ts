@@ -8,7 +8,7 @@ import {
   surfaceDisplayLabel,
 } from "./carry";
 import type { CarrySource } from "./carry";
-import type { GestureOverride } from "./remote-gestures";
+import type { GestureOverride } from "@manifold-plugin/presence/web";
 
 /** Every fixture names its item, exactly as a real grab site resolves it once. */
 const TEXT_ITEM = { kind: "text", containerId: null } as const;

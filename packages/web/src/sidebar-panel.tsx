@@ -9,10 +9,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
-import { ControlIcon, ItemIcon } from "./icons.tsx";
+import { ControlIcon, ItemIcon } from "@manifold/plugin/ui";
 import { PluginPlaceholder, useComposition, type WebSection } from "./plugin-host.tsx";
-import { WorkspaceStatus } from "./top-right.tsx";
-import { useWorkspaceShell } from "./pad-browser.tsx";
+import { useWorkspaceShell, type WorkspaceSidebarState } from "./pad-browser.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
 /**
@@ -30,6 +29,32 @@ import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
  * that fetches its own data through `host.client`. The stack knows only the order the
  * manifests declared and whether the owning plugin is enabled.
  */
+
+/** Ambient connection and persistence state; intentionally compact and visually quiet. */
+function WorkspaceStatus({
+  status,
+  savedAt,
+  rev,
+}: Pick<WorkspaceSidebarState, "status" | "savedAt" | "rev">) {
+  const savedLabel = savedAt === null ? "Not saved yet" : new Date(savedAt).toLocaleTimeString();
+  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+  return (
+    <div
+      className="workspace-status"
+      title={`Connection ${status} · ${savedLabel} · revision ${rev}`}
+      role="status"
+      data-testid="connection-status"
+    >
+      <span className={`status-dot ${status}`} aria-hidden="true" />
+      <span>
+        <strong data-testid="connection-state">{statusLabel}</strong>
+        <small>
+          {savedAt === null ? "Not saved" : `Saved ${savedLabel}`} · rev {rev}
+        </small>
+      </span>
+    </div>
+  );
+}
 
 function renderChangelogChange(change: string): ReactNode {
   return parseChangelogReferences(change).map((part, index) =>
@@ -209,6 +234,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           <button
             className="pad-sidebar-new"
             type="button"
+            data-action="core.views.createPad"
             title="New canvas"
             aria-label="New canvas"
             onClick={() => {
@@ -223,6 +249,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           <button
             className="pad-sidebar-new pad-sidebar-new-view"
             type="button"
+            data-action="core.views.createPad"
             title="New composition"
             aria-label="New composition"
             onClick={() => {
@@ -277,7 +304,11 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               <button type="button" onClick={() => setFolderName(null)} disabled={creatingFolder}>
                 Cancel
               </button>
-              <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>
+              <button
+                type="submit"
+                data-action="core.views.createFolder"
+                disabled={creatingFolder || folderName.trim() === ""}
+              >
                 {creatingFolder ? "Creating…" : "Create"}
               </button>
             </div>

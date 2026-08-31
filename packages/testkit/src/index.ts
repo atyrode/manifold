@@ -1,11 +1,18 @@
 export { PROTOCOL_VERSION } from "@manifold/protocol";
 export {
   HttpResponseError,
+  callAction,
   connect,
   createPad,
+  deletePad,
   enrollMachine,
+  getPad,
   isMachineOnline,
+  listPadSessions,
+  listPads,
+  listTerminals,
   mintToken,
+  ownerAction,
   ownerFetch,
   startAgent,
   startServer,

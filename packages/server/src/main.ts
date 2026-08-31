@@ -9,7 +9,7 @@ import { openDatabase } from "./db.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
-import { PlaceExecutor } from "./placement.ts";
+import { compositionElementTraits, PlaceExecutor } from "./placement.ts";
 import { PluginHost } from "./plugin-host.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-peer.ts";
@@ -74,15 +74,24 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   );
   rooms.setSessionProvider((padId) => broker.listForPad(padId));
   rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  /*
+    The executor resolves legality against the COMPOSITION's element traits (ADR 0013 §12),
+    and the composition's layout plugin drives the executor — mutually dependent, so the
+    roster arrives as a thunk read at placement time rather than a table captured here.
+   */
+  const placement: PlaceExecutor = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    compositionElementTraits(() => plugins.roster()),
+  );
   broker.setPlacement(placement);
   /*
-    The composition, and the host that answers for it. It is built BEFORE the gateways
-    because both consult it: the session gateway pushes the roster and refuses terminal
-    creation for a disabled terminals plugin, and the HTTP app serves the action door.
+    The machine gateway before the composition, because the composition consults it:
+    `core.machines.list` reports persisted rows AND live connectedness, and only this
+    registry knows the second half. Nothing it needs is downstream of the host.
    */
-  const plugins = new PluginHost(SERVER_PLUGIN_DEFS, store, auth, rooms, broker, runtime, logger);
-  const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,
     store,
@@ -92,6 +101,23 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime.newId(),
     runtime,
   );
+  /*
+    The composition, and the host that answers for it. It is built BEFORE the gateways
+    that consult it: the session gateway pushes the roster and refuses terminal
+    creation for a disabled terminals plugin, and the HTTP app serves the action door.
+   */
+  const plugins: PluginHost = new PluginHost(
+    SERVER_PLUGIN_DEFS,
+    store,
+    auth,
+    rooms,
+    broker,
+    placement,
+    machines,
+    runtime,
+    logger,
+  );
+  const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
   const http = new HttpApp(
     config,
     store,
@@ -101,7 +127,6 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     placement,
     machines,
     plugins,
-    runtime,
     logger,
   );
 

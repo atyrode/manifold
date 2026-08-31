@@ -18,18 +18,23 @@ import {
 } from "@manifold/plugin";
 import type {
   ActionOutcome,
+  BootstrapPrincipalRequest,
   Cap,
+  MintTokenRequest,
   PluginLifecycleState,
   PluginPurgeResult,
   PluginRefusalReason,
   PluginRoster,
   Principal,
   RuntimeDeps,
+  TokenGrant,
 } from "@manifold/protocol";
-import type { AuthContext, AuthService } from "./auth.ts";
+import { ServiceError } from "./auth.ts";
+import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
 import type { Logger } from "./log.ts";
+import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
-import type { ServerStore } from "./stores.ts";
+import type { MachineRecord, ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 /**
@@ -44,6 +49,54 @@ export interface ActionAuth {
   readonly padScope: string | null;
   readonly isRoot: boolean;
   allows(cap: Exclude<Cap, "*">, padId?: string): boolean;
+}
+
+/**
+ * An identity-mechanism call that the mechanism itself may refuse. `ServiceError` is a
+ * floor class a plugin cannot name, so the binding catches it and hands the refusal back as
+ * DATA carrying the same code the HTTP boundary maps — which is the broker's
+ * `"ok" | "not_found"` vocabulary generalized: a plugin relays the mechanism's answers, it
+ * does not invent them, and an expected refusal must never surface as a 500.
+ */
+export type IdentityResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly code: ServiceErrorCode; readonly message: string };
+
+/**
+ * The identity mechanism's ADMINISTRATIVE surface, pre-bound to the calling principal
+ * exactly as `ActionAuth.allows` is.
+ *
+ * Binding rather than handing over `AuthService` is the same decision, for the same reason:
+ * the caller is not a parameter a plugin may choose, so `core.access` cannot mint "as"
+ * somebody else, and `authenticate`/`authenticateMachine` — the credential verifier, and the
+ * one place raw secrets are compared — stay unreachable from above the floor. Every
+ * attenuation rule (a minted cap set ⊆ the minter's, no widening of pad scope, revoking only
+ * what you minted) therefore still runs inside the mechanism, on the real caller, where ADR
+ * 0011's evaluator will replace it.
+ */
+export interface IdentityDoor {
+  /** Creates a principal with a root token; refuses a non-root caller (`forbidden`). */
+  createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
+  /** Mints authority no broader than the caller's own, within the caller's pad scope. */
+  mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
+  /** Revokes a principal's tokens the caller is entitled to revoke; answers the count. */
+  revokePrincipal(principalId: string): IdentityResult<number>;
+  /** Enrolls a machine, refusing a scoped or `machines:mint`-less caller. */
+  enrollMachine(name: string): IdentityResult<MachineEnrollment>;
+  /** Re-mints an enrolled machine's secret, revoking the previous one. */
+  rotateMachineToken(machine: MachineRecord): IdentityResult<MachineEnrollment>;
+}
+
+/** Runs one mechanism call, turning its expected refusal into data and nothing else. */
+function identityCall<T>(run: () => T): IdentityResult<T> {
+  try {
+    return { ok: true, value: run() };
+  } catch (error) {
+    if (error instanceof ServiceError) {
+      return { ok: false, code: error.code, message: error.message };
+    }
+    throw error;
+  }
 }
 
 /**
@@ -62,6 +115,12 @@ function refused(reason: PluginRefusalReason, names?: readonly string[]): Action
   return { refused: `${reason}: ${names.join(", ")}` };
 }
 
+/**
+ * The ONE wording every scope violation gives, exported so a plugin's tests and a client's
+ * switch both name it instead of retyping it.
+ */
+export const OUTSIDE_SCOPE_REFUSAL = "outside this token's container";
+
 /** Composition administration, as the engine's own builtin doors drive it. */
 export interface HostControl {
   setEnabled(
@@ -75,6 +134,18 @@ export interface HostControl {
 }
 
 /**
+ * Liveness, and nothing else. The other services on `ActionCtx` are the real classes
+ * because plugins need their breadth; the machine socket registry is asked exactly one
+ * question by the composition — is this machine connected right now — and handing over the
+ * gateway that authenticates machines, fences superseded sockets and relays PTY frames in
+ * order to answer it would be authority nobody asked for. `MachineGateway` satisfies this
+ * structurally, which is also what lets a test drive liveness without a socket.
+ */
+export interface MachineLiveness {
+  isOnline(machineId: string): boolean;
+}
+
+/**
  * Everything a server-side handler is given. The real services appear here, in the floor;
  * a plugin never names these types. Its `server.ts` declares the MINIMAL structural slice
  * it needs (`{ broker: { rename(id, name): "ok" | "not_found" } }`), and assembling
@@ -85,10 +156,65 @@ export interface HostControl {
 export interface ActionCtx {
   readonly principal: Principal;
   readonly auth: ActionAuth;
+  /**
+   * The container this dispatch is confined to, or null for a workspace-grade caller.
+   *
+   * The same value the scope rung judged, promoted to the top of the context because it is a
+   * CONTRACT and not a detail: an action declaring `scope: "pad"` must keep every effect
+   * inside this pad while it is non-null, and must refuse anything its arguments name
+   * elsewhere. Rung 4 proves the caller's caps hold at this pad; only the handler can know
+   * whether the row, session or element it was asked about lives here.
+   *
+   * A handler may declare it as its whole slice (`{ padScope: string | null }`), which is
+   * why it sits here rather than only inside `auth` — that object is the authority record
+   * the evaluator seam consumes, this field is the question a handler asks.
+   */
+  readonly padScope: string | null;
+  /**
+   * DISCHARGES THE CONTAINMENT OBLIGATION, once, for every plugin.
+   *
+   * Returns the canonical refusal when this caller's scope excludes `padId`, and null when
+   * the dispatch may proceed. A handler resolves the pad of the thing its arguments NAME —
+   * from the broker, the room, the store, whatever knows — and hands it here:
+   *
+   *     const denial = ctx.outsideScope(session.padId);
+   *     if (denial !== null) return denial;
+   *
+   * It exists because the check is identical in every plugin and the WORDING must not be:
+   * hand-rolled variants ("scoped tokens can only read their own container", "...rename
+   * their own container", ...) are several strings a client cannot switch on for one
+   * concept, which is invariant 14 with the seams showing. The target pad is deliberately
+   * absent from the message — telling a scoped caller the id of a container it may not reach
+   * is a disclosure the refusal does not need.
+   *
+   * A null `padId` means the handler could not resolve one, which for a scoped caller is
+   * refused for the same reason: authority cannot be proven against a container nobody
+   * named.
+   */
+  outsideScope(padId: string | null): ActionRefused | null;
   readonly store: ServerStore;
   readonly rooms: RoomManager;
   readonly broker: TerminalBroker;
+  /**
+   * Live machine liveness, straight from the socket registry. Persisted machine rows are a
+   * store read like any other; whether a machine is CONNECTED right now is knowledge only
+   * the gateway holds, and `core.machines.list` has to answer both in one row.
+   */
+  readonly machines: MachineLiveness;
+  /**
+   * THE placement executor — one door onto every way a thing comes to be somewhere
+   * (`core.layout.place`). A plugin declares the minimal slice it uses, which for placement
+   * is `place(request)`; the algebra, its denials and its failure modes stay in the floor.
+   */
+  readonly placement: PlaceExecutor;
   readonly host: HostControl;
+  /**
+   * The identity mechanism's administrative surface, bound to THIS caller. Separate from
+   * `auth` on purpose: `auth` answers what the caller may do, `identity` is what the caller
+   * may hand to somebody else, and only `core.access` (plus machine enrollment) needs the
+   * second question.
+   */
+  readonly identity: IdentityDoor;
   /**
    * This plugin's OWN durable storage: namespaced, versioned, migration-ledgered. It is the
    * only place a plugin may keep data of its own — the bespoke tables floor code still owns
@@ -101,6 +227,12 @@ export interface ActionCtx {
    * other timed plane in the server is.
    */
   now(): number;
+  /**
+   * Fresh ids from the same seam as the clock, for the same reason: a handler that mints an
+   * id must be drivable by a deterministic test, exactly like every other id the server
+   * creates.
+   */
+  newId(): string;
 }
 
 /**
@@ -200,6 +332,8 @@ export class PluginHost {
     private readonly authService: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
+    private readonly placement: PlaceExecutor,
+    private readonly machines: MachineLiveness,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
     options: { readonly lifecycleTimeoutMs?: number } = {},
@@ -572,11 +706,22 @@ export class PluginHost {
         denial: { rule: "plugin_disabled", message: `plugin "${pluginId}" is disabled` },
       };
     }
-    if (auth.padScope !== null) {
-      // The precedent every workspace route already sets (`POST /api/place`): a token
-      // scoped to one container cannot authorize a workspace-grade mutation. This rung sits
-      // ABOVE the cap check on purpose — a scoped token carrying the right cap is still
-      // refused for its scope, and the message says which (D11).
+    /*
+      RUNG 3 — SCOPE. A token scoped to one container cannot authorize a WORKSPACE-grade
+      mutation: the precedent every workspace route already sets (`POST /api/place`), and it
+      sits ABOVE the cap check on purpose, so a scoped token carrying the right cap is still
+      refused for its scope and the message says which (D11).
+
+      An action may DECLARE itself confined to one container (`scope: "pad"`), and then a
+      scoped caller falls through — the door's whole effect is inside the pad the token
+      already holds. That is a narrowing of the refusal, never a hole: rung 4 still runs, and
+      for a scoped caller it now asks the caps AT that pad rather than in the abstract, so a
+      pad-scoped token can never reach past its own container. What the rung cannot check is
+      whether the thing named in the ARGUMENTS lives in that pad — arguments are not parsed
+      yet, deliberately — so honouring `ctx.padScope` is the handler's contractual obligation.
+    */
+    const scope = entry.def.scope ?? "workspace";
+    if (auth.padScope !== null && scope !== "pad") {
       return {
         ok: false,
         denial: {
@@ -586,7 +731,8 @@ export class PluginHost {
       };
     }
     for (const cap of entry.def.caps) {
-      const held = cap === "*" ? auth.isRoot : this.authService.allows(auth, cap);
+      const held =
+        cap === "*" ? auth.isRoot : this.authService.allows(auth, cap, auth.padScope ?? undefined);
       if (held) continue;
       return {
         ok: false,
@@ -615,12 +761,30 @@ export class PluginHost {
         isRoot: auth.isRoot,
         allows: (cap, padId) => this.authService.allows(auth, cap, padId),
       },
+      padScope: auth.padScope,
+      outsideScope: (padId) =>
+        auth.padScope !== null && padId !== auth.padScope
+          ? { refused: OUTSIDE_SCOPE_REFUSAL }
+          : null,
       store: this.store,
       rooms: this.rooms,
       broker: this.broker,
+      machines: this.machines,
+      placement: this.placement,
       host: this,
+      identity: {
+        createPrincipal: (input) =>
+          identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
+        mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
+        revokePrincipal: (principalId) =>
+          identityCall(() => this.authService.revokePrincipal(principalId, auth)),
+        enrollMachine: (name) => identityCall(() => this.authService.enrollMachine(name, auth)),
+        rotateMachineToken: (machine) =>
+          identityCall(() => this.authService.rotateMachineToken(machine, auth.principal.id)),
+      },
       storage: this.storage(pluginId),
       now: () => this.runtime.now(),
+      newId: () => this.runtime.newId(),
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     const produced = await invoke(ctx, parsed.data);

@@ -1,20 +1,21 @@
 import { expect, test } from "bun:test";
 import {
-  HttpErrorSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
-  OkResponseSchema,
   RevokeRequestSchema,
+  RevokeResultSchema,
+  TokenGrantSchema,
   PROTOCOL_VERSION,
 } from "@manifold/protocol";
 import { textToBase64, type SessionClient } from "@manifold/sdk";
 import {
+  callAction,
   connect,
   createPad,
   enrollMachine,
   mintToken,
-  ownerFetch,
+  ownerAction,
   startServer,
   waitFor,
   type TestServer,
@@ -27,37 +28,6 @@ import {
   type AdversarialMachineSocket,
   type AdversarialSessionSocket,
 } from "../src/adversarial.ts";
-
-interface Parser<T> {
-  parse(input: unknown): T;
-}
-
-interface ParsedResponse<T> {
-  readonly status: number;
-  readonly body: T;
-}
-
-async function fetchParsed<T>(
-  server: TestServer,
-  token: string,
-  path: string,
-  schema: Parser<T>,
-  init: RequestInit,
-): Promise<ParsedResponse<T>> {
-  const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${token}`);
-  headers.set("accept", "application/json");
-  const signal = init.signal ?? AbortSignal.timeout(15_000);
-  const response = await fetch(new URL(path, server.httpUrl), { ...init, headers, signal });
-  const text = await response.text();
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`HTTP ${response.status} returned non-JSON`, { cause: error });
-  }
-  return { status: response.status, body: schema.parse(decoded) };
-}
 
 async function closeRawSockets(
   sockets: readonly (AdversarialMachineSocket | AdversarialSessionSocket)[],
@@ -139,72 +109,81 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
       caps: ["terminal:write"],
       padId: padX.id,
     });
-    const sceneOnlyEscalation = await fetchParsed(
+    /*
+      Minting is `core.access.mintToken` now, so the two escalation refusals below are
+      DENIALS in a 200 envelope rather than 403 bodies — and the ladder makes them two
+      different rungs, which is exactly the distinction the pair was written to draw.
+      A capability the caller does not hold is refused by the door before the mechanism is
+      reached (`forbidden`); authority the caller holds but may not pass on is refused by the
+      mechanism (`refused`), on the real caller, with the wording the route used to return.
+    */
+    const sceneOnlyEscalation = await callAction(
       server,
       sceneOnly.token,
-      "/api/tokens",
-      HttpErrorSchema,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(escalationRequest),
-      },
+      "core.access.mintToken",
+      escalationRequest,
     );
-    expect(sceneOnlyEscalation.status).toBe(403);
-    expect(sceneOnlyEscalation.body.error.code).toBe("forbidden");
+    expect(sceneOnlyEscalation.ok).toBe(false);
+    if (sceneOnlyEscalation.ok) throw new Error("scene-only minting was not refused");
+    expect(sceneOnlyEscalation.denial.rule).toBe("forbidden");
+    expect(sceneOnlyEscalation.denial.message).toBe("tokens:mint capability required");
 
-    // This second minter has route access, so the 403 specifically proves attenuation
-    // rather than merely the tokens:mint route guard tested above.
+    // This second minter passes the cap rung, so its refusal specifically proves attenuation
+    // rather than merely the `tokens:mint` guard tested above. It is also the case that keeps
+    // `scope: "pad"` honest: a pad-scoped agent MAY mint inside its own container, so the
+    // door lets it through to the mechanism instead of refusing it for its scope.
     const attenuatedMinter = await mintToken(server, {
       principal: { kind: "agent", name: "Attenuated Minter", color: "#a46b2b" },
       caps: ["tokens:mint", "scene:write"],
       padId: padX.id,
     });
-    const attenuatedEscalation = await fetchParsed(
+    const attenuatedEscalation = await callAction(
       server,
       attenuatedMinter.token,
-      "/api/tokens",
-      HttpErrorSchema,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(escalationRequest),
-      },
+      "core.access.mintToken",
+      escalationRequest,
     );
-    expect(attenuatedEscalation.status).toBe(403);
-    expect(attenuatedEscalation.body.error.code).toBe("forbidden");
+    expect(attenuatedEscalation.ok).toBe(false);
+    if (attenuatedEscalation.ok) throw new Error("attenuated escalation was not refused");
+    expect(attenuatedEscalation.denial.rule).toBe("refused");
+    expect(attenuatedEscalation.denial.message).toBe("cannot mint capability terminal:write");
 
-    const deniedMachine = await fetchParsed(
+    // The same minter minting WITHIN its own authority and scope succeeds: the point of the
+    // scoped carve-out is that delegation downward keeps working.
+    const delegated = await callAction(
       server,
-      scoped.token,
-      "/api/machines",
-      HttpErrorSchema,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "denied-machine" }),
-      },
+      attenuatedMinter.token,
+      "core.access.mintToken",
+      MintTokenRequestSchema.parse({
+        principal: { kind: "agent", name: "Sub Agent", color: "#6b8fa4" },
+        caps: ["scene:write"],
+      }),
     );
-    expect(deniedMachine.status).toBe(403);
-    expect(deniedMachine.body.error.code).toBe("forbidden");
+    expect(delegated.ok).toBe(true);
+    if (!delegated.ok) throw new Error("in-scope delegation was refused");
+    expect(TokenGrantSchema.parse(delegated.result).padId).toBe(padX.id);
+
+    // A pad-scoped token is refused at the SCOPE rung now instead of by the route's own
+    // guard, which is the same answer wearing the ladder's vocabulary.
+    const deniedMachine = await callAction(server, scoped.token, "core.machines.enroll", {
+      name: "denied-machine",
+    });
+    expect(deniedMachine.ok).toBe(false);
+    if (deniedMachine.ok) throw new Error("a scoped token enrolled a machine");
+    expect(deniedMachine.denial.rule).toBe("forbidden");
 
     const machineMinter = await mintToken(server, {
       principal: { kind: "agent", name: "Machine Minter", color: "#2c8262" },
       caps: ["machines:mint"],
     });
-    const allowedMachine = await fetchParsed(
-      server,
-      machineMinter.token,
-      "/api/machines",
-      MachineEnrollResponseSchema,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "allowed-machine" }),
-      },
+    const allowedMachine = await callAction(server, machineMinter.token, "core.machines.enroll", {
+      name: "allowed-machine",
+    });
+    expect(allowedMachine.ok).toBe(true);
+    if (!allowedMachine.ok) throw new Error("machines:mint could not enroll a machine");
+    expect(MachineEnrollResponseSchema.parse(allowedMachine.result).machine.name).toBe(
+      "allowed-machine",
     );
-    expect(allowedMachine.status).toBe(200);
-    expect(allowedMachine.body.machine.name).toBe("allowed-machine");
 
     const revokee = await mintToken(server, {
       principal: { kind: "human", name: "Revoked User", color: "#c14d7b" },
@@ -236,12 +215,16 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const init = revokedSocket.frames.find((message) => message.type === "init");
     if (init?.type !== "init") throw new Error("revokee did not receive init");
 
-    await ownerFetch(server, "/api/tokens/revoke", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(RevokeRequestSchema.parse({ principalId: revokee.principal.id })),
-      responseSchema: OkResponseSchema,
-    });
+    const revocation = RevokeResultSchema.parse(
+      await ownerAction(
+        server,
+        "core.access.revokeToken",
+        RevokeRequestSchema.parse({ principalId: revokee.principal.id }),
+      ),
+    );
+    // The count is the door's answer where the route said only `{ok:true}`: one token was
+    // minted for this principal, so exactly one died, and the fence below closes its socket.
+    expect(revocation.revoked).toBe(1);
     try {
       revokedSocket.sendRaw(
         sessionFrame({
@@ -375,12 +358,11 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       ),
     ).toHaveLength(0);
 
-    await ownerFetch(server, "/api/tokens/revoke", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(RevokeRequestSchema.parse({ principalId: viewerGrant.principal.id })),
-      responseSchema: OkResponseSchema,
-    });
+    await ownerAction(
+      server,
+      "core.access.revokeToken",
+      RevokeRequestSchema.parse({ principalId: viewerGrant.principal.id }),
+    );
     const revokedClose = await waitFor(() => viewer.closeInfo, 5_000, 20);
     expect(revokedClose.code).toBe(4403);
     expect(revokedClose.reason).toBe("revoked");
@@ -470,12 +452,9 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
     const server = await startServer();
     servers.push(server);
 
-    const enrolled = await ownerFetch(server, "/api/machines", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "idempotent-machine" }),
-      responseSchema: MachineEnrollResponseSchema,
-    });
+    const enrolled = MachineEnrollResponseSchema.parse(
+      await ownerAction(server, "core.machines.enroll", { name: "idempotent-machine" }),
+    );
     if (enrolled.machineToken === undefined) {
       throw new Error("fresh enrollment must mint a token");
     }
@@ -499,30 +478,27 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
     expect(welcome.machineId).toBe(enrolled.machine.id);
 
     // Idempotent re-enroll: same row back, no token minted, live agent untouched.
-    const reenrolled = await ownerFetch(server, "/api/machines", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "idempotent-machine" }),
-      responseSchema: MachineEnrollResponseSchema,
-    });
+    const reenrolled = MachineEnrollResponseSchema.parse(
+      await ownerAction(server, "core.machines.enroll", { name: "idempotent-machine" }),
+    );
     expect(reenrolled.machine.id).toBe(enrolled.machine.id);
     expect(reenrolled.machineToken).toBeUndefined();
     expect(live.closeInfo).toBeNull();
 
-    const listed = await ownerFetch(server, "/api/machines", {
-      responseSchema: MachinesResponseSchema,
-    });
+    const listed = MachinesResponseSchema.parse(
+      await ownerAction(server, "core.machines.list", {}),
+    );
     expect(listed.machines.filter((machine) => machine.name === "idempotent-machine")).toHaveLength(
       1,
     );
 
     // Explicit rotation: new token, same row, old token revoked and its socket fenced.
-    const rotated = await ownerFetch(server, "/api/machines", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "idempotent-machine", rotateToken: true }),
-      responseSchema: MachineEnrollResponseSchema,
-    });
+    const rotated = MachineEnrollResponseSchema.parse(
+      await ownerAction(server, "core.machines.enroll", {
+        name: "idempotent-machine",
+        rotateToken: true,
+      }),
+    );
     expect(rotated.machine.id).toBe(enrolled.machine.id);
     if (rotated.machineToken === undefined) {
       throw new Error("rotation must mint a token");

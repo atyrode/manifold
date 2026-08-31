@@ -1,17 +1,14 @@
 import { expect, test } from "bun:test";
-import {
-  OkResponseSchema,
-  PadSessionsResponseSchema,
-  TerminalsResponseSchema,
-} from "@manifold/protocol";
 import { tileIdForSurface } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createPad,
+  deletePad,
   enrollMachine,
+  listPadSessions,
+  listTerminals,
   mintToken,
-  ownerFetch,
   startAgent,
   startServer,
   waitFor,
@@ -83,10 +80,8 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       x: 120,
       y: 90,
     });
-    const inventory = await ownerFetch(server, "/api/pad-sessions", {
-      responseSchema: PadSessionsResponseSchema,
-    });
-    const listedSession = inventory.sessions.find((candidate) => candidate.id === session.id);
+    const inventory = await listPadSessions(server);
+    const listedSession = inventory.find((candidate) => candidate.id === session.id);
     expect(listedSession).toMatchObject({
       id: session.id,
       padId: session.padId,
@@ -258,10 +253,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     );
     // The canvas's widget goes with it: a reference never outlives what it references.
     await waitFor(() => !canvas.elements.has("el-term-1"), 10_000, 20);
-    const afterKill = await ownerFetch(server, "/api/pad-sessions", {
-      responseSchema: PadSessionsResponseSchema,
-    });
-    expect(afterKill.sessions.find((candidate) => candidate.id === session.id)).toBeUndefined();
+    expect((await listPadSessions(server)).find((row) => row.id === session.id)).toBeUndefined();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -365,10 +357,7 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
     client.killTerminal(session.id);
     expect((await departed).kind).toBe("parked");
     await waitFor(() => client.sessions.get(session.id) === undefined, 10_000, 20);
-    const remaining = await ownerFetch(server, "/api/terminals", {
-      responseSchema: TerminalsResponseSchema,
-    });
-    expect(remaining.terminals).toEqual([]);
+    expect(await listTerminals(server)).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -489,11 +478,7 @@ test("deleting the composition a terminal lives in kills its agent-owned PTY", a
     // so THAT is the container whose deletion reaps the PTY.
     expect(session.padId).not.toBe(pad.id);
 
-    const deleted = await ownerFetch(server, `/api/pads/${session.padId}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
-    });
-    expect(deleted.ok).toBe(true);
+    await deletePad(server, session.padId);
     await waitFor(
       () =>
         agent.output.stdout.some(

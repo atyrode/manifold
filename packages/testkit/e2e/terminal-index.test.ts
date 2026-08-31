@@ -1,20 +1,19 @@
 import { expect, test } from "bun:test";
 import {
-  ActionOutcomeSchema,
   HttpErrorSchema,
   PlaceRequestSchema,
-  TerminalsResponseSchema,
   type ActionOutcome,
   type HttpError,
   type TerminalSummary,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
+  callAction,
   connect,
   createPad,
   enrollMachine,
+  listTerminals,
   mintToken,
-  ownerFetch,
   startAgent,
   startServer,
   waitFor,
@@ -25,12 +24,10 @@ import { closeClients, e2eFailure, nextMessage, openTerminalAt, stopProcesses } 
 
 /**
  * THE terminal index, over real processes. There is no pool any more: every terminal lives
- * in a composition, so `GET /api/terminals` lists them ALL — the ones a canvas references and
+ * in a composition, so `core.terminals.list` lists them ALL — the ones a canvas references and
  * the ones nothing references — and `unplaced` is derived from the containment graph rather
  * than stored beside a sort order. Renaming and killing are the only verbs left on a row.
  */
-
-const JSON_HEADERS = { "content-type": "application/json" } as const;
 
 interface ScopedResponse {
   readonly status: number;
@@ -59,13 +56,6 @@ async function fetchAsPrincipal(
   return { status: response.status, body: HttpErrorSchema.parse(decoded) };
 }
 
-async function listTerminals(server: TestServer): Promise<readonly TerminalSummary[]> {
-  const listing = await ownerFetch(server, "/api/terminals", {
-    responseSchema: TerminalsResponseSchema,
-  });
-  return listing.terminals;
-}
-
 async function terminalRow(
   server: TestServer,
   sessionId: string,
@@ -73,18 +63,13 @@ async function terminalRow(
   return (await listTerminals(server)).find((terminal) => terminal.id === sessionId);
 }
 
-/** Invokes one action over the real door, returning the outcome envelope verbatim. */
+/** Invokes one action as the owner, returning the outcome envelope verbatim. */
 async function invokeAction(
   server: TestServer,
   name: string,
   args: unknown,
 ): Promise<ActionOutcome> {
-  return await ownerFetch(server, `/api/actions/${name}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(args),
-    responseSchema: ActionOutcomeSchema,
-  });
+  return await callAction(server, server.ownerKey, name, args);
 }
 
 test("the terminal index lists every terminal, placed or not, and renames and kills through it", async () => {
@@ -213,23 +198,30 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
       caps: ["pads:read", "pads:write", "scene:write", "terminal:spawn", "terminal:write"],
       padId: pad.id,
     });
-    for (const path of ["/api/terminals", "/api/containers"]) {
-      const refused = await fetchAsPrincipal(server, scoped.token, path);
-      expect(refused.status).toBe(403);
-      expect(refused.body.error.code).toBe("forbidden");
-    }
-    const scopedPlace = await fetchAsPrincipal(server, scoped.token, "/api/place", {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(
+    // The INDEX is workspace-grade, so the door refuses the scoped token as DATA; the census
+    // is still a floor route, and it answers the same fact with a status.
+    expect(await callAction(server, scoped.token, "core.terminals.list", {})).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+    });
+    const census = await fetchAsPrincipal(server, scoped.token, "/api/containers");
+    expect(census.status).toBe(403);
+    expect(census.body.error.code).toBe("forbidden");
+    // Placement went the same way as the index: a door, refusing a scoped caller as data.
+    expect(
+      await callAction(
+        server,
+        scoped.token,
+        "core.layout.place",
         PlaceRequestSchema.parse({
           surface: { kind: "terminal", sessionId: placed.session.id },
           destination: { kind: "unplaced" },
         }),
       ),
+    ).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
     });
-    expect(scopedPlace.status).toBe(403);
-    expect(scopedPlace.body.error.code).toBe("forbidden");
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

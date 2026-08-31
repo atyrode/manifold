@@ -1,11 +1,11 @@
 import {
   ActionOutcomeSchema,
+  BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
-  CreatePadFolderRequestSchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
   MachinesResponseSchema,
-  MovePadTreeItemRequestSchema,
+  MintTokenRequestSchema,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
   PadResponseSchema,
@@ -13,14 +13,20 @@ import {
   PadTreeResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  PlacementDeniedResponseSchema,
-  RenamePadRequestSchema,
+  RevokeRequestSchema,
+  RevokeResultSchema,
   TerminalsResponseSchema,
+  TokenGrantSchema,
+  placementContainerFor,
+  placementRefusalRule,
+  type ActionDenial,
   type ActionOutcome,
+  type BootstrapPrincipalRequest,
   type Cap,
   type ClientMessageBody,
   type Gesture,
   type MachineSummary,
+  type MintTokenRequest,
   type Pad,
   type PadPresence,
   type PadSessionSummary,
@@ -33,11 +39,13 @@ import {
   type PresencePayload,
   type PresenceState,
   type Principal,
+  type RevokeResult,
   type SceneElement,
   type ServerMessageBody,
   type SessionInfo,
   type TerminalSummary,
   type TileLayout,
+  type TokenGrant,
 } from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
@@ -139,6 +147,14 @@ type Handler = (...args: never[]) => void;
 export type PlaceOutcome =
   | { readonly ok: true; readonly result: PlaceResponse }
   | { readonly ok: false; readonly denial: PlacementDenial };
+
+/**
+ * What an access door answers: the thing it issued, or the denial that refused it. Same
+ * shape as `PlaceOutcome` and for the same reason — a caller renders a refusal, and a
+ * refused delegation is an answer rather than a broken call.
+ */
+export type AccessOutcome<T> =
+  { readonly ok: true; readonly result: T } | { readonly ok: false; readonly denial: ActionDenial };
 
 export interface SessionClientOptions {
   /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
@@ -641,38 +657,34 @@ export class SessionClient {
   }
 
   /**
-   * THE placement call: put an item in a container. One envelope, one endpoint, and a
-   * refusal that names the RULE which refused it — legality lives in the protocol's
-   * placement declarations, so a caller never has to know which verb this used to be.
+   * THE placement call: put an item in a container. One envelope, one verb, and a refusal
+   * that names the RULE which refused it — legality lives in the protocol's placement
+   * declarations, so a caller never has to know which verb this used to be.
    *
-   * It is HTTP rather than a socket message because placement crosses containers: this
-   * client is joined to ONE room, and the write may touch two.
+   * It dispatches `core.layout.place` (ADR 0013 §14): the algebra is mechanism and stays
+   * floor, the verb is a plugin, and there is exactly one door onto "place a thing". This
+   * method survives the move because the SHAPE is the contract — callers keep asking for a
+   * surface and a destination and keep getting a `PlaceOutcome`.
+   *
+   * The denial is REBUILT rather than received: the action door's `refused` rung carries one
+   * string, which leads with the algebra's own rule, and the two other fields of a
+   * `PlacementDenial` are things this caller already holds — it sent the surface, and the
+   * container is a total function of the destination. Anything that is NOT a placement rule
+   * (a cap the caller lacks, a disabled plugin, a placement that could not be carried out)
+   * throws, exactly as the HTTP failures it replaces did.
    */
   async place(surface: PlacementSurface, destination: PlacementDestination): Promise<PlaceOutcome> {
     const request = PlaceRequestSchema.parse({ surface, destination });
-    const response = await fetch(`${this.apiOrigin()}/api/place`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.opts.token}`,
-      },
-      body: JSON.stringify(request),
-    });
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`place returned a non-JSON response (${response.status})`);
-    }
-    if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(payload) };
-    const denied = PlacementDeniedResponseSchema.safeParse(payload);
+    const outcome = await this.action("core.layout.place", request);
+    if (outcome.ok) return { ok: true, result: PlaceResponseSchema.parse(outcome.result) };
+    const rule = placementRefusalRule(outcome.denial.message);
+    if (rule === null) throw new Error(outcome.denial.message);
     // A denial is an ANSWER, not a failure: the caller renders the rule (and its drag
     // preview already asked `resolvePlacement` the same question locally).
-    if (denied.success) return { ok: false, denial: denied.data.error.denial };
-    const failure = HttpErrorSchema.safeParse(payload);
-    throw new Error(
-      failure.success ? failure.data.error.message : `place failed (${response.status})`,
-    );
+    return {
+      ok: false,
+      denial: { rule, surface, container: placementContainerFor(destination) },
+    };
   }
 
   /**
@@ -741,14 +753,14 @@ export class SessionClient {
     );
   }
 
-  /** The enrolled machines with live online state (`GET /api/machines`). */
+  /** The enrolled machines with live online state (`core.machines.list`). */
   async machines(): Promise<readonly MachineSummary[]> {
-    return MachinesResponseSchema.parse(await this.getJson("/api/machines")).machines;
+    return MachinesResponseSchema.parse(await this.invoke("core.machines.list", {})).machines;
   }
 
-  /** The workspace index — pads and folders in tree order (`GET /api/pad-tree`). */
+  /** The workspace index — pads and folders in tree order (`core.views.tree`). */
   async padTree(): Promise<readonly PadTreeItem[]> {
-    return PadTreeResponseSchema.parse(await this.getJson("/api/pad-tree")).items;
+    return PadTreeResponseSchema.parse(await this.invoke("core.views.tree", {})).items;
   }
 
   /** Who occupies which pad right now (`GET /api/pad-presence`). */
@@ -756,14 +768,15 @@ export class SessionClient {
     return PadPresenceResponseSchema.parse(await this.getJson("/api/pad-presence")).pads;
   }
 
-  /** Every pad-homed terminal session, for per-pad counts (`GET /api/pad-sessions`). */
+  /** Every pad-homed terminal session, for per-pad counts (`core.terminals.sessions`). */
   async padSessions(): Promise<readonly PadSessionSummary[]> {
-    return PadSessionsResponseSchema.parse(await this.getJson("/api/pad-sessions")).sessions;
+    return PadSessionsResponseSchema.parse(await this.invoke("core.terminals.sessions", {}))
+      .sessions;
   }
 
-  /** Every terminal in the workspace with its home composition (`GET /api/terminals`). */
+  /** Every terminal in the workspace with its home composition (`core.terminals.list`). */
   async terminals(): Promise<readonly TerminalSummary[]> {
-    return TerminalsResponseSchema.parse(await this.getJson("/api/terminals")).terminals;
+    return TerminalsResponseSchema.parse(await this.invoke("core.terminals.list", {})).terminals;
   }
 
   // --------------------------------------------------------- workspace writes
@@ -771,79 +784,116 @@ export class SessionClient {
   /*
     The workspace index's writes, beside its reads for the same reason: the section that
     LISTS containers is the section that renames and deletes them, and it holds only this
-    client. They are still HTTP routes rather than actions this wave — AXIOMS.md §Roadmap
-    puts "pad/folder CRUD + tree moves" in the workspace-index-actions row — so each one
-    mirrors its route's request/response schema exactly, the same discipline the web app's
-    own fetch layer keeps.
+    client. Every one of them is now a `core.views` ACTION — the bespoke routes are gone
+    (D13) — and each wrapper keeps its name, its arguments and its answer, because a method
+    name is a contract with plugin authors while the door behind it is ours to move.
    */
 
-  /** One authed JSON write; a non-2xx is a failure — these routes carry no denials. */
-  private async writeJson(path: string, method: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`${this.apiOrigin()}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${this.opts.token}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`${method} ${path} returned a non-JSON response (${response.status})`);
-    }
-    if (response.ok) return payload;
-    const failure = HttpErrorSchema.safeParse(payload);
-    throw new Error(
-      failure.success
-        ? failure.data.error.message
-        : `${method} ${path} failed (${response.status})`,
-    );
+  /**
+   * One action as a TYPED WRAPPER calls it: the result on success, a throw carrying the
+   * denial's message on refusal. `action` itself keeps denials as DATA, which is right for a
+   * caller that renders the rule; these wrappers replaced routes whose refusal was an HTTP
+   * error, and every caller of theirs is written around a throw. One shape per call site,
+   * chosen by the call site.
+   */
+  private async invoke(name: string, args: unknown): Promise<unknown> {
+    const outcome = await this.action(name, args);
+    if (!outcome.ok) throw new Error(outcome.denial.message);
+    return outcome.result;
   }
 
-  /** Renames one container (`PATCH /api/pads/:id`). */
+  /** Renames one container (`core.views.renamePad`). */
   async renamePad(padId: string, name: string): Promise<Pad> {
-    const request = RenamePadRequestSchema.parse({ name });
-    const body = await this.writeJson(`/api/pads/${encodeURIComponent(padId)}`, "PATCH", request);
-    return PadResponseSchema.parse(body).pad;
+    const result = await this.invoke("core.views.renamePad", { padId, name });
+    return PadResponseSchema.parse(result).pad;
   }
 
-  /** Deletes one container (`DELETE /api/pads/:id`); the server enforces authority. */
+  /** Retires one container (`core.views.deletePad`); the door enforces root authority. */
   async deletePad(padId: string): Promise<void> {
-    await this.writeJson(`/api/pads/${encodeURIComponent(padId)}`, "DELETE");
+    await this.invoke("core.views.deletePad", { padId });
   }
 
-  /** Creates an index folder (`POST /api/pad-folders`); answers the whole new index. */
+  /** Creates an index folder (`core.views.createFolder`); answers the whole new index. */
   async createPadFolder(name: string, parentId: string | null): Promise<readonly PadTreeItem[]> {
-    const request = CreatePadFolderRequestSchema.parse({ name, parentId });
-    return PadTreeResponseSchema.parse(await this.writeJson("/api/pad-folders", "POST", request))
-      .items;
+    const result = await this.invoke("core.views.createFolder", { name, parentId });
+    return PadTreeResponseSchema.parse(result).items;
   }
 
-  /** Renames an index folder (`PATCH /api/pad-folders/:id`). */
+  /** Renames an index folder (`core.views.renameFolder`). */
   async renamePadFolder(folderId: string, name: string): Promise<readonly PadTreeItem[]> {
-    const request = RenamePadRequestSchema.parse({ name });
-    return PadTreeResponseSchema.parse(
-      await this.writeJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, "PATCH", request),
-    ).items;
+    const result = await this.invoke("core.views.renameFolder", { folderId, name });
+    return PadTreeResponseSchema.parse(result).items;
   }
 
-  /** Deletes an index folder (`DELETE /api/pad-folders/:id`); its children move up. */
+  /** Deletes an index folder (`core.views.deleteFolder`); its children move up. */
   async deletePadFolder(folderId: string): Promise<readonly PadTreeItem[]> {
-    return PadTreeResponseSchema.parse(
-      await this.writeJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, "DELETE"),
-    ).items;
+    const result = await this.invoke("core.views.deleteFolder", { folderId });
+    return PadTreeResponseSchema.parse(result).items;
   }
 
-  /** Moves one index item between siblings or into a folder (`PUT /api/pad-tree`). */
+  /** Moves one index item between siblings or into a folder (`core.views.move`). */
   async movePadTreeItem(
     item: { readonly kind: "pad" | "folder"; readonly id: string },
     parentId: string | null,
     index: number,
   ): Promise<readonly PadTreeItem[]> {
-    const request = MovePadTreeItemRequestSchema.parse({ item, parentId, index });
-    return PadTreeResponseSchema.parse(await this.writeJson("/api/pad-tree", "PUT", request)).items;
+    const result = await this.invoke("core.views.move", { item, parentId, index });
+    return PadTreeResponseSchema.parse(result).items;
+  }
+
+  // -------------------------------------------------------------- access doors
+
+  /*
+    Handing authority out, over the same client every other capability uses (A2): a remote
+    human, the browser and an agent reach `core.access` identically. Unlike the index writes
+    above, a denial here is DATA rather than a throw — "you may not mint that cap" and
+    "you may not widen your pad scope" are answers a caller renders and often expects, so
+    `invoke`'s throw-on-refusal would turn a normal negotiation into an exception.
+  */
+
+  /** One access door, with its refusal kept as data. */
+  private async accessDoor<T>(
+    name: string,
+    args: unknown,
+    parse: (result: unknown) => T,
+  ): Promise<AccessOutcome<T>> {
+    const outcome = await this.action(name, args);
+    if (!outcome.ok) return { ok: false, denial: outcome.denial };
+    return { ok: true, result: parse(outcome.result) };
+  }
+
+  /**
+   * Creates a principal holding a root token (`core.access.createPrincipal`). Root-only,
+   * and the workspace's bootstrap: this is how the owner key becomes a durable identity.
+   */
+  async createPrincipal(input: BootstrapPrincipalRequest): Promise<AccessOutcome<TokenGrant>> {
+    const request = BootstrapPrincipalRequestSchema.parse(input);
+    return this.accessDoor("core.access.createPrincipal", request, (result) =>
+      TokenGrantSchema.parse(result),
+    );
+  }
+
+  /**
+   * Mints a token (`core.access.mintToken`) no broader than this client's own authority —
+   * the delegation path an agent uses to hand a sub-agent strictly less than it holds.
+   */
+  async mintToken(input: MintTokenRequest): Promise<AccessOutcome<TokenGrant>> {
+    const request = MintTokenRequestSchema.parse(input);
+    return this.accessDoor("core.access.mintToken", request, (result) =>
+      TokenGrantSchema.parse(result),
+    );
+  }
+
+  /**
+   * Revokes a principal's tokens (`core.access.revokeToken`) and answers HOW MANY died —
+   * zero is a success, not a refusal. Live sockets holding a revoked token are closed by
+   * the server's revocation fence, so this is the whole cutoff.
+   */
+  async revokeToken(principalId: string): Promise<AccessOutcome<RevokeResult>> {
+    const request = RevokeRequestSchema.parse({ principalId });
+    return this.accessDoor("core.access.revokeToken", request, (result) =>
+      RevokeResultSchema.parse(result),
+    );
   }
 
   sendGesture(gesture: Gesture): void {

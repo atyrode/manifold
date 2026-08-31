@@ -45,6 +45,19 @@ Your dependency budget is `@manifold/protocol`, `@manifold/scene`, `@manifold/sd
 `@manifold/plugin`. Importing anything else from the tree — server internals, web internals,
 another plugin — fails the gate.
 
+`@manifold/plugin` has three entries, and which one you reach for is a real distinction:
+
+| entry                    | what it holds                                                                                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER composes through it.                                           |
+| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`.                                                                          |
+| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`/`SurfaceIcon`, `NodeTitleBar`, `useToast`, and the published view-state store (`setViewState`). |
+
+`/ui` is closed on purpose — you extend it by passing nodes into its slots (`icon`, `middle`,
+`extraActions`), never by widening a union in it, so re-drawing the whole icon set stays a
+change to one file and no call site. `@manifold-plugin/terminals/web` is the worked example:
+its terminal viewer owns no drawing and no notice mechanism of its own.
+
 ---
 
 ## 2. The manifest
@@ -112,7 +125,8 @@ Rules worth knowing before you write one:
 - **`dormant` is how your contributions look while you are disabled**: `ghost` (the engine's inert
   placeholder, naming you — the default) or `hide` (record kept, nothing painted), plus an optional
   `label`. It is **data, not a component**: the engine draws the placeholder, because a plugin that
-  is off cannot be asked to render its own absence.
+  is off cannot be asked to render its own absence. Omitting the field is a real declaration
+  (absent ≡ `ghost`), and `hide` is for chrome only — never for a node holding a user's work (§6).
 - **`essential: true` means the workspace cannot be drawn without you.** Only `core.shell` claims
   it. Attempting to disable an essential plugin returns
   `{ ok: false, denial: { rule: "refused", message: "essential" } }`, where the message is one
@@ -164,10 +178,47 @@ export const rename = defineAction({
 });
 ```
 
-An action that REMOVES things may declare `cleanup: true`: the dispatcher then skips only
-the `plugin_disabled` rung, so disabling your plugin refuses creation and administration
-but never locks anyone out of deleting what already exists (D12; `core.terminals.kill` is
-the canonical example). Caps and schemas still apply.
+Two optional fields on an action are declared carve-outs from exactly one rung of the denial ladder,
+and they are the only ones:
+
+- **`cleanup: true`** — for an action that REMOVES things. The dispatcher then skips only the
+  `plugin_disabled` rung, so disabling your plugin refuses creation and administration but never
+  locks anyone out of deleting what already exists (D12; `core.terminals.kill` is the canonical
+  example).
+- **`scope: "pad"`** — for a door a pad-scoped token should be able to call. It skips only the
+  pad-scope rung. The test is parity, NOT whether you read or mutate: declare it if and only if the
+  route or channel verb you are replacing was reachable by a pad-scoped token. Reads of one
+  container qualify (its tree, its sessions), and so do mutations inside one container — opening,
+  renaming or killing a terminal, renaming the container itself, minting an attenuated token in it.
+  It comes with an **obligation**: the ladder proved the caller's caps hold for the caller's own
+  pad, so your handler must prove that the thing NAMED in the arguments lives there. Do not
+  hand-roll it — the engine owns the check and its wording:
+
+  ```ts
+  const denial = ctx.outsideScope(session.padId); // resolve the pad your ARGS name, then ask
+  if (denial !== null) return denial; // canonical: OUTSIDE_SCOPE_REFUSAL
+  ```
+
+  Declare the slice you use — `{ outsideScope(padId: string | null): { readonly refused: string } | null }`
+  — and import `OUTSIDE_SCOPE_REFUSAL` in tests rather than retyping the string. The refusal never
+  names the target pad (a scoped caller learns nothing about a container it may not reach), and a
+  `null` pad is refused for a scoped caller while passing for a workspace-grade one.
+
+  The three ways to discharge the obligation are **not interchangeable**:
+
+  1. **Call `ctx.outsideScope`** — required whenever your arguments name a pad-addressed node (a
+     session, element, folder, layout, pad).
+  2. **Lean on a mechanism** — legitimate ONLY if that mechanism refuses on the CALLER'S OWN SCOPE,
+     the way the identity mechanism refuses a mint that widens its minter's scope. _A mechanism
+     discharges the obligation only if it refuses on the caller's own scope; validating the argument
+     is not confining it._ "The row exists and parses" discharges nothing.
+  3. **Vacuous** — nothing in your answer is addressed by pad (a fleet-wide list). Write the reason
+     as a comment on the handler, or the next reader adds a filter and breaks share-link viewers.
+
+  Leave the default `"workspace"` for anything genuinely workspace-wide and for owner-only doors.
+  See `docs/decisions/0013-plugin-behavioral-contract.md` §15.
+
+Caps and schemas still apply in both cases: a carve-out skips one rung, never the intersection.
 
 The server half supplies the handler:
 
@@ -218,14 +269,14 @@ the placement rule that refused (`core.layout.place`). From a client,
 Dispatch runs one monotonic ladder. The first rule that fires wins, and no later step can
 argue an earlier denial back to allow:
 
-| #   | Rule              | Fires when                                                                                                                               |
-| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `unknown_action`  | No composed action by that full name.                                                                                                    |
-| 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                     |
-| 3   | `forbidden`       | The caller's token is **pad-scoped**. Actions are workspace-grade this wave; message is `scoped tokens cannot invoke workspace actions`. |
-| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                      |
-| 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                           |
-| 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                       |
+| #   | Rule              | Fires when                                                                                                                                                                                                                                  |
+| --- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `unknown_action`  | No composed action by that full name.                                                                                                                                                                                                       |
+| 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                                                                                                                        |
+| 3   | `forbidden`       | The caller's token is **pad-scoped** and your action's `scope` is `"workspace"` (the default). Message: `scoped tokens cannot invoke workspace actions`. Declare `scope: "pad"` when the door you replaced was reachable by a scoped token. |
+| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                                                                                                                         |
+| 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                              |
+| 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                          |
 
 Rule 3 is the same precedent as every workspace route. Finer per-node scoping arrives with the
 permission waterfall (`docs/decisions/0011-permission-waterfall.md`); until then, a scoped token
@@ -452,6 +503,68 @@ The engine merges your element renderers into the canvas node-type map and your 
 toolbar. Nothing in the engine mentions "draw"; disable the plugin and the tool button
 disappears and existing strokes render as placeholders, live, without a reload.
 
+### What an element renderer receives
+
+`draw` needs nothing from its host, which makes it the smallest example and a misleading one.
+`core.notes` is the sharper case — a note is edited character by character by several people at
+once — and it is why the element contract is explicit rather than "whatever the canvas node happens
+to pass". There are already two mount sites (a canvas node type and `ElementOutlet` for a tile
+leaf), so one frame's props are deliberately NOT the contract. All three types come from
+`@manifold/plugin`:
+
+```ts
+interface ElementProps {
+  readonly id: string;
+  readonly data: Readonly<Record<string, unknown>>; // your stored record
+  readonly selected?: boolean | undefined;
+} // identity and record only — geometry stays engine business
+
+interface ElementHost {
+  readonly doc: ElementDocument;
+  readonly editingElementId: string | null; // the host owns edit focus…
+  beginEditing(elementId: string): void; // …a renderer ASKS to enter…
+  endEditing(elementId: string): void; // …and asks to leave
+  readonly removeWhenEmpty: boolean; // canvas: an emptied note is litter; tile leaf: it IS the occupant
+}
+
+interface ElementDocument {
+  elementText(elementId: string): Y.Text | null;
+  transact(fn: (tx: ElementTx) => void): void;
+}
+interface ElementTx {
+  patch(elementId: string, patch: ScenePatch): boolean;
+  remove(elementId: string): boolean;
+  text(elementId: string): Y.Text | null;
+}
+```
+
+Reach the host with `useElementHost()` from `@manifold/plugin/hooks`; the mount site provides it
+through `ElementHostProvider`, and the hook THROWS rather than degrading, because an element with no
+mount site has nowhere to commit an edit. Edit focus is host-owned because the host publishes it as
+presence `view.editingElementId` (A2: what you are editing is observable), and `removeWhenEmpty` is
+the one genuine disagreement between the two disciplines rather than a preference.
+
+`ElementDocument`/`ElementTx` are the **document plane restated structurally** — the same technique
+`HostServices.client` uses, so the SDK's `SessionClient` satisfies the interface without a plugin
+ever importing web internals. The load-bearing point: **an element renderer edits its document
+directly and declares no action at all.** A per-element edit whose worst-case merge a human accepts
+is document traffic (§5), so `core.notes` and `core.draw` both ship with zero actions. If you find
+yourself wanting an action for a keystroke, re-read the plane table.
+
+**You implement nothing for dormancy, and there is no seam for it.** Both mount sites decide before
+your component is ever constructed, asking the same three questions in the same order: unknown
+element type → placeholder `state="unknown"`, owning plugin disabled → `"disabled"`, type declared
+but no renderer registered → `"unavailable"`. Only past all three does a mount site reach your
+component. So a disabled `core.notes` leaves the note's record untouched in the document and paints
+the engine's named placeholder in a canvas node and a tile leaf alike — the state is also mirrored
+to `data-plugin-state` for gates to assert on.
+
+The only dormancy lever a plugin has is manifest DATA: `dormant.mode` and `dormant.label`. Silence
+is a real declaration — absent ≡ `ghost`, the named placeholder — and it is the right declaration for
+anything holding a user's work; `core.notes` deliberately declares no `dormant` field at all. Reach
+for `hide` only for chrome, never for a node holding work: hiding a record a person typed into makes
+their work invisible without deleting it, which is the one outcome worse than a placeholder.
+
 ### The other three contribution kinds
 
 - **`panels`** are leaves of the workspace tile tree. The workspace layout is itself a
@@ -492,6 +605,16 @@ That is the whole host surface, and it is deliberate: no store, no room map, no 
 from `packages/web`, nothing that would have to be re-plumbed if plugin code were later moved
 behind an isolation boundary. If you need data the host does not expose, add a typed wrapper to
 the SDK — never a direct `fetch` against a route, and never a deep import.
+
+**When a plugin and the floor must both touch one value, the slot lives in `@manifold/plugin`.**
+Neither side may import the other (`AXIOMS.md` §Foundation), so a value with a writer on one side
+and a reader on the other has exactly one legal home: the engine package both already depend on.
+The shipped example is the spotlight — `core.presence` applies one and calls `recordSpotlight(uri)`;
+the web floor's debug seam reads `lastSpotlight()` for the axioms gate. One mutable slot, because
+"what did this viewport actually do" has one answer per device, and it records where the camera
+MOVED rather than where a frame arrived, so a spotlight the viewer has switched off never lands.
+Reach for this only for that shape — a single cross-boundary fact, not plugin state, which belongs
+in `ctx.storage` or the document.
 
 Addressing: `manifold://` URIs are the canonical way to refer to anything —
 `manifold://pad/<padId>`, `.../element/<elementId>`, `.../tile/<tileId>`,

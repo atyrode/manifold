@@ -1,6 +1,6 @@
 import { compareElements, type SceneElement } from "@manifold/protocol";
 import { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH } from "@manifold/scene";
-import type { GestureOverride } from "./remote-gestures";
+import type { GestureOverride } from "@manifold-plugin/presence/web";
 import { strokeBounds, toRelativePoints } from "./stroke";
 import type { Node } from "@xyflow/react";
 
@@ -242,9 +242,4 @@ export function createDrawElement(
     strokeWidth,
     color,
   };
-}
-
-export function textHeightFor(text: string, fontSize: number): number {
-  const lines = text.split("\n").length;
-  return Math.max(DEFAULT_TEXT_HEIGHT, lines * fontSize * 1.4 + 16);
 }

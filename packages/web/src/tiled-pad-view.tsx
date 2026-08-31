@@ -1,7 +1,6 @@
 import {
   CURSOR_MIN_INTERVAL_MS,
   placementItemFor,
-  type ItemKind,
   type MachineSummary,
   type Pad,
   type PadPresence,
@@ -24,10 +23,30 @@ import {
 } from "react";
 
 import { deletePad, getMachines, removePadTile, renamePad, type StoredIdentity } from "./api.ts";
-import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
+import {
+  clampCursorFraction,
+  cursorFraction,
+  remoteCursorSocketId,
+  REMOTE_CURSOR_FALLBACK_COLOR,
+  useRemoteCursors,
+} from "@manifold-plugin/presence/web";
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
-import { TextSurface } from "./flow-text-node.tsx";
-import { ControlIcon, ItemIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
+import {
+  ControlIcon,
+  ItemIcon,
+  NodeTitleBar,
+  RemoteCursorIcon,
+  SurfaceIcon,
+  subscribeViewState,
+  useToast,
+} from "@manifold/plugin/ui";
+import {
+  TerminalView,
+  browserMachineStorage,
+  chooseDefaultMachine,
+  recallMachine,
+  rememberMachine,
+} from "@manifold-plugin/terminals/web";
 import {
   carriesItem,
   createPlacementLookup,
@@ -36,25 +55,15 @@ import {
   useItemDrop,
   type ItemEnvelope,
 } from "@manifold/plugin/hooks";
-import {
-  browserMachineStorage,
-  chooseDefaultMachine,
-  recallMachine,
-  rememberMachine,
-} from "./machine-choice.ts";
 import { sessionMachine } from "./machine-visibility.ts";
-import { NodeTitleBar } from "./node-titlebar.tsx";
-import { TerminalView } from "./terminal-view.tsx";
 import { createTileDropStore } from "./tile-drop-store.ts";
 import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { TILED_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
-import { useToast } from "./toast.tsx";
 import { carryGhosts, noteTitle, remoteTileCarries, surfaceDisplayLabel } from "./carry.ts";
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
-import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
-import { subscribeViewState } from "./view-presence.ts";
+import { ElementOutlet, useComposition } from "./plugin-host.tsx";
 
 /**
  * The tiled discipline's renderer. A View and a Pad are one container object; this
@@ -69,16 +78,17 @@ import { subscribeViewState } from "./view-presence.ts";
  * purely geometric ratio write goes straight into the doc.
  */
 
-/** The fallbacks the canvas's note node uses, for the frame between a leaf and its element. */
-const NOTE_FALLBACK_FONT_SIZE = 20;
-const NOTE_FALLBACK_COLOR = "#f8f9fa";
-
 /**
  * The item kind a leaf's occupant IS, by surface form. A record over the surface union
  * rather than a chain of tests, so a new tileable form cannot be added without saying what
  * the placement algebra should call it.
+ *
+ * The values are `PlacementItem["kind"]` — a plain string — because the kind set is OPEN: a
+ * note's leaf reports `text`, which is `core.notes`'s contributed element type rather than a
+ * member of the closed floor table, and the algebra reads its traits from the composition
+ * (ADR 0013 §12).
  */
-const SOLO_ITEM_KINDS: Record<TileSurface["kind"], ItemKind> = {
+const SOLO_ITEM_KINDS: Record<TileSurface["kind"], PlacementItem["kind"]> = {
   terminal: "terminal",
   pad: "canvas-pad",
   text: "text",
@@ -154,6 +164,11 @@ export function TiledPadView({
   onCreateTerminalChange,
 }: TiledPadViewProps) {
   const padId = pad.id;
+  /**
+   * The composed vocabulary. A composition paints contributed elements in its leaves and asks
+   * the placement algebra about contributed KINDS, and both answers are the roster's.
+   */
+  const composition = useComposition();
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), padId, token: identity.token }),
   );
@@ -536,6 +551,12 @@ export function TiledPadView({
           for (const [id, item] of soloOccupancy(padId, client.layout())) merged.set(id, item);
           return merged;
         })(),
+        /*
+          A CONTRIBUTED element kind's placement traits live in its manifest, not in the closed
+          floor table (ADR 0013 §12) — a note leaf reports `text`, so without the roster this
+          preview would refuse drags the server accepts.
+        */
+        roster: composition.roster,
       }),
     /*
       `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
@@ -545,7 +566,7 @@ export function TiledPadView({
       re-render, which is exactly the disagreement with the server this lookup exists to
       prevent.
     */
-    [client, pads, padId, sceneRevision, soloOccupants],
+    [client, pads, padId, sceneRevision, soloOccupants, composition.roster],
   );
 
   const drop = useItemDrop({
@@ -881,14 +902,13 @@ export function TiledPadView({
               closeTooltip="Delete this note"
             />
             <div className="tiled-pad-tile__body">
-              <TextSurface
-                client={client}
+              <ElementOutlet
+                type="text"
                 elementId={surface.elementId}
-                text={text}
-                fontSize={note?.fontSize ?? NOTE_FALLBACK_FONT_SIZE}
-                color={note?.color ?? NOTE_FALLBACK_COLOR}
-                editing={editingNoteId === surface.elementId}
-                onBeginEditing={() => setEditingNoteId(surface.elementId)}
+                data={note ?? {}}
+                doc={client}
+                editingElementId={editingNoteId}
+                onBeginEditing={setEditingNoteId}
                 onEndEditing={() => setEditingNoteId(null)}
                 // The element IS the leaf's occupant: emptying the note must not delete
                 // it, or the leaf would be left with nothing to render.

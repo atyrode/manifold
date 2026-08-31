@@ -28,7 +28,6 @@ type TerminalDetach = Extract<ClientMessageBody, { type: "terminal_detach" }>;
 type TerminalInput = Extract<ClientMessageBody, { type: "terminal_input" }>;
 type TerminalResize = Extract<ClientMessageBody, { type: "terminal_resize" }>;
 type TerminalTake = Extract<ClientMessageBody, { type: "terminal_take" }>;
-type TerminalKill = Extract<ClientMessageBody, { type: "terminal_kill" }>;
 type OutputFrame = Extract<AgentMessage, { type: "output" }>;
 type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" }>;
 
@@ -355,17 +354,14 @@ export class TerminalBroker implements SessionPlacementPort {
     return this.machines.values().next().value ?? null;
   }
 
-  /** Starts a PTY create request after checking spawn authority and machine selection. */
+  /**
+   * Starts a PTY create request. Spawn AUTHORITY is not asked here any more: the session
+   * gateway dispatches `core.terminals.open` before it calls this, and that door carries
+   * `terminal:spawn` at the container's scope (ADR 0013 — terminal policy is a plugin,
+   * terminal bytes are floor). What remains is mechanism: placement discipline, machine
+   * selection, and the create round trip.
+   */
   open(peer: SessionPeer, message: TerminalOpen): void {
-    if (!this.auth.allows(peer.auth, "terminal:spawn", peer.padId)) {
-      peer.send({
-        type: "error",
-        code: "forbidden",
-        message: "terminal:spawn capability required",
-        ref: message.elementId,
-      });
-      return;
-    }
     // Discipline decides who authors the placement, so a mismatch is refused instead of
     // spawning a PTY no surface would ever show: a canvas opener that forgot to author an
     // element, or a tiled opener that thinks it can.
@@ -870,41 +866,12 @@ export class TerminalBroker implements SessionPlacementPort {
    * and is a no-op for it. Nothing has to remember which door was used, and no third status
    * exists to propagate — a terminal is running, exited on its own, or gone.
    *
-   * This door additionally needs the controller principal, or any holder of the wildcard
-   * capability (owner janitor: sweeping a terminal whose widget is already gone must not
-   * require winning the lease).
-   */
-  kill(peer: SessionPeer, message: TerminalKill): void {
-    const session = this.sessionFor(peer, message.sessionId);
-    if (session === null) return;
-    // A lease is a claim on a LIVE PTY. An exited terminal has no controller, so there is
-    // nothing to win and no reason to make dismissing it harder than closing its tile.
-    const isController = session.info.controllerId === peer.auth.principal.id;
-    if (session.info.status === "running" && !isController && !peer.auth.isRoot) {
-      peer.send({
-        type: "error",
-        code: "forbidden",
-        message: "controller lease or owner capability required",
-        ref: message.sessionId,
-      });
-      return;
-    }
-    if (!hasCap(peer.auth.caps, "terminal:write")) {
-      peer.send({
-        type: "error",
-        code: "forbidden",
-        message: "terminal:write capability required",
-        ref: message.sessionId,
-      });
-      return;
-    }
-    this.destroyTerminal(message.sessionId);
-  }
-
-  /**
-   * Owner-authorized kill for callers with no session peer (`core.terminals.kill`), which
-   * therefore hold no controller lease to win. An already-exited terminal is no conflict
-   * here: sweeping it is precisely what the caller asked for.
+   * THE kill: `core.terminals.kill` is the only door, for the session channel's
+   * `terminal_kill` frame as much as for the workspace index, so the lease rule and the
+   * capability a kill needs live in the plugin that owns terminal policy and this class is
+   * left with the mechanism — which is all a plane transport should ever have known. It
+   * takes no peer and holds no lease to win, and an already-exited terminal is no conflict:
+   * sweeping it is precisely what the caller asked for.
    */
   killById(sessionId: string): "ok" | "not_found" {
     if (!this.sessions.has(sessionId)) return "not_found";
@@ -999,6 +966,23 @@ export class TerminalBroker implements SessionPlacementPort {
   placedSession(sessionId: string): { readonly padId: string } | null {
     const session = this.sessions.get(sessionId);
     return session === undefined ? null : { padId: session.info.padId };
+  }
+
+  /**
+   * The live facts `core.terminals` judges a rename or a kill by: which composition the
+   * terminal lives in, whether its PTY is still running, and who holds its lease. Narrower
+   * than `SessionInfo` on purpose — a policy door has no business with geometry or the
+   * viewer registry, and the plugin declares exactly this slice as its own contract.
+   */
+  liveSession(sessionId: string): {
+    readonly padId: string;
+    readonly status: "running" | "exited";
+    readonly controllerId: string | null;
+  } | null {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return null;
+    const { padId, status, controllerId } = session.info;
+    return { padId, status, controllerId };
   }
 
   /**

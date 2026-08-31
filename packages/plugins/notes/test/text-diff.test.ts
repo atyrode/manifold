@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diffText } from "./text-diff";
+import { diffText } from "../src/text-diff.ts";
 
 describe("diffText", () => {
   test("describes an insertion at the cursor", () => {

@@ -1,22 +1,16 @@
 import {
+  ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
-  CreatePadFolderRequestSchema,
-  CreatePadRequestSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
   MachinesResponseSchema,
   PadPresenceResponseSchema,
   PadSchema,
-  PadTreeResponseSchema,
-  RenamePadRequestSchema,
-  TerminalsResponseSchema,
   TokenGrantSchema,
   type MachineSummary,
   type Pad,
   type PadPresence,
-  type PadTreeItem,
   type Principal,
-  type TerminalSummary,
   type TileLayout,
 } from "@manifold/protocol";
 
@@ -61,7 +55,15 @@ function authHeaders(token: string, includeJson: boolean): HeadersInit {
   };
 }
 
-/** Exchanges the fragment-delivered owner key for a durable human token. */
+/**
+ * Exchanges the fragment-delivered owner key for a durable human token
+ * (`core.access.createPrincipal`).
+ *
+ * The owner key is the ONE credential that lives outside the token system, which is why
+ * this boot path holds a raw secret and no session: it authenticates as root, asks the
+ * access door for an identity, and keeps only the grant. It is also why `core.access` is not
+ * `essential` — disabling it costs delegation, never the owner's own way in.
+ */
 export async function createPrincipal(
   ownerKey: string,
   input: { readonly name: string; readonly color: string },
@@ -71,63 +73,30 @@ export async function createPrincipal(
     color: input.color,
     kind: "human",
   });
-  const body = await requestJson("/api/principals", {
-    method: "POST",
-    headers: authHeaders(ownerKey, true),
-    body: JSON.stringify(request),
-  });
-  const grant = TokenGrantSchema.parse(body);
+  const grant = TokenGrantSchema.parse(
+    await dispatchAction(ownerKey, "core.access.createPrincipal", request),
+  );
   return { token: grant.token, principal: grant.principal };
 }
 
-/** Loads one container so a direct `/p/:id` deep-link still has its name and discipline. */
+/**
+ * Loads one container so a direct `/p/:id` deep-link still has its name and discipline
+ * (`core.views.pad`). Declared `scope: "pad"`, so a pad-scoped viewer resolves its own
+ * container exactly as `GET /api/pads/:id` let it.
+ */
 export async function getPad(token: string, padId: string): Promise<Pad> {
-  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
-    headers: authHeaders(token, false),
-  });
-  return PadSchema.parse(fieldFromObject(body, "pad"));
+  const result = await dispatchAction(token, "core.views.pad", { padId });
+  return PadSchema.parse(fieldFromObject(result, "pad"));
 }
 
-/** Creates a pad through the protocol-owned request schema; `layout` picks the discipline. */
-export async function createPad(token: string, name: string, layout?: Pad["layout"]): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name, layout });
-  const body = await requestJson("/api/pads", {
-    method: "POST",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return PadSchema.parse(fieldFromObject(body, "pad"));
-}
-
-/** Renames a pad through the protocol-owned request schema. */
+/**
+ * Renames a container (`core.views.renamePad`). The action is declared `scope: "pad"`, so a
+ * pad-scoped token may rename the container it is scoped to and is refused for any other —
+ * exactly what `PATCH /api/pads/:id` authorized before the index owned its own doors.
+ */
 export async function renamePad(token: string, padId: string, name: string): Promise<Pad> {
-  const request = RenamePadRequestSchema.parse({ name });
-  const body = await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
-    method: "PATCH",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return PadSchema.parse(fieldFromObject(body, "pad"));
-}
-export async function listPadTree(token: string): Promise<readonly PadTreeItem[]> {
-  const body = await requestJson("/api/pad-tree", {
-    headers: authHeaders(token, false),
-  });
-  return PadTreeResponseSchema.parse(body).items;
-}
-
-export async function createPadFolder(
-  token: string,
-  name: string,
-  parentId: string | null,
-): Promise<readonly PadTreeItem[]> {
-  const request = CreatePadFolderRequestSchema.parse({ name, parentId });
-  const body = await requestJson("/api/pad-folders", {
-    method: "POST",
-    headers: authHeaders(token, true),
-    body: JSON.stringify(request),
-  });
-  return PadTreeResponseSchema.parse(body).items;
+  const result = await dispatchAction(token, "core.views.renamePad", { padId, name });
+  return PadSchema.parse(fieldFromObject(result, "pad"));
 }
 
 /**
@@ -150,39 +119,40 @@ export async function getPadPresence(token: string): Promise<readonly PadPresenc
   return PadPresenceResponseSchema.parse(body).pads;
 }
 
-/**
- * Every terminal in the workspace (`GET /api/terminals`). There is no pool and no parked
- * variant: each row carries the composition it lives in (`homeId`) and whether anything
- * references that home (`unplaced`), which is what puts it at the index's top level.
- */
-export async function listTerminals(token: string): Promise<readonly TerminalSummary[]> {
-  const body = await requestJson("/api/terminals", {
-    headers: authHeaders(token, false),
-  });
-  return TerminalsResponseSchema.parse(body).terminals;
-}
-
 /*
- * The terminal lifecycle used to be two bespoke routes wrapped here. Both are now the action
- * door (`core.terminals.rename` / `core.terminals.kill`) and every caller invokes it through
- * `SessionClient.action`, which is the one door plugin code and a stranger's agent share — so
- * there is nothing left for this layer to wrap.
+ * Terminals had three bespoke routes wrapped here — the index, the rename and the kill. All
+ * three are the action door now (`core.terminals.list` / `.rename` / `.kill`), reached
+ * through `SessionClient` by every caller, so there is nothing left for this layer to wrap:
+ * one door, and the shell reaches it exactly the way a plugin does.
  */
 
-/** Loads the enrolled machines with live online state (`GET /api/machines`). */
-export async function getMachines(token: string): Promise<readonly MachineSummary[]> {
-  const body = await requestJson("/api/machines", {
-    headers: authHeaders(token, false),
+/**
+ * One action dispatch over this device's token. The action door answers 200 for a REFUSAL
+ * too, so the outcome decides and not the status; a denial becomes the thrown message every
+ * other call in this layer already throws, because these callers render an error string and
+ * have no rung to branch on. Code holding a `SessionClient` uses `client.action` instead —
+ * this exists for the boot-time paths that hold a token and nothing else.
+ */
+async function dispatchAction(token: string, name: string, args: unknown): Promise<unknown> {
+  const body = await requestJson(`/api/actions/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(args),
   });
-  return MachinesResponseSchema.parse(body).machines;
+  const outcome = ActionOutcomeSchema.parse(body);
+  if (!outcome.ok) throw new Error(outcome.denial.message);
+  return outcome.result;
 }
 
-/** Deletes a pad (server enforces root authority); resolves when the server confirms. */
+/** The enrolled machines with live online state (`core.machines.list`). */
+export async function getMachines(token: string): Promise<readonly MachineSummary[]> {
+  const outcome = await dispatchAction(token, "core.machines.list", {});
+  return MachinesResponseSchema.parse(outcome).machines;
+}
+
+/** Retires a container (`core.views.deletePad`); the door enforces root authority. */
 export async function deletePad(token: string, padId: string): Promise<void> {
-  await requestJson(`/api/pads/${encodeURIComponent(padId)}`, {
-    method: "DELETE",
-    headers: authHeaders(token, false),
-  });
+  await dispatchAction(token, "core.views.deletePad", { padId });
 }
 
 /*

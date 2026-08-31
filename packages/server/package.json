@@ -6,8 +6,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@manifold-plugin/access": "workspace:*",
     "@manifold-plugin/draw": "workspace:*",
     "@manifold-plugin/machines": "workspace:*",
+    "@manifold-plugin/notes": "workspace:*",
     "@manifold-plugin/plugin-manager": "workspace:*",
     "@manifold-plugin/presence": "workspace:*",
     "@manifold-plugin/shell": "workspace:*",

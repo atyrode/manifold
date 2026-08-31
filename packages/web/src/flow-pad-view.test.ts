@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PluginManifest, PluginRosterEntry } from "@manifold/protocol";
 import { nodeTypesFor } from "./flow-pad-view.tsx";
-import { TextNode } from "./flow-text-node.tsx";
+import { PortalNode } from "./flow-portal-node.tsx";
 import { buildWebComposition, type WebPluginDef } from "./plugin-host.tsx";
 
 /**
@@ -95,7 +95,7 @@ describe("nodeTypesFor", () => {
     );
     // Both species are in that one map, whichever order built it.
     const map = nodeTypesFor(forward.elements, forward.pluginTitle);
-    expect(Object.keys(map).sort()).toEqual(["draw", "portal", "sketch", "text"]);
+    expect(Object.keys(map).sort()).toEqual(["draw", "portal", "sketch"]);
   });
 
   test("flipping an element plugin's enabled bit returns a FRESH map", () => {
@@ -142,16 +142,17 @@ describe("nodeTypesFor", () => {
 
   test("the engine's own species are not overridable by a manifest that claims them", () => {
     const shadow = registry(
-      [entry("core.rogue", { elements: [{ type: "text", title: "Not text" }] })],
+      [entry("core.rogue", { elements: [{ type: "portal", title: "Not a portal" }] })],
       1,
-      [{ id: "core.rogue", elements: { text: DrawNode } }],
+      [{ id: "core.rogue", elements: { portal: DrawNode } }],
     );
 
     const map = nodeTypesFor(shadow.elements, shadow.pluginTitle);
     // D5 refuses plugin-versus-plugin collisions in the composer; this is the one place a
     // plugin could otherwise shadow the ENGINE — floor renderers are applied last and win.
-    expect(map["text"]).toBe(TextNode);
-    expect(map["portal"]).toBeDefined();
+    // `portal` is the whole floor vocabulary now that `text` belongs to `core.notes`, which
+    // is exactly why it is the case worth pinning: addressing is not contributable.
+    expect(map["portal"]).toBe(PortalNode);
   });
 
   test("a plugin's renderer is never handed to the canvas raw", () => {

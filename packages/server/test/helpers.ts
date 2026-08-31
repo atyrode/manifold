@@ -12,9 +12,9 @@ import {
 import type { AuthService } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS } from "../src/composition.ts";
 import { openDatabase } from "../src/db.ts";
-import { silentLogger } from "../src/log.ts";
-import type { PlaceExecutor, PlaceOutcome } from "../src/placement.ts";
-import { PluginHost } from "../src/plugin-host.ts";
+import { silentLogger, type Logger } from "../src/log.ts";
+import { PlaceExecutor, compositionElementTraits, type PlaceOutcome } from "../src/placement.ts";
+import { PluginHost, type MachineLiveness } from "../src/plugin-host.ts";
 import type { RoomManager, RoomTimers } from "../src/room.ts";
 import type { RawSocket } from "../src/session-peer.ts";
 import { ServerStore } from "../src/stores.ts";
@@ -276,16 +276,39 @@ export function testPluginHost(
   rooms: RoomManager,
   broker: TerminalBroker,
   runtime: RuntimeDeps,
-  options: { readonly lifecycleTimeoutMs?: number } = {},
+  options: {
+    readonly lifecycleTimeoutMs?: number;
+    /** Machine liveness, defaulting to "nothing is connected" — the honest state of a store. */
+    readonly machines?: MachineLiveness;
+    /** A sink, for cases that assert what a dispatch DOES and does not record. */
+    readonly logger?: Logger;
+  } = {},
 ): PluginHost {
-  return new PluginHost(
+  /*
+    The executor and the host are mutually dependent — the executor resolves legality against
+    the live composition, and a composed action drives the executor — which is exactly what
+    the roster THUNK exists for. Resolving it lazily through the host reproduces the
+    production wiring instead of freezing a roster a recompose would invalidate.
+  */
+  let host: PluginHost | null = null;
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    compositionElementTraits(() => host?.roster() ?? []),
+  );
+  host = new PluginHost(
     SERVER_PLUGIN_DEFS,
     store,
     auth,
     rooms,
     broker,
+    placement,
+    options.machines ?? { isOnline: () => false },
     runtime,
-    silentLogger,
+    options.logger ?? silentLogger,
     options,
   );
+  return host;
 }

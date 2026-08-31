@@ -3,47 +3,22 @@ import { resolve, sep } from "node:path";
 import { DEFAULT_WORKSPACE_LAYOUT } from "@manifold/plugin";
 import {
   ActionOutcomeSchema,
-  BootstrapPrincipalRequestSchema,
-  CreatePadFolderRequestSchema,
-  CreatePadRequestSchema,
-  EnrollMachineRequestSchema,
   ContainersResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
-  MachineEnrollResponseSchema,
-  MachinesResponseSchema,
-  MintTokenRequestSchema,
-  MovePadTreeItemRequestSchema,
   OkResponseSchema,
-  PLACEMENT_DENIED_CODE,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
-  PadResponseSchema,
-  PadSessionsResponseSchema,
-  PadTreeResponseSchema,
-  PadsResponseSchema,
-  PlaceRequestSchema,
-  PlaceResponseSchema,
-  PlacementDeniedResponseSchema,
   PluginsResponseSchema,
-  RenamePadRequestSchema,
   ResolveResponseSchema,
-  RevokeRequestSchema,
-  TerminalsResponseSchema,
-  TokenGrantSchema,
   buildProtocolJsonSchema,
   formatManifoldUri,
   parseManifoldUri,
   type Cap,
   type HttpError,
   type ManifoldRef,
-  type Pad,
-  type PadSessionSummary,
-  type RuntimeDeps,
-  type TerminalsResponse,
 } from "@manifold/protocol";
-import { ZodError } from "zod";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
@@ -69,17 +44,6 @@ class RequestError extends Error {
   ) {
     super(message);
     this.name = "RequestError";
-  }
-}
-
-function parseRequest<T>(schema: { parse(input: unknown): T }, input: unknown): T {
-  try {
-    return schema.parse(input);
-  } catch (error) {
-    if (error instanceof ZodError) {
-      throw new RequestError("invalid", "request did not match the protocol schema");
-    }
-    throw error;
   }
 }
 
@@ -156,7 +120,6 @@ export class HttpApp {
     private readonly placement: PlaceExecutor,
     private readonly machines: MachineGateway,
     private readonly plugins: PluginHost,
-    private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
   ) {}
 
@@ -224,99 +187,6 @@ export class HttpApp {
   }
 
   private async api(request: Request, pathname: string): Promise<Response> {
-    if (request.method === "GET" && pathname === "/api/pads") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      const pads = this.store
-        .listPads()
-        .filter((pad) => context.padScope === null || pad.id === context.padScope);
-      return jsonResponse(PadsResponseSchema.parse({ pads }));
-    }
-    if (pathname === "/api/pad-tree") {
-      const context = this.authenticate(request);
-      if (request.method === "GET") {
-        this.requireCap(context, "pads:read");
-        const tree = this.store.listPadTree();
-        if (context.padScope === null) {
-          return jsonResponse(PadTreeResponseSchema.parse({ items: tree }));
-        }
-        const included = new Set<string>();
-        const pad = tree.find((item) => item.kind === "pad" && item.pad.id === context.padScope);
-        if (pad?.kind === "pad") {
-          included.add(`pad:${pad.pad.id}`);
-          let parentId = pad.parentId;
-          while (parentId !== null) {
-            const folder = tree.find((item) => item.kind === "folder" && item.id === parentId);
-            if (folder?.kind !== "folder") break;
-            included.add(`folder:${folder.id}`);
-            parentId = folder.parentId;
-          }
-        }
-        return jsonResponse(
-          PadTreeResponseSchema.parse({
-            items: tree.filter((item) =>
-              included.has(item.kind === "pad" ? `pad:${item.pad.id}` : `folder:${item.id}`),
-            ),
-          }),
-        );
-      }
-      if (request.method === "PUT") {
-        this.requireCap(context, "pads:write");
-        if (context.padScope !== null) {
-          throw new RequestError("forbidden", "scoped tokens cannot organize pads");
-        }
-        const input = parseRequest(MovePadTreeItemRequestSchema, await parseJsonBody(request));
-        if (!this.store.movePadTreeItem(input.item, input.parentId, input.index)) {
-          throw new RequestError("conflict", "sidebar tree changed while moving an item");
-        }
-        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
-      }
-    }
-    if (pathname === "/api/pad-folders" && request.method === "POST") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot create pad folders");
-      }
-      const input = parseRequest(CreatePadFolderRequestSchema, await parseJsonBody(request));
-      if (
-        !this.store.createPadFolder(
-          {
-            id: this.runtime.newId(),
-            name: input.name,
-            createdAt: this.runtime.now(),
-          },
-          input.parentId,
-        )
-      ) {
-        throw new RequestError("conflict", "parent folder changed while creating a folder");
-      }
-      return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
-    }
-
-    const folderMatch = /^\/api\/pad-folders\/([^/]+)$/.exec(pathname);
-    if (folderMatch !== null) {
-      const folderId = decodePathSegment(folderMatch[1], "folder id");
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot modify pad folders");
-      }
-      if (request.method === "PATCH") {
-        const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
-        if (!this.store.renamePadFolder(folderId, input.name)) {
-          throw new RequestError("not_found", "pad folder not found");
-        }
-        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
-      }
-      if (request.method === "DELETE") {
-        if (!this.store.deletePadFolder(folderId)) {
-          throw new RequestError("not_found", "pad folder not found");
-        }
-        return jsonResponse(PadTreeResponseSchema.parse({ items: this.store.listPadTree() }));
-      }
-    }
-
     if (request.method === "GET" && pathname === "/api/pad-presence") {
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");
@@ -325,33 +195,6 @@ export class HttpApp {
         .filter((pad) => context.padScope === null || pad.padId === context.padScope);
       return jsonResponse(PadPresenceResponseSchema.parse({ pads }));
     }
-    if (request.method === "GET" && pathname === "/api/pad-sessions") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      const sessions: PadSessionSummary[] = [];
-      for (const session of this.store.listSessions()) {
-        if (context.padScope !== null && session.padId !== context.padScope) continue;
-        sessions.push({
-          id: session.id,
-          padId: session.padId,
-          machineId: session.machineId,
-          createdAt: session.createdAt,
-          status: session.status,
-          exitCode: session.exitCode,
-        });
-      }
-      return jsonResponse(PadSessionsResponseSchema.parse({ sessions }));
-    }
-
-    if (request.method === "GET" && pathname === "/api/terminals") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot read workspace terminals");
-      }
-      return jsonResponse(this.terminalsPayload());
-    }
-
     /*
       The index's whole input: what every container holds and what it points at. One route
       rather than a field on each of the pad routes, because the INDEX VISIBILITY RULE needs
@@ -374,7 +217,7 @@ export class HttpApp {
       Authentication only here: the caps an action requires are the ACTION's declaration, so
       the ladder inside `dispatch` is the single place authority is decided (and the single
       place a pad-scoped token is refused). A denial answers 200 carrying `ok: false`, the
-      shape `POST /api/place` already uses — a refusal is an answer about authority or state,
+      shape a refused placement uses too — a refusal is an answer about authority or state,
       never a transport failure.
      */
     const actionMatch = /^\/api\/actions\/([^/]+)$/.exec(pathname);
@@ -386,9 +229,10 @@ export class HttpApp {
     }
 
     if (request.method === "GET" && pathname === "/api/plugins") {
-      // Any authenticated token, pad-scoped included — the same precedent as
-      // `GET /api/machines`: the roster is VOCABULARY, and a scoped viewer still has to
-      // render panels and know which plugin owns the placeholder it is looking at.
+      // Any authenticated token, pad-scoped included — the same reasoning that makes
+      // `core.machines.list` a `scope: "pad"` read: the roster is VOCABULARY, and a scoped
+      // viewer still has to render panels and know which plugin owns the placeholder it is
+      // looking at.
       const context = this.authenticate(request);
       this.requireCap(context, "pads:read");
       return jsonResponse(PluginsResponseSchema.parse({ plugins: this.plugins.roster() }));
@@ -421,52 +265,6 @@ export class HttpApp {
       );
     }
 
-    if (request.method === "POST" && pathname === "/api/pads") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot create pads");
-      }
-      const input = parseRequest(CreatePadRequestSchema, await parseJsonBody(request));
-      const pad: Pad = {
-        id: this.runtime.newId(),
-        name: input.name,
-        createdAt: this.runtime.now(),
-        layout: input.layout ?? "canvas",
-      };
-      this.store.createPad(pad);
-      return jsonResponse(PadResponseSchema.parse({ pad }));
-    }
-
-    const padMatch = /^\/api\/pads\/([^/]+)$/.exec(pathname);
-    if (padMatch !== null) {
-      const padId = decodePathSegment(padMatch[1], "pad id");
-      const context = this.authenticate(request);
-      if (request.method === "GET") {
-        this.requireCap(context, "pads:read", padId);
-        const pad = this.store.getPad(padId);
-        if (pad === null) throw new RequestError("not_found", "pad not found");
-        return jsonResponse(PadResponseSchema.parse({ pad }));
-      }
-      if (request.method === "PATCH") {
-        this.requireCap(context, "pads:write", padId);
-        const input = parseRequest(RenamePadRequestSchema, await parseJsonBody(request));
-        const renamed = this.store.renamePad(padId, input.name);
-        if (renamed === null) throw new RequestError("not_found", "pad not found");
-        return jsonResponse(PadResponseSchema.parse({ pad: renamed }));
-      }
-      if (request.method === "DELETE") {
-        requireRoot(context);
-        if (this.store.getPad(padId) === null) {
-          throw new RequestError("not_found", "pad not found");
-        }
-        // One path for retiring a container: it also removes every reference to it, which a
-        // route doing its own row deletion would leave behind as widgets onto nothing.
-        this.placement.deleteContainer(padId);
-        return jsonResponse(OkResponseSchema.parse({ ok: true }));
-      }
-    }
-
     const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
     if (tileMatch !== null && request.method === "DELETE") {
       const padId = decodePathSegment(tileMatch[1], "pad id");
@@ -477,108 +275,12 @@ export class HttpApp {
       }
       // Leaf removal is NOT a placement: nothing accepts "nowhere" as a destination for a
       // LEAF, so a leaf is addressed directly here while every MOVE of its occupant goes
-      // through `POST /api/place`. Removing a terminal's last leaf closes the terminal.
+      // through `core.layout.place`. Removing a terminal's last leaf closes the terminal.
       const tileId = decodePathSegment(tileMatch[2], "tile id");
       const removed = this.placement.removeTile(padId, tileId);
       if (removed === "not_found") throw new RequestError("not_found", "tile not found");
       if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
       return jsonResponse(OkResponseSchema.parse({ ok: true }));
-    }
-
-    if (request.method === "POST" && pathname === "/api/place") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
-        // Same gate the verb routes carry: a placement moves items between containers, so
-        // a token scoped to one container can never authorize it.
-        throw new RequestError("forbidden", "scoped tokens cannot place items");
-      }
-      const input = parseRequest(PlaceRequestSchema, await parseJsonBody(request));
-      const outcome = this.placement.place(input);
-      if (outcome.status === "placed") {
-        return jsonResponse(PlaceResponseSchema.parse(outcome.result));
-      }
-      if (outcome.status === "denied") {
-        // A refusal is DATA: the rule that refused travels with the surface it refused and
-        // the container that refused it, so a client renders the rule instead of a string.
-        return jsonResponse(
-          PlacementDeniedResponseSchema.parse({
-            error: {
-              code: PLACEMENT_DENIED_CODE,
-              message: `placement refused by rule: ${outcome.denial.rule}`,
-              denial: outcome.denial,
-            },
-          }),
-          409,
-        );
-      }
-      throw new RequestError(
-        outcome.failure,
-        outcome.failure === "not_found"
-          ? "placement surface or container not found"
-          : "placement could not be carried out",
-      );
-    }
-
-    if (request.method === "POST" && pathname === "/api/principals") {
-      const context = this.authenticate(request);
-      requireRoot(context);
-      const input = parseRequest(BootstrapPrincipalRequestSchema, await parseJsonBody(request));
-      return jsonResponse(TokenGrantSchema.parse(this.auth.bootstrapPrincipal(input, context)));
-    }
-
-    if (request.method === "POST" && pathname === "/api/tokens") {
-      const context = this.authenticate(request);
-      const input = parseRequest(MintTokenRequestSchema, await parseJsonBody(request));
-      return jsonResponse(TokenGrantSchema.parse(this.auth.mintToken(input, context)));
-    }
-
-    if (request.method === "POST" && pathname === "/api/tokens/revoke") {
-      const context = this.authenticate(request);
-      const input = parseRequest(RevokeRequestSchema, await parseJsonBody(request));
-      this.auth.revokePrincipal(input.principalId, context);
-      return jsonResponse(OkResponseSchema.parse({ ok: true }));
-    }
-
-    if (request.method === "POST" && pathname === "/api/machines") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "machines:mint");
-      if (context.padScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot enroll machines");
-      }
-      const input = parseRequest(EnrollMachineRequestSchema, await parseJsonBody(request));
-      // Idempotent re-enroll (issue #40): an existing name returns its row without minting,
-      // so a re-run provision flow never invalidates the token a running agent holds.
-      // `rotateToken` is the explicit recovery path for a lost token file.
-      const existing = this.store.getMachineByName(input.name);
-      if (existing !== null && input.rotateToken !== true) {
-        return jsonResponse(
-          MachineEnrollResponseSchema.parse({
-            machine: { id: existing.id, name: existing.name },
-          }),
-        );
-      }
-      const enrolled =
-        existing === null
-          ? this.auth.enrollMachine(input.name, context)
-          : this.auth.rotateMachineToken(existing, context.principal.id);
-      return jsonResponse(
-        MachineEnrollResponseSchema.parse({
-          machine: { id: enrolled.machine.id, name: enrolled.machine.name },
-          machineToken: enrolled.machineToken,
-        }),
-      );
-    }
-
-    if (request.method === "GET" && pathname === "/api/machines") {
-      const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      const machines = this.store.listMachines().map((machine) => ({
-        id: machine.id,
-        name: machine.name,
-        online: this.machines.isOnline(machine.id),
-      }));
-      return jsonResponse(MachinesResponseSchema.parse({ machines }));
     }
 
     if (request.method === "GET" && pathname === "/api/introspect") {
@@ -655,31 +357,6 @@ export class HttpApp {
         return { exists: false, title: null };
       }
     }
-  }
-
-  /**
-   * Every terminal, with the composition it lives in and whether anything references that
-   * composition. `unplaced` is DERIVED from the containment graph on every read rather than
-   * stored: the pool's durable position was the last piece of state describing where a
-   * terminal was NOT, and the whole point of retiring it is that this question now has
-   * exactly one answer and no way to go stale.
-   */
-  private terminalsPayload(): TerminalsResponse {
-    const referenced = new Set<string>();
-    for (const census of this.rooms.censuses()) {
-      for (const reference of census.references) referenced.add(reference);
-    }
-    const terminals = this.store.listSessions().map((session) => ({
-      id: session.id,
-      machineId: session.machineId,
-      name: session.name,
-      createdAt: session.createdAt,
-      status: session.status,
-      exitCode: session.exitCode,
-      homeId: session.padId,
-      unplaced: !referenced.has(session.padId),
-    }));
-    return TerminalsResponseSchema.parse({ terminals });
   }
 
   private staticFile(pathname: string): Response {
