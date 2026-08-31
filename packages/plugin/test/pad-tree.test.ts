@@ -6,7 +6,7 @@ import {
   samePadTreeItems,
   treeItemId,
   type PadTreeNode,
-} from "./pad-tree.ts";
+} from "../src/pad-tree.ts";
 
 const pad = (
   id: string,

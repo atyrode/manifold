@@ -17,7 +17,17 @@ export {
 } from "./compose.ts";
 export { DEFAULT_WORKSPACE_LAYOUT } from "./layout.ts";
 export {
+  buildPadTree,
+  projectPadTreeMove,
+  samePadTreeItems,
+  treeItemId,
+  type PadTreeMove,
+  type PadTreeNode,
+} from "./pad-tree.ts";
+export {
+  type CompositionFacet,
   type HostServices,
+  type PadAuthoringHandle,
   type PadViewportHandle,
   type PanelProps,
   type PlaceOutcome,

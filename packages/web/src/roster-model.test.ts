@@ -25,7 +25,13 @@ describe("deriveRosterRows", () => {
     const rows = deriveRosterRows([entry(principal("peer", "Peer"))], self);
     expect(rows).toHaveLength(2);
     const selfRow = rows.find((row) => row.isSelf);
-    expect(selfRow).toEqual({ principal: self, connections: 1, status: "active", isSelf: true });
+    expect(selfRow).toEqual({
+      principal: self,
+      connections: 1,
+      status: "active",
+      tool: null,
+      isSelf: true,
+    });
   });
 
   test("self sorts first, peers sort by name", () => {
@@ -48,9 +54,30 @@ describe("deriveRosterRows", () => {
     expect(rows.find((row) => !row.isSelf)?.status).toBe("working");
   });
 
+  /**
+   * The peer tool chip is what makes "view state is observable" visible (A2): a tool nobody
+   * else can see is a capability nobody else can reason about.
+   */
+  test("a peer's published tool passes through, and absence reads as null", () => {
+    const self = principal("me", "Me");
+    const rows = deriveRosterRows(
+      [
+        entry(self, 1, { view: { tool: "select" } }),
+        entry(principal("peer", "Peer"), 1, { view: { tool: "draw" } }),
+        entry(principal("quiet", "Quiet"), 1, {}),
+      ],
+      self,
+    );
+    expect(rows.find((row) => row.principal.id === "peer")?.tool).toBe("draw");
+    expect(rows.find((row) => row.principal.id === "quiet")?.tool).toBeNull();
+    expect(rows.find((row) => row.isSelf)?.tool).toBe("select");
+  });
+
   test("connection counts pass through", () => {
     const self = principal("me", "Me");
     const rows = deriveRosterRows([entry(self, 3)], self);
-    expect(rows).toEqual([{ principal: self, connections: 3, status: "active", isSelf: true }]);
+    expect(rows).toEqual([
+      { principal: self, connections: 3, status: "active", tool: null, isSelf: true },
+    ]);
   });
 });

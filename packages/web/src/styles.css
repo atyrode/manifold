@@ -174,18 +174,13 @@ input:focus {
   border-radius: 999px;
 }
 
+/* The workspace IS a tile tree now (D2): one flex box holding the root split. */
 .pad-browser {
   position: fixed;
   inset: 0;
-  display: grid;
-  grid-template-columns: var(--sidebar-width, 17.5rem) minmax(0, 1fr);
+  display: flex;
   overflow: hidden;
   background: #121417;
-  transition: grid-template-columns 160ms ease;
-}
-
-.pad-browser.is-collapsed {
-  grid-template-columns: 3.25rem minmax(0, 1fr);
 }
 
 .pad-sidebar {
@@ -193,6 +188,8 @@ input:focus {
   z-index: 20;
   display: flex;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 0.55rem;
   overflow: hidden;
@@ -202,23 +199,14 @@ input:focus {
   background: #181a1f;
   box-shadow: 0.25rem 0 1.2rem rgb(0 0 0 / 16%);
 }
-.pad-sidebar-resize {
-  position: absolute;
-  z-index: 30;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--sidebar-width, 17.5rem) - 0.2rem);
-  width: 0.4rem;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.pad-sidebar-resize:hover,
-.pad-sidebar-resize:focus-visible {
-  background: rgb(92 124 250 / 55%);
+/*
+ * Collapsing is not a layout write: the stored ratios stay exactly as the operator dragged
+ * them, and the pane HOLDING the sidebar is pinned to the icon rail's width for as long as
+ * the collapse lasts. `:has()` is what lets the rail be presentation rather than a second,
+ * competing copy of the tree.
+ */
+.pad-browser.is-collapsed .ws-pane:has(> .tile-content-host > .pad-sidebar) {
+  flex: 0 0 3.25rem;
 }
 
 .pad-sidebar-header {
@@ -430,28 +418,15 @@ input:focus {
   flex: 1 1 auto;
 }
 
-.pad-sidebar-sections.is-reordering .sidebar-section {
-  transition: transform 120ms ease;
-}
-
-/* The held section is the gap: a translucent, dashed placeholder gliding to its projected slot. */
-.sidebar-section--held {
-  position: relative;
-  z-index: 1;
-  border-color: #748ffc;
-  border-style: dashed;
-  opacity: 0.55;
-}
-
 .sidebar-section-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.4rem;
   min-height: 2.15rem;
   padding: 0.4rem 0.5rem;
   color: #adb5bd;
-  cursor: grab;
+  cursor: pointer;
   font-size: 0.67rem;
   font-weight: 700;
   letter-spacing: 0.045em;
@@ -466,10 +441,6 @@ input:focus {
 .sidebar-section-header:hover,
 .sidebar-section-header:focus-visible {
   color: #f1f3f5;
-}
-
-.sidebar-section-header:active {
-  cursor: grabbing;
 }
 
 .sidebar-section[open] > .sidebar-section-header {
@@ -504,11 +475,6 @@ input:focus {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-.sidebar-section-actions {
-  display: inline-flex;
-  align-items: center;
 }
 
 .sidebar-section-body {
@@ -1208,9 +1174,13 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0.4;
 }
 
+/* A panel fills the content host the tree seats it in, whatever pane that host is sitting in. */
 .pad-browser-canvas {
   position: relative;
+  display: flex;
   min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
   overflow: hidden;
   background: #121417;
 }
@@ -1605,12 +1575,18 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 @media (max-width: 700px) {
-  .pad-browser {
-    grid-template-columns: 3.25rem minmax(0, 1fr);
+  /*
+   * Narrow viewports pin the sidebar's pane to the rail and let the panel float over the
+   * pad view, rather than letting the stored ratio eat the screen. The tree is untouched:
+   * this is presentation, so a phone and a monitor read the same stored layout.
+   */
+  .pad-browser .ws-pane:has(> .tile-content-host > .pad-sidebar) {
+    flex: 0 0 3.25rem;
   }
 
   .pad-sidebar {
     position: absolute;
+    z-index: 20;
     inset: 0 auto 0 0;
     width: 15rem;
     transition: width 160ms ease;
@@ -1618,14 +1594,6 @@ button.pad-sidebar-session.is-summary > small {
 
   .pad-browser.is-collapsed .pad-sidebar {
     width: 3.25rem;
-  }
-
-  .pad-sidebar-resize {
-    display: none;
-  }
-
-  .pad-browser-canvas {
-    grid-column: 2;
   }
 
   .status-meta {
@@ -3389,4 +3357,205 @@ button.pad-sidebar-session.is-summary > small {
 .plugin-placeholder__remove:hover {
   border-color: #495057;
   color: #dee2e6;
+}
+
+/* Published view state: what a peer is holding, in the roster popover. */
+.presence-tool-chip {
+  margin-left: 0.35rem;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0 0.3rem;
+  color: #adb5bd;
+  font-size: 0.62rem;
+  text-transform: lowercase;
+}
+
+/*
+  "Look at this", received. It sits above the canvas rather than inside it: a spotlight is an
+  interruption somebody else caused, so naming the sender and offering the way out (and the
+  way to refuse every future one) is the whole surface.
+*/
+.spotlight-chip {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transform: translateX(-50%);
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  background: #14161a;
+  padding: 0.35rem 0.6rem;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 45%);
+}
+
+.spotlight-chip__label {
+  color: #dee2e6;
+  font-size: 0.72rem;
+}
+
+.spotlight-chip__control {
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  background: transparent;
+  padding: 0.15rem 0.45rem;
+  color: #adb5bd;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.spotlight-chip__control:hover {
+  border-color: #495057;
+  color: #dee2e6;
+}
+
+/*
+ * THE WORKSPACE SKIN — the tile tree's third dress (see `WORKSPACE_TREE_CLASSES`). Same shape
+ * as `.tiled-*` and `.flow-portal__*`: the split is a flex box, a pane's stored ratio IS its
+ * `flex-grow`, and the divider is the seam. The workspace is a composition, so the sidebar
+ * seam is the same gesture as any tile seam and needed no code of its own.
+ */
+.ws-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.ws-split.is-row {
+  flex-direction: row;
+}
+
+.ws-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.ws-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.ws-divider {
+  z-index: 30;
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.ws-divider:hover,
+.ws-divider:active {
+  background: #4c6ef5;
+}
+
+.ws-split.is-row > .ws-divider {
+  cursor: col-resize;
+}
+
+.ws-split.is-column > .ws-divider {
+  cursor: row-resize;
+}
+
+/* A workspace tree is always the caller's own, so its seams are never inert. */
+.ws-divider.is-inert {
+  cursor: default;
+}
+
+/* The Views section's own bar: the count and the session-tree switch the header used to hold. */
+.views-section {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.views-section-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.25rem 0.2rem;
+}
+
+.views-section-error,
+.plugin-manager-error {
+  margin: 0.35rem 0.25rem;
+  color: #ffa8a8;
+  font-size: 0.72rem;
+}
+
+.plugin-manager {
+  display: grid;
+  align-content: start;
+  gap: 0.2rem;
+}
+
+.plugin-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 0.35rem;
+  padding: 0.28rem 0.35rem;
+}
+
+.plugin-manager-row:hover {
+  background: #22252b;
+}
+
+.plugin-manager-row.is-disabled .plugin-manager-label {
+  opacity: 0.55;
+}
+
+.plugin-manager-label {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.05rem;
+}
+
+.plugin-manager-label > strong {
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-manager-label > small {
+  overflow: hidden;
+  color: #868e96;
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-manager-toggle {
+  flex: 0 0 auto;
+  border: 1px solid #343a40;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 0.66rem;
+}
+
+.plugin-manager-toggle[aria-checked="true"] {
+  border-color: #4263eb;
+  color: #edf2ff;
+  background: rgb(66 99 235 / 22%);
+}
+
+.plugin-manager-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plugin-manager-lock {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
 }

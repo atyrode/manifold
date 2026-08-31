@@ -4,6 +4,11 @@ export interface RosterRow {
   readonly principal: Principal;
   readonly connections: number;
   readonly status: string;
+  /**
+   * The tool this peer is holding, from its published view state (A2). Null when the peer
+   * has published none — a fresh socket, or a surface with no tool strip at all.
+   */
+  readonly tool: string | null;
   readonly isSelf: boolean;
 }
 
@@ -18,11 +23,12 @@ export function deriveRosterRows(entries: Iterable<PresenceState>, self: Princip
       principal: entry.principal,
       connections: entry.connections,
       status: entry.payload.status ?? "active",
+      tool: entry.payload.view?.tool ?? null,
       isSelf,
     });
   }
   if (!hasSelf) {
-    rows.push({ principal: self, connections: 1, status: "active", isSelf: true });
+    rows.push({ principal: self, connections: 1, status: "active", tool: null, isSelf: true });
   }
   rows.sort((a, b) => {
     if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;

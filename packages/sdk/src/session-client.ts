@@ -1,22 +1,27 @@
 import {
   ActionOutcomeSchema,
   ClientMessageBodySchema,
+  CreatePadFolderRequestSchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
   MachinesResponseSchema,
+  MovePadTreeItemRequestSchema,
   PROTOCOL_VERSION,
   PadPresenceResponseSchema,
+  PadResponseSchema,
   PadSessionsResponseSchema,
   PadTreeResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
+  RenamePadRequestSchema,
   TerminalsResponseSchema,
   type ActionOutcome,
   type Cap,
   type ClientMessageBody,
   type Gesture,
   type MachineSummary,
+  type Pad,
   type PadPresence,
   type PadSessionSummary,
   type PadTreeItem,
@@ -759,6 +764,90 @@ export class SessionClient {
   /** Every terminal in the workspace with its home composition (`GET /api/terminals`). */
   async terminals(): Promise<readonly TerminalSummary[]> {
     return TerminalsResponseSchema.parse(await this.getJson("/api/terminals")).terminals;
+  }
+
+  // --------------------------------------------------------- workspace writes
+
+  /*
+    The workspace index's writes, beside its reads for the same reason: the section that
+    LISTS containers is the section that renames and deletes them, and it holds only this
+    client. They are still HTTP routes rather than actions this wave — AXIOMS.md §Roadmap
+    puts "pad/folder CRUD + tree moves" in the workspace-index-actions row — so each one
+    mirrors its route's request/response schema exactly, the same discipline the web app's
+    own fetch layer keeps.
+   */
+
+  /** One authed JSON write; a non-2xx is a failure — these routes carry no denials. */
+  private async writeJson(path: string, method: string, body?: unknown): Promise<unknown> {
+    const response = await fetch(`${this.apiOrigin()}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${this.opts.token}`,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`${method} ${path} returned a non-JSON response (${response.status})`);
+    }
+    if (response.ok) return payload;
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success
+        ? failure.data.error.message
+        : `${method} ${path} failed (${response.status})`,
+    );
+  }
+
+  /** Renames one container (`PATCH /api/pads/:id`). */
+  async renamePad(padId: string, name: string): Promise<Pad> {
+    const request = RenamePadRequestSchema.parse({ name });
+    const body = await this.writeJson(
+      `/api/pads/${encodeURIComponent(padId)}`,
+      "PATCH",
+      request,
+    );
+    return PadResponseSchema.parse(body).pad;
+  }
+
+  /** Deletes one container (`DELETE /api/pads/:id`); the server enforces authority. */
+  async deletePad(padId: string): Promise<void> {
+    await this.writeJson(`/api/pads/${encodeURIComponent(padId)}`, "DELETE");
+  }
+
+  /** Creates an index folder (`POST /api/pad-folders`); answers the whole new index. */
+  async createPadFolder(name: string, parentId: string | null): Promise<readonly PadTreeItem[]> {
+    const request = CreatePadFolderRequestSchema.parse({ name, parentId });
+    return PadTreeResponseSchema.parse(await this.writeJson("/api/pad-folders", "POST", request))
+      .items;
+  }
+
+  /** Renames an index folder (`PATCH /api/pad-folders/:id`). */
+  async renamePadFolder(folderId: string, name: string): Promise<readonly PadTreeItem[]> {
+    const request = RenamePadRequestSchema.parse({ name });
+    return PadTreeResponseSchema.parse(
+      await this.writeJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, "PATCH", request),
+    ).items;
+  }
+
+  /** Deletes an index folder (`DELETE /api/pad-folders/:id`); its children move up. */
+  async deletePadFolder(folderId: string): Promise<readonly PadTreeItem[]> {
+    return PadTreeResponseSchema.parse(
+      await this.writeJson(`/api/pad-folders/${encodeURIComponent(folderId)}`, "DELETE"),
+    ).items;
+  }
+
+  /** Moves one index item between siblings or into a folder (`PUT /api/pad-tree`). */
+  async movePadTreeItem(
+    item: { readonly kind: "pad" | "folder"; readonly id: string },
+    parentId: string | null,
+    index: number,
+  ): Promise<readonly PadTreeItem[]> {
+    const request = MovePadTreeItemRequestSchema.parse({ item, parentId, index });
+    return PadTreeResponseSchema.parse(await this.writeJson("/api/pad-tree", "PUT", request)).items;
   }
 
   sendGesture(gesture: Gesture): void {

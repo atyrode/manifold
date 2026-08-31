@@ -27,7 +27,6 @@ import {
   getMachines,
   removePadTile,
   renamePad,
-  renameTerminal,
   type StoredIdentity,
 } from "./api.ts";
 import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cursor-identity.ts";
@@ -54,6 +53,7 @@ import { carryGhosts, noteTitle, remoteTileCarries, surfaceDisplayLabel } from "
 import { useCarry, useRemoteGestures } from "./use-carry.ts";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { REMOTE_CURSOR_FALLBACK_COLOR, useRemoteCursors } from "./use-remote-cursors.ts";
+import { subscribeViewState } from "./view-presence.ts";
 
 /**
  * The tiled discipline's renderer. A View and a Pad are one container object; this
@@ -191,6 +191,16 @@ export function TiledPadView({
       envelope.kind === "terminal" ? (client.sessions.get(envelope.sessionId)?.name ?? null) : null,
   });
   const { notify } = useToast();
+
+  /**
+   * VIEW STATE, published (A2) — the tiled route is the routed view while it is on screen,
+   * so it owns the same one subscription the canvas renderer owns. Without it a viewer
+   * inside a composition would publish nothing when it collapsed its sidebar: the store is
+   * per device, and the socket that speaks for it is whichever route is mounted.
+   */
+  useEffect(() => {
+    return subscribeViewState((view) => client.sendPresence({ view }));
+  }, [client]);
 
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
@@ -342,14 +352,23 @@ export function TiledPadView({
       });
   }, [failed, identity.token, onPadChanged, padId, shrink]);
 
-  /** Titlebar rename of a tiled terminal; the room broadcast updates every viewer. */
+  /**
+   * Titlebar rename of a tiled terminal, through the ACTION DOOR; the room broadcast updates
+   * every viewer. A denial is data — the door's own sentence — so a disabled plugin or a
+   * missing capability reads as a named notice rather than an HTTP status.
+   */
   const renameTile = useCallback(
     (sessionId: string, name: string): void => {
-      void renameTerminal(identity.token, sessionId, name).catch((reason: unknown) =>
-        failed(reason, "Could not rename this terminal", "rename-terminal"),
-      );
+      void client
+        .action("core.terminals.rename", { sessionId, name })
+        .then((outcome) => {
+          if (!outcome.ok) notify(outcome.denial.message, { key: "rename-terminal" });
+        })
+        .catch((reason: unknown) =>
+          failed(reason, "Could not rename this terminal", "rename-terminal"),
+        );
     },
-    [failed, identity.token],
+    [client, failed, notify],
   );
 
   /**
@@ -773,6 +792,7 @@ export function TiledPadView({
             onPark={() => unplaceTile(node.id)}
             onClose={() => closeTile(node.id)}
             onRenameTitle={(name) => renameTile(surface.sessionId, name)}
+            renameAction="core.terminals.rename"
           />
         );
       case "pad":

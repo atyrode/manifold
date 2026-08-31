@@ -22,6 +22,7 @@ import { TilePreviewOverlay } from "./tile-preview-overlay.tsx";
 import { PORTAL_TREE_CLASSES, TileTree } from "./tile-tree.tsx";
 import { TileZoneDebug } from "./tile-zone-debug.tsx";
 import { useTileDrop, type TileDropHost } from "./use-tile-drop.ts";
+import { setViewState } from "./view-presence.ts";
 import {
   createWidgetSocketSwitch,
   type WidgetRole,
@@ -363,6 +364,8 @@ function PortalTerminalTile({
         // watching: it is the only titlebar this element has.
         chrome={interactive || mono !== null ? "full" : "preview"}
         {...(mono ?? {})}
+        // The mono bar renames the SESSION, so its input names the action it fires.
+        {...(mono === null ? {} : { renameAction: "core.terminals.rename" })}
       />
       {/*
         Watching: a full-bleed shield keeps clicks and keystrokes out of a terminal
@@ -659,6 +662,18 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       document.removeEventListener("pointerdown", disengage, true);
     };
   }, [engaged]);
+
+  /**
+   * Focus, published (A2). The ENGAGED widget is the one that speaks: every other widget on
+   * the board would otherwise publish "nothing focused" and clobber it, so the transition —
+   * and its cleanup, which covers disengaging, socket failure and unmount alike — is the
+   * whole writer. Floor for now, `"until": "core.presence"`.
+   */
+  useEffect(() => {
+    if (engagedTileId === null) return;
+    setViewState({ focusedContainerId: containerId });
+    return () => setViewState({ focusedContainerId: null });
+  }, [containerId, engagedTileId]);
 
   const enter = (): void => {
     if (containerId === "") return;

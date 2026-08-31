@@ -32,6 +32,13 @@ export interface DebugViewport {
   readonly offsetTop: number;
 }
 
+/** The pad camera itself, as `PadViewportHandle.viewport()` reports it. */
+export interface DebugCamera {
+  readonly x: number;
+  readonly y: number;
+  readonly zoom: number;
+}
+
 export interface DebugGestureSnapshot {
   readonly elementId: string;
   readonly connId: string;
@@ -54,6 +61,14 @@ export interface ManifoldDebugSeam {
   /** Current remote geometry overrides, excluding self echoes. */
   readonly gestures: () => readonly DebugGestureSnapshot[];
   readonly viewport: () => DebugViewport | null;
+  /**
+   * The mounted pad's camera. Separate from {@link ManifoldDebugSeam.viewport}, which
+   * projects the canvas onto the page for pointer aiming: this is the quantity a spotlight
+   * MOVES, so a gate can assert that "look at this" actually landed.
+   */
+  readonly padViewport: () => DebugCamera | null;
+  /** The last spotlight this client APPLIED (a `manifold://` URI), or null. */
+  readonly lastSpotlight: () => string | null;
   /**
    * Renders per node species since load. A context that churns is invisible in the DOM
    * — the pixels are identical — so the only way to hold "presence polling must not
@@ -88,6 +103,21 @@ export function countRender(kind: string): void {
 
 export function renderCounts(): Readonly<Record<string, number>> {
   return Object.fromEntries(renders);
+}
+
+let appliedSpotlight: string | null = null;
+
+/**
+ * Records a spotlight this client acted on. Written where the viewport actually moves, so
+ * the seam reports what HAPPENED rather than what arrived — a spotlight the viewer has
+ * switched off never lands here.
+ */
+export function recordSpotlight(uri: string): void {
+  appliedSpotlight = uri;
+}
+
+export function lastSpotlight(): string | null {
+  return appliedSpotlight;
 }
 
 /** Coerces a scene record into a geometry snapshot. */

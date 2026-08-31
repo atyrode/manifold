@@ -79,6 +79,21 @@ export const PORTAL_TREE_CLASSES: TileTreeClasses = {
   dividerPx: 11.2,
 };
 
+/**
+ * The WORKSPACE's own skin. The shell is a composition too (D2): a principal's layout is a
+ * tile tree whose leaves are plugin panels, drawn by this same component — so the sidebar
+ * and the pad view are panes and the seam between them is an ordinary divider, not a
+ * bespoke resize handle. Third skin, same shape as the two above; nothing about the tree's
+ * drag, seam or ratio behaviour differs here.
+ */
+export const WORKSPACE_TREE_CLASSES: TileTreeClasses = {
+  split: "ws-split",
+  pane: "ws-pane",
+  divider: "ws-divider",
+  /** `.ws-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
+  dividerPx: 5.6,
+};
+
 export interface TileTreeProps {
   readonly layout: TileLayout;
   readonly classes: TileTreeClasses;

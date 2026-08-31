@@ -54,6 +54,13 @@ export interface NodeTitleBarProps {
    * `exactOptionalPropertyTypes` rejects passing `undefined` otherwise.
    */
   readonly onRenameTitle?: ((name: string) => void) | undefined;
+  /**
+   * The FULL composed action name {@link NodeTitleBarProps.onRenameTitle} fires, marked into
+   * the DOM as `data-action` (AGENTS invariant 12; gate S4/R7 checks every marker against the
+   * live roster). Supplied by the adopter because the same bar renames pads and compositions
+   * too, and those doors are not actions yet.
+   */
+  readonly renameAction?: string | undefined;
   /** Modular slot: a terminal's origin machine, a view's bubble chip, presence. */
   readonly middle?: ReactNode;
   /** Bar-level double-click, e.g. expand a terminal. Controls never reach it. */
@@ -84,6 +91,7 @@ export function NodeTitleBar({
   defaultTitle,
   className,
   onRenameTitle,
+  renameAction,
   middle,
   onDoubleClick,
   onMinimize,
@@ -163,6 +171,7 @@ export function NodeTitleBar({
         <input
           ref={inputRef}
           className="node-titlebar__title-input"
+          {...(renameAction === undefined ? {} : { "data-action": renameAction })}
           aria-label={`Rename ${display}`}
           maxLength={MAX_TITLE_LENGTH}
           value={draft ?? ""}

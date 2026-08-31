@@ -2,6 +2,7 @@ import {
   CURSOR_MIN_INTERVAL_MS,
   MAX_GESTURE_POINT_VALUES,
   VIEWPORT_MIN_INTERVAL_MS,
+  parseManifoldUri,
   placementItemFor,
   type MachineSummary,
   type Pad,
@@ -9,28 +10,45 @@ import {
   type PlacementDestination,
   type PlacementItem,
 } from "@manifold/protocol";
+import type { PadViewportHandle } from "@manifold/plugin";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
+  NodeResizer,
   ReactFlow,
   ViewportPortal,
   useNodesState,
   type Node,
+  type NodeProps,
   type NodeTypes,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deletePad, getMachines, killTerminal, renameTerminal } from "./api.ts";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { deletePad, getMachines } from "./api.ts";
 import type { StoredIdentity } from "./api.ts";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
-import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
-import { debugSeamEnabled, renderCounts, toElementSnapshot } from "./debug-seam.ts";
+import { FLOOR_TOOLS, toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
+import {
+  debugSeamEnabled,
+  lastSpotlight,
+  renderCounts,
+  toElementSnapshot,
+} from "./debug-seam.ts";
 import { remoteCursorSocketId } from "./cursor-identity.ts";
-import { DrawNode } from "./flow-draw-node.tsx";
+import {
+  PluginPlaceholder,
+  useComposition,
+  useViewportRegistration,
+  type PlaceholderState,
+  type WebElement,
+} from "./plugin-host.tsx";
+import { SpotlightChip, useSpotlight } from "./spotlight.tsx";
+import { currentViewState, setViewState, subscribeViewState } from "./view-presence.ts";
 import { MONO_PORTAL_CLASS_SELECTOR, PORTAL_DRAG_HANDLE, PortalNode } from "./flow-portal-node.tsx";
 import {
   FlowPadProviders,
   TERMINAL_DRAG_HANDLE,
+  useFlowPad,
   type FlowPadContextValue,
 } from "./flow-terminal-node.tsx";
 import {
@@ -75,12 +93,114 @@ import type { WidgetRole } from "./widget-engagement.ts";
  * into React Flow nodes.
  */
 
-/** Stable module-scope identity prevents React Flow from remounting live PTYs. */
-const NODE_TYPES: NodeTypes = {
+/** The node species the ENGINE renders. Everything else arrives from the composition. */
+const FLOOR_NODE_TYPES: NodeTypes = {
   text: TextNode,
-  draw: DrawNode,
   portal: PortalNode,
 };
+
+/** Contributed ink may shrink to a thumbnail, so the resize floor is deliberately tiny. */
+const MIN_PLUGIN_ELEMENT_SIZE = 16;
+
+/**
+ * Stable tags for contributed renderers. The node-type map has to be memoized on WHICH
+ * components are registered — a fresh map remounts every node, live PTYs included — and a
+ * component is a function, so it needs an identity that survives into a string key.
+ */
+const componentTags = new WeakMap<ComponentType<never>, string>();
+let nextComponentTag = 0;
+
+function componentTag(component: ComponentType<never> | null): string {
+  if (component === null) return "-";
+  const existing = componentTags.get(component);
+  if (existing !== undefined) return existing;
+  nextComponentTag += 1;
+  const tag = String(nextComponentTag);
+  componentTags.set(component, tag);
+  return tag;
+}
+
+/**
+ * What a change in the element registry MEANS for React Flow: the ordered list of element
+ * types, whether each is enabled, and which component is attached. Toggling an unrelated
+ * plugin (`core.machines`, say) leaves this string identical, which is what keeps a terminal
+ * from being remounted — and reattached — by an administrator flipping a sidebar section.
+ */
+function elementRegistrySignature(elements: ReadonlyMap<string, WebElement>): string {
+  const parts: string[] = [];
+  for (const [type, element] of elements) {
+    parts.push(`${type}:${element.enabled ? "1" : "0"}:${componentTag(element.Component)}`);
+  }
+  return parts.join("|");
+}
+
+/**
+ * The paint boundary for a contributed element. Geometry stays ENGINE business — one
+ * resizer, one selection rule, one commit path for every species — so a plugin's renderer
+ * paints its own `data` and never learns how a scene document is written.
+ */
+function pluginElementNode(Component: ComponentType<never>): ComponentType<NodeProps> {
+  /*
+    The ONE cast at this boundary. `WebPluginDef.elements` are deliberately opaque
+    (`ComponentType<never>`): a React Flow node component's props are the renderer's own
+    contract, and the flow paint boundary is the single place allowed to name them.
+  */
+  const Painter = Component as unknown as ComponentType<NodeProps>;
+  return memo(function PluginElementNode(props: NodeProps) {
+    const pad = useFlowPad();
+    return (
+      <>
+        {/* Ink and text keep the classic bounding-box handles; only terminals grab by border. */}
+        <NodeResizer
+          nodeId={props.id}
+          isVisible={pad.tool === "select" && props.selected === true}
+          minWidth={MIN_PLUGIN_ELEMENT_SIZE}
+          minHeight={MIN_PLUGIN_ELEMENT_SIZE}
+          onResize={(_event, params) =>
+            pad.onResize(props.id, params.x, params.y, params.width, params.height)
+          }
+          onResizeEnd={(_event, params) =>
+            pad.onResizeEnd(props.id, params.x, params.y, params.width, params.height)
+          }
+        />
+        <Painter {...props} />
+      </>
+    );
+  });
+}
+
+/**
+ * An element whose plugin is off — or which declares a renderer nobody registered — draws
+ * the shared inert surface NAMING it. A stroke authored while `core.draw` was on must not
+ * vanish when somebody disables the plugin: the scene still holds it, so the canvas says so
+ * (D4), and enabling the plugin brings the ink back without a reload (R3).
+ */
+function pluginPlaceholderNode(name: string, state: PlaceholderState): ComponentType<NodeProps> {
+  return memo(function PluginElementPlaceholderNode() {
+    return <PluginPlaceholder name={name} state={state} />;
+  });
+}
+
+function buildNodeTypes(
+  elements: ReadonlyMap<string, WebElement>,
+  pluginTitle: (id: string) => string | null,
+): NodeTypes {
+  const contributed: Record<string, ComponentType<NodeProps>> = {};
+  for (const [type, element] of elements) {
+    const name = pluginTitle(element.plugin) ?? element.plugin;
+    if (!element.enabled) {
+      contributed[type] = pluginPlaceholderNode(name, "disabled");
+    } else if (element.Component === null) {
+      contributed[type] = pluginPlaceholderNode(name, "unavailable");
+    } else {
+      contributed[type] = pluginElementNode(element.Component);
+    }
+  }
+  // Floor species last: the engine's own renderers are not overridable by a manifest that
+  // happens to declare their wire type (D5 refuses plugin/plugin collisions; this refuses
+  // plugin-over-engine shadowing at the one place it could bite).
+  return { ...contributed, ...FLOOR_NODE_TYPES };
+}
 /**
  * A canvas cannot DERIVE solo occupancy: it holds elements, not tile layouts, and the
  * containers its portals point at belong to rooms it has not joined. Its host supplies
@@ -236,7 +356,6 @@ export function FlowPadView({
   const [sceneRevision, setSceneRevision] = useState(0);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   const [rosterRows, setRosterRows] = useState<readonly RosterRow[]>([]);
-  const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [tool, setTool] = useState<CanvasTool>("select");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -272,6 +391,69 @@ export function FlowPadView({
     () => loadViewport(window.localStorage, padId) ?? { x: 0, y: 0, zoom: 1 },
     [padId],
   );
+
+  /**
+   * The vocabulary this canvas paints with: element renderers and tools are declared by
+   * manifests and attached in `composition.ts`, so no plugin is named here.
+   */
+  const composition = useComposition();
+  /** Stable for the host gate's lifetime, so registering is an ordinary effect. */
+  const registerViewport = useViewportRegistration();
+  const elementSignature = elementRegistrySignature(composition.elements);
+  /*
+    A derived cache, deliberately not a memo: React Flow remounts every node when
+    `nodeTypes` changes identity, and a dependency array containing `composition` would do
+    exactly that on any unrelated toggle — reattaching every live PTY on the board because
+    somebody hid a sidebar section. The signature IS the dependency.
+  */
+  const nodeTypesRef = useRef<{ signature: string; value: NodeTypes }>({
+    signature: elementSignature,
+    value: buildNodeTypes(composition.elements, composition.pluginTitle),
+  });
+  if (nodeTypesRef.current.signature !== elementSignature) {
+    nodeTypesRef.current = {
+      signature: elementSignature,
+      value: buildNodeTypes(composition.elements, composition.pluginTitle),
+    };
+  }
+  const nodeTypes = nodeTypesRef.current.value;
+
+  /**
+   * VIEW STATE, published (A2). One subscription, declared FIRST so the mount-time writes
+   * below are already heard: a view change puts the current state on the presence plane
+   * through the same door cursors and selections use, and every other writer merges
+   * `currentViewState()` into its own payload, so a reconnect republishes it with no second
+   * send path.
+   *
+   * The routed canvas is the one that speaks for this device: an embedded board inside a
+   * composition tile holds its own tool, and two publishers of one per-principal state would
+   * fight over it. `depth === 1` is that test.
+   */
+  useEffect(() => {
+    if (depth !== 1) return;
+    return subscribeViewState((view) => client.sendPresence({ view }));
+  }, [client, depth]);
+
+  useEffect(() => {
+    if (depth !== 1) return;
+    setViewState({ tool });
+  }, [depth, tool]);
+
+  useEffect(() => {
+    if (depth !== 1) return;
+    setViewState({ editingElementId: editingId });
+  }, [depth, editingId]);
+
+  /*
+    A tool the composition no longer offers cannot stay in the viewer's hand: disabling
+    `core.draw` while its tool is held would otherwise leave a pointer authoring elements
+    whose renderer is now a placeholder. The hand falls back to select, live (R3).
+  */
+  useEffect(() => {
+    if (FLOOR_TOOLS.includes(tool)) return;
+    if (composition.tools.some((candidate) => candidate.enabled && candidate.id === tool)) return;
+    setTool("select");
+  }, [composition, tool]);
 
   useEffect(() => {
     const invalidate = (): void => setSceneRevision((value) => value + 1);
@@ -360,7 +542,9 @@ export function FlowPadView({
       const now = performance.now();
       if (!force && now - viewportLastSentRef.current < VIEWPORT_MIN_INTERVAL_MS) return;
       viewportLastSentRef.current = now;
-      client.sendPresence({ viewport });
+      // Every outgoing payload carries the view: presence is merged server-side, so this is
+      // also how a reconnected socket re-publishes what this device is holding.
+      client.sendPresence({ viewport, view: currentViewState() });
     },
     [client],
   );
@@ -455,7 +639,8 @@ export function FlowPadView({
   /**
    * The canonical projection carries no live-gesture geometry: `reconcileNodes` reuses the
    * node React Flow is dragging or resizing verbatim, so the pointer is tracked by React
-   * Flow's own array and this memo only rebuilds when the scene or highlight actually moves.
+   * Flow's own array and this memo only rebuilds when the scene actually moves. Selection is
+   * React Flow's own: the sidebar-row highlight that used to drive it went with those rows.
    */
   const canonicalNodes = useMemo<Node[]>(
     () =>
@@ -466,7 +651,6 @@ export function FlowPadView({
         width: element.width,
         height: element.height,
         zIndex: element.zIndex,
-        selected: element.id === highlightedId,
         ...(element.className === undefined ? {} : { className: element.className }),
         /*
           A widget moves by its name strip, and its MONO form has no name strip: a solo
@@ -482,7 +666,7 @@ export function FlowPadView({
           : {}),
         data: element.data,
       })),
-    [highlightedId, projected],
+    [projected],
   );
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
@@ -823,22 +1007,23 @@ export function FlowPadView({
   );
 
   /**
-   * X is the deliberate destroy — park is the non-destructive exit. Kill goes over
-   * HTTP: the wire's terminal_kill is gated on the session's HOME channel, which a
-   * canvas peer does not hold. The server sweeps session + home + every portal
-   * atomically; the local tombstone is optimism so the element vanishes this frame
-   * rather than a round-trip later (the doc sweep makes it idempotent).
+   * The terminal verbs this canvas offers, dispatched through the ACTION DOOR. A denial is
+   * DATA — the declared rule that refused it — so a disabled plugin, a scoped token or a
+   * missing capability reads as the door's own sentence instead of an HTTP status nobody
+   * can render. Affordances that fire these carry `data-action` (AGENTS invariant 12).
    */
-  const onClose = useCallback(
-    (elementId: string | null, sessionId: string): void => {
-      if (elementId !== null) tombstone([elementId]);
-      void killTerminal(identity.token, sessionId).catch((reason: unknown) => {
-        notify(reason instanceof Error ? reason.message : "Could not kill the terminal", {
-          key: `terminal-kill:${sessionId}`,
+  const dispatchTerminalAction = useCallback(
+    (name: string, args: unknown, fallback: string, key: string): void => {
+      void client
+        .action(name, args)
+        .then((outcome) => {
+          if (!outcome.ok) notify(outcome.denial.message, { key });
+        })
+        .catch((reason: unknown) => {
+          notify(reason instanceof Error ? reason.message : fallback, { key });
         });
-      });
     },
-    [identity.token, notify, tombstone],
+    [client, notify],
   );
 
   const canvasCenter = useCallback((): { x: number; y: number } => {
@@ -909,14 +1094,78 @@ export function FlowPadView({
    */
   const onRenameTerminal = useCallback(
     (sessionId: string, name: string): void => {
-      void renameTerminal(identity.token, sessionId, name).catch((reason: unknown) => {
-        notify(reason instanceof Error ? reason.message : "Could not rename this terminal", {
-          key: `rename-terminal:${sessionId}`,
-        });
-      });
+      dispatchTerminalAction(
+        "core.terminals.rename",
+        { sessionId, name },
+        "Could not rename this terminal",
+        `rename-terminal:${sessionId}`,
+      );
     },
-    [identity.token, notify],
+    [dispatchTerminalAction],
   );
+
+  /**
+   * This pad's viewport, as the host contract sees it. A plugin never reaches into the
+   * renderer: it names a NODE by `manifold://` URI and asks the mounted pad view to look at
+   * it, which is precisely what a spotlight is. Registered by the ROUTED canvas only — an
+   * embedded board is not what "the view on screen" means.
+   */
+  const viewportHandle = useMemo<PadViewportHandle>(
+    () => ({
+      centerOn: (uri: string): void => {
+        const ref = parseManifoldUri(uri);
+        const flow = flowRef.current;
+        if (ref === null || flow === null) return;
+        switch (ref.kind) {
+          case "element":
+            // A reference into another pad is the shell's business (navigate), not this view's.
+            if (ref.padId === padId) focusElement(ref.elementId);
+            return;
+          case "pad":
+          case "tile":
+            // A canvas holds no tiles, and "look at this canvas" has one honest answer: all
+            // of it. Fitting is also what a viewer does when handed an address with no box.
+            if (ref.padId === padId) void flow.fitView({ duration: 250 });
+            return;
+          case "terminal": {
+            // Terminal → the portal onto its home composition, when this canvas holds one.
+            const home = client.sessions.get(ref.sessionId)?.padId;
+            if (home === undefined) return;
+            for (const element of client.elements.values()) {
+              if (element.type === "portal" && element.containerId === home) {
+                focusElement(element.id);
+                return;
+              }
+            }
+            return;
+          }
+          case "principal":
+          case "plugin":
+          case "action":
+            return;
+          default: {
+            const exhaustive: never = ref;
+            return exhaustive;
+          }
+        }
+      },
+      viewport: () => flowRef.current?.getViewport() ?? null,
+    }),
+    [client, focusElement, padId],
+  );
+
+  useEffect(() => {
+    if (depth !== 1) return;
+    registerViewport(viewportHandle);
+    return () => registerViewport(null);
+  }, [depth, registerViewport, viewportHandle]);
+
+  /**
+   * "Look at this", applied. The spotlight arrives in this principal's OWN presence — the
+   * server wrote it after checking that the asker shares this room and holds `scene:write`
+   * there — so the viewer sees who asked and can switch the whole affordance off.
+   */
+  const spotlight = useSpotlight(client, viewportHandle, depth === 1);
 
   /**
    * A view widget's minimize: the WIDGET leaves this canvas and the container it
@@ -1065,7 +1314,6 @@ export function FlowPadView({
       machines,
       machineFor,
       onPark,
-      onClose,
       onRenameTerminal,
       removeElement,
       onDeleteContainer,
@@ -1120,34 +1368,28 @@ export function FlowPadView({
     ],
   );
 
+  /*
+    What the shell still needs from the live canvas: connection state and the one creation
+    verb a section can offer. The per-session row callbacks (focus, kill, copy removal,
+    highlight) are GONE with the sidebar rows they served — `core.views` and `core.machines`
+    render their own rows now and reach the server through the doors directly (D13: deleted
+    plumbing is simply deleted).
+  */
   useEffect(() => {
     onWorkspaceChange({
       status,
       savedAt,
       rev: sceneRevision,
-      machines,
       rows: sessionRows,
       onCreateTerminal: (machine) => void createTerminal(machine),
-      onFocus: focusElement,
-      onKill: (sessionId) => onClose(null, sessionId),
-      onRemoveCopy: (_sessionId, elementId) => tombstone([elementId]),
-      onRemoveAllCopies: (sessionId) => {
-        const row = sessionRows.find((candidate) => candidate.id === sessionId);
-        tombstone(row?.boundElementIds ?? []);
-      },
-      onHighlight: setHighlightedId,
     });
   }, [
-    client,
     createTerminal,
-    focusElement,
-    machines,
     onWorkspaceChange,
     savedAt,
     sceneRevision,
     sessionRows,
     status,
-    tombstone,
   ]);
 
   useEffect(() => () => onWorkspaceChange(null), [onWorkspaceChange]);
@@ -1200,6 +1442,13 @@ export function FlowPadView({
           offsetTop: bounds.top,
         };
       },
+      /**
+       * The pad CAMERA, verbatim: what `PadViewportHandle.viewport()` reports, which is what
+       * a spotlight moves. Distinct from `viewport` above, which projects the canvas onto the
+       * page for hit-test assertions.
+       */
+      padViewport: () => flowRef.current?.getViewport() ?? null,
+      lastSpotlight,
     };
     return () => {
       delete window.__manifold;
@@ -1232,7 +1481,15 @@ export function FlowPadView({
           }
           if (!modifier && !event.altKey) {
             const nextTool = toolForKey(event.key);
-            if (nextTool !== null) {
+            // A shortcut naming a CONTRIBUTED tool means nothing while its plugin is off: the
+            // key is floor, the vocabulary is the composition's.
+            if (
+              nextTool !== null &&
+              (FLOOR_TOOLS.includes(nextTool) ||
+                composition.tools.some(
+                  (candidate) => candidate.enabled && candidate.id === nextTool,
+                ))
+            ) {
               event.preventDefault();
               setTool(nextTool);
               return;
@@ -1305,6 +1562,12 @@ export function FlowPadView({
           // exactly the gap that used to swallow a container dropped on empty canvas.
           drop.commit(transfer, { kind: "canvas", padId, x: at.x, y: at.y });
         }}
+        /*
+          The STROKE gesture: what holding the contributed `draw` tool does. The tool's name
+          and its button come from the composition, but the pointer behaviour is still floor
+          — `until core.canvas tool-behavior contributions`, when a tool will bring its own
+          gesture and this handler will dispatch to it instead of naming an id.
+        */
         onPointerDownCapture={(event) => {
           if (tool !== "draw" || event.button !== 0 || isTypingTarget(event.target)) return;
           if (
@@ -1362,6 +1625,7 @@ export function FlowPadView({
         <div className="flow-presence">
           <PresenceIsland rows={rosterRows} />
         </div>
+        {spotlight === null ? null : <SpotlightChip spotlight={spotlight} />}
         <CanvasToolbar tool={tool} onChange={setTool} />
         <FlowPadProviders value={context} presence={presence}>
           {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
@@ -1370,7 +1634,7 @@ export function FlowPadView({
           <ReactFlow
             nodes={nodes}
             edges={NO_EDGES as never[]}
-            nodeTypes={NODE_TYPES}
+            nodeTypes={nodeTypes}
             onInit={(instance) => {
               flowRef.current = instance;
             }}
@@ -1389,7 +1653,10 @@ export function FlowPadView({
             onNodeDragStart={handleNodeDragStart}
             onNodeDrag={handleNodeDrag}
             onSelectionChange={({ nodes: selectedNodes }) => {
-              client.sendPresence({ selection: selectedNodes.map((node) => node.id) });
+              client.sendPresence({
+                selection: selectedNodes.map((node) => node.id),
+                view: currentViewState(),
+              });
             }}
             onNodeDragStop={handleNodeDragStop}
             nodesDraggable={flags.nodesDraggable}

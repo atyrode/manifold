@@ -1,6 +1,17 @@
-import type { HostServices, PanelProps, SectionProps } from "@manifold/plugin";
-import { PluginsResponseSchema, type PluginRoster } from "@manifold/protocol";
-import type { SessionClient } from "@manifold/sdk";
+import type {
+  HostServices,
+  PadAuthoringHandle,
+  PadViewportHandle,
+  PanelProps,
+  SectionProps,
+} from "@manifold/plugin";
+import {
+  MANIFOLD_URI_SCHEME,
+  parseManifoldUri,
+  PluginsResponseSchema,
+  type PluginRoster,
+} from "@manifold/protocol";
+import { SessionClient } from "@manifold/sdk";
 import {
   createContext,
   useCallback,
@@ -14,6 +25,7 @@ import {
 } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WEB_PLUGIN_DEFS } from "./composition.ts";
+import { sessionUrl } from "./flow-pad-view.tsx";
 
 /**
  * The browser half of the plugin engine — FLOOR (AXIOMS.md §Foundation), which is why this
@@ -59,6 +71,14 @@ export interface WebPluginDef {
   readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
   readonly tools?: Readonly<Record<string, ToolContribution>>;
+  /**
+   * URL space a plugin owns, keyed by FIRST PATH SEGMENT (`uri` serves `/uri/<rest>`).
+   * Routes are the one contribution with no manifest counterpart: a path is not a surface
+   * the workspace composes, it is an entry point the browser hands over — so the roster
+   * still decides whether the owning plugin is ENABLED, and a disabled plugin's route
+   * renders the same named placeholder every other contribution does.
+   */
+  readonly routes?: Readonly<Record<string, ComponentType<{ rest: string; host: HostServices }>>>;
 }
 
 /** A declared panel, keyed in the composition by its FULL id (`core.shell.sidebar`). */
@@ -98,6 +118,17 @@ export interface WebTool {
 }
 
 /**
+ * A registered URL space, keyed in the composition by its first path segment. It has no
+ * manifest row (see `WebPluginDef.routes`), so `plugin` is the registering plugin and
+ * `enabled` is that plugin's roster state.
+ */
+export interface WebRoute {
+  readonly plugin: string;
+  readonly Component: ComponentType<{ rest: string; host: HostServices }>;
+  readonly enabled: boolean;
+}
+
+/**
  * The browser's view of the composition: the roster plus one registry per contribution kind,
  * with components attached. `revision` increments on every roster change, so anything that
  * must be rebuilt when the vocabulary moves (React Flow's node-type map, for one) has a
@@ -115,6 +146,8 @@ export interface WebComposition {
   /** Sorted by declared `order`; ties keep roster order. */
   readonly sections: readonly WebSection[];
   readonly elements: ReadonlyMap<string, WebElement>;
+  /** Keyed by first path segment; a route the roster does not know is simply absent. */
+  readonly routes: ReadonlyMap<string, WebRoute>;
   readonly tools: readonly WebTool[];
 }
 
@@ -134,6 +167,7 @@ export function buildWebComposition(
   const sections: WebSection[] = [];
   const elements = new Map<string, WebElement>();
   const tools: WebTool[] = [];
+  const routes = new Map<string, WebRoute>();
 
   for (const entry of roster) {
     const { manifest, enabled } = entry;
@@ -176,6 +210,12 @@ export function buildWebComposition(
         enabled,
       });
     }
+    // Routes have no manifest row to iterate, so they come from the REGISTRATION and take
+    // the registering plugin's roster state — which is what keeps a disabled plugin's deep
+    // link rendering a named placeholder instead of a dead end.
+    for (const [segment, Component] of Object.entries(def?.routes ?? {})) {
+      routes.set(segment, { plugin: manifest.id, Component, enabled });
+    }
   }
 
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
@@ -190,6 +230,7 @@ export function buildWebComposition(
     panels,
     sections,
     elements,
+    routes,
     tools,
   };
 }
@@ -319,6 +360,150 @@ export function useHostServices(): HostServices {
     throw new Error("useHostServices requires a <HostServicesProvider> ancestor");
   }
   return host;
+}
+
+/**
+ * Registration channels for the two facets only the MOUNTED pad view can answer. Each is
+ * its own context for the same reason the plugins attach is: the register function is stable
+ * for the gate's lifetime, while the host value changes whenever a facet arrives, and a
+ * renderer must not re-register because a plugin was toggled.
+ */
+const ViewportRegisterContext = createContext<((handle: PadViewportHandle | null) => void) | null>(
+  null,
+);
+const AuthoringRegisterContext = createContext<
+  ((handle: PadAuthoringHandle | null) => void) | null
+>(null);
+
+/**
+ * Publishes the mounted pad view's viewport into the host. The pad renderer calls this with
+ * its handle on mount and `null` on unmount; a spotlight arriving while no view is mounted
+ * therefore finds `host.viewport === null` and says so, rather than moving a view that is
+ * not there.
+ */
+export function useViewportRegistration(): (handle: PadViewportHandle | null) => void {
+  const register = useContext(ViewportRegisterContext);
+  if (register === null) {
+    throw new Error("useViewportRegistration requires a <HostServicesGate> ancestor");
+  }
+  return register;
+}
+
+/** The same channel for the authoring door — see {@link PadAuthoringHandle}. */
+export function useAuthoringRegistration(): (handle: PadAuthoringHandle | null) => void {
+  const register = useContext(AuthoringRegisterContext);
+  if (register === null) {
+    throw new Error("useAuthoringRegistration requires a <HostServicesGate> ancestor");
+  }
+  return register;
+}
+
+export interface HostServicesGateProps {
+  readonly identity: StoredIdentity;
+  /** The application's own navigation; the gate translates `manifold://` into it. */
+  readonly navigate: (path: string, options?: { readonly replace?: boolean }) => void;
+  /**
+   * The routed container, when the route names one. It decides only whether the gate's
+   * client JOINS a room — which is what makes `selfCaps()` answer and the roster arrive
+   * live. Every HTTP door works either way.
+   */
+  readonly padId?: string | null;
+  readonly children: ReactNode;
+}
+
+/**
+ * Builds THE host surface and mounts it above every route — deliberately above, because a
+ * plugin route (`/uri/<encoded>`) is a contribution too and must reach the same doors the
+ * sidebar's sections do.
+ *
+ * Its session client is a SPECTATOR on the routed room: the gate watches, it never occupies.
+ * That is what a workspace-level handle has to be — it must not fake an occupant avatar in a
+ * room whose renderer already joined as one — and it is the reason `selfCaps()` and the
+ * connection-level `plugins` frame reach plugin code at all. With no route to a container
+ * (an empty workspace) the client stays unconnected: the HTTP doors still answer, and
+ * `selfCaps()` is empty until a view exists, which reads correctly as "no view, no room".
+ */
+export function HostServicesGate({
+  identity,
+  navigate,
+  padId = null,
+  children,
+}: HostServicesGateProps): ReactElement {
+  const composition = useComposition();
+  const attachPluginsClient = useAttachPluginsClient();
+  const [viewport, setViewport] = useState<PadViewportHandle | null>(null);
+  const [authoring, setAuthoring] = useState<PadAuthoringHandle | null>(null);
+
+  const client = useMemo(
+    () =>
+      new SessionClient({
+        url: sessionUrl(),
+        // The workspace is not a room. Unjoined, this is the id nothing is addressed by;
+        // it never reaches the wire, because an unconnected client sends no join.
+        padId: padId ?? "",
+        token: identity.token,
+        ...(padId === null ? {} : { spectator: true }),
+      }),
+    [identity.token, padId],
+  );
+
+  useEffect(() => {
+    if (padId === null) return;
+    void client.connect().catch((reason: unknown) => {
+      // The renderer's own occupant socket reports room failures to the operator; this
+      // handle failing only costs the workspace its live vocabulary, so it stays quiet.
+      console.error("evt=host_services_join_failed", reason);
+    });
+    return () => client.close();
+  }, [client, padId]);
+
+  useEffect(() => attachPluginsClient(client), [attachPluginsClient, client]);
+
+  /**
+   * One navigation door for plugin code, addressed the way the axioms address everything:
+   * a `manifold://` reference, or a plain application path for the routes the browser owns.
+   * A reference this shell cannot show as a route (a principal, a plugin, an action) is not
+   * silently swallowed — it goes to the deep-link route, whose job is exactly that.
+   */
+  const navigateUri = useCallback(
+    (uri: string): void => {
+      if (!uri.startsWith(MANIFOLD_URI_SCHEME)) {
+        navigate(uri);
+        return;
+      }
+      const ref = parseManifoldUri(uri);
+      if (ref === null) return;
+      navigate(
+        ref.kind === "pad" || ref.kind === "element" || ref.kind === "tile"
+          ? `/p/${encodeURIComponent(ref.padId)}`
+          : `/uri/${encodeURIComponent(uri)}`,
+      );
+    },
+    [navigate],
+  );
+
+  const host = useMemo<HostServices>(
+    () => ({
+      client,
+      padId,
+      navigate: navigateUri,
+      viewport,
+      authoring,
+      composition: {
+        roster: () => composition.roster,
+        enabled: (id) => composition.enabled(id),
+      },
+    }),
+    [authoring, client, composition, navigateUri, padId, viewport],
+  );
+
+  return (
+    <ViewportRegisterContext.Provider value={setViewport}>
+      <AuthoringRegisterContext.Provider value={setAuthoring}>
+        <HostServicesProvider value={host}>{children}</HostServicesProvider>
+      </AuthoringRegisterContext.Provider>
+    </ViewportRegisterContext.Provider>
+  );
 }
 
 /** Why a contribution is inert. Mirrored into `data-plugin-state` for gate assertions. */

@@ -2,6 +2,7 @@ import type {
   ActionOutcome,
   Cap,
   MachineSummary,
+  Pad,
   PadPresence,
   PadSessionSummary,
   PadTreeItem,
@@ -9,6 +10,7 @@ import type {
   PlacementDenial,
   PlacementDestination,
   PlacementSurface,
+  PluginRoster,
   TerminalSummary,
 } from "@manifold/protocol";
 
@@ -41,6 +43,24 @@ export interface SessionHandle {
   padPresence(): Promise<readonly PadPresence[]>;
   padSessions(): Promise<readonly PadSessionSummary[]>;
   terminals(): Promise<readonly TerminalSummary[]>;
+  /*
+    The workspace index's own writes. They are HTTP routes rather than actions this wave
+    (AXIOMS.md §Roadmap: "pad/folder CRUD + tree moves → workspace-index actions"), so the
+    plugin that renders the index reaches them through the same handle it reads with — one
+    door per concept, and the section that lists containers is also the one that renames
+    them. When those routes become actions these methods go away and `action()` carries
+    them; nothing else about the section changes.
+   */
+  renamePad(padId: string, name: string): Promise<Pad>;
+  deletePad(padId: string): Promise<void>;
+  createPadFolder(name: string, parentId: string | null): Promise<readonly PadTreeItem[]>;
+  renamePadFolder(folderId: string, name: string): Promise<readonly PadTreeItem[]>;
+  deletePadFolder(folderId: string): Promise<readonly PadTreeItem[]>;
+  movePadTreeItem(
+    item: { readonly kind: "pad" | "folder"; readonly id: string },
+    parentId: string | null,
+    index: number,
+  ): Promise<readonly PadTreeItem[]>;
 }
 
 /**
@@ -54,15 +74,47 @@ export interface PadViewportHandle {
 }
 
 /**
- * Everything a plugin may touch outside itself. Three capabilities, all of them addressed:
- * talk to the server (`client`), send the viewer somewhere by `manifold://` URI (`navigate`),
- * and move the mounted pad's viewport (`viewport`). No host internals, no React context of
- * the shell, no DOM handles — a contribution that needs more needs a new declared contract.
+ * The mounted pad view's authoring door. A terminal is born INSIDE a container, and only
+ * the renderer on screen knows how its discipline authors one (a canvas writes an element,
+ * a composition lets the server place a tile) — so a plugin asks for the birth instead of
+ * performing it. Null when no view is mounted, or when the mounted view cannot author:
+ * exactly the case where the affordance must not be offered.
+ */
+export interface PadAuthoringHandle {
+  createTerminal(machine?: MachineSummary): void;
+}
+
+/**
+ * The composition, as DATA. A plugin that administers plugins needs to read the roster it
+ * is listing; it must not be able to compose, register, or override anything — so this is
+ * two questions, both answers, no levers. Mutating the composition is an action
+ * (`core.plugins.setEnabled`), like every other authority-bearing change.
+ */
+export interface CompositionFacet {
+  roster(): PluginRoster;
+  enabled(id: string): boolean;
+}
+
+/**
+ * Everything a plugin may touch outside itself, all of it addressed: talk to the server
+ * (`client`), send the viewer somewhere by `manifold://` URI (`navigate`), move the mounted
+ * pad's viewport (`viewport`), author into it (`authoring`), and read the composition
+ * (`composition`). No host internals, no React context of the shell, no DOM handles — a
+ * contribution that needs more needs a new declared contract.
  */
 export interface HostServices {
   readonly client: SessionHandle;
+  /**
+   * The container the viewer is looking at, or null at the workspace root. Read-only and
+   * declared rather than inferred: an index that cannot mark its own active row would have
+   * to guess from the URL, and A2 makes "where a principal is" observable state, not a
+   * private fact of one renderer. Change it by calling `navigate`.
+   */
+  readonly padId: string | null;
   navigate(uri: string): void;
   readonly viewport: PadViewportHandle | null;
+  readonly authoring: PadAuthoringHandle | null;
+  readonly composition: CompositionFacet;
 }
 
 /** A contributed panel: a tile-surface leaf, including the workspace shell's own two. */

@@ -17,6 +17,7 @@ import { ControlIcon, ItemIcon } from "./icons.tsx";
 import type { SessionMachine } from "./machine-visibility.ts";
 import { NodeTitleBar, TITLEBAR_ACTIONS_CLASS } from "./node-titlebar.tsx";
 import { useToast } from "./toast.tsx";
+import { currentViewState } from "./view-presence.ts";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
@@ -61,6 +62,12 @@ interface TerminalViewProps {
    */
   readonly onRenameTitle?: (name: string) => void;
   /**
+   * The composed action {@link TerminalViewProps.onRenameTitle} dispatches, marked onto the
+   * rename input as `data-action`. The caller names it: this component is handed a callback,
+   * and only the caller knows which door it goes through.
+   */
+  readonly renameAction?: string;
+  /**
    * A BUBBLE's terminal is a terminal in temporary view mode: it is the only leaf
    * of a transient container, so it already fills the screen and its maximize slot
    * becomes Shrink — the way back out of the view born around it. Wins over
@@ -90,6 +97,7 @@ export function TerminalView({
   onShrink,
   titlebarExtras,
   onRenameTitle,
+  renameAction,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -448,7 +456,9 @@ export function TerminalView({
   const handleFocus = (): void => {
     if (readOnly || focusedRef.current) return;
     focusedRef.current = true;
-    client.sendPresence({ focus: { elementId } });
+    // The view rides every presence payload (`view-presence.ts`), so a focus frame also
+    // re-publishes what this device is holding.
+    client.sendPresence({ focus: { elementId }, view: currentViewState() });
   };
 
   const handleBlur = (event: FocusEvent<HTMLDivElement>): void => {
@@ -456,7 +466,7 @@ export function TerminalView({
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     if (readOnly) return;
     focusedRef.current = false;
-    client.sendPresence({ focus: null });
+    client.sendPresence({ focus: null, view: currentViewState() });
   };
 
   const stopFocusedWheel = (event: WheelEvent<HTMLDivElement>): void => {
@@ -559,6 +569,7 @@ export function TerminalView({
         title={session?.name ?? null}
         defaultTitle="terminal"
         onRenameTitle={readOnly ? undefined : onRenameTitle}
+        {...(renameAction === undefined ? {} : { renameAction })}
         onDoubleClick={readOnly ? undefined : handleTitlebarDoubleClick}
         middle={
           machine === null ? null : (

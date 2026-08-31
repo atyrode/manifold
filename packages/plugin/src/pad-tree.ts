@@ -1,3 +1,13 @@
+/**
+ * Workspace-index shaping — the pure fold from the flat `PadTreeItem[]` the index door
+ * answers with into the tree a viewer sees, plus the content comparison a poll needs.
+ *
+ * It lives in the ENGINE because both halves of the workspace genuinely need it and neither
+ * may import the other: the shell compares index snapshots so a repeated answer never
+ * reseeds the renderers below it, and the plugin that renders the index builds its rows and
+ * projects its own moves from the same functions. Two copies of "are these the same index?"
+ * is the drift this move exists to prevent (AGENTS.md invariant 14).
+ */
 import type { PadTreeItem } from "@manifold/protocol";
 
 export interface PadTreeNode {

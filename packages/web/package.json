@@ -9,7 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@headless-tree/core": "1.7.0",
+    "@manifold-plugin/draw": "workspace:*",
+    "@manifold-plugin/machines": "workspace:*",
+    "@manifold-plugin/plugin-manager": "workspace:*",
+    "@manifold-plugin/presence": "workspace:*",
+    "@manifold-plugin/terminals": "workspace:*",
+    "@manifold-plugin/uri": "workspace:*",
+    "@manifold-plugin/views": "workspace:*",
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
