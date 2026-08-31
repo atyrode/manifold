@@ -3,29 +3,29 @@ import {
   AgentMessageSchema,
   ClientMessageSchema,
   ClientMessageBodySchema,
-  CreatePadRequestSchema,
+  CreateContainerRequestSchema,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
-  PadSchema,
+  ContainerSchema,
   ROOT_TILE_ID,
   ServerMessageSchema,
   SceneElementSchema,
   TerminalsResponseSchema,
   TileLayoutSchema,
-  TileNodeSchema,
-  TileSurfaceSchema,
+  TileSchema,
+  TileRefSchema,
   buildProtocolJsonSchema,
   hasCap,
   validateTileLayout,
-  type TileNode,
-  type TileSurface,
+  type Tile,
+  type TileRef,
 } from "@manifold/protocol";
 
 /**
- * The canvas reference every fixture below reuses. A canvas never holds a session: it
- * holds a portal onto the composition the session lives in.
+ * The canvas reference every fixture below reuses. A canvas never holds a terminal: it
+ * holds a portal onto the composition the terminal lives in.
  */
 const element = (id: string) => ({
   id,
@@ -41,7 +41,7 @@ describe("session channel schemas", () => {
   test("join round-trips as a channel frame, and its body without routing", () => {
     const body = {
       type: "join" as const,
-      padId: "p1",
+      containerId: "p1",
       token: "t",
       protocolVersion: PROTOCOL_VERSION,
     };
@@ -55,14 +55,14 @@ describe("session channel schemas", () => {
   test("channel ids are tokens, so a tagged frame never needs JSON escaping", () => {
     const join = {
       type: "join" as const,
-      padId: "p1",
+      containerId: "p1",
       token: "t",
       protocolVersion: PROTOCOL_VERSION,
     };
     for (const ch of ["c1", "C-7_x", "a".repeat(64)]) {
       expect(ClientMessageSchema.safeParse({ ...join, ch }).success).toBe(true);
     }
-    for (const ch of ["", 'c"1', "pad/1", "a".repeat(65), "c 1"]) {
+    for (const ch of ["", 'c"1', "container/1", "a".repeat(65), "c 1"]) {
       expect(ClientMessageSchema.safeParse({ ...join, ch }).success).toBe(false);
     }
   });
@@ -81,7 +81,12 @@ describe("session channel schemas", () => {
   });
 
   test("channel_closed carries the close vocabulary a socket close used to carry", () => {
-    const frame = { type: "channel_closed" as const, ch: "c3", code: 4404, reason: "pad deleted" };
+    const frame = {
+      type: "channel_closed" as const,
+      ch: "c3",
+      code: 4404,
+      reason: "container deleted",
+    };
     expect(ServerMessageSchema.parse(frame)).toEqual(frame);
     expect(ServerMessageSchema.safeParse({ ...frame, code: 0 }).success).toBe(false);
     expect(ServerMessageSchema.safeParse({ type: "channel_closed", ch: "c3" }).success).toBe(false);
@@ -90,11 +95,11 @@ describe("session channel schemas", () => {
   test("every channel-level frame type round-trips through body and wire unions", () => {
     const bodies = [
       { type: "resync_request" as const },
-      { type: "terminal_attach" as const, sessionId: "s1" },
-      { type: "terminal_detach" as const, sessionId: "s1" },
-      { type: "terminal_resize" as const, sessionId: "s1", cols: 80, rows: 24 },
-      { type: "terminal_take" as const, sessionId: "s1" },
-      { type: "terminal_kill" as const, sessionId: "s1" },
+      { type: "terminal_attach" as const, terminalId: "s1" },
+      { type: "terminal_detach" as const, terminalId: "s1" },
+      { type: "terminal_resize" as const, terminalId: "s1", cols: 80, rows: 24 },
+      { type: "terminal_take" as const, terminalId: "s1" },
+      { type: "terminal_kill" as const, terminalId: "s1" },
       { type: "terminal_open" as const, elementId: "el1", cols: 80, rows: 24 },
     ];
     for (const body of bodies) {
@@ -104,29 +109,29 @@ describe("session channel schemas", () => {
     }
   });
 
-  test("session_event carries the parked kind", () => {
+  test("terminal_event carries the parked kind", () => {
     const msg = {
-      type: "session_event" as const,
+      type: "terminal_event" as const,
       ch: "c1",
-      sessionId: "s1",
+      terminalId: "s1",
       kind: "parked" as const,
     };
     expect(ServerMessageSchema.parse(msg)).toEqual(msg);
     expect(
       ServerMessageSchema.safeParse({
-        type: "session_event",
+        type: "terminal_event",
         ch: "c1",
-        sessionId: "s1",
+        terminalId: "s1",
         kind: "vanished",
       }).success,
     ).toBe(false);
   });
 
-  test("session_event carries the renamed kind and its new label", () => {
+  test("terminal_event carries the renamed kind and its new label", () => {
     const msg = {
-      type: "session_event" as const,
+      type: "terminal_event" as const,
       ch: "c1",
-      sessionId: "s1",
+      terminalId: "s1",
       kind: "renamed" as const,
       name: "build",
     };
@@ -135,17 +140,17 @@ describe("session channel schemas", () => {
     // every other kind stays parseable; the SDK treats absence as "cleared".
     expect(
       ServerMessageSchema.safeParse({
-        type: "session_event",
+        type: "terminal_event",
         ch: "c1",
-        sessionId: "s1",
+        terminalId: "s1",
         kind: "renamed",
       }).success,
     ).toBe(true);
     expect(
       ServerMessageSchema.safeParse({
-        type: "session_event",
+        type: "terminal_event",
         ch: "c1",
-        sessionId: "s1",
+        terminalId: "s1",
         kind: "renamed",
         name: "",
       }).success,
@@ -200,9 +205,9 @@ describe("session channel schemas", () => {
   });
 
   test("terminal_input requires base64 payload", () => {
-    const bad = { type: "terminal_input", ch: "c1", sessionId: "s", data: "not base64!!" };
+    const bad = { type: "terminal_input", ch: "c1", terminalId: "s", data: "not base64!!" };
     expect(ClientMessageSchema.safeParse(bad).success).toBe(false);
-    const good = { type: "terminal_input", ch: "c1", sessionId: "s", data: btoa("ls -la\n") };
+    const good = { type: "terminal_input", ch: "c1", terminalId: "s", data: btoa("ls -la\n") };
     expect(ClientMessageSchema.safeParse(good).success).toBe(true);
   });
 
@@ -216,8 +221,8 @@ describe("session channel schemas", () => {
       self: { id: "pr1", kind: "human", name: "alex", color: "#aabb00" },
       selfConnId: "conn-1",
       selfCaps: ["*"],
-      roster: [],
-      sessions: [],
+      attendance: [],
+      terminals: [],
     };
     expect(ServerMessageSchema.safeParse({ type: "init", ...state }).success).toBe(true);
     expect(ServerMessageSchema.safeParse({ type: "resync", ...state }).success).toBe(true);
@@ -320,7 +325,7 @@ describe("session channel schemas", () => {
     const portal = {
       id: "portal-1",
       type: "portal" as const,
-      containerId: "view-1",
+      containerId: "c-1",
       x: 8,
       y: 16,
       width: 720,
@@ -328,19 +333,19 @@ describe("session channel schemas", () => {
       zIndex: 3,
     };
     expect(SceneElementSchema.parse(portal)).toEqual(portal);
-    // The discriminant owns the payload shape: a portal carries a container, never a session.
+    // The discriminant owns the payload shape: a portal carries a container, never a terminal.
     expect(SceneElementSchema.safeParse({ ...portal, containerId: "" }).success).toBe(false);
-    expect(SceneElementSchema.safeParse({ ...portal, sessionId: "s1" }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...portal, terminalId: "s1" }).success).toBe(false);
   });
 
   test("the retired terminal element kind is refused on the wire", () => {
-    // A canvas never holds a session. The element that used to carry one now carries the
-    // id of the composition the session lives in, so the old kind has to fail to PARSE —
+    // A canvas never holds a terminal. The element that used to carry one now carries the
+    // id of the composition the terminal lives in, so the old kind has to fail to PARSE —
     // a doc still emitting it is a bug in the writer, not a variant to tolerate.
     const terminalElement = {
       id: "terminal-1",
       type: "terminal",
-      sessionId: "session-1",
+      terminalId: "terminal-1",
       x: 0,
       y: 0,
       width: 720,
@@ -348,54 +353,54 @@ describe("session channel schemas", () => {
       zIndex: 0,
     };
     expect(SceneElementSchema.safeParse(terminalElement).success).toBe(false);
-    // Nor does dropping the session id rescue it: `terminal` is not a discriminant value.
-    expect(SceneElementSchema.safeParse({ ...terminalElement, sessionId: undefined }).success).toBe(
-      false,
-    );
+    // Nor does dropping the terminal id rescue it: `terminal` is not a discriminant value.
+    expect(
+      SceneElementSchema.safeParse({ ...terminalElement, terminalId: undefined }).success,
+    ).toBe(false);
   });
 });
 
 describe("machine channel schemas", () => {
-  test("hello advertises surviving sessions with seq watermarks", () => {
+  test("hello advertises surviving terminals with seq watermarks", () => {
     const msg = AgentMessageSchema.parse({
       type: "hello",
       token: "mt",
       name: "devbox",
       agentVersion: "0.1.0",
       protocolVersion: PROTOCOL_VERSION,
-      sessions: [{ sessionId: "s1", cols: 80, rows: 24, alive: true, seq: 4213 }],
+      terminals: [{ terminalId: "s1", cols: 80, rows: 24, alive: true, seq: 4213 }],
     });
     if (msg.type !== "hello") throw new Error("unreachable");
-    expect(msg.sessions[0]?.seq).toBe(4213);
+    expect(msg.terminals[0]?.seq).toBe(4213);
   });
 
   test("output seq must be positive", () => {
-    const bad = { type: "output", sessionId: "s", seq: 0, data: btoa("x") };
+    const bad = { type: "output", terminalId: "s", seq: 0, data: btoa("x") };
     expect(AgentMessageSchema.safeParse(bad).success).toBe(false);
   });
 });
 
 describe("capabilities", () => {
   test("wildcard grants everything; scoped caps only themselves", () => {
-    expect(hasCap(["*"], "terminal:write")).toBe(true);
-    expect(hasCap(["scene:write"], "scene:write")).toBe(true);
-    expect(hasCap(["scene:write"], "terminal:write")).toBe(false);
+    expect(hasCap(["*"], "terminals:write")).toBe(true);
+    expect(hasCap(["scenes:write"], "scenes:write")).toBe(true);
+    expect(hasCap(["scenes:write"], "terminals:write")).toBe(false);
   });
 });
 
 describe("http schemas", () => {
   test("mint requires exactly one of principalId | principal", () => {
     expect(
-      MintTokenRequestSchema.safeParse({ caps: ["scene:write"], principalId: "p" }).success,
+      MintTokenRequestSchema.safeParse({ caps: ["scenes:write"], principalId: "p" }).success,
     ).toBe(true);
     expect(
       MintTokenRequestSchema.safeParse({
-        caps: ["scene:write"],
+        caps: ["scenes:write"],
         principalId: "p",
         principal: { name: "x", kind: "agent" },
       }).success,
     ).toBe(false);
-    expect(MintTokenRequestSchema.safeParse({ caps: ["scene:write"] }).success).toBe(false);
+    expect(MintTokenRequestSchema.safeParse({ caps: ["scenes:write"] }).success).toBe(false);
   });
 
   test("the terminal index round-trips a row that names where the terminal lives", () => {
@@ -441,80 +446,89 @@ describe("http schemas", () => {
     const unanswered: Record<string, unknown> = { ...entry };
     delete unanswered["unplaced"];
     expect(TerminalsResponseSchema.safeParse({ terminals: [unanswered] }).success).toBe(false);
-    // The pool's durable ordering retired with the pool: index order is the pad tree's.
+    // The pool's durable ordering retired with the pool: index order is the index tree's.
     expect(
       TerminalsResponseSchema.safeParse({ terminals: [{ ...entry, sortOrder: 0 }] }).success,
     ).toBe(false);
   });
 
-  test("pads carry a container discipline and nothing about bubbles", () => {
-    const pad = {
+  test("containers carry a discipline and nothing about bubbles", () => {
+    const container = {
       id: "p1",
-      name: "Pad",
+      name: "Notes",
       createdAt: 5,
-      layout: "canvas" as const,
+      discipline: "canvas" as const,
     };
-    expect(PadSchema.parse(pad)).toEqual(pad);
-    expect(PadSchema.parse({ ...pad, layout: "tiled" })).toEqual({ ...pad, layout: "tiled" });
-    // The discipline is required on the wire: a pad without one is unrenderable.
-    expect(PadSchema.safeParse({ id: "p1", name: "Pad", createdAt: 5 }).success).toBe(false);
-    expect(PadSchema.safeParse({ ...pad, layout: "grid" }).success).toBe(false);
+    expect(ContainerSchema.parse(container)).toEqual(container);
+    expect(ContainerSchema.parse({ ...container, discipline: "composition" })).toEqual({
+      ...container,
+      discipline: "composition",
+    });
+    // The discipline is required on the wire: a container without one is unrenderable.
+    expect(ContainerSchema.safeParse({ id: "p1", name: "Notes", createdAt: 5 }).success).toBe(
+      false,
+    );
+    expect(ContainerSchema.safeParse({ ...container, discipline: "grid" }).success).toBe(false);
     // Transience is gone with the bubbles: every composition is durable, so a row still
     // carrying the flag is stale state and must fail to parse rather than be ignored.
-    expect(PadSchema.safeParse({ ...pad, transient: false }).success).toBe(false);
-    expect(PadSchema.safeParse({ ...pad, transient: true }).success).toBe(false);
+    expect(ContainerSchema.safeParse({ ...container, transient: false }).success).toBe(false);
+    expect(ContainerSchema.safeParse({ ...container, transient: true }).success).toBe(false);
   });
 
-  test("pad creation takes an optional discipline and never a bubble flag", () => {
-    expect(CreatePadRequestSchema.parse({ name: "Pad" })).toEqual({ name: "Pad" });
-    expect(CreatePadRequestSchema.parse({ name: "View", layout: "tiled" })).toEqual({
-      name: "View",
-      layout: "tiled",
-    });
-    expect(CreatePadRequestSchema.safeParse({ name: "Pad", layout: "grid" }).success).toBe(false);
-    expect(CreatePadRequestSchema.safeParse({ name: "Pad", transient: true }).success).toBe(false);
+  test("container creation takes an optional discipline and never a bubble flag", () => {
+    expect(CreateContainerRequestSchema.parse({ name: "Notes" })).toEqual({ name: "Notes" });
+    expect(CreateContainerRequestSchema.parse({ name: "Desk", discipline: "composition" })).toEqual(
+      {
+        name: "Desk",
+        discipline: "composition",
+      },
+    );
+    expect(
+      CreateContainerRequestSchema.safeParse({ name: "Notes", discipline: "grid" }).success,
+    ).toBe(false);
+    expect(CreateContainerRequestSchema.safeParse({ name: "Notes", transient: true }).success).toBe(
+      false,
+    );
   });
 });
 
 describe("tile layout schemas", () => {
-  const leaf = (id: string, surface: TileSurface | null = null): TileNode => ({
+  const leaf = (id: string, ref: TileRef | null = null): Tile => ({
     id,
     dir: null,
     ratios: [],
     children: [],
-    surface,
+    ref,
   });
-  const split = (id: string, children: readonly string[]): TileNode => ({
+  const split = (id: string, children: readonly string[]): Tile => ({
     id,
     dir: "row",
     ratios: children.map(() => 1 / children.length),
     children: [...children],
-    surface: null,
+    ref: null,
   });
-  const terminal = (sessionId: string): TileSurface => ({ kind: "terminal", sessionId });
+  const terminal = (terminalId: string): TileRef => ({ kind: "terminal", terminalId });
 
-  test("surfaces discriminate terminals from embedded canvases", () => {
-    expect(TileSurfaceSchema.parse(terminal("s1"))).toEqual({ kind: "terminal", sessionId: "s1" });
-    expect(TileSurfaceSchema.parse({ kind: "pad", padId: "p1" })).toEqual({
-      kind: "pad",
-      padId: "p1",
+  test("refs discriminate terminals from embedded canvases", () => {
+    expect(TileRefSchema.parse(terminal("s1"))).toEqual({ kind: "terminal", terminalId: "s1" });
+    expect(TileRefSchema.parse({ kind: "container", containerId: "p1" })).toEqual({
+      kind: "container",
+      containerId: "p1",
     });
-    expect(TileSurfaceSchema.safeParse({ kind: "pad", padId: "" }).success).toBe(false);
-    expect(TileSurfaceSchema.safeParse({ kind: "browser", url: "https://x" }).success).toBe(false);
+    expect(TileRefSchema.safeParse({ kind: "container", containerId: "" }).success).toBe(false);
+    expect(TileRefSchema.safeParse({ kind: "browser", url: "https://x" }).success).toBe(false);
     expect(
-      TileSurfaceSchema.safeParse({ kind: "terminal", sessionId: "s1", padId: "p1" }).success,
+      TileRefSchema.safeParse({ kind: "terminal", terminalId: "s1", containerId: "p1" }).success,
     ).toBe(false);
   });
 
   test("nodes accept both shapes and reject malformed geometry", () => {
-    expect(TileNodeSchema.parse(leaf(ROOT_TILE_ID))).toEqual(leaf(ROOT_TILE_ID));
-    expect(TileNodeSchema.parse(split("s", ["a", "b"]))).toEqual(split("s", ["a", "b"]));
-    expect(TileNodeSchema.safeParse({ ...leaf("t1"), dir: "diagonal" }).success).toBe(false);
-    expect(TileNodeSchema.safeParse({ ...split("s", ["a", "b"]), ratios: [0, 1] }).success).toBe(
-      false,
-    );
-    expect(TileNodeSchema.safeParse({ ...leaf("t1"), extra: 1 }).success).toBe(false);
-    expect(TileNodeSchema.safeParse({ ...leaf("t1"), id: "" }).success).toBe(false);
+    expect(TileSchema.parse(leaf(ROOT_TILE_ID))).toEqual(leaf(ROOT_TILE_ID));
+    expect(TileSchema.parse(split("s", ["a", "b"]))).toEqual(split("s", ["a", "b"]));
+    expect(TileSchema.safeParse({ ...leaf("t1"), dir: "diagonal" }).success).toBe(false);
+    expect(TileSchema.safeParse({ ...split("s", ["a", "b"]), ratios: [0, 1] }).success).toBe(false);
+    expect(TileSchema.safeParse({ ...leaf("t1"), extra: 1 }).success).toBe(false);
+    expect(TileSchema.safeParse({ ...leaf("t1"), id: "" }).success).toBe(false);
     expect(TileLayoutSchema.parse({ root: leaf(ROOT_TILE_ID) })).toEqual({
       root: leaf(ROOT_TILE_ID),
     });
@@ -527,7 +541,7 @@ describe("tile layout schemas", () => {
       validateTileLayout({
         root: split(ROOT_TILE_ID, ["t1", "t2"]),
         t1: leaf("t1", terminal("s1")),
-        t2: leaf("t2", { kind: "pad", padId: "p1" }),
+        t2: leaf("t2", { kind: "container", containerId: "p1" }),
       }),
     ).toBe(true);
     // Unreachable garbage is inert: rejecting it would strand a live room.
@@ -566,10 +580,10 @@ describe("tile layout schemas", () => {
         t2: leaf("t2"),
       }),
     ).toBe(false);
-    // Surfaces live on leaves; splits carry structure only.
+    // Refs live on leaves; splits carry structure only.
     expect(
       validateTileLayout({
-        root: { ...split(ROOT_TILE_ID, ["t1"]), surface: terminal("s1") },
+        root: { ...split(ROOT_TILE_ID, ["t1"]), ref: terminal("s1") },
         t1: leaf("t1"),
       }),
     ).toBe(false);
@@ -581,11 +595,11 @@ describe("tile layout schemas", () => {
   test("validate rejects a container tiling itself", () => {
     const layout = {
       root: split(ROOT_TILE_ID, ["t1", "t2"]),
-      t1: leaf("t1", { kind: "pad" as const, padId: "view-1" }),
+      t1: leaf("t1", { kind: "container" as const, containerId: "c-1" }),
       t2: leaf("t2", terminal("s1")),
     };
-    expect(validateTileLayout(layout, "view-1")).toBe(false);
-    expect(validateTileLayout(layout, "view-2")).toBe(true);
+    expect(validateTileLayout(layout, "c-1")).toBe(false);
+    expect(validateTileLayout(layout, "c-2")).toBe(true);
     expect(validateTileLayout(layout)).toBe(true);
   });
 });
@@ -600,19 +614,17 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("the current version is ACCEPTED on the machine channel, with every version before it", () => {
+  test("v16 RESETS the acceptance set, because the agent wire itself moved", () => {
     /*
-      The verdict a bump owes: v14 -> v15 touched session frames and HTTP bodies only — the
-      plugin behavioral contract lives in manifests and roster rows, and an agent never sees
-      either. The agent wire (AgentMessage / ServerToAgentMessage) is byte-identical, so the
-      new version is ADDED rather than the set being reset. Forcing a fleet of long-lived
-      agents holding live PTYs to restart for a change that locks none of them out is the
-      exact failure the invariant guards against.
+      The verdict a bump owes: v15 -> v16 is the lexicon cut, and it renamed the MACHINE
+      wire — `sessionId` became `terminalId` on every agent frame, `hello.sessions` became
+      `hello.terminals`, and the injected PTY environment carries `MANIFOLD_CONTAINER`. A
+      v15 agent can neither be understood nor understand this server, so the set is reset
+      to `{16}` and the upgrade is a coordinated fleet restart. Every earlier bump left the
+      agent wire byte-identical (or additive-optional) and therefore ADDED; this one is the
+      first that could not.
     */
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
-    const accepted = [...MACHINE_PROTOCOL_COMPAT_VERSIONS].sort((a, b) => a - b);
-    expect(accepted).toEqual(
-      Array.from({ length: PROTOCOL_VERSION - 1 }, (_v, index) => index + 2),
-    );
+    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION]);
   });
 });

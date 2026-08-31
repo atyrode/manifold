@@ -3,6 +3,14 @@
 Date: 2026-08-31
 Status: accepted
 
+Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
+cites moved in the lexicon cut. The plugin-roster join is **assembly**, so `composeRoster` is
+`assembleRoster` and `CompositionError` is `AssemblyError` — "composition" below always means
+that join, never the tiled container discipline that now owns the word. A "pad-scoped" token is
+container-scoped (`AuthContext.containerScope`), `POST /api/place` became
+`core.space.place`, and the capabilities it discusses are `containers:read` / `containers:write`
+/ `scenes:write` / `terminals:spawn` / `terminals:write`. Canon is `AXIOMS.md` §Lexicon.
+
 ## Context
 
 The axioms ratified for manifold are **A1 everything is a plugin** (the engine plus core

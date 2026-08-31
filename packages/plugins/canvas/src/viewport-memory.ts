@@ -1,11 +1,11 @@
 /**
- * Per-pad, per-device camera memory: the viewport (scroll + zoom) survives a
+ * Per-container, per-device camera memory: the viewport (scroll + zoom) survives a
  * refresh via localStorage. Pure policy module — serialization, validation,
  * and storage-fault tolerance live here (unit-tested); the component only
  * decides WHEN to save/restore.
  *
  * Storage faults (privacy mode, quota, disabled storage) must never break the
- * pad: every operation degrades to a no-op.
+ * container: every operation degrades to a no-op.
  */
 
 export interface StoredViewport {
@@ -18,14 +18,14 @@ export interface StoredViewport {
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 30;
 
-/** Minimal Storage surface so tests can inject fakes (including throwing ones). */
+/** Minimal Storage ref so tests can inject fakes (including throwing ones). */
 export interface ViewportStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
-export function viewportMemoryKey(padId: string): string {
-  return `manifold:viewport:${padId}`;
+export function viewportMemoryKey(containerId: string): string {
+  return `manifold:viewport:${containerId}`;
 }
 
 export function encodeViewport(viewport: StoredViewport): string {
@@ -57,24 +57,24 @@ export function decodeViewport(raw: string | null): StoredViewport | null {
   return { x, y, zoom };
 }
 
-/** Loads the remembered camera for a pad; null on absence, garbage, or storage fault. */
-export function loadViewport(storage: ViewportStorage, padId: string): StoredViewport | null {
+/** Loads the remembered camera for a container; null on absence, garbage, or storage fault. */
+export function loadViewport(storage: ViewportStorage, containerId: string): StoredViewport | null {
   try {
-    return decodeViewport(storage.getItem(viewportMemoryKey(padId)));
+    return decodeViewport(storage.getItem(viewportMemoryKey(containerId)));
   } catch {
     return null;
   }
 }
 
-/** Remembers the camera for a pad; silently a no-op on storage faults. */
+/** Remembers the camera for a container; silently a no-op on storage faults. */
 export function saveViewport(
   storage: ViewportStorage,
-  padId: string,
+  containerId: string,
   viewport: StoredViewport,
 ): void {
   try {
-    storage.setItem(viewportMemoryKey(padId), encodeViewport(viewport));
+    storage.setItem(viewportMemoryKey(containerId), encodeViewport(viewport));
   } catch {
-    // quota/privacy mode: camera memory is a nicety, never worth breaking the pad
+    // quota/privacy mode: camera memory is a nicety, never worth breaking the container
   }
 }

@@ -9,7 +9,7 @@ import type { ElementHost } from "./host.ts";
  * different frames — a React Flow node type on a canvas, a tile leaf in a composition — and
  * each of them already owns a wrapper. Threading the host through those wrappers' prop types
  * would make React Flow's node-props shape part of the element contract, which is exactly the
- * host internal a plugin must not learn (ADR 0010). The surface provides; the renderer asks.
+ * host internal a plugin must not learn (ADR 0010). The ref provides; the renderer asks.
  *
  * Its own module, not a member of `hooks.ts`, because the projection registry mounts elements
  * through it: a barrel that re-exports both cannot also be what one of them imports.

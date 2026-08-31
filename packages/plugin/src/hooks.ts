@@ -16,7 +16,7 @@ export {
   carriesItem,
   containerEnvelope,
   endCarry,
-  envelopeSurface,
+  envelopeRef,
   parseEnvelope,
   readEnvelope,
   sealEnvelope,
@@ -52,19 +52,18 @@ export * from "./presence/index.ts";
  * none of them may import each other.
  */
 export {
-  SURFACE_NAMES,
   carryFrame,
   carryGhosts,
   carryPayload,
   carryPlacementId,
   noteTitle,
   remoteTileCarries,
-  surfaceDisplayLabel,
+  refDisplayLabel,
   type CarryGhost,
   type CarryPoint,
   type CarrySource,
   type RemoteTileCarry,
-  type SurfaceLabelLookups,
+  type RefLabelLookups,
 } from "./carry.ts";
 export {
   useCarry,
@@ -105,7 +104,7 @@ export {
   paneShifts,
   resolveTileAim,
   ringFraction,
-  surfaceKey,
+  refKey,
   tileChainAt,
   tileDestinationFor,
   tileProspect,
@@ -133,31 +132,31 @@ export {
 } from "./use-tile-drop.ts";
 /**
  * PROJECTION: how a container renderer paints an occupant belonging to another plugin, and
- * how a mounted surface publishes its viewport back to the host.
+ * how a mounted ref publishes its viewport back to the host.
  */
 export {
   ElementOutlet,
-  PadOverlayOutlet,
-  PadSurface,
+  ContainerOverlayOutlet,
+  ContainerRenderer,
   ProjectionProvider,
-  TerminalSurface,
+  TerminalRenderer,
   ViewportRegistrationProvider,
   useProjection,
   useTerminalFacet,
   useViewportRegistration,
   type ElementOutletProps,
-  type PadOverlayOutletProps,
-  type PadOverlayProps,
-  type PadSurfaceOutletProps,
-  type PadSurfaceProps,
+  type ContainerOverlayOutletProps,
+  type ContainerOverlayProps,
+  type ContainerRendererOutletProps,
+  type ContainerRendererProps,
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
   type ProjectionState,
   type RegisteredElement,
-  type RegisteredSurface,
+  type RegisteredRenderer,
   type RegisteredTool,
   type TerminalFacet,
-  type TerminalSurfaceProps,
+  type TerminalRendererProps,
 } from "./projection.ts";
 export { sessionUrl } from "./session-url.ts";
 /**
@@ -166,27 +165,27 @@ export { sessionUrl } from "./session-url.ts";
  */
 export {
   countRender,
-  debugSeamEnabled,
+  debugProbeEnabled,
   renderCounts,
   toElementSnapshot,
   type DebugCamera,
   type DebugElementSnapshot,
   type DebugGestureSnapshot,
   type DebugViewport,
-  type ManifoldDebugSeam,
-} from "./debug-seam.ts";
+  type ManifoldDebugProbe,
+} from "./debug-probe.ts";
 /**
- * THE ROUTED CONTAINER, as the shell publishes it: which pad the viewer asked for, what the
+ * THE ROUTED CONTAINER, as the shell publishes it: which container the viewer asked for, what the
  * index knows about it, and the verbs a renderer inside it needs. Its own module because
  * three parties read it — the floor shell that publishes it and the two container renderers
  * that consume it — and a context cannot ride `@manifold/plugin`'s platform-free root.
  */
 export {
-  PadRouteProvider,
-  usePadRoute,
-  type PadRoute,
+  ContainerRouteProvider,
+  useContainerRoute,
+  type ContainerRoute,
   type WorkspaceSidebarState,
-} from "./pad-route.ts";
+} from "./container-route.ts";
 
 import {
   useCallback,
@@ -199,14 +198,14 @@ import {
 
 /**
  * The workspace index is HTTP, not a live channel: this tab learns that another tab created a
- * container, parked a terminal, or joined a room only by asking again. Five surfaces did that
+ * container, parked a terminal, or joined a room only by asking again. Five refs did that
  * with five hand-rolled effects, each re-deriving the same four concerns — fetch once
  * immediately, then on an interval; drop a response that a token or route change superseded;
  * hold a response that would land mid-gesture; and leave state untouched when the answer did
  * not change. This is that one poll.
  *
  * EVENTUAL FIX: a workspace event channel. The session socket already carries per-room fan-out;
- * once the server pushes container/session/presence changes over it, every caller of this hook
+ * once the server pushes container/terminal/presence changes over it, every caller of this hook
  * becomes a subscription and the intervals go away. The hook is deliberately shaped like a
  * subscription (value + local writes + explicit refresh) so that swap stays mechanical.
  */

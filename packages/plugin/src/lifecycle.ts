@@ -40,16 +40,13 @@ export interface LifecycleCtx {
  * composition (topological) order, so a plugin reading them sees dependencies before
  * dependents, exactly as the fan-out itself is ordered.
  */
-export interface CompositionDelta {
+export interface AssemblyDelta {
   readonly enabled: readonly PluginId[];
   readonly disabled: readonly PluginId[];
 }
 
 export type LifecycleHook = (ctx: LifecycleCtx) => void | Promise<void>;
-export type CompositionChangedHook = (
-  ctx: LifecycleCtx,
-  delta: CompositionDelta,
-) => void | Promise<void>;
+export type AssemblyChangedHook = (ctx: LifecycleCtx, delta: AssemblyDelta) => void | Promise<void>;
 
 /**
  * The hooks a plugin may declare. Every one is optional and most plugins declare none: a
@@ -68,7 +65,7 @@ export type CompositionChangedHook = (
 export interface PluginLifecycle {
   readonly onEnable?: LifecycleHook;
   readonly onDisable?: LifecycleHook;
-  readonly onCompositionChanged?: CompositionChangedHook;
+  readonly onAssemblyChanged?: AssemblyChangedHook;
   readonly onPurge?: LifecycleHook;
 }
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TileEdgeSchema } from "./layout.ts";
-import { PlacementItemSchema, PlacementSurfaceSchema } from "./placement.ts";
+import { PlacementItemSchema, PlacementRefSchema } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /**
@@ -34,13 +34,14 @@ export const PresencePayloadSchema = z.strictObject({
   focus: z.strictObject({ elementId: z.string().min(1) }).nullish(),
   status: PresenceStatusSchema.optional(),
   /**
-   * VIEW STATE, published: which tool the peer is holding, what it is editing, which
-   * container has its focus, whether its sidebar is collapsed. This is the multiplayer
-   * axiom applied to the last private corner of the client — a chrome state only one
-   * browser tab could see is a capability no other principal can observe or drive, so it
-   * rides presence like everything else that dies with the connection.
+   * VANTAGE, published: where this principal is standing and what it holds — which tool,
+   * what it is editing, which container has its focus, whether its sidebar is collapsed.
+   * This is the multiplayer axiom applied to the last private corner of the client — a
+   * chrome state only one browser tab could see is a capability no other principal can
+   * observe or drive, so it rides presence like everything else that dies with the
+   * connection.
    */
-  view: z
+  vantage: z
     .strictObject({
       tool: z.string().min(1).max(64).nullish(),
       editingElementId: z.string().min(1).nullish(),
@@ -75,21 +76,21 @@ export type PresenceState = z.infer<typeof PresenceStateSchema>;
 /**
  * What a pointer is HOLDING right now. Motion is the dynamic half of the placement
  * algebra: grabbing anything by its chrome is one `carry`, whatever the item and
- * whatever the renderer, so the surface that will be placed on release is the surface
+ * whatever the renderer, so the ref that will be placed on release is the ref
  * that travels while the gesture is live. Collaborators paint it from this alone.
  *
  * The label is the item's display name at grab time. It rides along because the viewer
- * frequently cannot derive it: a terminal carried in from the pool, or a tile carried
- * off a widget, belongs to a room the viewer has not joined.
+ * frequently cannot derive it: a terminal carried in from the index, or a tile carried
+ * off a portal, belongs to a room the viewer has not joined.
  */
 /**
- * Where a live carry is currently AIMING inside a tiled container: the resolved drop
+ * Where a live carry is currently AIMING inside a composition: the resolved drop
  * target a collaborator can re-derive the full split preview from, using the same
  * geometry kernel the producer used. Sent only while an aim is armed; a frame without
  * one means the carry is over no target (viewers drop their preview).
  */
 export const CarryAimSchema = z.strictObject({
-  /** The tiled container (composition id) the aim addresses. */
+  /** The composition the aim addresses. */
   containerId: z.string().min(1),
   tileId: z.string().min(1),
   edge: TileEdgeSchema,
@@ -100,9 +101,9 @@ export const CarryAimSchema = z.strictObject({
 export type CarryAim = z.infer<typeof CarryAimSchema>;
 
 export const CarrySchema = z.strictObject({
-  surface: PlacementSurfaceSchema,
+  ref: PlacementRefSchema,
   /**
-   * WHAT the surface names, resolved by the producer at grab time. Required: a surface is
+   * WHAT the ref names, resolved by the producer at grab time. Required: a ref is
    * an address, and turning an address into an item takes a census of containers,
    * terminals and solo occupancy that only the grabber is guaranteed to hold. A viewer
    * that had to re-resolve it painted a refusal over a legal drag whenever its index poll

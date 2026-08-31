@@ -6,11 +6,11 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import type { MachineSummary, Pad, PadPresence, PlacementItem } from "@manifold/protocol";
+import type { MachineSummary, Container, Attendance, PlacementItem } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";
-import type { ElementDocument, ElementProps, HostServices, PadViewportHandle } from "./host.ts";
+import type { ElementDocument, ElementProps, HostServices, ViewportHandle } from "./host.ts";
 
 /**
  * PROJECTION — how one renderer paints a node it does not own (A4: composition is projection,
@@ -23,14 +23,14 @@ import type { ElementDocument, ElementProps, HostServices, PadViewportHandle } f
  * the engine answers with whatever the composition registered for it.
  *
  * That is the same shape the element registry already had, generalized to the other three
- * things a surface projects, and it is deliberately one mechanism rather than four channels:
+ * things a ref projects, and it is deliberately one mechanism rather than four channels:
  *
  *   terminals   the terminal viewer plus the machine-choice policy that decides where a new
  *               terminal is born (one facet, because the birth and the paint are one plugin's)
- *   pads        a container renderer, keyed by the container's DISCIPLINE (`canvas`, `tiled`) —
- *               which is how a tiled leaf embeds a canvas and a canvas node embeds a
+ *   containers        a container renderer, keyed by the container's DISCIPLINE (`canvas`, `composition`) —
+ *               which is how a composition leaf embeds a canvas and a canvas node embeds a
  *               composition without either plugin knowing the other exists
- *   overlays    decoration painted OVER somebody else's surface, keyed by slot (the presence
+ *   overlays    decoration painted OVER somebody else's ref, keyed by slot (the presence
  *               island, the spotlight chip)
  *   elements    a scene record's renderer, keyed by wire element type
  *
@@ -54,7 +54,7 @@ export interface ProjectionPlaceholderProps {
 }
 
 /** A registered component plus the roster facts a placeholder needs to name its absence. */
-export interface RegisteredSurface<P> {
+export interface RegisteredRenderer<P> {
   readonly plugin: string;
   /** The owning plugin's human title, for the placeholder. */
   readonly title: string;
@@ -72,7 +72,7 @@ export interface RegisteredElement {
 }
 
 /**
- * A contributed toolbar mode. Modes carry no component — a tool is a NAME the surface that
+ * A contributed toolbar mode. Modes carry no component — a tool is a NAME the ref that
  * owns the toolbar switches on — so the registry publishes the vocabulary and nothing else.
  * A disabled tool stays in the list, `enabled: false`, so the strip that draws it can leave
  * it out while the composition still explains why (ADR 0013 §4: chrome hides, data never).
@@ -90,14 +90,14 @@ export interface RegisteredTool {
  * became a plugin; they are declared HERE because the declaration has to sit where both the
  * implementor and the mount sites can reach it, and none of them may import each other.
  */
-export interface TerminalSurfaceProps {
+export interface TerminalRendererProps {
   readonly client: SessionClient;
-  readonly sessionId: string;
-  /** Stable placement id: a canvas element id, or a tile id inside a tiled container. */
+  readonly terminalId: string;
+  /** Stable placement id: a canvas element id, or a tile id inside a composition. */
   readonly elementId: string;
   readonly active: boolean;
   readonly panelHighlighted: boolean;
-  /** The session's machine as the wire publishes it; null before the first fetch resolves. */
+  /** The terminal's machine as the wire publishes it; null before the first fetch resolves. */
   readonly machine: MachineSummary | null;
   /** `preview` is the read-only chrome a WATCHED portal paints; `full` is the default. */
   readonly chrome?: "full" | "preview";
@@ -113,13 +113,13 @@ export interface TerminalSurfaceProps {
 }
 
 /**
- * Everything a surface needs from whichever plugin owns terminals: how to paint one, and
+ * Everything a ref needs from whichever plugin owns terminals: how to paint one, and
  * where a new one is born. The two travel together because they are one plugin's policy —
  * a view that may open a terminal must be able to ask which machine this device last used
  * for this container, and that memory is the terminal plugin's, not the renderer's.
  */
 export interface TerminalFacet {
-  readonly View: ComponentType<TerminalSurfaceProps>;
+  readonly View: ComponentType<TerminalRendererProps>;
   /**
    * The machine a terminal opened in `containerId` should land on: this device's memory for
    * that container when it still exists in `machines`, else the composed default, else null
@@ -134,24 +134,24 @@ export interface TerminalFacet {
 }
 
 /**
- * A container renderer, mounted INSIDE another container OR as the routed surface itself.
+ * A container renderer, mounted INSIDE another container OR as the routed ref itself.
  * Deliberately the neutral subset of what a routed renderer takes: a projection is a
  * reference plus a pipe, so the props carry the address and the index facts the placement
  * algebra needs locally, and nothing about the route. Everything route-shaped — the return
  * address, the index refresh, the create-terminal publication — a renderer reads from
- * {@link PadRoute} itself.
+ * {@link ContainerRoute} itself.
  *
  * `host` arrives as a PROP, exactly as it does for a panel or a section: a renderer dials
  * its own room pipe with the host's token (A4) and paints in the host's principal colour,
  * and every mount site must therefore hand its own host down rather than let a renderer
  * discover one.
  */
-export interface PadSurfaceProps {
+export interface ContainerRendererProps {
   readonly host: HostServices;
-  readonly padId: string;
+  readonly containerId: string;
   /** Every container the index knows, so an embedded renderer can answer the algebra locally. */
-  readonly pads: readonly Pad[];
-  readonly presence: readonly PadPresence[];
+  readonly containers: readonly Container[];
+  readonly presence: readonly Attendance[];
   /** The index's solo-composition fold; an embedded renderer cannot compute it. */
   readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
   readonly navigate: (path: string) => void;
@@ -160,15 +160,15 @@ export interface PadSurfaceProps {
 }
 
 /**
- * Decoration painted over a mounted pad surface, by slot. `host` rides along for the same
+ * Decoration painted over a mounted container ref, by slot. `host` rides along for the same
  * reason a panel's does, and one overlay makes it load-bearing: the spotlight chip is the
  * RECEIVING half of `core.presence.focus`, and moving the camera means calling
  * `host.viewport.centerOn` — the seam the mounted renderer registered.
  */
-export interface PadOverlayProps {
+export interface ContainerOverlayProps {
   readonly host: HostServices;
   readonly client: SessionClient;
-  readonly padId: string;
+  readonly containerId: string;
 }
 
 /**
@@ -185,13 +185,13 @@ export interface ProjectionRegistry {
     readonly enabled: boolean;
     readonly facet: TerminalFacet;
   } | null;
-  /** Keyed by container discipline — `Pad["layout"]`. */
-  padSurface(layout: string): RegisteredSurface<PadSurfaceProps> | null;
-  overlay(slot: string): RegisteredSurface<PadOverlayProps> | null;
+  /** Keyed by container discipline — `Container["discipline"]`. */
+  renderer(layout: string): RegisteredRenderer<ContainerRendererProps> | null;
+  overlay(slot: string): RegisteredRenderer<ContainerOverlayProps> | null;
   element(type: string): RegisteredElement | null;
   /** The whole element vocabulary, for a paint boundary that needs a map (React Flow's). */
   readonly elements: ReadonlyMap<string, RegisteredElement>;
-  /** The tool vocabulary in roster order, for whichever surface owns a toolbar. */
+  /** The tool vocabulary in roster order, for whichever ref owns a toolbar. */
   readonly tools: readonly RegisteredTool[];
 }
 
@@ -220,7 +220,7 @@ export function useProjection(): ProjectionRegistry {
 }
 
 /**
- * THE OTHER DIRECTION: what a mounted pad renderer publishes back to the host.
+ * THE OTHER DIRECTION: what a mounted container renderer publishes back to the host.
  *
  * `HostServices.viewport` is how a plugin moves the view a spotlight names (ADR 0013; A2's
  * "drivable by other principals"), and only the renderer actually on screen can answer it —
@@ -228,18 +228,18 @@ export function useProjection(): ProjectionRegistry {
  * context declared HERE because its two ends are a floor host and a plugin renderer, and the
  * renderer may not import the host.
  *
- * Registering null is the honest state, not a no-op: no pad view mounted means no viewport,
+ * Registering null is the honest state, not a no-op: no container view mounted means no viewport,
  * and a spotlight arriving then must land nowhere rather than somewhere stale.
  */
-const ViewportRegistrationContext = createContext<
-  ((handle: PadViewportHandle | null) => void) | null
->(null);
+const ViewportRegistrationContext = createContext<((handle: ViewportHandle | null) => void) | null>(
+  null,
+);
 
 export function ViewportRegistrationProvider({
   value,
   children,
 }: {
-  readonly value: (handle: PadViewportHandle | null) => void;
+  readonly value: (handle: ViewportHandle | null) => void;
   readonly children: ReactNode;
 }): ReactElement {
   return createElement(ViewportRegistrationContext.Provider, { value }, children);
@@ -250,15 +250,15 @@ export function ViewportRegistrationProvider({
  * simply has nowhere to publish. Silence beats a crash for a channel whose whole payload is
  * an optional capability.
  */
-export function useViewportRegistration(): (handle: PadViewportHandle | null) => void {
+export function useViewportRegistration(): (handle: ViewportHandle | null) => void {
   return useContext(ViewportRegistrationContext) ?? noViewportRegistration;
 }
 
-const noViewportRegistration = (_handle: PadViewportHandle | null): void => undefined;
+const noViewportRegistration = (_handle: ViewportHandle | null): void => undefined;
 
 /**
  * The terminal facet, or null when no plugin owns terminals right now (unregistered, or its
- * owner is disabled). Null is a real answer: a surface that cannot paint a terminal also
+ * owner is disabled). Null is a real answer: a ref that cannot paint a terminal also
  * must not offer to open one.
  */
 export function useTerminalFacet(): TerminalFacet | null {
@@ -268,7 +268,7 @@ export function useTerminalFacet(): TerminalFacet | null {
 }
 
 /** One projected terminal. Every miss is the engine's named placeholder, never a blank box. */
-export function TerminalSurface(props: TerminalSurfaceProps): ReactElement {
+export function TerminalRenderer(props: TerminalRendererProps): ReactElement {
   const registry = useProjection();
   const terminals = registry.terminals;
   const Placeholder = registry.Placeholder;
@@ -279,20 +279,20 @@ export function TerminalSurface(props: TerminalSurfaceProps): ReactElement {
   return createElement(terminals.facet.View, props);
 }
 
-export interface PadSurfaceOutletProps extends PadSurfaceProps {
+export interface ContainerRendererOutletProps extends ContainerRendererProps {
   /** The container's discipline, which decides whose renderer paints it. */
   readonly layout: string;
 }
 
 /**
- * One projected container. A tiled leaf holding a canvas and a canvas node holding a
+ * One projected container. A composition leaf holding a canvas and a canvas node holding a
  * composition are the same call with a different `layout` — which is why compositions and
  * canvases can nest arbitrarily without either plugin importing the other.
  */
-export function PadSurface({ layout, ...surface }: PadSurfaceOutletProps): ReactElement {
+export function ContainerRenderer({ layout, ...ref }: ContainerRendererOutletProps): ReactElement {
   const registry = useProjection();
   const Placeholder = registry.Placeholder;
-  const registered = registry.padSurface(layout);
+  const registered = registry.renderer(layout);
   if (registered === null) return createElement(Placeholder, { name: layout, state: "unknown" });
   if (!registered.enabled) {
     return createElement(Placeholder, { name: registered.title, state: "disabled" });
@@ -300,20 +300,23 @@ export function PadSurface({ layout, ...surface }: PadSurfaceOutletProps): React
   if (registered.Component === null) {
     return createElement(Placeholder, { name: registered.title, state: "unavailable" });
   }
-  return createElement(registered.Component, surface);
+  return createElement(registered.Component, ref);
 }
 
-export interface PadOverlayOutletProps extends PadOverlayProps {
+export interface ContainerOverlayOutletProps extends ContainerOverlayProps {
   readonly slot: string;
 }
 
 /**
- * A slot of decoration over the mounted surface. Absence paints NOTHING — no placeholder —
- * because an overlay is somebody else's chrome floating on this surface, and an inert box
+ * A slot of decoration over the mounted ref. Absence paints NOTHING — no placeholder —
+ * because an overlay is somebody else's chrome floating on this ref, and an inert box
  * over a live canvas would be worse than the missing decoration. The wrapper still carries
  * `data-overlay-slot`, so a gate can assert that the slot exists and is empty.
  */
-export function PadOverlayOutlet({ slot, ...overlay }: PadOverlayOutletProps): ReactElement {
+export function ContainerOverlayOutlet({
+  slot,
+  ...overlay
+}: ContainerOverlayOutletProps): ReactElement {
   const registry = useProjection();
   const registered = registry.overlay(slot);
   const painted =
@@ -322,7 +325,7 @@ export function PadOverlayOutlet({ slot, ...overlay }: PadOverlayOutletProps): R
       : createElement(registered.Component, overlay);
   return createElement(
     "div",
-    { className: "pad-overlay-slot", "data-overlay-slot": slot },
+    { className: "container-overlay-slot", "data-overlay-slot": slot },
     painted,
   );
 }
@@ -331,10 +334,10 @@ export interface ElementOutletProps {
   /** The WIRE element type, exactly as the scene document stores it (`text`). */
   readonly type: string;
   readonly elementId: string;
-  /** The element's record, as this surface projected it; `{}` while the record is in flight. */
+  /** The element's record, as this ref projected it; `{}` while the record is in flight. */
   readonly data: Readonly<Record<string, unknown>>;
   readonly doc: ElementDocument;
-  /** This surface's editing focus — one occupant of it is in its editor at a time. */
+  /** This ref's editing focus — one occupant of it is in its editor at a time. */
   readonly editingElementId: string | null;
   readonly onBeginEditing: (elementId: string) => void;
   readonly onEndEditing: (elementId: string) => void;

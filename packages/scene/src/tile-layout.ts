@@ -2,24 +2,24 @@ import {
   ROOT_TILE_ID,
   TileLayoutSchema,
   validateTileLayout,
+  type Tile,
   type TileEdge,
   type TileLayout,
-  type TileNode,
-  type TileSurface,
+  type TileRef,
 } from "@manifold/protocol";
 import * as Y from "yjs";
 
 /**
- * The ONLY Yjs code for tiled containers. Split/collapse math is pure and lives
+ * The ONLY Yjs code for compositions. Split/collapse math is pure and lives
  * beside the doc writers so it can be unit-tested without a document; the doc
  * writers are thin appliers that diff the pure result into the shared map.
  *
  * Structural writes are server-authored (they arrive over HTTP), so tile ids are
- * allocated deterministically from the current node table — one writer, no
+ * allocated deterministically from the current tile table — one writer, no
  * id races. Ratio drags are the only client-authored mutation.
  */
 
-/** Yjs root key holding a tiled container's node table; canvases never allocate it. */
+/** Yjs root key holding a composition's tile table; canvases never allocate it. */
 export const LAYOUT_KEY = "layout";
 
 export function layoutMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
@@ -33,14 +33,14 @@ export function emptyTileLayout(): TileLayout {
   return { [ROOT_TILE_ID]: tileLeaf(ROOT_TILE_ID, null) };
 }
 
-export function tileLeaf(id: string, surface: TileSurface | null): TileNode {
-  return { id, dir: null, ratios: [], children: [], surface };
+export function tileLeaf(id: string, ref: TileRef | null): Tile {
+  return { id, dir: null, ratios: [], children: [], ref };
 }
 
 /** Parent of `tileId`, or null for the root and for unreachable garbage. */
 export function tileParentId(layout: TileLayout, tileId: string): string | null {
-  for (const node of Object.values(layout)) {
-    if (node.children.includes(tileId)) return node.id;
+  for (const tile of Object.values(layout)) {
+    if (tile.children.includes(tileId)) return tile.id;
   }
   return null;
 }
@@ -49,28 +49,28 @@ export function tileParentId(layout: TileLayout, tileId: string): string | null 
 export function tileLeafIds(layout: TileLayout): string[] {
   const leaves: string[] = [];
   const walk = (id: string): void => {
-    const node = layout[id];
-    if (node === undefined) return;
-    if (node.dir === null) {
-      leaves.push(node.id);
+    const tile = layout[id];
+    if (tile === undefined) return;
+    if (tile.dir === null) {
+      leaves.push(tile.id);
       return;
     }
-    for (const child of node.children) walk(child);
+    for (const child of tile.children) walk(child);
   };
   walk(ROOT_TILE_ID);
   return leaves;
 }
 
 /**
- * Do two surfaces name the SAME item? Exhaustive over the union by construction, so a
+ * Do two refs name the SAME item? Exhaustive over the union by construction, so a
  * new tileable form cannot be added without deciding what its identity is.
  */
-export function sameSurface(a: TileSurface, b: TileSurface): boolean {
+export function sameTileRef(a: TileRef, b: TileRef): boolean {
   switch (a.kind) {
     case "terminal":
-      return b.kind === "terminal" && a.sessionId === b.sessionId;
-    case "pad":
-      return b.kind === "pad" && a.padId === b.padId;
+      return b.kind === "terminal" && a.terminalId === b.terminalId;
+    case "container":
+      return b.kind === "container" && a.containerId === b.containerId;
     case "text":
       return b.kind === "text" && a.elementId === b.elementId;
     case "panel":
@@ -83,15 +83,15 @@ export function sameSurface(a: TileSurface, b: TileSurface): boolean {
 }
 
 /**
- * Leaf id showing `surface`, in tree order; null when the container does not show it.
- * Placement truth for a session lives HERE and in the element table — never on a
- * session record, which one id could only ever describe partially.
+ * Leaf id showing `ref`, in tree order; null when the container does not show it.
+ * Placement truth for a terminal lives HERE and in the element table — never on a
+ * terminal record, which one id could only ever describe partially.
  */
-export function tileIdForSurface(layout: TileLayout | null, surface: TileSurface): string | null {
+export function tileIdForRef(layout: TileLayout | null, ref: TileRef): string | null {
   if (layout === null) return null;
   for (const tileId of tileLeafIds(layout)) {
-    const found = layout[tileId]?.surface ?? null;
-    if (found !== null && sameSurface(found, surface)) return tileId;
+    const found = layout[tileId]?.ref ?? null;
+    if (found !== null && sameTileRef(found, ref)) return tileId;
   }
   return null;
 }
@@ -106,12 +106,12 @@ export function nextTileId(layout: TileLayout, taken: ReadonlySet<string> = new 
 
 export interface TileInsert {
   readonly layout: TileLayout;
-  /** Tile id of the inserted surface; the placement id callers hand back. */
+  /** Tile id of the inserted ref; the placement id callers hand back. */
   readonly tileId: string;
 }
 
 /**
- * Insert `surface` next to `targetTileId`. `center` fills an empty leaf in place;
+ * Insert `ref` next to `targetTileId`. `center` fills a vacant leaf in place;
  * a CROSS-axis edge wraps the target in a new two-way split, while a SAME-axis
  * edge joins the parent split as a flat sibling (see the branch note below).
  * `between` picks the interior same-axis ratio rule: wedge between both neighbors
@@ -123,36 +123,36 @@ export interface TileInsert {
  */
 export function withTileLeaf(
   layout: TileLayout,
-  surface: TileSurface,
+  ref: TileRef,
   targetTileId: string,
   edge: TileEdge,
   between = false,
 ): TileInsert | null {
-  return insertLeaf(layout, surface, targetTileId, edge, between);
+  return insertLeaf(layout, ref, targetTileId, edge, between);
 }
 
 /**
  * The layout that would result from dropping SOMETHING at `edge` of `targetTileId`,
- * with the landing leaf left EMPTY. Preview-only: the same tree surgery `withTileLeaf`
+ * with the landing leaf left VACANT. Preview-only: the same tree surgery `withTileLeaf`
  * performs — one private implementation, two public entry points — so a preview can
  * never describe a shape the write would not produce. `withTileLeaf` keeps its
- * non-null `surface` on purpose: it underlies the server's only structural tile
- * write, and a nullable surface must never be able to reach a doc write.
+ * non-null `ref` on purpose: it underlies the server's only structural tile
+ * write, and a nullable ref must never be able to reach a doc write.
  */
-export function withTileSlot(
+export function withVacantLeaf(
   layout: TileLayout,
   targetTileId: string,
   edge: TileEdge,
   between = false,
-): { readonly layout: TileLayout; readonly slotId: string } | null {
+): { readonly layout: TileLayout; readonly vacantLeafId: string } | null {
   const inserted = insertLeaf(layout, null, targetTileId, edge, between);
-  return inserted === null ? null : { layout: inserted.layout, slotId: inserted.tileId };
+  return inserted === null ? null : { layout: inserted.layout, vacantLeafId: inserted.tileId };
 }
 
 /** The one tree surgery behind both entry points above. */
 function insertLeaf(
   layout: TileLayout,
-  surface: TileSurface | null,
+  ref: TileRef | null,
   targetTileId: string,
   edge: TileEdge,
   between: boolean,
@@ -161,9 +161,9 @@ function insertLeaf(
   if (target === undefined) return null;
 
   if (edge === "center") {
-    if (target.dir !== null || target.surface !== null) return null;
+    if (target.dir !== null || target.ref !== null) return null;
     return {
-      layout: { ...layout, [targetTileId]: { ...target, surface } },
+      layout: { ...layout, [targetTileId]: { ...target, ref } },
       tileId: targetTileId,
     };
   }
@@ -171,7 +171,7 @@ function insertLeaf(
   const dir = edge === "left" || edge === "right" ? "row" : "column";
   const leading = edge === "left" || edge === "top";
   const leafId = nextTileId(layout);
-  const leaf = tileLeaf(leafId, surface);
+  const leaf = tileLeaf(leafId, ref);
 
   if (targetTileId === ROOT_TILE_ID) {
     const movedId = nextTileId(layout, new Set([leafId]));
@@ -185,7 +185,7 @@ function insertLeaf(
           dir,
           ratios: [0.5, 0.5],
           children: leading ? [leafId, movedId] : [movedId, leafId],
-          surface: null,
+          ref: null,
         },
       },
       tileId: leafId,
@@ -255,7 +255,7 @@ function insertLeaf(
         dir,
         ratios: [0.5, 0.5],
         children: leading ? [leafId, targetTileId] : [targetTileId, leafId],
-        surface: null,
+        ref: null,
       },
       [parentId]: {
         ...parent,
@@ -268,27 +268,27 @@ function insertLeaf(
 
 /**
  * Remove a leaf and collapse the split it leaves behind: a split down to one
- * child is replaced by that child in the grandparent's slot, and a collapse that
+ * child is replaced by that child in the grandparent's seat, and a collapse that
  * reaches the root promotes the survivor's content into the root id. Removing
  * the root leaf itself empties it instead — the root always exists.
  */
 export function withoutTileLeaf(layout: TileLayout, tileId: string): TileLayout | null {
-  const node = layout[tileId];
-  if (node === undefined || node.dir !== null) return null;
+  const tile = layout[tileId];
+  if (tile === undefined || tile.dir !== null) return null;
 
   if (tileId === ROOT_TILE_ID) {
-    if (node.surface === null) return null;
+    if (tile.ref === null) return null;
     return { ...layout, [ROOT_TILE_ID]: tileLeaf(ROOT_TILE_ID, null) };
   }
 
-  const next: Record<string, TileNode> = { ...layout };
+  const next: Record<string, Tile> = { ...layout };
   delete next[tileId];
   return pruneFromParent(next, layout, tileId);
 }
 
 /** Detach `childId` from its parent, then collapse the parent when it thins out. */
 function pruneFromParent(
-  next: Record<string, TileNode>,
+  next: Record<string, Tile>,
   layout: TileLayout,
   childId: string,
 ): TileLayout | null {
@@ -335,8 +335,8 @@ function pruneFromParent(
 
 /**
  * Exchange what two leaves hold. This is what CENTER means on an occupied target: the
- * carried surface takes the exact spot it was released on and the occupant takes the seat
- * the carry came from. Only the two `surface` fields move — ids, splits and ratios are
+ * carried ref takes the exact spot it was released on and the occupant takes the seat
+ * the carry came from. Only the two `ref` fields move — ids, splits and ratios are
  * untouched — so every collaborator's tree keeps the same shape and the same identities.
  *
  * Both ids must name LEAVES: a split holds structure, never content, so there is nothing
@@ -356,8 +356,8 @@ export function withTilesSwapped(
   if (a.dir !== null || b.dir !== null) return null;
   return {
     ...layout,
-    [aTileId]: { ...a, surface: b.surface },
-    [bTileId]: { ...b, surface: a.surface },
+    [aTileId]: { ...a, ref: b.ref },
+    [bTileId]: { ...b, ref: a.ref },
   };
 }
 
@@ -367,14 +367,14 @@ export function withTilesSwapped(
  * one of these per side and each room fans its own update out. Within a single tree
  * `withTilesSwapped` is the whole operation and this is not the way to spell it.
  */
-export function withTileLeafSurface(
+export function withTileLeafRef(
   layout: TileLayout,
   tileId: string,
-  surface: TileSurface | null,
+  ref: TileRef | null,
 ): TileLayout | null {
-  const node = layout[tileId];
-  if (node === undefined || node.dir !== null) return null;
-  return { ...layout, [tileId]: { ...node, surface } };
+  const tile = layout[tileId];
+  if (tile === undefined || tile.dir !== null) return null;
+  return { ...layout, [tileId]: { ...tile, ref } };
 }
 
 /** Resize a split; ratios must stay parallel to its children and strictly positive. */
@@ -402,28 +402,28 @@ export function readTileLayout(doc: Y.Doc, containerId?: string): TileLayout | n
 }
 
 /**
- * Seeds a tiled container with a single empty leaf. A tree that fails validation
+ * Seeds a composition with a single vacant leaf. A tree that fails validation
  * is unusable, so it is replaced rather than left stranding the room.
  *
  * The seed is valid by construction, so `applyTileLayout` can never refuse it and
  * there is nothing here for a caller to handle: this stays void.
  */
-export function initTiledLayout(doc: Y.Doc, origin: unknown): void {
+export function initCompositionLayout(doc: Y.Doc, origin: unknown): void {
   if (readTileLayout(doc) !== null) return;
   applyTileLayout(doc, emptyTileLayout(), origin);
 }
 
-/** Places `surface` per `edge`; returns the new tile id, or null when rejected. */
+/** Places `ref` per `edge`; returns the new tile id, or null when rejected. */
 export function writeTileLeaf(
   doc: Y.Doc,
-  surface: TileSurface,
+  ref: TileRef,
   targetTileId: string,
   edge: TileEdge,
   origin: unknown,
   between = false,
 ): string | null {
   const layout = readTileLayout(doc) ?? emptyTileLayout();
-  const inserted = withTileLeaf(layout, surface, targetTileId, edge, between);
+  const inserted = withTileLeaf(layout, ref, targetTileId, edge, between);
   if (inserted === null) return null;
   if (!applyTileLayout(doc, inserted.layout, origin)) return null;
   return inserted.tileId;
@@ -454,15 +454,15 @@ export function swapTileLeaves(
 }
 
 /** Writes one leaf's occupant: the per-document half of a cross-container exchange. */
-export function writeTileLeafSurface(
+export function writeTileLeafRef(
   doc: Y.Doc,
   tileId: string,
-  surface: TileSurface | null,
+  ref: TileRef | null,
   origin: unknown,
 ): boolean {
   const layout = readTileLayout(doc);
   if (layout === null) return false;
-  const next = withTileLeafSurface(layout, tileId, surface);
+  const next = withTileLeafRef(layout, tileId, ref);
   if (next === null) return false;
   if (!applyTileLayout(doc, next, origin)) return false;
   return true;
@@ -483,7 +483,7 @@ export function setTileRatios(
 }
 
 /**
- * Diffs a whole node table into the doc: only changed fields are written, so a
+ * Diffs a whole tile table into the doc: only changed fields are written, so a
  * ratio drag touches one key and never churns the tiles around it.
  *
  * REFUSES a table the read side could not read back, before touching the doc, and
@@ -517,20 +517,20 @@ export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): 
     for (const id of [...map.keys()]) {
       if (next[id] === undefined) map.delete(id);
     }
-    for (const node of Object.values(next)) {
-      const existing = map.get(node.id);
+    for (const tile of Object.values(next)) {
+      const existing = map.get(tile.id);
       if (existing instanceof Y.Map) {
-        updateTileFields(existing, node);
+        updateTileFields(existing, tile);
       } else {
         // A fresh map is not integrated yet, so it is filled blind: reading a
         // detached Yjs type is an invalid access.
         const created = new Y.Map<unknown>();
-        created.set("id", node.id);
-        created.set("dir", node.dir);
-        created.set("ratios", [...node.ratios]);
-        created.set("children", [...node.children]);
-        created.set("surface", node.surface === null ? null : { ...node.surface });
-        map.set(node.id, created);
+        created.set("id", tile.id);
+        created.set("dir", tile.dir);
+        created.set("ratios", [...tile.ratios]);
+        created.set("children", [...tile.children]);
+        created.set("ref", tile.ref === null ? null : { ...tile.ref });
+        map.set(tile.id, created);
       }
     }
   }, origin);
@@ -538,17 +538,17 @@ export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): 
 }
 
 /** Writes only the fields that actually changed, so untouched tiles never churn. */
-function updateTileFields(map: Y.Map<unknown>, node: TileNode): void {
-  if (map.get("id") !== node.id) map.set("id", node.id);
-  if (map.get("dir") !== node.dir) map.set("dir", node.dir);
-  if (!sameJson(map.get("ratios"), node.ratios)) map.set("ratios", [...node.ratios]);
-  if (!sameJson(map.get("children"), node.children)) map.set("children", [...node.children]);
-  if (!sameJson(map.get("surface"), node.surface)) {
-    map.set("surface", node.surface === null ? null : { ...node.surface });
+function updateTileFields(map: Y.Map<unknown>, tile: Tile): void {
+  if (map.get("id") !== tile.id) map.set("id", tile.id);
+  if (map.get("dir") !== tile.dir) map.set("dir", tile.dir);
+  if (!sameJson(map.get("ratios"), tile.ratios)) map.set("ratios", [...tile.ratios]);
+  if (!sameJson(map.get("children"), tile.children)) map.set("children", [...tile.children]);
+  if (!sameJson(map.get("ref"), tile.ref)) {
+    map.set("ref", tile.ref === null ? null : { ...tile.ref });
   }
 }
 
-/** Structural comparison for the plain arrays/objects stored inside tile nodes. */
+/** Structural comparison for the plain arrays/objects stored inside tiles. */
 function sameJson(current: unknown, next: unknown): boolean {
   if (current === next) return true;
   if (current === null || next === null || current === undefined || next === undefined) {

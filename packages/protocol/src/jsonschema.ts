@@ -12,7 +12,7 @@ import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
 
 /**
- * The live composition, when the caller has one to publish. The protocol package describes
+ * The live assembly, when the caller has one to publish. The protocol package describes
  * the WIRE and knows nothing about which plugins a given server composed, so the server
  * hands its vocabulary in rather than this file reaching for a registry it cannot see.
  */
@@ -26,7 +26,7 @@ export interface ProtocolExtras {
  * Machine-legible protocol description, served at `GET /api/protocol`. Agents introspect
  * the wire format without reading source — the schemas ARE the documentation.
  *
- * `placement` publishes the composition algebra itself: which item kinds exist, the
+ * `placement` publishes the placement algebra itself: which item kinds exist, the
  * groups they carry, the groups each container accepts, the guards, and the denial rules.
  * A mod discovers what composes with what — and what never can — from these tables.
  *
@@ -35,10 +35,10 @@ export interface ProtocolExtras {
  * every closed set a refusal can name. It describes the SHAPE of a plugin; the `plugins`
  * key below describes the ones this server actually composed.
  *
- * `extras` publishes the LIVE composition — the ACTION vocabulary and the plugin roster
+ * `extras` publishes the LIVE assembly — the ACTION vocabulary and the plugin roster
  * this server actually composed: a stranger's agent learns every door it may knock on, and
  * what each one takes, from this one document. Omitting it yields exactly the description
- * of a server with nothing composed, so a caller with no composition in hand (a test, a
+ * of a server with nothing assembled, so a caller with no assembly in hand (a test, a
  * schema dump) is not obliged to invent one.
  */
 export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string, unknown> {

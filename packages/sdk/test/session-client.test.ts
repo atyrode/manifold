@@ -4,7 +4,7 @@ import {
   ROOT_TILE_ID,
   type SceneElement,
   type ServerMessageBody,
-  type TileSurface,
+  type TileRef,
 } from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
@@ -13,7 +13,7 @@ import {
   createSceneDoc,
   decodeUpdate,
   encodeUpdate,
-  initTiledLayout,
+  initCompositionLayout,
   readElements,
   readTileLayout,
   writeElement,
@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 /**
- * Minimal in-memory WebSocket double implementing exactly the surface SessionClient
+ * Minimal in-memory WebSocket double implementing exactly the ref SessionClient
  * uses. Lets unit tests drive the full state machine without a server process.
  */
 class FakeSocket {
@@ -106,7 +106,7 @@ function element(id: string): SceneElement {
   return {
     id,
     type: "portal",
-    containerId: `pad-${id}`,
+    containerId: `container-${id}`,
     x: 0,
     y: 0,
     width: 720,
@@ -122,20 +122,14 @@ function encodedDoc(...elements: SceneElement[]): string {
 }
 
 /**
- * A tiled container as the server seeds it: the first surface fills the root leaf,
+ * A composition as the server seeds it: the first ref fills the root leaf,
  * every later one splits it to the right.
  */
-function encodedTiledDoc(...surfaces: TileSurface[]): string {
+function encodedCompositionDoc(...refs: TileRef[]): string {
   const doc = createSceneDoc();
-  initTiledLayout(doc, SERVER_PLACE_ORIGIN);
-  for (const [index, surface] of surfaces.entries()) {
-    writeTileLeaf(
-      doc,
-      surface,
-      ROOT_TILE_ID,
-      index === 0 ? "center" : "right",
-      SERVER_PLACE_ORIGIN,
-    );
+  initCompositionLayout(doc, SERVER_PLACE_ORIGIN);
+  for (const [index, ref] of refs.entries()) {
+    writeTileLeaf(doc, ref, ROOT_TILE_ID, index === 0 ? "center" : "right", SERVER_PLACE_ORIGIN);
   }
   return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
@@ -152,8 +146,8 @@ const INIT: InitFrame = {
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
   selfCaps: ["*"],
-  roster: [],
-  sessions: [],
+  attendance: [],
+  terminals: [],
 };
 
 /** A client's channel id once it holds one; a missing id is a harness bug, not a case. */
@@ -179,12 +173,12 @@ function dialing(options: ClientHarnessOptions = {}): ClientHarness {
   FakeSocket.instances = [];
   const client = new SessionClient({
     url: "ws://test/ws/session",
-    padId: "pad1",
+    containerId: "container1",
     token: "tok",
     reconnect: options.reconnect ?? false,
     ...(options.spectator === true ? { spectator: true } : {}),
     ...(options.backoffCapMs !== undefined ? { backoffCapMs: options.backoffCapMs } : {}),
-    // Test double implements the full surface SessionClient touches; a runtime check is
+    // Test double implements the full ref SessionClient touches; a runtime check is
     // meaningless here, hence the deliberate unchecked cast.
     webSocketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
   });
@@ -245,21 +239,21 @@ describe("shared transport", () => {
 
   /**
    * Two rooms of one tab: same url, same token, same socket factory — which is exactly
-   * what a canvas plus a portal widget looks like in the browser.
+   * what a canvas plus a portal portal looks like in the browser.
    */
   function twoRooms(options: { reconnect?: boolean } = {}): MultiplexHarness {
     FakeSocket.instances = [];
     const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
-    const build = (padId: string): SessionClient =>
+    const build = (containerId: string): SessionClient =>
       new SessionClient({
         url: "ws://test/ws/session",
-        padId,
+        containerId,
         token: "tok",
         reconnect: options.reconnect ?? false,
         webSocketFactory: factory,
       });
-    const first = build("pad1");
-    const second = build("pad2");
+    const first = build("container1");
+    const second = build("container2");
     const firstConnect = first.connect();
     const secondConnect = second.connect();
     const socket = FakeSocket.instances.at(-1);
@@ -288,11 +282,11 @@ describe("shared transport", () => {
     expect(first.channelId).not.toBe(second.channelId);
 
     socket.open();
-    const JoinSchema = z.looseObject({ type: z.string(), ch: z.string(), padId: z.string() });
+    const JoinSchema = z.looseObject({ type: z.string(), ch: z.string(), containerId: z.string() });
     const joins = socket.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
-    expect(joins.map((join) => [join.padId, join.ch])).toEqual([
-      ["pad1", channelOf(first)],
-      ["pad2", channelOf(second)],
+    expect(joins.map((join) => [join.containerId, join.ch])).toEqual([
+      ["container1", channelOf(first)],
+      ["container2", channelOf(second)],
     ]);
 
     receiveOn(socket, first, initFor(first, "e-a", "in-a"));
@@ -371,14 +365,14 @@ describe("shared transport", () => {
     const JoinSchema = z.looseObject({
       type: z.string(),
       ch: z.string(),
-      padId: z.string(),
+      containerId: z.string(),
       lastEpoch: z.string().optional(),
     });
     const joins = replacement.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
     // Both rooms rejoined, each carrying its OWN resume hints.
-    expect(joins.map((join) => [join.padId, join.ch, join.lastEpoch])).toEqual([
-      ["pad1", channelOf(first), "e-a"],
-      ["pad2", channelOf(second), "e-b"],
+    expect(joins.map((join) => [join.containerId, join.ch, join.lastEpoch])).toEqual([
+      ["container1", channelOf(first), "e-a"],
+      ["container2", channelOf(second), "e-b"],
     ]);
 
     first.close();
@@ -412,7 +406,7 @@ describe("shared transport", () => {
     expect(socket.closedWith?.code).toBe(1000);
   });
 
-  test("a terminal channel refusal kills one room and spares its sibling", async () => {
+  test("a session channel refusal kills one room and spares its sibling", async () => {
     const { first, second, socket, firstConnect, secondConnect } = twoRooms();
     socket.open();
     receiveOn(socket, first, initFor(first, "e-a", "in-a"));
@@ -423,7 +417,7 @@ describe("shared transport", () => {
       ch: channelOf(first),
       type: "channel_closed",
       code: 4404,
-      reason: "pad deleted",
+      reason: "container deleted",
     });
 
     // The dead room reports closed and holds no channel; the socket never went anywhere.
@@ -451,13 +445,13 @@ describe("shared transport", () => {
       ch: channelOf(first),
       type: "channel_closed",
       code: 4404,
-      reason: "pad not found",
+      reason: "container not found",
     });
 
     // Identical shape to the socket-level rejection this replaced: a room that cannot be
     // joined reports its close code, and the tab's other rooms never notice.
     await expect(firstConnect).rejects.toThrow(
-      "session rejected with close code 4404: pad not found",
+      "terminal rejected with close code 4404: container not found",
     );
     receiveOn(socket, second, initFor(second, "e-b", "in-b"));
     await secondConnect;
@@ -701,24 +695,24 @@ describe("scene flow", () => {
   });
 });
 
-describe("tiled layout", () => {
+describe("composition layout", () => {
   test("a canvas container has no layout tree", () => {
     const { client } = connected();
     expect(client.layout()).toBeNull();
   });
 
-  test("init adopts a tiled room's tree, which the epoch swap replaces", () => {
+  test("init adopts a composition room's tree, which the epoch swap replaces", () => {
     const { client, socket } = dialing();
     const origins: string[] = [];
     client.on("layout_changed", (origin) => origins.push(origin));
 
     socket.open();
-    socket.receive({ ...INIT, doc: encodedTiledDoc({ kind: "terminal", sessionId: "s1" }) });
+    socket.receive({ ...INIT, doc: encodedCompositionDoc({ kind: "terminal", terminalId: "s1" }) });
 
     expect(origins).toEqual(["remote"]);
-    expect(client.layout()?.[ROOT_TILE_ID]?.surface).toEqual({
+    expect(client.layout()?.[ROOT_TILE_ID]?.ref).toEqual({
       kind: "terminal",
-      sessionId: "s1",
+      terminalId: "s1",
     });
 
     socket.receive({ ...INIT, type: "resync", epoch: "e2", doc: encodedDoc(element("srv")) });
@@ -732,9 +726,9 @@ describe("tiled layout", () => {
 
     socket.receive({
       type: "doc_update",
-      update: encodedTiledDoc(
-        { kind: "terminal", sessionId: "s1" },
-        { kind: "terminal", sessionId: "s2" },
+      update: encodedCompositionDoc(
+        { kind: "terminal", terminalId: "s1" },
+        { kind: "terminal", terminalId: "s2" },
       ),
       by: "peer",
     });
@@ -762,9 +756,9 @@ describe("tiled layout", () => {
 
   test("a ratio drag publishes one local update a replica converges on", () => {
     const { client, socket } = connected();
-    const base = encodedTiledDoc(
-      { kind: "terminal", sessionId: "s1" },
-      { kind: "terminal", sessionId: "s2" },
+    const base = encodedCompositionDoc(
+      { kind: "terminal", terminalId: "s1" },
+      { kind: "terminal", terminalId: "s2" },
     );
     socket.receive({ type: "doc_update", update: base, by: "peer" });
     const origins: string[] = [];
@@ -787,9 +781,9 @@ describe("tiled layout", () => {
     const { client, socket } = connected();
     socket.receive({
       type: "doc_update",
-      update: encodedTiledDoc(
-        { kind: "terminal", sessionId: "s1" },
-        { kind: "terminal", sessionId: "s2" },
+      update: encodedCompositionDoc(
+        { kind: "terminal", terminalId: "s1" },
+        { kind: "terminal", terminalId: "s2" },
       ),
       by: "peer",
     });
@@ -812,7 +806,7 @@ describe("tiled layout", () => {
     const { client, socket } = connected();
     socket.receive({
       type: "doc_update",
-      update: encodedTiledDoc({ kind: "pad", padId: "pad1" }),
+      update: encodedCompositionDoc({ kind: "container", containerId: "container1" }),
       by: "peer",
     });
     expect(client.layout()).toBeNull();
@@ -835,8 +829,8 @@ describe("frame policy", () => {
 
     // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
     // validates the frame shape and bounded payload rather than rescanning its contents.
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 0, data: "%" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 0, data: "%" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 0, data: "%" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 0, data: "%" });
 
     expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:0:%"]);
     expect(socket.closedWith).toBeNull();
@@ -844,7 +838,7 @@ describe("frame policy", () => {
 
   test("malformed terminal data frame still closes 4002", () => {
     const { socket } = connected();
-    socket.receive({ type: "terminal_output", sessionId: "s1", data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", data: "" });
     expect(socket.closedWith?.code).toBe(4002);
   });
 
@@ -890,8 +884,8 @@ describe("frame policy", () => {
   });
 });
 
-describe("roster and presence", () => {
-  test("roster join/leave and connection-stamped presence merge", () => {
+describe("attendance and presence", () => {
+  test("attendance join/leave and connection-stamped presence merge", () => {
     const { client, socket } = connected();
     const peer = {
       principal: { id: "p2", kind: "agent" as const, name: "pi", color: "#00ff00" },
@@ -903,18 +897,18 @@ describe("roster and presence", () => {
     client.on("presence", (message) => {
       observedConnIds.push(message.connId);
     });
-    socket.receive({ type: "roster", joined: peer });
-    expect(client.roster.get("p2")?.principal.name).toBe("pi");
+    socket.receive({ type: "attendance", joined: peer });
+    expect(client.attendance.get("p2")?.principal.name).toBe("pi");
     socket.receive({
       type: "presence",
       principalId: "p2",
       connId: "peer-connection",
       payload: { status: "working" },
     });
-    expect(client.roster.get("p2")?.payload.status).toBe("working");
+    expect(client.attendance.get("p2")?.payload.status).toBe("working");
     expect(observedConnIds).toEqual(["peer-connection"]);
-    socket.receive({ type: "roster", left: { principalId: "p2" } });
-    expect(client.roster.has("p2")).toBe(false);
+    socket.receive({ type: "attendance", left: { principalId: "p2" } });
+    expect(client.attendance.has("p2")).toBe(false);
   });
 });
 
@@ -957,9 +951,9 @@ describe("listener isolation", () => {
 });
 
 describe("terminal attach refcounting", () => {
-  const SESSION = {
+  const TERMINAL = {
     id: "s1",
-    padId: "pad",
+    containerId: "container",
     name: null,
     machineId: "m1",
     status: "running" as const,
@@ -969,7 +963,7 @@ describe("terminal attach refcounting", () => {
     controllerId: "me",
     createdBy: "me",
   };
-  const INIT_WITH_SESSION: InitFrame = { ...INIT, sessions: [SESSION] };
+  const INIT_WITH_TERMINAL: InitFrame = { ...INIT, terminals: [TERMINAL] };
 
   test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
     const { client, socket } = connected();
@@ -988,15 +982,15 @@ describe("terminal attach refcounting", () => {
 
   test("a late view attaching mid-stream receives the re-snapshot; no duplicates", () => {
     const { client, socket } = connected();
-    socket.receive(INIT_WITH_SESSION);
+    socket.receive(INIT_WITH_TERMINAL);
     const seenA: string[] = [];
     const seenB: string[] = [];
     client.on("terminal_snapshot", (m) => seenA.push(`snap:${m.seq}`));
     client.on("terminal_output", (m) => seenA.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     // A is live mid-stream before B even exists.
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 3, data: "" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 4, data: "" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 3, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 4, data: "" });
     expect(seenA).toEqual(["snap:3", "out:4"]);
     // B (cloned element) subscribes late and attaches: the wire re-attach makes
     // the server emit a fresh snapshot, which is B's ONLY path to screen state.
@@ -1004,15 +998,15 @@ describe("terminal attach refcounting", () => {
     client.on("terminal_output", (m) => seenB.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 7, data: "" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 8, data: "" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 7, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 8, data: "" });
     // B renders from the re-snapshot; A sees exactly one reset snapshot and no
     // duplicated output frames.
     expect(seenB).toEqual(["snap:7", "out:8"]);
     expect(seenA).toEqual(["snap:3", "out:4", "snap:7", "out:8"]);
     // Detaching one view keeps the shared wire viewer alive: outputs still flow.
     client.detachTerminal("s1");
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 9, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 9, data: "" });
     expect(seenA.at(-1)).toBe("out:9");
     expect(seenB.at(-1)).toBe("out:9");
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
@@ -1023,25 +1017,25 @@ describe("terminal attach refcounting", () => {
 
   test("same-connection resync preserves the existing wire subscription", () => {
     const { client, socket } = connected();
-    socket.receive(INIT_WITH_SESSION);
+    socket.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     const attachesBeforeResync = sentTypes(socket).filter(
       (type) => type === "terminal_attach",
     ).length;
 
-    socket.receive({ ...INIT_WITH_SESSION, type: "resync" });
+    socket.receive({ ...INIT_WITH_TERMINAL, type: "resync" });
 
     expect(sentTypes(socket).filter((type) => type === "terminal_attach")).toHaveLength(
       attachesBeforeResync,
     );
   });
 
-  test("reconnect re-subscribes running sessions views still hold, without double-counting", () => {
+  test("reconnect re-subscribes running terminals views still hold, without double-counting", () => {
     const { client } = dialing({ reconnect: true });
     const first = FakeSocket.instances.at(-1);
     if (first === undefined) throw new Error("no socket");
     first.open();
-    first.receive(INIT_WITH_SESSION);
+    first.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(1);
 
@@ -1052,7 +1046,7 @@ describe("terminal attach refcounting", () => {
       const second = FakeSocket.instances.at(-1);
       if (second === undefined || second === first) throw new Error("no reconnect socket");
       second.open();
-      second.receive({ ...INIT_WITH_SESSION, selfConnId: "conn-reconnected" });
+      second.receive({ ...INIT_WITH_TERMINAL, selfConnId: "conn-reconnected" });
       // server viewer registry is connection-scoped: SDK must re-attach exactly once
       expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
       // a single detach still fully unsubscribes (refcount untouched by reconnect)
@@ -1064,10 +1058,10 @@ describe("terminal attach refcounting", () => {
   });
 });
 
-describe("session naming", () => {
-  const NAMED_SESSION = {
+describe("terminal naming", () => {
+  const NAMED_TERMINAL = {
     id: "s1",
-    padId: "pad",
+    containerId: "container",
     name: null,
     machineId: "m1",
     status: "running" as const,
@@ -1078,29 +1072,29 @@ describe("session naming", () => {
     createdBy: "me",
   };
 
-  test("a renamed event relabels the session in place and notifies listeners", () => {
+  test("a renamed event relabels the terminal in place and notifies listeners", () => {
     const { client, socket } = connected();
-    socket.receive({ ...INIT, sessions: [NAMED_SESSION] });
+    socket.receive({ ...INIT, terminals: [NAMED_TERMINAL] });
     let changes = 0;
-    client.on("sessions_changed", () => {
+    client.on("terminals_changed", () => {
       changes += 1;
     });
 
-    socket.receive({ type: "session_event", sessionId: "s1", kind: "renamed", name: "build" });
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "renamed", name: "build" });
 
-    expect(client.sessions.get("s1")?.name).toBe("build");
-    // Everything else about the session is untouched by a rename.
-    expect(client.sessions.get("s1")).toEqual({ ...NAMED_SESSION, name: "build" });
+    expect(client.terminals.get("s1")?.name).toBe("build");
+    // Everything else about the terminal is untouched by a rename.
+    expect(client.terminals.get("s1")).toEqual({ ...NAMED_TERMINAL, name: "build" });
     expect(changes).toBe(1);
   });
 
   test("a renamed event with no label clears the name back to the default", () => {
     const { client, socket } = connected();
-    socket.receive({ ...INIT, sessions: [{ ...NAMED_SESSION, name: "build" }] });
+    socket.receive({ ...INIT, terminals: [{ ...NAMED_TERMINAL, name: "build" }] });
 
-    socket.receive({ type: "session_event", sessionId: "s1", kind: "renamed" });
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "renamed" });
 
-    expect(client.sessions.get("s1")?.name).toBeNull();
+    expect(client.terminals.get("s1")?.name).toBeNull();
   });
 });
 
@@ -1111,7 +1105,7 @@ describe("terminal opening", () => {
 
     client.close();
 
-    await expect(opening).rejects.toThrow("session closed before terminal opened");
+    await expect(opening).rejects.toThrow("terminal closed before terminal opened");
   });
 });
 

@@ -12,12 +12,12 @@ import type {
   PluginManifest,
   PluginRoster,
   TileLayout,
-  TileSurface,
+  TileRef,
 } from "@manifold/protocol";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
@@ -56,7 +56,7 @@ function testPlacement(fixture: HostFixture): PlaceExecutor {
     fixture.rooms,
     fixture.broker,
     fixture.runtime,
-    compositionElementTraits(() => []),
+    assemblyElementTraits(() => []),
   );
 }
 
@@ -87,8 +87,8 @@ function hostFixture(): HostFixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   return {
     store,
     auth,
@@ -101,12 +101,12 @@ function hostFixture(): HostFixture {
 }
 
 /** A token, so authority is exercised through real attenuation rather than a hand-built context. */
-function context(fixture: HostFixture, caps: readonly Cap[], padId?: string): AuthContext {
+function context(fixture: HostFixture, caps: readonly Cap[], containerId?: string): AuthContext {
   const grant = fixture.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
       caps: [...caps],
-      ...(padId === undefined ? {} : { padId }),
+      ...(containerId === undefined ? {} : { containerId }),
     },
     fixture.owner,
   );
@@ -118,9 +118,9 @@ function denial(outcome: ActionOutcome): { rule: string; message: string } {
   return outcome.denial;
 }
 
-/** A one-leaf workspace tree holding `surface`; structural validity is otherwise intact. */
-function layoutWith(surface: TileSurface): TileLayout {
-  return { root: { id: "root", dir: null, ratios: [], children: [], surface } };
+/** A one-leaf workspace tree holding `ref`; structural validity is otherwise intact. */
+function layoutWith(ref: TileRef): TileLayout {
+  return { root: { id: "root", dir: null, ratios: [], children: [], ref } };
 }
 
 describe("PluginHost denial ladder", () => {
@@ -141,7 +141,7 @@ describe("PluginHost denial ladder", () => {
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
-      sessionId: "s1",
+      terminalId: "s1",
       name: "build",
     });
 
@@ -159,27 +159,27 @@ describe("PluginHost denial ladder", () => {
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.kill", {
-      sessionId: "s1",
+      terminalId: "s1",
     });
 
     // The disable must refuse creation and administration, never removal — otherwise an
     // administrator toggling a plugin off locks every canvas out of deleting terminals.
     // The kill still walks the REST of the ladder: here it reaches the handler, which
-    // refuses on state (no such session) rather than on the disable.
+    // refuses on state (no such terminal) rather than on the disable.
     expect(denial(outcome).rule).toBe("refused");
     fixture.store.close();
   });
 
-  test("a pad-scoped token is refused for its scope even when it holds the capability", async () => {
+  test("a container-scoped token is refused for its scope even when it holds the capability", async () => {
     const fixture = hostFixture();
-    const pad = fixture.runtime.newId();
-    fixture.store.createPad({
-      id: pad,
+    const container = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id: container,
       name: "scoped",
       createdAt: fixture.runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     });
-    const scoped = context(fixture, ["pads:read", "plugins:manage"], pad);
+    const scoped = context(fixture, ["containers:read", "plugins:manage"], container);
 
     const outcome = await fixture.host.dispatch(scoped, ENGINE_SET_ENABLED_ACTION, {
       id: "core.draw",
@@ -201,7 +201,7 @@ describe("PluginHost denial ladder", () => {
 
   test("a missing declared capability is forbidden before arguments are looked at", async () => {
     const fixture = hostFixture();
-    const reader = context(fixture, ["pads:read"]);
+    const reader = context(fixture, ["containers:read"]);
 
     // Deliberately malformed args: if the ladder checked shape first, the caller would learn
     // the door's schema by knocking on a door it may not open.
@@ -209,10 +209,10 @@ describe("PluginHost denial ladder", () => {
 
     expect(denial(outcome)).toEqual({
       rule: "forbidden",
-      // `core.terminals.rename` is graded `scope: "pad"` and declares `terminal:write`, so an
-      // UNSCOPED reader passes the scope rung and is refused here — before its arguments are
-      // parsed, which is the whole point of the ordering.
-      message: "terminal:write capability required",
+      // `core.terminals.rename` is graded `scope: "container"` and declares `terminals:write`,
+      // so an UNSCOPED reader passes the scope rung and is refused here — before its arguments
+      // are parsed, which is the whole point of the ordering.
+      message: "terminals:write capability required",
     });
     fixture.store.close();
   });
@@ -221,7 +221,7 @@ describe("PluginHost denial ladder", () => {
     const fixture = hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
-      sessionId: "s1",
+      terminalId: "s1",
     });
 
     expect(denial(outcome).rule).toBe("invalid_args");
@@ -233,7 +233,7 @@ describe("PluginHost denial ladder", () => {
     const fixture = hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
-      sessionId: "missing",
+      terminalId: "missing",
       name: "build",
     });
 
@@ -245,12 +245,12 @@ describe("PluginHost denial ladder", () => {
     const fixture = hostFixture();
 
     const blank = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
-      sessionId: "missing",
+      terminalId: "missing",
       name: "   ",
     });
 
-    // The route this replaced answered 400 for a blank name and 404 for a missing session;
-    // both are now refusals, and the blank name is caught before the session is looked up.
+    // The route this replaced answered 400 for a blank name and 404 for a missing terminal;
+    // both are now refusals, and the blank name is caught before the terminal is looked up.
     expect(denial(blank)).toEqual({ rule: "refused", message: "name is empty" });
     fixture.store.close();
   });
@@ -267,7 +267,7 @@ describe("PluginHost enablement", () => {
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
     expect([...fixture.store.disabledPlugins()]).toEqual(["core.terminals"]);
-    expect(fixture.host.composition().enabled("core.terminals")).toBe(false);
+    expect(fixture.host.assembly().enabled("core.terminals")).toBe(false);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.find((entry) => entry.manifest.id === "core.terminals")?.enabled).toBe(false);
     // A disabled plugin stays IN the roster: a client has to name the plugin it is waiting
@@ -291,7 +291,7 @@ describe("PluginHost enablement", () => {
     });
 
     // D3: every publish is a connection-level frame to every open socket, and every client
-    // rebuilds its composition when one lands. Enabling what is already enabled is an
+    // rebuilds its assembly when one lands. Enabling what is already enabled is an
     // answer, not news.
     expect(await fixture.host.setEnabled("core.terminals", true, "admin")).toEqual({ ok: true });
     expect(seen).toHaveLength(0);
@@ -328,19 +328,19 @@ describe("PluginHost enablement", () => {
     fixture.store.close();
   });
 
-  test("the composition is REPLACED on a toggle, so a held reference is a stale snapshot", async () => {
+  test("the assembly is REPLACED on a toggle, so a held reference is a stale snapshot", async () => {
     const fixture = hostFixture();
-    const before = fixture.host.composition();
+    const before = fixture.host.assembly();
 
     expect(await fixture.host.setEnabled("core.draw", false, "admin")).toEqual({ ok: true });
 
     // Hot enablement (D4) is a recompose, not a mutation: everything that must react reads
-    // `composition()` again (or the published roster), which is why the identity changes.
-    expect(fixture.host.composition()).not.toBe(before);
+    // `assembly()` again (or the published roster), which is why the identity changes.
+    expect(fixture.host.assembly()).not.toBe(before);
     expect(before.enabled("core.draw")).toBe(true);
-    expect(fixture.host.composition().enabled("core.draw")).toBe(false);
+    expect(fixture.host.assembly().enabled("core.draw")).toBe(false);
     // The vocabulary itself is untouched: a disable removes no name from the registry.
-    expect([...fixture.host.composition().actions.keys()].sort()).toEqual(
+    expect([...fixture.host.assembly().actions.keys()].sort()).toEqual(
       [...before.actions.keys()].sort(),
     );
     fixture.store.close();
@@ -358,7 +358,7 @@ describe("PluginHost enablement", () => {
 
     // Nothing was written and nothing went dark: the refusal is total.
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
-    expect(fixture.host.composition().enabled("core.shell")).toBe(true);
+    expect(fixture.host.assembly().enabled("core.shell")).toBe(true);
     fixture.store.close();
   });
 
@@ -379,13 +379,13 @@ describe("PluginHost enablement", () => {
 
     /*
       The self-lockout the old `essential` flag on `core.plugins` existed to prevent, solved
-      where it belongs (ADR 0013 §11). The door is not a member of the composition it
+      where it belongs (ADR 0013 §11). The door is not a member of the assembly it
       administers, so there is no toggle to reach it: `plugins:manage` is authority to
       administer plugins, never authority to destroy the administration.
      */
     expect(denial(outcome)).toEqual({ rule: "refused", message: `builtin: ${ENGINE_PLUGINS_ID}` });
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
-    expect(fixture.host.composition().enabled(ENGINE_PLUGINS_ID)).toBe(true);
+    expect(fixture.host.assembly().enabled(ENGINE_PLUGINS_ID)).toBe(true);
     fixture.store.close();
   });
 
@@ -401,7 +401,7 @@ describe("PluginHost enablement", () => {
         enabled: false,
       }),
     ).toEqual({ ok: true, result: {} });
-    expect(fixture.host.composition().enabled("core.plugins")).toBe(false);
+    expect(fixture.host.assembly().enabled("core.plugins")).toBe(false);
 
     // Administration is still alive with the manager UI dark, and can bring it back.
     expect(
@@ -417,7 +417,7 @@ describe("PluginHost enablement", () => {
         enabled: true,
       }),
     ).toEqual({ ok: true, result: {} });
-    expect(fixture.host.composition().enabled("core.plugins")).toBe(true);
+    expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
     fixture.store.close();
   });
 
@@ -437,7 +437,7 @@ describe("PluginHost enablement", () => {
 
   test("setEnabled needs plugins:manage, which the roster publishes as the action's cap", async () => {
     const fixture = hostFixture();
-    const writer = context(fixture, ["pads:read", "pads:write"]);
+    const writer = context(fixture, ["containers:read", "containers:write"]);
 
     const outcome = await fixture.host.dispatch(writer, ENGINE_SET_ENABLED_ACTION, {
       id: "core.terminals",
@@ -453,12 +453,12 @@ describe("PluginHost enablement", () => {
   });
 });
 
-describe("core.layout.set", () => {
+describe("core.space.setLayout", () => {
   test("a valid workspace tree is stored for the caller and nobody else", async () => {
     const fixture = hostFixture();
-    const other = context(fixture, ["pads:read", "pads:write"]);
+    const other = context(fixture, ["containers:read", "containers:write"]);
 
-    const outcome = await fixture.host.dispatch(fixture.owner, "core.layout.set", {
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
       layout: DEFAULT_WORKSPACE_LAYOUT,
     });
 
@@ -476,7 +476,7 @@ describe("core.layout.set", () => {
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
     const layout = layoutWith({ kind: "panel", panelId: "core.ghost.panel" });
 
-    const outcome = await fixture.host.dispatch(fixture.owner, "core.layout.set", { layout });
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", { layout });
 
     // Validation is STRUCTURAL only. A leaf naming a plugin nobody composed renders a
     // placeholder with a remove control; refusing the write instead would mean turning a
@@ -489,11 +489,11 @@ describe("core.layout.set", () => {
   test("a leaf that is not a panel is refused", async () => {
     const fixture = hostFixture();
 
-    const outcome = await fixture.host.dispatch(fixture.owner, "core.layout.set", {
-      layout: layoutWith({ kind: "terminal", sessionId: "s1" }),
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
+      layout: layoutWith({ kind: "terminal", terminalId: "s1" }),
     });
 
-    // A workspace shows panels. A terminal or pad surface at this level is a category error
+    // A workspace shows panels. A terminal or container ref at this level is a category error
     // the renderer could not honour, so it is refused rather than stored and ignored.
     expect(denial(outcome)).toEqual({
       rule: "refused",
@@ -506,9 +506,9 @@ describe("core.layout.set", () => {
   test("a tree that is not a tree is refused", async () => {
     const fixture = hostFixture();
 
-    const outcome = await fixture.host.dispatch(fixture.owner, "core.layout.set", {
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
       layout: {
-        root: { id: "root", dir: "row", ratios: [1], children: ["missing"], surface: null },
+        root: { id: "root", dir: "row", ratios: [1], children: ["missing"], ref: null },
       },
     });
 
@@ -519,22 +519,22 @@ describe("core.layout.set", () => {
     fixture.store.close();
   });
 
-  test("a pad-scoped token cannot write a workspace layout at all", async () => {
+  test("a container-scoped token cannot write a workspace layout at all", async () => {
     const fixture = hostFixture();
-    const pad = fixture.runtime.newId();
-    fixture.store.createPad({
-      id: pad,
+    const container = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id: container,
       name: "scoped",
       createdAt: fixture.runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     });
-    const scoped = context(fixture, ["pads:read", "pads:write"], pad);
+    const scoped = context(fixture, ["containers:read", "containers:write"], container);
 
-    const outcome = await fixture.host.dispatch(scoped, "core.layout.set", {
+    const outcome = await fixture.host.dispatch(scoped, "core.space.setLayout", {
       layout: DEFAULT_WORKSPACE_LAYOUT,
     });
 
-    // `core.layout.set` declares NO caps, which is exactly why the scope rung matters: the
+    // `core.space.setLayout` declares NO caps, which is exactly why the scope rung matters: the
     // cap check would have passed it through.
     expect(denial(outcome)).toEqual({
       rule: "forbidden",
@@ -618,8 +618,8 @@ describe("PluginHost contract failures", () => {
 
     // The action is real vocabulary — it is in the roster and `/api/protocol` — so
     // `unknown_action` would be false, and any denial would blame the caller for a
-    // registration the composition files got wrong.
-    expect(host.composition().actions.has("test.doors.orphan")).toBe(true);
+    // registration the assembly files got wrong.
+    expect(host.assembly().actions.has("test.doors.orphan")).toBe(true);
     await expect(host.dispatch(fixture.owner, "test.doors.orphan", {})).rejects.toThrow(
       /no server handler/,
     );
@@ -630,7 +630,7 @@ describe("PluginHost contract failures", () => {
     const fixture = hostFixture();
     const host = brokenHost(fixture);
 
-    // Ordering matters for triage: a bad argument must not surface as a server failure just
+    // Ordering matters for triage: a bad argument must not appear as a server failure just
     // because the handler behind it would have failed too.
     const outcome = await host.dispatch(fixture.owner, "test.doors.liar", { surplus: 1 });
     expect(denial(outcome).rule).toBe("invalid_args");
@@ -676,7 +676,7 @@ function recorder(
       onDisable: (ctx) => {
         log.calls.push(`disable:${ctx.pluginId}`);
       },
-      onCompositionChanged: (ctx, delta) => {
+      onAssemblyChanged: (ctx, delta) => {
         log.calls.push(
           `changed:${ctx.pluginId}(+${delta.enabled.join("|")}-${delta.disabled.join("|")})`,
         );
@@ -722,7 +722,7 @@ describe("PluginHost lifecycle", () => {
     fixture.store.close();
   });
 
-  test("survivors hear onCompositionChanged once, in composition order, with the delta", async () => {
+  test("survivors hear onAssemblyChanged once, in assembly order, with the delta", async () => {
     const fixture = hostFixture();
     const log: HookLog = { calls: [] };
     const host = customHost(fixture, [
@@ -735,7 +735,7 @@ describe("PluginHost lifecycle", () => {
 
     /*
       The disabled plugin gets its own hook and is NOT a survivor; the other two hear the
-      change exactly once each, in the composition's topological order (`test.alpha` before
+      change exactly once each, in the assembly's topological order (`test.alpha` before
       `test.zulu` because `after` says so; the engine's builtin row declares no hooks). That
       order is derived and total precisely so this fan-out is reproducible.
      */
@@ -765,7 +765,7 @@ describe("PluginHost lifecycle", () => {
     // A DISABLE ALWAYS COMPLETES. The remedy for a plugin misbehaving on the way out must
     // never be that plugin, so the flag is written, the roster says so, and the failure is
     // reported as state rather than swallowed or obeyed.
-    expect(host.composition().enabled("test.alpha")).toBe(false);
+    expect(host.assembly().enabled("test.alpha")).toBe(false);
     expect([...fixture.store.disabledPlugins()]).toEqual(["test.alpha"]);
     const entry = host.roster().find((row) => row.manifest.id === "test.alpha");
     expect(entry?.lifecycle).toBe("disable_failed");
@@ -786,11 +786,11 @@ describe("PluginHost lifecycle", () => {
     await host.setEnabled("test.alpha", false, "admin");
 
     // Resolving at all IS the assertion: enablement is workspace-global, so a hook able to
-    // stall it would let one plugin freeze every principal's composition. The engine stops
+    // stall it would let one plugin freeze every principal's assembly. The engine stops
     // WAITING at the bound; it cannot stop the hook, and pretending otherwise would be a lie.
     expect(await host.setEnabled("test.alpha", true, "admin")).toEqual({ ok: true });
 
-    expect(host.composition().enabled("test.alpha")).toBe(true);
+    expect(host.assembly().enabled("test.alpha")).toBe(true);
     expect(host.roster().find((row) => row.manifest.id === "test.alpha")?.lifecycle).toBe(
       "enable_failed",
     );
@@ -861,10 +861,10 @@ describe("PluginHost dependencies", () => {
     const outcome = await host.setEnabled("test.base", false, "admin");
 
     // No disable cascade (ADR 0013 §5.4): in a workspace-global setting, a cascade is other
-    // principals' surfaces vanishing without their consent, while a refusal is one round
-    // trip that says exactly what is in the way.
+    // principals' panels and elements vanishing without their consent, while a refusal is one
+    // round trip that says exactly what is in the way.
     expect(outcome).toEqual({ refused: "missing_dependency: test.leaf" });
-    expect(host.composition().enabled("test.base")).toBe(true);
+    expect(host.assembly().enabled("test.base")).toBe(true);
     expect([...fixture.store.disabledPlugins()]).toEqual(["test.rival"]);
     fixture.store.close();
   });
@@ -881,7 +881,7 @@ describe("PluginHost dependencies", () => {
     expect(await host.setEnabled("test.leaf", true, "admin")).toEqual({
       refused: "dependency_disabled: test.base",
     });
-    expect(host.composition().enabled("test.leaf")).toBe(false);
+    expect(host.assembly().enabled("test.leaf")).toBe(false);
     fixture.store.close();
   });
 
@@ -974,7 +974,7 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(() => mine.set("no spaces allowed", "x")).toThrow(/not a valid key/);
     mine.stampDataVersion({ major: 3, minor: 1 });
     expect(mine.dataVersion()).toEqual({ major: 3, minor: 1 });
-    // ...and the stamp is not part of the surface the plugin iterates.
+    // ...and the stamp is not part of the key set the plugin iterates.
     expect(mine.keys()).toEqual(["shared-key"]);
     fixture.store.close();
   });
@@ -990,7 +990,7 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(storage.get("row")).toBe("original+migrated");
     expect(storage.appliedMigrations()).toEqual(["0002-widen-rows"]);
     expect(storage.dataVersion()).toEqual({ major: 2, minor: 0 });
-    expect(host.composition().pendingMigrations.size).toBe(0);
+    expect(host.assembly().pendingMigrations.size).toBe(0);
 
     // A second host over the same database is a restart: the ledger is what makes the
     // migration at-most-once, so the data must not be transformed twice.
@@ -1010,13 +1010,13 @@ describe("PluginHost storage, migrations and purge", () => {
       customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true })),
     ).toThrow(/data_downgrade|downgrade is refused/);
 
-    // Disabled, the same data is simply RETAINED: it cannot hurt anyone, so composition
+    // Disabled, the same data is simply RETAINED: it cannot hurt anyone, so assembly
     // proceeds and the refusal moves to the door, where an actor is present to be told.
     fixture.store.setPluginEnabled(VERSIONED_ID, false, "admin", 0);
     const host = customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
     const outcome = await host.setEnabled(VERSIONED_ID, true, "admin");
     expect("refused" in outcome && outcome.refused.startsWith("data_downgrade")).toBe(true);
-    expect(host.composition().enabled(VERSIONED_ID)).toBe(false);
+    expect(host.assembly().enabled(VERSIONED_ID)).toBe(false);
     fixture.store.close();
   });
 
@@ -1086,7 +1086,7 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(storage.get("row")).toBeNull();
     expect(storage.dataVersion()).toBeNull();
     // The reservation is released, so a replacement may now claim the type DELIBERATELY —
-    // which is exactly the squat that composition refuses while the reservation stands.
+    // which is exactly the squat that assembly refuses while the reservation stands.
     expect(fixture.store.elementOwners().has("versioned-thing")).toBe(false);
     fixture.store.close();
   });
@@ -1095,7 +1095,7 @@ describe("PluginHost storage, migrations and purge", () => {
     const fixture = hostFixture();
     const host = customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
     await host.setEnabled(VERSIONED_ID, false, "admin");
-    const writer = context(fixture, ["pads:read", "pads:write"]);
+    const writer = context(fixture, ["containers:read", "containers:write"]);
 
     const refusedByCaps = await host.dispatch(writer, ENGINE_PURGE_ACTION, { id: VERSIONED_ID });
     expect(denial(refusedByCaps)).toEqual({
@@ -1114,19 +1114,21 @@ describe("PluginHost storage, migrations and purge", () => {
 });
 
 /**
- * RUNG 3, NARROWED — `scope: "pad"`.
+ * RUNG 3, NARROWED — `scope: "container"`.
  *
  * The wave-1 rule stands for every workspace-grade door: a token scoped to one container
  * cannot authorize a workspace mutation. What an action may now do is DECLARE that its whole
- * effect is confined to one container, which lets a pad-scoped caller through — with the pad
- * taken from the TOKEN, the caps evaluated at that pad, and the handler contractually bound
+ * effect is confined to one container, which lets a container-scoped caller through — with the
+ * container taken from the TOKEN, the caps evaluated there, and the handler contractually bound
  * to honour it. These cases pin all three, plus the fact that nothing widened: the rung below
  * still runs, and an undeclared action still refuses.
  */
 describe("PluginHost action scope", () => {
   const SCOPED_ID = "test.scoped";
 
-  function scopedDefs(seen: { padScope: string | null | undefined }): readonly ServerPluginDef[] {
+  function scopedDefs(seen: {
+    containerScope: string | null | undefined;
+  }): readonly ServerPluginDef[] {
     return [
       {
         manifest: {
@@ -1134,43 +1136,45 @@ describe("PluginHost action scope", () => {
           version: "1.0.0",
           title: "Scoped",
           description: "One door graded for a container, one for the workspace.",
-          capabilities: ["pads:read", "pads:write"],
+          capabilities: ["containers:read", "containers:write"],
           contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
         },
         actions: [
           defineAction({
             name: "read",
             title: "Read inside one container",
-            caps: ["pads:read"],
-            scope: "pad",
+            caps: ["containers:read"],
+            scope: "container",
             input: z.strictObject({}),
-            result: z.strictObject({ padScope: z.string().nullable() }),
+            result: z.strictObject({ containerScope: z.string().nullable() }),
           }),
           defineAction({
             name: "sweep",
             title: "Touch the whole workspace",
-            caps: ["pads:read"],
+            caps: ["containers:read"],
             input: z.strictObject({}),
             result: z.strictObject({}),
           }),
           defineAction({
             name: "write",
             title: "Write inside one container",
-            caps: ["pads:write"],
-            scope: "pad",
+            caps: ["containers:write"],
+            scope: "container",
             input: z.strictObject({}),
-            result: z.strictObject({ padScope: z.string().nullable() }),
+            result: z.strictObject({ containerScope: z.string().nullable() }),
           }),
         ],
         handlers: {
-          read: async (ctx: { padScope: string | null }) => {
-            // A handler declaring `padScope` as its WHOLE slice: the scope is a first-class
-            // part of the context precisely so this is the natural way to read it.
-            seen.padScope = ctx.padScope;
-            return { padScope: ctx.padScope };
+          read: async (ctx: { containerScope: string | null }) => {
+            // A handler declaring `containerScope` as its WHOLE slice: the scope is a
+            // first-class part of the context precisely so this is the natural way to read it.
+            seen.containerScope = ctx.containerScope;
+            return { containerScope: ctx.containerScope };
           },
           sweep: async () => ({}),
-          write: async (ctx: { padScope: string | null }) => ({ padScope: ctx.padScope }),
+          write: async (ctx: { containerScope: string | null }) => ({
+            containerScope: ctx.containerScope,
+          }),
         },
       },
     ];
@@ -1179,38 +1183,38 @@ describe("PluginHost action scope", () => {
   function scopedFixture(): {
     readonly fixture: HostFixture;
     readonly host: PluginHost;
-    readonly pad: string;
-    readonly seen: { padScope: string | null | undefined };
+    readonly container: string;
+    readonly seen: { containerScope: string | null | undefined };
   } {
     const fixture = hostFixture();
-    const seen: { padScope: string | null | undefined } = { padScope: undefined };
-    const pad = fixture.runtime.newId();
-    fixture.store.createPad({
-      id: pad,
+    const seen: { containerScope: string | null | undefined } = { containerScope: undefined };
+    const container = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id: container,
       name: "scoped",
       createdAt: fixture.runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     });
-    return { fixture, host: customHost(fixture, scopedDefs(seen)), pad, seen };
+    return { fixture, host: customHost(fixture, scopedDefs(seen)), container, seen };
   }
 
-  test("a pad-scoped token reaches a pad-scoped action, and the handler is told which pad", async () => {
-    const { fixture, host, pad, seen } = scopedFixture();
-    const scoped = context(fixture, ["pads:read"], pad);
+  test("a container-scoped token reaches a container-scoped action, and the handler is told which container", async () => {
+    const { fixture, host, container, seen } = scopedFixture();
+    const scoped = context(fixture, ["containers:read"], container);
 
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.read`, {});
 
-    // The pad comes from the TOKEN, never from the arguments — authority that read arguments
-    // would force the ladder to validate shape before authority, and a caller would learn a
-    // door's schema by knocking on one it may not open.
-    expect(outcome).toEqual({ ok: true, result: { padScope: pad } });
-    expect(seen.padScope).toBe(pad);
+    // The container comes from the TOKEN, never from the arguments — authority that read
+    // arguments would force the ladder to validate shape before authority, and a caller would
+    // learn a door's schema by knocking on one it may not open.
+    expect(outcome).toEqual({ ok: true, result: { containerScope: container } });
+    expect(seen.containerScope).toBe(container);
     fixture.store.close();
   });
 
   test("the same token is still refused every action that did not declare itself confined", async () => {
-    const { fixture, host, pad, seen } = scopedFixture();
-    const scoped = context(fixture, ["pads:read"], pad);
+    const { fixture, host, container, seen } = scopedFixture();
+    const scoped = context(fixture, ["containers:read"], container);
 
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.sweep`, {});
 
@@ -1220,60 +1224,60 @@ describe("PluginHost action scope", () => {
       rule: "forbidden",
       message: "scoped tokens cannot invoke workspace actions",
     });
-    expect(seen.padScope).toBeUndefined();
+    expect(seen.containerScope).toBeUndefined();
     fixture.store.close();
   });
 
-  test("a workspace-grade caller reaches the pad-scoped action with no scope at all", async () => {
+  test("a workspace-grade caller reaches the container-scoped action with no scope at all", async () => {
     const { fixture, host, seen } = scopedFixture();
 
     const outcome = await host.dispatch(fixture.owner, `${SCOPED_ID}.read`, {});
 
-    // `scope: "pad"` is about what the door PROMISES, not about who may open it: an unscoped
-    // principal gets `padScope: null` and the handler resolves its target the way it always
-    // did (for terminals, the session row's own pad).
-    expect(outcome).toEqual({ ok: true, result: { padScope: null } });
-    expect(seen.padScope).toBeNull();
+    // `scope: "container"` is about what the door PROMISES, not about who may open it: an
+    // unscoped principal gets `containerScope: null` and the handler resolves its target the
+    // way it always did (for terminals, the terminal row's own container).
+    expect(outcome).toEqual({ ok: true, result: { containerScope: null } });
+    expect(seen.containerScope).toBeNull();
     fixture.store.close();
   });
 
-  test("the cap rung still runs for a scoped caller, and runs AT its pad", async () => {
-    const { fixture, host, pad } = scopedFixture();
-    const reader = context(fixture, ["pads:read"], pad);
+  test("the cap rung still runs for a scoped caller, and runs AT its container", async () => {
+    const { fixture, host, container } = scopedFixture();
+    const reader = context(fixture, ["containers:read"], container);
 
-    // Holding `pads:read` at this pad is not authority to write in it: the scope rung let the
-    // caller reach rung 4, and rung 4 refused — which is why declaring a pad scope narrows
-    // the refusal without ever widening authority.
+    // Holding `containers:read` at this container is not authority to write in it: the scope
+    // rung let the caller reach rung 4, and rung 4 refused — which is why declaring a container
+    // scope narrows the refusal without ever widening authority.
     expect(denial(await host.dispatch(reader, `${SCOPED_ID}.write`, {}))).toEqual({
       rule: "forbidden",
-      message: "pads:write capability required",
+      message: "containers:write capability required",
     });
 
-    // And a token scoped to a DIFFERENT pad, holding the cap, is evaluated at its own scope:
-    // it passes the rung and the handler is handed that pad, which is exactly the value it is
-    // obliged to constrain itself to.
+    // And a token scoped to a DIFFERENT container, holding the cap, is evaluated at its own
+    // scope: it passes the rung and the handler is handed that container, which is exactly the
+    // value it is obliged to constrain itself to.
     const other = fixture.runtime.newId();
-    fixture.store.createPad({
+    fixture.store.createContainer({
       id: other,
       name: "other",
       createdAt: fixture.runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     });
-    const writer = context(fixture, ["pads:read", "pads:write"], other);
+    const writer = context(fixture, ["containers:read", "containers:write"], other);
     expect(await host.dispatch(writer, `${SCOPED_ID}.write`, {})).toEqual({
       ok: true,
-      result: { padScope: other },
+      result: { containerScope: other },
     });
     fixture.store.close();
   });
 
   test("the ladder order is unchanged: scope refuses before arguments are looked at", async () => {
-    const { fixture, host, pad } = scopedFixture();
-    const scoped = context(fixture, ["pads:read"], pad);
+    const { fixture, host, container } = scopedFixture();
+    const scoped = context(fixture, ["containers:read"], container);
 
     // Deliberately malformed args at a workspace-grade door. If the new rung had moved below
-    // validation — as it would have to if the pad came from the arguments — this would answer
-    // `invalid_args` and leak the door's schema to a caller who may not open it.
+    // validation — as it would have to if the container came from the arguments — this would
+    // answer `invalid_args` and leak the door's schema to a caller who may not open it.
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.sweep`, { surplus: true });
 
     expect(denial(outcome).rule).toBe("forbidden");
@@ -1284,7 +1288,7 @@ describe("PluginHost action scope", () => {
 describe("ctx.outsideScope", () => {
   const GUARD_ID = "test.guard";
 
-  /** A door whose argument names a pad, discharging containment through the shared helper. */
+  /** A door whose argument names a container, discharging containment through the shared helper. */
   function guardDefs(): readonly ServerPluginDef[] {
     return [
       {
@@ -1292,28 +1296,29 @@ describe("ctx.outsideScope", () => {
           id: GUARD_ID,
           version: "1.0.0",
           title: "Guard",
-          description: "Names a pad in its arguments and must stay inside the caller's scope.",
-          capabilities: ["pads:read"],
+          description:
+            "Names a container in its arguments and must stay inside the caller's scope.",
+          capabilities: ["containers:read"],
           contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
         },
         actions: [
           defineAction({
             name: "touch",
             title: "Touch a named container",
-            caps: ["pads:read"],
-            scope: "pad",
-            input: z.strictObject({ padId: z.string() }),
+            caps: ["containers:read"],
+            scope: "container",
+            input: z.strictObject({ containerId: z.string() }),
             result: z.strictObject({ touched: z.string() }),
           }),
         ],
         handlers: {
           touch: async (
-            ctx: { outsideScope(padId: string | null): { readonly refused: string } | null },
-            args: { padId: string },
+            ctx: { outsideScope(containerId: string | null): { readonly refused: string } | null },
+            args: { containerId: string },
           ) => {
-            const denial = ctx.outsideScope(args.padId);
+            const denial = ctx.outsideScope(args.containerId);
             if (denial !== null) return denial;
-            return { touched: args.padId };
+            return { touched: args.containerId };
           },
         },
       },
@@ -1326,20 +1331,22 @@ describe("ctx.outsideScope", () => {
     const mine = fixture.runtime.newId();
     const theirs = fixture.runtime.newId();
     for (const id of [mine, theirs]) {
-      fixture.store.createPad({
+      fixture.store.createContainer({
         id,
         name: id,
         createdAt: fixture.runtime.now(),
-        layout: "canvas",
+        discipline: "canvas",
       });
     }
-    const scoped = context(fixture, ["pads:read"], mine);
+    const scoped = context(fixture, ["containers:read"], mine);
 
-    // THE GAP THE RUNG CANNOT CLOSE: this caller's caps genuinely hold at its own pad, so
+    // THE GAP THE RUNG CANNOT CLOSE: this caller's caps genuinely hold at its own container, so
     // rung 4 passed it. Only the handler knows the argument names a different container —
     // which is why the obligation exists, and why it gets ONE wording rather than one per
     // plugin for a client to guess between.
-    expect(denial(await host.dispatch(scoped, `${GUARD_ID}.touch`, { padId: theirs }))).toEqual({
+    expect(
+      denial(await host.dispatch(scoped, `${GUARD_ID}.touch`, { containerId: theirs })),
+    ).toEqual({
       rule: "refused",
       message: OUTSIDE_SCOPE_REFUSAL,
     });
@@ -1348,36 +1355,38 @@ describe("ctx.outsideScope", () => {
     expect(OUTSIDE_SCOPE_REFUSAL).not.toContain(theirs);
 
     // Its own container passes, and a workspace-grade caller is confined by nothing.
-    expect(await host.dispatch(scoped, `${GUARD_ID}.touch`, { padId: mine })).toEqual({
+    expect(await host.dispatch(scoped, `${GUARD_ID}.touch`, { containerId: mine })).toEqual({
       ok: true,
       result: { touched: mine },
     });
-    expect(await host.dispatch(fixture.owner, `${GUARD_ID}.touch`, { padId: theirs })).toEqual({
+    expect(
+      await host.dispatch(fixture.owner, `${GUARD_ID}.touch`, { containerId: theirs }),
+    ).toEqual({
       ok: true,
       result: { touched: theirs },
     });
     fixture.store.close();
   });
 
-  test("an unresolvable pad is refused for a scoped caller and allowed for a workspace one", async () => {
+  test("an unresolvable container is refused for a scoped caller and allowed for a workspace one", async () => {
     const fixture = hostFixture();
     const host = customHost(fixture, guardDefs());
-    const pad = fixture.runtime.newId();
-    fixture.store.createPad({
-      id: pad,
+    const container = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id: container,
       name: "mine",
       createdAt: fixture.runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     });
-    const scoped = context(fixture, ["pads:read"], pad);
+    const scoped = context(fixture, ["containers:read"], container);
 
-    // A handler that could not resolve a pad for the thing it was asked about passes null.
-    // For a scoped caller that is a refusal — authority cannot be proven against a container
-    // nobody named — and for an unscoped one there was never anything to confine.
-    expect(host.composition().actions.has(`${GUARD_ID}.touch`)).toBe(true);
-    const scopedCtx = await host.dispatch(scoped, `${GUARD_ID}.touch`, { padId: "" });
+    // A handler that could not resolve a container for the thing it was asked about passes
+    // null. For a scoped caller that is a refusal — authority cannot be proven against a
+    // container nobody named — and for an unscoped one there was never anything to confine.
+    expect(host.assembly().actions.has(`${GUARD_ID}.touch`)).toBe(true);
+    const scopedCtx = await host.dispatch(scoped, `${GUARD_ID}.touch`, { containerId: "" });
     expect(denial(scopedCtx).message).toBe(OUTSIDE_SCOPE_REFUSAL);
-    expect(await host.dispatch(fixture.owner, `${GUARD_ID}.touch`, { padId: "" })).toEqual({
+    expect(await host.dispatch(fixture.owner, `${GUARD_ID}.touch`, { containerId: "" })).toEqual({
       ok: true,
       result: { touched: "" },
     });

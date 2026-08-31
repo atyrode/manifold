@@ -7,7 +7,7 @@ import { z } from "zod";
  * spotlights are facets of a single concept — what a principal is doing right now, visible
  * to everyone sharing the room and gone when the connection dies.
  *
- * Both halves now live here: the browser surfaces (cursor overlay, remote gesture overrides,
+ * Both halves now live here: the browser refs (cursor overlay, remote gesture overrides,
  * roster island, spotlight receipt) behind `@manifold-plugin/presence/web`, and the one door
  * presence needs on the server — a request that another principal look at a node. The
  * device's view-state store itself is engine mechanism (`@manifold/plugin`), because chrome
@@ -19,12 +19,12 @@ export const presenceManifest: PluginManifest = {
   title: "Presence",
   description:
     "Publishes each principal's view state and delivers consent-guarded spotlight requests.",
-  capabilities: ["scene:write"],
+  capabilities: ["scenes:write"],
   contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
 };
 
 /**
- * "Look at this." `scene:write` because it DRIVES another principal's client — the same
+ * "Look at this." `scenes:write` because it DRIVES another principal's client — the same
  * authority that lets a caller move things in a room lets it point somebody in that room at
  * a node, and nothing weaker would do, since a viewport yank is an interruption.
  *
@@ -35,7 +35,7 @@ export const presenceActions = [
   defineAction({
     name: "focus",
     title: "Ask a principal to look at a node",
-    caps: ["scene:write"],
+    caps: ["scenes:write"],
     input: z.strictObject({
       targetPrincipalId: z.string().min(1),
       uri: z.string().min(1).max(512),

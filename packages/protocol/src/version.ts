@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 15;
+export const PROTOCOL_VERSION = 16;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -17,34 +17,42 @@ export const PROTOCOL_VERSION = 15;
  * RESETS the set to only the new version and requires a coordinated fleet
  * restart (server + spokes together).
  *
+ * HISTORY. Written in the CURRENT lexicon, because a changelog that speaks a
+ * retired vocabulary is a second door onto the concepts it describes: what v9
+ * called `SessionInfo.padId` is the field this tree calls
+ * `TerminalInfo.containerId`, and the frame v10 called `session_event` is the
+ * one now called `terminal_event`. The wire bytes of a past version are not
+ * rewritten by naming them in today's words — only v16's are, below.
+ *
  * v2 -> v3: session-channel only (init/resync gained selfCaps); agent wire
  * verified identical, so v2 agents stay accepted.
- * v3 -> v4: agent wire gained OPTIONAL `exitCode` on advertised sessions
+ * v3 -> v4: agent wire gained OPTIONAL `exitCode` on advertised terminals
  * (hello). Absence ≡ the old `null` adoption semantics, so v2/v3 agents stay
  * accepted; they merely keep reporting disconnect-window exits as null.
  * v4 -> v5: session-channel scene records became strict native terminal
  * records. The machine wire is identical, so v2/v3/v4 agents stay accepted.
  * v5 -> v6: session-channel scene frames became Yjs document updates. The
  * machine wire is byte-identical, so existing agents stay accepted.
- * v6 -> v7: session-channel roster states gained required `connIds` so viewers
- * can retire a closed tab's cursor. The machine wire is byte-identical, so
- * existing agents stay accepted.
+ * v6 -> v7: session-channel attendance states gained required `connIds` so
+ * viewers can retire a closed tab's cursor. The machine wire is byte-identical,
+ * so existing agents stay accepted.
  * v7 -> v8: session-channel cursor frames dropped the never-rendered `tool`
  * field. The machine wire is byte-identical, so existing agents stay accepted.
- * v8 -> v9: session-channel SessionInfo.padId became nullable and session_event
- * gained "parked". The machine wire is byte-identical, so existing agents stay
- * accepted.
- * v9 -> v10: session-channel SessionInfo gained a nullable name and session_event
- * gained "renamed". The machine wire is byte-identical, so existing agents stay
- * accepted.
- * v10 -> v11: pads gained layout/transient and tiled containers store a layout
- * tree; scene elements gained portal; the session `join` frame gained an OPTIONAL
- * `spectator` flag so a portal widget's preview socket can watch a room without
- * occupying it (absent ≡ occupant, the pre-flag semantics); `terminal_open` gained
- * an OPTIONAL `placement: "tile"` (absent ≡ the opener authors a canvas element)
- * and `terminal_opened` an OPTIONAL `ref` echoing it, so a view can birth a
- * terminal the server places as a tile; SessionInfo and PadSessionSummary DROPPED
- * `elementId`, because a session holds many placements at once (canvas mirrors,
+ * v8 -> v9: session-channel TerminalInfo.containerId became nullable and the
+ * terminal event frame gained "parked". The machine wire is byte-identical, so
+ * existing agents stay accepted.
+ * v9 -> v10: session-channel TerminalInfo gained a nullable name and the
+ * terminal event frame gained "renamed". The machine wire is byte-identical, so
+ * existing agents stay accepted.
+ * v10 -> v11: containers gained a discipline and transient flag, and
+ * compositions store a layout tree; scene elements gained portal; the session
+ * `join` frame gained an OPTIONAL `spectator` flag so a portal's preview socket
+ * can watch a room without occupying it (absent ≡ occupant, the pre-flag
+ * semantics); `terminal_open` gained an OPTIONAL `placement: "tile"` (absent ≡
+ * the opener authors a canvas element) and `terminal_opened` an OPTIONAL `ref`
+ * echoing it, so a composition can birth a terminal the server places as a
+ * tile; TerminalInfo and the per-container terminal summary DROPPED
+ * `elementId`, because a terminal holds many placements at once (canvas mirrors,
  * tile leaves) and consumers read placement from the doc's elements and layout
  * tree instead. The machine wire is byte-identical, so existing agents stay
  * accepted.
@@ -60,9 +68,9 @@ export const PROTOCOL_VERSION = 15;
  * gained an OPTIONAL `aim` so collaborators can re-derive a producer's live split
  * preview. The machine wire is byte-identical, so existing agents stay accepted.
  * v13 -> v14: session/HTTP only — connection-level plugins frame, presence
- * view/spotlight, panel tile surface, plugins:manage cap, action/resolve doors,
+ * vantage/spotlight, panel tile ref, plugins:manage cap, action/resolve doors,
  * and gesture `carry` payloads gained a REQUIRED `item`: a carry now names the
- * item its surface addresses, so a collaborator paints legality from the frame
+ * item its ref addresses, so a collaborator paints legality from the frame
  * instead of re-resolving an address against its own index poll.
  * Machine wire byte-identical, so existing agents stay accepted.
  * v14 -> v15: session/HTTP only — the plugin behavioral contract. Manifests gained
@@ -70,19 +78,40 @@ export const PROTOCOL_VERSION = 15;
  * the v14 semantics), `dataVersion` (absent ≡ unversioned: nothing migrates, nothing
  * refuses), `dormant` (absent ≡ the engine's named ghost, which is what v14 already drew),
  * `purges` (an audit-visible declaration bound to no verb) and per-element `placement`
- * traits (absent ≡ canvas-item/inline, exactly today's contributed element); roster rows
+ * traits (absent ≡ canvas_item/inline, exactly today's contributed element); roster rows
  * gained `lifecycle`, `refusal` and `changedBy`/`changedAt` (all absent ≡ a plugin nobody
  * has toggled and nothing refuses) and their `source` widened from the literal "builtin"
  * to "builtin" | "plugin", which every v14 value still satisfies. Published actions gained
- * `scope` ∈ {workspace, pad}, DEFAULTED to `workspace`, which is the v14 rule verbatim: a
- * pad-scoped token is refused every action that does not declare itself confined to one
- * container. All of it rides `GET /api/plugins`, `GET /api/protocol` and the
- * connection-level `plugins` frame. The machine wire is byte-identical — an agent never
- * sees a manifest — so existing agents stay accepted.
+ * `scope` ∈ {workspace, container}, DEFAULTED to `workspace`, which is the v14 rule
+ * verbatim: a container-scoped token is refused every action that does not declare itself
+ * confined to one container. All of it rides `GET /api/plugins`, `GET /api/protocol` and
+ * the connection-level `plugins` frame. The machine wire is byte-identical — an agent
+ * never sees a manifest — so existing agents stay accepted.
+ * v15 -> v16: THE LEXICON CUT, and the one bump in this list that RESETS the
+ * acceptance set. Every layer now speaks one vocabulary, so wire names moved:
+ * the container is a `container` everywhere (`containerId`, `kind: "container"`,
+ * `manifold://container/<id>`) and its `layout` field is its `discipline`, whose
+ * values are `canvas` | `composition`; a PTY is a `terminal` everywhere
+ * (`terminalId`, `TerminalInfo`, the `terminal_event` frame, `terminals` in
+ * init/resync and in the agent `hello`) and `session` now names only a client
+ * connection; the presence roster frame is `attendance`; published per-principal state is
+ * `vantage`; a leaf's occupant and a placement's subject are both a `ref`
+ * (`TileRef`, `PlacementRef`, denial `unknown_ref`); caps are
+ * `containers:read` | `containers:write` | `scenes:write` | `terminals:spawn` |
+ * `terminals:write`; every closed-enum wire literal is snake_case
+ * (`canvas_item`, `no_self_embed`, `on_claim`); and the PTY environment carries
+ * `MANIFOLD_CONTAINER`.
+ *
+ * The MACHINE wire is part of that move — `terminalId`, `terminals` on hello,
+ * `MANIFOLD_CONTAINER` — so a v15 agent can neither be understood nor
+ * understand this server. The set is therefore `{16}` and the upgrade is a
+ * COORDINATED RESTART, sanctioned rather than accidental: stop the fleet, apply
+ * DB migration 11 (it takes its own backup), start the server, then restart
+ * every enrolled agent. An old agent dialing in is refused at machine-ws
+ * version negotiation (close 4409) instead of silently exchanging frames whose
+ * field names no longer exist.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16]);
 
 /**
  * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this

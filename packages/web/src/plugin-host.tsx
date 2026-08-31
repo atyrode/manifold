@@ -2,20 +2,20 @@ import {
   ProjectionProvider,
   ViewportRegistrationProvider,
   sessionUrl,
-  type PadOverlayProps,
-  type PadSurfaceProps,
+  type ContainerOverlayProps,
+  type ContainerRendererProps,
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
   type ProjectionState,
   type RegisteredElement,
-  type RegisteredSurface,
+  type RegisteredRenderer,
   type RegisteredTool,
   type TerminalFacet,
 } from "@manifold/plugin/hooks";
 import type {
   HostServices,
-  PadAuthoringHandle,
-  PadViewportHandle,
+  AuthoringHandle,
+  ViewportHandle,
   PanelProps,
   SectionProps,
 } from "@manifold/plugin";
@@ -38,11 +38,11 @@ import {
   type ReactNode,
 } from "react";
 import type { StoredIdentity } from "./api.ts";
-import { WEB_PLUGIN_DEFS } from "./composition.ts";
+import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
  * The browser half of the plugin engine — FLOOR (AXIOMS.md §Foundation), which is why this
- * file never imports a plugin package: `composition.ts` is the one web file allowed to name
+ * file never imports a plugin package: `assembly.ts` is the one web file allowed to name
  * `@manifold-plugin/*`, and it hands its registrations here as inert data.
  *
  * The division of labour is the whole point:
@@ -70,10 +70,10 @@ import { WEB_PLUGIN_DEFS } from "./composition.ts";
  * props on a canvas, a plain render in a tile leaf. Keeping the registry opaque is what stops
  * one frame's props from becoming the contract.
  *
- * FOUR of these channels have no manifest counterpart — `routes`, `padSurfaces`, `overlays`
- * and `terminals` — and they share one rationale: none of them is a surface the WORKSPACE
+ * FOUR of these channels have no manifest counterpart — `routes`, `renderers`, `overlays`
+ * and `terminals` — and they share one rationale: none of them is a ref the WORKSPACE
  * composes, so there is nothing for a principal's layout or the sidebar order to name. A path
- * is an entry point the browser hands over; a pad surface, an overlay and the terminal viewer
+ * is an entry point the browser hands over; a container ref, an overlay and the terminal viewer
  * are projections one renderer asks another plugin for (`@manifold/plugin/hooks`'
  * {@link ProjectionRegistry}). The roster still decides whether the registering plugin is
  * ENABLED, which is what keeps every one of them painting the engine's named placeholder
@@ -89,22 +89,22 @@ export interface WebPluginDef {
    */
   readonly routes?: Readonly<Record<string, ComponentType<{ rest: string; host: HostServices }>>>;
   /**
-   * Container renderers, keyed by the container DISCIPLINE they draw (`Pad["layout"]`:
-   * `canvas`, `tiled`). The routed shell and every nesting renderer project a pad through
+   * Container renderers, keyed by the container DISCIPLINE they draw (`Container["discipline"]`:
+   * `canvas`, `composition`). The routed shell and every nesting renderer project a container through
    * this one registry, which is how a canvas holds a composition and a composition holds a
    * canvas without either plugin importing the other.
    */
-  readonly padSurfaces?: Readonly<Record<string, ComponentType<PadSurfaceProps>>>;
+  readonly renderers?: Readonly<Record<string, ComponentType<ContainerRendererProps>>>;
   /**
-   * Decoration painted over a mounted pad surface, keyed by slot (`pad-roster`,
-   * `pad-spotlight`). An unregistered or disabled overlay paints NOTHING: an inert box
+   * Decoration painted over a mounted container ref, keyed by slot (`container-roster`,
+   * `container-spotlight`). An unregistered or disabled overlay paints NOTHING: an inert box
    * floating over someone's canvas is worse than the missing decoration.
    */
-  readonly overlays?: Readonly<Record<string, ComponentType<PadOverlayProps>>>;
+  readonly overlays?: Readonly<Record<string, ComponentType<ContainerOverlayProps>>>;
   /**
-   * Terminals, as every surface that paints one sees them: the viewer plus the machine
+   * Terminals, as every ref that paints one sees them: the viewer plus the machine
    * choice a new terminal is born on. One registration, because both belong to whichever
-   * plugin owns terminals, and a surface needs both to offer the affordance honestly.
+   * plugin owns terminals, and a ref needs both to offer the affordance honestly.
    */
   readonly terminals?: TerminalFacet;
 }
@@ -154,18 +154,18 @@ export interface WebTerminals {
  * cheap memo key instead of a deep comparison.
  *
  * Four of the registries below are typed by `@manifold/plugin` rather than by this file
- * ({@link RegisteredElement}, {@link RegisteredTool}, {@link RegisteredSurface}): they are
+ * ({@link RegisteredElement}, {@link RegisteredTool}, {@link RegisteredRenderer}): they are
  * exactly what the projection registry publishes to plugin code, and a second shape for the
  * same row would be a second answer to "what did the composition register" (invariant 14).
  */
-export interface WebComposition {
+export interface BrowserAssembly {
   readonly roster: PluginRoster;
   readonly revision: number;
   /** False for a disabled plugin AND for an id the roster does not carry. */
   enabled(id: string): boolean;
   /** The plugin's human title, for placeholders and admin UI; null when unknown. */
   pluginTitle(id: string): string | null;
-  /** Keyed by FULL panel id — the id a `panel` tile surface names. */
+  /** Keyed by FULL panel id — the id a `panel` tile ref names. */
   readonly panels: ReadonlyMap<string, WebPanel>;
   /** Sorted by declared `order`; ties keep roster order. */
   readonly sections: readonly WebSection[];
@@ -173,10 +173,10 @@ export interface WebComposition {
   /** Keyed by first path segment; a route the roster does not know is simply absent. */
   readonly routes: ReadonlyMap<string, WebRoute>;
   readonly tools: readonly RegisteredTool[];
-  /** Keyed by container discipline (`canvas`, `tiled`). */
-  readonly padSurfaces: ReadonlyMap<string, RegisteredSurface<PadSurfaceProps>>;
+  /** Keyed by container discipline (`canvas`, `composition`). */
+  readonly renderers: ReadonlyMap<string, RegisteredRenderer<ContainerRendererProps>>;
   /** Keyed by overlay slot. */
-  readonly overlays: ReadonlyMap<string, RegisteredSurface<PadOverlayProps>>;
+  readonly overlays: ReadonlyMap<string, RegisteredRenderer<ContainerOverlayProps>>;
   /** Null until some enabled-or-disabled plugin registers the terminal facet. */
   readonly terminals: WebTerminals | null;
 }
@@ -185,11 +185,11 @@ export interface WebComposition {
  * Joins the server's vocabulary with the browser's registrations. Pure, and exported so the
  * join is testable without a provider or a socket.
  */
-export function buildWebComposition(
+export function buildBrowserAssembly(
   roster: PluginRoster,
   revision: number,
   defs: readonly WebPluginDef[],
-): WebComposition {
+): BrowserAssembly {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const titles = new Map<string, string>();
   const enabledIds = new Set<string>();
@@ -198,8 +198,8 @@ export function buildWebComposition(
   const elements = new Map<string, RegisteredElement>();
   const tools: RegisteredTool[] = [];
   const routes = new Map<string, WebRoute>();
-  const padSurfaces = new Map<string, RegisteredSurface<PadSurfaceProps>>();
-  const overlays = new Map<string, RegisteredSurface<PadOverlayProps>>();
+  const renderers = new Map<string, RegisteredRenderer<ContainerRendererProps>>();
+  const overlays = new Map<string, RegisteredRenderer<ContainerOverlayProps>>();
   let terminals: WebTerminals | null = null;
 
   for (const entry of roster) {
@@ -250,8 +250,8 @@ export function buildWebComposition(
       the moment the plugin is disabled. `title` is the plugin's own, because that is what a
       placeholder must name — the missing renderer has no title of its own to borrow.
      */
-    for (const [layout, Component] of Object.entries(def?.padSurfaces ?? {})) {
-      padSurfaces.set(layout, {
+    for (const [layout, Component] of Object.entries(def?.renderers ?? {})) {
+      renderers.set(layout, {
         plugin: manifest.id,
         title: manifest.title,
         Component,
@@ -272,7 +272,7 @@ export function buildWebComposition(
   }
 
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
-  // the engine's `composeRoster` applies server-side.
+  // the engine's `assembleRoster` applies server-side.
   sections.sort((left, right) => left.order - right.order);
 
   return {
@@ -285,13 +285,13 @@ export function buildWebComposition(
     elements,
     routes,
     tools,
-    padSurfaces,
+    renderers,
     overlays,
     terminals,
   };
 }
 
-const CompositionContext = createContext<WebComposition | null>(null);
+const AssemblyContext = createContext<BrowserAssembly | null>(null);
 /**
  * Kept in its OWN context, deliberately: the attach function is stable for the provider's
  * lifetime, while the composition changes with every roster. A component that subscribes a
@@ -299,13 +299,13 @@ const CompositionContext = createContext<WebComposition | null>(null);
  */
 const PluginsAttachContext = createContext<((client: SessionClient) => () => void) | null>(null);
 
-/** Throws rather than degrading: a composition-less consumer would silently render nothing. */
-export function useComposition(): WebComposition {
-  const composition = useContext(CompositionContext);
-  if (composition === null) {
-    throw new Error("useComposition requires a <CompositionProvider> ancestor");
+/** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
+export function useAssembly(): BrowserAssembly {
+  const assembly = useContext(AssemblyContext);
+  if (assembly === null) {
+    throw new Error("useAssembly requires a <AssemblyProvider> ancestor");
   }
-  return composition;
+  return assembly;
 }
 
 /**
@@ -317,12 +317,12 @@ export function useComposition(): WebComposition {
 export function useAttachPluginsClient(): (client: SessionClient) => () => void {
   const attach = useContext(PluginsAttachContext);
   if (attach === null) {
-    throw new Error("useAttachPluginsClient requires a <CompositionProvider> ancestor");
+    throw new Error("useAttachPluginsClient requires a <AssemblyProvider> ancestor");
   }
   return attach;
 }
 
-interface CompositionProviderProps {
+interface AssemblyProviderProps {
   readonly identity: StoredIdentity;
   readonly children: ReactNode;
 }
@@ -338,14 +338,11 @@ interface RosterState {
 const INITIAL_ROSTER: RosterState = { roster: [], revision: 0, digest: "" };
 
 /**
- * Owns the roster for the authenticated session: fetched once at boot (this is why the
+ * Owns the roster for the authenticated terminal: fetched once at boot (this is why the
  * provider needs the token, and why it mounts inside `IdentityGate`), then kept current by
  * whoever attaches a session client.
  */
-export function CompositionProvider({
-  identity,
-  children,
-}: CompositionProviderProps): ReactElement {
+export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
 
   const publish = useCallback((roster: PluginRoster): void => {
@@ -367,7 +364,7 @@ export function CompositionProvider({
         publish(PluginsResponseSchema.parse(await response.json()).plugins);
       } catch (reason) {
         if (controller.signal.aborted) return;
-        // No toast layer exists above this provider, and a missing roster is already visible
+        // No notice layer exists above this provider, and a missing roster is already visible
         // as named placeholders where panels should be — so the console is the honest report.
         console.error("evt=plugin_roster_fetch_failed", reason);
       }
@@ -380,14 +377,14 @@ export function CompositionProvider({
     [publish],
   );
 
-  const composition = useMemo(
-    () => buildWebComposition(state.roster, state.revision, WEB_PLUGIN_DEFS),
+  const assembly = useMemo(
+    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS),
     [state],
   );
 
   return (
     <PluginsAttachContext.Provider value={attachPluginsClient}>
-      <CompositionContext.Provider value={composition}>{children}</CompositionContext.Provider>
+      <AssemblyContext.Provider value={assembly}>{children}</AssemblyContext.Provider>
     </PluginsAttachContext.Provider>
   );
 }
@@ -399,7 +396,7 @@ interface HostServicesProviderProps {
   readonly children: ReactNode;
 }
 
-/** Publishes the one host surface plugin code is allowed to touch (`@manifold/plugin`). */
+/** Publishes the one host ref plugin code is allowed to touch (`@manifold/plugin`). */
 export function HostServicesProvider({ value, children }: HostServicesProviderProps): ReactElement {
   return <HostServicesContext.Provider value={value}>{children}</HostServicesContext.Provider>;
 }
@@ -414,7 +411,7 @@ export function useHostServices(): HostServices {
 }
 
 /**
- * The registration channel for the one facet only the MOUNTED pad view can answer, and the
+ * The registration channel for the one facet only the MOUNTED container view can answer, and the
  * only one whose consumer is FLOOR. Its own context for the same reason the plugins attach
  * is: the register function is stable for the gate's lifetime, while the host value changes
  * whenever a facet arrives, and a renderer must not re-register because a plugin was toggled.
@@ -423,12 +420,12 @@ export function useHostServices(): HostServices {
  * ({@link ViewportRegistrationProvider}) rather than here, because the renderer that
  * publishes a viewport is a plugin and a plugin may not import this file.
  */
-const AuthoringRegisterContext = createContext<
-  ((handle: PadAuthoringHandle | null) => void) | null
->(null);
+const AuthoringRegisterContext = createContext<((handle: AuthoringHandle | null) => void) | null>(
+  null,
+);
 
-/** The same channel for the authoring door — see {@link PadAuthoringHandle}. */
-export function useAuthoringRegistration(): (handle: PadAuthoringHandle | null) => void {
+/** The same channel for the authoring door — see {@link AuthoringHandle}. */
+export function useAuthoringRegistration(): (handle: AuthoringHandle | null) => void {
   const register = useContext(AuthoringRegisterContext);
   if (register === null) {
     throw new Error("useAuthoringRegistration requires a <HostServicesGate> ancestor");
@@ -445,12 +442,12 @@ export interface HostServicesGateProps {
    * client JOINS a room — which is what makes `selfCaps()` answer and the roster arrive
    * live. Every HTTP door works either way.
    */
-  readonly padId?: string | null;
+  readonly containerId?: string | null;
   readonly children: ReactNode;
 }
 
 /**
- * Builds THE host surface and mounts it above every route — deliberately above, because a
+ * Builds THE host ref and mounts it above every route — deliberately above, because a
  * plugin route (`/uri/<encoded>`) is a contribution too and must reach the same doors the
  * sidebar's sections do.
  *
@@ -464,13 +461,13 @@ export interface HostServicesGateProps {
 export function HostServicesGate({
   identity,
   navigate,
-  padId = null,
+  containerId = null,
   children,
 }: HostServicesGateProps): ReactElement {
-  const composition = useComposition();
+  const assembly = useAssembly();
   const attachPluginsClient = useAttachPluginsClient();
-  const [viewport, setViewport] = useState<PadViewportHandle | null>(null);
-  const [authoring, setAuthoring] = useState<PadAuthoringHandle | null>(null);
+  const [viewport, setViewport] = useState<ViewportHandle | null>(null);
+  const [authoring, setAuthoring] = useState<AuthoringHandle | null>(null);
 
   const client = useMemo(
     () =>
@@ -478,22 +475,22 @@ export function HostServicesGate({
         url: sessionUrl(),
         // The workspace is not a room. Unjoined, this is the id nothing is addressed by;
         // it never reaches the wire, because an unconnected client sends no join.
-        padId: padId ?? "",
+        containerId: containerId ?? "",
         token: identity.token,
-        ...(padId === null ? {} : { spectator: true }),
+        ...(containerId === null ? {} : { spectator: true }),
       }),
-    [identity.token, padId],
+    [identity.token, containerId],
   );
 
   useEffect(() => {
-    if (padId === null) return;
+    if (containerId === null) return;
     void client.connect().catch((reason: unknown) => {
       // The renderer's own occupant socket reports room failures to the operator; this
       // handle failing only costs the workspace its live vocabulary, so it stays quiet.
       console.error("evt=host_services_join_failed", reason);
     });
     return () => client.close();
-  }, [client, padId]);
+  }, [client, containerId]);
 
   useEffect(() => attachPluginsClient(client), [attachPluginsClient, client]);
 
@@ -512,8 +509,8 @@ export function HostServicesGate({
       const ref = parseManifoldUri(uri);
       if (ref === null) return;
       navigate(
-        ref.kind === "pad" || ref.kind === "element" || ref.kind === "tile"
-          ? `/p/${encodeURIComponent(ref.padId)}`
+        ref.kind === "container" || ref.kind === "element" || ref.kind === "tile"
+          ? `/p/${encodeURIComponent(ref.containerId)}`
           : `/uri/${encodeURIComponent(uri)}`,
       );
     },
@@ -525,16 +522,16 @@ export function HostServicesGate({
       client,
       principal: identity.principal,
       token: identity.token,
-      padId,
+      containerId,
       navigate: navigateUri,
       viewport,
       authoring,
-      composition: {
-        roster: () => composition.roster,
-        enabled: (id) => composition.enabled(id),
+      assembly: {
+        roster: () => assembly.roster,
+        enabled: (id) => assembly.enabled(id),
       },
     }),
-    [authoring, client, composition, identity, navigateUri, padId, viewport],
+    [authoring, client, assembly, identity, navigateUri, containerId, viewport],
   );
 
   /**
@@ -546,16 +543,16 @@ export function HostServicesGate({
    */
   const projection = useMemo<ProjectionRegistry>(
     () => ({
-      revision: composition.revision,
+      revision: assembly.revision,
       Placeholder: PluginPlaceholder,
-      terminals: composition.terminals,
-      padSurface: (layout) => composition.padSurfaces.get(layout) ?? null,
-      overlay: (slot) => composition.overlays.get(slot) ?? null,
-      element: (type) => composition.elements.get(type) ?? null,
-      elements: composition.elements,
-      tools: composition.tools,
+      terminals: assembly.terminals,
+      renderer: (layout) => assembly.renderers.get(layout) ?? null,
+      overlay: (slot) => assembly.overlays.get(slot) ?? null,
+      element: (type) => assembly.elements.get(type) ?? null,
+      elements: assembly.elements,
+      tools: assembly.tools,
     }),
-    [composition],
+    [assembly],
   );
 
   return (
@@ -586,9 +583,9 @@ const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
 export type PluginPlaceholderProps = ProjectionPlaceholderProps;
 
 /**
- * The one inert-contribution surface, shared by workspace panes and canvas nodes: it NAMES
+ * The one inert-contribution ref, shared by workspace panes and canvas nodes: it NAMES
  * what is missing, so a disabled plugin reads as "core.draw is off", never as a blank box.
- * The remove control commits a pruned workspace tree through `core.layout.set`, which is why
+ * The remove control commits a pruned workspace tree through `core.space.setLayout`, which is why
  * a disable can never brick a layout (D4, `[R: layout-lock blocker]`).
  */
 export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
@@ -600,7 +597,7 @@ export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderPr
         <button
           type="button"
           className="plugin-placeholder__remove"
-          data-action="core.layout.set"
+          data-action="core.space.setLayout"
           onClick={onRemove}
         >
           Remove
@@ -611,26 +608,26 @@ export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderPr
 }
 
 export interface PanelOutletProps {
-  /** FULL panel id, exactly as a `panel` tile surface carries it. */
+  /** FULL panel id, exactly as a `panel` tile ref carries it. */
   readonly panelId: string;
   /** Offered on placeholders only: prune this leaf from the caller's own layout. */
   readonly onRemove?: (() => void) | undefined;
 }
 
 /**
- * Renders whatever a `panel` tile surface points at — the single seam between the tile tree
+ * Renders whatever a `panel` tile ref points at — the single call ref between the tile tree
  * and plugin code. Every failure mode is a named placeholder rather than an empty pane:
  * unknown id, known-but-disabled plugin, or a declared panel whose web half is absent.
  */
 export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactElement {
-  const composition = useComposition();
+  const assembly = useAssembly();
   const host = useHostServices();
-  const panel = composition.panels.get(panelId);
+  const panel = assembly.panels.get(panelId);
 
   if (panel === undefined) {
     return <PluginPlaceholder name={panelId} state="unknown" onRemove={onRemove} />;
   }
-  const name = composition.pluginTitle(panel.plugin) ?? panel.plugin;
+  const name = assembly.pluginTitle(panel.plugin) ?? panel.plugin;
   if (!panel.enabled) {
     return <PluginPlaceholder name={name} state="disabled" onRemove={onRemove} />;
   }

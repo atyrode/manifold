@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import {
   ROOT_TILE_ID,
   ServerToAgentMessageSchema,
-  type Pad,
+  type Container,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
 import { RoomManager } from "../src/room.ts";
-import { SessionPeer } from "../src/session-peer.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
 
@@ -29,11 +29,11 @@ class FakeMachine implements MachineChannel {
 }
 
 /**
- * The fixture opens a terminal in a COMPOSITION, which is where a terminal lives: the pad
- * IS the home, so the opener's own container is the one the session is homed in and every
- * session-scoped message it sends is addressed to the right room. A canvas opener would be
- * homed in a solo composition it is not joined to, which is the lifecycle rule under test
- * elsewhere, not the plumbing under test here.
+ * The fixture opens a terminal in a COMPOSITION, which is where a terminal lives: the
+ * container IS the home, so the opener's own container is the one the terminal is homed in
+ * and every terminal-scoped message it sends is addressed to the right room. A canvas opener
+ * would be homed in a solo composition it is not joined to, which is the lifecycle rule under
+ * test elsewhere, not the plumbing under test here.
  */
 function openingFixture() {
   const runtime = new FakeRuntime();
@@ -41,13 +41,13 @@ function openingFixture() {
   const store = testStore();
   const auth = new AuthService(store, "b".repeat(64), runtime);
   const root = auth.authenticate("b".repeat(64));
-  const pad: Pad = {
+  const container: Container = {
     id: runtime.newId(),
     name: "terminal composition",
     createdAt: runtime.now(),
-    layout: "tiled",
+    discipline: "composition",
   };
-  store.createPad(pad);
+  store.createContainer(container);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(
     store,
@@ -58,8 +58,8 @@ function openingFixture() {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   // Terminals are a FLOOR item kind, so this fixture needs no contributed traits: it never
   // places a plugin-owned element, and an empty roster is the honest input for that.
   broker.setPlacement(
@@ -68,14 +68,14 @@ function openingFixture() {
       rooms,
       broker,
       runtime,
-      compositionElementTraits(() => []),
+      assemblyElementTraits(() => []),
     ),
   );
   const enrollment = auth.enrollMachine("fake", root);
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
-  const opener = new SessionPeer(runtime.newId(), socket, root, pad.id, "c1");
+  const opener = new SessionChannel(runtime.newId(), socket, root, container.id, "c1");
   broker.open(opener, {
     type: "terminal_open",
     elementId: "terminal-1",
@@ -85,12 +85,25 @@ function openingFixture() {
   });
   const create = machine.sent.find((message) => message.type === "create");
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
-  return { runtime, clock, store, auth, root, pad, rooms, broker, machine, socket, opener, create };
+  return {
+    runtime,
+    clock,
+    store,
+    auth,
+    root,
+    container,
+    rooms,
+    broker,
+    machine,
+    socket,
+    opener,
+    create,
+  };
 }
 
 function brokerFixture() {
   const fixture = openingFixture();
-  fixture.broker.onCreated(fixture.machine.machineId, fixture.create.sessionId);
+  fixture.broker.onCreated(fixture.machine.machineId, fixture.create.terminalId);
   fixture.socket.clear();
   fixture.machine.clear();
   return fixture;
@@ -111,16 +124,16 @@ describe("TerminalBroker attach handoff", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     expect(fixture.machine.sent).toEqual([
-      { type: "snapshot_request", sessionId: fixture.create.sessionId },
+      { type: "snapshot_request", terminalId: fixture.create.terminalId },
     ]);
 
     for (let seq = 1; seq <= 6; seq += 1) {
       fixture.broker.onOutput(fixture.machine.machineId, {
         type: "output",
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         seq,
         data: encoded(`output-${seq}`),
       });
@@ -128,14 +141,14 @@ describe("TerminalBroker attach handoff", () => {
     for (let seq = 7; seq <= 10; seq += 1) {
       fixture.broker.onOutput(fixture.machine.machineId, {
         type: "output",
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         seq,
         data: encoded(`output-${seq}`),
       });
     }
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 6,
       data: encoded("snapshot-at-6"),
     });
@@ -166,29 +179,29 @@ describe("TerminalBroker controller lease", () => {
     const grant = fixture.auth.mintToken(
       {
         principal: { name: "second controller", kind: "human" },
-        caps: ["pads:read", "terminal:write"],
-        padId: fixture.pad.id,
+        caps: ["containers:read", "terminals:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
     const secondContext = fixture.auth.authenticate(grant.token);
     const secondSocket = new FakeSocket();
-    const second = new SessionPeer(
+    const second = new SessionChannel(
       fixture.runtime.newId(),
       secondSocket,
       secondContext,
-      fixture.pad.id,
+      fixture.container.id,
       "c2",
     );
 
     fixture.broker.input(second, {
       type: "terminal_input",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       data: encoded("denied"),
     });
     fixture.broker.resize(second, {
       type: "terminal_resize",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       cols: 100,
       rows: 30,
     });
@@ -202,16 +215,16 @@ describe("TerminalBroker controller lease", () => {
 
     fixture.broker.take(second, {
       type: "terminal_take",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     fixture.broker.input(second, {
       type: "terminal_input",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       data: encoded("allowed"),
     });
     fixture.broker.resize(second, {
       type: "terminal_resize",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       cols: 120,
       rows: 40,
     });
@@ -220,7 +233,7 @@ describe("TerminalBroker controller lease", () => {
     fixture.socket.clear();
     fixture.broker.input(fixture.opener, {
       type: "terminal_input",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       data: encoded("former-controller"),
     });
     expect(fixture.socket.messages().at(-1)).toMatchObject({
@@ -232,39 +245,39 @@ describe("TerminalBroker controller lease", () => {
     // class's own door: `core.terminals.kill` is the only one, and the lease rule it applies
     // is tested where it now lives (packages/server/test/plugin-host.test.ts). What the
     // broker still owes is the mechanism — the PTY is asked to stop.
-    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
+    expect(fixture.broker.killById(fixture.create.terminalId)).toBe("ok");
     expect(fixture.machine.sent.map((message) => message.type)).toEqual([
       "input",
       "resize",
       "kill",
     ]);
-    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
-    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
     fixture.store.close();
   });
 
   test("an offline kill removes the terminal anyway and kills the PTY if its machine returns", () => {
     const fixture = brokerFixture();
-    const room = fixture.rooms.get(fixture.pad.id);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
     room.join(fixture.opener);
     fixture.socket.clear();
     fixture.broker.setMachineOffline(fixture.machine);
 
-    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
+    expect(fixture.broker.killById(fixture.create.terminalId)).toBe("ok");
 
     // Undeliverable is not a reason to keep the terminal. The request was the whole intent,
-    // so the session, its row and the home it was the last occupant of all go, and nobody is
+    // so the terminal, its row and the home it was the last occupant of all go, and nobody is
     // left staring at an entry that outlived what it described.
-    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
-    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
-    expect(fixture.store.getPad(fixture.pad.id)).toBeNull();
+    expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
     // And no EXIT is announced: an exit is what a terminal that stopped ON ITS OWN reports,
     // and inventing one here is exactly the state this rule exists to forbid. What the home
-    // hears is the departure notice, which is what drops the row from every session listing.
-    expect(fixture.socket.messages().filter((message) => message.type === "session_event")).toEqual(
-      [{ type: "session_event", sessionId: fixture.create.sessionId, kind: "parked" }],
-    );
+    // hears is the departure notice, which is what drops the row from every terminal listing.
+    expect(
+      fixture.socket.messages().filter((message) => message.type === "terminal_event"),
+    ).toEqual([{ type: "terminal_event", terminalId: fixture.create.terminalId, kind: "parked" }]);
 
     // The durability the persisted exit used to buy now comes from the ABSENCE of a row: a
     // PTY that outlived an undeliverable kill has nothing to be adopted against, so hello
@@ -272,7 +285,7 @@ describe("TerminalBroker controller lease", () => {
     fixture.broker.setMachineOnline(fixture.machine);
     fixture.broker.reconcileMachineHello(fixture.machine.machineId, [
       {
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         cols: 80,
         rows: 24,
         alive: true,
@@ -281,39 +294,39 @@ describe("TerminalBroker controller lease", () => {
     ]);
     expect(fixture.machine.sent).toContainEqual({
       type: "kill",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     fixture.store.close();
   });
 
-  test("session re-adoption broadcasts the reset controller lease", () => {
+  test("terminal re-adoption broadcasts the reset controller lease", () => {
     const fixture = brokerFixture();
-    const room = fixture.rooms.get(fixture.pad.id);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
     room.join(fixture.opener);
     fixture.socket.clear();
     const grant = fixture.auth.mintToken(
       {
         principal: { name: "pre-restart controller", kind: "human" },
-        caps: ["pads:read", "terminal:write"],
-        padId: fixture.pad.id,
+        caps: ["containers:read", "terminals:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
-    const controller = new SessionPeer(
+    const controller = new SessionChannel(
       fixture.runtime.newId(),
       new FakeSocket(),
       fixture.auth.authenticate(grant.token),
-      fixture.pad.id,
+      fixture.container.id,
       "c2",
     );
     fixture.broker.take(controller, {
       type: "terminal_take",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     expect(fixture.socket.messages().at(-1)).toMatchObject({
-      type: "session_event",
-      sessionId: fixture.create.sessionId,
+      type: "terminal_event",
+      terminalId: fixture.create.terminalId,
       kind: "controller_changed",
       controllerId: controller.auth.principal.id,
     });
@@ -330,7 +343,7 @@ describe("TerminalBroker controller lease", () => {
     );
     restarted.reconcileMachineHello(fixture.machine.machineId, [
       {
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         cols: 80,
         rows: 24,
         alive: true,
@@ -339,8 +352,8 @@ describe("TerminalBroker controller lease", () => {
     ]);
 
     expect(fixture.socket.messages()).toContainEqual({
-      type: "session_event",
-      sessionId: fixture.create.sessionId,
+      type: "terminal_event",
+      terminalId: fixture.create.terminalId,
       kind: "controller_changed",
       controllerId: fixture.root.principal.id,
     });
@@ -350,8 +363,8 @@ describe("TerminalBroker controller lease", () => {
     const fixture = brokerFixture();
 
     expect(
-      fixture.broker.adoptSession(fixture.machine.machineId, {
-        sessionId: fixture.create.sessionId,
+      fixture.broker.adoptTerminal(fixture.machine.machineId, {
+        terminalId: fixture.create.terminalId,
         cols: 80,
         rows: 24,
         alive: false,
@@ -360,7 +373,7 @@ describe("TerminalBroker controller lease", () => {
       }),
     ).toBeFalse();
 
-    expect(fixture.store.getSession(fixture.create.sessionId)).toMatchObject({
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toMatchObject({
       status: "exited",
       exitCode: 23,
     });
@@ -371,11 +384,11 @@ describe("TerminalBroker controller lease", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 0,
       data: encoded("initial"),
     });
@@ -383,8 +396,8 @@ describe("TerminalBroker controller lease", () => {
     fixture.machine.clear();
 
     expect(
-      fixture.broker.adoptSession(fixture.machine.machineId, {
-        sessionId: fixture.create.sessionId,
+      fixture.broker.adoptTerminal(fixture.machine.machineId, {
+        terminalId: fixture.create.terminalId,
         cols: 100,
         rows: 30,
         alive: true,
@@ -392,12 +405,12 @@ describe("TerminalBroker controller lease", () => {
       }),
     ).toBeTrue();
     expect(fixture.machine.sent).toEqual([
-      { type: "snapshot_request", sessionId: fixture.create.sessionId },
+      { type: "snapshot_request", terminalId: fixture.create.terminalId },
     ]);
 
     fixture.broker.onOutput(fixture.machine.machineId, {
       type: "output",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 11,
       data: encoded("tail"),
     });
@@ -406,7 +419,7 @@ describe("TerminalBroker controller lease", () => {
     );
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 10,
       data: encoded("healed"),
     });
@@ -449,18 +462,18 @@ describe("TerminalBroker bounded pending work", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
 
     fixture.clock.advance(10_000);
     expect(fixture.socket.messages().at(-1)).toMatchObject({
       type: "error",
       code: "conflict",
-      ref: fixture.create.sessionId,
+      ref: fixture.create.terminalId,
     });
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 0,
       data: encoded("late"),
     });
@@ -474,12 +487,12 @@ describe("TerminalBroker bounded pending work", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     for (let seq = 1; seq <= 257; seq += 1) {
       fixture.broker.onOutput(fixture.machine.machineId, {
         type: "output",
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         seq,
         data: encoded("x"),
       });
@@ -498,17 +511,17 @@ describe("TerminalBroker bounded pending work", () => {
 });
 
 describe("TerminalBroker lifecycle cleanup", () => {
-  test("pad deletion kills a running PTY, drops broker state, and revokes its agent token", () => {
+  test("container deletion kills a running PTY, drops broker state, and revokes its agent token", () => {
     const fixture = brokerFixture();
     const token = sessionToken(fixture.create);
     fixture.machine.clear();
 
-    fixture.broker.dropPad(fixture.pad.id);
-    fixture.rooms.drop(fixture.pad.id);
-    fixture.store.deletePad(fixture.pad.id);
+    fixture.broker.dropContainer(fixture.container.id);
+    fixture.rooms.drop(fixture.container.id);
+    fixture.store.deleteContainer(fixture.container.id);
 
-    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: fixture.create.sessionId }]);
-    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
+    expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: fixture.create.terminalId }]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
     expect(() => fixture.auth.authenticate(token)).toThrow(ServiceError);
     fixture.store.close();
   });
@@ -518,7 +531,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
     const token = sessionToken(fixture.create);
     expect(fixture.auth.authenticate(token).principal.kind).toBe("agent");
 
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
 
     expect(() => fixture.auth.authenticate(token)).toThrow(ServiceError);
     fixture.store.close();
@@ -526,93 +539,93 @@ describe("TerminalBroker lifecycle cleanup", () => {
 
   test("an exited terminal keeps its home leaf, so the prune leaves it alone", () => {
     const fixture = brokerFixture();
-    const room = fixture.rooms.get(fixture.pad.id);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
     room.join(fixture.opener);
     fixture.socket.clear();
 
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
-    expect(fixture.broker.listForPad(fixture.pad.id)).toMatchObject([
-      { id: fixture.create.sessionId, status: "exited", exitCode: 0 },
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { id: fixture.create.terminalId, status: "exited", exitCode: 0 },
     ]);
 
     // L2: nothing is deleted on exit. The leaf survives, so the exit code stays on screen
     // until somebody dismisses it, and the prune must not dismiss it for them.
-    fixture.broker.pruneExitedUnhomedForPad(fixture.pad.id);
-    expect(room.homesSession(fixture.create.sessionId)).toBeTrue();
-    expect(fixture.broker.listForPad(fixture.pad.id)).toHaveLength(1);
-    expect(fixture.store.getSession(fixture.create.sessionId)).not.toBeNull();
-    expect(fixture.store.getPad(fixture.pad.id)).not.toBeNull();
+    fixture.broker.pruneExitedUnhomedForContainer(fixture.container.id);
+    expect(room.homesTerminal(fixture.create.terminalId)).toBeTrue();
+    expect(fixture.broker.listForContainer(fixture.container.id)).toHaveLength(1);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).not.toBeNull();
+    expect(fixture.store.getContainer(fixture.container.id)).not.toBeNull();
     fixture.store.close();
   });
 
   test("the prune collects an exited terminal whose home leaf is gone and retires the home", () => {
     const fixture = brokerFixture();
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
-    const room = fixture.rooms.get(fixture.pad.id);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
 
-    // Listing stays pure: reading the roster never collects anything.
-    expect(fixture.broker.listForPad(fixture.pad.id)).toHaveLength(1);
-    expect(fixture.store.getSession(fixture.create.sessionId)).not.toBeNull();
+    // Listing stays pure: reading the terminal listing never collects anything.
+    expect(fixture.broker.listForContainer(fixture.container.id)).toHaveLength(1);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).not.toBeNull();
 
     expect(room.removeTileLeafById(ROOT_TILE_ID)).toBeTrue();
-    fixture.broker.pruneExitedUnhomedForPad(fixture.pad.id);
-    expect(fixture.broker.listForPad(fixture.pad.id)).toEqual([]);
-    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
+    fixture.broker.pruneExitedUnhomedForContainer(fixture.container.id);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
     // The terminal was the only thing the composition held, so the composition goes too.
-    expect(fixture.store.getPad(fixture.pad.id)).toBeNull();
+    expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
     fixture.store.close();
   });
 
-  test("broker lifecycle broadcasts never materialize an unloaded pad room", () => {
+  test("broker lifecycle broadcasts never materialize an unloaded container room", () => {
     const fixture = brokerFixture();
     /*
       Birth makes the home resident — it has to, since the leaf is written into the live
-      document. Fencing that room leaves the pad on disk with nothing loaded, which is the
-      state the rule is about: a lifecycle broadcast must reach `rooms.live`, never
+      document. Fencing that room leaves the container on disk with nothing loaded, which is
+      the state the rule is about: a lifecycle broadcast must reach `rooms.live`, never
       `rooms.get`, or every exit in the workspace would page a document back in.
      */
-    fixture.rooms.drop(fixture.pad.id);
+    fixture.rooms.drop(fixture.container.id);
     expect(fixture.rooms.introspect()).toHaveLength(0);
 
     fixture.broker.resize(fixture.opener, {
       type: "terminal_resize",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       cols: 100,
       rows: 30,
     });
     fixture.broker.take(fixture.opener, {
       type: "terminal_take",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
     expect(fixture.rooms.introspect()).toHaveLength(0);
     fixture.store.close();
   });
 });
 
 describe("TerminalBroker live stream and control contracts", () => {
-  test("driving an exited session conflicts, but dismissing it is the kill it asked for", () => {
+  test("driving an exited terminal conflicts, but dismissing it is the kill it asked for", () => {
     const fixture = brokerFixture();
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.sessionId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
     fixture.socket.clear();
     fixture.machine.clear();
 
     fixture.broker.input(fixture.opener, {
       type: "terminal_input",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       data: encoded("ignored"),
     });
     fixture.broker.resize(fixture.opener, {
       type: "terminal_resize",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       cols: 90,
       rows: 25,
     });
     fixture.broker.take(fixture.opener, {
       type: "terminal_take",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
 
     // Driving a dead PTY is a conflict: there is nothing on the other end to drive.
@@ -623,7 +636,7 @@ describe("TerminalBroker live stream and control contracts", () => {
         .map((message) => message.code),
     ).toEqual(["conflict", "conflict", "conflict"]);
 
-    expect(fixture.broker.killById(fixture.create.sessionId)).toBe("ok");
+    expect(fixture.broker.killById(fixture.create.terminalId)).toBe("ok");
 
     // Killing one is not. A lease is a claim on a LIVE PTY, so an exited terminal has no
     // controller to win and dismissing it is the same verb as killing a running one — which
@@ -634,8 +647,8 @@ describe("TerminalBroker live stream and control contracts", () => {
         .filter((message) => message.type === "error")
         .map((message) => message.code),
     ).toEqual(["conflict", "conflict", "conflict"]);
-    expect(fixture.store.getSession(fixture.create.sessionId)).toBeNull();
-    expect(fixture.store.getPad(fixture.pad.id)).toBeNull();
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
     // No PTY was asked to stop: it already had.
     expect(fixture.machine.sent).toEqual([]);
     fixture.store.close();
@@ -643,14 +656,14 @@ describe("TerminalBroker live stream and control contracts", () => {
 
   test("every peer in the terminal's HOME receives terminal_opened with its leaf", () => {
     const fixture = openingFixture();
-    const room = fixture.rooms.get(fixture.pad.id);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
     const secondSocket = new FakeSocket();
-    const second = new SessionPeer(
+    const second = new SessionChannel(
       fixture.runtime.newId(),
       secondSocket,
       fixture.root,
-      fixture.pad.id,
+      fixture.container.id,
       "c2",
     );
     room.join(fixture.opener);
@@ -658,7 +671,7 @@ describe("TerminalBroker live stream and control contracts", () => {
     fixture.socket.clear();
     secondSocket.clear();
 
-    fixture.broker.onCreated(fixture.machine.machineId, fixture.create.sessionId);
+    fixture.broker.onCreated(fixture.machine.machineId, fixture.create.terminalId);
 
     // L1: the fan-out goes to the home room, addressed by the leaf the server wrote — the
     // opener's `ref` echo is a private correlation token and never reaches other peers.
@@ -666,9 +679,9 @@ describe("TerminalBroker live stream and control contracts", () => {
     expect(opened).toEqual({
       type: "terminal_opened",
       elementId: ROOT_TILE_ID,
-      session: {
-        id: fixture.create.sessionId,
-        padId: fixture.pad.id,
+      terminal: {
+        id: fixture.create.terminalId,
+        containerId: fixture.container.id,
         name: null,
         machineId: fixture.machine.machineId,
         status: "running",
@@ -689,11 +702,11 @@ describe("TerminalBroker live stream and control contracts", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 0,
       data: encoded("snapshot"),
     });
@@ -702,7 +715,7 @@ describe("TerminalBroker live stream and control contracts", () => {
     for (const seq of [2, 2, 1, 3]) {
       fixture.broker.onOutput(fixture.machine.machineId, {
         type: "output",
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         seq,
         data: encoded(`output-${seq}`),
       });
@@ -725,21 +738,21 @@ describe("TerminalBroker concurrent snapshot generations", () => {
     // back every timer it takes, so the count has to return to exactly this baseline.
     const armedByBirth = fixture.clock.pendingJobs;
     const secondSocket = new FakeSocket();
-    const second = new SessionPeer(
+    const second = new SessionChannel(
       fixture.runtime.newId(),
       secondSocket,
       fixture.root,
-      fixture.pad.id,
+      fixture.container.id,
       "c2",
     );
 
     fixture.broker.attach(fixture.opener, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     fixture.broker.attach(second, {
       type: "terminal_attach",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
     });
     expect(
       fixture.machine.sent.filter((message) => message.type === "snapshot_request"),
@@ -747,7 +760,7 @@ describe("TerminalBroker concurrent snapshot generations", () => {
 
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 42,
       data: encoded("snapshot-42"),
     });
@@ -756,13 +769,13 @@ describe("TerminalBroker concurrent snapshot generations", () => {
     ).toHaveLength(2);
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 59,
       data: encoded("snapshot-59"),
     });
     fixture.broker.onSnapshot(fixture.machine.machineId, {
       type: "snapshot",
-      sessionId: fixture.create.sessionId,
+      terminalId: fixture.create.terminalId,
       seq: 26,
       data: encoded("stale-out-of-order-snapshot"),
     });
@@ -770,7 +783,7 @@ describe("TerminalBroker concurrent snapshot generations", () => {
     for (const seq of [43, 44, 45, 45, 44, 60]) {
       fixture.broker.onOutput(fixture.machine.machineId, {
         type: "output",
-        sessionId: fixture.create.sessionId,
+        terminalId: fixture.create.terminalId,
         seq,
         data: encoded(`output-${seq}`),
       });
@@ -807,17 +820,17 @@ describe("TerminalBroker concurrent snapshot generations", () => {
 describe("TerminalBroker pending-open room residency", () => {
   test("a pending open blocks eviction until its create fails", () => {
     const fixture = openingFixture();
-    const room = fixture.rooms.get(fixture.pad.id);
+    const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
     room.join(fixture.opener);
     fixture.socket.clear();
 
     room.leave(fixture.opener);
-    expect(fixture.broker.hasPendingOpenForPad(fixture.pad.id)).toBe(true);
+    expect(fixture.broker.hasPendingOpenForContainer(fixture.container.id)).toBe(true);
     expect(fixture.rooms.introspect()).toHaveLength(1);
 
-    fixture.broker.onCreateError(fixture.machine.machineId, fixture.create.sessionId);
-    expect(fixture.broker.hasPendingOpenForPad(fixture.pad.id)).toBe(false);
+    fixture.broker.onCreateError(fixture.machine.machineId, fixture.create.terminalId);
+    expect(fixture.broker.hasPendingOpenForContainer(fixture.container.id)).toBe(false);
     expect(fixture.rooms.introspect()).toHaveLength(0);
     fixture.store.close();
   });

@@ -3,18 +3,21 @@ import { z } from "zod";
 /**
  * Capability-scoped authority. Uniform identity (humans and agents are both principals)
  * never implies uniform authority: every token carries an explicit cap set, optionally
- * scoped to a single pad.
+ * scoped to a single container.
+ *
+ * Every name is `<domain-plural>:<verb>`, which is the whole naming law: a reader of a
+ * token's cap set can tell what it reaches and what it may do there without a table.
  */
 export const CAPS = [
   "*",
-  "pads:read",
-  "pads:write",
-  "scene:write",
-  "terminal:spawn",
-  "terminal:write",
+  "containers:read",
+  "containers:write",
+  "scenes:write",
+  "terminals:spawn",
+  "terminals:write",
   "tokens:mint",
   "machines:mint",
-  /** Enable and disable plugins for the whole workspace: composition administration. */
+  /** Enable and disable plugins for the whole workspace: assembly administration. */
   "plugins:manage",
 ] as const;
 

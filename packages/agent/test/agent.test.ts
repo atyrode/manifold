@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { AgentMessageSchema, type AgentMessage } from "@manifold/protocol";
 import { Agent, MAX_SOCKET_BUFFERED_AMOUNT_BYTES } from "../src/agent.ts";
-import { PtySession } from "../src/session.ts";
+import { PtyTerminal } from "../src/terminal.ts";
 
 /**
  * End-to-end machine-channel handshake against an in-process Bun.serve fake server. The
@@ -13,32 +13,32 @@ import { PtySession } from "../src/session.ts";
 
 const BASH = Bun.which("bash") ?? "/bin/sh";
 
-/** Reaches the concrete live session so this race test can control xterm's write queue. */
-function sessionForTest(agent: Agent, sessionId: string): PtySession {
+/** Reaches the concrete live terminal so this race test can control xterm's write queue. */
+function terminalForTest(agent: Agent, terminalId: string): PtyTerminal {
   const target: unknown = agent;
   if (
     typeof target !== "object" ||
     target === null ||
-    !("sessions" in target) ||
-    !(target.sessions instanceof Map)
+    !("terminals" in target) ||
+    !(target.terminals instanceof Map)
   ) {
-    throw new Error("Agent session registry is unavailable");
+    throw new Error("Agent terminal registry is unavailable");
   }
-  const session: unknown = target.sessions.get(sessionId);
-  if (!(session instanceof PtySession)) throw new Error(`missing test session ${sessionId}`);
-  return session;
+  const terminal: unknown = target.terminals.get(terminalId);
+  if (!(terminal instanceof PtyTerminal)) throw new Error(`missing test terminal ${terminalId}`);
+  return terminal;
 }
 
 /** Feeds the production Bun.Terminal data callback synchronously to keep the drain pending. */
-function injectPtyOutput(session: PtySession, data: string): void {
-  const target: unknown = session;
+function injectPtyOutput(terminal: PtyTerminal, data: string): void {
+  const target: unknown = terminal;
   if (
     typeof target !== "object" ||
     target === null ||
     !("ingest" in target) ||
     typeof target.ingest !== "function"
   ) {
-    throw new Error("PtySession ingest callback is unavailable");
+    throw new Error("PtyTerminal ingest callback is unavailable");
   }
   target.ingest.call(target, new TextEncoder().encode(data));
 }
@@ -74,7 +74,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
               ws.send(
                 JSON.stringify({
                   type: "create",
-                  sessionId: "sess-1",
+                  terminalId: "sess-1",
                   cols: 80,
                   rows: 24,
                   env: {},
@@ -89,7 +89,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
             ws.send(
               JSON.stringify({
                 type: "input",
-                sessionId: "sess-1",
+                terminalId: "sess-1",
                 data: Buffer.from("echo HELLO_AGENT\n").toString("base64"),
               }),
             );
@@ -101,7 +101,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
               outputSeen.resolve();
               if (!snapshotRequested) {
                 snapshotRequested = true;
-                ws.send(JSON.stringify({ type: "snapshot_request", sessionId: "sess-1" }));
+                ws.send(JSON.stringify({ type: "snapshot_request", terminalId: "sess-1" }));
               }
             }
             return;
@@ -130,7 +130,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
     expect(agent.serverEpoch).toBe("epoch-1");
 
     await createdSeen.promise;
-    expect(agent.sessionCount).toBe(1);
+    expect(agent.terminalCount).toBe(1);
 
     await outputSeen.promise;
 
@@ -146,7 +146,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
     if (secondHello.type !== "hello") throw new Error("expected a hello frame");
     expect(hellos.length).toBe(2);
 
-    const survivor = secondHello.sessions.find((s) => s.sessionId === "sess-1");
+    const survivor = secondHello.terminals.find((s) => s.terminalId === "sess-1");
     expect(survivor).toBeDefined();
     expect(survivor?.alive).toBe(true);
     expect(survivor?.cols).toBe(80);
@@ -200,7 +200,7 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
             ws.send(
               JSON.stringify({
                 type: "create",
-                sessionId: "dispose-race",
+                terminalId: "dispose-race",
                 cols: 80,
                 rows: 24,
                 env: {},
@@ -241,9 +241,9 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
   try {
     await agent.connect();
     await createdSeen.promise;
-    const session = sessionForTest(agent, "dispose-race");
-    const originalSnapshot = session.snapshot.bind(session);
-    session.snapshot = () => {
+    const terminal = terminalForTest(agent, "dispose-race");
+    const originalSnapshot = terminal.snapshot.bind(terminal);
+    terminal.snapshot = () => {
       const pending = originalSnapshot();
       snapshotStarted.resolve();
       return pending;
@@ -252,11 +252,11 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     // Keep xterm parsing while the request queues its drain marker, then dispose only after
     // snapshot() has actually returned its pending promise to Agent.onSnapshotRequest.
     const row = `${"x".repeat(79)}\r\n`;
-    injectPtyOutput(session, row.repeat(500));
+    injectPtyOutput(terminal, row.repeat(500));
     const sendServerFrame = await sendToAgentReady.promise;
-    sendServerFrame(JSON.stringify({ type: "snapshot_request", sessionId: "dispose-race" }));
+    sendServerFrame(JSON.stringify({ type: "snapshot_request", terminalId: "dispose-race" }));
     await snapshotStarted.promise;
-    session.dispose();
+    terminal.dispose();
 
     expect(await snapshotOutcome.promise).toBe("abandoned");
     await exitedSeen.promise;
@@ -266,7 +266,7 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     // unhandled rejection that terminates Bun's process.
     sendServerFrame(JSON.stringify({ type: "ping" }));
     await pongSeen.promise;
-    expect(agent.sessionCount).toBe(0);
+    expect(agent.terminalCount).toBe(0);
     expect(stderrMessages).toEqual([]);
   } finally {
     console.warn = originalWarn;
@@ -370,7 +370,7 @@ test("phantom transport: silence past the liveness deadline forces close and re-
   }
 }, 20000);
 
-test("server close code and reason surface in logs; 4409 gets the version-rejected marker", async () => {
+test("server close code and reason ref in logs; 4409 gets the version-rejected marker", async () => {
   const records: Array<{ evt: string; [k: string]: unknown }> = [];
   const disconnectedSeen = Promise.withResolvers<void>();
   const socket = new ScriptedSocket();
@@ -444,7 +444,7 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     if (first === undefined) throw new Error("missing first socket");
     first.receive({
       type: "create",
-      sessionId: "dead-while-away",
+      terminalId: "dead-while-away",
       cols: 80,
       rows: 24,
       env: {},
@@ -452,11 +452,11 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     await created.promise;
 
     first.serverClose(1006, "transport lost");
-    const session = sessionForTest(agent, "dead-while-away");
-    session.write("finish\n");
-    const exit = await session.exited;
+    const terminal = terminalForTest(agent, "dead-while-away");
+    terminal.write("finish\n");
+    const exit = await terminal.exited;
     expect(exit.exitCode).toBe(17);
-    expect(agent.sessionCount).toBe(1);
+    expect(agent.terminalCount).toBe(1);
 
     const internals = agent as unknown as { reconnectTimer: Timer | null; dial: () => void };
     clearTimeout(internals.reconnectTimer ?? undefined);
@@ -464,20 +464,20 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     internals.dial();
 
     const hello = await secondHello.promise;
-    expect(hello.sessions).toContainEqual({
-      sessionId: "dead-while-away",
+    expect(hello.terminals).toContainEqual({
+      terminalId: "dead-while-away",
       cols: 80,
       rows: 24,
       alive: false,
-      seq: session.seq,
+      seq: terminal.seq,
       exitCode: 17,
     });
-    expect(agent.sessionCount).toBe(1);
+    expect(agent.terminalCount).toBe(1);
 
     const second = sockets[1];
     if (second === undefined) throw new Error("missing second socket");
     second.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-2" });
-    expect(agent.sessionCount).toBe(0);
+    expect(agent.terminalCount).toBe(0);
   } finally {
     await agent.shutdown();
   }
@@ -507,9 +507,9 @@ test("socket output backpressure closes the transport for reconnect recovery", a
     await agent.connect();
     socket.bufferedAmount = MAX_SOCKET_BUFFERED_AMOUNT_BYTES + 1;
     const internals = agent as unknown as {
-      onOutput: (sessionId: string, output: { seq: number; bytes: Uint8Array }) => void;
+      onOutput: (terminalId: string, output: { seq: number; bytes: Uint8Array }) => void;
     };
-    internals.onOutput("busy-session", { seq: 1, bytes: new Uint8Array([1]) });
+    internals.onOutput("busy-terminal", { seq: 1, bytes: new Uint8Array([1]) });
 
     expect(socket.closedByAgent).toEqual({ code: 4009, reason: "outbound buffer exceeded" });
     expect(records).toContainEqual(
@@ -550,7 +550,7 @@ test("shutdown escalates a signal-trapping PTY after its grace window", async ()
   await agent.connect();
   socket.receive({
     type: "create",
-    sessionId: "trap-signals",
+    terminalId: "trap-signals",
     cols: 80,
     rows: 24,
     env: {},
@@ -560,5 +560,5 @@ test("shutdown escalates a signal-trapping PTY after its grace window", async ()
   const startedAt = performance.now();
   await agent.shutdown();
   expect(performance.now() - startedAt).toBeLessThan(1_000);
-  expect(agent.sessionCount).toBe(0);
+  expect(agent.terminalCount).toBe(0);
 }, 5000);

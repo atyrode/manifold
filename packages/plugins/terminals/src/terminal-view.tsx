@@ -1,12 +1,12 @@
 /**
- * The terminal VIEWER — `core.terminals`' browser surface for one PTY.
+ * The terminal VIEWER — `core.terminals`' browser ref for one PTY.
  *
  * The PTY plane below it stays floor and always will (the broker, the attach refcount, the
  * no-gap snapshot invariant, the byte frames); what lives here is everything that has an
  * answer a principal could argue with: which controls a viewer is offered, what a rename
  * dispatches, when a spectator socket may not write, and what an exited shell looks like.
  *
- * Chrome comes from `@manifold/plugin/ui` — the titlebar, the glyphs, the one notice surface,
+ * Chrome comes from `@manifold/plugin/ui` — the titlebar, the glyphs, the one notice ref,
  * the published view-state store — so this file owns no drawing and no notification mechanism
  * of its own.
  */
@@ -30,35 +30,35 @@ import {
   ItemIcon,
   NodeTitleBar,
   TITLEBAR_ACTIONS_CLASS,
-  currentViewState,
-  useToast,
+  currentVantage,
+  useNotice,
 } from "@manifold/plugin/ui";
 
 interface TerminalViewProps {
   readonly client: SessionClient;
-  readonly sessionId: string;
+  readonly terminalId: string;
   /**
-   * Stable placement id: the canvas element id, or the tile id inside a tiled
+   * Stable placement id: the canvas element id, or the tile id inside a
    * container. It is only ever a presence focus key, so either one is correct.
    */
   readonly elementId: string;
   /** Host-canvas selection state; a rising edge focuses xterm so typing works immediately. */
   readonly active: boolean;
-  /** Session-panel hover target; highlights this copy without changing the viewport. */
+  /** Terminal-panel hover target; highlights this copy without changing the viewport. */
   readonly panelHighlighted: boolean;
   /**
-   * This session's machine as the wire publishes it (`core.machines.list`); null before the
+   * This terminal's machine as the wire publishes it (`core.machines.list`); null before the
    * first fetch resolves, so the badge never flashes before it knows. The dot's colour is
    * `MachineSummary.color` — DERIVED SERVER-SIDE from the machine id over the shared identity
    * palette, so every viewer paints the same dot and no client re-implements the hash.
    */
   readonly machine: MachineSummary | null;
   /**
-   * `preview` is the read-only chrome a WATCHED portal widget paints inside a canvas:
+   * `preview` is the read-only chrome a WATCHED portal portal paints inside a canvas:
    * the titlebar keeps the name and the machine badge, while the control cluster and
    * the idle veil are gone because nothing anyone is only watching is actionable.
    *
-   * It tracks the socket, not the surface: engaging a widget's tile swaps its spectator
+   * It tracks the socket, not the ref: engaging a portal's tile swaps its spectator
    * socket for an occupant one and the same tile switches to `full`, because at that
    * point every write this view makes is a write the server accepts. Which controls
    * appear stays a question of which callbacks the host passes.
@@ -68,16 +68,16 @@ interface TerminalViewProps {
   readonly onPark?: () => void;
   /** Kills the PTY and removes this element. */
   readonly onClose?: () => void;
-  /** Opens a fresh PTY session and rebinds it to this element (restart in place). */
+  /** Opens a fresh PTY terminal and rebinds it to this element (restart in place). */
   readonly onRestart?: () => Promise<void>;
   /**
-   * Transmutes this terminal into a tiled view born around it — the titlebar
+   * Transmutes this terminal into a composition born around it — the titlebar
    * Expand button and titlebar double-click. Omitted inside a view: the terminal
    * already lives in one.
    */
   readonly onExpand?: () => void;
   /**
-   * Renames this session (`core.terminals.rename`) from the titlebar title.
+   * Renames this terminal (`core.terminals.rename`) from the titlebar title.
    * Omitted in preview chrome and wherever the caller holds no token.
    */
   readonly onRenameTitle?: (name: string) => void;
@@ -104,7 +104,7 @@ interface TerminalViewProps {
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
   client,
-  sessionId,
+  terminalId,
   elementId,
   active,
   panelHighlighted,
@@ -136,14 +136,14 @@ export function TerminalView({
   const [viewOnlyError, setViewOnlyError] = useState(false);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
-  const { notify } = useToast();
+  const { notify } = useNotice();
 
-  const session = client.sessions.get(sessionId);
-  const sessionReady = session !== undefined;
-  /** Non-null exactly when this session's machine is known and NOT online. */
+  const terminal = client.terminals.get(terminalId);
+  const terminalReady = terminal !== undefined;
+  /** Non-null exactly when this terminal's machine is known and NOT online. */
   const offlineMachine = machine !== null && !machine.online ? machine : null;
   const selfId = client.self?.id ?? null;
-  const isController = selfId !== null && session?.controllerId === selfId;
+  const isController = selfId !== null && terminal?.controllerId === selfId;
   const isControllerRef = useRef(false);
 
   useEffect(() => {
@@ -151,8 +151,8 @@ export function TerminalView({
   }, [isController]);
 
   /**
-   * Preview chrome paints a widget's read-only body over a SPECTATOR socket, so nothing
-   * in it may write; an engaged widget hands the same tile an occupant socket and `full`
+   * Preview chrome paints a portal's read-only body over a SPECTATOR socket, so nothing
+   * in it may write; an engaged portal hands the same tile an occupant socket and `full`
    * chrome, and every guard below lifts together with the prop. Held in a ref for the
    * same reason `isController` is: the xterm lifecycle effect must not tear a live
    * terminal down to observe a prop.
@@ -205,23 +205,23 @@ export function TerminalView({
   }, [active]);
 
   useEffect(() => {
-    const refreshSession = (): void => {
-      if (client.sessions.get(sessionId)?.controllerId === client.self?.id) {
+    const refreshTerminal = (): void => {
+      if (client.terminals.get(terminalId)?.controllerId === client.self?.id) {
         setViewOnlyError(false);
       }
       rerender();
     };
-    const offSessions = client.on("sessions_changed", refreshSession);
-    const offRoster = client.on("roster_changed", rerender);
+    const offTerminals = client.on("terminals_changed", refreshTerminal);
+    const offAttendance = client.on("attendance_changed", rerender);
     return () => {
-      offSessions();
-      offRoster();
+      offTerminals();
+      offAttendance();
     };
-  }, [client, sessionId]);
+  }, [client, terminalId]);
 
   /**
    * The current socket, reachable from the xterm lifecycle without being a dependency
-   * of it. See the two effects below: the terminal belongs to the session, the
+   * of it. See the two effects below: the terminal belongs to the terminal, the
    * subscriptions belong to the socket.
    */
   const clientRef = useRef(client);
@@ -230,29 +230,29 @@ export function TerminalView({
   }, [client]);
 
   /**
-   * The xterm instance and its DOM host, whose life is the SESSION's — never the
-   * socket's. A widget escalating from spectator to occupant (and dropping back) hands
+   * The xterm instance and its DOM host, whose life is the TERMINAL's — never the
+   * socket's. A portal escalating from spectator to occupant (and dropping back) hands
    * this component a DIFFERENT `SessionClient` for the same tile; a terminal disposed
    * and re-opened on that swap is a visible refresh — new DOM node, buffer repainted
    * from zero, selection and mouse-mode TUIs losing their host mid-gesture. So
-   * creation depends on the session alone, and the socket wiring below re-runs against
+   * creation depends on the terminal alone, and the socket wiring below re-runs against
    * the SAME terminal.
    *
-   * `sessionReady` is read off whichever client is painting, and both sides of a role
-   * swap know the session before the swap is visible (the switch promotes only after
-   * `connect()` resolves, and init carries the session table), so an escalation never
+   * `terminalReady` is read off whichever client is painting, and both sides of a role
+   * swap know the terminal before the swap is visible (the switch promotes only after
+   * `connect()` resolves, and init carries the terminal table), so an escalation never
    * flickers this effect.
    */
   useEffect(() => {
-    if (!sessionReady) return;
+    if (!terminalReady) return;
     const container = containerRef.current;
     if (container === null) return;
 
-    const initialSession = clientRef.current.sessions.get(sessionId);
-    if (initialSession === undefined) return;
+    const initialTerminal = clientRef.current.terminals.get(terminalId);
+    if (initialTerminal === undefined) return;
     const terminal = new Terminal({
-      cols: initialSession.cols,
-      rows: initialSession.rows,
+      cols: initialTerminal.cols,
+      rows: initialTerminal.rows,
       convertEol: false,
       cursorBlink: true,
       scrollback: 2000,
@@ -278,7 +278,7 @@ export function TerminalView({
       // A preview paints a scaled-down box, and its socket is a spectator the server
       // refuses writes from. Sending this geometry would either be rejected or — worse,
       // if the same principal happens to hold the PTY — squeeze the real terminal down
-      // to the size of somebody's widget.
+      // to the size of somebody's portal.
       if (readOnlyRef.current) return;
       if (!isControllerRef.current) return;
       const geometry = { cols: terminal.cols, rows: terminal.rows };
@@ -290,7 +290,7 @@ export function TerminalView({
         return;
       }
       lastSentGeometry = geometry;
-      clientRef.current.resizeTerminal(sessionId, geometry.cols, geometry.rows);
+      clientRef.current.resizeTerminal(terminalId, geometry.cols, geometry.rows);
     };
 
     const scheduleResize = (): void => {
@@ -351,11 +351,11 @@ export function TerminalView({
       fitRef.current = null;
       paintedRef.current = false;
     };
-  }, [sessionId, sessionReady]);
+  }, [terminalId, terminalReady]);
 
   /**
    * The SOCKET half: output subscriptions, keyboard input and the attach refcount.
-   * Keyed on the client, so a widget's spectator⇄occupant swap re-runs exactly this
+   * Keyed on the client, so a portal's spectator⇄occupant swap re-runs exactly this
    * much — the terminal, its DOM node and its buffer all survive — and the re-attach's
    * snapshot lands in the existing terminal as a single-frame `reset()` + replay.
    * That is lossless because the server's snapshot is a complete, seq-anchored picture
@@ -366,7 +366,7 @@ export function TerminalView({
    * creates it; React runs setups in declaration order.
    */
   useEffect(() => {
-    if (!sessionReady) return;
+    if (!terminalReady) return;
     const terminal = terminalRef.current;
     if (terminal === null) return;
 
@@ -376,7 +376,7 @@ export function TerminalView({
     const settle = (): void => settleRef.current?.();
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
-      if (message.sessionId !== sessionId) return;
+      if (message.terminalId !== terminalId) return;
       // Whatever is on screen — painted by this socket or by the one it replaced — is
       // REPLACED by the snapshot, never appended to.
       if (paintedRef.current) terminal.reset();
@@ -395,7 +395,7 @@ export function TerminalView({
     });
 
     const offOutput = client.on("terminal_output", (message) => {
-      if (message.sessionId !== sessionId) return;
+      if (message.terminalId !== terminalId) return;
       if (snapshotSeq === null) {
         bufferedOutputs.set(message.seq, message.data);
         return;
@@ -405,8 +405,8 @@ export function TerminalView({
       lastWrittenSeq = message.seq;
     });
 
-    const offSessionEvent = client.on("session_event", (message) => {
-      if (message.sessionId !== sessionId) return;
+    const offTerminalEvent = client.on("terminal_event", (message) => {
+      if (message.terminalId !== terminalId) return;
       if (message.kind === "resized" && message.cols !== undefined && message.rows !== undefined) {
         terminal.resize(message.cols, message.rows);
       }
@@ -415,23 +415,23 @@ export function TerminalView({
     const offError = client.on("error", (message) => {
       if (
         message.code === "not_controller" &&
-        (message.ref === undefined || message.ref === sessionId)
+        (message.ref === undefined || message.ref === terminalId)
       ) {
         setViewOnlyError(true);
       }
     });
 
-    // A WATCHED widget is read-only: its shield keeps focus out, and this keeps a stray
+    // A WATCHED portal is read-only: its shield keeps focus out, and this keeps a stray
     // keystroke from ever reaching a spectator socket the server would refuse. Engaging
     // the tile re-renders with `full` chrome, and the very next keystroke is legal.
     const inputDisposable = terminal.onData((data) => {
       if (readOnlyRef.current) return;
-      client.sendTerminalInput(sessionId, data);
+      client.sendTerminalInput(terminalId, data);
     });
 
-    // The SDK refcounts attach/detach per session (clones share one wire
+    // The SDK refcounts attach/detach per terminal (clones share one wire
     // subscription) and re-subscribes by itself after a reconnect.
-    client.attachTerminal(sessionId);
+    client.attachTerminal(terminalId);
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") return;
@@ -444,13 +444,13 @@ export function TerminalView({
     return () => {
       offSnapshot();
       offOutput();
-      offSessionEvent();
+      offTerminalEvent();
       offError();
       offStatus();
       inputDisposable.dispose();
-      client.detachTerminal(sessionId);
+      client.detachTerminal(terminalId);
     };
-  }, [client, sessionId, sessionReady]);
+  }, [client, terminalId, terminalReady]);
 
   useEffect(() => {
     if (!isController) return;
@@ -475,20 +475,20 @@ export function TerminalView({
   */
   const selfPrincipalId = client.self?.id ?? null;
   const remoteFocusers: Principal[] = [];
-  for (const state of client.roster.values()) {
+  for (const state of client.attendance.values()) {
     if (state.principal.id === selfPrincipalId) continue;
     if (state.payload.focus?.elementId === elementId) remoteFocusers.push(state.principal);
   }
   const remoteFocuser = remoteFocusers[0] ?? null;
 
   // Focus presence is a write, and a preview's socket is a spectator: xterm's helper
-  // textarea is tabbable even under the widget's shield, so the guard lives here.
+  // textarea is tabbable even under the portal's shield, so the guard lives here.
   const handleFocus = (): void => {
     if (readOnly || focusedRef.current) return;
     focusedRef.current = true;
     // The view rides every presence payload (`@manifold/plugin/ui` view state), so a focus
     // re-publishes what this device is holding.
-    client.sendPresence({ focus: { elementId }, view: currentViewState() });
+    client.sendPresence({ focus: { elementId }, vantage: currentVantage() });
   };
 
   const handleBlur = (event: FocusEvent<HTMLDivElement>): void => {
@@ -496,7 +496,7 @@ export function TerminalView({
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     if (readOnly) return;
     focusedRef.current = false;
-    client.sendPresence({ focus: null, view: currentViewState() });
+    client.sendPresence({ focus: null, vantage: currentVantage() });
   };
 
   const stopFocusedWheel = (event: WheelEvent<HTMLDivElement>): void => {
@@ -551,9 +551,9 @@ export function TerminalView({
         };
 
   const frameClass = [
-    "manifold-terminal",
-    remoteFocuser === null ? "" : "manifold-terminal--remote-focus",
-    panelHighlighted ? "manifold-terminal--panel-highlight" : "",
+    "terminal-frame",
+    remoteFocuser === null ? "" : "terminal-frame--remote-focus",
+    panelHighlighted ? "terminal-frame--panel-highlight" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -596,7 +596,7 @@ export function TerminalView({
       <NodeTitleBar
         className="terminal-titlebar"
         icon={<ItemIcon kind="terminal" size={13} />}
-        title={session?.name ?? null}
+        title={terminal?.name ?? null}
         defaultTitle="terminal"
         onRenameTitle={readOnly ? undefined : onRenameTitle}
         {...(renameAction === undefined ? {} : { renameAction })}
@@ -620,17 +620,17 @@ export function TerminalView({
         maximizeTooltip={maximize.tooltip}
         onClose={readOnly ? undefined : onClose}
         closeLabel="Kill terminal"
-        closeTooltip="Kill terminal (ends the session)"
+        closeTooltip="Kill terminal (ends the terminal)"
         closeClassName="terminal-ctl--close"
         extraActions={readOnly ? null : titlebarExtras}
       />
       <div className="xterm-host" ref={containerRef} />
       {/*
         The idle veil is a property of ATTENTION, not of chrome. It used to be skipped in
-        preview because a preview had no notion of a focused tile; a widget's tiles now
-        carry `active` (false for every tile while the widget only watches, true for the
+        preview because a preview had no notion of a focused tile; a portal's tiles now
+        carry `active` (false for every tile while the portal only watches, true for the
         one engaged tile), so the same dimming that tells a canvas which terminal you are
-        in tells a widget it is resting — and inside an engaged widget, which tile holds
+        in tells a portal it is resting — and inside an engaged portal, which tile holds
         the keyboard while its siblings stay veiled.
       */}
       <div
@@ -638,10 +638,10 @@ export function TerminalView({
         aria-hidden="true"
       />
       {/*
-        NOT a notice, so it does not become a toast: this is a MODE indicator. It
+        NOT a notice, so it does not become a notice: this is a MODE indicator. It
         states a standing condition of this terminal ("your socket may not write
         here") and it is the control that ends that condition, anchored to the
-        surface the condition applies to. A toast is a message about an event that
+        ref the condition applies to. A notice is a message about an event that
         just happened and then stops being true; this stays true until clicked, and
         in a canvas of many terminals it has to say WHICH terminal by sitting on it.
       */}
@@ -650,7 +650,7 @@ export function TerminalView({
           className="view-only-ribbon"
           type="button"
           onClick={() => {
-            client.takeTerminal(sessionId);
+            client.takeTerminal(terminalId);
             // Hand focus straight back to the terminal: the whole point of
             // taking control is to type, and the button click just stole focus.
             terminalRef.current?.focus();
@@ -659,7 +659,7 @@ export function TerminalView({
           view-only — click to take control
         </button>
       ) : null}
-      {session?.status === "exited" || offlineMachine !== null ? (
+      {terminal?.status === "exited" || offlineMachine !== null ? (
         <div className="terminal-exited">
           {offlineMachine !== null ? (
             <span>machine offline — {offlineMachine.name}</span>
@@ -667,12 +667,12 @@ export function TerminalView({
             // A null code is a shell that never reported one; "unknown" told the
             // operator nothing the missing number did not already say.
             <span>
-              {typeof session?.exitCode === "number"
-                ? `exited (${String(session.exitCode)})`
+              {typeof terminal?.exitCode === "number"
+                ? `exited (${String(terminal.exitCode)})`
                 : "exited"}
             </span>
           )}
-          {session?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
+          {terminal?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
             <button
               type="button"
               className="terminal-restart"
@@ -685,10 +685,10 @@ export function TerminalView({
                   .catch((reason: unknown) => {
                     // The button that started the restart is the one place that knows a
                     // restart was attempted at all, so it is where the failure is reported.
-                    // Keyed per session: hammering restart replaces the notice, never stacks.
+                    // Keyed per terminal: hammering restart replaces the notice, never stacks.
                     notify(
                       reason instanceof Error ? reason.message : "Could not restart terminal",
-                      { key: `terminal-restart:${sessionId}` },
+                      { key: `terminal-restart:${terminalId}` },
                     );
                   })
                   .finally(() => setIsRestarting(false));

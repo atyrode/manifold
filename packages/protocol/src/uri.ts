@@ -8,16 +8,16 @@ import { z } from "zod";
  * addressable here that is not addressable there.
  *
  * The seven forms:
- *   manifold://terminal/<sessionId>
- *   manifold://pad/<padId>
- *   manifold://pad/<padId>/element/<elementId>
- *   manifold://pad/<padId>/tile/<tileId>
+ *   manifold://terminal/<terminalId>
+ *   manifold://container/<containerId>
+ *   manifold://container/<containerId>/element/<elementId>
+ *   manifold://container/<containerId>/tile/<tileId>
  *   manifold://principal/<principalId>
  *   manifold://plugin/<pluginId>
  *   manifold://action/<actionName>
  *
  * An element and a tile are addressed THROUGH their container because neither has an
- * identity outside it — the same reason `TileSurface`'s note form names an element id
+ * identity outside it — the same reason `TileRef`'s note form names an element id
  * rather than a cross-document pair.
  */
 export const MANIFOLD_URI_SCHEME = "manifold://";
@@ -31,14 +31,14 @@ export const MANIFOLD_URI_SCHEME = "manifold://";
 const RefIdSchema = z.string().min(1).max(128);
 
 export const ManifoldRefSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("terminal"), sessionId: RefIdSchema }),
-  z.strictObject({ kind: z.literal("pad"), padId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("terminal"), terminalId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("container"), containerId: RefIdSchema }),
   z.strictObject({
     kind: z.literal("element"),
-    padId: RefIdSchema,
+    containerId: RefIdSchema,
     elementId: RefIdSchema,
   }),
-  z.strictObject({ kind: z.literal("tile"), padId: RefIdSchema, tileId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("tile"), containerId: RefIdSchema, tileId: RefIdSchema }),
   z.strictObject({ kind: z.literal("principal"), principalId: RefIdSchema }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
   z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
@@ -46,7 +46,7 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
 /**
- * Ids are opaque strings — a pad id is generated, a plugin action name is dotted, and a
+ * Ids are opaque strings — a container id is generated, a plugin action name is dotted, and a
  * principal id is whatever a mint chose — so every segment is percent-encoded rather than
  * trusted: an id holding a `/` must not silently become two segments, which is exactly how
  * an address parser turns into a confused deputy.
@@ -54,13 +54,13 @@ export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 export function formatManifoldUri(ref: ManifoldRef): string {
   switch (ref.kind) {
     case "terminal":
-      return `${MANIFOLD_URI_SCHEME}terminal/${encodeURIComponent(ref.sessionId)}`;
-    case "pad":
-      return `${MANIFOLD_URI_SCHEME}pad/${encodeURIComponent(ref.padId)}`;
+      return `${MANIFOLD_URI_SCHEME}terminal/${encodeURIComponent(ref.terminalId)}`;
+    case "container":
+      return `${MANIFOLD_URI_SCHEME}container/${encodeURIComponent(ref.containerId)}`;
     case "element":
-      return `${MANIFOLD_URI_SCHEME}pad/${encodeURIComponent(ref.padId)}/element/${encodeURIComponent(ref.elementId)}`;
+      return `${MANIFOLD_URI_SCHEME}container/${encodeURIComponent(ref.containerId)}/element/${encodeURIComponent(ref.elementId)}`;
     case "tile":
-      return `${MANIFOLD_URI_SCHEME}pad/${encodeURIComponent(ref.padId)}/tile/${encodeURIComponent(ref.tileId)}`;
+      return `${MANIFOLD_URI_SCHEME}container/${encodeURIComponent(ref.containerId)}/tile/${encodeURIComponent(ref.tileId)}`;
     case "principal":
       return `${MANIFOLD_URI_SCHEME}principal/${encodeURIComponent(ref.principalId)}`;
     case "plugin":
@@ -76,8 +76,8 @@ export function formatManifoldUri(ref: ManifoldRef): string {
 
 /**
  * Decodes every segment or refuses the whole URI. A malformed escape (`%zz`) is a refusal
- * rather than a literal, and an empty segment is a refusal too: `manifold://pad/` names
- * nothing, and answering "a pad with an empty id" would push the mistake downstream.
+ * rather than a literal, and an empty segment is a refusal too: `manifold://container/` names
+ * nothing, and answering "a container with an empty id" would push the mistake downstream.
  */
 function decodeSegments(path: string): string[] | null {
   const raw = path.split("/");
@@ -115,9 +115,9 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
   if (segments.length === 2) {
     switch (head) {
       case "terminal":
-        return { kind: "terminal", sessionId: first };
-      case "pad":
-        return { kind: "pad", padId: first };
+        return { kind: "terminal", terminalId: first };
+      case "container":
+        return { kind: "container", containerId: first };
       case "principal":
         return { kind: "principal", principalId: first };
       case "plugin":
@@ -129,9 +129,9 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
     }
   }
 
-  if (segments.length === 4 && head === "pad" && second !== undefined) {
-    if (mid === "element") return { kind: "element", padId: first, elementId: second };
-    if (mid === "tile") return { kind: "tile", padId: first, tileId: second };
+  if (segments.length === 4 && head === "container" && second !== undefined) {
+    if (mid === "element") return { kind: "element", containerId: first, elementId: second };
+    if (mid === "tile") return { kind: "tile", containerId: first, tileId: second };
     return null;
   }
 

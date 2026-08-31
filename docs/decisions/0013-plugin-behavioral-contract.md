@@ -3,6 +3,18 @@
 Date: 2026-08-31
 Status: accepted (contract v2 ratified 2026-08-31); implemented in the wave-1 completion
 
+Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
+cites moved in the lexicon cut. The plugin-roster join is **assembly**: `composeRoster` is
+`assembleRoster`, `CompositionError` is `AssemblyError`, `onCompositionChanged` is
+`onAssemblyChanged`, `CompositionDelta` is `AssemblyDelta` — where this record says
+"composition" it means that join, and where it says "composition" as a container it means the
+tiled **discipline**, which is now the word's only container sense. The placement verb
+`core.layout.place` is `core.space.place`; `scope: "pad"` and `padScope` are the
+container-scoped rung (`containerScope`); `pads:write` is `containers:write`; item kind
+`canvas-pad` is `canvas` and the guard `discipline-match` is `discipline_match` (wire enum
+literals are snake_case); `/api/pads/…` reads `/api/containers/…`; and `PadTreeItem` is
+`IndexEntry`. Canon is `AXIOMS.md` §Lexicon.
+
 ## Context
 
 Wave 1's first pass shipped the mechanism: one registry, one action door, a hot workspace-global

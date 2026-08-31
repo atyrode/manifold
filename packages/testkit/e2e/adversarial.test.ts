@@ -11,7 +11,7 @@ import {
 } from "@manifold/scene";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
   mintToken,
   startServer,
@@ -31,10 +31,12 @@ type InitMessage = Extract<ServerMessage, { type: "init" }>;
 
 async function joinRaw(
   socket: AdversarialSessionSocket,
-  padId: string,
+  containerId: string,
   token: string,
 ): Promise<InitMessage> {
-  socket.sendRaw(sessionFrame({ type: "join", padId, token, protocolVersion: PROTOCOL_VERSION }));
+  socket.sendRaw(
+    sessionFrame({ type: "join", containerId, token, protocolVersion: PROTOCOL_VERSION }),
+  );
   const message = await waitFor(
     () => socket.frames.find((frame) => frame.type === "init"),
     5_000,
@@ -58,11 +60,11 @@ test("raw adversarial frames prove join ordering and frame-classification policy
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "adversarial");
+    const container = await createContainer(server, "adversarial");
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Adversary", color: "#b84a4a" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
 
     const wrongFirst = await rawSessionSocket(server);
@@ -75,7 +77,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const malformedKnown = await rawSessionSocket(server);
     sockets.push(malformedKnown);
-    await joinRaw(malformedKnown, pad.id, grant.token);
+    await joinRaw(malformedKnown, container.id, grant.token);
     malformedKnown.sendRaw(
       sessionFrame({
         type: "doc_update",
@@ -89,7 +91,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const unknownType = await rawSessionSocket(server);
     sockets.push(unknownType);
-    await joinRaw(unknownType, pad.id, grant.token);
+    await joinRaw(unknownType, container.id, grant.token);
     unknownType.sendRaw(sessionFrame({ type: "zorp" }));
     unknownType.sendRaw(JSON.stringify({ type: "ping" }));
     await waitFor(() => unknownType.frames.some((frame) => frame.type === "pong"), 5_000, 20);
@@ -97,7 +99,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const oversized = await rawSessionSocket(server);
     sockets.push(oversized);
-    await joinRaw(oversized, pad.id, grant.token);
+    await joinRaw(oversized, container.id, grant.token);
     const frameStart = oversized.frames.length;
     oversized.sendRaw(
       sessionFrame({
@@ -124,7 +126,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const repaired = await rawSessionSocket(server);
     sockets.push(repaired);
-    await joinRaw(repaired, pad.id, grant.token);
+    await joinRaw(repaired, container.id, grant.token);
     const invalidDoc = createSceneDoc();
     const invalidElement = new Y.Map<unknown>();
     invalidElement.set("id", "invalid-element");
@@ -182,7 +184,7 @@ test("a reused machine token fences the old socket before routing later commands
       name: "fenced-machine-first",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
-      sessions: [],
+      terminals: [],
     });
     const firstWelcome = await waitFor(
       () => first.frames.find((frame) => frame.type === "welcome"),
@@ -201,7 +203,7 @@ test("a reused machine token fences the old socket before routing later commands
       name: "fenced-machine-second",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
-      sessions: [],
+      terminals: [],
     });
     const secondWelcome = await waitFor(
       () => second.frames.find((frame) => frame.type === "welcome"),
@@ -215,14 +217,18 @@ test("a reused machine token fences the old socket before routing later commands
     expect(superseded.reason).toBe("superseded");
     expect(superseded.initiatedBy).toBe("REMOTE");
 
-    const pad = await createPad(server, "machine fence");
+    const container = await createContainer(server, "machine fence");
     // Workspace-scoped: killing the terminal is a message to the composition it lives in,
     // and that composition's id is minted by the server as the PTY lands.
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Fence User", color: "#4777b8" },
-      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
-    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    const client = await connect(server, {
+      containerId: container.id,
+      token: grant.token,
+      reconnect: false,
+    });
     clients.push(client);
     const opening = client.openTerminal({
       elementId: "el-fenced-machine",
@@ -236,42 +242,42 @@ test("a reused machine token fences the old socket before routing later commands
       20,
     );
     if (create.type !== "create") throw new Error("active machine did not receive create");
-    second.send({ type: "created", sessionId: create.sessionId });
-    const session = await opening;
-    expect(session.machineId).toBe(enrolled.machineId);
+    second.send({ type: "created", terminalId: create.terminalId });
+    const terminal = await opening;
+    expect(terminal.machineId).toBe(enrolled.machineId);
     expect(first.frames).toHaveLength(firstFrameCount);
 
     const home = await connect(server, {
-      padId: session.padId,
+      containerId: terminal.containerId,
       token: grant.token,
       reconnect: false,
     });
     clients.push(home);
-    await waitFor(() => home.sessions.has(session.id), 5_000, 20);
+    await waitFor(() => home.terminals.has(terminal.id), 5_000, 20);
     // A kill destroys the terminal, so the home hears a departure rather than an exit; what
     // this test is about is WHICH socket the kill frame reaches.
     const departed = nextMessage(
       home,
-      "session_event",
+      "terminal_event",
       5_000,
-      (message) => message.sessionId === session.id && message.kind === "parked",
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
     const killStart = second.frames.length;
-    home.killTerminal(session.id);
+    home.killTerminal(terminal.id);
     const kill = await waitFor(
       () =>
         second.frames
           .slice(killStart)
-          .find((frame) => frame.type === "kill" && frame.sessionId === session.id),
+          .find((frame) => frame.type === "kill" && frame.terminalId === terminal.id),
       5_000,
       20,
     );
     if (kill.type !== "kill") throw new Error("active machine did not receive kill");
     expect((await departed).kind).toBe("parked");
-    // The machine answers the kill the only way it can. The session is already gone, so the
+    // The machine answers the kill the only way it can. The terminal is already gone, so the
     // frame changes nothing — and must not resurrect it as an exited row.
-    second.send({ type: "exited", sessionId: session.id, exitCode: 0 });
-    await waitFor(() => home.sessions.get(session.id) === undefined, 5_000, 20);
+    second.send({ type: "exited", terminalId: terminal.id, exitCode: 0 });
+    await waitFor(() => home.terminals.get(terminal.id) === undefined, 5_000, 20);
     expect(first.frames).toHaveLength(firstFrameCount);
   } catch (error) {
     throw e2eFailure(error, servers);

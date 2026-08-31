@@ -21,7 +21,7 @@ function portal(id: string, zIndex = 0): SceneElement {
   return {
     id,
     type: "portal",
-    containerId: `pad-${id}`,
+    containerId: `container-${id}`,
     x: 0,
     y: 0,
     width: 720,

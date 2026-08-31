@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
-  PadSessionsResponseSchema,
-  PadTreeResponseSchema,
+  ContainerTerminalsResponseSchema,
+  IndexResponseSchema,
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
-  type Pad,
-  type PadSessionSummary,
-  type PadTreeItem,
+  type Container,
+  type ContainerTerminalSummary,
+  type IndexEntry,
   type SceneElement,
   type ServerMessageBody,
   type ServerToAgentMessage,
@@ -27,10 +27,10 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
 import { OUTSIDE_SCOPE_REFUSAL } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
-import { SessionPeer } from "../src/session-peer.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
@@ -56,8 +56,8 @@ import {
  *   - `unplaced` round-trips with nothing but the graph: place a terminal and it is false,
  *     release it and it is true again, with no state left over to go stale.
  *   - Reordering an unplaced terminal is not a terminal operation at all. It is
- *     `core.views.move` on that terminal's HOME, because the top level of the one index is
- *     where the unreferenced already live.
+ *     `core.index.moveEntry` on that terminal's HOME, because the top level of the one index
+ *     is where the unreferenced already live.
  */
 
 const OWNER_KEY = "e".repeat(64);
@@ -98,12 +98,12 @@ interface IndexFixture {
   store: ServerStore;
   auth: AuthService;
   root: AuthContext;
-  canvas: Pad;
+  canvas: Container;
   rooms: RoomManager;
   broker: TerminalBroker;
   placement: PlaceExecutor;
   machine: FakeMachine;
-  opener: SessionPeer;
+  opener: SessionChannel;
   app: HttpApp;
 }
 
@@ -124,13 +124,13 @@ function indexFixture(): IndexFixture {
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
-  const canvas: Pad = {
+  const canvas: Container = {
     id: runtime.newId(),
     name: "index canvas",
     createdAt: runtime.now(),
-    layout: "canvas",
+    discipline: "canvas",
   };
-  store.createPad(canvas);
+  store.createContainer(canvas);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(
     store,
@@ -141,9 +141,9 @@ function indexFixture(): IndexFixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  // The composition first: the executor resolves contributed element traits against it
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
+  // The assembly first: the executor resolves contributed element traits against it
   // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
   const plugins = testPluginHost(store, auth, rooms, broker, runtime);
   const placement = new PlaceExecutor(
@@ -151,7 +151,7 @@ function indexFixture(): IndexFixture {
     rooms,
     broker,
     runtime,
-    compositionElementTraits(() => plugins.roster()),
+    assemblyElementTraits(() => plugins.roster()),
   );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
@@ -165,7 +165,7 @@ function indexFixture(): IndexFixture {
   );
   const machine = new FakeMachine(auth.enrollMachine(MACHINE_NAME, root).machine.id);
   broker.setMachineOnline(machine);
-  const opener = new SessionPeer(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
+  const opener = new SessionChannel(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
   const app = new HttpApp(
     config,
     store,
@@ -196,28 +196,28 @@ function indexFixture(): IndexFixture {
   return fixture;
 }
 
-function room(fixture: IndexFixture, padId: string): Room {
-  const found = fixture.rooms.get(padId);
-  if (found === null) throw new Error(`missing room ${padId}`);
+function room(fixture: IndexFixture, containerId: string): Room {
+  const found = fixture.rooms.get(containerId);
+  if (found === null) throw new Error(`missing room ${containerId}`);
   return found;
 }
 
-function homeOf(fixture: IndexFixture, sessionId: string): string {
-  const padId = fixture.store.getSession(sessionId)?.padId;
-  if (padId === undefined) throw new Error(`session ${sessionId} has no row`);
-  return padId;
+function homeOf(fixture: IndexFixture, terminalId: string): string {
+  const containerId = fixture.store.getTerminal(terminalId)?.containerId;
+  if (containerId === undefined) throw new Error(`terminal ${terminalId} has no row`);
+  return containerId;
 }
 
-/** The index an action answered with: the outcome envelope, then the tree inside it. */
-function actionItems(payload: unknown): readonly PadTreeItem[] {
+/** The index an action answered with: the outcome envelope, then the entries inside it. */
+function actionItems(payload: unknown): readonly IndexEntry[] {
   const outcome = ActionOutcomeSchema.parse(payload);
   if (!outcome.ok) throw new Error(`action refused: ${outcome.denial.message}`);
-  return PadTreeResponseSchema.parse(outcome.result).items;
+  return IndexResponseSchema.parse(outcome.result).items;
 }
 
 /** A terminal, born from the canvas into a solo composition of its own. */
 interface Born {
-  readonly sessionId: string;
+  readonly terminalId: string;
   readonly homeId: string;
 }
 
@@ -230,30 +230,30 @@ function openTerminal(fixture: IndexFixture): Born {
   });
   const create = fixture.machine.sent.filter((message) => message.type === "create").at(-1);
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
-  fixture.broker.onCreated(fixture.machine.machineId, create.sessionId);
-  return { sessionId: create.sessionId, homeId: homeOf(fixture, create.sessionId) };
+  fixture.broker.onCreated(fixture.machine.machineId, create.terminalId);
+  return { terminalId: create.terminalId, homeId: homeOf(fixture, create.terminalId) };
 }
 
-function tiledPad(fixture: IndexFixture, name: string): Pad {
-  const pad: Pad = {
+function compositionContainer(fixture: IndexFixture, name: string): Container {
+  const container: Container = {
     id: fixture.runtime.newId(),
     name,
     createdAt: fixture.runtime.now(),
-    layout: "tiled",
+    discipline: "composition",
   };
-  fixture.store.createPad(pad);
-  return pad;
+  fixture.store.createContainer(container);
+  return container;
 }
 
 interface Witness {
-  readonly peer: SessionPeer;
+  readonly peer: SessionChannel;
   readonly socket: FakeSocket;
 }
 
-function joinPeer(fixture: IndexFixture, padId: string): Witness {
+function joinPeer(fixture: IndexFixture, containerId: string): Witness {
   const socket = new FakeSocket();
-  const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, "c1");
-  room(fixture, padId).join(peer);
+  const peer = new SessionChannel(fixture.runtime.newId(), socket, fixture.root, containerId, "c1");
+  room(fixture, containerId).join(peer);
   return { peer, socket };
 }
 
@@ -291,30 +291,36 @@ async function indexRows(
   fixture: IndexFixture,
   token: string = OWNER_KEY,
 ): Promise<readonly TerminalSummary[]> {
-  const response = await call(fixture, "POST", "/api/actions/core.terminals.list", token, {});
+  const response = await call(fixture, "POST", "/api/actions/core.terminals.listAll", token, {});
   expect(response.status).toBe(200);
   const outcome = ActionOutcomeSchema.parse(response.payload);
   if (!outcome.ok) throw new Error(`index refused: ${outcome.denial.message}`);
   return TerminalsResponseSchema.parse(outcome.result).terminals;
 }
 
-async function sessionRows(
+async function terminalRowsByContainer(
   fixture: IndexFixture,
   token: string = OWNER_KEY,
-): Promise<readonly PadSessionSummary[]> {
-  const response = await call(fixture, "POST", "/api/actions/core.terminals.sessions", token, {});
+): Promise<readonly ContainerTerminalSummary[]> {
+  const response = await call(
+    fixture,
+    "POST",
+    "/api/actions/core.terminals.listByContainer",
+    token,
+    {},
+  );
   expect(response.status).toBe(200);
   const outcome = ActionOutcomeSchema.parse(response.payload);
   if (!outcome.ok) throw new Error(`listing refused: ${outcome.denial.message}`);
-  return PadSessionsResponseSchema.parse(outcome.result).sessions;
+  return ContainerTerminalsResponseSchema.parse(outcome.result).terminals;
 }
 
-function padScopedToken(fixture: IndexFixture): string {
+function containerScopedToken(fixture: IndexFixture): string {
   return fixture.auth.mintToken(
     {
-      principal: { name: "pad guest", kind: "human" },
-      caps: ["pads:read", "pads:write", "scene:write", "terminal:write"],
-      padId: fixture.canvas.id,
+      principal: { name: "container guest", kind: "human" },
+      caps: ["containers:read", "containers:write", "scenes:write", "terminals:write"],
+      containerId: fixture.canvas.id,
     },
     fixture.root,
   ).token;
@@ -326,22 +332,22 @@ afterEach(() => {
   }
 });
 
-describe("core.terminals.list", () => {
+describe("core.terminals.listAll", () => {
   test("the index lists every terminal with the composition it lives in", async () => {
     const fixture = indexFixture();
     const running = openTerminal(fixture);
     const exited = openTerminal(fixture);
-    fixture.broker.onExited(fixture.machine.machineId, exited.sessionId, 3);
+    fixture.broker.onExited(fixture.machine.machineId, exited.terminalId, 3);
 
     const terminals = await indexRows(fixture);
     // The pool listed only the UNBOUND terminals and swept the exited ones. There is nothing
     // to be unbound from now, so this is simply every terminal — and an exited one is still a
     // terminal until somebody dismisses its last leaf.
     expect([...terminals.map((terminal) => terminal.id)].sort()).toEqual(
-      [running.sessionId, exited.sessionId].sort(),
+      [running.terminalId, exited.terminalId].sort(),
     );
-    expect(terminals.find((terminal) => terminal.id === running.sessionId)).toEqual({
-      id: running.sessionId,
+    expect(terminals.find((terminal) => terminal.id === running.terminalId)).toEqual({
+      id: running.terminalId,
       machineId: fixture.machine.machineId,
       name: null,
       createdAt: 0,
@@ -350,8 +356,8 @@ describe("core.terminals.list", () => {
       homeId: running.homeId,
       unplaced: true,
     });
-    expect(terminals.find((terminal) => terminal.id === exited.sessionId)).toEqual({
-      id: exited.sessionId,
+    expect(terminals.find((terminal) => terminal.id === exited.terminalId)).toEqual({
+      id: exited.terminalId,
       machineId: fixture.machine.machineId,
       name: null,
       createdAt: 0,
@@ -372,32 +378,32 @@ describe("core.terminals.list", () => {
 
     writeElement(
       room(fixture, fixture.canvas.id).doc,
-      portalElement("widget-1", born.homeId),
+      portalElement("portal-1", born.homeId),
       LOCAL_ORIGIN,
     );
     expect(await unplacedOf()).toEqual([false]);
 
     // Releasing it is subtractive: the reference goes and the terminal stays where it lives,
     // so the index reports it at top level again with nothing durable having changed.
-    expect(unplaceTerminal(fixture.placement, born.sessionId)).toEqual({ removed: 1 });
+    expect(unplaceTerminal(fixture.placement, born.terminalId)).toEqual({ removed: 1 });
     expect(await unplacedOf()).toEqual([true]);
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
   });
 
   test("a terminal merged into a referenced composition is placed through that composition", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     writeElement(
       room(fixture, fixture.canvas.id).doc,
-      portalElement("widget-1", composition.id),
+      portalElement("portal-1", composition.id),
       LOCAL_ORIGIN,
     );
 
     const added = placeTile(
       fixture.placement,
       composition.id,
-      { kind: "terminal", sessionId: born.sessionId },
+      { kind: "terminal", terminalId: born.terminalId },
       null,
       null,
     );
@@ -407,22 +413,22 @@ describe("core.terminals.list", () => {
     // that composition being referenced — not about the terminal itself being pointed at.
     expect(await indexRows(fixture)).toEqual([
       expect.objectContaining({
-        id: born.sessionId,
+        id: born.terminalId,
         homeId: composition.id,
         unplaced: false,
       }),
     ]);
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
   });
 
-  test("a pad-scoped token cannot read the terminal index", async () => {
+  test("a container-scoped token cannot read the terminal index", async () => {
     const fixture = indexFixture();
 
     const response = await call(
       fixture,
       "POST",
-      "/api/actions/core.terminals.list",
-      padScopedToken(fixture),
+      "/api/actions/core.terminals.listAll",
+      containerScopedToken(fixture),
       {},
     );
 
@@ -443,26 +449,26 @@ describe("core.terminals.rename", () => {
     const born = openTerminal(fixture);
     writeElement(
       room(fixture, fixture.canvas.id).doc,
-      portalElement("widget-1", born.homeId),
+      portalElement("portal-1", born.homeId),
       LOCAL_ORIGIN,
     );
     const onCanvas = joinPeer(fixture, fixture.canvas.id);
     const inHome = joinPeer(fixture, born.homeId);
 
     const renamed = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
       name: "  build  ",
     });
 
     expect(renamed.status).toBe(200);
     expect(renamed.payload).toEqual({ ok: true, result: {} });
-    expect(fixture.store.getSession(born.sessionId)?.name).toBe("build");
-    // A name is session state, so it is published where every viewer of the terminal is
-    // already joined: its home. A canvas learns about it through the widget it renders.
-    expect(bodiesOfType(inHome.socket, "session_event")).toEqual([
-      { type: "session_event", sessionId: born.sessionId, kind: "renamed", name: "build" },
+    expect(fixture.store.getTerminal(born.terminalId)?.name).toBe("build");
+    // A name is terminal state, so it is published where every viewer of the terminal is
+    // already joined: its home. A canvas learns about it through the portal it renders.
+    expect(bodiesOfType(inHome.socket, "terminal_event")).toEqual([
+      { type: "terminal_event", terminalId: born.terminalId, kind: "renamed", name: "build" },
     ]);
-    expect(bodiesOfType(onCanvas.socket, "session_event")).toEqual([]);
+    expect(bodiesOfType(onCanvas.socket, "terminal_event")).toEqual([]);
   });
 
   test("a blank name and an unknown terminal are refusals, not transport failures", async () => {
@@ -470,11 +476,11 @@ describe("core.terminals.rename", () => {
     const born = openTerminal(fixture);
 
     const blank = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
       name: "   ",
     });
     const missing = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
-      sessionId: "missing",
+      terminalId: "missing",
       name: "build",
     });
 
@@ -489,20 +495,20 @@ describe("core.terminals.rename", () => {
       ok: false,
       denial: { rule: "refused", message: "terminal not found" },
     });
-    expect(fixture.broker.rename("missing-session", "build")).toBe("not_found");
+    expect(fixture.broker.rename("missing-terminal", "build")).toBe("not_found");
   });
 
   test("a rename survives into the advert a merge publishes", () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    expect(fixture.broker.rename(born.sessionId, "build")).toBe("ok");
-    const composition = tiledPad(fixture, "composition");
+    expect(fixture.broker.rename(born.terminalId, "build")).toBe("ok");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
 
     const added = placeTile(
       fixture.placement,
       composition.id,
-      { kind: "terminal", sessionId: born.sessionId },
+      { kind: "terminal", terminalId: born.terminalId },
       null,
       null,
     );
@@ -510,27 +516,28 @@ describe("core.terminals.rename", () => {
 
     expect(bodiesOfType(inside.socket, "terminal_opened").at(-1)).toMatchObject({
       elementId: added.tileId,
-      session: { id: born.sessionId, name: "build", padId: composition.id },
+      terminal: { id: born.terminalId, name: "build", containerId: composition.id },
     });
   });
 
-  test("a pad-scoped token can rename only inside its own container", async () => {
+  test("a container-scoped token can rename only inside its own container", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    const token = padScopedToken(fixture);
+    const token = containerScopedToken(fixture);
 
-    // Renaming is pad-graded (`scope: "pad"`), because a terminal belongs to a container and
-    // the per-terminal agent token is scoped to one. What the scope rung cannot check is
-    // WHICH container the named session lives in — this terminal is homed in its own solo
-    // composition, not in the pad this token is scoped to — so the handler refuses it.
+    // Renaming is container-graded (`scope: "container"`), because a terminal belongs to a
+    // container and the per-terminal agent token is scoped to one. What the scope rung cannot
+    // check is WHICH container the named terminal lives in — this terminal is homed in its own
+    // solo composition, not in the container this token is scoped to — so the handler refuses
+    // it.
     const renamed = await call(fixture, "POST", "/api/actions/core.terminals.rename", token, {
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
       name: "build",
     });
     // Reordering a terminal IS moving its home in the one index, so the gate that refuses it
     // is the index's own door rather than a terminal-pool gate that no longer exists.
-    const moved = await call(fixture, "POST", "/api/actions/core.views.move", token, {
-      item: { kind: "pad", id: born.homeId },
+    const moved = await call(fixture, "POST", "/api/actions/core.index.moveEntry", token, {
+      item: { kind: "container", id: born.homeId },
       parentId: null,
       index: 0,
     });
@@ -544,7 +551,7 @@ describe("core.terminals.rename", () => {
       ok: false,
       denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
     });
-    expect(fixture.store.getSession(born.sessionId)?.name).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)?.name).toBeNull();
   });
 });
 
@@ -558,26 +565,26 @@ describe("core.terminals.kill", () => {
     fixture.machine.clear();
 
     const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
     // The machine answers a kill by reporting the exit; the row it would have updated is
     // already gone, so this cannot resurrect it as an exited entry.
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
     const listed = await indexRows(fixture);
     const again = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
     const missing = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
-      sessionId: "missing",
+      terminalId: "missing",
     });
 
     expect(killed.payload).toEqual({ ok: true, result: {} });
-    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
+    expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: born.terminalId }]);
     // A kill removes the terminal from the world, so the index has no row to show and the
     // home it lived in is gone with it. There is no tombstone state between the two.
     expect(listed).toEqual([]);
-    expect(fixture.store.getSession(born.sessionId)).toBeNull();
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
     // Gone is gone: a second kill and an id that never existed refuse identically.
     expect(again.payload).toEqual({
       ok: false,
@@ -586,7 +593,7 @@ describe("core.terminals.kill", () => {
     expect(missing.payload).toEqual(again.payload);
   });
 
-  test("a pad-scoped token cannot kill a terminal in another container", async () => {
+  test("a container-scoped token cannot kill a terminal in another container", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
 
@@ -594,79 +601,88 @@ describe("core.terminals.kill", () => {
       fixture,
       "POST",
       "/api/actions/core.terminals.kill",
-      padScopedToken(fixture),
-      { sessionId: born.sessionId },
+      containerScopedToken(fixture),
+      { terminalId: born.terminalId },
     );
 
-    // Killing is pad-graded — an agent must be able to clean up its own terminal — so the
-    // refusal comes from the containment the handler owes rather than from the scope rung.
+    // Killing is container-graded — an agent must be able to clean up its own terminal — so
+    // the refusal comes from the containment the handler owes rather than from the scope rung.
     expect(response.payload).toEqual({
       ok: false,
       denial: { rule: "refused", message: OUTSIDE_SCOPE_REFUSAL },
     });
-    expect(fixture.store.getSession(born.sessionId)?.status).toBe("running");
+    expect(fixture.store.getTerminal(born.terminalId)?.status).toBe("running");
   });
 });
 
-describe("core.views.move is how an unplaced terminal is reordered", () => {
+describe("core.index.moveEntry is how an unplaced terminal is reordered", () => {
   test("a solo composition moves into a folder and reads back under it", async () => {
     const fixture = indexFixture();
     const born = openTerminal(fixture);
-    const created = await call(fixture, "POST", "/api/actions/core.views.createFolder", OWNER_KEY, {
+    const created = await call(fixture, "POST", "/api/actions/core.index.createFolder", OWNER_KEY, {
       name: "machines",
     });
     expect(created.status).toBe(200);
     const folder = actionItems(created.payload).find((item) => item.kind === "folder");
     if (folder?.kind !== "folder") throw new Error("missing folder");
 
-    const moved = await call(fixture, "POST", "/api/actions/core.views.move", OWNER_KEY, {
-      item: { kind: "pad", id: born.homeId },
+    const moved = await call(fixture, "POST", "/api/actions/core.index.moveEntry", OWNER_KEY, {
+      item: { kind: "container", id: born.homeId },
       parentId: folder.id,
       index: 0,
     });
-    const listed = await call(fixture, "POST", "/api/actions/core.views.tree", OWNER_KEY, {});
+    const listed = await call(fixture, "POST", "/api/actions/core.index.read", OWNER_KEY, {});
 
     expect(moved.status).toBe(200);
     // The terminal was never reordered: its HOME was. That is the whole of what replaced the
     // pool's durable sort order, and it is why organizing terminals needs no terminal route.
     for (const payload of [moved.payload, listed.payload]) {
       const home = actionItems(payload).find(
-        (item) => item.kind === "pad" && item.pad.id === born.homeId,
+        (item) => item.kind === "container" && item.container.id === born.homeId,
       );
       expect(home).toEqual({
-        kind: "pad",
-        pad: { id: born.homeId, name: MACHINE_NAME, createdAt: 0, layout: "tiled" },
+        kind: "container",
+        container: {
+          id: born.homeId,
+          name: MACHINE_NAME,
+          createdAt: 0,
+          discipline: "composition",
+        },
         parentId: folder.id,
         sortOrder: 0,
       });
     }
     // Moving a container never touches where the terminal lives.
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
   });
 });
 
-describe("core.terminals.sessions", () => {
-  test("the pad session listing reports each terminal under its home", async () => {
+describe("core.terminals.listByContainer", () => {
+  test("the per-container listing reports each terminal under its home", async () => {
     const fixture = indexFixture();
     const solo = openTerminal(fixture);
     const merged = openTerminal(fixture);
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const added = placeTile(
       fixture.placement,
       composition.id,
-      { kind: "terminal", sessionId: merged.sessionId },
+      { kind: "terminal", terminalId: merged.terminalId },
       null,
       null,
     );
     if (typeof added === "string") throw new Error(`placement failed: ${added}`);
 
-    const sessions = await sessionRows(fixture);
-    // Every session has a pad, so nothing is omitted here any more: the listing is a join of
-    // terminals onto the containers they live in.
-    expect([...sessions.map((session) => session.id)].sort()).toEqual(
-      [solo.sessionId, merged.sessionId].sort(),
+    const terminals = await terminalRowsByContainer(fixture);
+    // Every terminal has a container, so nothing is omitted here any more: the listing is a
+    // join of terminals onto the containers they live in.
+    expect([...terminals.map((terminal) => terminal.id)].sort()).toEqual(
+      [solo.terminalId, merged.terminalId].sort(),
     );
-    expect(sessions.find((session) => session.id === solo.sessionId)?.padId).toBe(solo.homeId);
-    expect(sessions.find((session) => session.id === merged.sessionId)?.padId).toBe(composition.id);
+    expect(terminals.find((terminal) => terminal.id === solo.terminalId)?.containerId).toBe(
+      solo.homeId,
+    );
+    expect(terminals.find((terminal) => terminal.id === merged.terminalId)?.containerId).toBe(
+      composition.id,
+    );
   });
 });

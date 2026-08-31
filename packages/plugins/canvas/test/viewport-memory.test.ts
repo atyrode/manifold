@@ -21,16 +21,16 @@ function fakeStorage(initial: Record<string, string> = {}): ViewportStorage & {
 }
 
 describe("viewport memory", () => {
-  test("round-trips a viewport through storage per pad", () => {
+  test("round-trips a viewport through storage per container", () => {
     const storage = fakeStorage();
-    saveViewport(storage, "pad-a", { x: -120.5, y: 44, zoom: 1.25 });
-    saveViewport(storage, "pad-b", { x: 9, y: 9, zoom: 2 });
-    expect(loadViewport(storage, "pad-a")).toEqual({ x: -120.5, y: 44, zoom: 1.25 });
-    expect(loadViewport(storage, "pad-b")).toEqual({ x: 9, y: 9, zoom: 2 });
+    saveViewport(storage, "container-a", { x: -120.5, y: 44, zoom: 1.25 });
+    saveViewport(storage, "container-b", { x: 9, y: 9, zoom: 2 });
+    expect(loadViewport(storage, "container-a")).toEqual({ x: -120.5, y: 44, zoom: 1.25 });
+    expect(loadViewport(storage, "container-b")).toEqual({ x: 9, y: 9, zoom: 2 });
   });
 
   test("absent key loads as null", () => {
-    expect(loadViewport(fakeStorage(), "pad")).toBeNull();
+    expect(loadViewport(fakeStorage(), "container")).toBeNull();
   });
 
   test.each([
@@ -69,13 +69,13 @@ describe("viewport memory", () => {
         throw new Error("quota exceeded");
       },
     };
-    expect(loadViewport(broken, "pad")).toBeNull();
+    expect(loadViewport(broken, "container")).toBeNull();
     expect(() => {
-      saveViewport(broken, "pad", { x: 0, y: 0, zoom: 1 });
+      saveViewport(broken, "container", { x: 0, y: 0, zoom: 1 });
     }).not.toThrow();
   });
 
-  test("keys are pad-scoped", () => {
+  test("keys are container-scoped", () => {
     expect(viewportMemoryKey("abc")).toBe("manifold:viewport:abc");
   });
 });

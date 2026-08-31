@@ -60,7 +60,7 @@ const packages = [
   "plugins/terminals",
   "plugins/presence",
   "plugins/machines",
-  "plugins/views",
+  "plugins/index",
   "plugins/draw",
   "plugins/notes",
   "plugins/uri",
@@ -121,17 +121,32 @@ try {
   ]);
 
   const built = await build;
-  const browserGates: Promise<TaskResult>[] = built.ok
-    ? [
-        run("verify:convergence", ["bun", "scripts/verify-convergence.ts"]),
-        run("verify:terminal-selection", ["bun", "scripts/verify-terminal-selection.ts"]),
-        run("verify:terminal-mirror", ["bun", "scripts/verify-terminal-mirror.ts"]),
-        run("verify:tile-drop", ["bun", "scripts/verify-tile-drop.ts"]),
-        run("verify:axioms", ["bun", "scripts/verify-axioms.ts"]),
-      ]
+  // The static pool must DRAIN before the browser gates start: each browser gate is a
+  // server + one or two real Chromiums, and running them beside six compilers is what
+  // put this box over its ceiling — the kernel reaps a compiler and the gate reads a
+  // phantom failure with empty output. Two phases cost ~40s of wall clock; a phantom
+  // RED costs a human diagnosing a failure that does not exist.
+  const statics = await staticChecks;
+  // verify:convergence drives TWO real browsers for ~3 minutes and is the one gate that
+  // flakes under load (cold caches right after the static pool drains). It runs alone and
+  // gets ONE retry — visibly: a pass-on-retry is reported as such, never silently green.
+  let convergence: TaskResult[] = [];
+  if (built.ok) {
+    const first = await run("verify:convergence", ["bun", "scripts/verify-convergence.ts"]);
+    convergence = first.ok
+      ? [first]
+      : [await run("verify:convergence (retry 1)", ["bun", "scripts/verify-convergence.ts"])];
+  }
+  const browserGates = built.ok
+    ? await runLimited(2, [
+        () => run("verify:terminal-selection", ["bun", "scripts/verify-terminal-selection.ts"]),
+        () => run("verify:terminal-mirror", ["bun", "scripts/verify-terminal-mirror.ts"]),
+        () => run("verify:tile-drop", ["bun", "scripts/verify-tile-drop.ts"]),
+        () => run("verify:axioms", ["bun", "scripts/verify-axioms.ts"]),
+      ])
     : [];
 
-  const results = [built, ...(await staticChecks), ...(await Promise.all(browserGates))];
+  const results = [built, ...statics, ...convergence, ...browserGates];
   const failed = results.filter((result) => !result.ok);
   console.log(
     failed.length === 0

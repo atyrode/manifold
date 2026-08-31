@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
   isMachineOnline,
   mintToken,
@@ -34,8 +34,8 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
   try {
     const firstServer = await startServer();
     servers.push(firstServer);
-    const pad = await createPad(firstServer, "restart survival");
-    const referenced = await createPad(firstServer, "restart survival reference");
+    const container = await createContainer(firstServer, "restart survival");
+    const referenced = await createContainer(firstServer, "restart survival reference");
     const enrolled = await enrollMachine(firstServer, "survival-agent");
     const agent = await startAgent({
       serverUrl: firstServer.url,
@@ -44,12 +44,12 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     });
     agents.push(agent);
     // Workspace-scoped: the terminal is born into a composition of its own, whose id is
-    // minted by the server, so a pad-scoped grant could never join the room that holds it.
+    // minted by the server, so a container-scoped grant could never join the room that holds it.
     const grant = await mintToken(firstServer, {
       principal: { kind: "human", name: "Restart User", color: "#5e48c7" },
-      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
     });
-    const client = await connect(firstServer, { padId: pad.id, token: grant.token });
+    const client = await connect(firstServer, { containerId: container.id, token: grant.token });
     clients.push(client);
 
     const firstSavedRev = client.rev + 1;
@@ -69,7 +69,7 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       15_000,
       (message) => message.rev >= secondSavedRev,
     );
-    const { session, homeClient } = await openTerminalAt(client, firstServer, {
+    const { terminal, homeClient } = await openTerminalAt(client, firstServer, {
       elementId: "el-survive-terminal",
       token: grant.token,
       portalAt: { x: 240, y: 160 },
@@ -78,9 +78,9 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     await secondSaved;
 
     const beforeRestartScene = sortedScene(client);
-    const capture = await attachedCapture(homeClient, session.id);
+    const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
-    homeClient.sendTerminalInput(session.id, "printf 'SURVIVE_1\\n'\n");
+    homeClient.sendTerminalInput(terminal.id, "printf 'SURVIVE_1\\n'\n");
     await waitForTerminalText(capture, "SURVIVE_1", 10_000);
     const emitterTrigger = `${firstServer.dataDir}/emit-during-downtime`;
     const emitterDone = `${firstServer.dataDir}/emitter-finished`;
@@ -89,7 +89,7 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       `while [ ! -f ${JSON.stringify(emitterTrigger)} ]; do sleep 0.05; done; ` +
       'i=1; while [ "$i" -le 4 ]; do printf \'DOWNTIME_%s\\n\' "$i"; ' +
       `i=$((i + 1)); sleep 0.2; done; printf done > ${JSON.stringify(emitterDone)}) &\n`;
-    homeClient.sendTerminalInput(session.id, emitterCommand);
+    homeClient.sendTerminalInput(terminal.id, emitterCommand);
     await waitForTerminalText(capture, "EMITTER_ARMED", 10_000);
     const preRestartWatermark = capture.outputSeqs.at(-1) ?? capture.snapshotSeq;
     if (preRestartWatermark === null) throw new Error("terminal produced no pre-restart watermark");
@@ -110,33 +110,33 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     await waitFor(async () => isMachineOnline(restarted, enrolled.machineId), 20_000, 100);
 
     const afterRestart = await connect(restarted, {
-      padId: pad.id,
+      containerId: container.id,
       token: grant.token,
       reconnect: false,
     });
     clients.push(afterRestart);
     expect(sortedScene(afterRestart)).toEqual(beforeRestartScene);
-    // The session is state of the composition it LIVES in, so that is the room that reports
+    // The terminal is state of the composition it LIVES in, so that is the room that reports
     // it — the canvas only ever held a portal onto that composition.
     const homeAfterRestart = await connect(restarted, {
-      padId: session.padId,
+      containerId: terminal.containerId,
       token: grant.token,
       reconnect: false,
     });
     clients.push(homeAfterRestart);
-    const adopted = homeAfterRestart.sessions.get(session.id);
+    const adopted = homeAfterRestart.terminals.get(terminal.id);
     expect(adopted).toBeDefined();
     expect(adopted?.status).toBe("running");
-    expect(adopted?.padId).toBe(session.padId);
+    expect(adopted?.containerId).toBe(terminal.containerId);
 
-    const afterCapture = captureTerminal(homeAfterRestart, session.id);
+    const afterCapture = captureTerminal(homeAfterRestart, terminal.id);
     captures.push(afterCapture);
-    homeAfterRestart.attachTerminal(session.id);
+    homeAfterRestart.attachTerminal(terminal.id);
     await waitFor(() => afterCapture.snapshotSeq !== null, 10_000, 20);
     expect(afterCapture.snapshotSeq).toBeGreaterThanOrEqual(preRestartWatermark);
     expect(afterCapture.snapshotText).toContain("SURVIVE_1");
     expect(afterCapture.snapshotText).toContain("DOWNTIME_4");
-    homeAfterRestart.sendTerminalInput(session.id, "printf 'SURVIVE_2\\n'\n");
+    homeAfterRestart.sendTerminalInput(terminal.id, "printf 'SURVIVE_2\\n'\n");
     await waitForTerminalText(afterCapture, "SURVIVE_2", 10_000);
     expect(afterCapture.snapshotText + afterCapture.outputText).toContain("SURVIVE_2");
   } catch (error) {

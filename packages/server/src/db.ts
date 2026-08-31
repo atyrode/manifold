@@ -1,21 +1,29 @@
 import { Database } from "bun:sqlite";
+import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
- * Yjs documents, which no amount of SQL can do. A code migration declares whether the
- * change it makes is recoverable: `backup: true` takes a consistent snapshot of the
- * database beside itself first, because a one-way data move is the one kind of migration
- * whose mistake cannot be undone by running something else afterwards.
+ * Yjs documents, which no amount of SQL can do. Either form may declare that the change it
+ * makes is not recoverable: `backup: true` takes a consistent snapshot of the database
+ * beside itself first, because a one-way data move is the one kind of migration whose
+ * mistake cannot be undone by running something else afterwards.
+ *
+ * A bare string is the common case — SQL that a later migration could always reverse — so it
+ * stays the terse form rather than gaining a wrapper object for a flag it never sets.
  */
+interface BackedUpSqlMigration {
+  readonly backup: boolean;
+  readonly sql: string;
+}
 interface CodeMigration {
   readonly backup: boolean;
   apply(db: Database, path: string): void;
 }
-type Migration = string | CodeMigration;
+type Migration = string | BackedUpSqlMigration | CodeMigration;
 
 const MIGRATIONS: Readonly<Record<number, Migration>> = {
   1: `
@@ -247,6 +255,15 @@ CREATE TABLE plugin_kv(
 ) WITHOUT ROWID;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10');
 `,
+  /**
+   * The lexicon cut (#69). Tables and columns take the canon names — `containers`,
+   * `container_folders`, `terminals`, `*.container_id`, `containers.discipline` with values
+   * `canvas` | `composition` — the stored capability vocabulary is rewritten, and the tile
+   * tables inside every scene document and every workspace layout move their leaf occupant
+   * from `surface` to `ref`. Code, and backed up, because two of those are document data
+   * and the whole set must land together or a composition reads as empty (migrate-lexicon.ts).
+   */
+  11: { backup: true, apply: migrateToCanonLexicon },
 };
 
 interface TableRow {
@@ -302,6 +319,7 @@ export function openDatabase(path: string): Database {
     }
     const migrate = db.transaction(() => {
       if (typeof migration === "string") db.exec(migration);
+      else if ("sql" in migration) db.exec(migration.sql);
       else migration.apply(db, path);
     });
     migrate();

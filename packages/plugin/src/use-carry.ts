@@ -22,7 +22,7 @@ import {
 
 /**
  * The carry lifecycle, in React. One grab is one carry whatever grabbed it — a React
- * Flow node drag, a widget's tile grip, a leaf's grip inside a composition, or an HTML5
+ * Flow node drag, a portal's tile grip, a leaf's grip inside a composition, or an HTML5
  * drag that started in the sidebar and wandered in — so the send half lives here once
  * and every renderer calls the same three verbs.
  *
@@ -73,7 +73,7 @@ export interface UseCarryOptions {
   readonly client: SessionClient;
   /**
    * What to call an ADOPTED carry — the renderer knows names this module cannot: its
-   * own sessions, its own container index. Null falls back to the species name.
+   * own terminals, its own container index. Null falls back to the species name.
    */
   readonly describe?: (envelope: ItemEnvelope) => string | null;
   /**

@@ -1,7 +1,7 @@
-import { ROOT_TILE_ID, type TileSurface } from "@manifold/protocol";
+import { ROOT_TILE_ID, type TileRef } from "@manifold/protocol";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { ControlIcon, SurfaceIcon } from "./icons.tsx";
+import { ControlIcon, CarriedItemIcon } from "./icons.tsx";
 import type { TileDropSignal, TileDropStore } from "../tile-drop-store.ts";
 import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
 
@@ -16,7 +16,7 @@ import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
  * transition ahead of the aim the eye was shown.
  *
  * Its entire local-vs-remote logic is ARBITRATION — choosing which producer's
- * `(aim, surface, label)` triple enters the builder. Everything after that reads one
+ * `(aim, ref, label)` triple enters the builder. Everything after that reads one
  * {@link TileDropState} and cannot ask who produced it: the slot, the cues, the caption,
  * the denial and the pane motion are one implementation, so a collaborator's view of a
  * drag is the dragger's view by construction rather than by matching two code paths.
@@ -29,14 +29,14 @@ import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
  * transform-not-reflow is the protection, and it covers the fullscreen route's
  * controller socket too. Percentage translate resolves against the element's OWN box,
  * which is the `from` rect, so the numbers are scale-invariant: correct under the
- * widget's `scale(0.5)` and any canvas zoom without knowing either.
+ * portal's `scale(0.5)` and any canvas zoom without knowing either.
  */
 export interface TilePreviewOverlayProps {
   /** The host's one pipeline: aim resolution, the shared builder, its memo. */
   readonly drop: TileDropPipeline;
   readonly store: TileDropStore;
   /** Names the displaced occupant in a replace caption; the host answers from its doc. */
-  readonly surfaceLabel: (surface: TileSurface) => string | null;
+  readonly refLabel: (ref: TileRef) => string | null;
 }
 
 /** The class a carried item wears while its carry has an armed target (see styles.css). */
@@ -74,11 +74,7 @@ function paneElement(
   return first instanceof HTMLElement ? first : null;
 }
 
-export function TilePreviewOverlay({
-  drop,
-  store,
-  surfaceLabel,
-}: TilePreviewOverlayProps): ReactNode {
+export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlayProps): ReactNode {
   const signal: TileDropSignal = useSyncExternalStore(store.subscribe, store.get, store.get);
   const host = drop.host;
   const motionRef = useRef<PreviewMotion>({ shifted: [], faded: [] });
@@ -87,7 +83,7 @@ export function TilePreviewOverlay({
 
   const armed =
     signal.pointer !== null &&
-    (host.widget === null || signal.armedElementId === host.widget.elementId);
+    (host.portal === null || signal.armedElementId === host.portal.elementId);
   const local =
     armed && signal.pointer !== null
       ? drop.aimAt(signal.pointer.clientX, signal.pointer.clientY)
@@ -123,7 +119,7 @@ export function TilePreviewOverlay({
   /*
     Publish the resolved aim back to the store: the SINGLE source of both what a release
     commits and what rides the carry wire, so no transport builds an aim beside the one
-    painted here. ONLY the armed overlay writes: a canvas holds one overlay per widget,
+    painted here. ONLY the armed overlay writes: a canvas holds one overlay per portal,
     and an unarmed one publishing its null would clobber the armed answer — and ping-pong
     the store into an endless notify loop. Disarming is the TRANSPORT's write
     (`clearCompose` / the arm losing its element), never ours. The dependency list is
@@ -143,7 +139,7 @@ export function TilePreviewOverlay({
 
   // The FLIP itself: written imperatively so the tree never re-renders. Nothing moves
   // when the drop is denied, because nothing will move on release — and that guard now
-  // serves a peer's refused aim too, since a viewer judges the peer's own surface.
+  // serves a peer's refused aim too, since a viewer judges the peer's own ref.
   useEffect(() => {
     const area = host.areaRef.current;
     const motion = motionRef.current;
@@ -195,7 +191,7 @@ export function TilePreviewOverlay({
   const swapping = shown.aim.action === "swap" && !denied;
   const replacing = shown.aim.action === "replace" && !denied;
   const displaced =
-    replacing && host.layout !== null ? (host.layout[shown.aim.tileId]?.surface ?? null) : null;
+    replacing && host.layout !== null ? (host.layout[shown.aim.tileId]?.ref ?? null) : null;
   /*
     ONE class computation for the slot AND its swap partner. They are two halves of one
     trade, so a branch that could restyle one and not the other is a defect waiting for
@@ -232,13 +228,13 @@ export function TilePreviewOverlay({
             <ControlIcon kind="park" size={28} />
             {displaced === null ? null : (
               <span className="tile-preview__caption">
-                {surfaceLabel(displaced) ?? "this tile"} moves out
+                {refLabel(displaced) ?? "this tile"} moves out
               </span>
             )}
           </span>
         ) : shown.chip === null || denied ? null : (
           <span className="tile-preview__glyph">
-            <SurfaceIcon kind={shown.chip.kind} size={14} />
+            <CarriedItemIcon kind={shown.chip.kind} size={14} />
             <span className="tile-preview__caption">{shown.chip.label}</span>
           </span>
         )}

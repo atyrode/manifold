@@ -57,21 +57,21 @@ describe("chooseDefaultMachine", () => {
 });
 
 describe("machine memory", () => {
-  test("round-trips the picked machine per pad", () => {
+  test("round-trips the picked machine per container", () => {
     const storage = fakeStorage();
-    rememberMachine(storage, "pad-a", "m1");
-    rememberMachine(storage, "pad-b", "m2");
-    expect(recallMachine(storage, "pad-a")).toBe("m1");
-    expect(recallMachine(storage, "pad-b")).toBe("m2");
+    rememberMachine(storage, "container-a", "m1");
+    rememberMachine(storage, "container-b", "m2");
+    expect(recallMachine(storage, "container-a")).toBe("m1");
+    expect(recallMachine(storage, "container-b")).toBe("m2");
   });
 
   test("absent key recalls as null", () => {
-    expect(recallMachine(fakeStorage(), "pad")).toBeNull();
+    expect(recallMachine(fakeStorage(), "container")).toBeNull();
   });
 
   test("empty stored value recalls as null", () => {
-    const storage = fakeStorage({ [machineMemoryKey("pad")]: "" });
-    expect(recallMachine(storage, "pad")).toBeNull();
+    const storage = fakeStorage({ [machineMemoryKey("container")]: "" });
+    expect(recallMachine(storage, "container")).toBeNull();
   });
 
   test("throwing storage degrades to a no-op, never throws", () => {
@@ -83,13 +83,13 @@ describe("machine memory", () => {
         throw new Error("quota exceeded");
       },
     };
-    expect(recallMachine(broken, "pad")).toBeNull();
+    expect(recallMachine(broken, "container")).toBeNull();
     expect(() => {
-      rememberMachine(broken, "pad", "m1");
+      rememberMachine(broken, "container", "m1");
     }).not.toThrow();
   });
 
-  test("keys are pad-scoped", () => {
+  test("keys are container-scoped", () => {
     expect(machineMemoryKey("abc")).toBe("manifold:machine:abc");
   });
 });

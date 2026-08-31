@@ -1,14 +1,14 @@
 import {
   LIFECYCLE_TIMEOUT_MS,
-  composeRoster,
+  assembleRoster,
   compareDataVersion,
   enginePluginsActions,
   enginePluginsManifest,
   planDataMigration,
   runHook,
-  type Composition,
-  type CompositionDelta,
-  type CompositionEnv,
+  type Assembly,
+  type AssemblyDelta,
+  type AssemblyEnv,
   type LifecycleCtx,
   type PluginDef,
   type PluginMigration,
@@ -40,15 +40,15 @@ import type { TerminalBroker } from "./terminal-broker.ts";
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
  * one question the doors ask. Handing plugins a bound `allows` rather than the
- * `AuthService`/`AuthContext` pair keeps the evaluator behind a single call surface — the
+ * `AuthService`/`AuthContext` pair keeps the evaluator behind one entry point — the
  * seam ADR 0011's waterfall replaces — and keeps a plugin from reaching into auth internals.
  */
 export interface ActionAuth {
   readonly principal: Principal;
   readonly caps: readonly Cap[];
-  readonly padScope: string | null;
+  readonly containerScope: string | null;
   readonly isRoot: boolean;
-  allows(cap: Exclude<Cap, "*">, padId?: string): boolean;
+  allows(cap: Exclude<Cap, "*">, containerId?: string): boolean;
 }
 
 /**
@@ -56,28 +56,28 @@ export interface ActionAuth {
  * floor class a plugin cannot name, so the binding catches it and hands the refusal back as
  * DATA carrying the same code the HTTP boundary maps — which is the broker's
  * `"ok" | "not_found"` vocabulary generalized: a plugin relays the mechanism's answers, it
- * does not invent them, and an expected refusal must never surface as a 500.
+ * does not invent them, and an expected refusal must never escape as a 500.
  */
 export type IdentityResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly code: ServiceErrorCode; readonly message: string };
 
 /**
- * The identity mechanism's ADMINISTRATIVE surface, pre-bound to the calling principal
+ * The identity mechanism's ADMINISTRATIVE door, pre-bound to the calling principal
  * exactly as `ActionAuth.allows` is.
  *
  * Binding rather than handing over `AuthService` is the same decision, for the same reason:
  * the caller is not a parameter a plugin may choose, so `core.access` cannot mint "as"
  * somebody else, and `authenticate`/`authenticateMachine` — the credential verifier, and the
  * one place raw secrets are compared — stay unreachable from above the floor. Every
- * attenuation rule (a minted cap set ⊆ the minter's, no widening of pad scope, revoking only
- * what you minted) therefore still runs inside the mechanism, on the real caller, where ADR
- * 0011's evaluator will replace it.
+ * attenuation rule (a minted cap set ⊆ the minter's, no widening of container scope,
+ * revoking only what you minted) therefore still runs inside the mechanism, on the real
+ * caller, where ADR 0011's evaluator will replace it.
  */
 export interface IdentityDoor {
   /** Creates a principal with a root token; refuses a non-root caller (`forbidden`). */
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
-  /** Mints authority no broader than the caller's own, within the caller's pad scope. */
+  /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
   /** Revokes a principal's tokens the caller is entitled to revoke; answers the count. */
   revokePrincipal(principalId: string): IdentityResult<number>;
@@ -104,7 +104,7 @@ function identityCall<T>(run: () => T): IdentityResult<T> {
  * from the published vocabulary (`PluginRefusalReason`), so a client can switch on it, and
  * carries the offenders after a colon when there are any to name — which ADR 0013 §5
  * requires of every refusal that replaces a cascade: "the refusal is one round trip, the
- * cascade is other people's surfaces disappearing without their consent."
+ * cascade is other people's plugins disappearing without their consent."
  */
 export interface ActionRefused {
   readonly refused: string;
@@ -121,7 +121,7 @@ function refused(reason: PluginRefusalReason, names?: readonly string[]): Action
  */
 export const OUTSIDE_SCOPE_REFUSAL = "outside this token's container";
 
-/** Composition administration, as the engine's own builtin doors drive it. */
+/** Assembly administration, as the engine's own builtin doors drive it. */
 export interface HostControl {
   setEnabled(
     id: string,
@@ -136,7 +136,7 @@ export interface HostControl {
 /**
  * Liveness, and nothing else. The other services on `ActionCtx` are the real classes
  * because plugins need their breadth; the machine socket registry is asked exactly one
- * question by the composition — is this machine connected right now — and handing over the
+ * question by the assembly — is this machine connected right now — and handing over the
  * gateway that authenticates machines, fences superseded sockets and relays PTY frames in
  * order to answer it would be authority nobody asked for. `MachineGateway` satisfies this
  * structurally, which is also what lets a test drive liveness without a socket.
@@ -149,9 +149,9 @@ export interface MachineLiveness {
  * Everything a server-side handler is given. The real services appear here, in the floor;
  * a plugin never names these types. Its `server.ts` declares the MINIMAL structural slice
  * it needs (`{ broker: { rename(id, name): "ok" | "not_found" } }`), and assembling
- * `SERVER_PLUGIN_DEFS` in `composition.ts` is where that slice is checked against this
+ * `SERVER_PLUGIN_DEFS` in `assembly.ts` is where that slice is checked against this
  * context by assignment. That is the sandbox shape D1 asks for without a sandbox yet: a
- * plugin's declared surface is exactly what it can touch, and it is verified at build time.
+ * plugin's declared slice is exactly what it can touch, and it is verified at build time.
  */
 export interface ActionCtx {
   readonly principal: Principal;
@@ -160,38 +160,38 @@ export interface ActionCtx {
    * The container this dispatch is confined to, or null for a workspace-grade caller.
    *
    * The same value the scope rung judged, promoted to the top of the context because it is a
-   * CONTRACT and not a detail: an action declaring `scope: "pad"` must keep every effect
-   * inside this pad while it is non-null, and must refuse anything its arguments name
-   * elsewhere. Rung 4 proves the caller's caps hold at this pad; only the handler can know
-   * whether the row, session or element it was asked about lives here.
+   * CONTRACT and not a detail: an action declaring `scope: "container"` must keep every
+   * effect inside this container while it is non-null, and must refuse anything its
+   * arguments name elsewhere. Rung 4 proves the caller's caps hold at this container; only
+   * the handler can know whether the row, terminal or element it was asked about lives here.
    *
-   * A handler may declare it as its whole slice (`{ padScope: string | null }`), which is
-   * why it sits here rather than only inside `auth` — that object is the authority record
+   * A handler may declare it as its whole slice (`{ containerScope: string | null }`), which
+   * is why it sits here rather than only inside `auth` — that object is the authority record
    * the evaluator seam consumes, this field is the question a handler asks.
    */
-  readonly padScope: string | null;
+  readonly containerScope: string | null;
   /**
    * DISCHARGES THE CONTAINMENT OBLIGATION, once, for every plugin.
    *
-   * Returns the canonical refusal when this caller's scope excludes `padId`, and null when
-   * the dispatch may proceed. A handler resolves the pad of the thing its arguments NAME —
-   * from the broker, the room, the store, whatever knows — and hands it here:
+   * Returns the canonical refusal when this caller's scope excludes `containerId`, and null
+   * when the dispatch may proceed. A handler resolves the container of the thing its
+   * arguments NAME — from the broker, the room, the store, whatever knows — and hands it here:
    *
-   *     const denial = ctx.outsideScope(session.padId);
+   *     const denial = ctx.outsideScope(terminal.containerId);
    *     if (denial !== null) return denial;
    *
    * It exists because the check is identical in every plugin and the WORDING must not be:
    * hand-rolled variants ("scoped tokens can only read their own container", "...rename
    * their own container", ...) are several strings a client cannot switch on for one
-   * concept, which is invariant 14 with the seams showing. The target pad is deliberately
-   * absent from the message — telling a scoped caller the id of a container it may not reach
-   * is a disclosure the refusal does not need.
+   * concept, which is invariant 14 with the seams showing. The target container is
+   * deliberately absent from the message — telling a scoped caller the id of a container it
+   * may not reach is a disclosure the refusal does not need.
    *
-   * A null `padId` means the handler could not resolve one, which for a scoped caller is
-   * refused for the same reason: authority cannot be proven against a container nobody
+   * A null `containerId` means the handler could not resolve one, which for a scoped caller
+   * is refused for the same reason: authority cannot be proven against a container nobody
    * named.
    */
-  outsideScope(padId: string | null): ActionRefused | null;
+  outsideScope(containerId: string | null): ActionRefused | null;
   readonly store: ServerStore;
   readonly rooms: RoomManager;
   readonly broker: TerminalBroker;
@@ -203,13 +203,13 @@ export interface ActionCtx {
   readonly machines: MachineLiveness;
   /**
    * THE placement executor — one door onto every way a thing comes to be somewhere
-   * (`core.layout.place`). A plugin declares the minimal slice it uses, which for placement
+   * (`core.space.place`). A plugin declares the minimal slice it uses, which for placement
    * is `place(request)`; the algebra, its denials and its failure modes stay in the floor.
    */
   readonly placement: PlaceExecutor;
   readonly host: HostControl;
   /**
-   * The identity mechanism's administrative surface, bound to THIS caller. Separate from
+   * The identity mechanism's administrative door, bound to THIS caller. Separate from
    * `auth` on purpose: `auth` answers what the caller may do, `identity` is what the caller
    * may hand to somebody else, and only `core.access` (plus machine enrollment) needs the
    * second question.
@@ -218,7 +218,7 @@ export interface ActionCtx {
   /**
    * This plugin's OWN durable storage: namespaced, versioned, migration-ledgered. It is the
    * only place a plugin may keep data of its own — the bespoke tables floor code still owns
-   * (terminal names, machine rows) move onto this surface in the conversion batch.
+   * (terminal names, machine rows) move onto this storage in the conversion batch.
    */
   readonly storage: PluginStorage;
   /**
@@ -255,7 +255,7 @@ export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
 };
 
-/** The slice the engine's own doors touch: identity, and the composition they administer. */
+/** The slice the engine's own doors touch: identity, and the assembly they administer. */
 interface EngineDoorCtx {
   readonly principal: Principal;
   readonly host: HostControl;
@@ -263,7 +263,7 @@ interface EngineDoorCtx {
 
 /**
  * THE ENGINE'S BUILTIN ROWS. Registered by the host itself rather than through
- * `composition.ts`, because administration of the composition cannot be a member of it: a
+ * `assembly.ts`, because administration of the assembly cannot be a member of it: a
  * plugin owning `setEnabled` can be disabled, and then the door that would re-enable it
  * answers `plugin_disabled` to everyone including root.
  *
@@ -295,7 +295,7 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
 ];
 
 /**
- * The action door's engine: it owns the live composition, answers dispatches, and is the
+ * The action door's engine: it owns the live assembly, answers dispatches, and is the
  * only writer of workspace-global enablement.
  *
  * The denial ladder is MONOTONIC and evaluated in one fixed order — unknown action, then
@@ -312,7 +312,7 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
  * a named `refused` class. The ladder a client learned still holds.
  */
 export class PluginHost {
-  private composed: Composition;
+  private assembled: Assembly;
   private readonly defs: readonly ServerPluginDef[];
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
   private readonly storages = new Map<string, PluginStorageAdmin>();
@@ -342,11 +342,11 @@ export class PluginHost {
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
-    this.composed = composeRoster(this.defs, store.disabledPlugins(), this.env());
+    this.assembled = assembleRoster(this.defs, store.disabledPlugins(), this.env());
     /*
-      Boot, in one pass and no promises: run the migrations composition found owing, stamp
+      Boot, in one pass and no promises: run the migrations assembly found owing, stamp
       the declared data version of everything serving, and claim element types for everything
-      composed. All three are synchronous because the substrate is — which is what keeps
+      assembled. All three are synchronous because the substrate is — which is what keeps
       process start free of a lifecycle fan-out (`onEnable` is a TRANSITION hook: at boot
       everything enabled is simply live) and keeps the server from answering a request over
       data a pending migration has not touched yet.
@@ -357,11 +357,11 @@ export class PluginHost {
       const types = def.manifest.contributes.elements.map((element) => element.type);
       if (types.length > 0) store.claimElementTypes(def.manifest.id, types);
     }
-    if (migrated) this.composed = composeRoster(this.defs, store.disabledPlugins(), this.env());
+    if (migrated) this.assembled = assembleRoster(this.defs, store.disabledPlugins(), this.env());
   }
 
-  /** The durable and runtime facts a composition needs, read fresh on every recompose. */
-  private env(): CompositionEnv {
+  /** The durable and runtime facts an assembly needs, read fresh on every reassembly. */
+  private env(): AssemblyEnv {
     const dataState = new Map<string, PluginStoredData>();
     for (const def of this.defs) {
       const storage = this.storage(def.manifest.id);
@@ -391,7 +391,7 @@ export class PluginHost {
   private stampDeclaredVersions(): void {
     for (const def of this.defs) {
       const declared = def.manifest.dataVersion;
-      if (declared === undefined || !this.composed.enabled(def.manifest.id)) continue;
+      if (declared === undefined || !this.assembled.enabled(def.manifest.id)) continue;
       const storage = this.storage(def.manifest.id);
       const stored = storage.dataVersion();
       if (stored !== null && stored.major !== declared.major) continue;
@@ -408,10 +408,10 @@ export class PluginHost {
     return created;
   }
 
-  /** Applies every migration the current composition found owing. True if any ran. */
+  /** Applies every migration the current assembly found owing. True if any ran. */
   private runPendingMigrations(): boolean {
     let ran = false;
-    for (const [pluginId, migrations] of this.composed.pendingMigrations) {
+    for (const [pluginId, migrations] of this.assembled.pendingMigrations) {
       ran = this.applyMigrations(pluginId, migrations) || ran;
     }
     return ran;
@@ -439,12 +439,12 @@ export class PluginHost {
     return true;
   }
 
-  composition(): Composition {
-    return this.composed;
+  assembly(): Assembly {
+    return this.assembled;
   }
 
   roster(): PluginRoster {
-    return this.composed.roster;
+    return this.assembled.roster;
   }
 
   /** Registers a roster listener and returns its removal, mirroring `AuthService.onRevoked`. */
@@ -456,19 +456,19 @@ export class PluginHost {
   }
 
   /**
-   * Flips workspace-global enablement, persists it with attribution, recomposes, tells the
+   * Flips workspace-global enablement, persists it with attribution, reassembles, tells the
    * plugins that survived, and publishes the new roster.
    *
    * Every refusal is DATA the caller's action forwards, and every one names a class from the
    * published vocabulary:
    *
-   * - `unknown_plugin` — nothing composed under that id;
+   * - `unknown_plugin` — nothing assembled under that id;
    * - `builtin` — an engine door, which has no toggle because the thing that would toggle it
    *   is itself;
    * - `essential` — a plugin the workspace cannot draw itself without (`core.shell`);
    * - `missing_dependency` — disabling this would strand ENABLED plugins that require it, and
    *   the refusal names them. There is no disable cascade: in a workspace-global setting a
-   *   cascade is other principals' surfaces vanishing without their consent (ADR 0013 §5.4);
+   *   cascade is other principals' plugins vanishing without their consent (ADR 0013 §5.4);
    * - `dependency_disabled` — enabling this needs plugins that are off, and names them. No
    *   enable cascade either: one toggle, one plugin, one visible consequence (§5.5);
    * - `incompatible_dependency` — an enabled plugin declares this one incompatible;
@@ -480,19 +480,19 @@ export class PluginHost {
     enabled: boolean,
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }> {
-    const entry = this.composed.roster.find((candidate) => candidate.manifest.id === id);
+    const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
-    if (this.composed.builtin(id)) return refused("builtin", [id]);
+    if (this.assembled.builtin(id)) return refused("builtin", [id]);
     if (entry.enabled === enabled) return { ok: true };
 
     if (!enabled) {
       if (entry.manifest.essential === true) return refused("essential");
-      const stranded = this.composed.requiredBy(id);
+      const stranded = this.assembled.requiredBy(id);
       if (stranded.length > 0) return refused("missing_dependency", stranded);
     } else {
-      const missing = this.composed.unmet(id);
+      const missing = this.assembled.unmet(id);
       if (missing.length > 0) return refused("dependency_disabled", missing);
-      const clashes = this.composed.conflicts(id);
+      const clashes = this.assembled.conflicts(id);
       if (clashes.length > 0) return refused("incompatible_dependency", clashes);
       /*
         Data is checked at the door as well as at boot, because a disabled plugin's data is
@@ -516,18 +516,18 @@ export class PluginHost {
     }
 
     const wasEnabled = new Set(
-      this.composed.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
+      this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
-    this.composed = composeRoster(this.defs, this.store.disabledPlugins(), this.env());
-    const delta: CompositionDelta = {
-      enabled: this.composed.order.filter(
-        (row) => this.composed.enabled(row) && !wasEnabled.has(row),
+    this.assembled = assembleRoster(this.defs, this.store.disabledPlugins(), this.env());
+    const delta: AssemblyDelta = {
+      enabled: this.assembled.order.filter(
+        (row) => this.assembled.enabled(row) && !wasEnabled.has(row),
       ),
-      disabled: this.composed.order.filter(
-        (row) => !this.composed.enabled(row) && wasEnabled.has(row),
+      disabled: this.assembled.order.filter(
+        (row) => !this.assembled.enabled(row) && wasEnabled.has(row),
       ),
     };
     await this.fanOut(delta, wasEnabled);
@@ -550,9 +550,9 @@ export class PluginHost {
    * purge released the reservation, so a replacement may now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
-    const entry = this.composed.roster.find((candidate) => candidate.manifest.id === id);
+    const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
-    if (this.composed.builtin(id)) return refused("builtin", [id]);
+    if (this.assembled.builtin(id)) return refused("builtin", [id]);
     if (entry.enabled) return refused("still_enabled", [id]);
 
     const def = this.defs.find((candidate) => candidate.manifest.id === id);
@@ -596,11 +596,11 @@ export class PluginHost {
   }
 
   /**
-   * ONE FAN-OUT PER COMMIT, in composition order, bounded, and unable to change anything.
+   * ONE FAN-OUT PER COMMIT, in assembly order, bounded, and unable to change anything.
    *
    * `onEnable` and `onDisable` fire for the plugins the delta names; then every SURVIVOR — a
-   * plugin enabled before and after — gets one `onCompositionChanged(delta)`. Order is the
-   * composition's topological order, which is why that order has to be derived and total
+   * plugin enabled before and after — gets one `onAssemblyChanged(delta)`. Order is the
+   * assembly's topological order, which is why that order has to be derived and total
    * rather than incidental.
    *
    * A hook that throws or overruns its bound is NAMED, never obeyed: the roster records
@@ -608,19 +608,18 @@ export class PluginHost {
    * always completes — a plugin must not be able to make itself unremovable by failing on
    * the way out.
    */
-  private async fanOut(delta: CompositionDelta, wasEnabled: ReadonlySet<string>): Promise<void> {
+  private async fanOut(delta: AssemblyDelta, wasEnabled: ReadonlySet<string>): Promise<void> {
     for (const id of delta.enabled) {
       await this.hook(id, "onEnable", "enable_failed");
     }
     for (const id of delta.disabled) {
       await this.hook(id, "onDisable", "disable_failed");
     }
-    const survivors = this.composed.order.filter(
-      (id) => this.composed.enabled(id) && wasEnabled.has(id) && !delta.enabled.includes(id),
+    const survivors = this.assembled.order.filter(
+      (id) => this.assembled.enabled(id) && wasEnabled.has(id) && !delta.enabled.includes(id),
     );
     for (const id of survivors) {
-      const changed = this.defs.find((def) => def.manifest.id === id)?.lifecycle
-        ?.onCompositionChanged;
+      const changed = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onAssemblyChanged;
       if (changed === undefined) continue;
       const outcome = await runHook(
         () => changed(this.lifecycleCtx(id), delta),
@@ -631,13 +630,13 @@ export class PluginHost {
       // did not move, so there is no state about it to correct — only a report to make.
       this.logger.error("plugin_lifecycle", {
         plugin: id,
-        hook: "onCompositionChanged",
+        hook: "onAssemblyChanged",
         error: outcome.reason,
       });
     }
     // The states just recorded belong on the roster clients are about to receive, so the
-    // composition is rebuilt once here rather than published stale and corrected later.
-    this.composed = composeRoster(this.defs, this.store.disabledPlugins(), this.env());
+    // assembly is rebuilt once here rather than published stale and corrected later.
+    this.assembled = assembleRoster(this.defs, this.store.disabledPlugins(), this.env());
   }
 
   private async hook(
@@ -660,7 +659,7 @@ export class PluginHost {
   }
 
   private publish(): void {
-    for (const listener of this.rosterListeners) listener(this.composed.roster);
+    for (const listener of this.rosterListeners) listener(this.assembled.roster);
   }
 
   /**
@@ -690,7 +689,7 @@ export class PluginHost {
   }
 
   private async run(auth: AuthContext, fullName: string, rawArgs: unknown): Promise<ActionOutcome> {
-    const entry = this.composed.actions.get(fullName);
+    const entry = this.assembled.actions.get(fullName);
     if (entry === undefined) {
       return {
         ok: false,
@@ -698,7 +697,7 @@ export class PluginHost {
       };
     }
     const pluginId = entry.plugin.id;
-    if (!this.composed.enabled(pluginId) && entry.def.cleanup !== true) {
+    if (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true) {
       // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
       // creation and administration, never the ability to remove what already exists.
       return {
@@ -712,16 +711,17 @@ export class PluginHost {
       sits ABOVE the cap check on purpose, so a scoped token carrying the right cap is still
       refused for its scope and the message says which (D11).
 
-      An action may DECLARE itself confined to one container (`scope: "pad"`), and then a
-      scoped caller falls through — the door's whole effect is inside the pad the token
-      already holds. That is a narrowing of the refusal, never a hole: rung 4 still runs, and
-      for a scoped caller it now asks the caps AT that pad rather than in the abstract, so a
-      pad-scoped token can never reach past its own container. What the rung cannot check is
-      whether the thing named in the ARGUMENTS lives in that pad — arguments are not parsed
-      yet, deliberately — so honouring `ctx.padScope` is the handler's contractual obligation.
+      An action may DECLARE itself confined to one container (`scope: "container"`), and then
+      a scoped caller falls through — the door's whole effect is inside the container the
+      token already holds. That is a narrowing of the refusal, never a hole: rung 4 still
+      runs, and for a scoped caller it now asks the caps AT that container rather than in the
+      abstract, so a container-scoped token can never reach past its own container. What the
+      rung cannot check is whether the thing named in the ARGUMENTS lives in that container —
+      arguments are not parsed yet, deliberately — so honouring `ctx.containerScope` is the
+      handler's contractual obligation.
     */
     const scope = entry.def.scope ?? "workspace";
-    if (auth.padScope !== null && scope !== "pad") {
+    if (auth.containerScope !== null && scope !== "container") {
       return {
         ok: false,
         denial: {
@@ -732,7 +732,9 @@ export class PluginHost {
     }
     for (const cap of entry.def.caps) {
       const held =
-        cap === "*" ? auth.isRoot : this.authService.allows(auth, cap, auth.padScope ?? undefined);
+        cap === "*"
+          ? auth.isRoot
+          : this.authService.allows(auth, cap, auth.containerScope ?? undefined);
       if (held) continue;
       return {
         ok: false,
@@ -748,8 +750,8 @@ export class PluginHost {
     }
     const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
-      // A composed action with no handler is a wiring bug in `composition.ts`, never a
-      // caller's problem: it must surface as a server failure, not as a denial.
+      // An assembled action with no handler is a wiring bug in `assembly.ts`, never a
+      // caller's problem: it must be reported as a server failure, not as a denial.
       throw new Error(`action "${fullName}" has no server handler`);
     }
     const ctx: ActionCtx = {
@@ -757,13 +759,13 @@ export class PluginHost {
       auth: {
         principal: auth.principal,
         caps: auth.caps,
-        padScope: auth.padScope,
+        containerScope: auth.containerScope,
         isRoot: auth.isRoot,
-        allows: (cap, padId) => this.authService.allows(auth, cap, padId),
+        allows: (cap, containerId) => this.authService.allows(auth, cap, containerId),
       },
-      padScope: auth.padScope,
-      outsideScope: (padId) =>
-        auth.padScope !== null && padId !== auth.padScope
+      containerScope: auth.containerScope,
+      outsideScope: (containerId) =>
+        auth.containerScope !== null && containerId !== auth.containerScope
           ? { refused: OUTSIDE_SCOPE_REFUSAL }
           : null,
       store: this.store,
@@ -800,6 +802,6 @@ export class PluginHost {
   }
 
   enabled(id: string): boolean {
-    return this.composed.enabled(id);
+    return this.assembled.enabled(id);
   }
 }

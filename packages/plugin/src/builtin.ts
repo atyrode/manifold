@@ -33,7 +33,7 @@ export const ENGINE_PLUGINS_ID = `${ENGINE_NAMESPACE_PREFIX}plugins`;
 /*
  * There is deliberately no exported "builtin ids" table. The set of builtin rows is DERIVED
  * from the definitions the engine registers (`ENGINE_BUILTIN_DEFS` in the server host) and
- * handed to `composeRoster` as `env.builtins`, so "builtin" stays a fact about who
+ * handed to `assembleRoster` as `env.builtins`, so "builtin" stays a fact about who
  * registered a row rather than a claim a manifest could make about itself — and a second
  * list that could disagree with the first never exists (invariant 14).
  */

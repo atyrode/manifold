@@ -35,21 +35,21 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
   const online = machines?.filter((machine) => machine.online).length ?? 0;
 
   return (
-    <div className="workspace-sidebar workspace-machines">
+    <div className="sidebar-section-content workspace-machines">
       {/* The count used to live in the section header, which is chrome the shell owns; a
           section now says everything it has to say inside its own body. */}
       <span className="sidebar-section-count">
         {online}/{machines?.length ?? 0} online
       </span>
-      <div className="workspace-list" data-testid="machines-rail">
+      <div className="sidebar-section-list" data-testid="machines-rail">
         {machines === null ? (
-          <span className="workspace-empty">Loading machines…</span>
+          <span className="sidebar-section-empty">Loading machines…</span>
         ) : machines.length === 0 ? (
-          <span className="workspace-empty">No machines enrolled</span>
+          <span className="sidebar-section-empty">No machines enrolled</span>
         ) : (
           machines.map((machine) => (
             <div
-              className={`workspace-machine-row${machine.online ? "" : " is-offline"}`}
+              className={`sidebar-machine-row${machine.online ? "" : " is-offline"}`}
               key={machine.id}
             >
               {/* The pip is STATUS; the icon says what kind of thing this row is. */}
@@ -57,14 +57,14 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                 className={`machine-dot${machine.online ? "" : " is-offline"}`}
                 aria-hidden="true"
               />
-              <span className="workspace-machine-mark" aria-hidden="true">
+              <span className="sidebar-machine-mark" aria-hidden="true">
                 <Server className="mf-icon" focusable="false" {...ROW_ICON} />
               </span>
               <strong>{machine.name}</strong>
               <span>{machine.online ? "Online" : "Offline"}</span>
               {machine.online && authoring !== null ? (
                 <button
-                  className="workspace-machine-create"
+                  className="sidebar-machine-create"
                   type="button"
                   aria-label={`New terminal on ${machine.name}`}
                   title={`New terminal on ${machine.name}`}

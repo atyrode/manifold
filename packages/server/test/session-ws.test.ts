@@ -4,7 +4,7 @@ import {
   CURSOR_MIN_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
-  type Pad,
+  type Container,
 } from "@manifold/protocol";
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
 import { AuthService } from "../src/auth.ts";
@@ -24,9 +24,9 @@ interface GatewayFixture {
   readonly store: ServerStore;
   readonly ownerKey: string;
   readonly auth: AuthService;
-  readonly pad: Pad;
+  readonly container: Container;
   /** Creates one more container so a socket can carry two rooms at once. */
-  readonly secondPad: (name: string) => Pad;
+  readonly secondContainer: (name: string) => Container;
   readonly rooms: RoomManager;
   readonly gateway: SessionGateway;
 }
@@ -37,13 +37,13 @@ function gatewayFixture(): GatewayFixture {
   const store = testStore();
   const ownerKey = "e".repeat(64);
   const auth = new AuthService(store, ownerKey, runtime);
-  const pad: Pad = {
+  const container: Container = {
     id: runtime.newId(),
-    name: "sync pad",
+    name: "sync container",
     createdAt: runtime.now(),
-    layout: "canvas",
+    discipline: "canvas",
   };
-  store.createPad(pad);
+  store.createContainer(container);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(
     store,
@@ -54,21 +54,21 @@ function gatewayFixture(): GatewayFixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   const plugins = testPluginHost(store, auth, rooms, broker, runtime);
   const gateway = new SessionGateway(auth, rooms, broker, plugins, clock, silentLogger, runtime);
-  const secondPad = (name: string): Pad => {
-    const created: Pad = {
+  const secondContainer = (name: string): Container => {
+    const created: Container = {
       id: runtime.newId(),
       name,
       createdAt: runtime.now(),
-      layout: "canvas",
+      discipline: "canvas",
     };
-    store.createPad(created);
+    store.createContainer(created);
     return created;
   };
-  return { runtime, clock, store, ownerKey, auth, pad, secondPad, rooms, gateway };
+  return { runtime, clock, store, ownerKey, auth, container, secondContainer, rooms, gateway };
 }
 
 /** Sends one channel-tagged client frame. */
@@ -83,7 +83,7 @@ function send(
 
 interface JoinOptions {
   readonly ch?: string;
-  readonly padId?: string;
+  readonly containerId?: string;
   readonly token?: string;
   readonly spectator?: boolean;
 }
@@ -98,12 +98,12 @@ function joinChannel(
   const ch = options.ch ?? CH;
   send(fixture.gateway, id, ch, {
     type: "join",
-    padId: options.padId ?? fixture.pad.id,
+    containerId: options.containerId ?? fixture.container.id,
     token: options.token ?? fixture.ownerKey,
     protocolVersion: PROTOCOL_VERSION,
     ...(options.spectator === true ? { spectator: true } : {}),
   });
-  // A second channel into the same room also hears that room's roster deltas, so the
+  // A second channel into the same room also hears that room's attendance deltas, so the
   // init this join earned is found by its channel id, not by frame order.
   const init = socket.frames().findLast((frame) => frame.type === "init" && frame.ch === ch);
   expect(init).toBeDefined();
@@ -114,29 +114,29 @@ function join(
   gateway: SessionGateway,
   id: string,
   socket: FakeSocket,
-  padId: string,
+  containerId: string,
   token: string,
 ): void {
   gateway.open(id, socket);
-  send(gateway, id, CH, { type: "join", padId, token, protocolVersion: PROTOCOL_VERSION });
-  // The roster comes first and belongs to the SOCKET: a connection learns the workspace's
+  send(gateway, id, CH, { type: "join", containerId, token, protocolVersion: PROTOCOL_VERSION });
+  // The plugin roster comes first and belongs to the SOCKET: a connection learns the workspace's
   // vocabulary before it carries any room, so the join's `init` is the second frame.
   expect(socket.messages().map((message) => message.type)).toEqual(["plugins", "init"]);
   socket.clear();
 }
 
-/** Joins the read-only channel a portal widget's live preview opens. */
+/** Joins the read-only channel a portal's live preview opens. */
 function joinSpectator(
   gateway: SessionGateway,
   id: string,
   socket: FakeSocket,
-  padId: string,
+  containerId: string,
   token: string,
 ): void {
   gateway.open(id, socket);
   send(gateway, id, CH, {
     type: "join",
-    padId,
+    containerId,
     token,
     protocolVersion: PROTOCOL_VERSION,
     spectator: true,
@@ -173,7 +173,7 @@ describe("SessionGateway high-rate request cadence", () => {
   test("resync floods produce at most one authoritative frame per second", () => {
     const fixture = gatewayFixture();
     const socket = new FakeSocket();
-    join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "peer", socket, fixture.container.id, fixture.ownerKey);
 
     for (let index = 0; index < 20; index += 1) {
       send(fixture.gateway, "peer", CH, { type: "resync_request" });
@@ -193,7 +193,7 @@ describe("SessionGateway high-rate request cadence", () => {
   test("a rapid second resync request is served once at the cadence boundary", () => {
     const fixture = gatewayFixture();
     const socket = new FakeSocket();
-    join(fixture.gateway, "peer", socket, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "peer", socket, fixture.container.id, fixture.ownerKey);
 
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
@@ -215,8 +215,8 @@ describe("SessionGateway high-rate request cadence", () => {
     const fixture = gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
-    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
-    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
 
     send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     first.clear();
@@ -244,8 +244,8 @@ describe("SessionGateway high-rate request cadence", () => {
     const fixture = gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
-    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
-    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
     send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     second.clear();
     fixture.clock.advance(10);
@@ -313,19 +313,19 @@ describe("SessionGateway connection identity", () => {
 describe("SessionGateway channel multiplexing", () => {
   test("two channels on one socket carry two rooms' documents independently", () => {
     const fixture = gatewayFixture();
-    const other = fixture.secondPad("other pad");
+    const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
-    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+    joinChannel(fixture, "tab", socket, { ch: "b", containerId: other.id });
     socket.clear();
 
     send(fixture.gateway, "tab", "a", { type: "doc_update", update: docUpdateFor("in-a") });
     send(fixture.gateway, "tab", "b", { type: "doc_update", update: docUpdateFor("in-b") });
 
     // Each write landed in exactly the room its channel names.
-    expect(fixture.rooms.live(fixture.pad.id)?.element("in-a")).toMatchObject({ id: "in-a" });
-    expect(fixture.rooms.live(fixture.pad.id)?.element("in-b")).toBeNull();
+    expect(fixture.rooms.live(fixture.container.id)?.element("in-a")).toMatchObject({ id: "in-a" });
+    expect(fixture.rooms.live(fixture.container.id)?.element("in-b")).toBeNull();
     expect(fixture.rooms.live(other.id)?.element("in-b")).toMatchObject({ id: "in-b" });
     expect(fixture.rooms.live(other.id)?.element("in-a")).toBeNull();
 
@@ -340,17 +340,17 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("presence and roster stay per channel: one socket, two memberships", () => {
+  test("presence and attendance stay per channel: one socket, two memberships", () => {
     const fixture = gatewayFixture();
-    const other = fixture.secondPad("other pad");
+    const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     const witnessA = new FakeSocket();
     const witnessB = new FakeSocket();
-    join(fixture.gateway, "witness-a", witnessA, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "witness-a", witnessA, fixture.container.id, fixture.ownerKey);
     join(fixture.gateway, "witness-b", witnessB, other.id, fixture.ownerKey);
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
-    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+    joinChannel(fixture, "tab", socket, { ch: "b", containerId: other.id });
     witnessA.clear();
     witnessB.clear();
 
@@ -368,11 +368,11 @@ describe("SessionGateway channel multiplexing", () => {
 
   test("role is per channel: one socket occupies one room and only watches another", () => {
     const fixture = gatewayFixture();
-    const other = fixture.secondPad("watched pad");
+    const other = fixture.secondContainer("watched container");
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "live" });
-    joinChannel(fixture, "tab", socket, { ch: "preview", padId: other.id, spectator: true });
+    joinChannel(fixture, "tab", socket, { ch: "preview", containerId: other.id, spectator: true });
     socket.clear();
 
     // The watching channel writes nothing, so the watched room has no occupants.
@@ -384,12 +384,14 @@ describe("SessionGateway channel multiplexing", () => {
         message: "spectator sockets are read-only",
       }),
     ]);
-    expect(fixture.rooms.presence().map((entry) => entry.padId)).toEqual([fixture.pad.id]);
+    expect(fixture.rooms.presence().map((entry) => entry.containerId)).toEqual([
+      fixture.container.id,
+    ]);
 
     // The occupying channel on the SAME socket keeps full write authority.
     socket.clear();
     send(fixture.gateway, "tab", "live", { type: "doc_update", update: docUpdateFor("written") });
-    expect(fixture.rooms.live(fixture.pad.id)?.element("written")).toMatchObject({
+    expect(fixture.rooms.live(fixture.container.id)?.element("written")).toMatchObject({
       id: "written",
     });
 
@@ -399,19 +401,19 @@ describe("SessionGateway channel multiplexing", () => {
 
   test("one channel leaving never disturbs the other, and an empty socket must rejoin", () => {
     const fixture = gatewayFixture();
-    const other = fixture.secondPad("other pad");
+    const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     const witness = new FakeSocket();
     join(fixture.gateway, "witness", witness, other.id, fixture.ownerKey);
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
-    joinChannel(fixture, "tab", socket, { ch: "b", padId: other.id });
+    joinChannel(fixture, "tab", socket, { ch: "b", containerId: other.id });
 
     send(fixture.gateway, "tab", "a", { type: "leave" });
 
     // The left room lost its only membership, so it stops being resident entirely; the
     // socket and its other channel live on.
-    expect(fixture.rooms.live(fixture.pad.id)).toBeNull();
+    expect(fixture.rooms.live(fixture.container.id)).toBeNull();
     expect(socket.closed).toBeNull();
     witness.clear();
     socket.clear();
@@ -447,7 +449,7 @@ describe("SessionGateway channel multiplexing", () => {
 
     send(fixture.gateway, "tab", "overflow", {
       type: "join",
-      padId: fixture.pad.id,
+      containerId: fixture.container.id,
       token: fixture.ownerKey,
       protocolVersion: PROTOCOL_VERSION,
     });
@@ -476,7 +478,7 @@ describe("SessionGateway channel multiplexing", () => {
     joinChannel(fixture, "tab", socket, { ch: "a" });
     send(fixture.gateway, "tab", "a", {
       type: "join",
-      padId: fixture.pad.id,
+      containerId: fixture.container.id,
       token: fixture.ownerKey,
       protocolVersion: PROTOCOL_VERSION,
     });
@@ -486,7 +488,7 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("an unknown pad refuses its channel; the socket keeps its other rooms", () => {
+  test("an unknown container refuses its channel; the socket keeps its other rooms", () => {
     const fixture = gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
@@ -495,13 +497,13 @@ describe("SessionGateway channel multiplexing", () => {
 
     send(fixture.gateway, "tab", "gone", {
       type: "join",
-      padId: "no-such-pad",
+      containerId: "no-such-container",
       token: fixture.ownerKey,
       protocolVersion: PROTOCOL_VERSION,
     });
 
     expect(socket.frames()).toEqual([
-      { type: "channel_closed", ch: "gone", code: 4404, reason: "pad not found" },
+      { type: "channel_closed", ch: "gone", code: 4404, reason: "container not found" },
     ]);
     expect(socket.closed).toBeNull();
     socket.clear();
@@ -518,7 +520,7 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.gateway.open("tab", socket);
     send(fixture.gateway, "tab", "a", {
       type: "join",
-      padId: fixture.pad.id,
+      containerId: fixture.container.id,
       token: fixture.ownerKey,
       protocolVersion: PROTOCOL_VERSION - 1,
     });
@@ -554,8 +556,8 @@ describe("SessionGateway gesture cadence", () => {
     const fixture = gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
-    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
-    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
 
     const gesture = (phase: "active" | "end", x: number): void => {
       send(fixture.gateway, "first", CH, {
@@ -602,8 +604,8 @@ describe("SessionGateway gesture cadence", () => {
     const fixture = gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
-    join(fixture.gateway, "first", first, fixture.pad.id, fixture.ownerKey);
-    join(fixture.gateway, "second", second, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
     send(fixture.gateway, "first", CH, {
       type: "gesture",
       kind: "resize",
@@ -639,27 +641,27 @@ describe("SessionGateway gesture cadence", () => {
 });
 
 describe("SessionGateway spectator sockets", () => {
-  test("a watching socket is absent from the roster and from pad presence", () => {
+  test("a watching socket is absent from the attendance and from container presence", () => {
     const fixture = gatewayFixture();
     const occupantSocket = new FakeSocket();
     const watcherSocket = new FakeSocket();
     const watcherToken = fixture.auth.mintToken(
       {
-        principal: { name: "widget watcher", kind: "human" },
-        caps: ["pads:read"],
+        principal: { name: "portal watcher", kind: "human" },
+        caps: ["containers:read"],
       },
       fixture.auth.authenticate(fixture.ownerKey),
     ).token;
-    join(fixture.gateway, "occupant", occupantSocket, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "occupant", occupantSocket, fixture.container.id, fixture.ownerKey);
 
-    joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.pad.id, watcherToken);
+    joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.container.id, watcherToken);
 
-    // Nobody joined: the occupant hears no roster delta for a watcher.
+    // Nobody joined: the occupant hears no attendance delta for a watcher.
     expect(occupantSocket.messages()).toEqual([]);
-    // The widget avatars read this endpoint's source, so a watcher must not appear in it.
+    // The portal avatars read this endpoint's source, so a watcher must not appear in it.
     expect(fixture.rooms.presence()).toEqual([
       {
-        padId: fixture.pad.id,
+        containerId: fixture.container.id,
         principals: [expect.objectContaining({ name: "owner" })],
       },
     ]);
@@ -678,8 +680,14 @@ describe("SessionGateway spectator sockets", () => {
     const fixture = gatewayFixture();
     const occupantSocket = new FakeSocket();
     const watcherSocket = new FakeSocket();
-    join(fixture.gateway, "occupant", occupantSocket, fixture.pad.id, fixture.ownerKey);
-    joinSpectator(fixture.gateway, "watcher", watcherSocket, fixture.pad.id, fixture.ownerKey);
+    join(fixture.gateway, "occupant", occupantSocket, fixture.container.id, fixture.ownerKey);
+    joinSpectator(
+      fixture.gateway,
+      "watcher",
+      watcherSocket,
+      fixture.container.id,
+      fixture.ownerKey,
+    );
 
     const writes: Record<string, unknown>[] = [
       { type: "doc_update", update: "AA==" },
@@ -687,10 +695,10 @@ describe("SessionGateway spectator sockets", () => {
       { type: "cursor", x: 1, y: 1 },
       { type: "gesture", kind: "move", phase: "active", elementId: "element", x: 1, y: 1 },
       { type: "terminal_open", elementId: "element", cols: 80, rows: 24 },
-      { type: "terminal_input", sessionId: "session", data: "AA==" },
-      { type: "terminal_resize", sessionId: "session", cols: 80, rows: 24 },
-      { type: "terminal_take", sessionId: "session" },
-      { type: "terminal_kill", sessionId: "session" },
+      { type: "terminal_input", terminalId: "terminal", data: "AA==" },
+      { type: "terminal_resize", terminalId: "terminal", cols: 80, rows: 24 },
+      { type: "terminal_take", terminalId: "terminal" },
+      { type: "terminal_kill", terminalId: "terminal" },
     ];
     for (const write of writes) {
       watcherSocket.clear();

@@ -5,7 +5,7 @@ import {
   carryPayload,
   carryPlacementId,
   remoteTileCarries,
-  surfaceDisplayLabel,
+  refDisplayLabel,
 } from "../src/carry.ts";
 import type { CarrySource } from "../src/carry.ts";
 import type { GestureOverride } from "../src/presence/index.ts";
@@ -14,17 +14,17 @@ import type { GestureOverride } from "../src/presence/index.ts";
 const TEXT_ITEM = { kind: "text", containerId: null } as const;
 const TERMINAL_ITEM = { kind: "terminal", containerId: "home-1" } as const;
 const TILE_ITEM = { kind: "tile", containerId: null } as const;
-const VIEW_ITEM = { kind: "view", containerId: "p" } as const;
+const VIEW_ITEM = { kind: "composition", containerId: "p" } as const;
 
 const elementCarry: CarrySource = {
   id: "element-1",
-  envelope: { kind: "element", padId: "pad", elementId: "element-1" },
+  envelope: { kind: "element", containerId: "container", elementId: "element-1" },
   item: TEXT_ITEM,
   label: null,
 };
 const poolCarry: CarrySource = {
   id: "carry-uuid",
-  envelope: { kind: "terminal", sessionId: "session-1" },
+  envelope: { kind: "terminal", terminalId: "terminal-1" },
   item: TERMINAL_ITEM,
   label: "build",
 };
@@ -47,11 +47,11 @@ describe("carry", () => {
     expect(carryPlacementId(elementCarry.envelope)).toBe("element-1");
     expect(carryPlacementId({ kind: "tile", containerId: "view", tileId: "leaf" })).toBe("leaf");
     expect(carryPlacementId(poolCarry.envelope)).toBeNull();
-    expect(carryPlacementId({ kind: "canvas", padId: "pad" })).toBeNull();
-    expect(carryPlacementId({ kind: "composition", padId: "view" })).toBeNull();
+    expect(carryPlacementId({ kind: "canvas", containerId: "container" })).toBeNull();
+    expect(carryPlacementId({ kind: "composition", containerId: "view" })).toBeNull();
   });
 
-  test("a frame carries the surface the drop will use, and geometry only when there is any", () => {
+  test("a frame carries the ref the drop will use, and geometry only when there is any", () => {
     const placed = carryFrame(elementCarry, { x: 5, y: 6, width: 700, height: 400 }, "active");
     expect(placed).toEqual({
       kind: "carry",
@@ -62,7 +62,7 @@ describe("carry", () => {
       width: 700,
       height: 400,
       carry: {
-        surface: { kind: "element", padId: "pad", elementId: "element-1" },
+        ref: { kind: "element", containerId: "container", elementId: "element-1" },
         item: TEXT_ITEM,
       },
     });
@@ -76,36 +76,36 @@ describe("carry", () => {
       x: 1,
       y: 2,
       carry: {
-        surface: { kind: "terminal", sessionId: "session-1" },
+        ref: { kind: "terminal", terminalId: "terminal-1" },
         item: TERMINAL_ITEM,
         label: "build",
       },
     });
   });
 
-  test("both container disciplines travel as one pad surface", () => {
+  test("both container disciplines travel as one container ref", () => {
     expect(
       carryPayload({
         id: "x",
-        envelope: { kind: "canvas", padId: "p" },
+        envelope: { kind: "canvas", containerId: "p" },
         item: VIEW_ITEM,
         label: null,
       }),
-    ).toEqual({ surface: { kind: "pad", padId: "p" }, item: VIEW_ITEM });
+    ).toEqual({ ref: { kind: "container", containerId: "p" }, item: VIEW_ITEM });
     expect(
       carryPayload({
         id: "x",
-        envelope: { kind: "composition", padId: "p" },
+        envelope: { kind: "composition", containerId: "p" },
         item: VIEW_ITEM,
         label: null,
       }),
-    ).toEqual({ surface: { kind: "pad", padId: "p" }, item: VIEW_ITEM });
+    ).toEqual({ ref: { kind: "container", containerId: "p" }, item: VIEW_ITEM });
   });
 
   test("ghosts skip what the renderer already draws and follow the eased position", () => {
     const local = override({
       carry: {
-        surface: { kind: "element", padId: "pad", elementId: "element-1" },
+        ref: { kind: "element", containerId: "container", elementId: "element-1" },
         item: TEXT_ITEM,
       },
       current: { x: 33, y: 44 },
@@ -113,7 +113,7 @@ describe("carry", () => {
     const foreign = override({
       elementId: "carry-uuid",
       carry: {
-        surface: { kind: "terminal", sessionId: "session-1" },
+        ref: { kind: "terminal", terminalId: "terminal-1" },
         item: TERMINAL_ITEM,
         label: "build",
       },
@@ -121,10 +121,7 @@ describe("carry", () => {
     });
     const plainMove = override({ elementId: "moved", kind: "move" });
 
-    const ghosts = carryGhosts(
-      [local, foreign, plainMove],
-      (surface) => surface.kind === "element",
-    );
+    const ghosts = carryGhosts([local, foreign, plainMove], (ref) => ref.kind === "element");
     expect(ghosts).toEqual([
       {
         key: "peer-connection:carry-uuid",
@@ -145,7 +142,7 @@ describe("carry", () => {
     const unnamed = override({
       elementId: "leaf",
       carry: {
-        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        ref: { kind: "tile", containerId: "view", tileId: "leaf" },
         item: TILE_ITEM,
       },
     });
@@ -171,7 +168,7 @@ describe("carry", () => {
       connId: "old",
       updatedAt: 10,
       carry: {
-        surface: { kind: "terminal", sessionId: "s1" },
+        ref: { kind: "terminal", terminalId: "s1" },
         item: TERMINAL_ITEM,
         aim: { containerId: "view", tileId: "t1", edge: "left", action: "place" },
       },
@@ -180,20 +177,20 @@ describe("carry", () => {
       connId: "new",
       updatedAt: 20,
       carry: {
-        surface: { kind: "tile", containerId: "view", tileId: "t9" },
+        ref: { kind: "tile", containerId: "view", tileId: "t9" },
         item: TILE_ITEM,
         label: "build",
         aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
       },
     });
     // Another container entirely: an older frame, and it must still be visible — the
-    // widget it addresses is a different tile area on the same canvas.
+    // portal it addresses is a different tile area on the same canvas.
     const elsewhere = override({
       connId: "third",
       elementId: "other",
       updatedAt: 5,
       carry: {
-        surface: { kind: "terminal", sessionId: "s3" },
+        ref: { kind: "terminal", terminalId: "s3" },
         item: TERMINAL_ITEM,
         aim: { containerId: "other-view", tileId: "t1", edge: "top", action: "place" },
       },
@@ -202,7 +199,7 @@ describe("carry", () => {
       connId: "no-aim",
       updatedAt: 30,
       carry: {
-        surface: { kind: "terminal", sessionId: "s2" },
+        ref: { kind: "terminal", terminalId: "s2" },
         item: TERMINAL_ITEM,
       },
     });
@@ -213,7 +210,7 @@ describe("carry", () => {
       connId: "new",
       principalId: "peer",
       aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
-      surface: { kind: "tile", containerId: "view", tileId: "t9" },
+      ref: { kind: "tile", containerId: "view", tileId: "t9" },
       // The item travels: this is the value a viewer judges the drop with.
       item: TILE_ITEM,
       label: "build",
@@ -224,17 +221,17 @@ describe("carry", () => {
     expect(remoteTileCarries([aimless]).size).toBe(0);
   });
 
-  test("every tiled species is named by one switch, and an unknown name is null", () => {
+  test("every composition species is named by one switch, and an unknown name is null", () => {
     const lookups = {
-      sessionName: (sessionId: string) => (sessionId === "s1" ? "build" : null),
-      padName: (padId: string) => (padId === "p1" ? "Sketches" : null),
+      terminalName: (terminalId: string) => (terminalId === "s1" ? "build" : null),
+      containerName: (containerId: string) => (containerId === "p1" ? "Sketches" : null),
       noteText: (elementId: string) => (elementId === "e1" ? "Groceries\nmilk\neggs" : null),
     };
-    expect(surfaceDisplayLabel({ kind: "terminal", sessionId: "s1" }, lookups)).toBe("build");
-    expect(surfaceDisplayLabel({ kind: "pad", padId: "p1" }, lookups)).toBe("Sketches");
+    expect(refDisplayLabel({ kind: "terminal", terminalId: "s1" }, lookups)).toBe("build");
+    expect(refDisplayLabel({ kind: "container", containerId: "p1" }, lookups)).toBe("Sketches");
     // A note borrows its FIRST line, which is the only handle a note has.
-    expect(surfaceDisplayLabel({ kind: "text", elementId: "e1" }, lookups)).toBe("Groceries");
-    expect(surfaceDisplayLabel({ kind: "text", elementId: "gone" }, lookups)).toBeNull();
-    expect(surfaceDisplayLabel(null, lookups)).toBeNull();
+    expect(refDisplayLabel({ kind: "text", elementId: "e1" }, lookups)).toBe("Groceries");
+    expect(refDisplayLabel({ kind: "text", elementId: "gone" }, lookups)).toBeNull();
+    expect(refDisplayLabel(null, lookups)).toBeNull();
   });
 });

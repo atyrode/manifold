@@ -3,6 +3,10 @@
 **Date:** 2026-08-26  
 **Status:** Accepted
 
+**Lexicon addendum 2026-08-31 (#69):** this record is history and is not rewritten, title
+included; superseded by `2026-08-26-headless-tree.md`. What it calls "pad ordering" is ordering
+the workspace **index** of **containers** and folders. Canon is `AXIOMS.md` §Lexicon.
+
 ## Context
 
 Pad navigation needs pointer and keyboard-accessible reordering. Hand-rolled HTML drag events do not provide a coherent keyboard interaction, collision handling, or screen-reader announcements, and would leave manifold owning a subtle input state machine.

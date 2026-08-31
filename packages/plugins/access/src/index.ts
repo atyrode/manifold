@@ -15,7 +15,7 @@ import {
  * The MECHANISM stays floor and is untouched — hashing, timing-safe comparison, bearer
  * authentication, attenuation, the revocation fence that closes live sockets. What moved is
  * the DOOR: who may ask, with what arguments, and what the answer looks like. A plugin here
- * cannot mint "as" somebody else, because the identity surface it is handed is pre-bound to
+ * cannot mint "as" somebody else, because the identity ref it is handed is pre-bound to
  * the calling principal (`ctx.identity`), and it cannot see a raw secret except the one it
  * is handing to the caller who just asked for it.
  *
@@ -26,9 +26,9 @@ import {
  * authority; it does not cost the ability to administer, and the owner can always turn it
  * back on. `essential` is reserved for plugins the workspace cannot draw itself without.
  *
- * ADR 0011 will redesign what happens BENEATH this door — flat caps plus a pad scope become
+ * ADR 0011 will redesign what happens BENEATH this door — flat caps plus a container scope become
  * grants on the node tree, and a token becomes a reference to a grant. That is why the door
- * is worth having now: the vocabulary a caller sees (`core.access.mintToken` with a cap set
+ * is worth having now: the vocabulary a caller sees (`core.access.mint` with a cap set
  * and an optional scope) is exactly the vocabulary the waterfall keeps, so the evaluator
  * swap happens under an interface that already published its shape.
  *
@@ -38,7 +38,7 @@ import {
  *
  * Declares NO read action, because there is no access read to move: nothing today publishes
  * principals or tokens except `GET /api/introspect`, which is the engine's own root-only
- * introspection door over rooms, sessions, machines and principals together. Inventing
+ * introspection door over rooms, terminals, machines and principals together. Inventing
  * `core.access.list` would be inventing a read, not converting one.
  */
 export const accessManifest: PluginManifest = {
@@ -61,18 +61,18 @@ export const accessManifest: PluginManifest = {
  * - `createPrincipal` was `requireRoot`, so its declared cap is `*` — the door's own
  *   `forbidden` rung answers a non-root caller, rather than the handler relaying a prose
  *   refusal from the mechanism for a question the ladder can ask first.
- * - `mintToken` and `revokeToken` demanded `tokens:mint`, which the mechanism checked
+ * - `mint` and `revoke` demanded `tokens:mint`, which the mechanism checked
  *   itself; declaring it moves that check to the rung where every other cap is checked, and
  *   the mechanism's own check stays as the belt to the door's braces.
  *
- * Both are `scope: "pad"`, and that is a preservation rather than a widening. The routes
- * authenticated ANY token: a pad-scoped agent holding `tokens:mint` could mint a further
+ * Both are `scope: "container"`, and that is a preservation rather than a widening. The routes
+ * authenticated ANY token: a container-scoped agent holding `tokens:mint` could mint a further
  * attenuated token inside its own container and revoke what it had minted there, which is
  * how a terminal agent delegates to a sub-agent. Refusing scoped callers at the door would
  * have deleted that as unreachable — `packages/testkit/e2e/auth.test.ts` exists precisely to
- * prove attenuation rather than a route guard. The confinement obligation `scope: "pad"`
+ * prove attenuation rather than a route guard. The confinement obligation `scope: "container"`
  * places on the handler is discharged by the mechanism, on the real caller: a mint may not
- * widen its minter's pad scope, and a scoped revocation reaches only that pad's tokens.
+ * widen its minter's container scope, and a scoped revocation reaches only that container's tokens.
  * Re-checking it here would be a second implementation of one rule (invariant 14), so it is
  * proved by test instead.
  */
@@ -85,10 +85,10 @@ export const accessActions = [
     result: TokenGrantSchema,
   }),
   defineAction({
-    name: "mintToken",
+    name: "mint",
     title: "Mint a token",
     caps: ["tokens:mint"],
-    scope: "pad",
+    scope: "container",
     input: MintTokenRequestSchema,
     result: TokenGrantSchema,
   }),
@@ -101,10 +101,10 @@ export const accessActions = [
       and administration die on a disable; taking authority back does not.
     */
     cleanup: true,
-    name: "revokeToken",
+    name: "revoke",
     title: "Revoke a principal's tokens",
     caps: ["tokens:mint"],
-    scope: "pad",
+    scope: "container",
     input: RevokeRequestSchema,
     /*
       An EXHAUSTIVE record, not `{ ok: true }`: revocation is destructive, so how many

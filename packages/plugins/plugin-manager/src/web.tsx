@@ -38,7 +38,7 @@ function lockHint(entry: PluginRosterEntry): string | null {
 }
 
 export function PluginManagerSection({ host }: SectionProps): ReactElement {
-  const roster = host.composition.roster();
+  const roster = host.assembly.roster();
   const caps = host.client.selfCaps();
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -62,7 +62,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   return (
     <div className="plugin-manager" data-testid="plugin-manager">
       {!canManage ? (
-        <p className="pad-sidebar-muted">
+        <p className="sidebar-muted">
           Read-only: turning plugins on and off needs the <code>plugins:manage</code> capability.
         </p>
       ) : null}
@@ -71,7 +71,9 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
           {failure}
         </p>
       )}
-      {roster.length === 0 ? <span className="workspace-empty">No plugins composed</span> : null}
+      {roster.length === 0 ? (
+        <span className="sidebar-section-empty">No plugins composed</span>
+      ) : null}
       {roster.map((entry) => {
         const { manifest } = entry;
         const hint = lockHint(entry);

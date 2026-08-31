@@ -5,7 +5,7 @@ onboarding surface; you should not need to read manifold's source to author a pl
 
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
-curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/protocol   # JSON Schemas for the wire, every composed action's input/result, and `pluginContract` — the whole plugin vocabulary as data
+curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/protocol   # JSON Schemas for the wire, every assembled action's input/result, and `pluginContract` — the whole plugin vocabulary as data
 ```
 
 The roster is authoritative. If this document and `GET /api/plugins` disagree about what
@@ -16,7 +16,7 @@ Everything above the foundation floor is a plugin. The floor is a machine-readab
 `AXIOMS.md` (fenced JSON, checked in both directions by `bun run verify:axioms`), not a
 judgement call: identity and auth, protocol schemas, the plane transports, persistence, and
 the registry itself. Anything else — the sidebar, the drawing tool, the terminal lifecycle,
-view presence, the shell — is plugin territory, and the shipped ones are your worked examples.
+vantage presence, the shell — is plugin territory, and the shipped ones are your worked examples.
 
 ---
 
@@ -37,9 +37,9 @@ A plugin is a workspace package under `packages/plugins/<name>`, published as
 }
 ```
 
-A plugin is registered in exactly two places — `packages/server/src/composition.ts` and
-`packages/web/src/composition.ts`. There is no discovery, no filesystem scan, no load order:
-composition is data, and an unregistered package is not a plugin.
+A plugin is registered in exactly two places — `packages/server/src/assembly.ts` and
+`packages/web/src/assembly.ts`. There is no discovery, no filesystem scan, no load order:
+assembly is data, and an unregistered package is not a plugin.
 
 Your dependency budget is `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`, and
 `@manifold/plugin`. Importing anything else from the tree — server internals, web internals,
@@ -49,9 +49,9 @@ another plugin — fails the gate.
 
 | entry                    | what it holds                                                                                                                                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER composes through it.                                           |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                          |
 | `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`.                                                                          |
-| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`/`SurfaceIcon`, `NodeTitleBar`, `useToast`, and the published view-state store (`setViewState`). |
+| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`/`CarriedItemIcon`, `NodeTitleBar`, `useNotice`, and the published vantage store (`setVantage`). |
 
 `/ui` is closed on purpose — you extend it by passing nodes into its slots (`icon`, `middle`,
 `extraActions`), never by widening a union in it, so re-drawing the whole icon set stays a
@@ -73,7 +73,7 @@ export const manifest: PluginManifest = {
   version: "1.0.0", // display only
   title: "Draw",
   description: "Freehand strokes on the canvas.",
-  capabilities: ["scene:write"], // the union of everything this plugin's actions may need
+  capabilities: ["scenes:write"], // the union of everything this plugin's actions may need
   // essential: true,              // optional; only core.shell claims it
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
   dependencies: {
@@ -89,7 +89,7 @@ export const manifest: PluginManifest = {
       {
         type: "draw",
         title: "Drawing",
-        placement: { groups: ["canvas-item"], guards: [], homed: "inline" },
+        placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
       },
     ],
     tools: [{ id: "draw", title: "Draw" }], // a toolbar tool
@@ -103,7 +103,7 @@ Rules worth knowing before you write one:
 
 - **The id must be dotted** — at least one `.` — and it namespaces everything you contribute.
   A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`. The prefix
-  `engine.` is **reserved**: it belongs to the engine's own builtin doors, and composition refuses
+  `engine.` is **reserved**: it belongs to the engine's own builtin doors, and assembly refuses
   any plugin that claims it.
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
   where the name is a verb phrase, as in `setEnabled`), except element `type`, which is a wire kind
@@ -113,14 +113,14 @@ Rules worth knowing before you write one:
   authority without reading its actions.
 - **`dependencies` are declared per plugin id** with a `type` of `required`, `optional` or
   `incompatible`, plus an optional `reason` that is shown to whoever hits the refusal. A missing or
-  disabled `required` dependency, or a present `incompatible` one, refuses composition naming both
+  disabled `required` dependency, or a present `incompatible` one, refuses assembly naming both
   sides. There is **no enable cascade**: enabling you never silently enables anything else, and
   disabling a plugin that others require is refused, naming them.
 - **`after` is ordering, not requirement.** It contributes to the deterministic order the engine
   composes and fires lifecycle hooks in (topological over `dependencies` ∪ `after`, ties broken by
-  lexicographic id). A cycle is a `CompositionError`.
+  lexicographic id). A cycle is an `AssemblyError`.
 - **`dataVersion` governs your stored rows** (§4). Bump `minor` freely; bumping `major` without a
-  migration refuses to compose your plugin, and data written by a newer `major` than your code
+  migration refuses to assemble your plugin, and data written by a newer `major` than your code
   refuses too — the engine never guesses at your schema.
 - **`dormant` is how your contributions look while you are disabled**: `ghost` (the engine's inert
   placeholder, naming you — the default) or `hide` (record kept, nothing painted), plus an optional
@@ -137,19 +137,19 @@ Rules worth knowing before you write one:
 
   ```ts
   placement: {
-    groups: ["canvas-item"],   // PlacementGroup[]: tileable | mergeable | unplaceable | embeddable
-                               //   | canvas-item | canvas-item-as-portal | extractable
-    guards: [],                // ItemGuard[]: no-self-embed | solo-only
-    homed: "inline",           // HomingMode: eager | on-claim | inline — or null for "no home"
+    groups: ["canvas_item"],   // PlacementGroup[]: tileable | mergeable | unplaceable | embeddable
+                               //   | canvas_item | canvas_item_as_portal | extractable
+    guards: [],                // ItemGuard[]: no_self_embed | solo_only
+    homed: "inline",           // HomingMode: eager | on_claim | inline — or null for "no home"
   }
   ```
 
   `placement` is optional, and omitting it means `DEFAULT_ELEMENT_PLACEMENT_TRAITS`
-  (`{ groups: ["canvas-item"], guards: [], homed: "inline" }`, exported from the protocol — the
+  (`{ groups: ["canvas_item"], guards: [], homed: "inline" }`, exported from the protocol — the
   `draw` row verbatim). When you DO declare it, all three fields are required: `homed: null` is how
   you say "no home", not omission. There is no canvas-operation key — the op is derived by the
   algebra, which is the half that stays engine (ADR 0013 §12). The container-site-only guard
-  `discipline-match` is refused on an element.
+  `discipline_match` is refused on an element. Every closed wire literal is `snake_case`.
 
 - **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
   targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
@@ -172,9 +172,9 @@ import { z } from "zod";
 export const rename = defineAction({
   name: "rename", // LOCAL name; full name is `core.terminals.rename`
   title: "Rename terminal",
-  caps: ["pads:write"], // MUST be ⊆ manifest.capabilities
-  input: z.strictObject({ sessionId: z.string().min(1), name: z.string().min(1).max(120) }),
-  result: z.strictObject({ sessionId: z.string(), name: z.string() }),
+  caps: ["terminals:write"], // MUST be ⊆ manifest.capabilities
+  input: z.strictObject({ terminalId: z.string().min(1), name: z.string().min(1).max(120) }),
+  result: z.strictObject({ terminalId: z.string(), name: z.string() }),
 });
 ```
 
@@ -185,34 +185,39 @@ and they are the only ones:
   `plugin_disabled` rung, so disabling your plugin refuses creation and administration but never
   locks anyone out of deleting what already exists (D12; `core.terminals.kill` is the canonical
   example).
-- **`scope: "pad"`** — for a door a pad-scoped token should be able to call. It skips only the
-  pad-scope rung. The test is parity, NOT whether you read or mutate: declare it if and only if the
-  route or channel verb you are replacing was reachable by a pad-scoped token. Reads of one
-  container qualify (its tree, its sessions), and so do mutations inside one container — opening,
+- **`scope: "container"`** — for a door a container-scoped token should be able to call. It skips
+  only the
+  container-scope rung. The test is parity, NOT whether you read or mutate: declare it if and only
+  if the
+  route or channel verb you are replacing was reachable by a container-scoped token. Reads of one
+  container qualify (its index rows, its terminals), and so do mutations inside one container —
+  opening,
   renaming or killing a terminal, renaming the container itself, minting an attenuated token in it.
   It comes with an **obligation**: the ladder proved the caller's caps hold for the caller's own
-  pad, so your handler must prove that the thing NAMED in the arguments lives there. Do not
+  container, so your handler must prove that the thing NAMED in the arguments lives there. Do not
   hand-roll it — the engine owns the check and its wording:
 
   ```ts
-  const denial = ctx.outsideScope(session.padId); // resolve the pad your ARGS name, then ask
+  const denial = ctx.outsideScope(terminal.containerId); // resolve the container your ARGS name
   if (denial !== null) return denial; // canonical: OUTSIDE_SCOPE_REFUSAL
   ```
 
-  Declare the slice you use — `{ outsideScope(padId: string | null): { readonly refused: string } | null }`
+  Declare the slice you use — `{ outsideScope(containerId: string | null): { readonly refused: string } | null }`
   — and import `OUTSIDE_SCOPE_REFUSAL` in tests rather than retyping the string. The refusal never
-  names the target pad (a scoped caller learns nothing about a container it may not reach), and a
-  `null` pad is refused for a scoped caller while passing for a workspace-grade one.
+  names the target container (a scoped caller learns nothing about a container it may not reach),
+  and a
+  `null` container is refused for a scoped caller while passing for a workspace-grade one.
 
   The three ways to discharge the obligation are **not interchangeable**:
 
-  1. **Call `ctx.outsideScope`** — required whenever your arguments name a pad-addressed node (a
-     session, element, folder, layout, pad).
+  1. **Call `ctx.outsideScope`** — required whenever your arguments name a container-addressed node
+     (a terminal, element, folder, layout, container).
   2. **Lean on a mechanism** — legitimate ONLY if that mechanism refuses on the CALLER'S OWN SCOPE,
      the way the identity mechanism refuses a mint that widens its minter's scope. _A mechanism
      discharges the obligation only if it refuses on the caller's own scope; validating the argument
      is not confining it._ "The row exists and parses" discharges nothing.
-  3. **Vacuous** — nothing in your answer is addressed by pad (a fleet-wide list). Write the reason
+  3. **Vacuous** — nothing in your answer is addressed by container (a fleet-wide list). Write the
+     reason
      as a comment on the handler, or the next reader adds a filter and breaks share-link viewers.
 
   Leave the default `"workspace"` for anything genuinely workspace-wide and for owner-only doors.
@@ -229,16 +234,16 @@ export const serverDef = {
   actions: [rename, kill],
   handlers: {
     rename: async (ctx, args) => {
-      if (ctx.broker.rename(args.sessionId, args.name) === "not_found") {
+      if (ctx.broker.rename(args.terminalId, args.name) === "not_found") {
         return { refused: "no such terminal" }; // → denial rule "refused"
       }
-      return { sessionId: args.sessionId, name: args.name };
+      return { terminalId: args.terminalId, name: args.name };
     },
   },
 };
 ```
 
-`ctx` is the only host surface a handler sees — principal, auth context, store, rooms, broker.
+`ctx` is the only host door a handler sees — principal, auth context, store, rooms, broker.
 Return the result value on success, or `{ refused: <message> }` to deny. The returned value is
 validated against your `result` schema; a mismatch is a server error, not a denial, because it
 is your bug.
@@ -250,18 +255,18 @@ POST /api/actions/core.terminals.rename
 authorization: Bearer <token>
 content-type: application/json
 
-{"sessionId":"ts_abc","name":"build"}
+{"terminalId":"ts_abc","name":"build"}
 ```
 
 The response is always 200 with an `ActionOutcome`:
 
 ```jsonc
-{ "ok": true, "result": { "sessionId": "ts_abc", "name": "build" } }
-{ "ok": false, "denial": { "rule": "forbidden", "message": "pads:write capability required" } }
+{ "ok": true, "result": { "terminalId": "ts_abc", "name": "build" } }
+{ "ok": false, "denial": { "rule": "forbidden", "message": "terminals:write capability required" } }
 ```
 
 Denials are outcomes, not HTTP errors — the same shape the placement door returns when it names
-the placement rule that refused (`core.layout.place`). From a client,
+the placement rule that refused (`core.space.place`). From a client,
 `client.action(name, args)` on the SDK `SessionClient` returns the same object.
 
 ### The denial ladder
@@ -269,14 +274,14 @@ the placement rule that refused (`core.layout.place`). From a client,
 Dispatch runs one monotonic ladder. The first rule that fires wins, and no later step can
 argue an earlier denial back to allow:
 
-| #   | Rule              | Fires when                                                                                                                                                                                                                                  |
-| --- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `unknown_action`  | No composed action by that full name.                                                                                                                                                                                                       |
-| 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                                                                                                                        |
-| 3   | `forbidden`       | The caller's token is **pad-scoped** and your action's `scope` is `"workspace"` (the default). Message: `scoped tokens cannot invoke workspace actions`. Declare `scope: "pad"` when the door you replaced was reachable by a scoped token. |
-| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                                                                                                                         |
-| 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                              |
-| 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                          |
+| #   | Rule              | Fires when                                                                                                                                                                                                                                              |
+| --- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `unknown_action`  | No assembled action by that full name.                                                                                                                                                                                                                  |
+| 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                                                                                                                                    |
+| 3   | `forbidden`       | The caller's token is **container-scoped** and your action's `scope` is `"workspace"` (the default). Message: `scoped tokens cannot invoke workspace actions`. Declare `scope: "container"` when the door you replaced was reachable by a scoped token. |
+| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                                                                                                                                     |
+| 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                                          |
+| 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                                      |
 
 Rule 3 is the same precedent as every workspace route. Finer per-node scoping arrives with the
 permission waterfall (`docs/decisions/0011-permission-waterfall.md`); until then, a scoped token
@@ -335,7 +340,7 @@ export const serverDef = {
       ctx.storage.set("parked", "1");
     },
     // SOMEONE ELSE changed. Repair your own references to what left or arrived.
-    onCompositionChanged: (ctx, delta) => {
+    onAssemblyChanged: (ctx, delta) => {
       if (delta.disabled.includes("core.canvas")) ctx.storage.set("parked", "1");
     },
     // You are being destroyed. The engine clears your namespace and releases your element
@@ -355,8 +360,8 @@ parameter is contravariant you may declare only the slice you use —
 `onDisable: (ctx: { storage: PluginStorage }) => void` type-checks — the same sandbox shape action
 handlers have.
 
-- **`onCompositionChanged` fires on every SURVIVING plugin** — enabled before AND after the change —
-  in composition order, after the roster commits and before it is broadcast, with
+- **`onAssemblyChanged` fires on every SURVIVING plugin** — enabled before AND after the change —
+  in assembly order, after the roster commits and before it is broadcast, with
   `delta: { enabled, disabled }`. The plugins in the delta do not get it; they get their own
   `onEnable`/`onDisable`, so nobody is told twice about their own transition. The plugin that needs
   to repair state is usually not the plugin that was toggled, so this — not `onDisable` — is where
@@ -458,16 +463,16 @@ This is the question that decides whether you write an action at all. Answer it 
 write code; getting it wrong produces state that one principal can see and another cannot,
 which is the bug class the axioms exist to prevent.
 
-| Plane               | Rule                                                                                     | Mechanism                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Action**          | Legality or effect depends on state the actor cannot see, or authority it does not hold. | A registered action. `POST /api/actions/:name`.             |
-| **Document**        | A per-element edit whose worst-case merge outcome a human would accept.                  | The Yjs scene document.                                     |
-| **Presence**        | It dies with the connection.                                                             | The presence payload (cursor, selection, viewport, `view`). |
-| **Channel traffic** | A continuous stream — PTY bytes, cursor motion, a live drag.                             | Existing channel frames or local echo.                      |
+| Plane               | Rule                                                                                     | Mechanism                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **Action**          | Legality or effect depends on state the actor cannot see, or authority it does not hold. | A registered action. `POST /api/actions/:name`.                |
+| **Document**        | A per-element edit whose worst-case merge outcome a human would accept.                  | The Yjs scene document.                                        |
+| **Presence**        | It dies with the connection.                                                             | The presence payload (cursor, selection, viewport, `vantage`). |
+| **Channel traffic** | A continuous stream — PTY bytes, cursor motion, a live drag.                             | Existing channel frames or local echo.                         |
 
 The continuous-stream row has a corollary you must obey: **an action fires at the commit point
 of a gesture, never per frame.** Dragging a workspace divider paints locally for every pointer
-move and dispatches exactly one `core.layout.set` on pointerup. A per-frame action is a
+move and dispatches exactly one `core.space.setLayout` on pointerup. A per-frame action is a
 performance bug and an audit-log flood.
 
 State that belongs to none of the four is **unplaned**, and unplaned state is a bug. There is
@@ -485,7 +490,7 @@ and one tool, and it has no server half at all, because drawing a stroke is a do
 edit.
 
 The web half exports the renderers, keyed by the ids the manifest declared; the shape is the
-one `packages/web/src/composition.ts` registers, so let inference type it rather than naming a
+one `packages/web/src/assembly.ts` registers, so let inference type it rather than naming a
 type you have not read:
 
 ```tsx
@@ -568,9 +573,10 @@ their work invisible without deleting it, which is the one outcome worse than a 
 ### The other three contribution kinds
 
 - **`panels`** are leaves of the workspace tile tree. The workspace layout is itself a
-  `TileLayout` whose leaf surfaces are `{ kind: "panel", panelId }` — the shell is a
-  composition of panels (`core.shell.sidebar` and `core.shell.pad-view` by default), rendered
-  by the same `TileTree` component that renders a pad. One tree vocabulary everywhere.
+  `TileLayout` whose leaf refs are `{ kind: "panel", panelId }` — the shell is a
+  composition of panels (`core.shell.sidebar` and `core.shell.container-view` by default),
+  rendered
+  by the same `TileTree` component that renders a composition. One tree vocabulary everywhere.
 - **`sections`** are rows in the sidebar stack, ordered by the manifest's `order` field. There
   is no user-visible section-order setting to read and no hardcoded section list to edit; the
   manifests _are_ the order.
@@ -589,19 +595,24 @@ interface SectionProps {
 }
 
 interface HostServices {
-  client: SessionHandle; // the SDK surface: action(), place(), machines(),
-  // padTree(), padPresence(), terminals()
+  readonly client: SessionHandle; // the SDK doors: action(), place(), selfCaps(), machines(),
+  // index(), attendanceByContainer(), terminalsByContainer(), allTerminals()
+  readonly principal: Principal; // who this device is — paint in this principal's colour
+  readonly token: string; // this device's bearer: the grant a renderer opens its own pipe with
+  readonly containerId: string | null; // the container the route is showing, null at the root
   navigate(uri: string): void; // a manifold:// URI, or an app path
-  viewport: PadViewportHandle | null; // null until a pad view is mounted
+  readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
+  readonly authoring: AuthoringHandle | null; // null when nothing can be authored into
+  readonly assembly: AssemblyFacet; // read the roster: which plugins and contributions exist
 }
 
-interface PadViewportHandle {
+interface ViewportHandle {
   centerOn(uri: string): void;
   viewport(): { x: number; y: number; zoom: number } | null;
 }
 ```
 
-That is the whole host surface, and it is deliberate: no store, no room map, no React context
+That is the whole host contract, and it is deliberate: no store, no room map, no React context
 from `packages/web`, nothing that would have to be re-plumbed if plugin code were later moved
 behind an isolation boundary. If you need data the host does not expose, add a typed wrapper to
 the SDK — never a direct `fetch` against a route, and never a deep import.
@@ -610,15 +621,15 @@ the SDK — never a direct `fetch` against a route, and never a deep import.
 Neither side may import the other (`AXIOMS.md` §Foundation), so a value with a writer on one side
 and a reader on the other has exactly one legal home: the engine package both already depend on.
 The shipped example is the spotlight — `core.presence` applies one and calls `recordSpotlight(uri)`;
-the web floor's debug seam reads `lastSpotlight()` for the axioms gate. One mutable slot, because
+the web floor's debug probe reads `lastSpotlight()` for the axioms gate. One mutable slot, because
 "what did this viewport actually do" has one answer per device, and it records where the camera
 MOVED rather than where a frame arrived, so a spotlight the viewer has switched off never lands.
 Reach for this only for that shape — a single cross-boundary fact, not plugin state, which belongs
 in `ctx.storage` or the document.
 
 Addressing: `manifold://` URIs are the canonical way to refer to anything —
-`manifold://pad/<padId>`, `.../element/<elementId>`, `.../tile/<tileId>`,
-`manifold://terminal/<sessionId>`, `manifold://principal/<id>`, `manifold://plugin/<pluginId>`,
+`manifold://container/<containerId>`, `.../element/<elementId>`, `.../tile/<tileId>`,
+`manifold://terminal/<terminalId>`, `manifold://principal/<id>`, `manifold://plugin/<pluginId>`,
 `manifold://action/<actionName>`. `GET /api/resolve?uri=` tells you whether one exists and what
 it is called; `/uri/<encoded>` is a deep link to it. Use these instead of inventing an id
 format.
@@ -633,40 +644,57 @@ Every DOM control that invokes an action carries the action's full name:
 
 This is not decoration. It is what lets a test, an agent, or a reviewer answer "what can this
 pixel do?" without reading the handler, and the gate checks that every `data-action` literal
-in the tree names a composed action.
+in the tree names an assembled action.
 
 ---
 
-## 7. Composition rules
+## 7. Assembly rules
 
-Composition happens at boot and on every enable/disable, on both the server and the web side.
-It either produces a roster or throws a `CompositionError` naming every offender.
+Assembly happens at boot and on every enable/disable, on both the server and the web side.
+It either produces a roster or throws an `AssemblyError` naming every offender. The word is
+deliberate: **assembly** is the plugin-roster join, while a **composition** is a container whose
+discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon).
 
 - **Collisions refuse; nothing ever shadows.** Duplicate plugin ids, action full names, panel
-  ids, element types, or tool ids fail composition loudly. There is no last-write-wins, no
+  ids, element types, or tool ids fail assembly loudly. There is no last-write-wins, no
   load-order precedence, and no silent override — a shadowed capability name is an authority
   bypass, so the answer is always a refusal that names both sides.
-- **Action caps must be a subset of manifest capabilities**, checked at composition, not at
+- **Action caps must be a subset of manifest capabilities**, checked at assembly, not at
   dispatch.
 - **Enable/disable is hot, workspace-global, and an ENGINE door.**
   `engine.plugins.setEnabled` (cap `plugins:manage`) is a **builtin roster row**
   (`source: "builtin"`), not a plugin action: it flips a server-persisted flag and broadcasts the
   new roster on a connection-level session frame, and every client rebuilds live. No reload, ever.
-  The door lives outside the composition on purpose — a door that can disable itself could never be
+  The door lives outside the assembly on purpose — a door that can disable itself could never be
   relied on to re-enable anything. `core.plugins` is the manager **UI** only, and it is an ordinary,
   disableable plugin.
 - **Disabled and unknown contributions render inert placeholders that name the plugin** — on
   canvases and in the workspace tree alike, unless the manifest declared `dormant.mode: "hide"`.
   A placeholder in the workspace tree carries a remove control that commits the pruned layout.
-  Disabling a plugin must never brick a surface, and layout writes referencing an unknown panel
+  Disabling a plugin must never brick a renderer, and layout writes referencing an unknown panel
   are _accepted_ for exactly this reason.
 - **Disabling kills creation and administration, never cleanup.** Disabling `core.terminals`
-  refuses new terminal opens and its administrative actions, but existing sessions stay
+  refuses new terminal opens and its administrative actions, but existing terminals stay
   attachable and killable. Users are never locked out of removing things.
-- **Dependencies are resolved at composition**, and the resulting order — topological, ties broken
+- **Dependencies are resolved at assembly**, and the resulting order — topological, ties broken
   by id — is the order lifecycle hooks fire in. Missing `required` dependencies, `incompatible`
   peers, cycles, data-version mismatches and element-type squatting are all named refusals, never
   warnings.
+
+### The web registration channels (documented in full next wave)
+
+A plugin's web half registers through four channels, and this guide does not yet specify them:
+**renderers** (a discipline's container renderer — the projection registry key this wave renamed
+from `padSurfaces` to `renderers`), **overlays** (chrome painted into a renderer's named slot,
+like `attendance` and `spotlight`), **routes** (a browser path prefix, as `core.uri` claims
+`/uri/`), and the **terminal facet** (the viewer `core.terminals` publishes for other renderers
+to mount). They work, `packages/plugins/*` uses all four, and today they are registration-time
+conventions rather than manifest contributions: they have no `contributes` counterpart, so the
+roster cannot publish them, and one of them does not refuse a duplicate the way D5 requires.
+That is a defect, not a design — it is fixed in the **defect-fix wave (wave F) of this same
+change**, which gives each channel a manifest counterpart and a loud collision refusal, and
+writes them up in this section. Until then: read `packages/web/src/assembly.ts` and
+`packages/plugin/src/projection.ts` for the shapes, and do not rely on a duplicate being caught.
 
 ---
 
@@ -675,32 +703,42 @@ It either produces a roster or throws a `CompositionError` naming every offender
 `bun run verify:axioms` runs in `bun run gate`. It has a static half and a browser half; these
 are the checks that will fail _your_ plugin:
 
-- Both composition files compose without a `CompositionError`, and every panel id referenced by
+- Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id referenced by
   the default workspace layout exists.
 - **Import boundary** (walked with the TypeScript parser, not regex): floor files must not
-  import `@manifold-plugin/*` — the two `composition.ts` files are the only exceptions — and
+  import `@manifold-plugin/*` — the two `assembly.ts` files are the only exceptions — and
   plugin packages may import only `@manifold/{protocol,scene,sdk,plugin}`.
-- **Every `data-action` literal names a composed action.**
+- **Every `data-action` literal names an assembled action.**
 - **Every `localStorage` key in `packages/{web,plugins}` is listed in the `AXIOMS.md`
   device-local register.**
+- **Every word you name things with is in the `AXIOMS.md` §Lexicon registry** (S11): a retired
+  synonym in an identifier, a wire literal, a CSS selector, a file name or a doc heading fails
+  the gate, and so does an `allow` exemption that no longer suppresses anything. This is the check
+  most likely to fail a NEW plugin, because a new plugin brings new words: if your feature needs a
+  term the registry does not have, add the row in the same commit — that direction is cheap by
+  design.
+- **Exactly one table translates an item kind into a display noun** (S12): `ITEM_NOUNS` in
+  `packages/plugin/src/item-noun.ts`, whose keys are the floor kinds and whose answer for a
+  CONTRIBUTED kind is your manifest's element `title`. Never ship a second lookup — declare the
+  title and let the floor read it.
 - Every `packages/plugins/*` directory is registered per the halves it exports, and every
-  composed definition maps back to a package.
+  assembled definition maps back to a package.
 - Every floor glob in the registry matches at least one file (the registry cannot rot silently).
 - The `/api/…` route literals in the server equal the documented allowlist — a bespoke feature
   route added outside the action door fails the gate by construction.
-- Every `SceneElementSchema` member type is either an engine floor kind or a composed element
+- Every `SceneElementSchema` member type is either an engine floor kind or an assembled element
   type.
-- In the browser: `/api/protocol` and `/api/plugins` agree with the composition; hot
+- In the browser: `/api/protocol` and `/api/plugins` agree with the assembly; hot
   enable/disable takes effect without a reload; an action invoked over the SDK is observed in
   the DOM and vice versa; the denial ladder returns the documented rules.
 - Every floor file falls inside exactly one pillar of the `AXIOMS.md` pillar registry — an unowned
   file above the plugin boundary is RED.
-- The list of every `cleanup: true` action in the composition is published, so the one carve-out
+- The list of every `cleanup: true` action in the assembly is published, so the one carve-out
   from the disable rule cannot grow unnoticed.
 
 ## Further reading
 
-- `AXIOMS.md` — the axioms, the taxonomy, the foundation registry, the device-local register,
+- `AXIOMS.md` — the axioms, the lexicon, the foundation registry, the device-local register,
   and the roadmap.
 - `docs/decisions/0013-plugin-behavioral-contract.md` — the behavioral contract: lifecycle,
   dormancy, retain-only disable and purge, dependencies, data versions, ownership reservation, the

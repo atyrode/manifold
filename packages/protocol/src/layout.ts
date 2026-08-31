@@ -1,53 +1,62 @@
 import { z } from "zod";
 
 /**
- * Tiled-container layout tree. A View and a Pad are ONE container object that
- * differ only in `Pad.layout`: a canvas stores free-floating scene elements, a
- * tiled container stores this node table under the scene doc's layout key.
+ * The tile LAYOUT tree, and the container DISCIPLINE that decides who reads it. A
+ * container is one object with one of two disciplines: a `canvas` stores free-floating
+ * scene elements, a `composition` stores this tile table under the scene doc's layout key.
+ *
+ * `layout` means exactly one thing in this codebase — this tree — and `discipline` means
+ * exactly one thing: which renderer a container asks for.
  */
 
 /** Every layout tree is entered through this id; it always exists. */
 export const ROOT_TILE_ID = "root";
 
-/** Fan-out bound per split, keeping node payloads small on the wire. */
+/** Fan-out bound per split, keeping tile payloads small on the wire. */
 export const MAX_TILE_CHILDREN = 16;
 
 /**
  * Container discipline: the one field that separates the two renderers of the same
- * object. Every placement rule that mentions "canvas" or "view" resolves through this.
+ * object. Every placement rule that mentions a canvas or a composition resolves through
+ * this, and each value IS the last segment of the plugin that renders it (`core.canvas`,
+ * `core.compositions`) — a checkable invariant rather than a coincidence.
  */
-export const ContainerLayoutSchema = z.enum(["canvas", "tiled"]);
-export type ContainerLayout = z.infer<typeof ContainerLayoutSchema>;
+export const ContainerDisciplineSchema = z.enum(["canvas", "composition"]);
+export type ContainerDiscipline = z.infer<typeof ContainerDisciplineSchema>;
 
 /**
- * What a leaf shows. Every tileable item kind has one form here, and each form names its
- * item by identity: a session, a container, or — for a note, which has no identity outside
- * the document holding it — the element the composition's own scene doc stores it under. A
- * composition therefore OWNS its notes the way a canvas does; placing a note into one moves
- * the element into its document rather than referencing it across two.
+ * What a leaf shows: a REFERENCE to the item occupying it. Every tileable item kind has
+ * one form here, and each form names its item by identity: a terminal, a container, or —
+ * for a note, which has no identity outside the document holding it — the element the
+ * composition's own scene doc stores it under. A composition therefore OWNS its notes the
+ * way a canvas does; placing a note into one moves the element into its document rather
+ * than referencing it across two.
+ *
+ * It is one of the two shapes of the SAME addressing concept `PlacementRef` and
+ * `ManifoldRef` carry (D7): a leaf's occupant is a reference, so it is named one.
  */
-export const TileSurfaceSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("pad"), padId: z.string().min(1) }),
+export const TileRefSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("terminal"), terminalId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("container"), containerId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("text"), elementId: z.string().min(1) }),
   /**
    * A plugin PANEL, named by its fully qualified panel id (`core.shell.sidebar`). This is
    * the form that makes the workspace shell itself a composition: a principal's workspace
    * layout is a tile tree whose leaves are panels, rendered by the same component every
-   * other tiled container uses. A panel id naming no live panel — an unknown plugin, or a
+   * other composition uses. A panel id naming no live panel — an unknown plugin, or a
    * disabled one — is legal on the wire and renders an inert placeholder, because a
    * disabled plugin must never make a layout unwritable.
    */
   z.strictObject({ kind: z.literal("panel"), panelId: z.string().min(1).max(96) }),
 ]);
-export type TileSurface = z.infer<typeof TileSurfaceSchema>;
+export type TileRef = z.infer<typeof TileRefSchema>;
 
 /** Split axis: `row` lays children out horizontally, `column` vertically. */
 export const TileDirSchema = z.enum(["row", "column"]);
 export type TileDir = z.infer<typeof TileDirSchema>;
 
 /**
- * Where a dropped surface lands relative to a target tile. The four edges split the
+ * Where a dropped ref lands relative to a target tile. The four edges split the
  * target; `center` means THIS EXACT SPOT — it fills the leaf when the leaf is empty and
  * exchanges the two occupants when it is not. Which of the two a center drop turns out
  * to be is document state, so the executor decides it and names the answer (`swap`) in
@@ -58,50 +67,50 @@ export type TileEdge = z.infer<typeof TileEdgeSchema>;
 
 /**
  * One tile. Exactly two shapes are legal: a SPLIT (`dir` set, `children` and
- * `ratios` parallel, `surface` null) or a LEAF (`dir` null, `children` empty,
- * `surface` either a surface or null for an empty drop target).
+ * `ratios` parallel, `ref` null) or a LEAF (`dir` null, `children` empty,
+ * `ref` either a reference or null for a vacant drop target).
  */
-export const TileNodeSchema = z.strictObject({
+export const TileSchema = z.strictObject({
   id: z.string().min(1),
   dir: TileDirSchema.nullable(),
   ratios: z.array(z.number().positive()).max(MAX_TILE_CHILDREN),
   children: z.array(z.string().min(1)).max(MAX_TILE_CHILDREN),
-  surface: TileSurfaceSchema.nullable(),
+  ref: TileRefSchema.nullable(),
 });
-export type TileNode = z.infer<typeof TileNodeSchema>;
+export type Tile = z.infer<typeof TileSchema>;
 
-/** Flat node table keyed by tile id; the tree lives in `children` references. */
-export const TileLayoutSchema = z.record(z.string().min(1), TileNodeSchema);
+/** Flat tile table keyed by tile id; the tree lives in `children` references. */
+export const TileLayoutSchema = z.record(z.string().min(1), TileSchema);
 export type TileLayout = z.infer<typeof TileLayoutSchema>;
 
 /**
  * Structural validation the schema cannot express: the root exists, every child
  * reference resolves, nothing is reachable twice (no cycles, no shared subtrees),
- * ratios stay parallel to children, surfaces sit on leaves only, and a container
+ * ratios stay parallel to children, refs sit on leaves only, and a container
  * never tiles itself. Pass `containerId` to enforce the self-reference rule.
  *
- * Unreachable nodes are tolerated: they are inert garbage that the next
+ * Unreachable tiles are tolerated: they are inert garbage that the next
  * structural write prunes, and rejecting them would strand a live room.
  */
 export function validateTileLayout(layout: TileLayout, containerId?: string): boolean {
   if (layout[ROOT_TILE_ID] === undefined) return false;
 
-  for (const [id, node] of Object.entries(layout)) {
-    if (node.id !== id) return false;
-    if (node.dir === null) {
-      if (node.children.length > 0 || node.ratios.length > 0) return false;
+  for (const [id, tile] of Object.entries(layout)) {
+    if (tile.id !== id) return false;
+    if (tile.dir === null) {
+      if (tile.children.length > 0 || tile.ratios.length > 0) return false;
     } else {
       // Splits carry structure, never content; ops collapse a one-child split
       // back into a leaf, so live trees hold two or more children per split.
-      if (node.children.length === 0) return false;
-      if (node.children.length !== node.ratios.length) return false;
-      if (node.surface !== null) return false;
+      if (tile.children.length === 0) return false;
+      if (tile.children.length !== tile.ratios.length) return false;
+      if (tile.ref !== null) return false;
     }
     if (
       containerId !== undefined &&
-      node.surface !== null &&
-      node.surface.kind === "pad" &&
-      node.surface.padId === containerId
+      tile.ref !== null &&
+      tile.ref.kind === "container" &&
+      tile.ref.containerId === containerId
     ) {
       return false;
     }
@@ -112,9 +121,9 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
   while (queue.length > 0) {
     const id = queue.pop();
     if (id === undefined) break;
-    const node = layout[id];
-    if (node === undefined) return false;
-    for (const child of node.children) {
+    const tile = layout[id];
+    if (tile === undefined) return false;
+    for (const child of tile.children) {
       if (layout[child] === undefined) return false;
       if (seen.has(child)) return false;
       seen.add(child);

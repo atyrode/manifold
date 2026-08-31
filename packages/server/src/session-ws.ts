@@ -18,7 +18,7 @@ import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
 import type { PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
-import { SessionPeer, serializeServerMessage, type RawSocket } from "./session-peer.ts";
+import { SessionChannel, serializeServerMessage, type RawSocket } from "./session-channel.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 type ClassifiedFrame =
@@ -62,7 +62,7 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
 /**
  * Which frames a spectator channel may send. Reading is the whole point of a watching
  * channel, so state, doc updates, terminal output and the attach/detach subscription pair
- * all flow to it — but every mutation is refused, so a widget's live preview can never
+ * all flow to it — but every mutation is refused, so a portal's live preview can never
  * type into a PTY, resize it, move an element, or fake presence. The map is keyed by the
  * frame union itself: a new client frame cannot compile without declaring its answer.
  */
@@ -90,8 +90,8 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
  * enforces are per room: a canvas being scribbled on must not starve a second room's
  * cursor stream, and a resync of one room says nothing about another.
  */
-interface SessionChannel {
-  readonly peer: SessionPeer;
+interface ChannelState {
+  readonly peer: SessionChannel;
   readonly room: Room;
   lastResyncAt: number | null;
   cancelResyncFlush: (() => void) | null;
@@ -108,11 +108,11 @@ interface SessionConnection {
   /** Bun's socket id; it prefixes every membership's `selfConnId`. */
   readonly id: string;
   /** Channel id → its room membership. Insertion ordered, which the drain rotation uses. */
-  readonly channels: Map<string, SessionChannel>;
+  readonly channels: Map<string, ChannelState>;
   /** Rotates the drain start so a chatty room cannot monopolize socket buffer space. */
   drainCursor: number;
   /**
-   * Stamps a fresh `selfConnId` on every join. A room membership is what the roster,
+   * Stamps a fresh `selfConnId` on every join. A room membership is what attendance,
    * cursor echo-suppression, and the broker's viewer registry are keyed by, so a channel
    * rejoining the SAME socket (a role swap) must never reuse the identity of the
    * membership it replaced.
@@ -163,8 +163,8 @@ export class SessionGateway {
     private readonly logger: Logger,
     private readonly runtime: RuntimeDeps,
   ) {
-    this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
-      this.revokePrincipal(principalId, padId);
+    this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
+      this.revokePrincipal(principalId, containerId);
     });
     this.removeRosterListener = plugins.onRosterChange((roster) => {
       const frame = JSON.stringify(CONNECTION_BODIES.plugins.parse({ type: "plugins", roster }));
@@ -244,7 +244,7 @@ export class SessionGateway {
         const channel = connection.channels.get(message.ch);
         if (channel === undefined) {
           // A frame can legitimately be in flight when the server retires its channel
-          // (pad deleted, queue overflow). Dropping it keeps that race from killing the
+          // (container deleted, queue overflow). Dropping it keeps that race from killing the
           // rooms that are still healthy on this socket.
           this.logger.warn("session_unknown_channel", { frame: message.type });
           return;
@@ -273,7 +273,7 @@ export class SessionGateway {
   /**
    * Binds one channel id to one room. Credential and wire failures close the SOCKET
    * (they invalidate everything it carries); room-scoped failures refuse just this
-   * channel, so a widget pointing at a deleted pad never takes a tab down with it.
+   * channel, so a portal pointing at a deleted container never takes a tab down with it.
    */
   private joinChannel(connection: SessionConnection, message: JoinMessage): void {
     if (message.protocolVersion !== PROTOCOL_VERSION) {
@@ -296,36 +296,36 @@ export class SessionGateway {
       }
       return;
     }
-    if (!this.auth.allows(context, "pads:read", message.padId)) {
+    if (!this.auth.allows(context, "containers:read", message.containerId)) {
       connection.socket.close(4403, "forbidden");
       return;
     }
     if (connection.channels.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) {
-      this.logger.warn("session_channel_limit", { padId: message.padId });
+      this.logger.warn("session_channel_limit", { containerId: message.containerId });
       this.refuseChannel(connection, message.ch, CHANNEL_LIMIT_CLOSE_CODE, "channel limit reached");
       return;
     }
-    const room = this.rooms.get(message.padId);
+    const room = this.rooms.get(message.containerId);
     if (room === null) {
-      this.refuseChannel(connection, message.ch, 4404, "pad not found");
+      this.refuseChannel(connection, message.ch, 4404, "container not found");
       return;
     }
-    this.broker.pruneExitedUnhomedForPad(message.padId);
+    this.broker.pruneExitedUnhomedForContainer(message.containerId);
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
-    const peer = new SessionPeer(
+    const peer = new SessionChannel(
       `${connection.id}.${(connection.nextPeerSeq += 1)}`,
       connection.socket,
       context,
-      message.padId,
+      message.containerId,
       message.ch,
       message.spectator === true,
       (closing) => {
         this.retireChannel(connection, closing);
       },
     );
-    const channel: SessionChannel = {
+    const channel: ChannelState = {
       peer,
       room,
       lastResyncAt: null,
@@ -362,7 +362,7 @@ export class SessionGateway {
   }
 
   /** Called by a peer that closed itself (channel refusal, overflow, transport failure). */
-  private retireChannel(connection: SessionConnection, peer: SessionPeer): void {
+  private retireChannel(connection: SessionConnection, peer: SessionChannel): void {
     if (connection.channels.get(peer.channel)?.peer !== peer) return;
     this.releaseChannel(connection, peer.channel);
   }
@@ -373,7 +373,7 @@ export class SessionGateway {
    */
   private relayCursor(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     cursor: CursorUpdate,
   ): void {
     const now = this.runtime.now();
@@ -407,7 +407,7 @@ export class SessionGateway {
    */
   private relayGesture(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     gesture: GestureUpdate,
   ): void {
     const now = this.runtime.now();
@@ -445,7 +445,7 @@ export class SessionGateway {
   }
 
   /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */
-  private sendResyncIfDue(connection: SessionConnection, channel: SessionChannel): void {
+  private sendResyncIfDue(connection: SessionConnection, channel: ChannelState): void {
     const now = this.runtime.now();
     const elapsed =
       channel.lastResyncAt === null ? RESYNC_MIN_INTERVAL_MS : now - channel.lastResyncAt;
@@ -453,7 +453,7 @@ export class SessionGateway {
       channel.cancelResyncFlush?.();
       channel.cancelResyncFlush = null;
       channel.lastResyncAt = now;
-      this.broker.pruneExitedUnhomedForPad(channel.peer.padId);
+      this.broker.pruneExitedUnhomedForContainer(channel.peer.containerId);
       channel.room.sendResync(channel.peer);
       return;
     }
@@ -464,7 +464,7 @@ export class SessionGateway {
       if (connection.closed) return;
       if (connection.channels.get(channel.peer.channel) !== channel) return;
       channel.lastResyncAt = this.runtime.now();
-      this.broker.pruneExitedUnhomedForPad(channel.peer.padId);
+      this.broker.pruneExitedUnhomedForContainer(channel.peer.containerId);
       channel.room.sendResync(channel.peer);
     }, RESYNC_MIN_INTERVAL_MS - elapsed);
   }
@@ -484,7 +484,7 @@ export class SessionGateway {
    * it, and the socket is told the request failed instead of being left waiting forever.
    */
   private async dispatchPolicy(
-    peer: SessionPeer,
+    peer: SessionChannel,
     action: string,
     ref: string,
     args: Record<string, unknown>,
@@ -508,7 +508,7 @@ export class SessionGateway {
 
   private dispatch(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     message: ClientMessage,
   ): void {
     const peer = channel.peer;
@@ -530,22 +530,22 @@ export class SessionGateway {
         this.releaseChannel(connection, message.ch);
         return;
       case "doc_update":
-        if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
+        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
           peer.send({
             type: "error",
             code: "forbidden",
-            message: "scene:write capability required",
+            message: "scenes:write capability required",
           });
           return;
         }
         room.applyDocUpdate(peer, message.update);
         return;
       case "gesture":
-        if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
+        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
           peer.send({
             type: "error",
             code: "forbidden",
-            message: "scene:write capability required",
+            message: "scenes:write capability required",
           });
           return;
         }
@@ -575,7 +575,7 @@ export class SessionGateway {
           disable — nobody is locked out of removing what already exists (D12).
          */
         void this.dispatchPolicy(peer, "core.terminals.open", message.elementId, {
-          padId: peer.padId,
+          containerId: peer.containerId,
           elementId: message.elementId,
           cols: message.cols,
           rows: message.rows,
@@ -604,8 +604,8 @@ export class SessionGateway {
         // The kill is the ACTION's, whole: authority, the lease rule and the destruction all
         // live behind one door, so this frame and the workspace index cannot answer
         // differently about the same terminal (invariant 14).
-        void this.dispatchPolicy(peer, "core.terminals.kill", message.sessionId, {
-          sessionId: message.sessionId,
+        void this.dispatchPolicy(peer, "core.terminals.kill", message.terminalId, {
+          terminalId: message.terminalId,
         });
         return;
       default: {
@@ -651,13 +651,13 @@ export class SessionGateway {
    * one credential's channels (the SDK pools by token), and a dead credential
    * invalidates all of them, so this is a socket-level close by nature.
    */
-  revokePrincipal(principalId: string, padId: string | null = null): void {
+  revokePrincipal(principalId: string, containerId: string | null = null): void {
     for (const [id, connection] of [...this.connections]) {
       let fenced = false;
       for (const channel of connection.channels.values()) {
         const peer = channel.peer;
         if (peer.auth.principal.id !== principalId) continue;
-        if (padId !== null && peer.auth.padScope !== padId) continue;
+        if (containerId !== null && peer.auth.containerScope !== containerId) continue;
         fenced = true;
         break;
       }

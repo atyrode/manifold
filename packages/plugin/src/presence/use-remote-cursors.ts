@@ -15,7 +15,7 @@ import { FLOW_SNAP_EPSILON, FRACTION_SNAP_EPSILON } from "./interpolate.ts";
  *
  * Cursors are a renderer-level concern, not a canvas one: a room broadcasts the frames,
  * and whichever renderer is mounted on that room decides where they land. The canvas
- * renderer projects them through React Flow's pan/zoom transform; the tiled renderer
+ * renderer projects them through React Flow's pan/zoom transform; the composition renderer
  * projects fractions onto the view root. Everything before that projection — the
  * per-connection map, the self-echo drop, roster pruning, label/color resolution and the
  * animation-frame easing — is identical, so it lives here once.
@@ -37,7 +37,7 @@ export const REMOTE_CURSOR_FALLBACK_LABEL = "Collaborator";
  * quietly starts disagreeing with itself between a cursor and a carry.
  */
 export function carrierColor(client: SessionClient | null, principalId: string): string {
-  return client?.roster.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR;
+  return client?.attendance.get(principalId)?.principal.color ?? REMOTE_CURSOR_FALLBACK_COLOR;
 }
 
 export interface RemoteCursorsView {
@@ -54,7 +54,7 @@ export interface RemoteCursorsView {
 
 /**
  * Which space a room's cursor frames are expressed in, decided by the container's
- * discipline: canvas rooms carry React-Flow scene coordinates, tiled rooms carry
+ * discipline: canvas rooms carry React-Flow scene coordinates, composition rooms carry
  * view-root fractions in the unit square.
  */
 export type CursorSpace = "flow" | "fraction";
@@ -80,8 +80,8 @@ export function useRemoteCursors(
     const map = cursorsRef.current;
     const publish = (): void => setCursors([...map.values()]);
     if (client === null) return;
-    const offRoster = client.on("roster_changed", () => {
-      pruneRemoteCursors(map, client.roster.values());
+    const offAttendance = client.on("attendance_changed", () => {
+      pruneRemoteCursors(map, client.attendance.values());
       // Published unconditionally: labels and colors resolve from the roster at paint
       // time, so a rename, a color change, or a sibling tab joining (which renumbers
       // the "name (2)" ordinals) has to repaint even when no cursor moved.
@@ -91,7 +91,7 @@ export function useRemoteCursors(
       if (recordRemoteCursor(map, message, client.selfConnId)) publish();
     });
     return () => {
-      offRoster();
+      offAttendance();
       offCursor();
       // A renderer swapping clients must not inherit the previous room's cursors.
       map.clear();
@@ -118,7 +118,7 @@ export function useRemoteCursors(
 
   const labelFor = useCallback(
     (cursor: RemoteCursor): string => {
-      const state = client?.roster.get(cursor.principalId);
+      const state = client?.attendance.get(cursor.principalId);
       return state === undefined
         ? REMOTE_CURSOR_FALLBACK_LABEL
         : cursorLabel(state.principal.name, cursor.connId, state.connIds);
@@ -128,7 +128,7 @@ export function useRemoteCursors(
 
   const colorFor = useCallback(
     (cursor: RemoteCursor): string | null =>
-      client?.roster.get(cursor.principalId)?.principal.color ?? null,
+      client?.attendance.get(cursor.principalId)?.principal.color ?? null,
     [client],
   );
 

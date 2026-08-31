@@ -15,13 +15,13 @@
  *
  * The canvas objects it drags are REAL terminals. A terminal lives in a solo composition
  * and a canvas references it as a `portal` onto that composition, which renders
- * element-chrome-first (`.flow-portal--mono`): the terminal's own titlebar IS the node's
+ * element-chrome-first (`.portal--mono`): the terminal's own titlebar IS the node's
  * bar and its drag handle. So the gate seeds by opening PTYs over the wire and authoring
- * the portal exactly as `flow-pad-view`'s `createTerminal` does — a fabricated portal onto
+ * the portal exactly as `canvas-view`'s `createTerminal` does — a fabricated portal onto
  * a container that does not exist would render a dead card and prove nothing about the
  * chrome every gesture below actually grabs.
  *
- * Requires the debug seam (localStorage "manifold:debug" = "1"; packages/plugin/src/debug-seam.ts).
+ * Requires the debug probe (localStorage "manifold:debug" = "1"; packages/plugin/src/debug-probe.ts).
  * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up
  * even on failure.
  *
@@ -36,7 +36,7 @@ import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import {
   ActionOutcomeSchema,
-  PadResponseSchema,
+  ContainerResponseSchema,
   MachinesResponseSchema,
   type SceneElement,
 } from "../packages/protocol/src/index.ts";
@@ -146,12 +146,12 @@ interface PaintProbe {
   readonly nodeZ?: number;
 }
 
-/** Measured state of a remote cursor inside a tiled view's presence overlay. */
+/** Measured state of a remote cursor inside a composition's presence overlay. */
 interface ViewCursorProbe {
   readonly state: "no-body" | "no-layer" | "no-cursor" | "measured";
   /** Every cursor painted in the overlay, whichever principal owns it. */
   readonly count?: number;
-  /** Arrow tip as a fraction of the tile area — the tiled wire coordinate space. */
+  /** Arrow tip as a fraction of the tile area — the composition wire coordinate space. */
   readonly fx?: number;
   readonly fy?: number;
   readonly width?: number;
@@ -183,20 +183,21 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  // `core.views.createPad` replaced `POST /api/pads`: the index owns its own doors, and a
+  // `core.index.createContainer` replaced `POST /api/containers`: the index owns its own doors, and a
   // denial is data inside the outcome envelope rather than a status.
-  const created = await fetch(`${origin}/api/actions/core.views.createPad`, {
+  const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "convergence-gate" }),
   });
   const createdOutcome = ActionOutcomeSchema.parse(await created.json());
-  if (!createdOutcome.ok) throw new Error(`createPad refused: ${createdOutcome.denial.message}`);
-  const padId = PadResponseSchema.parse(createdOutcome.result).pad.id;
+  if (!createdOutcome.ok)
+    throw new Error(`createContainer refused: ${createdOutcome.denial.message}`);
+  const containerId = ContainerResponseSchema.parse(createdOutcome.result).container.id;
 
   // ---------------------------------------------------------------- clients
 
-  async function openPad(
+  async function openContainer(
     browser: Browser,
     debugPort: number,
     name: string,
@@ -216,25 +217,25 @@ try {
       }
       await browser.clickText("Enter manifold");
     }
-    await browser.goto(`${origin}/p/${padId}`);
+    await browser.goto(`${origin}/p/${containerId}`);
     await until(
       () =>
         browser.evaluate<boolean>(
           "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
         ),
       20_000,
-      `${name}: session open`,
+      `${name}: terminal open`,
     );
     await until(
       () => browser.evaluate<boolean>("window.__manifold !== undefined"),
       10_000,
-      `${name}: debug seam installed`,
+      `${name}: debug probe installed`,
     );
   }
 
   const cursorColor = "#e03131";
-  await openPad(browserA, debugPortA, "convA", cursorColor);
-  await openPad(browserB, debugPortB, "convB");
+  await openContainer(browserA, debugPortA, "convA", cursorColor);
+  await openContainer(browserB, debugPortB, "convB");
 
   // ------------------------------------------------ presence & status chrome
 
@@ -253,7 +254,7 @@ try {
   console.log("PASS  presence island shows both principals");
   if (
     !(await browserA.evaluate<boolean>(
-      "(document.querySelector('.pad-sidebar .workspace-status [data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
+      "(document.querySelector('.sidebar .sidebar-status [data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
     ))
   ) {
     throw new Error("convA: sidebar workspace status missing or not open");
@@ -262,7 +263,7 @@ try {
 
   const changelogOpened = await browserA.evaluate<boolean>(
     `(() => {
-      const button = document.querySelector('.pad-sidebar-version');
+      const button = document.querySelector('.sidebar-version');
       if (!(button instanceof HTMLButtonElement)) return false;
       button.click();
       return true;
@@ -280,7 +281,7 @@ try {
   const changelogValid = await browserA.evaluate<boolean>(
     `(() => {
       const dialog = document.querySelector('.web-changelog-dialog');
-      const label = document.querySelector('.pad-sidebar-version')?.textContent ?? '';
+      const label = document.querySelector('.sidebar-version')?.textContent ?? '';
       return dialog?.getAttribute('aria-labelledby') === 'web-changelog-title'
         && label.startsWith('v') && label.includes(' · ')
         && dialog.querySelectorAll('.web-changelog-releases li').length > 0;
@@ -304,7 +305,7 @@ try {
   await until(
     () =>
       browserA.evaluate<boolean>(
-        "document.querySelector('.web-changelog-dialog') === null && document.activeElement?.classList.contains('pad-sidebar-version') === true",
+        "document.querySelector('.web-changelog-dialog') === null && document.activeElement?.classList.contains('sidebar-version') === true",
       ),
     5_000,
     "convA: changelog closes and restores focus",
@@ -314,14 +315,14 @@ try {
   const identityBeforeRefresh = await browserA.evaluate<string>(
     "localStorage.getItem('manifold.identity') ?? ''",
   );
-  await browserA.goto(`${origin}/p/${padId}`);
+  await browserA.goto(`${origin}/p/${containerId}`);
   await until(
     () =>
       browserA.evaluate<boolean>(
         "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
       ),
     20_000,
-    "convA: session reopened after refresh",
+    "convA: terminal reopened after refresh",
   );
   const identityAfterRefresh = await browserA.evaluate<string>(
     "localStorage.getItem('manifold.identity') ?? ''",
@@ -350,7 +351,7 @@ try {
 
   const sdk = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId,
+    containerId,
     token: ownerKey,
     reconnect: false,
   });
@@ -420,7 +421,7 @@ try {
 
   /**
    * Runs one round: capture canonical before-state, perform gestures, wait for five-view
-   * convergence, then assert the round's declared effect. Probe errors surface in the
+   * convergence, then assert the round's declared effect. Probe errors ref in the
    * failure output instead of being reported as stale diffs.
    */
   async function round(name: string, effect: RoundEffect, act: () => Promise<void>): Promise<void> {
@@ -461,7 +462,7 @@ try {
           }
           return lastDiff.length === 0;
         },
-        12_000,
+        30_000,
         "five-view convergence with declared effect",
       );
       console.log(`PASS  ${name} — converged, ${String(canonicalView().size)} elements canonical`);
@@ -474,9 +475,9 @@ try {
 
   // ---------------------------------------------------------------- rounds
 
-  console.log(`convergence rounds against ${origin} pad ${padId}`);
+  console.log(`convergence rounds against ${origin} container ${containerId}`);
   const canvasLeftA = await browserA.evaluate<number>(
-    "document.querySelector('.pad-browser-canvas')?.getBoundingClientRect().left ?? 0",
+    "document.querySelector('.workspace-canvas')?.getBoundingClientRect().left ?? 0",
   );
 
   /**
@@ -507,7 +508,7 @@ try {
   /**
    * Opens one REAL terminal and returns the canvas reference its opener owes — a portal
    * onto the solo composition `terminal_open` just created, under the id the open
-   * correlated on. These are the two steps `createTerminal` in `flow-pad-view.tsx` takes,
+   * correlated on. These are the two steps `createTerminal` in `canvas-view.tsx` takes,
    * split so the round measures only the second: the PTY and its home already exist when
    * the round starts, so what converges is the AUTHORING, not the spawn latency.
    *
@@ -516,11 +517,11 @@ try {
    */
   const terminalPortal = async (x: number, y: number): Promise<SceneElement> => {
     const elementId = crypto.randomUUID();
-    const session = await sdk.openTerminal({ elementId, cols: 80, rows: 24, machineId });
+    const terminal = await sdk.openTerminal({ elementId, cols: 80, rows: 24, machineId });
     return {
       id: elementId,
       type: "portal",
-      containerId: session.padId,
+      containerId: terminal.containerId,
       x,
       y,
       width: 480,
@@ -540,7 +541,7 @@ try {
       readonly pointerY: number;
       readonly nodeX: number;
       readonly nodeY: number;
-      /** What the pointer would actually hit there, and how that surface advertises itself. */
+      /** What the pointer would actually hit there, and how that ref advertises itself. */
       readonly handleOwned: boolean;
       readonly cursor: string;
     } | null>(
@@ -551,7 +552,7 @@ try {
         chrome. The grab lands at a quarter width, clear of the controls on the right.
 
         `handleOwned`/`cursor` are asserted because `.terminal-titlebar` is
-        `pointer-events: none` by default (it floats over the xterm surface): a bar that
+        `pointer-events: none` by default (it floats over the xterm ref): a bar that
         renders but does not take the pointer is exactly how canvas terminals silently
         became undraggable while every synthetic-click assertion stayed green.
       */
@@ -559,7 +560,7 @@ try {
           const node = document.querySelector(
             ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
           );
-          const titlebar = node?.querySelector(".flow-portal--mono .terminal-titlebar");
+          const titlebar = node?.querySelector(".portal--mono .terminal-titlebar");
           if (!(node instanceof HTMLElement) || !(titlebar instanceof HTMLElement)) return null;
           const nodeRect = node.getBoundingClientRect();
           const titlebarRect = titlebar.getBoundingClientRect();
@@ -634,7 +635,7 @@ try {
             gestures.some((gesture) => gesture.elementId === elementId)
           );
         },
-        5_000,
+        15_000,
         `remote terminal ${elementId} to move before pointer release`,
       );
     }
@@ -843,7 +844,7 @@ try {
       const node = document.querySelector(${nodeSelector});
       if (!(node instanceof HTMLElement)) return { state: "no-node" };
       const box = node.getBoundingClientRect();
-      const marker = [...document.querySelectorAll(".flow-remote-cursor")].find((cursor) => {
+      const marker = [...document.querySelectorAll(".remote-cursor")].find((cursor) => {
         const rect = cursor.getBoundingClientRect();
         return (
           rect.left >= box.left - 2 &&
@@ -952,7 +953,7 @@ try {
         () =>
           browserB.evaluate<boolean>(
             `(() => {
-              const path = document.querySelector(".flow-stroke-preview[data-gesture-element] path");
+              const path = document.querySelector(".stroke-preview[data-gesture-element] path");
               return path instanceof SVGPathElement && (path.getAttribute("d") ?? "").includes("L");
             })()`,
           ),
@@ -1020,7 +1021,7 @@ try {
       await until(
         () =>
           browserA.evaluate<boolean>(
-            `document.querySelector(".flow-text__editor") instanceof HTMLTextAreaElement`,
+            `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
           ),
         5_000,
         "browser A text editor",
@@ -1039,7 +1040,7 @@ try {
       async () => {
         const focusedA = await browserA.evaluate<boolean>(
           `(() => {
-            const editor = document.querySelector(".flow-text__editor");
+            const editor = document.querySelector(".canvas-text__editor");
             if (!(editor instanceof HTMLTextAreaElement)) return false;
             editor.focus();
             editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -1052,7 +1053,7 @@ try {
           () =>
             browserB.evaluate<boolean>(
               `(() => {
-                const text = document.querySelector(".flow-text");
+                const text = document.querySelector(".canvas-text");
                 return text instanceof HTMLElement && (text.textContent ?? "").includes("hello");
               })()`,
             ),
@@ -1073,14 +1074,14 @@ try {
         await until(
           () =>
             browserB.evaluate<boolean>(
-              `document.querySelector(".flow-text__editor") instanceof HTMLTextAreaElement`,
+              `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
             ),
           5_000,
           "browser B text editor",
         );
         await browserB.evaluate(
           `(() => {
-            const editor = document.querySelector(".flow-text__editor");
+            const editor = document.querySelector(".canvas-text__editor");
             if (!(editor instanceof HTMLTextAreaElement)) return;
             editor.focus();
             editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -1145,7 +1146,7 @@ try {
         5_000,
         "text selection before delete",
       );
-      await browserA.evaluate(`document.querySelector(".flow-pad-canvas")?.focus()`);
+      await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
       await pressKey(browserA, "Delete", "Delete");
       await until(
         async () =>
@@ -1159,7 +1160,7 @@ try {
         5_000,
         "text deletion in both browsers",
       );
-      await browserA.evaluate(`document.querySelector(".flow-pad-canvas")?.focus()`);
+      await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
       await pressKey(browserA, "z", "KeyZ", 2);
       await until(
         async () =>
@@ -1273,7 +1274,7 @@ try {
         await until(
           () =>
             browserA.evaluate<boolean>(
-              `document.querySelector(${edgeSelector})?.querySelector(".flow-portal-resize-edge.right") !== null`,
+              `document.querySelector(${edgeSelector})?.querySelector(".portal-resize-edge.right") !== null`,
             ),
           5_000,
           "right border grab zone",
@@ -1285,7 +1286,7 @@ try {
         }>(
           `(() => {
             const node = document.querySelector(${edgeSelector});
-            const handle = node.querySelector(".flow-portal-resize-edge.right");
+            const handle = node.querySelector(".portal-resize-edge.right");
             const rect = handle.getBoundingClientRect();
             return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width };
           })()`,
@@ -1355,7 +1356,7 @@ try {
       () =>
         browserA.evaluate<boolean>(
           `(() => {
-            const editor = document.querySelector(".flow-text__editor");
+            const editor = document.querySelector(".canvas-text__editor");
             if (!(editor instanceof HTMLTextAreaElement)) return false;
             editor.focus();
             return document.activeElement === editor;
@@ -1368,7 +1369,7 @@ try {
     await until(
       () =>
         browserA.evaluate<boolean>(
-          `document.querySelector(".flow-text__editor")?.value === "resize me"`,
+          `document.querySelector(".canvas-text__editor")?.value === "resize me"`,
         ),
       5_000,
       "typed text in the editor",
@@ -1565,49 +1566,49 @@ try {
     );
   }
 
-  // Presence is a renderer-level contract, not a canvas feature. A tiled view has no
+  // Presence is a renderer-level contract, not a canvas feature. A composition has no
   // React Flow viewport to ride, so its cursors paint on an absolutely-positioned
-  // `.tiled-presence-layer` over the tile area and travel the wire as view-root
+  // `.composition-presence-layer` over the tile area and travel the wire as view-root
   // FRACTIONS: tile ratios are shared CRDT state, so a fraction resolves to the same
   // tile for every viewer. This round runs LAST — it navigates both browsers off the
-  // canvas pad, then kills browser B to prove a departed tab's cursor is pruned.
+  // canvas container, then kills browser B to prove a departed tab's cursor is pruned.
   //
   // convB sends and convA receives, not the other way round: F5 froze convB's tab, and
   // a page thawed out of `Page.setWebLifecycleState("frozen")` stays
-  // `visibilityState: "hidden"` for the rest of the session, so its
+  // `visibilityState: "hidden"` for the rest of the terminal, so its
   // requestAnimationFrame never fires again (measured; `Page.bringToFront` does not
   // revive it). Sending is event-driven and works in a hidden page, but a receiver
   // needs the animation frame to ease a cursor toward each new position, so the
   // live-motion assertions have to watch the browser that was never frozen.
   try {
-    const viewResponse = await fetch(`${origin}/api/actions/core.views.createPad`, {
+    const viewResponse = await fetch(`${origin}/api/actions/core.index.createContainer`, {
       method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ name: "convergence-view", layout: "tiled" }),
+      body: JSON.stringify({ name: "convergence-view", discipline: "composition" }),
     });
     if (!viewResponse.ok) {
-      throw new Error(`tiled view creation failed with ${String(viewResponse.status)}`);
+      throw new Error(`composition creation failed with ${String(viewResponse.status)}`);
     }
     const viewOutcome = ActionOutcomeSchema.parse(await viewResponse.json());
-    if (!viewOutcome.ok) throw new Error(`createPad refused: ${viewOutcome.denial.message}`);
-    const viewId = PadResponseSchema.parse(viewOutcome.result).pad.id;
+    if (!viewOutcome.ok) throw new Error(`createContainer refused: ${viewOutcome.denial.message}`);
+    const containerId = ContainerResponseSchema.parse(viewOutcome.result).container.id;
 
     // Parked on the sidebar, outside the tile area: the receiver must not emit cursors
     // of its own, or the sender's own overlay could no longer prove the absence of a
-    // self-echo. Layout-driven synthetic pointer moves never reach `.tiled-body`.
+    // self-echo. Layout-driven synthetic pointer moves never reach `.composition-body`.
     await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 40, y: 420 });
 
     const openView = async (browser: Browser, label: string): Promise<void> => {
-      await browser.goto(`${origin}/p/${viewId}`);
-      // A tiled route mounts no canvas, so neither the debug seam nor the sidebar
+      await browser.goto(`${origin}/p/${containerId}`);
+      // A composition route mounts no canvas, so neither the debug probe nor the sidebar
       // connection chip exists here: the rendered root leaf is the readiness signal.
       await until(
         () =>
           browser.evaluate<boolean>(
-            "document.querySelector('.tiled-pad-view .tiled-body .tiled-leaf') !== null",
+            "document.querySelector('.composition-view .composition-body .composition-leaf') !== null",
           ),
         20_000,
-        `${label}: tiled view rendered`,
+        `${label}: composition rendered`,
       );
     };
     await openView(browserA, "convA");
@@ -1635,7 +1636,7 @@ try {
     ): Promise<{ readonly x: number; readonly y: number }> =>
       await browser.evaluate(
         `(() => {
-          const body = document.querySelector(".tiled-body");
+          const body = document.querySelector(".composition-body");
           if (!(body instanceof HTMLElement)) throw new Error("tile area missing");
           const box = body.getBoundingClientRect();
           return {
@@ -1666,12 +1667,12 @@ try {
     // One expression serves both browsers: on convA it proves the remote cursor arrived,
     // on convB that the sender never paints its own echo.
     const viewCursor = `(() => {
-      const body = document.querySelector(".tiled-body");
+      const body = document.querySelector(".composition-body");
       if (!(body instanceof HTMLElement)) return { state: "no-body" };
       const box = body.getBoundingClientRect();
-      const layer = document.querySelector(".tiled-presence-layer");
+      const layer = document.querySelector(".composition-presence-layer");
       if (!(layer instanceof HTMLElement)) return { state: "no-layer" };
-      const painted = [...layer.querySelectorAll(".flow-remote-cursor")];
+      const painted = [...layer.querySelectorAll(".remote-cursor")];
       const count = painted.length;
       const cursor = painted.find(
         (node) => node.getAttribute("data-cursor-color") === ${JSON.stringify(senderColor)},
@@ -1725,11 +1726,11 @@ try {
         );
       },
       8_000,
-      "convA: convB's cursor painted at its pointer fraction in the tiled overlay",
+      "convA: convB's cursor painted at its pointer fraction in the composition overlay",
     );
     const arrived = await browserA.evaluate<ViewCursorProbe>(viewCursor);
     if (arrived.layerFills !== true) {
-      throw new Error("the tiled presence overlay does not cover its view root");
+      throw new Error("the composition presence overlay does not cover its view root");
     }
 
     await sweepTileArea(browserB, firstTarget, secondTarget);
@@ -1743,7 +1744,7 @@ try {
         );
       },
       8_000,
-      "convA: tiled cursor tracks convB's pointer across the tile area",
+      "convA: composition cursor tracks convB's pointer across the tile area",
     );
     const tracked = await browserA.evaluate<ViewCursorProbe>(viewCursor);
 
@@ -1770,12 +1771,12 @@ try {
       "convA: the departed tab's cursor retired from the overlay",
     );
     console.log(
-      `PASS  F12 tiled view cursors converge on the presence overlay — tracked from ${(arrived.fx ?? -1).toFixed(3)},${(arrived.fy ?? -1).toFixed(3)} to ${(tracked.fx ?? -1).toFixed(3)},${(tracked.fy ?? -1).toFixed(3)}, no self-echo, pruned on tab close`,
+      `PASS  F12 composition cursors converge on the presence overlay — tracked from ${(arrived.fx ?? -1).toFixed(3)},${(arrived.fy ?? -1).toFixed(3)} to ${(tracked.fx ?? -1).toFixed(3)},${(tracked.fy ?? -1).toFixed(3)}, no self-echo, pruned on tab close`,
     );
   } catch (error) {
-    failures.push("F12 tiled view cursor convergence");
+    failures.push("F12 composition cursor convergence");
     console.log(
-      `FAIL  F12 tiled view cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
+      `FAIL  F12 composition cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 } finally {

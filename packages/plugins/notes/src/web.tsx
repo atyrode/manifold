@@ -8,12 +8,12 @@ import { diffText } from "./text-diff.ts";
  * The note renderer — `core.notes`'s browser half, and the same component wherever a note is
  * placed. A canvas paints it inside the engine's element frame (which owns the resize handles
  * and the selection rule); a composition paints it straight into a tile leaf. Both edit the
- * SAME `Y.Text` through the room they are joined to, which is why a note tiled into a
+ * SAME `Y.Text` through the room they are joined to, which is why a note placed into a
  * composition is collaborative there for exactly the same reason it was on the canvas: the
  * document is the door, not this file.
  *
  * The mount site's disagreements arrive as `ElementHost` (editing focus, and whether an emptied
- * note is litter), so nothing here asks which surface it is on.
+ * note is litter), so nothing here asks which ref it is on.
  */
 
 /** Fallbacks match the engine's authoring defaults for a note written by an older client. */
@@ -82,7 +82,7 @@ function NoteNodeImpl({ id, data }: ElementProps): ReactElement {
     return (
       <textarea
         ref={editorRef}
-        className="flow-text__editor nodrag nowheel"
+        className="canvas-text__editor nodrag nowheel"
         autoFocus
         defaultValue={ytext?.toString() ?? text}
         style={{ color, fontSize }}
@@ -112,7 +112,7 @@ function NoteNodeImpl({ id, data }: ElementProps): ReactElement {
 
   return (
     <div
-      className="flow-text"
+      className="canvas-text"
       style={{ color, fontSize }}
       onDoubleClick={(event) => {
         event.stopPropagation();
@@ -126,13 +126,13 @@ function NoteNodeImpl({ id, data }: ElementProps): ReactElement {
 
 /**
  * Memoized for the same reason every element renderer is: a canvas re-invokes its node
- * components on every drag frame of the board, and none of these props move with the pointer.
+ * components on every drag frame of the canvas, and none of these props move with the pointer.
  */
 export const NoteNode = memo(NoteNodeImpl);
 
 /**
  * What this plugin registers in the browser, keyed by the wire type its manifest declared. It
- * is inert data: `packages/web/src/composition.ts` is the one file that reads it, and the host
+ * is inert data: `packages/web/src/assembly.ts` is the one file that reads it, and the host
  * joins it against the server's roster before anything renders.
  */
 export const notesWebPlugin = {

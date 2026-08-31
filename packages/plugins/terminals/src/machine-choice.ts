@@ -1,23 +1,23 @@
 /**
- * Per-pad, per-device machine memory and the default-machine policy for
+ * Per-container, per-device machine memory and the default-machine policy for
  * terminal creation. Pure policy module — choice rules, serialization, and
  * storage-fault tolerance live here (unit-tested); the component only decides
  * WHEN to fetch machines and render the picker.
  *
  * Storage faults (privacy mode, quota, disabled storage) must never break the
- * pad: every operation degrades to a no-op.
+ * container: every operation degrades to a no-op.
  */
 
 import type { MachineSummary } from "@manifold/protocol";
 
-/** Minimal Storage surface so tests can inject fakes (including throwing ones). */
+/** Minimal Storage ref so tests can inject fakes (including throwing ones). */
 export interface MachineStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
-export function machineMemoryKey(padId: string): string {
-  return `manifold:machine:${padId}`;
+export function machineMemoryKey(containerId: string): string {
+  return `manifold:machine:${containerId}`;
 }
 
 /**
@@ -49,19 +49,23 @@ export function chooseDefaultMachine(
   return online.length === 1 ? (online[0] ?? null) : null;
 }
 
-/** Remembers the picked machine for a pad; silently a no-op on storage faults. */
-export function rememberMachine(storage: MachineStorage, padId: string, machineId: string): void {
+/** Remembers the picked machine for a container; silently a no-op on storage faults. */
+export function rememberMachine(
+  storage: MachineStorage,
+  containerId: string,
+  machineId: string,
+): void {
   try {
-    storage.setItem(machineMemoryKey(padId), machineId);
+    storage.setItem(machineMemoryKey(containerId), machineId);
   } catch {
-    // quota/privacy mode: machine memory is a nicety, never worth breaking the pad
+    // quota/privacy mode: machine memory is a nicety, never worth breaking the container
   }
 }
 
-/** Loads the remembered machine id for a pad; null on absence or storage fault. */
-export function recallMachine(storage: MachineStorage, padId: string): string | null {
+/** Loads the remembered machine id for a container; null on absence or storage fault. */
+export function recallMachine(storage: MachineStorage, containerId: string): string | null {
   try {
-    const stored = storage.getItem(machineMemoryKey(padId));
+    const stored = storage.getItem(machineMemoryKey(containerId));
     return stored !== null && stored.length > 0 ? stored : null;
   } catch {
     return null;

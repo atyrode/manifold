@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { PadPresenceResponseSchema, type Cursor, type Principal } from "@manifold/protocol";
+import { AttendanceResponseSchema, type Cursor, type Principal } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   mintToken,
   ownerFetch,
   startServer,
@@ -25,66 +25,66 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "presence");
-    const otherPad = await createPad(server, "other presence");
+    const container = await createContainer(server, "presence");
+    const otherContainer = await createContainer(server, "other presence");
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Alice Presence", color: "#d13f62" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
     const bob = await mintToken(server, {
       principal: { kind: "agent", name: "Bob Presence", color: "#3274d9" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
     const charlie = await mintToken(server, {
       principal: { kind: "human", name: "Charlie Presence", color: "#2f9e44" },
-      caps: ["pads:read"],
-      padId: otherPad.id,
+      caps: ["containers:read"],
+      containerId: otherContainer.id,
     });
-    const clientA = await connect(server, { padId: pad.id, token: alice.token });
-    const clientB = await connect(server, { padId: pad.id, token: bob.token });
-    const clientC = await connect(server, { padId: otherPad.id, token: charlie.token });
+    const clientA = await connect(server, { containerId: container.id, token: alice.token });
+    const clientB = await connect(server, { containerId: container.id, token: bob.token });
+    const clientC = await connect(server, { containerId: otherContainer.id, token: charlie.token });
     clients.push(clientA, clientB, clientC);
 
-    await waitFor(() => clientA.roster.size === 2 && clientB.roster.size === 2, 5_000, 20);
-    const rosterAlice = clientB.roster.get(alice.principal.id);
-    const rosterBob = clientB.roster.get(bob.principal.id);
-    if (rosterAlice === undefined || rosterBob === undefined) {
+    await waitFor(() => clientA.attendance.size === 2 && clientB.attendance.size === 2, 5_000, 20);
+    const attendanceAlice = clientB.attendance.get(alice.principal.id);
+    const attendanceBob = clientB.attendance.get(bob.principal.id);
+    if (attendanceAlice === undefined || attendanceBob === undefined) {
       throw new Error("both principals were not present in the roster");
     }
-    expectPrincipal(rosterAlice.principal, alice.principal);
-    expectPrincipal(rosterBob.principal, bob.principal);
+    expectPrincipal(attendanceAlice.principal, alice.principal);
+    expectPrincipal(attendanceBob.principal, bob.principal);
 
-    const crossPadPresence = await ownerFetch(server, "/api/pad-presence", {
-      responseSchema: PadPresenceResponseSchema,
+    const crossRoomAttendance = await ownerFetch(server, "/api/attendance", {
+      responseSchema: AttendanceResponseSchema,
     });
-    expect(crossPadPresence.pads).toContainEqual({
-      padId: pad.id,
+    expect(crossRoomAttendance.attendance).toContainEqual({
+      containerId: container.id,
       principals: [alice.principal, bob.principal].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
     });
-    expect(crossPadPresence.pads).toContainEqual({
-      padId: otherPad.id,
+    expect(crossRoomAttendance.attendance).toContainEqual({
+      containerId: otherContainer.id,
       principals: [charlie.principal],
     });
 
-    const scopedResponse = await fetch(`${server.httpUrl}/api/pad-presence`, {
+    const scopedResponse = await fetch(`${server.httpUrl}/api/attendance`, {
       headers: { authorization: `Bearer ${alice.token}` },
     });
     expect(scopedResponse.status).toBe(200);
-    const scopedPresence = PadPresenceResponseSchema.parse(await scopedResponse.json());
-    expect(scopedPresence.pads).toEqual([
+    const scopedPresence = AttendanceResponseSchema.parse(await scopedResponse.json());
+    expect(scopedPresence.attendance).toEqual([
       {
-        padId: pad.id,
+        containerId: container.id,
         principals: [alice.principal, bob.principal].sort((left, right) =>
           left.id.localeCompare(right.id),
         ),
       },
     ]);
-    expect(rosterAlice.connections).toBe(1);
-    expect(rosterBob.connections).toBe(1);
+    expect(attendanceAlice.connections).toBe(1);
+    expect(attendanceBob.connections).toBe(1);
 
     const receivedCursors: Cursor[] = [];
     const offCursor = clientB.on("cursor", (message) => {
@@ -127,7 +127,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
     clientA.sendPresence({ status: "working" });
     await waitFor(
       () => {
-        const state = clientB.roster.get(alice.principal.id);
+        const state = clientB.attendance.get(alice.principal.id);
         return (
           state?.payload.selection?.[0] === "el-selected" && state.payload.status === "working"
         );
@@ -135,25 +135,25 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
       2_000,
       20,
     );
-    expect(clientB.roster.get(alice.principal.id)?.payload).toMatchObject({
+    expect(clientB.attendance.get(alice.principal.id)?.payload).toMatchObject({
       selection: ["el-selected"],
       status: "working",
     });
 
     clientA.close();
-    await waitFor(() => !clientB.roster.has(alice.principal.id), 5_000, 20);
+    await waitFor(() => !clientB.attendance.has(alice.principal.id), 5_000, 20);
 
-    const tabOne = await connect(server, { padId: pad.id, token: alice.token });
-    const tabTwo = await connect(server, { padId: pad.id, token: alice.token });
+    const tabOne = await connect(server, { containerId: container.id, token: alice.token });
+    const tabTwo = await connect(server, { containerId: container.id, token: alice.token });
     clients.push(tabOne, tabTwo);
-    await waitFor(() => clientB.roster.get(alice.principal.id)?.connections === 2, 5_000, 20);
+    await waitFor(() => clientB.attendance.get(alice.principal.id)?.connections === 2, 5_000, 20);
     expect(
-      [...clientB.roster.values()].filter((entry) => entry.principal.id === alice.principal.id),
+      [...clientB.attendance.values()].filter((entry) => entry.principal.id === alice.principal.id),
     ).toHaveLength(1);
 
     tabOne.close();
-    await waitFor(() => clientB.roster.get(alice.principal.id)?.connections === 1, 5_000, 20);
-    expect(clientB.roster.has(alice.principal.id)).toBe(true);
+    await waitFor(() => clientB.attendance.get(alice.principal.id)?.connections === 1, 5_000, 20);
+    expect(clientB.attendance.has(alice.principal.id)).toBe(true);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {

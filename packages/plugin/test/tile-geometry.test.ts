@@ -3,10 +3,10 @@ import {
   ROOT_TILE_ID,
   type TileEdge,
   type TileLayout,
-  type TileNode,
-  type TileSurface,
+  type Tile,
+  type TileRef,
 } from "@manifold/protocol";
-import { withTileSlot } from "@manifold/scene";
+import { withVacantLeaf } from "@manifold/scene";
 
 import {
   RING_AXIS_CAP,
@@ -22,10 +22,10 @@ import {
   type UnitPoint,
 } from "../src/tile-geometry.ts";
 
-const terminal = (sessionId: string): TileSurface => ({ kind: "terminal", sessionId });
+const terminal = (terminalId: string): TileRef => ({ kind: "terminal", terminalId });
 
-function leaf(id: string, surface: TileSurface | null = null): TileNode {
-  return { id, dir: null, ratios: [], children: [], surface };
+function leaf(id: string, ref: TileRef | null = null): Tile {
+  return { id, dir: null, ratios: [], children: [], ref };
 }
 
 function split(
@@ -33,8 +33,8 @@ function split(
   dir: "row" | "column",
   children: readonly string[],
   ratios: readonly number[],
-): TileNode {
-  return { id, dir, ratios: [...ratios], children: [...children], surface: null };
+): Tile {
+  return { id, dir, ratios: [...ratios], children: [...children], ref: null };
 }
 
 /** `A | B`: a root row of two occupied leaves. */
@@ -307,8 +307,8 @@ describe("resolveTileAim", () => {
     // …and its top end the same, above.
     expect(over(0.75, 0.55)).toEqual({ tileId: "tRow", edge: "top", action: "place", depth: 2 });
     // The insert the aim addresses is the flat same-axis splice into the column.
-    const slotted = withTileSlot(layout, "tRow", "bottom");
-    expect(slotted?.layout["tCol"]?.children).toEqual(["tB", "tRow", slotted?.slotId ?? ""]);
+    const slotted = withVacantLeaf(layout, "tRow", "bottom");
+    expect(slotted?.layout["tCol"]?.children).toEqual(["tB", "tRow", slotted?.vacantLeafId ?? ""]);
     expect(slotted?.layout["tCol"]?.ratios).toEqual([1, 0.5, 0.5]);
   });
 
@@ -770,7 +770,7 @@ describe("paneShifts", () => {
 
   test("a root split reports exactly one shift carrying the renamed pane's old rect", () => {
     const current: TileLayout = { [ROOT_TILE_ID]: leaf(ROOT_TILE_ID, terminal("s1")) };
-    const slotted = withTileSlot(current, ROOT_TILE_ID, "right");
+    const slotted = withVacantLeaf(current, ROOT_TILE_ID, "right");
     expect(slotted).not.toBeNull();
     const shifts = paneShifts(current, slotted?.layout ?? {}, DIVIDERS);
     expect(shifts).toHaveLength(1);
@@ -778,7 +778,7 @@ describe("paneShifts", () => {
     // The NEW id with the OLD rect as `from`: this pins the root-rename against a
     // spurious unmount — an id-matched diff would lose the one pane that must move.
     expect(shift?.tileId).not.toBe(ROOT_TILE_ID);
-    expect(slotted?.layout[shift?.tileId ?? ""]?.surface).toEqual(terminal("s1"));
+    expect(slotted?.layout[shift?.tileId ?? ""]?.ref).toEqual(terminal("s1"));
     expect(shift?.fromTileId).toBe(ROOT_TILE_ID);
     expect(shift?.from).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     expect(shift?.to.width).toBeCloseTo(0.49, 6);
@@ -786,7 +786,7 @@ describe("paneShifts", () => {
 
   test("an untouched sibling produces no shift", () => {
     const current = rowLayout();
-    const slotted = withTileSlot(current, "t2", "bottom");
+    const slotted = withVacantLeaf(current, "t2", "bottom");
     const shifts = paneShifts(current, slotted?.layout ?? {}, DIVIDERS);
     expect(shifts).toHaveLength(1);
     expect(shifts[0]?.tileId).toBe("t2");
@@ -813,10 +813,10 @@ describe("paneShifts", () => {
     slot: leaf("slot"),
   });
 
-  test("one surface in two leaves is two panes, each shifting from its own box", () => {
+  test("one ref in two leaves is two panes, each shifting from its own box", () => {
     /*
       A second leaf for a terminal already living here "is simply another copy of it" —
-      duplicates are legal, so a seat table keyed by bare surface identity kept only the
+      duplicates are legal, so a seat table keyed by bare ref identity kept only the
       last leaf and pointed BOTH prospective panes at it: two transforms written to one
       box, last one winning, the other pane frozen. Ordinals, in `tile-tree.tsx`'s own
       document order, are what make a pane a pane.
@@ -849,23 +849,29 @@ describe("tileDestinationFor", () => {
 
   test("a multi-tile container is a tile destination naming the aimed leaf", () => {
     expect(
-      tileDestinationFor(aim, { containerId: "view-1", widget: null, rootIsLeaf: false }),
-    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left" });
-    // A widget over a MULTI-tile container also addresses the leaf directly.
+      tileDestinationFor(aim, { containerId: "view-1", portal: null, rootIsLeaf: false }),
+    ).toEqual({ kind: "tile", containerId: "view-1", targetTileId: "t2", edge: "left" });
+    // A portal over a MULTI-tile container also addresses the leaf directly.
     expect(
       tileDestinationFor(aim, {
         containerId: "view-1",
-        widget: { padId: "canvas-1", elementId: "el-1" },
+        portal: { containerId: "canvas-1", elementId: "el-1" },
         rootIsLeaf: false,
       }),
-    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left" });
+    ).toEqual({ kind: "tile", containerId: "view-1", targetTileId: "t2", edge: "left" });
   });
 
   test("a between aim rides the wire destination; a split aim stays lean", () => {
     const wedge: TileAim = { tileId: "t2", edge: "left", action: "place", depth: 1, between: true };
     expect(
-      tileDestinationFor(wedge, { containerId: "view-1", widget: null, rootIsLeaf: false }),
-    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left", between: true });
+      tileDestinationFor(wedge, { containerId: "view-1", portal: null, rootIsLeaf: false }),
+    ).toEqual({
+      kind: "tile",
+      containerId: "view-1",
+      targetTileId: "t2",
+      edge: "left",
+      between: true,
+    });
     const split: TileAim = {
       tileId: "t2",
       edge: "left",
@@ -874,25 +880,30 @@ describe("tileDestinationFor", () => {
       between: false,
     };
     expect(
-      tileDestinationFor(split, { containerId: "view-1", widget: null, rootIsLeaf: false }),
-    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: "t2", edge: "left" });
+      tileDestinationFor(split, { containerId: "view-1", portal: null, rootIsLeaf: false }),
+    ).toEqual({ kind: "tile", containerId: "view-1", targetTileId: "t2", edge: "left" });
   });
 
-  test("a solo canvas widget keeps the compose door", () => {
+  test("a solo canvas portal keeps the compose door", () => {
     const solo: TileAim = { tileId: ROOT_TILE_ID, edge: "bottom", action: "place", depth: 0 };
     expect(
       tileDestinationFor(solo, {
         containerId: "view-1",
-        widget: { padId: "canvas-1", elementId: "el-1" },
+        portal: { containerId: "canvas-1", elementId: "el-1" },
         rootIsLeaf: true,
       }),
-    ).toEqual({ kind: "compose", padId: "canvas-1", targetElementId: "el-1", edge: "bottom" });
+    ).toEqual({
+      kind: "compose",
+      containerId: "canvas-1",
+      targetElementId: "el-1",
+      edge: "bottom",
+    });
   });
 
   test("a solo container on the fullscreen route addresses its own root leaf", () => {
     const solo: TileAim = { tileId: ROOT_TILE_ID, edge: "right", action: "place", depth: 0 };
     expect(
-      tileDestinationFor(solo, { containerId: "view-1", widget: null, rootIsLeaf: true }),
-    ).toEqual({ kind: "tile", padId: "view-1", targetTileId: ROOT_TILE_ID, edge: "right" });
+      tileDestinationFor(solo, { containerId: "view-1", portal: null, rootIsLeaf: true }),
+    ).toEqual({ kind: "tile", containerId: "view-1", targetTileId: ROOT_TILE_ID, edge: "right" });
   });
 });

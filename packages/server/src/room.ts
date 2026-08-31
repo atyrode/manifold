@@ -3,19 +3,19 @@ import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   compareElements,
+  type Attendance,
   type CensusItem,
   type ClientMessageBody,
   type ContainerCensus,
-  type PadPresence,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type RuntimeDeps,
   type SceneElement,
-  type SessionInfo,
+  type TerminalInfo,
   type TileEdge,
   type TileLayout,
-  type TileSurface,
+  type TileRef,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -28,7 +28,7 @@ import {
   decodeUpdate,
   elementsMap,
   encodeUpdate,
-  initTiledLayout,
+  initCompositionLayout,
   nextZIndex,
   patchElement,
   readElement,
@@ -39,28 +39,28 @@ import {
   swapTileLeaves,
   writeElement,
   writeTileLeaf,
-  writeTileLeafSurface,
+  writeTileLeafRef,
 } from "@manifold/scene";
 import type { Logger } from "./log.ts";
 import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
   serializeServerMessage,
   type ChannelMessage,
-  type SessionPeer,
-} from "./session-peer.ts";
+  type SessionChannel,
+} from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
 
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
 
 /**
- * The census of one container, derived from its document alone: a tiled container is
- * counted by its occupied leaves, a canvas by its elements. Free of `Room` so the same
- * derivation serves a resident room and a pad whose document is only on disk — two
- * answers to "what does this container hold" would be two answers too many.
+ * The census of one container, derived from its document alone: a composition is counted
+ * by its occupied leaves, a canvas by its elements. Free of `Room` so the same derivation
+ * serves a resident room and a container whose document is only on disk — two answers to
+ * "what does this container hold" would be two answers too many.
  */
 export function censusFor(
-  padId: string,
+  containerId: string,
   layout: TileLayout | null,
   elements: readonly SceneElement[],
 ): ContainerCensus {
@@ -69,37 +69,38 @@ export function censusFor(
   if (layout === null) {
     for (const element of elements) {
       if (element.type !== "portal") {
-        items.push({ kind: element.type, containerId: null, sessionId: null });
+        items.push({ kind: element.type, containerId: null, terminalId: null });
         continue;
       }
       references.push(element.containerId);
-      items.push({ kind: "view", containerId: element.containerId, sessionId: null });
+      items.push({ kind: "composition", containerId: element.containerId, terminalId: null });
     }
   } else {
     for (const node of Object.values(layout)) {
-      const surface = node.surface;
-      if (surface === null) continue;
-      if (surface.kind === "terminal") {
-        // A leaf holding a terminal is the only place a session's home is written down, so
-        // the census carries the session id: the index needs it to join a solo composition
+      const ref = node.ref;
+      if (ref === null) continue;
+      if (ref.kind === "terminal") {
+        // A leaf holding a terminal is the only place a terminal's home is written down, so
+        // the census carries the terminal id: the index needs it to join a solo composition
         // row to the terminal wearing it.
-        items.push({ kind: "terminal", containerId: null, sessionId: surface.sessionId });
+        items.push({ kind: "terminal", containerId: null, terminalId: ref.terminalId });
         continue;
       }
-      if (surface.kind === "pad") {
-        references.push(surface.padId);
-        items.push({ kind: "canvas-pad", containerId: surface.padId, sessionId: null });
+      if (ref.kind === "container") {
+        references.push(ref.containerId);
+        items.push({ kind: "canvas", containerId: ref.containerId, terminalId: null });
         continue;
       }
-      items.push({ kind: "text", containerId: null, sessionId: null });
+      items.push({ kind: "text", containerId: null, terminalId: null });
     }
   }
-  return { padId, layout: layout === null ? "canvas" : "tiled", items, references };
+  const discipline = layout === null ? "canvas" : "composition";
+  return { containerId, discipline, items, references };
 }
 
 /**
- * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, roster, and
- * sessions while allowing canonical documents substantially larger than one client update.
+ * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, attendance, and
+ * terminals while allowing canonical documents substantially larger than one client update.
  */
 export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
@@ -130,25 +131,25 @@ export const defaultRoomTimers: RoomTimers = {
  * Why a room reported itself empty. `occupants` is the lifecycle event — the last real
  * member walked out, so the bubble rule runs. `sockets` says only that the last WATCHER
  * of an already-unoccupied room hung up: nothing happened socially, the room merely stops
- * being resident. Keeping them apart is load-bearing: a widget preview closing must never
+ * being resident. Keeping them apart is load-bearing: a portal preview closing must never
  * pop somebody's newborn bubble.
  */
 export type RoomEmptyReason = "occupants" | "sockets";
 
-/** Canonical in-memory Yjs document and ephemeral membership for one persisted pad. */
+/** Canonical in-memory Yjs document and ephemeral membership for one persisted container. */
 export class Room {
   readonly doc = createSceneDoc();
   readonly epoch: string;
   rev: number;
 
-  private readonly connections = new Map<string, Set<SessionPeer>>();
+  private readonly connections = new Map<string, Set<SessionChannel>>();
   /**
    * Watching sockets, kept apart from `connections` on purpose: they are not principals
-   * in this room. Everything membership means — roster fan-out, presence, the join/leave
-   * events, and the room-empty hook that pops a bubble — reads `connections`, while
-   * everything transport means — broadcast, close, eviction residency — reads both.
+   * in this room. Everything membership means — attendance fan-out, presence, the
+   * join/leave events, and the room-empty hook that pops a bubble — reads `connections`,
+   * while everything transport means — broadcast, close, eviction residency — reads both.
    */
-  private readonly spectators = new Set<SessionPeer>();
+  private readonly spectators = new Set<SessionChannel>();
   private readonly presences = new Map<string, PresencePayload>();
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private dirty = false;
@@ -159,17 +160,17 @@ export class Room {
   private overLimit = false;
 
   constructor(
-    readonly padId: string,
+    readonly containerId: string,
     private readonly store: ServerStore,
     private readonly runtime: RuntimeDeps,
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
-    private readonly sessions: () => readonly SessionInfo[],
+    private readonly terminals: () => readonly TerminalInfo[],
     private readonly onEmpty: (room: Room, reason: RoomEmptyReason) => void,
   ) {
-    const record = store.latestDoc(padId, (error, invalid) => {
+    const record = store.latestDoc(containerId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
-        padId,
+        containerId,
         epoch: invalid.epoch,
         rev: invalid.rev,
         error: error.message,
@@ -197,15 +198,15 @@ export class Room {
       this.scheduleSnapshot();
     });
 
-    // A tiled container renders its layout tree, so the tree must exist before the
-    // first peer joins. The discipline lives on the pad row, and seeding is
+    // A composition renders its layout tree, so the tree must exist before the first
+    // channel joins. The discipline lives on the container row, and seeding is
     // idempotent, so a container loaded from a snapshot keeps its stored tree.
-    if (store.getPad(padId)?.layout === "tiled") {
-      initTiledLayout(this.doc, SERVER_PLACE_ORIGIN);
+    if (store.getContainer(containerId)?.discipline === "composition") {
+      initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
     }
   }
 
-  private roster(): PresenceState[] {
+  private attendance(): PresenceState[] {
     const result: PresenceState[] = [];
     for (const [principalId, peers] of this.connections) {
       const first = peers.values().next().value;
@@ -220,7 +221,7 @@ export class Room {
     return result.sort((left, right) => left.principal.id.localeCompare(right.principal.id));
   }
 
-  private stateMessage(type: "init" | "resync", peer: SessionPeer): ChannelMessage {
+  private stateMessage(type: "init" | "resync", peer: SessionChannel): ChannelMessage {
     return {
       type,
       protocolVersion: PROTOCOL_VERSION,
@@ -230,16 +231,16 @@ export class Room {
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
       selfConnId: peer.id,
-      roster: this.roster(),
-      sessions: [...this.sessions()],
+      attendance: this.attendance(),
+      terminals: [...this.terminals()],
     };
   }
 
-  private sendState(type: "init" | "resync", peer: SessionPeer): boolean {
+  private sendState(type: "init" | "resync", peer: SessionChannel): boolean {
     const frame = serializeServerMessage(this.stateMessage(type, peer));
     if (frame.bytes > SESSION_TRANSPORT_PAYLOAD_BYTES) {
       this.logger.error("scene_state_exceeds_transport", {
-        padId: this.padId,
+        containerId: this.containerId,
         type,
         bytes: frame.bytes,
         limit: SESSION_TRANSPORT_PAYLOAD_BYTES,
@@ -255,11 +256,11 @@ export class Room {
     return peer.sendSerialized(frame);
   }
 
-  /** Registers a tab, sends init first, then publishes principal-level roster deltas. */
-  join(peer: SessionPeer): boolean {
+  /** Registers a tab, sends init first, then publishes principal-level attendance deltas. */
+  join(peer: SessionChannel): boolean {
     if (peer.spectator) {
       // A watcher receives the same authoritative state (its preview IS this room) and
-      // nothing else: no roster entry, no presence slot, no principal_joined event.
+      // nothing else: no attendance row, no presence entry, no principal_joined event.
       this.spectators.add(peer);
       if (!this.sendState("init", peer)) {
         this.spectators.delete(peer);
@@ -290,15 +291,21 @@ export class Room {
       connIds: [...peers].map((connected) => connected.id),
       payload: this.presences.get(principalId) ?? {},
     };
-    this.broadcast({ type: "roster", joined }, false, peer);
+    this.broadcast({ type: "attendance", joined }, false, peer);
     if (firstConnection) {
-      this.store.addEvent(this.padId, this.runtime.now(), principalId, "principal_joined", {});
+      this.store.addEvent(
+        this.containerId,
+        this.runtime.now(),
+        principalId,
+        "principal_joined",
+        {},
+      );
     }
     return true;
   }
 
   /** Removes a tab and expires principal presence only after its final connection leaves. */
-  leave(peer: SessionPeer): void {
+  leave(peer: SessionChannel): void {
     if (peer.spectator) {
       if (!this.spectators.delete(peer)) return;
       // A watcher hanging up is not a departure: the bubble rule must NOT run here, or a
@@ -314,15 +321,15 @@ export class Room {
     if (peers.size === 0) {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
-      this.broadcast({ type: "roster", left: { principalId } });
-      this.store.addEvent(this.padId, this.runtime.now(), principalId, "principal_left", {});
+      this.broadcast({ type: "attendance", left: { principalId } });
+      this.store.addEvent(this.containerId, this.runtime.now(), principalId, "principal_left", {});
       if (this.connections.size === 0) this.onEmpty(this, "occupants");
       return;
     }
     const first = peers.values().next().value;
     if (first !== undefined) {
       this.broadcast({
-        type: "roster",
+        type: "attendance",
         joined: {
           principal: first.auth.principal,
           connections: peers.size,
@@ -334,11 +341,11 @@ export class Room {
   }
 
   /** Emits a full state replacement to one connection. */
-  sendResync(peer: SessionPeer): void {
+  sendResync(peer: SessionChannel): void {
     this.sendState("resync", peer);
   }
 
-  private consumeDocUpdate(peer: SessionPeer): boolean {
+  private consumeDocUpdate(peer: SessionChannel): boolean {
     const now = this.runtime.now();
     const previous = this.updateBuckets.get(peer.id) ?? {
       tokens: DOC_UPDATE_BURST,
@@ -358,7 +365,7 @@ export class Room {
   }
 
   /** Applies one bounded update, then repairs schema-invalid element projections. */
-  applyDocUpdate(peer: SessionPeer, encoded: DocUpdate["update"]): boolean {
+  applyDocUpdate(peer: SessionChannel, encoded: DocUpdate["update"]): boolean {
     let update: Uint8Array;
     try {
       update = decodeUpdate(encoded);
@@ -392,7 +399,7 @@ export class Room {
 
     for (const id of changed) {
       if (readElement(this.doc, id) === null && removeElement(this.doc, id, REPAIR_ORIGIN)) {
-        this.logger.warn("scene_element_repaired", { padId: this.padId, id });
+        this.logger.warn("scene_element_repaired", { containerId: this.containerId, id });
       }
     }
     return true;
@@ -404,10 +411,10 @@ export class Room {
    * `spotlight` is SERVER-WRITTEN ONLY and is dropped here whatever a client sends. It says
    * "another principal asked you to look at this", and its whole value is that the ask
    * carried an authority check — `core.presence.focus` verified a shared room and
-   * `scene:write` before writing one. A peer allowed to set it on itself could set it on
+   * `scenes:write` before writing one. A peer allowed to set it on itself could set it on
    * anybody by claiming a principal it is not, so the field simply never crosses inbound.
    */
-  updatePresence(peer: SessionPeer, payload: PresencePayload): void {
+  updatePresence(peer: SessionChannel, payload: PresencePayload): void {
     const principalId = peer.auth.principal.id;
     const client: PresencePayload = { ...payload };
     delete client.spotlight;
@@ -438,7 +445,7 @@ export class Room {
   }
 
   /** Relays high-rate cursor motion with droppable delivery under socket pressure. */
-  relayCursor(peer: SessionPeer, cursor: CursorUpdate): void {
+  relayCursor(peer: SessionChannel, cursor: CursorUpdate): void {
     this.broadcast(
       {
         type: "cursor",
@@ -455,7 +462,7 @@ export class Room {
    * outbound frame names its fields rather than spreading the inbound one: the client
    * frame arrives with routing attached, and a broadcast body must carry none.
    */
-  relayGesture(peer: SessionPeer, gesture: GestureUpdate): void {
+  relayGesture(peer: SessionChannel, gesture: GestureUpdate): void {
     this.broadcast(
       {
         type: "gesture",
@@ -476,7 +483,7 @@ export class Room {
   }
 
   /** Broadcasts one schema serialization to all current room members. */
-  broadcast(message: ChannelMessage, droppable = false, except?: SessionPeer): void {
+  broadcast(message: ChannelMessage, droppable = false, except?: SessionChannel): void {
     const frame = serializeServerMessage(message);
     for (const peers of this.connections.values()) {
       for (const peer of peers) {
@@ -508,7 +515,7 @@ export class Room {
       this.flushSnapshot();
     } catch (error) {
       this.logger.error("scene_doc_save_failed", {
-        padId: this.padId,
+        containerId: this.containerId,
         cadence,
         error: error instanceof Error ? error.message : "unknown failure",
       });
@@ -525,12 +532,12 @@ export class Room {
     this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
     if (this.overLimit) {
       this.logger.warn("scene_doc_over_limit", {
-        padId: this.padId,
+        containerId: this.containerId,
         bytes: this.docBytes,
         limit: DOC_BYTES_LIMIT,
       });
     }
-    this.store.saveDoc(this.padId, this.epoch, this.rev, at, doc);
+    this.store.saveDoc(this.containerId, this.epoch, this.rev, at, doc);
     this.dirty = false;
     this.cancelQuiet?.();
     this.cancelMax?.();
@@ -549,15 +556,15 @@ export class Room {
   }
 
   /**
-   * Closes every member when a pad is deleted or the process shuts down. Membership is
-   * dropped BEFORE the channels are told, because a channel close now calls back into
+   * Closes every member when a container is deleted or the process shuts down. Membership
+   * is dropped BEFORE the channels are told, because a channel close now calls back into
    * `leave` (the gateway retires the channel record): a room that is being demolished
    * must not publish departures, write events for a row that may already be gone, or
    * fire the room-empty hook on its way out.
    */
   closeAll(code: number, reason: string): void {
     this.cancelSnapshotTimers();
-    const members: SessionPeer[] = [];
+    const members: SessionChannel[] = [];
     for (const peers of this.connections.values()) members.push(...peers);
     members.push(...this.spectators);
     this.connections.clear();
@@ -573,8 +580,8 @@ export class Room {
   }
 
   /**
-   * Whether any socket actually OCCUPIES this room, as opposed to watching it. A portal
-   * widget's live preview holds a real socket without being anybody's presence, so the two
+   * Whether any socket actually OCCUPIES this room, as opposed to watching it. A portal's
+   * live preview holds a real socket without being anybody's presence, so the two
    * questions have to stay separate even though nothing dissolves on emptiness any more.
    */
   hasOccupants(): boolean {
@@ -582,25 +589,25 @@ export class Room {
   }
 
   /**
-   * Whether this container HOMES a session — holds a tile leaf for it. Only a composition
+   * Whether this container HOMES a terminal — holds a tile leaf for it. Only a composition
    * can: a canvas references a terminal through a portal onto its home, so a canvas has
-   * nothing to say about where a session lives.
+   * nothing to say about where a terminal lives.
    */
-  homesSession(sessionId: string): boolean {
+  homesTerminal(terminalId: string): boolean {
     const layout = readTileLayout(this.doc);
     if (layout === null) return false;
     for (const node of Object.values(layout)) {
-      const surface = node.surface;
-      if (surface !== null && surface.kind === "terminal" && surface.sessionId === sessionId) {
+      const ref = node.ref;
+      if (ref !== null && ref.kind === "terminal" && ref.terminalId === terminalId) {
         return true;
       }
     }
     return false;
   }
 
-  /** The tiled layout tree, or null for a canvas (and for a tree that fails validation). */
+  /** The layout tree of a composition, or null for a canvas (and a tree that fails validation). */
   tileLayout(): TileLayout | null {
-    return readTileLayout(this.doc, this.padId);
+    return readTileLayout(this.doc, this.containerId);
   }
 
   /** One element projection, or null when it is absent or schema-invalid. */
@@ -627,14 +634,14 @@ export class Room {
   }
 
   /**
-   * Places a surface in this container's layout tree under `SERVER_PLACE_ORIGIN`, so
+   * Places a ref in this container's layout tree under `SERVER_PLACE_ORIGIN`, so
    * the doc-update hook fans it out and client undo managers never capture it.
-   * A null target fills the first empty leaf, else splits the root to the right;
-   * a null edge fills an empty target leaf, else splits that leaf to the right.
+   * A null target fills the first vacant leaf, else splits the root to the right;
+   * a null edge fills a vacant target leaf, else splits that leaf to the right.
    * Returns the placement's tile id, or null when the tree rejects the write.
    */
   placeTile(
-    surface: TileSurface,
+    ref: TileRef,
     targetTileId: string | null,
     edge: TileEdge | null,
     between = false,
@@ -643,21 +650,21 @@ export class Room {
     if (layout === null) return null;
     const target =
       targetTileId ??
-      Object.values(layout).find((node) => node.dir === null && node.surface === null)?.id ??
+      Object.values(layout).find((node) => node.dir === null && node.ref === null)?.id ??
       ROOT_TILE_ID;
     const node = layout[target];
     if (node === undefined) return null;
-    const resolved = edge ?? (node.dir === null && node.surface === null ? "center" : "right");
-    return writeTileLeaf(this.doc, surface, target, resolved, SERVER_PLACE_ORIGIN, between);
+    const resolved = edge ?? (node.dir === null && node.ref === null ? "center" : "right");
+    return writeTileLeaf(this.doc, ref, target, resolved, SERVER_PLACE_ORIGIN, between);
   }
 
-  /** Places a terminal surface; the returned tile id IS the session's placement id. */
+  /** Places a terminal ref; the returned tile id IS the terminal's placement id. */
   placeTerminalTile(
-    sessionId: string,
+    terminalId: string,
     targetTileId: string | null,
     edge: TileEdge | null,
   ): string | null {
-    return this.placeTile({ kind: "terminal", sessionId }, targetTileId, edge);
+    return this.placeTile({ kind: "terminal", terminalId }, targetTileId, edge);
   }
 
   /** Removes one tile leaf, collapsing the split it leaves behind. */
@@ -680,8 +687,8 @@ export class Room {
    * occupant and fans its own update out. Inside one container `swapTileLeavesById` is the
    * whole operation.
    */
-  setTileSurface(tileId: string, surface: TileSurface | null): boolean {
-    return writeTileLeafSurface(this.doc, tileId, surface, SERVER_PLACE_ORIGIN);
+  setTileRef(tileId: string, ref: TileRef | null): boolean {
+    return writeTileLeafRef(this.doc, tileId, ref, SERVER_PLACE_ORIGIN);
   }
 
   /**
@@ -716,7 +723,7 @@ export class Room {
   /**
    * Repoints a portal at a different container, keeping the element id and geometry. This
    * is what a merge does to the references of an absorbed composition: the canvas kept
-   * showing the same item, so the widget must not jump, blink, or be re-authored under a
+   * showing the same item, so the portal must not jump, blink, or be re-authored under a
    * new id that collaborators' selections would lose.
    */
   repointPortal(elementId: string, containerId: string): boolean {
@@ -756,7 +763,7 @@ export class Room {
         containerId,
         x,
         y,
-        // A widget frames a terminal-sized surface, so a fresh portal borrows that size.
+        // A portal frames a terminal-sized area, so a fresh one borrows that size.
         width: DEFAULT_TERMINAL_WIDTH,
         height: DEFAULT_TERMINAL_HEIGHT,
         zIndex: nextZIndex(this.doc),
@@ -794,10 +801,10 @@ export class Room {
 
   /** This container's census, from its live document. */
   census(): ContainerCensus {
-    return censusFor(this.padId, this.tileLayout(), this.elements());
+    return censusFor(this.containerId, this.tileLayout(), this.elements());
   }
 
-  /** Returns the principal-level live roster without cursor or viewport payloads. */
+  /** Returns the principal-level live attendance without cursor or viewport payloads. */
   livePrincipals(): Principal[] {
     const principals: Principal[] = [];
     for (const peers of this.connections.values()) {
@@ -812,7 +819,7 @@ export class Room {
     let connectionCount = 0;
     for (const peers of this.connections.values()) connectionCount += peers.size;
     return {
-      padId: this.padId,
+      containerId: this.containerId,
       epoch: this.epoch,
       rev: this.rev,
       elements: readElements(this.doc).size,
@@ -824,21 +831,21 @@ export class Room {
   }
 }
 
-/** Lazily loads rooms and coordinates snapshot flush/delete across all active pads. */
+/** Lazily loads rooms and coordinates snapshot flush/delete across all active containers. */
 export class RoomManager {
   private readonly rooms = new Map<string, Room>();
   /**
-   * Censuses of pads with no resident room, keyed by pad id and fenced by the document
-   * revision they were derived from. Decoding every stored document on every index poll
-   * would be pure waste: the revision is one cheap SQL read, and a document that has not
-   * moved cannot have changed what it holds.
+   * Censuses of containers with no resident room, keyed by container id and fenced by the
+   * document revision they were derived from. Decoding every stored document on every
+   * index poll would be pure waste: the revision is one cheap SQL read, and a document
+   * that has not moved cannot have changed what it holds.
    */
   private readonly censusCache = new Map<
     string,
     { readonly rev: number; readonly census: ContainerCensus }
   >();
-  private sessionProvider: (padId: string) => readonly SessionInfo[] = () => [];
-  private pendingOpenProvider: (padId: string) => boolean = () => false;
+  private terminalProvider: (containerId: string) => readonly TerminalInfo[] = () => [];
+  private pendingOpenProvider: (containerId: string) => boolean = () => false;
 
   constructor(
     private readonly store: ServerStore,
@@ -847,37 +854,42 @@ export class RoomManager {
     private readonly logger: Logger,
   ) {}
 
-  /** Installs the broker's per-pad session view after circular startup wiring completes. */
-  setSessionProvider(provider: (padId: string) => readonly SessionInfo[]): void {
-    this.sessionProvider = provider;
+  /** Installs the broker's per-container terminal view after circular startup wiring done. */
+  setTerminalProvider(provider: (containerId: string) => readonly TerminalInfo[]): void {
+    this.terminalProvider = provider;
   }
 
   /** Installs the broker's in-flight create view for residency decisions. */
-  setPendingOpenProvider(provider: (padId: string) => boolean): void {
+  setPendingOpenProvider(provider: (containerId: string) => boolean): void {
     this.pendingOpenProvider = provider;
   }
 
   /**
    * Every container's census, which is the whole input to the index. Resident rooms answer
    * from their live document; the rest are decoded from their newest stored snapshot and
-   * cached against its revision, so an idle workspace costs one query per pad and a busy
-   * one costs only the pads that actually changed.
+   * cached against its revision, so an idle workspace costs one query per container and a
+   * busy one costs only the containers that actually changed.
    */
   censuses(): ContainerCensus[] {
     const censuses: ContainerCensus[] = [];
-    for (const pad of this.store.listPads()) {
-      const room = this.rooms.get(pad.id);
+    for (const container of this.store.listContainers()) {
+      const room = this.rooms.get(container.id);
       if (room !== undefined) {
-        this.censusCache.delete(pad.id);
+        this.censusCache.delete(container.id);
         censuses.push(room.census());
         continue;
       }
-      const record = this.store.latestDoc(pad.id);
+      const record = this.store.latestDoc(container.id);
       if (record === null) {
-        censuses.push({ padId: pad.id, layout: pad.layout, items: [], references: [] });
+        censuses.push({
+          containerId: container.id,
+          discipline: container.discipline,
+          items: [],
+          references: [],
+        });
         continue;
       }
-      const cached = this.censusCache.get(pad.id);
+      const cached = this.censusCache.get(container.id);
       if (cached !== undefined && cached.rev === record.rev) {
         censuses.push(cached.census);
         continue;
@@ -887,83 +899,88 @@ export class RoomManager {
       try {
         Y.applyUpdate(doc, record.doc);
         census = censusFor(
-          pad.id,
-          pad.layout === "tiled" ? readTileLayout(doc, pad.id) : null,
+          container.id,
+          container.discipline === "composition" ? readTileLayout(doc, container.id) : null,
           [...readElements(doc).values()].sort(compareElements),
         );
       } catch {
         // A document this manager cannot read is reported as holding nothing rather than
         // omitted: the index still has to show the container, and the room's own fallback
         // loading is what recovers the contents.
-        census = { padId: pad.id, layout: pad.layout, items: [], references: [] };
+        census = {
+          containerId: container.id,
+          discipline: container.discipline,
+          items: [],
+          references: [],
+        };
       } finally {
         doc.destroy();
       }
-      this.censusCache.set(pad.id, { rev: record.rev, census });
+      this.censusCache.set(container.id, { rev: record.rev, census });
       censuses.push(census);
     }
     return censuses;
   }
 
-  /** Returns a canonical room only when its durable pad exists. */
-  get(padId: string): Room | null {
-    if (this.store.getPad(padId) === null) return null;
-    let room = this.rooms.get(padId);
+  /** Returns a canonical room only when its durable container exists. */
+  get(containerId: string): Room | null {
+    if (this.store.getContainer(containerId) === null) return null;
+    let room = this.rooms.get(containerId);
     if (room === undefined) {
       room = new Room(
-        padId,
+        containerId,
         this.store,
         this.runtime,
         this.timers,
         this.logger,
         () => {
-          return this.sessionProvider(padId);
+          return this.terminalProvider(containerId);
         },
         (idleRoom) => {
           this.evict(idleRoom);
         },
       );
-      this.rooms.set(padId, room);
+      this.rooms.set(containerId, room);
     }
     return room;
   }
 
   /** Returns only an already materialized room; broker events must never load one. */
-  live(padId: string): Room | null {
-    return this.rooms.get(padId) ?? null;
+  live(containerId: string): Room | null {
+    return this.rooms.get(containerId) ?? null;
   }
 
-  /** Summarizes presence from already-live rooms without materializing idle pads. */
-  presence(): PadPresence[] {
-    const pads: PadPresence[] = [];
+  /** Summarizes presence from already-live rooms without materializing idle containers. */
+  presence(): Attendance[] {
+    const attendance: Attendance[] = [];
     for (const room of this.rooms.values()) {
       const principals = room.livePrincipals();
-      if (principals.length > 0) pads.push({ padId: room.padId, principals });
+      if (principals.length > 0) attendance.push({ containerId: room.containerId, principals });
     }
-    return pads.sort((left, right) => left.padId.localeCompare(right.padId));
+    return attendance.sort((left, right) => left.containerId.localeCompare(right.containerId));
   }
 
   /**
-   * Pads where BOTH principals are currently joined. This is the consent gate behind
-   * "look at this": one principal may steer another's view only where they are already
+   * Containers where BOTH principals are currently joined. This is the consent gate behind
+   * "look at this": one principal may steer another's viewport only where they are already
    * together, so the reach of a spotlight is exactly the reach of shared presence, and it
    * is computed from live membership rather than from anything the caller claims.
    */
-  sharedPadIds(left: string, right: string): string[] {
+  sharedContainerIds(left: string, right: string): string[] {
     const shared: string[] = [];
     for (const room of this.rooms.values()) {
-      if (room.hasPrincipal(left) && room.hasPrincipal(right)) shared.push(room.padId);
+      if (room.hasPrincipal(left) && room.hasPrincipal(right)) shared.push(room.containerId);
     }
     return shared.sort((first, second) => first.localeCompare(second));
   }
 
   /** Writes server-owned presence into a live room; false when nobody is there to receive it. */
   setSpotlight(
-    padId: string,
+    containerId: string,
     principalId: string,
     spotlight: { uri: string; from: string },
   ): boolean {
-    return this.rooms.get(padId)?.writeSpotlight(principalId, spotlight) ?? false;
+    return this.rooms.get(containerId)?.writeSpotlight(principalId, spotlight) ?? false;
   }
 
   /**
@@ -972,49 +989,50 @@ export class RoomManager {
    * the room exactly as a join would, because the answer is in the document and a stale
    * snapshot would report a note somebody just deleted as still there.
    */
-  holdsElement(padId: string, elementId: string): boolean {
-    const room = this.get(padId);
+  holdsElement(containerId: string, elementId: string): boolean {
+    const room = this.get(containerId);
     return room !== null && readElement(room.doc, elementId) !== null;
   }
 
-  holdsTile(padId: string, tileId: string): boolean {
-    const room = this.get(padId);
+  holdsTile(containerId: string, tileId: string): boolean {
+    const room = this.get(containerId);
     if (room === null) return false;
-    return readTileLayout(room.doc, padId)?.[tileId] !== undefined;
+    return readTileLayout(room.doc, containerId)?.[tileId] !== undefined;
   }
 
   /** Rechecks an idle resident after its last running terminal exits. */
-  evictIfIdle(padId: string): boolean {
-    const room = this.rooms.get(padId);
+  evictIfIdle(containerId: string): boolean {
+    const room = this.rooms.get(containerId);
     if (room === undefined) return false;
     return this.evict(room);
   }
 
   private evict(room: Room): boolean {
-    if (this.rooms.get(room.padId) !== room || room.hasConnections()) return false;
-    if (this.pendingOpenProvider(room.padId)) return false;
-    if (this.sessionProvider(room.padId).some((session) => session.status === "running")) {
+    if (this.rooms.get(room.containerId) !== room || room.hasConnections()) return false;
+    if (this.pendingOpenProvider(room.containerId)) return false;
+    const running = this.terminalProvider(room.containerId);
+    if (running.some((terminal) => terminal.status === "running")) {
       return false;
     }
     try {
       room.flushSnapshot();
     } catch (error) {
       this.logger.error("snapshot_final_flush_failed", {
-        padId: room.padId,
+        containerId: room.containerId,
         error: error instanceof Error ? error.message : "unknown failure",
       });
       return false;
     }
-    this.rooms.delete(room.padId);
+    this.rooms.delete(room.containerId);
     return true;
   }
 
-  /** Evicts and fences a deleted pad's live room. */
-  drop(padId: string): void {
-    const room = this.rooms.get(padId);
+  /** Evicts and fences a deleted container's live room. */
+  drop(containerId: string): void {
+    const room = this.rooms.get(containerId);
     if (room === undefined) return;
-    room.closeAll(4404, "pad deleted");
-    this.rooms.delete(padId);
+    room.closeAll(4404, "container deleted");
+    this.rooms.delete(containerId);
   }
 
   /** Flushes every dirty scene for graceful shutdown. */
@@ -1024,7 +1042,7 @@ export class RoomManager {
         room.flushSnapshot();
       } catch (error) {
         this.logger.error("snapshot_shutdown_flush_failed", {
-          padId: room.padId,
+          containerId: room.containerId,
           error: error instanceof Error ? error.message : "unknown failure",
         });
         room.cancelSnapshotTimers();

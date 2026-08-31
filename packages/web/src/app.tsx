@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import type { StoredIdentity } from "./api.ts";
-import { PadBrowser } from "./pad-browser.tsx";
+import { WorkspaceHost } from "./workspace.tsx";
 import {
   HostServicesGate,
   PluginPlaceholder,
-  useComposition,
+  useAssembly,
   useHostServices,
 } from "./plugin-host.tsx";
-import { ToastProvider } from "./toast.tsx";
+import { NoticeProvider } from "./notice.tsx";
 
 type Route =
-  | { readonly kind: "browser"; readonly padId: string | null }
+  | { readonly kind: "browser"; readonly containerId: string | null }
   /**
    * A route a PLUGIN owns, addressed by its first path segment (`/uri/<rest>`). The engine
    * resolves the segment against the composition and hands the rest over verbatim: which
@@ -22,11 +22,11 @@ type Route =
 const PLUGIN_ROUTE = /^\/([a-z][a-z0-9-]*)\/(.+)$/;
 
 function currentRoute(): Route {
-  if (window.location.pathname === "/") return { kind: "browser", padId: null };
+  if (window.location.pathname === "/") return { kind: "browser", containerId: null };
   const match = /^\/p\/([^/]+)$/.exec(window.location.pathname);
   if (match?.[1] !== undefined) {
     try {
-      return { kind: "browser", padId: decodeURIComponent(match[1]) };
+      return { kind: "browser", containerId: decodeURIComponent(match[1]) };
     } catch {
       return { kind: "not_found" };
     }
@@ -47,13 +47,13 @@ interface AppProps {
 /**
  * Keeps the view shell mounted across root and direct-container routes.
  *
- * The toast layer is mounted HERE, above every route: it must outlive the shell it
+ * The notice layer is mounted HERE, above every route: it must outlive the shell it
  * reports for (a renderer that crashes into the error boundary still has notices to
  * show) and it must sit outside the sidebar's collapse subtree, which is what used to
  * hide sidebar failures on the icon rail.
  *
  * `HostServicesGate` sits above the route switch for the same reason: a plugin route is
- * plugin code, so it needs the one host surface (`client`, `navigate`, `viewport`) exactly
+ * plugin code, so it needs the one host ref (`client`, `navigate`, `viewport`) exactly
  * like a panel or a section does.
  */
 export function App({ identity }: AppProps) {
@@ -72,27 +72,27 @@ export function App({ identity }: AppProps) {
   }, []);
 
   return (
-    <ToastProvider>
+    <NoticeProvider>
       <HostServicesGate
         identity={identity}
         navigate={navigate}
-        padId={route.kind === "browser" ? route.padId : null}
+        containerId={route.kind === "browser" ? route.containerId : null}
       >
         {renderRoute(route, identity, navigate)}
       </HostServicesGate>
-    </ToastProvider>
+    </NoticeProvider>
   );
 }
 
 /**
- * A plugin-owned route. Every failure mode is the shared inert surface NAMING what is
+ * A plugin-owned route. Every failure mode is the shared inert ref NAMING what is
  * missing: an unclaimed prefix, a disabled plugin, or a declared route whose web half is
  * absent — the same three answers `PanelOutlet` gives for a panel.
  */
 function PluginRoute({ prefix, rest }: { readonly prefix: string; readonly rest: string }) {
-  const composition = useComposition();
+  const assembly = useAssembly();
   const host = useHostServices();
-  const route = composition.routes.get(prefix);
+  const route = assembly.routes.get(prefix);
 
   if (route === undefined) {
     return (
@@ -101,7 +101,7 @@ function PluginRoute({ prefix, rest }: { readonly prefix: string; readonly rest:
       </main>
     );
   }
-  const name = composition.pluginTitle(route.plugin) ?? route.plugin;
+  const name = assembly.pluginTitle(route.plugin) ?? route.plugin;
   if (!route.enabled || route.Component === null) {
     return (
       <main className="gate-screen">
@@ -120,7 +120,13 @@ function renderRoute(
 ) {
   switch (route.kind) {
     case "browser":
-      return <PadBrowser identity={identity} requestedPadId={route.padId} navigate={navigate} />;
+      return (
+        <WorkspaceHost
+          identity={identity}
+          requestedContainerId={route.containerId}
+          navigate={navigate}
+        />
+      );
     case "plugin":
       return <PluginRoute prefix={route.prefix} rest={route.rest} />;
     case "not_found":

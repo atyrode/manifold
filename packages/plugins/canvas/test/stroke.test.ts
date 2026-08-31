@@ -16,7 +16,7 @@ describe("stroke", () => {
     expect(points).toEqual([10, 20, 12, 20]);
   });
 
-  test("strokeBounds pads the point extents by the stroke width", () => {
+  test("strokeBounds containers the point extents by the stroke width", () => {
     expect(strokeBounds([10, 20, 30, 25, 15, 50], 3)).toEqual({
       x: 7,
       y: 17,

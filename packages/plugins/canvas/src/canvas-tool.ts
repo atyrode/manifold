@@ -9,7 +9,7 @@ export type CanvasTool = string;
 /**
  * The two modes this plugin owns, in strip order. They are declared in `canvasManifest` like
  * any contributed tool — so the published vocabulary is complete — and listed again here
- * because ORDER is this surface's business: its own modes come first, then everybody else's
+ * because ORDER is this ref's business: its own modes come first, then everybody else's
  * in roster order. Membership is also what {@link toolFlags} switches on.
  */
 export const CANVAS_TOOLS: readonly CanvasTool[] = ["select", "text"];

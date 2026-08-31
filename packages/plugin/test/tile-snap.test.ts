@@ -23,9 +23,9 @@ describe("composeTargetAt", () => {
   const nodes: readonly SnapNode[] = [
     // Every canvas node a drop can compose onto is a `portal`: a terminal on a canvas IS
     // a portal onto its solo home, so there is one species here, not two.
-    node("widget-a", "portal", 0, 0, 1),
-    node("widget-b", "portal", 50, 50, 2),
-    node("widget", "portal", 300, 0, 1),
+    node("portal-a", "portal", 0, 0, 1),
+    node("portal-b", "portal", 50, 50, 2),
+    node("portal", "portal", 300, 0, 1),
     node("note", "text", 500, 0, 9),
     node("ink", "draw", 700, 0, 9),
   ];
@@ -34,9 +34,9 @@ describe("composeTargetAt", () => {
     expect(composeTargetAt(nodes, { x: 250, y: 250 }, null)).toBeNull();
   });
 
-  test("widgets are targets; notes and ink are not", () => {
-    expect(composeTargetAt(nodes, { x: 10, y: 10 }, null)?.id).toBe("widget-a");
-    expect(composeTargetAt(nodes, { x: 320, y: 20 }, null)?.id).toBe("widget");
+  test("portals are targets; notes and ink are not", () => {
+    expect(composeTargetAt(nodes, { x: 10, y: 10 }, null)?.id).toBe("portal-a");
+    expect(composeTargetAt(nodes, { x: 320, y: 20 }, null)?.id).toBe("portal");
     // There is nothing to birth a container around, and the executor refuses them
     // anyway, so offering the gesture over a note or a stroke would be a lie.
     expect(composeTargetAt(nodes, { x: 520, y: 20 }, null)).toBeNull();
@@ -44,17 +44,17 @@ describe("composeTargetAt", () => {
   });
 
   test("overlaps resolve to the topmost node, matching what the viewer sees", () => {
-    expect(composeTargetAt(nodes, { x: 60, y: 60 }, null)?.id).toBe("widget-b");
+    expect(composeTargetAt(nodes, { x: 60, y: 60 }, null)?.id).toBe("portal-b");
   });
 
   test("the dragged node is never its own target", () => {
-    expect(composeTargetAt(nodes, { x: 60, y: 60 }, "widget-b")?.id).toBe("widget-a");
-    expect(composeTargetAt([nodes[0]!], { x: 10, y: 10 }, "widget-a")).toBeNull();
+    expect(composeTargetAt(nodes, { x: 60, y: 60 }, "portal-b")?.id).toBe("portal-a");
+    expect(composeTargetAt([nodes[0]!], { x: 10, y: 10 }, "portal-a")).toBeNull();
   });
 
   test("edges count as inside, so a drop on a border still composes", () => {
-    expect(composeTargetAt([nodes[0]!], { x: 0, y: 0 }, null)?.id).toBe("widget-a");
-    expect(composeTargetAt([nodes[0]!], { x: 100, y: 100 }, null)?.id).toBe("widget-a");
+    expect(composeTargetAt([nodes[0]!], { x: 0, y: 0 }, null)?.id).toBe("portal-a");
+    expect(composeTargetAt([nodes[0]!], { x: 100, y: 100 }, null)?.id).toBe("portal-a");
     expect(composeTargetAt([nodes[0]!], { x: 101, y: 100 }, null)).toBeNull();
   });
 });
@@ -186,23 +186,23 @@ describe("resolveSnapTarget", () => {
 });
 
 describe("asTileTree", () => {
-  test("lifts a terminal surface into a valid one-leaf tree", () => {
-    const tree = asTileTree({ kind: "terminal", sessionId: "s1" });
+  test("lifts a terminal ref into a valid one-leaf tree", () => {
+    const tree = asTileTree({ kind: "terminal", terminalId: "s1" });
     expect(Object.keys(tree)).toEqual([ROOT_TILE_ID]);
     expect(tree[ROOT_TILE_ID]).toEqual({
       id: ROOT_TILE_ID,
       dir: null,
       ratios: [],
       children: [],
-      surface: { kind: "terminal", sessionId: "s1" },
+      ref: { kind: "terminal", terminalId: "s1" },
     });
     expect(validateTileLayout(tree)).toBe(true);
   });
 
-  test("a pad surface tree is valid unless it is the container itself", () => {
-    const tree = asTileTree({ kind: "pad", padId: "pad-a" });
-    expect(validateTileLayout(tree, "pad-b")).toBe(true);
-    expect(validateTileLayout(tree, "pad-a")).toBe(false);
+  test("a container ref tree is valid unless it is the container itself", () => {
+    const tree = asTileTree({ kind: "container", containerId: "container-a" });
+    expect(validateTileLayout(tree, "container-b")).toBe(true);
+    expect(validateTileLayout(tree, "container-a")).toBe(false);
   });
 });
 
@@ -256,7 +256,7 @@ describe("dividerRatios", () => {
     expect(dividerRatios(drag, 100)).toEqual([0.5, 1.5]);
   });
 
-  test("the fraction is scale-invariant, so a scaled widget drags like the route", () => {
+  test("the fraction is scale-invariant, so a scaled portal drags like the route", () => {
     // The same split drawn at 0.5: the box measures half, and so does the travel.
     const scaled: DividerDrag = { ...drag, originPx: 100, sizePx: 200 };
     expect(dividerRatios(scaled, 150)).toEqual(dividerRatios(drag, 300));

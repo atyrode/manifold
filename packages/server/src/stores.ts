@@ -13,14 +13,14 @@ import {
 } from "@manifold/plugin";
 import {
   CapSchema,
-  PadSchema,
-  PadTreeItemSchema,
+  ContainerSchema,
+  IndexEntrySchema,
   PrincipalSchema,
   TileLayoutSchema,
   validateTileLayout,
   type Cap,
-  type Pad,
-  type PadTreeItem,
+  type Container,
+  type IndexEntry,
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
@@ -28,7 +28,7 @@ import { Y } from "@manifold/scene";
 import { z } from "zod";
 
 export const EVENTS_RETENTION_DAYS = 30;
-export const EVENTS_MAX_PER_PAD = 10_000;
+export const EVENTS_MAX_PER_CONTAINER = 10_000;
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 
@@ -67,23 +67,23 @@ interface PluginKvCountRow {
   total: number;
 }
 
-interface PadRow {
+interface ContainerRow {
   id: string;
   name: string;
   created_at: number;
-  layout: string;
+  discipline: string;
 }
-interface PadTreeRow {
-  kind: "pad" | "folder";
+interface IndexRow {
+  kind: "container" | "folder";
   id: string;
   name: string;
   created_at: number;
   parent_id: string | null;
   sort_order: number;
-  layout: string;
+  discipline: string;
 }
 interface TreeRef {
-  kind: "pad" | "folder";
+  kind: "container" | "folder";
   id: string;
 }
 
@@ -101,13 +101,13 @@ interface TokenRow {
   principal_id: string;
   minted_by: string | null;
   caps: string;
-  pad_id: string | null;
+  container_id: string | null;
   created_at: number;
   revoked_at: number | null;
 }
 
 interface DocRow {
-  pad_id: string;
+  container_id: string;
   epoch: string;
   rev: number;
   ts: number;
@@ -128,10 +128,10 @@ interface MachineAuthRow extends MachineRow {
   revoked_at: number | null;
 }
 
-interface SessionDbRow {
+interface TerminalDbRow {
   id: string;
   machine_id: string;
-  pad_id: string | null;
+  container_id: string | null;
   created_by: string;
   agent_principal_id: string | null;
   name: string | null;
@@ -155,14 +155,14 @@ export interface TokenRecord {
   principalId: string;
   mintedBy: string | null;
   caps: readonly Cap[];
-  padId: string | null;
+  containerId: string | null;
   createdAt: number;
   revokedAt: number | null;
 }
 
 /** Latest canonical Yjs document loaded into a room. */
 export interface DocRecord {
-  padId: string;
+  containerId: string;
   epoch: string;
   rev: number;
   ts: number;
@@ -190,12 +190,12 @@ export interface MachineAuthRecord extends MachineRecord {
   revokedAt: number | null;
 }
 
-/** Durable terminal session row; geometry/controller remain live broker state by schema. */
-export interface StoredSession {
+/** Durable terminal row; geometry/controller remain live broker state by schema. */
+export interface StoredTerminal {
   id: string;
   machineId: string;
-  /** The composition this terminal lives in. Never null: a terminal is `homed: "eager"`. */
-  padId: string;
+  /** The container this terminal lives in. Never null: a terminal is `homed: "eager"`. */
+  containerId: string;
   createdBy: string;
   agentPrincipalId: string | null;
   name: string | null;
@@ -204,11 +204,11 @@ export interface StoredSession {
   createdAt: number;
 }
 
-/** Input required to persist a newly created terminal session. */
-export interface NewStoredSession {
+/** Input required to persist a newly created terminal. */
+export interface NewStoredTerminal {
   id: string;
   machineId: string;
-  padId: string;
+  containerId: string;
   createdBy: string;
   agentPrincipalId: string;
   createdAt: number;
@@ -228,7 +228,7 @@ function toToken(row: TokenRow): TokenRecord {
     principalId: row.principal_id,
     mintedBy: row.minted_by,
     caps,
-    padId: row.pad_id,
+    containerId: row.container_id,
     createdAt: row.created_at,
     revokedAt: row.revoked_at,
   };
@@ -239,35 +239,35 @@ function toMachine(row: MachineRow): MachineRecord {
 }
 
 /**
- * A pad row IS the container: `layout` selects which of its two disciplines it wears. There
- * is no lifecycle flag beside it any more — nothing dissolves under anybody, so there is
- * nothing to mark as provisional and no return address to remember.
+ * A container row is the whole object: `discipline` selects which of its two disciplines the
+ * container wears. There is no lifecycle flag beside it any more — nothing dissolves under
+ * anybody, so there is nothing to mark as provisional and no return address to remember.
  */
-function toPad(row: {
+function toContainer(row: {
   readonly id: string;
   readonly name: string;
   readonly created_at: number;
-  readonly layout: string;
-}): Pad {
-  if (row.layout !== "canvas" && row.layout !== "tiled") {
-    throw new Error(`invalid persisted pad layout: ${row.layout}`);
+  readonly discipline: string;
+}): Container {
+  if (row.discipline !== "canvas" && row.discipline !== "composition") {
+    throw new Error(`invalid persisted container discipline: ${row.discipline}`);
   }
-  return { id: row.id, name: row.name, createdAt: row.created_at, layout: row.layout };
+  return { id: row.id, name: row.name, createdAt: row.created_at, discipline: row.discipline };
 }
 
-function toSession(row: SessionDbRow): StoredSession {
+function toTerminal(row: TerminalDbRow): StoredTerminal {
   if (row.status !== "running" && row.status !== "exited") {
-    throw new Error(`invalid persisted session status: ${row.status}`);
+    throw new Error(`invalid persisted terminal status: ${row.status}`);
   }
-  if (row.pad_id === null) {
-    // Migration 9 gave every session a home and nothing since can take it away: a session
+  if (row.container_id === null) {
+    // Migration 9 gave every terminal a home and nothing since can take it away: a terminal
     // is deleted, never unbound. A null here means a write went around the broker.
-    throw new Error(`session ${row.id} has no home composition`);
+    throw new Error(`terminal ${row.id} has no home composition`);
   }
   return {
     id: row.id,
     machineId: row.machine_id,
-    padId: row.pad_id,
+    containerId: row.container_id,
     createdBy: row.created_by,
     agentPrincipalId: row.agent_principal_id,
     name: row.name,
@@ -279,12 +279,13 @@ function toSession(row: SessionDbRow): StoredSession {
 
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
-  private readonly eventCountByPad = new Map<string, number>();
+  private readonly eventCountByContainer = new Map<string, number>();
 
   constructor(readonly db: Database) {
     db.exec(`
       CREATE INDEX IF NOT EXISTS events_by_timestamp ON events(ts);
-      CREATE INDEX IF NOT EXISTS events_by_pad_recency ON events(pad_id, ts DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS events_by_container_recency
+        ON events(container_id, ts DESC, id DESC);
     `);
   }
 
@@ -312,7 +313,7 @@ export class ServerStore {
   /**
    * Which plugins an administrator turned off, workspace-globally. Stored as the DISABLED
    * set rather than the enabled one so a plugin that ships later is on by default and no
-   * write is owed when the composition grows. A corrupt row reads as "nothing disabled":
+   * write is owed when the assembly grows. A corrupt row reads as "nothing disabled":
    * the alternative is a workspace that boots with every plugin dark because one meta value
    * lost its brackets.
    */
@@ -354,7 +355,7 @@ export class ServerStore {
   /**
    * ELEMENT-TYPE RESERVATIONS — wire type → the plugin that claimed it. A tombstone, not a
    * cache: it survives the owner being disabled, going dormant, or leaving the build, because
-   * the documents that stored `type: "draw"` survive all three. Composition refuses a
+   * the documents that stored `type: "draw"` survive all three. Assembly refuses a
    * different plugin claiming a reserved type, so a canvas full of one plugin's elements can
    * never be silently reinterpreted by whatever ships next under that name.
    */
@@ -400,7 +401,7 @@ export class ServerStore {
 
   /**
    * PER-PLUGIN STORAGE, bound to one plugin id. The engine hands this to a plugin as
-   * `ctx.storage`; the plugin sees a namespaced key-value surface and never the database,
+   * `ctx.storage`; the plugin sees a namespaced key-value store and never the database,
    * so two plugins cannot read each other's rows and a purge erases exactly one namespace.
    *
    * Returned as the ADMIN handle. `PluginHost` keeps that and hands plugins the narrower
@@ -445,7 +446,7 @@ export class ServerStore {
         assertStorageKey(key);
         drop(key);
       },
-      // A plugin's own keys only: the engine's reserved rows are not part of the surface it
+      // A plugin's own keys only: the engine's reserved rows are not part of the keyspace it
       // iterates, or every `keys()` consumer would have to learn to skip them.
       keys: (prefix) => scan(prefix ?? "").filter((key) => !key.startsWith(RESERVED_KEY_PREFIX)),
       dataVersion: () => {
@@ -501,30 +502,31 @@ export class ServerStore {
     this.setMeta(`layout:${principalId}`, JSON.stringify(parsed));
   }
 
-  listPadTree(): PadTreeItem[] {
+  listIndex(): IndexEntry[] {
     return this.db
-      .query<PadTreeRow, []>(
-        `SELECT kind, id, name, created_at, parent_id, sort_order, layout
+      .query<IndexRow, []>(
+        `SELECT kind, id, name, created_at, parent_id, sort_order, discipline
          FROM (
-           SELECT 'pad' AS kind, id, name, created_at, folder_id AS parent_id, sort_order, layout
-           FROM pads
+           SELECT 'container' AS kind, id, name, created_at, folder_id AS parent_id, sort_order,
+                  discipline
+           FROM containers
            UNION ALL
            SELECT 'folder' AS kind, id, name, created_at, parent_folder_id AS parent_id, sort_order,
-                  'canvas' AS layout
-           FROM pad_folders
+                  'canvas' AS discipline
+           FROM container_folders
          )
          ORDER BY COALESCE(parent_id, ''), sort_order, created_at, id`,
       )
       .all()
       .map((row) =>
-        row.kind === "pad"
-          ? PadTreeItemSchema.parse({
-              kind: "pad",
-              pad: toPad(row),
+        row.kind === "container"
+          ? IndexEntrySchema.parse({
+              kind: "container",
+              container: toContainer(row),
               parentId: row.parent_id,
               sortOrder: row.sort_order,
             })
-          : PadTreeItemSchema.parse({
+          : IndexEntrySchema.parse({
               kind: "folder",
               id: row.id,
               name: row.name,
@@ -535,25 +537,30 @@ export class ServerStore {
       );
   }
 
-  listPads(): Pad[] {
-    return this.listPadTree()
-      .filter((item): item is Extract<PadTreeItem, { kind: "pad" }> => item.kind === "pad")
-      .map((item) => item.pad);
+  listContainers(): Container[] {
+    return this.listIndex()
+      .filter(
+        (item): item is Extract<IndexEntry, { kind: "container" }> => item.kind === "container",
+      )
+      .map((item) => item.container);
   }
 
-  getPad(id: string): Pad | null {
+  getContainer(id: string): Container | null {
     const row = this.db
-      .query<PadRow, [string]>("SELECT id, name, created_at, layout FROM pads WHERE id = ?")
+      .query<ContainerRow, [string]>(
+        "SELECT id, name, created_at, discipline FROM containers WHERE id = ?",
+      )
       .get(id);
-    return row === null ? null : PadSchema.parse(toPad(row));
+    return row === null ? null : ContainerSchema.parse(toContainer(row));
   }
 
   private siblingRefs(parentId: string | null): TreeRef[] {
     return this.db
       .query<TreeRef, [string | null, string | null]>(
-        `SELECT 'pad' AS kind, id, sort_order FROM pads WHERE folder_id IS ?
+        `SELECT 'container' AS kind, id, sort_order FROM containers WHERE folder_id IS ?
          UNION ALL
-         SELECT 'folder' AS kind, id, sort_order FROM pad_folders WHERE parent_folder_id IS ?
+         SELECT 'folder' AS kind, id, sort_order FROM container_folders
+         WHERE parent_folder_id IS ?
          ORDER BY sort_order, kind, id`,
       )
       .all(parentId, parentId)
@@ -561,16 +568,16 @@ export class ServerStore {
   }
 
   private setTreePosition(item: TreeRef, parentId: string | null, sortOrder: number): void {
-    if (item.kind === "pad") {
+    if (item.kind === "container") {
       this.db
         .query<void, [string | null, number, string]>(
-          "UPDATE pads SET folder_id = ?, sort_order = ? WHERE id = ?",
+          "UPDATE containers SET folder_id = ?, sort_order = ? WHERE id = ?",
         )
         .run(parentId, sortOrder, item.id);
     } else {
       this.db
         .query<void, [string | null, number, string]>(
-          "UPDATE pad_folders SET parent_folder_id = ?, sort_order = ? WHERE id = ?",
+          "UPDATE container_folders SET parent_folder_id = ?, sort_order = ? WHERE id = ?",
         )
         .run(parentId, sortOrder, item.id);
     }
@@ -581,24 +588,30 @@ export class ServerStore {
   }
 
   /** Persists a container at the top level of the index. */
-  createPad(pad: Pad): void {
-    PadSchema.parse(pad);
+  createContainer(container: Container): void {
+    ContainerSchema.parse(container);
     this.db
       .query<void, [string, string, number, number, string]>(
-        `INSERT INTO pads(id, name, created_at, sort_order, folder_id, layout)
+        `INSERT INTO containers(id, name, created_at, sort_order, folder_id, discipline)
          VALUES (?, ?, ?, ?, NULL, ?)`,
       )
-      .run(pad.id, pad.name, pad.createdAt, this.siblingRefs(null).length, pad.layout);
+      .run(
+        container.id,
+        container.name,
+        container.createdAt,
+        this.siblingRefs(null).length,
+        container.discipline,
+      );
   }
 
-  createPadFolder(
+  createFolder(
     folder: { readonly id: string; readonly name: string; readonly createdAt: number },
     parentId: string | null,
   ): boolean {
     if (
       parentId !== null &&
       this.db
-        .query<ExistsRow, [string]>("SELECT 1 AS found FROM pad_folders WHERE id = ?")
+        .query<ExistsRow, [string]>("SELECT 1 AS found FROM container_folders WHERE id = ?")
         .get(parentId) === null
     ) {
       return false;
@@ -606,25 +619,25 @@ export class ServerStore {
     const sortOrder = this.siblingRefs(parentId).length;
     this.db
       .query<void, [string, string, number, string | null, number]>(
-        `INSERT INTO pad_folders(id, name, created_at, parent_folder_id, sort_order)
+        `INSERT INTO container_folders(id, name, created_at, parent_folder_id, sort_order)
          VALUES (?, ?, ?, ?, ?)`,
       )
       .run(folder.id, folder.name, folder.createdAt, parentId, sortOrder);
     return true;
   }
 
-  renamePadFolder(id: string, name: string): boolean {
+  renameFolder(id: string, name: string): boolean {
     return (
       this.db
-        .query<void, [string, string]>("UPDATE pad_folders SET name = ? WHERE id = ?")
+        .query<void, [string, string]>("UPDATE container_folders SET name = ? WHERE id = ?")
         .run(name, id).changes > 0
     );
   }
 
-  deletePadFolder(id: string): boolean {
+  deleteFolder(id: string): boolean {
     return this.db.transaction(() => {
-      const folder = this.listPadTree().find(
-        (item): item is Extract<PadTreeItem, { kind: "folder" }> =>
+      const folder = this.listIndex().find(
+        (item): item is Extract<IndexEntry, { kind: "folder" }> =>
           item.kind === "folder" && item.id === id,
       );
       if (folder === undefined) return false;
@@ -635,18 +648,18 @@ export class ServerStore {
       const insertionIndex = Math.min(folder.sortOrder, siblings.length);
       siblings.splice(insertionIndex, 0, ...children);
       for (const child of children) this.setTreePosition(child, folder.parentId, 0);
-      this.db.query<void, [string]>("DELETE FROM pad_folders WHERE id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM container_folders WHERE id = ?").run(id);
       this.reindexSiblings(folder.parentId, siblings);
       return true;
     })();
   }
 
-  movePadTreeItem(item: TreeRef, parentId: string | null, index: number): boolean {
+  moveIndexEntry(item: TreeRef, parentId: string | null, index: number): boolean {
     return this.db.transaction(() => {
-      const tree = this.listPadTree();
+      const tree = this.listIndex();
       const current = tree.find((candidate) =>
-        candidate.kind === "pad"
-          ? item.kind === "pad" && candidate.pad.id === item.id
+        candidate.kind === "container"
+          ? item.kind === "container" && candidate.container.id === item.id
           : item.kind === "folder" && candidate.id === item.id,
       );
       if (current === undefined) return false;
@@ -683,30 +696,30 @@ export class ServerStore {
     })();
   }
 
-  renamePad(id: string, name: string): Pad | null {
+  renameContainer(id: string, name: string): Container | null {
     const result = this.db
-      .query<void, [string, string]>("UPDATE pads SET name = ? WHERE id = ?")
+      .query<void, [string, string]>("UPDATE containers SET name = ? WHERE id = ?")
       .run(name, id);
-    return result.changes === 0 ? null : this.getPad(id);
+    return result.changes === 0 ? null : this.getContainer(id);
   }
 
-  deletePad(id: string): boolean {
-    this.eventCountByPad.delete(id);
+  deleteContainer(id: string): boolean {
+    this.eventCountByContainer.delete(id);
     return this.db.transaction(() => {
-      const current = this.listPadTree().find(
-        (item): item is Extract<PadTreeItem, { kind: "pad" }> =>
-          item.kind === "pad" && item.pad.id === id,
+      const current = this.listIndex().find(
+        (item): item is Extract<IndexEntry, { kind: "container" }> =>
+          item.kind === "container" && item.container.id === id,
       );
       if (current === undefined) return false;
-      this.db.query<void, [string]>("DELETE FROM scene_docs WHERE pad_id = ?").run(id);
-      this.db.query<void, [string]>("DELETE FROM events WHERE pad_id = ?").run(id);
-      this.db.query<void, [string]>("DELETE FROM sessions WHERE pad_id = ?").run(id);
-      const removed = this.db.query<void, [string]>("DELETE FROM pads WHERE id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM scene_docs WHERE container_id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM events WHERE container_id = ?").run(id);
+      this.db.query<void, [string]>("DELETE FROM terminals WHERE container_id = ?").run(id);
+      const removed = this.db.query<void, [string]>("DELETE FROM containers WHERE id = ?").run(id);
       if (removed.changes === 0) return false;
       this.reindexSiblings(
         current.parentId,
         this.siblingRefs(current.parentId).filter(
-          (item) => !(item.kind === "pad" && item.id === id),
+          (item) => !(item.kind === "container" && item.id === id),
         ),
       );
       return true;
@@ -714,25 +727,25 @@ export class ServerStore {
   }
 
   latestDoc(
-    padId: string,
+    containerId: string,
     onInvalid?: (error: Error, record: InvalidDoc) => void,
   ): DocRecord | null {
     const rows = this.db
       .query<DocRow, [string]>(
-        `SELECT pad_id, epoch, rev, ts, hash, doc FROM scene_docs
-         WHERE pad_id = ? ORDER BY ts DESC, rev DESC LIMIT 30`,
+        `SELECT container_id, epoch, rev, ts, hash, doc FROM scene_docs
+         WHERE container_id = ? ORDER BY ts DESC, rev DESC LIMIT 30`,
       )
-      .all(padId);
+      .all(containerId);
     for (const row of rows) {
       try {
         if (sha256Hex(row.doc) !== row.hash) {
-          throw new Error(`scene document hash mismatch for pad ${padId}`);
+          throw new Error(`scene document hash mismatch for container ${containerId}`);
         }
         const probe = new Y.Doc();
         Y.applyUpdate(probe, row.doc);
         probe.destroy();
         return {
-          padId: row.pad_id,
+          containerId: row.container_id,
           epoch: row.epoch,
           rev: row.rev,
           ts: row.ts,
@@ -747,27 +760,27 @@ export class ServerStore {
     return null;
   }
 
-  saveDoc(padId: string, epoch: string, rev: number, ts: number, doc: Uint8Array): DocRecord {
+  saveDoc(containerId: string, epoch: string, rev: number, ts: number, doc: Uint8Array): DocRecord {
     const hash = sha256Hex(doc);
     const save = this.db.transaction(() => {
       this.db
         .query<void, [string, string, number, number, string, Uint8Array]>(
-          `INSERT OR REPLACE INTO scene_docs(pad_id, epoch, rev, ts, hash, doc)
+          `INSERT OR REPLACE INTO scene_docs(container_id, epoch, rev, ts, hash, doc)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(padId, epoch, rev, ts, hash, doc);
+        .run(containerId, epoch, rev, ts, hash, doc);
       this.db
         .query<void, [string, string]>(
           `DELETE FROM scene_docs
-           WHERE pad_id = ? AND rowid NOT IN (
-             SELECT rowid FROM scene_docs WHERE pad_id = ?
+           WHERE container_id = ? AND rowid NOT IN (
+             SELECT rowid FROM scene_docs WHERE container_id = ?
              ORDER BY ts DESC, rev DESC LIMIT 30
            )`,
         )
-        .run(padId, padId);
+        .run(containerId, containerId);
     });
     save();
-    return { padId, epoch, rev, ts, hash, doc: new Uint8Array(doc) };
+    return { containerId, epoch, rev, ts, hash, doc: new Uint8Array(doc) };
   }
 
   createPrincipal(principal: Principal, createdAt: number): void {
@@ -818,7 +831,7 @@ export class ServerStore {
         [string, string, string, string | null, string, string | null, number, number | null]
       >(
         `INSERT INTO tokens(
-           id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
+           id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -827,7 +840,7 @@ export class ServerStore {
         record.principalId,
         record.mintedBy,
         JSON.stringify(record.caps),
-        record.padId,
+        record.containerId,
         record.createdAt,
         record.revokedAt,
       );
@@ -836,7 +849,7 @@ export class ServerStore {
   getTokenByHash(hash: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
          FROM tokens WHERE hash = ?`,
       )
       .get(hash);
@@ -846,7 +859,7 @@ export class ServerStore {
   getToken(id: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, minted_by, caps, pad_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
          FROM tokens WHERE id = ?`,
       )
       .get(id);
@@ -864,14 +877,14 @@ export class ServerStore {
     return row?.found === 1;
   }
 
-  revokeTokensByPrincipal(principalId: string, revokedAt: number, padId?: string): number {
-    if (padId !== undefined) {
+  revokeTokensByPrincipal(principalId: string, revokedAt: number, containerId?: string): number {
+    if (containerId !== undefined) {
       return this.db
         .query<void, [number, string, string]>(
           `UPDATE tokens SET revoked_at = ?
-           WHERE principal_id = ? AND pad_id = ? AND revoked_at IS NULL`,
+           WHERE principal_id = ? AND container_id = ? AND revoked_at IS NULL`,
         )
-        .run(revokedAt, principalId, padId).changes;
+        .run(revokedAt, principalId, containerId).changes;
     }
     return this.db
       .query<void, [number, string]>(
@@ -891,7 +904,7 @@ export class ServerStore {
   }
 
   addEvent(
-    padId: string | null,
+    containerId: string | null,
     ts: number,
     principalId: string | null,
     type: string,
@@ -900,38 +913,39 @@ export class ServerStore {
     const retainedCount = this.transaction((): number | null => {
       this.db
         .query<void, [string | null, number, string | null, string, string]>(
-          "INSERT INTO events(pad_id, ts, principal_id, type, payload) VALUES (?, ?, ?, ?, ?)",
+          `INSERT INTO events(container_id, ts, principal_id, type, payload)
+           VALUES (?, ?, ?, ?, ?)`,
         )
-        .run(padId, ts, principalId, type, JSON.stringify(payload));
+        .run(containerId, ts, principalId, type, JSON.stringify(payload));
       this.db
         .query<void, [number]>("DELETE FROM events WHERE ts < ?")
         .run(ts - EVENTS_RETENTION_DAYS * MILLISECONDS_PER_DAY);
-      if (padId === null) return null;
+      if (containerId === null) return null;
 
-      const cachedCount = this.eventCountByPad.get(padId);
+      const cachedCount = this.eventCountByContainer.get(containerId);
       let count =
         cachedCount === undefined
           ? this.db
               .query<{ count: number }, [string]>(
-                "SELECT COUNT(*) AS count FROM events WHERE pad_id = ?",
+                "SELECT COUNT(*) AS count FROM events WHERE container_id = ?",
               )
-              .get(padId)!.count
+              .get(containerId)!.count
           : cachedCount + 1;
-      if (count <= EVENTS_MAX_PER_PAD) return count;
+      if (count <= EVENTS_MAX_PER_CONTAINER) return count;
       this.db
         .query<void, [string, number]>(
           `DELETE FROM events
            WHERE id IN (
-             SELECT id FROM events WHERE pad_id = ?
+             SELECT id FROM events WHERE container_id = ?
              ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
            )`,
         )
-        .run(padId, EVENTS_MAX_PER_PAD);
-      count = EVENTS_MAX_PER_PAD;
+        .run(containerId, EVENTS_MAX_PER_CONTAINER);
+      count = EVENTS_MAX_PER_CONTAINER;
       return count;
     });
-    if (padId !== null && retainedCount !== null) {
-      this.eventCountByPad.set(padId, retainedCount);
+    if (containerId !== null && retainedCount !== null) {
+      this.eventCountByContainer.set(containerId, retainedCount);
     }
   }
 
@@ -1004,110 +1018,110 @@ export class ServerStore {
       .run(name, at, machineId);
   }
 
-  createSession(session: NewStoredSession): void {
+  createTerminal(terminal: NewStoredTerminal): void {
     this.db
       .query<void, [string, string, string, string, string, string, null, number, null]>(
-        `INSERT INTO sessions(
-           id, machine_id, pad_id, created_by, agent_principal_id,
+        `INSERT INTO terminals(
+           id, machine_id, container_id, created_by, agent_principal_id,
            status, exit_code, created_at, name
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        session.id,
-        session.machineId,
-        session.padId,
-        session.createdBy,
-        session.agentPrincipalId,
+        terminal.id,
+        terminal.machineId,
+        terminal.containerId,
+        terminal.createdBy,
+        terminal.agentPrincipalId,
         "running",
         null,
-        session.createdAt,
+        terminal.createdAt,
         null,
       );
   }
 
-  getSession(id: string): StoredSession | null {
+  getTerminal(id: string): StoredTerminal | null {
     const row = this.db
-      .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+      .query<TerminalDbRow, [string]>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name
-         FROM sessions WHERE id = ?`,
+         FROM terminals WHERE id = ?`,
       )
       .get(id);
-    return row === null ? null : toSession(row);
+    return row === null ? null : toTerminal(row);
   }
 
-  listSessions(): StoredSession[] {
+  listTerminals(): StoredTerminal[] {
     return this.db
-      .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+      .query<TerminalDbRow, []>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name
-         FROM sessions ORDER BY created_at, id`,
+         FROM terminals ORDER BY created_at, id`,
       )
       .all()
-      .map(toSession);
+      .map(toTerminal);
   }
 
-  listRunningSessionsForMachine(machineId: string): StoredSession[] {
+  listRunningTerminalsForMachine(machineId: string): StoredTerminal[] {
     return this.db
-      .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+      .query<TerminalDbRow, [string]>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name
-         FROM sessions WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
+         FROM terminals WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
-      .map(toSession);
+      .map(toTerminal);
   }
-  listRunningSessions(): StoredSession[] {
+  listRunningTerminals(): StoredTerminal[] {
     return this.db
-      .query<SessionDbRow, []>(
-        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+      .query<TerminalDbRow, []>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name
-         FROM sessions WHERE status = 'running' ORDER BY created_at, id`,
+         FROM terminals WHERE status = 'running' ORDER BY created_at, id`,
       )
       .all()
-      .map(toSession);
+      .map(toTerminal);
   }
 
-  deleteSession(id: string): boolean {
-    return this.db.query<void, [string]>("DELETE FROM sessions WHERE id = ?").run(id).changes > 0;
+  deleteTerminal(id: string): boolean {
+    return this.db.query<void, [string]>("DELETE FROM terminals WHERE id = ?").run(id).changes > 0;
   }
 
-  markSessionExited(id: string, exitCode: number | null): boolean {
+  markTerminalExited(id: string, exitCode: number | null): boolean {
     return (
       this.db
         .query<void, [number | null, string]>(
-          "UPDATE sessions SET status = 'exited', exit_code = ? WHERE id = ?",
+          "UPDATE terminals SET status = 'exited', exit_code = ? WHERE id = ?",
         )
         .run(exitCode, id).changes > 0
     );
   }
 
   /**
-   * Moves a session to a different home composition. A session is never unbound: it is
+   * Moves a terminal to a different home container. A terminal is never unbound: it is
    * deleted, or it lives somewhere. Which is why this takes no null.
    */
-  updateSessionPad(id: string, padId: string): void {
+  updateTerminalContainer(id: string, containerId: string): void {
     this.db
-      .query<void, [string, string]>("UPDATE sessions SET pad_id = ? WHERE id = ?")
-      .run(padId, id);
+      .query<void, [string, string]>("UPDATE terminals SET container_id = ? WHERE id = ?")
+      .run(containerId, id);
   }
 
-  /** Sets or clears a session's operator-assigned display name. */
-  updateSessionName(id: string, name: string | null): void {
+  /** Sets or clears a terminal's operator-assigned display name. */
+  updateTerminalName(id: string, name: string | null): void {
     this.db
-      .query<void, [string | null, string]>("UPDATE sessions SET name = ? WHERE id = ?")
+      .query<void, [string | null, string]>("UPDATE terminals SET name = ? WHERE id = ?")
       .run(name, id);
   }
 
-  /** Sessions homed in one container, in creation order. */
-  listSessionsForPad(padId: string): StoredSession[] {
+  /** Terminals homed in one container, in creation order. */
+  listTerminalsForContainer(containerId: string): StoredTerminal[] {
     return this.db
-      .query<SessionDbRow, [string]>(
-        `SELECT id, machine_id, pad_id, created_by, agent_principal_id,
+      .query<TerminalDbRow, [string]>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
                 status, exit_code, created_at, name
-         FROM sessions WHERE pad_id = ? ORDER BY created_at, id`,
+         FROM terminals WHERE container_id = ? ORDER BY created_at, id`,
       )
-      .all(padId)
-      .map(toSession);
+      .all(containerId)
+      .map(toTerminal);
   }
 }

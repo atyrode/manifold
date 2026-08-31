@@ -3,6 +3,13 @@
 Date: 2026-08-31
 Status: designed 2026-08-31, implementation next wave
 
+Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
+cites moved in the lexicon cut. `padScope` is `containerScope`, `padId` is `containerId`, and
+the subtree grant a token's scope stands for is at `manifold://container/<id>` rather than
+`manifold://pad/<id>`. The degenerate cap array it describes reads
+`containers:read` / `containers:write` / `scenes:write` / `terminals:spawn` / `terminals:write`
+today. Canon is `AXIOMS.md` §Lexicon.
+
 ## Context
 
 Axiom A4 (sovereign nodes) says every node has one owner, one home, and one canonical

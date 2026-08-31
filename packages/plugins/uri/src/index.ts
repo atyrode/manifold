@@ -3,7 +3,7 @@ import { type PluginManifest } from "@manifold/protocol";
 /**
  * Deep links, as a plugin. `manifold://` is the canonical serialization of the addressing
  * algebra (D7); this is the half that turns one into a place in the browser: `/uri/<encoded>`
- * resolves the reference and takes the viewer there — a pad it opens, an element or tile it
+ * resolves the reference and takes the viewer there — a container it opens, an element or tile it
  * opens AND centers on, a terminal it follows to the container that holds it.
  *
  * It contributes no panels, sections, elements or tools, and declares no capabilities:

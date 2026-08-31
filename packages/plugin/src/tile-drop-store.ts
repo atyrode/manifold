@@ -6,14 +6,14 @@ import { sameAim } from "./use-tile-drop.ts";
 /**
  * The per-frame channel between a drag transport and a tile area's preview overlay.
  *
- * One store per host surface. Transports (an HTML5 `dragover`, a React Flow node drag)
- * write the pointer and — on a canvas — which widget the canvas has armed; the overlay
+ * One store per host ref. Transports (an HTML5 `dragover`, a React Flow node drag)
+ * write the pointer and — on a canvas — which portal the canvas has armed; the overlay
  * resolves the aim and publishes it back, so the transport can commit it at release AND
  * lift it onto the carry wire. That published aim is the SINGLE source of the wire aim
  * on both renderers: neither builds its own beside the one it paints.
  *
  * Consumed with `useSyncExternalStore` ONLY by the overlay: a pointer update repaints
- * the overlay alone and never re-renders the widget or its live terminals, which is what
+ * the overlay alone and never re-renders the portal or its live terminals, which is what
  * allowed deleting the old node-data zone stamping (it remapped every projected node on
  * every zone change).
  */
@@ -30,23 +30,23 @@ const NO_REMOTE_CARRIES: ReadonlyMap<string, RemoteTileCarry> = new Map();
 
 export interface TileDropSignal {
   readonly pointer: { readonly clientX: number; readonly clientY: number } | null;
-  /** Canvas only: which widget the canvas armed. The route leaves it null. */
+  /** Canvas only: which portal the canvas armed. The route leaves it null. */
   readonly armedElementId: string | null;
   /** The overlay's answer: what releasing right now would commit. */
   readonly aim: TileDropAim | null;
   /**
-   * PEER aims over this surface, keyed by the container each one addresses, freshest
+   * PEER aims over this ref, keyed by the container each one addresses, freshest
    * per container. Written imperatively by the hosts feeding this store — the overlay
    * is the only subscriber, so a collaborator's 60 Hz drag never re-renders a tree or
-   * its terminals. A canvas draws many widgets, which is why this is a map and not one
-   * winner: a single slot let two peers aiming at two widgets mask each other.
+   * its terminals. A canvas draws many portals, which is why this is a map and not one
+   * winner: a single slot let two peers aiming at two portals mask each other.
    */
   readonly remote: ReadonlyMap<string, RemoteTileCarry>;
 }
 
 /**
  * The half a TRANSPORT writes. `remote` is not in it: peer aims arrive from N
- * independent feeds (a canvas's own room, plus every live widget's socket) and are
+ * independent feeds (a canvas's own room, plus every live portal's socket) and are
  * merged by {@link TileDropStore.setRemote}, so a transport spreading a stale snapshot
  * cannot clobber a feed it knows nothing about.
  */
@@ -57,10 +57,10 @@ export interface TileDropStore {
   set(next: TileDropIntent): void;
   /**
    * Publishes one FEED's per-container peer aims. Feeds are additive and independent:
-   * a canvas publishes what its own room hears, and each live widget publishes what its
-   * container's room hears, which is how a route dragger's preview reaches the widget
+   * a canvas publishes what its own room hears, and each live portal publishes what its
+   * container's room hears, which is how a route dragger's preview reaches the portal
    * viewers watching the same container. Freshest wins per container across feeds.
-   * Publishing an empty map retires a feed (a widget unmounting).
+   * Publishing an empty map retires a feed (a portal unmounting).
    */
   setRemote(feedId: string, carries: ReadonlyMap<string, RemoteTileCarry>): void;
   subscribe(listener: () => void): () => void;
@@ -77,11 +77,11 @@ function destinationsEqual(a: PlacementDestination, b: PlacementDestination): bo
   if (a.kind !== b.kind) return false;
   switch (a.kind) {
     case "canvas":
-      return b.kind === "canvas" && a.padId === b.padId && a.x === b.x && a.y === b.y;
+      return b.kind === "canvas" && a.containerId === b.containerId && a.x === b.x && a.y === b.y;
     case "tile":
       return (
         b.kind === "tile" &&
-        a.padId === b.padId &&
+        a.containerId === b.containerId &&
         a.targetTileId === b.targetTileId &&
         a.edge === b.edge &&
         (a.between === true) === (b.between === true)
@@ -89,7 +89,7 @@ function destinationsEqual(a: PlacementDestination, b: PlacementDestination): bo
     case "compose":
       return (
         b.kind === "compose" &&
-        a.padId === b.padId &&
+        a.containerId === b.containerId &&
         a.targetElementId === b.targetElementId &&
         a.edge === b.edge
       );

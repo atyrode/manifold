@@ -60,7 +60,7 @@ describe("connection-scoped cursor identity", () => {
     const snapped = new Map<string, RemoteCursor>();
     // View-root fractions: the whole span of motion is smaller than the flow epsilon, so
     // easing at scene scale teleports the cursor on the very first frame — the defect
-    // that made tiled cursors jump while canvas cursors glided.
+    // that made composition cursors jump while canvas cursors glided.
     recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null);
     recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null);
     expect(stepRemoteCursors(snapped, CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON)).toBe(true);
@@ -160,7 +160,7 @@ describe("view-root cursor fractions", () => {
 
   test("clamps received fractions so no frame can paint outside the view root", () => {
     expect(clampCursorFraction({ x: 0.25, y: 0.75 })).toEqual({ x: 0.25, y: 0.75 });
-    // A canvas-space frame reaching a tiled renderer lands on the border, never off it.
+    // A canvas-space frame reaching a composition renderer lands on the border, never off it.
     expect(clampCursorFraction({ x: 1_284, y: -12 })).toEqual({ x: 1, y: 0 });
     expect(clampCursorFraction({ x: Number.NaN, y: Number.NaN })).toEqual({ x: 0, y: 0 });
   });

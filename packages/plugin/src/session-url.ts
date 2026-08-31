@@ -1,5 +1,5 @@
 /**
- * WHERE THE SESSION SOCKET IS. One answer, because every renderer that joins a room dials
+ * WHERE THE TERMINAL SOCKET IS. One answer, because every renderer that joins a room dials
  * the same door and a second derivation is a second answer to "which instance is this"
  * (invariant 14).
  *

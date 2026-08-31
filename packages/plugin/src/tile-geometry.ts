@@ -3,17 +3,17 @@ import {
   type PlacementDestination,
   type TileEdge,
   type TileLayout,
-  type TileNode,
-  type TileSurface,
+  type Tile,
+  type TileRef,
 } from "@manifold/protocol";
 
-import { sameSurface, withTileSlot, withoutTileLeaf } from "@manifold/scene";
+import { sameTileRef, withVacantLeaf, withoutTileLeaf } from "@manifold/scene";
 import { SNAP_EDGE_BAND, snapZone } from "./tile-snap.ts";
 
 /**
- * Leaf-addressed drop geometry for tiled containers, DOM-free and in UNIT SPACE:
+ * Leaf-addressed drop geometry for compositions, DOM-free and in UNIT SPACE:
  * every rectangle and point is a fraction 0..1 of the tile area, so the same numbers
- * hold at any canvas zoom and under a widget's `transform: scale()`.
+ * hold at any canvas zoom and under a portal's `transform: scale()`.
  *
  * This module answers WHERE a pointer aims inside a tile tree — any leaf at any depth,
  * every SEAM between adjacent siblings at any depth, and the area's own border ring —
@@ -40,7 +40,7 @@ export interface UnitPoint {
 /** Constant on-screen ring thickness, in device px, converted to a fraction by the caller. */
 export const ROOT_RING_PX = 20;
 
-/** The ring never eats more than this fraction of an axis (small widgets stay targetable). */
+/** The ring never eats more than this fraction of an axis (small portals stay targetable). */
 export const RING_AXIS_CAP = 0.15;
 
 /**
@@ -126,7 +126,7 @@ export function tileChainAt(
   let tileId: string | undefined = ROOT_TILE_ID;
   while (tileId !== undefined) {
     chain.push(tileId);
-    const node: TileNode | undefined = layout[tileId];
+    const node: Tile | undefined = layout[tileId];
     if (node === undefined || node.dir === null) break;
     tileId = node.children.find((childId) => {
       const rect = rects.get(childId);
@@ -300,7 +300,7 @@ type SeamHeld = "middle" | "low-end" | "high-end";
 
 /** One seam the pointer sits in the band of, and how deeply. */
 interface Seam {
-  readonly split: TileNode;
+  readonly split: Tile;
   /** The split's own depth in the chain: what its structural end aims address. */
   readonly depth: number;
   /** Index of the leading child, so ties resolve to the leading boundary. */
@@ -323,7 +323,7 @@ function seamHalf(ringAxis: number, childExtent: number): number {
 }
 
 /** Which meaning of this seam the held aim names — the bias every boundary takes. */
-function seamHeld(held: HeldAim | null, split: TileNode, previousChildId: string): SeamHeld | null {
+function seamHeld(held: HeldAim | null, split: Tile, previousChildId: string): SeamHeld | null {
   if (held === null) return null;
   const row = split.dir === "row";
   // A middle aim IS the leading child's trailing edge, so it names this seam exactly.
@@ -342,7 +342,7 @@ function seamHeld(held: HeldAim | null, split: TileNode, previousChildId: string
  */
 function seamAt(
   rects: ReadonlyMap<string, UnitRect>,
-  split: TileNode,
+  split: Tile,
   index: number,
   depth: number,
   point: UnitPoint,
@@ -396,7 +396,7 @@ function closerSeam(a: Seam | null, b: Seam | null): Seam | null {
 /** The leading child of the gap a pointer stands in, when the chain ended on this split. */
 function gapIndexAt(
   rects: ReadonlyMap<string, UnitRect>,
-  split: TileNode,
+  split: Tile,
   point: UnitPoint,
 ): number | null {
   const row = split.dir === "row";
@@ -468,7 +468,7 @@ function seamAim(
     A member of a TWO-child split cannot aim at that split, at either meaning of its
     seam. Its own departure collapses the split — `withoutTileLeaf` promotes the lone
     survivor into the parent — so the id a seam-end aim names does not exist in the
-    pruned tree, `tileProspect` remaps nothing (a split has no surface to re-find) and
+    pruned tree, `tileProspect` remaps nothing (a split has no ref to re-find) and
     answers null: a zone that looks live for every other carry, previews nothing and
     commits nothing. The middle refuses for the simpler reason below (a no-op), so the
     whole seam is nothing to a member of a pair.
@@ -638,7 +638,7 @@ export function resolveTileAim(
     return { tileId: leafId, edge: zone, action: "place", depth, between: false };
   }
   // Center never dissolves on a tile target: five zones are always live here.
-  if (node.surface === null) return { tileId: leafId, edge: "center", action: "place", depth };
+  if (node.ref === null) return { tileId: leafId, edge: "center", action: "place", depth };
   return {
     tileId: leafId,
     edge: "center",
@@ -653,22 +653,22 @@ export function resolveTileAim(
  * parent's id, so an id-matched diff would report spurious unmounts for panes that
  * visibly must move. Empty leaves have no identity to follow. Exported because the
  * tree's content portals key pane CONTENT by this same base — but a base is NOT a
- * pane: one surface may legally occupy several leaves, so both sides disambiguate the
+ * pane: one ref may legally occupy several leaves, so both sides disambiguate the
  * repeats by ordinal (`paneIdentities` here, `seen` there).
  */
-export function surfaceKey(surface: TileSurface | null): string | null {
-  if (surface === null) return null;
-  switch (surface.kind) {
+export function refKey(ref: TileRef | null): string | null {
+  if (ref === null) return null;
+  switch (ref.kind) {
     case "terminal":
-      return `terminal:${surface.sessionId}`;
-    case "pad":
-      return `pad:${surface.padId}`;
+      return `terminal:${ref.terminalId}`;
+    case "container":
+      return `container:${ref.containerId}`;
     case "text":
-      return `text:${surface.elementId}`;
+      return `text:${ref.elementId}`;
     case "panel":
-      return `panel:${surface.panelId}`;
+      return `panel:${ref.panelId}`;
     default: {
-      const exhaustive: never = surface;
+      const exhaustive: never = ref;
       return exhaustive;
     }
   }
@@ -698,7 +698,7 @@ function sameRect(a: UnitRect, b: UnitRect): boolean {
  * disambiguated: `base`, then `base#1`, `base#2` for repeats of that base.
  *
  * Duplicates are legal — a second leaf for a terminal already living in this container
- * "is simply another copy of it", says the placement executor — so a bare `surfaceKey`
+ * "is simply another copy of it", says the placement executor — so a bare `refKey`
  * would collapse two panes onto one seat, and a diff would then point both prospective
  * leaves at one DOM box: two transforms written to it, last one winning, while the
  * other pane never moves at all.
@@ -718,7 +718,7 @@ function paneIdentities(layout: TileLayout): ReadonlyMap<string, string> {
       return;
     }
     // An empty leaf has nothing on screen to glide, so it has no identity to follow.
-    const base = surfaceKey(node.surface);
+    const base = refKey(node.ref);
     if (base === null) return;
     const nth = seen.get(base) ?? 0;
     seen.set(base, nth + 1);
@@ -731,7 +731,7 @@ function paneIdentities(layout: TileLayout): ReadonlyMap<string, string> {
 /**
  * Where every occupied pane of `current` would sit under `next`, for the panes whose
  * rectangle actually changes. Matched by pane identity (see `paneIdentities`); a pane
- * with no counterpart — the carried surface entering, an occupant leaving — is simply
+ * with no counterpart — the carried ref entering, an occupant leaving — is simply
  * not a shift, because there is nothing on screen to glide.
  */
 export function paneShifts(
@@ -771,21 +771,21 @@ export function tileDestinationFor(
   aim: TileAim,
   host: {
     readonly containerId: string;
-    readonly widget: { readonly padId: string; readonly elementId: string } | null;
+    readonly portal: { readonly containerId: string; readonly elementId: string } | null;
     readonly rootIsLeaf: boolean;
   },
 ): PlacementDestination {
-  if (host.rootIsLeaf && host.widget !== null) {
+  if (host.rootIsLeaf && host.portal !== null) {
     return {
       kind: "compose",
-      padId: host.widget.padId,
-      targetElementId: host.widget.elementId,
+      containerId: host.portal.containerId,
+      targetElementId: host.portal.elementId,
       edge: aim.edge,
     };
   }
   return {
     kind: "tile",
-    padId: host.containerId,
+    containerId: host.containerId,
     targetTileId: aim.tileId,
     edge: aim.edge,
     ...(aim.between === true ? { between: true } : {}),
@@ -813,10 +813,10 @@ function remapAimedTile(
 ): string | null {
   if (pruned[aimedTileId] !== undefined) return aimedTileId;
   const aimed = layout[aimedTileId];
-  if (aimed === undefined || aimed.dir !== null || aimed.surface === null) return null;
+  if (aimed === undefined || aimed.dir !== null || aimed.ref === null) return null;
   for (const node of Object.values(pruned)) {
-    if (node.dir !== null || node.surface === null) continue;
-    if (sameSurface(node.surface, aimed.surface)) return node.id;
+    if (node.dir !== null || node.ref === null) continue;
+    if (sameTileRef(node.ref, aimed.ref)) return node.id;
   }
   return null;
 }
@@ -855,9 +855,9 @@ export function tileProspect(
       : layout;
   const remapped = remapAimedTile(layout, pruned, aim.tileId);
   if (remapped === null) return null;
-  const slotted = withTileSlot(pruned, remapped, aim.edge, aim.between === true);
+  const slotted = withVacantLeaf(pruned, remapped, aim.edge, aim.between === true);
   if (slotted === null) return null;
-  const slot = tileRects(slotted.layout, dividers).get(slotted.slotId) ?? null;
+  const slot = tileRects(slotted.layout, dividers).get(slotted.vacantLeafId) ?? null;
   if (slot === null) return null;
   return { slot, partner: null, shifts: paneShifts(layout, slotted.layout, dividers) };
 }

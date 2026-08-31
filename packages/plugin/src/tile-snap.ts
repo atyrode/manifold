@@ -1,11 +1,11 @@
-import { ROOT_TILE_ID, type TileEdge, type TileLayout, type TileSurface } from "@manifold/protocol";
+import { ROOT_TILE_ID, type TileEdge, type TileLayout, type TileRef } from "@manifold/protocol";
 
 /**
  * Pure snap geometry and hit-testing, shared by the composition renderer and the canvas
  * compose gesture.
  *
  * MODEL RULE (see the container-primitives plan): uniformity lives in the composition
- * layer, not storage. Every tileable surface — a canvas terminal element, a canvas, a note,
+ * layer, not storage. Every tileable ref — a canvas terminal element, a canvas, a note,
  * later a browser pane — is treated by drag, preview and compose logic as a one-leaf tile
  * tree via `asTileTree`, while the stored object stays a plain element until composition
  * actually happens.
@@ -47,8 +47,8 @@ export interface SnapNode {
 }
 
 /**
- * The ONE element type a canvas drop can compose onto: a widget, which is a portal onto
- * the container the surface would join. There is no second species — a canvas terminal
+ * The ONE element type a canvas drop can compose onto: a portal, which is a portal onto
+ * the container the ref would join. There is no second species — a canvas terminal
  * IS a portal onto its solo home, so the composition it births is the container behind
  * that same portal. Notes and ink are not targets (there is nothing to birth a container
  * around, and the executor refuses them anyway), so offering the gesture would be a lie.
@@ -135,7 +135,7 @@ export interface SnapCarry {
   /**
    * True when the carry holds a PLACEMENT of the target's own species — a leaf for a leaf,
    * a canvas element for a canvas element — so there is a seat to give the occupant back.
-   * False for identity forms (a sidebar row, a bare session id), which name an item
+   * False for identity forms (a sidebar row, a bare terminal id), which name an item
    * without naming any placement of it and therefore have nothing to trade.
    */
   readonly canSwap: boolean;
@@ -179,18 +179,18 @@ function nearestEdge(rect: SnapRect, pointer: SnapPoint): TileEdge {
 }
 
 /**
- * Lifts a single surface into the one-leaf tile tree the preview and compose
+ * Lifts a single ref into the one-leaf tile tree the preview and compose
  * layers reason over. Nothing is stored: a canvas terminal element only becomes
  * a real layout tree when the server composes a view around it.
  */
-export function asTileTree(surface: TileSurface): TileLayout {
+export function asTileTree(ref: TileRef): TileLayout {
   return {
     [ROOT_TILE_ID]: {
       id: ROOT_TILE_ID,
       dir: null,
       ratios: [],
       children: [],
-      surface,
+      ref,
     },
   };
 }
@@ -250,7 +250,7 @@ export interface DividerDrag {
  * Where a divider drag has moved to: the pointer's travel as a fraction of the split,
  * scaled into ratio units. Both terms are client pixels — the caller measures the box
  * with `getBoundingClientRect()`, which reports it already transformed — so the same
- * math holds for a tree drawn 1:1 and one drawn inside a scaled, zoomed canvas widget.
+ * math holds for a tree drawn 1:1 and one drawn inside a scaled, zoomed canvas portal.
  * Returns `drag.ratios` itself when the drag is pinned, so callers can skip the write.
  */
 export function dividerRatios(drag: DividerDrag, pointerPx: number): readonly number[] {

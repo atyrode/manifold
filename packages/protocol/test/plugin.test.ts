@@ -22,7 +22,7 @@ import {
   PluginRosterSchema,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
-  TileSurfaceSchema,
+  TileRefSchema,
   buildProtocolJsonSchema,
   pluginVocabulary,
   type PluginManifest,
@@ -47,7 +47,7 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     version: "0.1.0",
     title: "Terminals",
     description: "",
-    capabilities: ["pads:write"],
+    capabilities: ["containers:write"],
     contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
     ...overrides,
   };
@@ -56,7 +56,7 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 describe("plugin manifest", () => {
   test("the contribution lists default to empty, so a manifest declares only what it adds", () => {
     const parsed = PluginManifestSchema.parse({
-      id: "core.layout",
+      id: "core.space",
       version: "0.1.0",
       title: "Workspace layout",
       description: "One action door over the workspace tree.",
@@ -64,7 +64,7 @@ describe("plugin manifest", () => {
       contributes: {},
     });
 
-    // A plugin contributing nothing but actions (core.layout is exactly that) must not have
+    // A plugin contributing nothing but actions (core.space is exactly that) must not have
     // to write five empty arrays to be composable.
     expect(parsed.contributes).toEqual({
       panels: [],
@@ -84,7 +84,7 @@ describe("plugin manifest", () => {
     const reserved = PluginManifestSchema.parse(
       manifest({
         id: "core.presence",
-        capabilities: ["scene:write"],
+        capabilities: ["scenes:write"],
         contributes: {
           panels: [],
           sections: [],
@@ -146,12 +146,12 @@ describe("plugin manifest", () => {
     // with a caller's, so it is refused rather than carried as decoration.
     expect(
       PluginManifestSchema.safeParse(
-        manifest({ capabilities: ["pads:write", "plugins:invent"] as never }),
+        manifest({ capabilities: ["containers:write", "plugins:invent"] as never }),
       ).success,
     ).toBe(false);
     expect(
       PluginManifestSchema.safeParse(
-        manifest({ capabilities: Array.from({ length: 17 }, () => "pads:read" as const) }),
+        manifest({ capabilities: Array.from({ length: 17 }, () => "containers:read" as const) }),
       ).success,
     ).toBe(false);
   });
@@ -202,7 +202,7 @@ describe("published action summary", () => {
   const summary = {
     name: "core.terminals.rename",
     title: "Rename terminal",
-    caps: ["pads:write"] as const,
+    caps: ["containers:write"] as const,
     input: { type: "object" },
     result: { type: "object" },
   };
@@ -224,7 +224,7 @@ describe("published action summary", () => {
 
   test("a summary carries nothing beyond the vocabulary it publishes", () => {
     expect(ActionSummarySchema.safeParse({ ...summary, handler: "rename" }).success).toBe(false);
-    expect(ActionSummarySchema.safeParse({ ...summary, caps: ["pads:invent"] }).success).toBe(
+    expect(ActionSummarySchema.safeParse({ ...summary, caps: ["containers:invent"] }).success).toBe(
       false,
     );
     // The schemas are JSON Schema documents, not zod shapes: a reader is an agent, not this
@@ -290,11 +290,11 @@ describe("the plugin roster", () => {
       {
         name: "core.terminals.kill",
         title: "Kill terminal",
-        caps: ["pads:write"],
+        caps: ["containers:write"],
         cleanup: true,
         // A cleanup door confined to one container: `scope` is required on the OUTPUT type
         // because the schema defaults it, so a summary always states its authority grade.
-        scope: "pad",
+        scope: "container",
         input: { type: "object" },
         result: { type: "object" },
       },
@@ -432,22 +432,22 @@ describe("the connection-level plugins frame", () => {
   });
 });
 
-describe("the panel tile surface", () => {
-  test("a panel is a leaf surface like any other, so the workspace is one tree vocabulary", () => {
+describe("the panel tile ref", () => {
+  test("a panel is a leaf ref like any other, so the workspace is one tree vocabulary", () => {
     // D2: the shell is a composition, not a second node system. The workspace layout is a
     // TileLayout whose leaves are plugin panels, rendered by the SAME TileTree component
     // every container uses.
-    const parsed = TileSurfaceSchema.parse({ kind: "panel", panelId: "core.shell.sidebar" });
+    const parsed = TileRefSchema.parse({ kind: "panel", panelId: "core.shell.sidebar" });
     expect(parsed).toEqual({ kind: "panel", panelId: "core.shell.sidebar" });
   });
 
-  test("a panel surface names exactly one panel, with nothing else attached", () => {
-    expect(TileSurfaceSchema.safeParse({ kind: "panel", panelId: "" }).success).toBe(false);
-    expect(TileSurfaceSchema.safeParse({ kind: "panel" }).success).toBe(false);
-    // No props, no config, no component: a surface is an ADDRESS the outlet resolves
+  test("a panel ref names exactly one panel, with nothing else attached", () => {
+    expect(TileRefSchema.safeParse({ kind: "panel", panelId: "" }).success).toBe(false);
+    expect(TileRefSchema.safeParse({ kind: "panel" }).success).toBe(false);
+    // No props, no config, no component: a ref is an ADDRESS the outlet resolves
     // against the live composition, which is what lets a disable render a placeholder.
     expect(
-      TileSurfaceSchema.safeParse({
+      TileRefSchema.safeParse({
         kind: "panel",
         panelId: "core.shell.sidebar",
         props: { collapsed: true },
@@ -582,7 +582,7 @@ describe("dormancy is declarative", () => {
 
 describe("the residual carve-out and the purge verb", () => {
   test("the residual mechanisms are a CLOSED three, one per plane", () => {
-    // Disable gates a plugin's ACTIVE surface; these are the declared carve-outs that
+    // Disable gates a plugin's ACTIVE contributions; these are the declared carve-outs that
     // outlive it. Closed, so the carve-out cannot grow quietly: a fourth is a protocol
     // change reviewed as one.
     expect([...PLUGIN_RESIDUAL_MECHANISMS]).toEqual(["cleanup", "dormant", "retain"]);
@@ -647,21 +647,21 @@ describe("contributed element placement traits", () => {
       withElement({
         type: "draw",
         title: "Drawing",
-        placement: { groups: ["canvas-item"], guards: [], homed: "inline" },
+        placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
       }),
     );
     expect(parsed.contributes.elements[0]?.placement).toEqual({
-      groups: ["canvas-item"],
+      groups: ["canvas_item"],
       guards: [],
       homed: "inline",
     });
   });
 
-  test("absence is the canvas-item default, so a v14 element row still means what it meant", () => {
+  test("absence is the canvas_item default, so a v14 element row still means what it meant", () => {
     const parsed = PluginManifestSchema.parse(withElement({ type: "draw", title: "Drawing" }));
     expect(parsed.contributes.elements[0]?.placement).toBeUndefined();
     expect(DEFAULT_ELEMENT_PLACEMENT_TRAITS).toEqual({
-      groups: ["canvas-item"],
+      groups: ["canvas_item"],
       guards: [],
       homed: "inline",
     });
@@ -670,10 +670,10 @@ describe("contributed element placement traits", () => {
   test("traits are the ALGEBRA's vocabulary; a manifest cannot invent placement behavior", () => {
     for (const placement of [
       { groups: ["floaty"], guards: [], homed: "inline" },
-      { groups: ["canvas-item"], guards: ["discipline-match"], homed: "inline" }, // container-site
-      { groups: ["canvas-item"], guards: [], homed: "whenever" },
-      { groups: ["canvas-item"], guards: [] }, // homing is not optional: null is the answer
-      { groups: ["canvas-item"], guards: [], homed: null, accepts: ["tileable"] },
+      { groups: ["canvas_item"], guards: ["discipline_match"], homed: "inline" }, // container-site
+      { groups: ["canvas_item"], guards: [], homed: "whenever" },
+      { groups: ["canvas_item"], guards: [] }, // homing is not optional: null is the answer
+      { groups: ["canvas_item"], guards: [], homed: null, accepts: ["tileable"] },
     ]) {
       expect(
         PluginManifestSchema.safeParse(withElement({ type: "draw", title: "Drawing", placement }))
@@ -725,7 +725,7 @@ describe("a v14 manifest is a v15 manifest", () => {
       version: "0.1.0",
       title: "Terminals",
       description: "",
-      capabilities: ["pads:write"],
+      capabilities: ["containers:write"],
       contributes: { elements: [{ type: "draw", title: "Drawing" }] },
     });
     expect(parsed.dependencies).toBeUndefined();

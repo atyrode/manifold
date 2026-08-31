@@ -3,6 +3,11 @@
 Date: 2026-08-31
 Status: designed 2026-08-31, implementation wave 2
 
+Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
+cites moved in the lexicon cut. The sidebar section it names "Views" is the **Index** section
+(`core.index`), and the topics it designs are `manifold://container/<id>` addresses rather than
+`manifold://pad/<id>`. Canon is `AXIOMS.md` §Lexicon.
+
 ## Context
 
 manifold has three planes and each one has a rule (the plane rule, `AXIOMS.md` §Axioms):

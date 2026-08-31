@@ -3,13 +3,13 @@ import {
   ActionOutcomeSchema,
   ContainersResponseSchema,
   OkResponseSchema,
-  PadsResponseSchema,
+  ContainerCensusResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
   censusSolo,
   type CensusItem,
   type ContainerCensus,
-  type Pad,
+  type Container,
   type PlaceRequest,
   type PlaceResponse,
   type TileLayout,
@@ -17,7 +17,7 @@ import {
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
   listTerminals,
   mintToken,
@@ -66,12 +66,12 @@ interface Workspace {
   readonly server: TestServer;
   readonly agent: TestAgent;
   readonly token: string;
-  readonly pad: Pad;
+  readonly container: Container;
 }
 
 /**
- * One real server + agent + canvas pad. The token is WORKSPACE-scoped on purpose: a terminal
- * lives in a composition the server mints as the PTY lands, so a pad-scoped grant could
+ * One real server + agent + canvas container. The token is WORKSPACE-scoped on purpose: a terminal
+ * lives in a composition the server mints as the PTY lands, so a container-scoped grant could
  * never join the room that holds it.
  */
 async function startWorkspace(
@@ -81,7 +81,7 @@ async function startWorkspace(
 ): Promise<Workspace> {
   const server = await startServer();
   servers.push(server);
-  const pad = await createPad(server, `${label} canvas`);
+  const container = await createContainer(server, `${label} canvas`);
   const enrolled = await enrollMachine(server, `${label}-agent`);
   const agent = await startAgent({
     serverUrl: server.url,
@@ -91,53 +91,60 @@ async function startWorkspace(
   agents.push(agent);
   const owner = await mintToken(server, {
     principal: { kind: "human", name: "Container Owner", color: "#3fa46b" },
-    caps: ["pads:read", "pads:write", "scene:write", "terminal:spawn", "terminal:write"],
+    caps: [
+      "containers:read",
+      "containers:write",
+      "scenes:write",
+      "terminals:spawn",
+      "terminals:write",
+    ],
   });
-  return { server, agent, token: owner.token, pad };
+  return { server, agent, token: owner.token, container };
 }
 
 /**
  * The ONE placement call. Every gesture this file exercises — merge, extract, unplace — is
- * the same envelope with a different destination dispatched through `core.layout.place`, and
+ * the same envelope with a different destination dispatched through `core.space.place`, and
  * the returned `op` says which placement the declarations chose, so each caller asserts the
  * op it expected.
  */
 async function place(server: TestServer, request: PlaceRequest): Promise<PlaceResponse> {
   return PlaceResponseSchema.parse(
-    await ownerAction(server, "core.layout.place", PlaceRequestSchema.parse(request)),
+    await ownerAction(server, "core.space.place", PlaceRequestSchema.parse(request)),
   );
 }
 
-async function listPads(server: TestServer): Promise<readonly Pad[]> {
-  return PadsResponseSchema.parse(await ownerAction(server, "core.views.list", {})).pads;
+async function listContainers(server: TestServer): Promise<readonly Container[]> {
+  return ContainersResponseSchema.parse(await ownerAction(server, "core.index.listContainers", {}))
+    .containers;
 }
 
 /** The whole containment graph: one census per container, which is the index's only input. */
-async function listContainers(server: TestServer): Promise<readonly ContainerCensus[]> {
+async function containerCensuses(server: TestServer): Promise<readonly ContainerCensus[]> {
   const listing = await ownerFetch(server, "/api/containers", {
-    responseSchema: ContainersResponseSchema,
+    responseSchema: ContainerCensusResponseSchema,
   });
   return listing.containers;
 }
 
-async function censusOf(server: TestServer, padId: string): Promise<ContainerCensus> {
-  const containers = await listContainers(server);
-  const census = containers.find((candidate) => candidate.padId === padId);
-  if (census === undefined) throw new Error(`no container census for ${padId}`);
+async function censusOf(server: TestServer, containerId: string): Promise<ContainerCensus> {
+  const containers = await containerCensuses(server);
+  const census = containers.find((candidate) => candidate.containerId === containerId);
+  if (census === undefined) throw new Error(`no container census for ${containerId}`);
   return census;
 }
 
 /** What a solo composition holds, stated the way the census states it. */
-function soloTerminal(sessionId: string): CensusItem {
-  return { kind: "terminal", containerId: null, sessionId };
+function soloTerminal(terminalId: string): CensusItem {
+  return { kind: "terminal", containerId: null, terminalId };
 }
 
-/** The leaf a session occupies; its id IS the session's placement inside a tiled container. */
-function tileForSession(layout: TileLayout, sessionId: string): string | null {
+/** The leaf a terminal occupies; its id IS the terminal's placement inside a composition. */
+function tileForTerminal(layout: TileLayout, terminalId: string): string | null {
   for (const node of Object.values(layout)) {
-    const surface = node.surface;
-    if (node.dir !== null || surface === null) continue;
-    if (surface.kind === "terminal" && surface.sessionId === sessionId) return node.id;
+    const ref = node.ref;
+    if (node.dir !== null || ref === null) continue;
+    if (ref.kind === "terminal" && ref.terminalId === terminalId) return node.id;
   }
   return null;
 }
@@ -154,7 +161,7 @@ async function waitForTileCount(client: SessionClient, count: number): Promise<T
     20,
   );
   const layout = client.layout();
-  if (layout === null) throw new Error("tiled container published no layout tree");
+  if (layout === null) throw new Error("composition published no layout tree");
   return layout;
 }
 
@@ -170,8 +177,8 @@ async function invokeAction(server: TestServer, name: string, args: unknown): Pr
 }
 
 /** Renames a terminal so a merged composition's auto-name is exact rather than machine-derived. */
-async function renameTerminal(server: TestServer, sessionId: string, name: string): Promise<void> {
-  await invokeAction(server, "core.terminals.rename", { sessionId, name });
+async function renameTerminal(server: TestServer, terminalId: string, name: string): Promise<void> {
+  await invokeAction(server, "core.terminals.rename", { terminalId, name });
 }
 
 test("a terminal is born into a solo composition, and placing a portal onto it flips unplaced", async () => {
@@ -179,45 +186,49 @@ test("a terminal is born into a solo composition, and placing a portal onto it f
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("solo", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, token, container } = await startWorkspace("solo", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
     // No portal yet: the birth invariant is about the COMPOSITION, and authoring the canvas's
     // reference afterwards is what proves `unplaced` is derived rather than stored.
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-solo",
       token,
     });
     clients.push(homeClient);
 
     // The index knows exactly one terminal, and the composition it names lives beside the
-    // canvas as a tiled container of its own.
+    // canvas as a composition of its own.
     const terminals = await listTerminals(server);
     expect(terminals).toHaveLength(1);
     expect(terminals[0]).toMatchObject({
-      id: session.id,
-      homeId: session.padId,
+      id: terminal.id,
+      homeId: terminal.containerId,
       status: "running",
       exitCode: null,
       unplaced: true,
     });
-    const pads = await listPads(server);
-    expect(pads.map((row) => row.id).sort()).toEqual([pad.id, session.padId].sort());
-    expect(pads.find((row) => row.id === session.padId)?.layout).toBe("tiled");
+    const containers = await listContainers(server);
+    expect(containers.map((row) => row.id).sort()).toEqual(
+      [container.id, terminal.containerId].sort(),
+    );
+    expect(containers.find((row) => row.id === terminal.containerId)?.discipline).toBe(
+      "composition",
+    );
 
     // Solo means exactly one item, and that item IS the terminal.
-    const home = await censusOf(server, session.padId);
-    expect(home.layout).toBe("tiled");
-    expect(home.items).toEqual([soloTerminal(session.id)]);
-    expect(censusSolo(home)).toEqual(soloTerminal(session.id));
+    const home = await censusOf(server, terminal.containerId);
+    expect(home.discipline).toBe("composition");
+    expect(home.items).toEqual([soloTerminal(terminal.id)]);
+    expect(censusSolo(home)).toEqual(soloTerminal(terminal.id));
     expect(home.references).toEqual([]);
     const born = await waitForTileCount(homeClient, 1);
-    expect(tileForSession(born, session.id)).not.toBeNull();
+    expect(tileForTerminal(born, terminal.id)).not.toBeNull();
 
     // Placing it is authoring a REFERENCE. Nothing about the terminal changes, and the index
     // re-derives `unplaced` from the containment graph on the very next read.
     canvas.transact((tx) => {
-      tx.create(portalElement("el-solo", session.padId, { x: 320, y: 180 }));
+      tx.create(portalElement("el-solo", terminal.containerId, { x: 320, y: 180 }));
     });
     await waitFor(() => canvas.elements.has("el-solo"), 10_000, 20);
     await waitFor(
@@ -225,11 +236,13 @@ test("a terminal is born into a solo composition, and placing a portal onto it f
       10_000,
       50,
     );
-    const canvasCensus = await censusOf(server, pad.id);
-    expect(canvasCensus.layout).toBe("canvas");
-    expect(canvasCensus.references).toEqual([session.padId]);
+    const canvasCensus = await censusOf(server, container.id);
+    expect(canvasCensus.discipline).toBe("canvas");
+    expect(canvasCensus.references).toEqual([terminal.containerId]);
     // The composition still holds exactly what it held: a reference is not containment.
-    expect((await censusOf(server, session.padId)).items).toEqual([soloTerminal(session.id)]);
+    expect((await censusOf(server, terminal.containerId)).items).toEqual([
+      soloTerminal(terminal.id),
+    ]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -244,8 +257,8 @@ test("composing two live terminals merges their homes into one named composition
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("merge", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, token, container } = await startWorkspace("merge", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
     const target = await openTerminalAt(canvas, server, {
       elementId: "el-target",
@@ -258,12 +271,12 @@ test("composing two live terminals merges their homes into one named composition
       portalAt: { x: 980, y: 150 },
     });
     clients.push(target.homeClient, dragged.homeClient);
-    expect(target.session.padId).not.toBe(dragged.session.padId);
+    expect(target.terminal.containerId).not.toBe(dragged.terminal.containerId);
 
-    await renameTerminal(server, target.session.id, "alpha");
-    await renameTerminal(server, dragged.session.id, "beta");
+    await renameTerminal(server, target.terminal.id, "alpha");
+    await renameTerminal(server, dragged.terminal.id, "beta");
     await waitFor(
-      () => dragged.homeClient.sessions.get(dragged.session.id)?.name === "beta",
+      () => dragged.homeClient.terminals.get(dragged.terminal.id)?.name === "beta",
       10_000,
       20,
     );
@@ -271,37 +284,48 @@ test("composing two live terminals merges their homes into one named composition
     // Real bytes into both PTYs, so the merge has something to lose.
     const alpha = sentinel("alpha");
     const beta = sentinel("beta");
-    const targetCapture = await attachedCapture(target.homeClient, target.session.id);
-    const draggedCapture = await attachedCapture(dragged.homeClient, dragged.session.id);
+    const targetCapture = await attachedCapture(target.homeClient, target.terminal.id);
+    const draggedCapture = await attachedCapture(dragged.homeClient, dragged.terminal.id);
     captures.push(targetCapture, draggedCapture);
-    target.homeClient.sendTerminalInput(target.session.id, alpha.command);
-    dragged.homeClient.sendTerminalInput(dragged.session.id, beta.command);
+    target.homeClient.sendTerminalInput(target.terminal.id, alpha.command);
+    dragged.homeClient.sendTerminalInput(dragged.terminal.id, beta.command);
     await Promise.all([
       waitForTerminalText(targetCapture, alpha.text, 10_000),
       waitForTerminalText(draggedCapture, beta.text, 10_000),
     ]);
 
-    // One widget dropped on another: a composition is born absorbing BOTH items, and the
+    // One portal dropped on another: a composition is born absorbing BOTH items, and the
     // target's element becomes a reference to it in place.
     const composed = await place(server, {
-      surface: { kind: "element", padId: pad.id, elementId: "el-dragged" },
-      destination: { kind: "compose", padId: pad.id, targetElementId: "el-target", edge: "right" },
+      ref: { kind: "element", containerId: container.id, elementId: "el-dragged" },
+      destination: {
+        kind: "compose",
+        containerId: container.id,
+        targetElementId: "el-target",
+        edge: "right",
+      },
     });
     if (composed.op !== "compose") throw new Error(`expected compose, got ${composed.op}`);
 
-    const merged = (await listPads(server)).find((row) => row.id === composed.viewId);
-    expect(merged).toMatchObject({ id: composed.viewId, name: "alpha + beta", layout: "tiled" });
+    const merged = (await listContainers(server)).find((row) => row.id === composed.containerId);
+    expect(merged).toMatchObject({
+      id: composed.containerId,
+      name: "alpha + beta",
+      discipline: "composition",
+    });
     // Both homes handed their occupant over and retired: neither row survives.
     await waitFor(
       async () => {
-        const ids = (await listPads(server)).map((row) => row.id);
-        return !ids.includes(target.session.padId) && !ids.includes(dragged.session.padId);
+        const ids = (await listContainers(server)).map((row) => row.id);
+        return (
+          !ids.includes(target.terminal.containerId) && !ids.includes(dragged.terminal.containerId)
+        );
       },
       10_000,
       50,
     );
-    expect((await listPads(server)).map((row) => row.id).sort()).toEqual(
-      [pad.id, composed.viewId].sort(),
+    expect((await listContainers(server)).map((row) => row.id).sort()).toEqual(
+      [container.id, composed.containerId].sort(),
     );
 
     // The target's reference kept its id and its geometry; the dragged one was consumed.
@@ -313,37 +337,37 @@ test("composing two live terminals merges their homes into one named composition
     );
     expect(canvas.elements.get("el-target")).toMatchObject({
       type: "portal",
-      containerId: composed.viewId,
+      containerId: composed.containerId,
       x: 200,
       y: 150,
     });
 
     // The composition holds both terminals as leaves, and the index says both live there.
     const inside = await connect(server, {
-      padId: composed.viewId,
+      containerId: composed.containerId,
       token,
       reconnect: false,
     });
     clients.push(inside);
     const layout = await waitForTileCount(inside, 2);
-    expect(tileForSession(layout, target.session.id)).not.toBeNull();
-    expect(tileForSession(layout, dragged.session.id)).toBe(composed.tileId);
+    expect(tileForTerminal(layout, target.terminal.id)).not.toBeNull();
+    expect(tileForTerminal(layout, dragged.terminal.id)).toBe(composed.tileId);
     await waitFor(
       async () =>
-        (await listTerminals(server)).every((terminal) => terminal.homeId === composed.viewId),
+        (await listTerminals(server)).every((terminal) => terminal.homeId === composed.containerId),
       10_000,
       50,
     );
     // Containment, not tree order: the census reports the container's own order, and which
     // leaf a split put first is the layout's business rather than this rule's.
-    const held = (await censusOf(server, composed.viewId)).items;
+    const held = (await censusOf(server, composed.containerId)).items;
     expect(held).toHaveLength(2);
-    expect(held).toContainEqual(soloTerminal(target.session.id));
-    expect(held).toContainEqual(soloTerminal(dragged.session.id));
+    expect(held).toContainEqual(soloTerminal(target.terminal.id));
+    expect(held).toContainEqual(soloTerminal(dragged.terminal.id));
 
     // Both PTYs survived the merge: each pre-merge screen replays on attach to the survivor.
-    const survivingTarget = await attachedCapture(inside, target.session.id);
-    const survivingDragged = await attachedCapture(inside, dragged.session.id);
+    const survivingTarget = await attachedCapture(inside, target.terminal.id);
+    const survivingDragged = await attachedCapture(inside, dragged.terminal.id);
     captures.push(survivingTarget, survivingDragged);
     expect(survivingTarget.pendingOutputCount).toBe(0);
     expect(survivingDragged.pendingOutputCount).toBe(0);
@@ -352,17 +376,17 @@ test("composing two live terminals merges their homes into one named composition
 
     // Compositions MERGE, never nest: one holding two items is nobody's item, and the rule
     // that refuses it says exactly that rather than throwing.
-    const other = await createPad(server, "merge refusal target", "tiled");
+    const other = await createContainer(server, "merge refusal target", "composition");
     const nested = await canvas.place(
-      { kind: "pad", padId: composed.viewId },
-      { kind: "tile", padId: other.id, targetTileId: null, edge: null },
+      { kind: "container", containerId: composed.containerId },
+      { kind: "tile", containerId: other.id, targetTileId: null, edge: null },
     );
     expect(nested.ok).toBe(false);
-    if (nested.ok) throw new Error("a two-item composition tiled into another must be refused");
+    if (nested.ok) throw new Error("a two-item composition placed into another must be refused");
     expect(nested.denial).toEqual({
       rule: "not_solo",
-      surface: { kind: "pad", padId: composed.viewId },
-      container: { kind: "view", padId: other.id },
+      ref: { kind: "container", containerId: composed.containerId },
+      container: { kind: "composition", containerId: other.id },
     });
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
@@ -379,8 +403,8 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("extract", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, token, container } = await startWorkspace("extract", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
     const resident = await openTerminalAt(canvas, server, {
       elementId: "el-resident",
@@ -395,20 +419,20 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
     clients.push(resident.homeClient, guest.homeClient);
 
     const mark = sentinel("guest");
-    const guestCapture = await attachedCapture(guest.homeClient, guest.session.id);
+    const guestCapture = await attachedCapture(guest.homeClient, guest.terminal.id);
     captures.push(guestCapture);
-    guest.homeClient.sendTerminalInput(guest.session.id, mark.command);
+    guest.homeClient.sendTerminalInput(guest.terminal.id, mark.command);
     await waitForTerminalText(guestCapture, mark.text, 10_000);
 
     // A tile drop is the other spelling of the merge: the guest joins the resident's
     // composition and the home it emptied retires.
-    const bornHome = guest.session.padId;
+    const bornHome = guest.terminal.containerId;
     const changed = nextLayoutChange(resident.homeClient);
     const added = await place(server, {
-      surface: { kind: "element", padId: pad.id, elementId: "el-guest" },
+      ref: { kind: "element", containerId: container.id, elementId: "el-guest" },
       destination: {
         kind: "tile",
-        padId: resident.session.padId,
+        containerId: resident.terminal.containerId,
         targetTileId: null,
         edge: "right",
       },
@@ -418,9 +442,9 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
     // update and re-reads the tree rather than diffing ids it never wrote.
     expect(await changed).toBe("remote");
     const shared = await waitForTileCount(resident.homeClient, 2);
-    expect(tileForSession(shared, guest.session.id)).toBe(added.tileId);
+    expect(tileForTerminal(shared, guest.terminal.id)).toBe(added.tileId);
     await waitFor(
-      async () => (await listPads(server)).every((row) => row.id !== bornHome),
+      async () => (await listContainers(server)).every((row) => row.id !== bornHome),
       10_000,
       50,
     );
@@ -428,8 +452,8 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
     // Extraction: the leaf leaves a MULTI-tile composition, so its terminal is re-homed into
     // a composition that did not exist a moment ago, and the canvas gets a portal onto that.
     const extracted = await place(server, {
-      surface: { kind: "tile", containerId: resident.session.padId, tileId: added.tileId },
-      destination: { kind: "canvas", padId: pad.id, x: 640, y: 700 },
+      ref: { kind: "tile", containerId: resident.terminal.containerId, tileId: added.tileId },
+      destination: { kind: "canvas", containerId: container.id, x: 640, y: 700 },
     });
     if (extracted.op !== "extract") throw new Error(`expected extract, got ${extracted.op}`);
     await waitFor(() => canvas.elements.has(extracted.elementId), 10_000, 20);
@@ -437,25 +461,31 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
     if (authored?.type !== "portal") throw new Error("extract authored no portal element");
     expect(authored).toMatchObject({ x: 640, y: 700 });
     const newHome = authored.containerId;
-    expect(newHome).not.toBe(resident.session.padId);
+    expect(newHome).not.toBe(resident.terminal.containerId);
     expect(newHome).not.toBe(bornHome);
-    expect(newHome).not.toBe(pad.id);
+    expect(newHome).not.toBe(container.id);
 
-    expect(censusSolo(await censusOf(server, newHome))).toEqual(soloTerminal(guest.session.id));
+    expect(censusSolo(await censusOf(server, newHome))).toEqual(soloTerminal(guest.terminal.id));
     const indexed = (await listTerminals(server)).find(
-      (terminal) => terminal.id === guest.session.id,
+      (terminal) => terminal.id === guest.terminal.id,
     );
     expect(indexed).toMatchObject({ homeId: newHome, status: "running", unplaced: false });
     // The source composition still holds the resident, so it was not emptied and stays.
     const remaining = await waitForTileCount(resident.homeClient, 1);
-    expect(tileForSession(remaining, resident.session.id)).not.toBeNull();
-    expect((await listPads(server)).map((row) => row.id)).toContain(resident.session.padId);
+    expect(tileForTerminal(remaining, resident.terminal.id)).not.toBeNull();
+    expect((await listContainers(server)).map((row) => row.id)).toContain(
+      resident.terminal.containerId,
+    );
 
     // Same PTY, two placements later: the pre-merge screen replays out of the new home.
-    const rehomed = await connect(server, { padId: newHome, token, reconnect: false });
+    const rehomed = await connect(server, { containerId: newHome, token, reconnect: false });
     clients.push(rehomed);
-    await waitFor(() => rehomed.sessions.get(guest.session.id)?.padId === newHome, 10_000, 20);
-    const rehomedCapture = await attachedCapture(rehomed, guest.session.id);
+    await waitFor(
+      () => rehomed.terminals.get(guest.terminal.id)?.containerId === newHome,
+      10_000,
+      20,
+    );
+    const rehomedCapture = await attachedCapture(rehomed, guest.terminal.id);
     captures.push(rehomedCapture);
     expect(rehomedCapture.pendingOutputCount).toBe(0);
     expect(rehomedCapture.snapshotText).toContain(mark.text);
@@ -474,10 +504,10 @@ test("unplacing a terminal removes every reference to it and leaves the PTY runn
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("unplace", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, token, container } = await startWorkspace("unplace", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-unplace",
       token,
       portalAt: { x: 260, y: 200 },
@@ -485,20 +515,20 @@ test("unplacing a terminal removes every reference to it and leaves the PTY runn
     clients.push(homeClient);
 
     // A second reference to the same composition: naming the ITEM releases all of them, which
-    // is what distinguishes an identity unplace from releasing one widget.
+    // is what distinguishes an identity unplace from releasing one portal.
     canvas.transact((tx) => {
-      tx.create(portalElement("el-mirror", session.padId, { x: 900, y: 200 }));
+      tx.create(portalElement("el-mirror", terminal.containerId, { x: 900, y: 200 }));
     });
     await waitFor(() => canvas.elements.has("el-mirror"), 10_000, 20);
 
     const mark = sentinel("unplaced");
-    const capture = await attachedCapture(homeClient, session.id);
+    const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
-    homeClient.sendTerminalInput(session.id, mark.command);
+    homeClient.sendTerminalInput(terminal.id, mark.command);
     await waitForTerminalText(capture, mark.text, 10_000);
 
     const released = await place(server, {
-      surface: { kind: "terminal", sessionId: session.id },
+      ref: { kind: "terminal", terminalId: terminal.id },
       destination: { kind: "unplaced" },
     });
     expect(released).toEqual({ op: "unplace", removed: 2 });
@@ -507,25 +537,31 @@ test("unplacing a terminal removes every reference to it and leaves the PTY runn
       10_000,
       20,
     );
-    expect((await censusOf(server, pad.id)).references).toEqual([]);
+    expect((await censusOf(server, container.id)).references).toEqual([]);
 
     // THIS is the whole difference from the park it replaced: the terminal did not move, did
     // not die, and is still indexed — it is simply unreferenced.
-    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === session.id);
+    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === terminal.id);
     expect(indexed).toMatchObject({
-      id: session.id,
-      homeId: session.padId,
+      id: terminal.id,
+      homeId: terminal.containerId,
       status: "running",
       exitCode: null,
       unplaced: true,
     });
-    expect(censusSolo(await censusOf(server, session.padId))).toEqual(soloTerminal(session.id));
+    expect(censusSolo(await censusOf(server, terminal.containerId))).toEqual(
+      soloTerminal(terminal.id),
+    );
 
     // A client that joins the home only AFTER the unplace still gets the pre-unplace screen.
-    const rejoin = await connect(server, { padId: session.padId, token, reconnect: false });
+    const rejoin = await connect(server, {
+      containerId: terminal.containerId,
+      token,
+      reconnect: false,
+    });
     clients.push(rejoin);
-    await waitFor(() => rejoin.sessions.get(session.id)?.status === "running", 10_000, 20);
-    const rejoinCapture = await attachedCapture(rejoin, session.id);
+    await waitFor(() => rejoin.terminals.get(terminal.id)?.status === "running", 10_000, 20);
+    const rejoinCapture = await attachedCapture(rejoin, terminal.id);
     captures.push(rejoinCapture);
     expect(rejoinCapture.pendingOutputCount).toBe(0);
     expect(rejoinCapture.snapshotText).toContain(mark.text);
@@ -533,7 +569,7 @@ test("unplacing a terminal removes every reference to it and leaves the PTY runn
     // Zero removed is a legal answer: it says "already unplaced" rather than failing.
     expect(
       await place(server, {
-        surface: { kind: "terminal", sessionId: session.id },
+        ref: { kind: "terminal", terminalId: terminal.id },
         destination: { kind: "unplaced" },
       }),
     ).toEqual({ op: "unplace", removed: 0 });
@@ -551,25 +587,29 @@ test("removing a terminal's last home leaf reaps the PTY and retires the composi
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
   try {
-    const { server, agent, token, pad } = await startWorkspace("reap", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, agent, token, container } = await startWorkspace("reap", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-reap",
       token,
       portalAt: { x: 200, y: 200 },
     });
     clients.push(homeClient);
     const layout = await waitForTileCount(homeClient, 1);
-    const leaf = tileForSession(layout, session.id);
+    const leaf = tileForTerminal(layout, terminal.id);
     if (leaf === null) throw new Error("the newborn composition holds no terminal leaf");
 
     // Closing a terminal's only leaf closes the terminal: there is no pool to fall into, so
     // the operator who removed its last representation removed the terminal.
-    const removed = await ownerFetch(server, `/api/pads/${session.padId}/tiles/${leaf}`, {
-      method: "DELETE",
-      responseSchema: OkResponseSchema,
-    });
+    const removed = await ownerFetch(
+      server,
+      `/api/containers/${terminal.containerId}/tiles/${leaf}`,
+      {
+        method: "DELETE",
+        responseSchema: OkResponseSchema,
+      },
+    );
     expect(removed.ok).toBe(true);
 
     await waitFor(
@@ -577,7 +617,7 @@ test("removing a terminal's last home leaf reaps the PTY and retires the composi
         agent.output.stdout.some(
           (line) =>
             line.includes('"evt":"exited"') &&
-            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+            line.includes(`"terminalId":${JSON.stringify(terminal.id)}`),
         ),
       15_000,
       50,
@@ -586,14 +626,14 @@ test("removing a terminal's last home leaf reaps the PTY and retires the composi
     // The composition it emptied retires with it, and the canvas's reference goes with that.
     await waitFor(
       async () => {
-        const ids = (await listPads(server)).map((row) => row.id);
-        return ids.length === 1 && ids[0] === pad.id;
+        const ids = (await listContainers(server)).map((row) => row.id);
+        return ids.length === 1 && ids[0] === container.id;
       },
       10_000,
       50,
     );
     await waitFor(() => !canvas.elements.has("el-reap"), 10_000, 20);
-    expect((await censusOf(server, pad.id)).references).toEqual([]);
+    expect((await censusOf(server, container.id)).references).toEqual([]);
     expect(agent.proc.exitCode).toBeNull();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
@@ -609,30 +649,30 @@ test("killing a terminal by id removes it, its home, and every portal onto it", 
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, agent, token, pad } = await startWorkspace("kill", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, agent, token, container } = await startWorkspace("kill", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-kill",
       token,
       portalAt: { x: 200, y: 200 },
     });
     clients.push(homeClient);
-    // A second widget onto the same terminal, because "gone" has to mean gone from every
+    // A second portal onto the same terminal, because "gone" has to mean gone from every
     // canvas rather than from the one the killer happened to be looking at.
     canvas.transact((tx) => {
-      tx.create(portalElement("el-kill-mirror", session.padId, { x: 980, y: 200 }));
+      tx.create(portalElement("el-kill-mirror", terminal.containerId, { x: 980, y: 200 }));
     });
     await waitFor(() => canvas.elements.has("el-kill-mirror"), 10_000, 20);
 
     // Prove the PTY is real and answering before it is destroyed.
     const mark = sentinel("killed");
-    const capture = await attachedCapture(homeClient, session.id);
+    const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
-    homeClient.sendTerminalInput(session.id, mark.command);
+    homeClient.sendTerminalInput(terminal.id, mark.command);
     await waitForTerminalText(capture, mark.text, 10_000);
 
-    await invokeAction(server, "core.terminals.kill", { sessionId: session.id });
+    await invokeAction(server, "core.terminals.kill", { terminalId: terminal.id });
 
     // The PTY really stopped: the agent, not the server, says so.
     await waitFor(
@@ -640,7 +680,7 @@ test("killing a terminal by id removes it, its home, and every portal onto it", 
         agent.output.stdout.some(
           (line) =>
             line.includes('"evt":"exited"') &&
-            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+            line.includes(`"terminalId":${JSON.stringify(terminal.id)}`),
         ),
       15_000,
       50,
@@ -651,15 +691,15 @@ test("killing a terminal by id removes it, its home, and every portal onto it", 
     // row, and reporting an exit only ever UPDATES one.
     await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
     // Its home was solo, so it went with it, and only the canvas remains.
-    const pads = (await listPads(server)).map((row) => row.id);
-    expect(pads).toEqual([pad.id]);
-    // Both widgets vanish through the document, which is how live viewers learn about it.
+    const containers = (await listContainers(server)).map((row) => row.id);
+    expect(containers).toEqual([container.id]);
+    // Both portals vanish through the document, which is how live viewers learn about it.
     await waitFor(
       () => !canvas.elements.has("el-kill") && !canvas.elements.has("el-kill-mirror"),
       10_000,
       20,
     );
-    expect((await censusOf(server, pad.id)).references).toEqual([]);
+    expect((await censusOf(server, container.id)).references).toEqual([]);
     expect(agent.proc.exitCode).toBeNull();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
@@ -676,51 +716,57 @@ test("a terminal that exits on its own keeps its real code, its home and its por
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   try {
-    const { server, token, pad } = await startWorkspace("natural-exit", servers, agents);
-    const canvas = await connect(server, { padId: pad.id, token, reconnect: false });
+    const { server, token, container } = await startWorkspace("natural-exit", servers, agents);
+    const canvas = await connect(server, { containerId: container.id, token, reconnect: false });
     clients.push(canvas);
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-exit",
       token,
       portalAt: { x: 240, y: 180 },
     });
     clients.push(homeClient);
     const mark = sentinel("alive");
-    const capture = await attachedCapture(homeClient, session.id);
+    const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
-    homeClient.sendTerminalInput(session.id, mark.command);
+    homeClient.sendTerminalInput(terminal.id, mark.command);
     await waitForTerminalText(capture, mark.text, 10_000);
 
     // Nobody asked for this. The shell decides to stop, and it names its own code.
-    homeClient.sendTerminalInput(session.id, "exit 7\n");
-    await waitFor(() => homeClient.sessions.get(session.id)?.status === "exited", 15_000, 20);
-    expect(homeClient.sessions.get(session.id)?.exitCode).toBe(7);
+    homeClient.sendTerminalInput(terminal.id, "exit 7\n");
+    await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "exited", 15_000, 20);
+    expect(homeClient.terminals.get(terminal.id)?.exitCode).toBe(7);
 
     // A dead terminal is information the operator may want, so nothing is deleted: the row
-    // keeps the REAL code, its home keeps its leaf, and the canvas keeps its widget.
-    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === session.id);
+    // keeps the REAL code, its home keeps its leaf, and the canvas keeps its portal.
+    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === terminal.id);
     expect(indexed).toMatchObject({
-      id: session.id,
-      homeId: session.padId,
+      id: terminal.id,
+      homeId: terminal.containerId,
       status: "exited",
       exitCode: 7,
       unplaced: false,
     });
-    expect(censusSolo(await censusOf(server, session.padId))).toEqual(soloTerminal(session.id));
+    expect(censusSolo(await censusOf(server, terminal.containerId))).toEqual(
+      soloTerminal(terminal.id),
+    );
     expect(canvas.elements.has("el-exit")).toBe(true);
-    expect((await censusOf(server, pad.id)).references).toEqual([session.padId]);
+    expect((await censusOf(server, container.id)).references).toEqual([terminal.containerId]);
     // Rejoining the home still finds the exit on screen, which is the whole point of keeping it.
-    const rejoin = await connect(server, { padId: session.padId, token, reconnect: false });
+    const rejoin = await connect(server, {
+      containerId: terminal.containerId,
+      token,
+      reconnect: false,
+    });
     clients.push(rejoin);
-    await waitFor(() => rejoin.sessions.get(session.id)?.status === "exited", 10_000, 20);
-    expect(rejoin.sessions.get(session.id)?.exitCode).toBe(7);
+    await waitFor(() => rejoin.terminals.get(terminal.id)?.status === "exited", 10_000, 20);
+    expect(rejoin.terminals.get(terminal.id)?.exitCode).toBe(7);
 
     // And only a deliberate kill destroys it: the same terminal, dismissed, poofs like any
     // other — which is the contrast this test exists to draw.
-    await invokeAction(server, "core.terminals.kill", { sessionId: session.id });
+    await invokeAction(server, "core.terminals.kill", { terminalId: terminal.id });
     await waitFor(async () => (await listTerminals(server)).length === 0, 15_000, 100);
     await waitFor(() => !canvas.elements.has("el-exit"), 10_000, 20);
-    expect((await listPads(server)).map((row) => row.id)).toEqual([pad.id]);
+    expect((await listContainers(server)).map((row) => row.id)).toEqual([container.id]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

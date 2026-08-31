@@ -24,7 +24,7 @@ export type PluginId = z.infer<typeof PluginIdSchema>;
  * the same action schemas as everything else, distinguished only by `source: "builtin"`.
  * One dispatch ladder, one vocabulary, no privileged second door.
  *
- * The prefix is a RESERVATION: composition refuses a non-builtin plugin claiming an id
+ * The prefix is a RESERVATION: assembly refuses a non-builtin plugin claiming an id
  * under it, because a plugin that could publish `engine.*` could impersonate the engine to
  * a client reading the roster.
  */
@@ -35,7 +35,7 @@ export const ENGINE_NAMESPACE_PREFIX = "engine.";
  * `${manifest.id}.${local}` on the wire — so a plugin can never name anything outside its
  * own namespace and a full name always says who owns it.
  *
- * Exported because the composition engine validates every action's local name against this
+ * Exported because the assembly engine validates every action's local name against this
  * exact rule before it builds a full name: one door per concept, so a local name is legal
  * here and there or nowhere.
  *
@@ -50,11 +50,11 @@ export type LocalName = z.infer<typeof LocalNameSchema>;
 const TitleSchema = z.string().min(1).max(64);
 
 /**
- * What a plugin declares it adds to the composition. Each list is bounded, because a
+ * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
  *
- * `panels` are tile-surface leaves (the workspace shell is itself a composition of them),
+ * `panels` are tile-ref leaves (the workspace shell is itself a composition of them),
  * `sections` are sidebar sections ordered by their declared `order`, `elements` are canvas
  * element renderers keyed by wire type, `tools` are toolbar tools.
  */
@@ -98,9 +98,9 @@ const ContributesSchema = z.strictObject({
 
 /**
  * What one plugin needs of another. Requirement and ORDER are separate axes: `required`
- * refuses composition when the named plugin is missing or disabled, `incompatible` refuses
+ * refuses assembly when the named plugin is missing or disabled, `incompatible` refuses
  * when it is present, `optional` refuses nothing and exists so a client can explain a
- * degraded surface. Ordering is declared separately (`after`), because "I need X" and "put
+ * degraded experience. Ordering is declared separately (`after`), because "I need X" and "put
  * me after X" are different sentences and conflating them forces authors to invent a
  * dependency to get a sequence.
  *
@@ -158,7 +158,7 @@ export type PluginDormant = z.infer<typeof PluginDormantSchema>;
 
 /**
  * Every way something of a DISABLED plugin may still be live — the complete list, closed.
- * A disable gates a plugin's active surface; these three are the declared carve-outs that
+ * A disable gates a plugin's active contributions; these three are the declared carve-outs that
  * survive it, one per plane:
  *
  *   `cleanup`  an action stays dispatchable while disabled (D12), so nobody is ever locked
@@ -254,20 +254,21 @@ export type PluginManifest = z.infer<typeof PluginManifestSchema>;
  * WHAT AUTHORITY AN ACTION IS GRADED FOR.
  *
  * `workspace` is the default and the wave-1 rule: a token scoped to one container cannot
- * authorize a workspace-grade mutation, the precedent `core.layout.place` and every
+ * authorize a workspace-grade mutation, the precedent `core.space.place` and every
  * workspace route already set.
  *
- * `pad` says the action's whole effect is confined to ONE container, so a pad-scoped token
- * may open it — the door then evaluates the action's declared caps AT that pad, and the
- * handler is contractually bound to keep every effect inside it. The pad comes from the
- * TOKEN (`ctx.padScope`), never from the arguments: authority that depended on parsed
- * arguments would force the ladder to validate shape before authority, and a caller would
- * learn an action's schema by knocking on a door it may not open.
+ * `container` says the action's whole effect is confined to ONE container, so a
+ * container-scoped token may open it — the door then evaluates the action's declared caps
+ * AT that container, and the handler is contractually bound to keep every effect inside
+ * it. The container comes from the TOKEN (`ctx.containerScope`), never from the arguments:
+ * authority that depended on parsed arguments would force the ladder to validate shape
+ * before authority, and a caller would learn an action's schema by knocking on a door it
+ * may not open.
  *
- * A workspace-grade caller invoking a `pad` action gets `padScope: null` and the handler
- * resolves its target the way it always did.
+ * A workspace-grade caller invoking a `container` action gets `containerScope: null` and
+ * the handler resolves its target the way it always did.
  */
-export const ACTION_SCOPES = ["workspace", "pad"] as const;
+export const ACTION_SCOPES = ["workspace", "container"] as const;
 export const ActionScopeSchema = z.enum(ACTION_SCOPES);
 export type ActionScope = (typeof ACTION_SCOPES)[number];
 
@@ -290,8 +291,8 @@ export const ActionSummarySchema = z.strictObject({
   cleanup: z.boolean().optional(),
   /**
    * The authority grade this door is written for. Published (defaulted, so an older reader
-   * that never saw the field reads the conservative answer) because "may my pad-scoped token
-   * call this?" is a question a client must be able to answer from the vocabulary alone.
+   * that never saw the field reads the conservative answer) because "may my container-scoped
+   * token call this?" is a question a client must be able to answer from the vocabulary alone.
    */
   scope: ActionScopeSchema.default("workspace"),
   input: z.record(z.string(), z.unknown()),
@@ -386,7 +387,7 @@ export const PluginRosterEntrySchema = z.strictObject({
 export type PluginRosterEntry = z.infer<typeof PluginRosterEntrySchema>;
 
 /**
- * The whole composition, as every principal sees it: server-owned, served at
+ * The whole assembly, as every principal sees it: server-owned, served at
  * `GET /api/plugins`, and pushed on the connection-level `plugins` session frame whenever
  * it changes. Registration is shared state, never a client's private guess.
  */
@@ -416,7 +417,7 @@ export type ActionDenialRule = (typeof ACTION_DENIAL_RULES)[number];
 
 /**
  * What the action door answers. A denial is a 200 carrying `ok: false` — the same shape
- * `core.layout.place` uses for a refused placement, because a refusal is an ANSWER about
+ * `core.space.place` uses for a refused placement, because a refusal is an ANSWER about
  * authority or state, not a transport failure.
  */
 export const ActionOutcomeSchema = z.union([
@@ -432,7 +433,7 @@ export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
  * from the declarations themselves rather than from prose that drifts away from them.
  *
  * What this does NOT contain is which plugins a given server composed: that is the live
- * composition, handed in through `ProtocolExtras`, because this package describes shapes
+ * assembly, handed in through `ProtocolExtras`, because this package describes shapes
  * and never their inhabitants.
  */
 export function pluginVocabulary(): Record<string, unknown> {

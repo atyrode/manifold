@@ -8,7 +8,7 @@ import {
   carriesItem,
   containerEnvelope,
   endCarry,
-  envelopeSurface,
+  envelopeRef,
   parseEnvelope,
   readEnvelope,
   sealEnvelope,
@@ -39,11 +39,11 @@ function transfer(entries: Readonly<Record<string, string>> = {}): DataTransfer 
 
 /** One envelope per declared kind: a new kind cannot compile without a case here. */
 const ENVELOPES: Readonly<Record<ItemEnvelopeKind, ItemEnvelope>> = {
-  terminal: { kind: "terminal", sessionId: "s1" },
-  canvas: { kind: "canvas", padId: "c1" },
-  composition: { kind: "composition", padId: "v1" },
+  terminal: { kind: "terminal", terminalId: "s1" },
+  canvas: { kind: "canvas", containerId: "c1" },
+  composition: { kind: "composition", containerId: "v1" },
   tile: { kind: "tile", containerId: "v1", tileId: "t3" },
-  element: { kind: "element", padId: "c1", elementId: "e7" },
+  element: { kind: "element", containerId: "c1", elementId: "e7" },
 };
 
 /**
@@ -53,8 +53,8 @@ const ENVELOPES: Readonly<Record<ItemEnvelopeKind, ItemEnvelope>> = {
  */
 const ITEMS: Readonly<Record<ItemEnvelopeKind, PlacementItem>> = {
   terminal: { kind: "terminal", containerId: "home-1" },
-  canvas: { kind: "canvas-pad", containerId: "c1" },
-  composition: { kind: "view", containerId: "v1" },
+  canvas: { kind: "canvas", containerId: "c1" },
+  composition: { kind: "composition", containerId: "v1" },
   tile: { kind: "tile", containerId: null },
   element: { kind: "text", containerId: null },
 };
@@ -68,27 +68,30 @@ describe("envelope format", () => {
     }
   });
 
-  test("every kind maps to exactly one placement surface", () => {
-    expect(envelopeSurface(ENVELOPES.terminal)).toEqual({ kind: "terminal", sessionId: "s1" });
-    // Both container species place through ONE surface form: the server resolves the
+  test("every kind maps to exactly one placement ref", () => {
+    expect(envelopeRef(ENVELOPES.terminal)).toEqual({ kind: "terminal", terminalId: "s1" });
+    // Both container species place through ONE ref form: the server resolves the
     // discipline from its own row, so a client can never assert one.
-    expect(envelopeSurface(ENVELOPES.canvas)).toEqual({ kind: "pad", padId: "c1" });
-    expect(envelopeSurface(ENVELOPES.composition)).toEqual({ kind: "pad", padId: "v1" });
-    expect(envelopeSurface(ENVELOPES.tile)).toEqual({
+    expect(envelopeRef(ENVELOPES.canvas)).toEqual({ kind: "container", containerId: "c1" });
+    expect(envelopeRef(ENVELOPES.composition)).toEqual({ kind: "container", containerId: "v1" });
+    expect(envelopeRef(ENVELOPES.tile)).toEqual({
       kind: "tile",
       containerId: "v1",
       tileId: "t3",
     });
-    expect(envelopeSurface(ENVELOPES.element)).toEqual({
+    expect(envelopeRef(ENVELOPES.element)).toEqual({
       kind: "element",
-      padId: "c1",
+      containerId: "c1",
       elementId: "e7",
     });
   });
 
   test("a container's discipline decides its kind", () => {
-    expect(containerEnvelope("p1", "canvas")).toEqual({ kind: "canvas", padId: "p1" });
-    expect(containerEnvelope("p1", "tiled")).toEqual({ kind: "composition", padId: "p1" });
+    expect(containerEnvelope("p1", "canvas")).toEqual({ kind: "canvas", containerId: "p1" });
+    expect(containerEnvelope("p1", "composition")).toEqual({
+      kind: "composition",
+      containerId: "p1",
+    });
   });
 
   test("malformed, foreign and incomplete payloads are not drags of ours", () => {
@@ -100,10 +103,10 @@ describe("envelope format", () => {
       '"terminal"',
       '{"kind":"browser","url":"x"}',
       '{"kind":"terminal"}',
-      '{"kind":"terminal","sessionId":""}',
+      '{"kind":"terminal","terminalId":""}',
       '{"kind":"canvas"}',
       '{"kind":"tile","containerId":"v1"}',
-      '{"kind":"element","padId":"c1"}',
+      '{"kind":"element","containerId":"c1"}',
     ]) {
       expect(parseEnvelope(payload)).toBeNull();
     }
@@ -112,9 +115,9 @@ describe("envelope format", () => {
   });
 
   test("extra fields are ignored rather than rejected, so the payload can grow", () => {
-    expect(parseEnvelope('{"kind":"terminal","sessionId":"s1","label":"build"}')).toEqual({
+    expect(parseEnvelope('{"kind":"terminal","terminalId":"s1","label":"build"}')).toEqual({
       kind: "terminal",
-      sessionId: "s1",
+      terminalId: "s1",
     });
   });
 });
@@ -149,11 +152,11 @@ describe("carry register", () => {
   test("the carry holds the resolved item, which is what a peer receives", () => {
     expect(carriedPlacement()).toBeNull();
     beginCarry(ENVELOPES.composition, ITEMS.composition);
-    // Surface AND item: the address to place, and what it names. A watcher gets both, so
+    // Ref AND item: the address to place, and what it names. A watcher gets both, so
     // nothing downstream re-derives an item from a census it may not have yet.
     expect(carriedPlacement()).toEqual({
-      surface: { kind: "pad", padId: "v1" },
-      item: { kind: "view", containerId: "v1" },
+      ref: { kind: "container", containerId: "v1" },
+      item: { kind: "composition", containerId: "v1" },
     });
     endCarry();
     expect(carriedPlacement()).toBeNull();

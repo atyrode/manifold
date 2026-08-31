@@ -15,7 +15,7 @@ import { z } from "zod";
  *
  * `machines:mint` is the ceiling this manifest declares, and it is genuinely load-bearing:
  * enrolment mints a durable credential for a process nobody in this workspace can see, which
- * is the highest-authority thing the fleet can do. `pads:read` is the list's ceiling, matching
+ * is the highest-authority thing the fleet can do. `containers:read` is the list's ceiling, matching
  * the route it replaces exactly.
  */
 export const machinesManifest: PluginManifest = {
@@ -23,7 +23,7 @@ export const machinesManifest: PluginManifest = {
   version: "1.0.0",
   title: "Machines",
   description: "Enrolls machines, lists them with live online state, and births terminals.",
-  capabilities: ["machines:mint", "pads:read"],
+  capabilities: ["machines:mint", "containers:read"],
   contributes: {
     panels: [],
     sections: [{ id: "machines", title: "Machines", order: 20 }],
@@ -43,17 +43,17 @@ export const machinesManifest: PluginManifest = {
 export const machinesActions = [
   defineAction({
     /*
-      A READ, and therefore `scope: "pad"`: `GET /api/machines` answered any authenticated
-      token including a pad-scoped one, because a viewer holding a share link still has to
+      A READ, and therefore `scope: "container"`: `GET /api/machines` answered any authenticated
+      token including a container-scoped one, because a viewer holding a share link still has to
       paint the machine badge on the terminal in front of it. Declaring the scope keeps that
-      reachability through the action door; the handler owes ctx.padScope the same treatment
+      reachability through the action door; the handler owes ctx.containerScope the same treatment
       the route gave it, which here is none — the route filtered nothing, and the fleet is a
       workspace-global fact a scoped viewer was always allowed to read in full.
     */
-    scope: "pad",
+    scope: "container",
     name: "list",
     title: "List the enrolled machines",
-    caps: ["pads:read"],
+    caps: ["containers:read"],
     input: z.strictObject({}),
     result: MachinesResponseSchema,
   }),

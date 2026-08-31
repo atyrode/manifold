@@ -91,7 +91,7 @@ export function expireGestures(state: Map<string, GestureOverride>, now: number)
     const carry = gesture.carry;
     if (carry?.aim === undefined || age <= AIM_TTL_MS) continue;
     const aimless: Carry = {
-      surface: carry.surface,
+      ref: carry.ref,
       item: carry.item,
       ...(carry.label === undefined ? {} : { label: carry.label }),
     };

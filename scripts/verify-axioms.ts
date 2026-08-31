@@ -12,7 +12,7 @@
  * regex over source (D14): imports, storage keys, action markers and route literals are AST
  * facts, and a regex that "mostly works" on them is a gate that mostly holds.
  *
- *   S1 both composition files compose, and the default workspace names panels that exist
+ *   S1 both assembly files assemble, and the default workspace names panels that exist
  *   S2 import boundary: floor imports no plugin; a plugin imports only the four engine packages
  *   S3 every localStorage key is in the device-local register
  *   S4 every `data-action` literal names a composed action
@@ -30,26 +30,28 @@
  * server + agent on an ephemeral port, restores every plugin it toggled, cleans up.
  * Env: MANIFOLD_CHROMIUM (else system chromium), MANIFOLD_GATE_DIST (shared bundle).
  */
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ts from "typescript";
 import {
-  CompositionError,
-  composeRoster,
+  AssemblyError,
+  assembleRoster,
+  ITEM_NOUNS,
   DEFAULT_WORKSPACE_LAYOUT,
   ENGINE_PLUGINS_ID,
   ENGINE_SET_ENABLED_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
-  type Composition,
+  type Assembly,
 } from "../packages/plugin/src/index.ts";
 import {
   ActionOutcomeSchema,
   ActionSummarySchema,
+  ITEM_KINDS,
   LayoutResponseSchema,
   MachinesResponseSchema,
-  PadResponseSchema,
+  ContainerResponseSchema,
   PluginRosterSchema,
   PluginsResponseSchema,
   ResolveResponseSchema,
@@ -58,7 +60,7 @@ import {
   formatManifoldUri,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
-import { SERVER_PLUGIN_DEFS } from "../packages/server/src/composition.ts";
+import { SERVER_PLUGIN_DEFS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
@@ -95,7 +97,7 @@ interface FloorRow {
 
 interface DeviceLocalRow {
   readonly key: string;
-  /** True when the register entry licenses a FAMILY (`manifold:viewport:<padId>`). */
+  /** True when the register entry licenses a FAMILY (`manifold:viewport:<containerId>`). */
   readonly prefix: boolean;
   readonly why: string;
 }
@@ -230,7 +232,7 @@ function stringConstants(file: ts.SourceFile): ReadonlyMap<string, string> {
 
 /**
  * The literal a storage-key expression carries: the string itself, the constant it names, or
- * the fixed HEAD of a template (`manifold:viewport:${padId}` is the registered prefix plus an
+ * the fixed HEAD of a template (`manifold:viewport:${containerId}` is the registered prefix plus an
  * id, and the register is what says the prefix form is allowed).
  */
 function keyLiteral(node: ts.Expression, constants: ReadonlyMap<string, string>): string | null {
@@ -246,28 +248,28 @@ function keyLiteral(node: ts.Expression, constants: ReadonlyMap<string, string>)
   return null;
 }
 
-// ─────────────────────────────────────────────────────────── the composition
+// ─────────────────────────────────────────────────────────── the assembly
 
-let composition: Composition | null = null;
+let assembly: Assembly | null = null;
 try {
   /*
-    The engine's own builtin row is registered by the HOST, not by `composition.ts` — so the
+    The engine's own builtin row is registered by the HOST, not by `assembly.ts` — so the
     vocabulary this script compares against the live server has to include it, or every
     check that says "/api/protocol equals the composition" would fail on the enablement door
     itself.
   */
-  composition = composeRoster(
+  assembly = assembleRoster(
     [...SERVER_PLUGIN_DEFS, { manifest: enginePluginsManifest, actions: enginePluginsActions }],
     new Set(),
     { builtins: new Set([ENGINE_PLUGINS_ID]) },
   );
-  check("S1 server composition", true, `${String(composition.roster.length)} plugins composed`);
+  check("S1 server assembly", true, `${String(assembly.roster.length)} plugins composed`);
 } catch (error) {
-  const detail = error instanceof CompositionError ? error.problems.join(" | ") : String(error);
-  check("S1 server composition", false, detail);
+  const detail = error instanceof AssemblyError ? error.problems.join(" | ") : String(error);
+  check("S1 server assembly", false, detail);
 }
 
-const composed: Composition = composition ?? composeRoster([], new Set<string>());
+const composed: Assembly = assembly ?? assembleRoster([], new Set<string>());
 const actionNames = new Set(composed.actions.keys());
 const pluginIds = new Set(composed.roster.map((entry) => entry.manifest.id));
 const elementTypes = new Set(composed.elements.keys());
@@ -388,10 +390,10 @@ function resolvePackageEntry(specifier: string): string | null {
   return `${owner.dir}/${entry.replace(/^\.\//, "")}`;
 }
 
-// ─────────────────────────────────────────────────────────── S1: composition
+// ─────────────────────────────────────────────────────────── S1: assembly
 
-const WEB_COMPOSITION = "packages/web/src/composition.ts";
-const SERVER_COMPOSITION = "packages/server/src/composition.ts";
+const WEB_COMPOSITION = "packages/web/src/assembly.ts";
+const SERVER_COMPOSITION = "packages/server/src/assembly.ts";
 
 const webRegistrations: WebRegistration[] = [];
 {
@@ -411,14 +413,14 @@ const webRegistrations: WebRegistration[] = [];
         ? resolveExportedRegistration(file, entry.text)
         : null;
     if (registration === null) {
-      check("S1 web composition", false, `unreadable WEB_PLUGIN_DEFS entry ${entry.getText(file)}`);
+      check("S1 web assembly", false, `unreadable WEB_PLUGIN_DEFS entry ${entry.getText(file)}`);
       continue;
     }
     webRegistrations.push(registration);
   }
   const unknown = webRegistrations.filter((entry) => !pluginIds.has(entry.id));
   check(
-    "S1 web composition",
+    "S1 web assembly",
     entries.length > 0 && unknown.length === 0,
     unknown.length === 0
       ? `${String(webRegistrations.length)} web registrations, every id in the roster`
@@ -451,9 +453,9 @@ const webRegistrations: WebRegistration[] = [];
 {
   const missing: string[] = [];
   for (const node of Object.values(DEFAULT_WORKSPACE_LAYOUT)) {
-    const surface = node.surface;
-    if (surface === null || surface.kind !== "panel") continue;
-    if (!composed.panels.has(surface.panelId)) missing.push(surface.panelId);
+    const ref = node.ref;
+    if (ref === null || ref.kind !== "panel") continue;
+    if (!composed.panels.has(ref.panelId)) missing.push(ref.panelId);
   }
   check(
     "S1 default workspace",
@@ -562,7 +564,7 @@ for (const row of registries.floor) {
         Two harvests, because a key can be written two ways and both are real state. The
         CALL harvest is exact: whatever `getItem`/`setItem`/`removeItem` is handed, resolved
         through this file's own constants. The CONVENTION harvest catches the key BUILDERS —
-        `manifold:viewport:${padId}` never touches a storage call in its own module — by
+        `manifold:viewport:${containerId}` never touches a storage call in its own module — by
         taking every `manifold.`/`manifold:` literal as a candidate. `manifold://` is an
         ADDRESS, not a key, and is the one prefix excluded.
       */
@@ -729,8 +731,8 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/containers",
   "/api/introspect",
   "/api/layout",
-  "/api/pad-presence",
-  "/api/pads/:id/tiles/:id",
+  "/api/attendance",
+  "/api/containers/:id/tiles/:id",
   "/api/plugins",
   "/api/protocol",
   "/api/resolve",
@@ -763,7 +765,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
       return;
     }
     if (!ts.isRegularExpressionLiteral(node)) return;
-    // `/^\/api\/pads\/([^/]+)$/` → `/api/pads/:id`: the SHAPE is the route, and naming the
+    // `/^\/api\/containers\/([^/]+)$/` → `/api/containers/:id`: the SHAPE is the route, and naming the
     // captures `:id` keeps the allowlist readable instead of a wall of escapes.
     const source = node.text.replace(/^\/|\/[a-z]*$/g, "");
     if (!source.startsWith("^\\/api")) return;
@@ -791,7 +793,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
 // ─────────────────────────────────────────────────────────── S8: element vocabulary
 
 {
-  /** What the ENGINE renders itself (`FLOOR_NODE_TYPES`, flow-pad-view.tsx). */
+  /** What the ENGINE renders itself (`FLOOR_NODE_TYPES`, canvas-view.tsx). */
   const FLOOR_ELEMENT_KINDS: Readonly<Record<string, true>> = { portal: true, text: true };
   const wireTypes = SceneElementSchema.options.map((option) => String(option.shape.type.value));
   const stray = wireTypes.filter(
@@ -803,6 +805,388 @@ const ROUTE_ALLOWLIST: readonly string[] = [
     stray.length === 0
       ? `${list(wireTypes)} ⊆ floor {${list(Object.keys(FLOOR_ELEMENT_KINDS))}} ∪ composed {${list(elementTypes)}}`
       : `wire element types nobody owns: ${list(stray)}`,
+  );
+}
+
+/** `z.literal("…")` / `z.enum([...])` arguments: the closed wire vocabularies. */
+function isVocabularyArgument(node: ts.StringLiteralLike): boolean {
+  const call =
+    node.parent.kind === ts.SyntaxKind.ArrayLiteralExpression ? node.parent.parent : node.parent;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return false;
+  const method = call.expression.name.text;
+  return method === "literal" || method === "enum";
+}
+
+/** `className="…"` and `data-*="…"`, in JSX and in `{ className: "…" }` alike. */
+function isMarkupValue(node: ts.StringLiteralLike): boolean {
+  const parent = node.parent;
+  if (ts.isJsxAttribute(parent)) {
+    const name = parent.name.getText(parent.getSourceFile());
+    return name === "className" || name.startsWith("data-");
+  }
+  if (
+    ts.isJsxExpression(parent) &&
+    parent.parent !== undefined &&
+    ts.isJsxAttribute(parent.parent)
+  ) {
+    const name = parent.parent.name.getText(parent.getSourceFile());
+    return name === "className" || name.startsWith("data-");
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────── S11: the lexicon, S12: one label vocabulary
+
+/**
+ * ONE WORD PER CONCEPT, ONE CONCEPT PER WORD (AGENTS invariant 15).
+ *
+ * Vocabulary is a TOKEN property, which is why this check reads tokens instead of following
+ * edges the way S2 must: a banned synonym is banned wherever it appears, with no context that
+ * redeems it except a declared `allow` row. So a scanner over words is not an approximation
+ * of the rule — it IS the rule, and the registry in `AXIOMS.md` §Lexicon is its statute.
+ *
+ * SUBJECTS ARE NARROW, deliberately: identifiers, the four literal classes S4/S7 already
+ * isolate (property keys, `z.literal`/`z.enum` arguments, `className`/`data-*` values, `/api/`
+ * paths), CSS selector tokens, Markdown ATX headings, and file and directory names. Plain
+ * string literals and comment bodies are NOT subjects. That boundary is what keeps the
+ * allowlist from rotting into a blanket: live migration code necessarily writes `ALTER TABLE
+ * pads` as SQL text and the generated changelog quotes a released `widget`, and licensing
+ * those through an exemption would license the same words in an identifier beside them.
+ */
+interface LexiconAllow {
+  readonly kind: "exactIdent" | "importSpecifier" | "declaration" | "glob";
+  readonly idents: readonly string[];
+  readonly specifier: string;
+  readonly declaration: { readonly file: string; readonly name: string } | null;
+  readonly glob: string;
+  readonly why: string;
+  /** Liveness: an exemption that stops being needed stops being permitted. */
+  suppressed: number;
+}
+
+interface LexiconRow {
+  readonly term: string;
+  readonly means: string;
+  readonly banned: readonly string[];
+  readonly allow: readonly LexiconAllow[];
+}
+
+function lexiconAllow(raw: unknown): LexiconAllow | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const why = "why" in raw && typeof raw.why === "string" ? raw.why : "";
+  if (why === "") return null;
+  const base = {
+    idents: [] as string[],
+    specifier: "",
+    declaration: null,
+    glob: "",
+    why,
+    suppressed: 0,
+  };
+  const exact: unknown = Reflect.get(raw, "exactIdent");
+  if (Array.isArray(exact)) {
+    return { ...base, kind: "exactIdent", idents: exact.map((name) => String(name)) };
+  }
+  const specifier: unknown = Reflect.get(raw, "importSpecifier");
+  if (typeof specifier === "string") return { ...base, kind: "importSpecifier", specifier };
+  const declaration: unknown = Reflect.get(raw, "declaration");
+  if (declaration !== null && typeof declaration === "object") {
+    const file: unknown = Reflect.get(declaration, "file");
+    const name: unknown = Reflect.get(declaration, "name");
+    if (typeof file === "string" && typeof name === "string") {
+      return { ...base, kind: "declaration", declaration: { file, name } };
+    }
+  }
+  const glob: unknown = Reflect.get(raw, "glob");
+  if (typeof glob === "string") return { ...base, kind: "glob", glob };
+  return null;
+}
+
+function lexiconRegistry(): readonly LexiconRow[] {
+  const text = readFileSync(join(repoRoot, "AXIOMS.md"), "utf8");
+  const rows: LexiconRow[] = [];
+  const fence = /```json\n([\s\S]*?)\n```/g;
+  for (;;) {
+    const block = fence.exec(text);
+    if (block === null) break;
+    const parsedBlock: unknown = JSON.parse(block[1] ?? "");
+    if (parsedBlock === null || typeof parsedBlock !== "object") continue;
+    if (!("lexicon" in parsedBlock) || !Array.isArray(parsedBlock.lexicon)) continue;
+    for (const raw of parsedBlock.lexicon) {
+      if (raw === null || typeof raw !== "object") continue;
+      const term: unknown = Reflect.get(raw, "term");
+      const means: unknown = Reflect.get(raw, "means");
+      if (typeof term !== "string" || term === "" || typeof means !== "string" || means === "") {
+        continue;
+      }
+      const banned: unknown = Reflect.get(raw, "banned");
+      const allow: unknown = Reflect.get(raw, "allow");
+      rows.push({
+        term,
+        means,
+        banned: Array.isArray(banned) ? banned.map((word) => String(word).toLowerCase()) : [],
+        allow: (Array.isArray(allow) ? allow : [])
+          .map(lexiconAllow)
+          .filter((row): row is LexiconAllow => row !== null),
+      });
+    }
+  }
+  if (rows.length === 0) throw new Error("AXIOMS.md carries no fenced `lexicon` registry");
+  return rows;
+}
+
+/**
+ * Word-level, never substring: `padding` is one word and survives, `padStart` is two and is
+ * caught (then exempted by name). Trailing digits split so a `pad1` fixture cannot hide.
+ */
+const LEXICON_WORD = /[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+/g;
+function lexiconWords(subject: string): readonly string[] {
+  return (subject.match(LEXICON_WORD) ?? []).map((word) => word.toLowerCase());
+}
+
+/** Vendor CSS is recognized by prefix rather than by exemption — C16's distinction, mechanized. */
+const VENDOR_SELECTOR = /^(react-flow__|xterm)/;
+
+interface LexiconSubject {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+  /** The declaration this subject sits inside, for the `declaration` allow selector. */
+  readonly declaration: string;
+}
+
+function scanTree(dir: string, out: string[]): void {
+  for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === "dist") continue;
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) scanTree(path, out);
+    else out.push(path);
+  }
+}
+
+{
+  const lexicon = lexiconRegistry();
+  const bannedBy = new Map<string, string>();
+  const contradictions: string[] = [];
+  for (const row of lexicon) {
+    for (const word of row.banned) bannedBy.set(word, row.term);
+  }
+  for (const row of lexicon) {
+    if (bannedBy.has(row.term.toLowerCase())) contradictions.push(row.term);
+  }
+
+  const files: string[] = [];
+  for (const root of ["packages", "scripts"]) scanTree(root, files);
+  const docs: string[] = [];
+  scanTree("docs", docs);
+  for (const doc of [...docs, "AXIOMS.md", "AGENTS.md", "CHANGELOG.md", "README.md"]) {
+    if (doc.endsWith(".md")) files.push(doc);
+  }
+
+  const subjects: LexiconSubject[] = [];
+  const termsSeen = new Set<string>();
+  const noteTerms = (text: string): void => {
+    for (const word of lexiconWords(text)) termsSeen.add(word);
+  };
+
+  for (const path of files) {
+    // FILE AND DIRECTORY NAMES are subjects: `pad-browser.tsx` is a claim about the concept.
+    for (const segment of path.split("/")) {
+      subjects.push({ path, line: 0, text: segment.replace(/\.[a-z]+$/, ""), declaration: "" });
+    }
+    if (path.endsWith(".css")) {
+      const text = readFileSync(join(repoRoot, path), "utf8");
+      const lines = text.split("\n");
+      lines.forEach((lineText, index) => {
+        for (const hit of lineText.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)) {
+          const selector = hit[1] ?? "";
+          if (VENDOR_SELECTOR.test(selector)) continue;
+          subjects.push({ path, line: index + 1, text: selector, declaration: "" });
+        }
+      });
+      noteTerms(text);
+      continue;
+    }
+    if (path.endsWith(".md")) {
+      const text = readFileSync(join(repoRoot, path), "utf8");
+      text.split("\n").forEach((lineText, index) => {
+        const heading = /^#{1,6}\s+(.*)$/.exec(lineText);
+        if (heading !== null) {
+          subjects.push({ path, line: index + 1, text: heading[1] ?? "", declaration: "" });
+        }
+      });
+      noteTerms(text);
+      continue;
+    }
+    if (!SOURCE.test(path)) continue;
+    const file = parsed(path);
+    noteTerms(file.getFullText());
+    let declaration = "";
+    const enclosing: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        enclosing.push(node.name.text);
+        declaration = node.name.text;
+      }
+      if (ts.isIdentifier(node)) {
+        subjects.push({ path, line: lineOf(file, node), text: node.text, declaration });
+      } else if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        const parent = node.parent;
+        const classified =
+          (ts.isPropertyAssignment(parent) && parent.name === node) ||
+          isVocabularyArgument(node) ||
+          isMarkupValue(node) ||
+          node.text.startsWith("/api/");
+        if (classified) {
+          subjects.push({ path, line: lineOf(file, node), text: node.text, declaration });
+        }
+      }
+      ts.forEachChild(node, visit);
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        enclosing.pop();
+        declaration = enclosing[enclosing.length - 1] ?? "";
+      }
+    };
+    visit(file);
+  }
+
+  const globCache = new Map<string, ReadonlySet<string>>();
+  const globMatches = (glob: string): ReadonlySet<string> => {
+    const cached = globCache.get(glob);
+    if (cached !== undefined) return cached;
+    const matched = new Set<string>();
+    for (const hit of new Bun.Glob(glob).scanSync({ cwd: repoRoot, onlyFiles: true })) {
+      matched.add(hit.split("\\").join("/"));
+    }
+    globCache.set(glob, matched);
+    return matched;
+  };
+  const importsCache = new Map<string, ReadonlySet<string>>();
+  const importsOf = (path: string): ReadonlySet<string> => {
+    const cached = importsCache.get(path);
+    if (cached !== undefined) return cached;
+    const names = new Set(moduleSpecifiers(path).map((entry) => entry.text));
+    importsCache.set(path, names);
+    return names;
+  };
+
+  const violations: string[] = [];
+  for (const subject of subjects) {
+    for (const word of lexiconWords(subject.text)) {
+      const term = bannedBy.get(word);
+      if (term === undefined) continue;
+      const row = lexicon.find((candidate) => candidate.term === term);
+      const exemption = row?.allow.find((allow) => {
+        if (allow.kind === "exactIdent") return allow.idents.includes(subject.text);
+        if (allow.kind === "importSpecifier") {
+          return SOURCE.test(subject.path) && importsOf(subject.path).has(allow.specifier);
+        }
+        if (allow.kind === "declaration") {
+          return (
+            subject.path === allow.declaration?.file &&
+            subject.declaration === allow.declaration.name
+          );
+        }
+        return globMatches(allow.glob).has(subject.path);
+      });
+      if (exemption !== undefined) {
+        exemption.suppressed += 1;
+        continue;
+      }
+      violations.push(
+        `${subject.path}:${String(subject.line)} ${subject.text} — "${word}" is banned; use "${term}"`,
+      );
+    }
+  }
+
+  const stale = lexicon.flatMap((row) =>
+    row.allow
+      .filter((allow) => allow.suppressed === 0)
+      .map(
+        (allow) =>
+          `${row.term}/${allow.kind}:${allow.idents.join(",")}${allow.glob}${allow.specifier}${allow.declaration?.name ?? ""}`,
+      ),
+  );
+  const unused = lexicon
+    .map((row) => row.term)
+    .filter((term) => !lexiconWords(term).every((word) => termsSeen.has(word)));
+
+  check(
+    "S11 lexicon",
+    violations.length === 0,
+    violations.length === 0
+      ? `${String(subjects.length)} subjects across ${String(files.length)} files carry none of the ${String(bannedBy.size)} banned words`
+      : `${String(violations.length)} banned words: ${violations.slice(0, 20).join(" | ")}`,
+  );
+  check(
+    "S11 lexicon allow liveness",
+    stale.length === 0,
+    stale.length === 0
+      ? `every allow row suppresses a real occurrence`
+      : `allow rows suppressing nothing — delete them: ${list(stale)}`,
+  );
+  check(
+    "S11 lexicon totality",
+    unused.length === 0 && contradictions.length === 0,
+    unused.length === 0 && contradictions.length === 0
+      ? `${String(lexicon.length)} terms, each live in the tree and none in another row's banned set`
+      : `terms nobody uses: ${list(unused)}; terms banned by another row: ${list(contradictions)}`,
+  );
+}
+
+/**
+ * ONE LABEL VOCABULARY (§0's three disagreeing tables, made structurally impossible).
+ *
+ * `ITEM_NOUNS` is the only map in the tree from an item kind to a display noun. Its keys must
+ * be exactly `ITEM_KINDS`, each value must be the key's own canonical word, and no SECOND
+ * kind→word table may exist: any other object literal keyed by three or more item kinds whose
+ * values are all string literals is a rival vocabulary, which is how `pad: "view"` and
+ * `pad: "canvas"` and `"canvas-pad": "A canvas"` came to ship in one build.
+ */
+{
+  const kinds = Object.keys(ITEM_KINDS).sort();
+  const nouns = Object.keys(ITEM_NOUNS).sort();
+  const misnamed = Object.entries(ITEM_NOUNS).filter(([kind, noun]) => noun !== kind);
+  check(
+    "S12 one label vocabulary",
+    nouns.join() === kinds.join() && misnamed.length === 0,
+    nouns.join() === kinds.join() && misnamed.length === 0
+      ? `ITEM_NOUNS names exactly ${list(kinds)}, each by its own canonical word`
+      : `keys ${list(nouns)} ≠ ITEM_KINDS ${list(kinds)}; off-canon values: ${list(misnamed.map(([kind, noun]) => `${kind}→${noun}`))}`,
+  );
+
+  const kindSet = new Set<string>([...kinds, ...elementTypes]);
+  const rivals: string[] = [];
+  const sources: string[] = [];
+  for (const root of ["packages", "scripts"]) scanTree(root, sources);
+  for (const path of sources) {
+    /*
+      The protocol is the ALGEBRA's home, and its kind→op tables (`CANVAS_OPS`) are wire
+      vocabulary rather than words a person reads — mapping a kind to `"portal"` is a rule,
+      not a label. Display tables live above the wire, which is exactly where the three that
+      disagreed lived, so that is where this looks.
+    */
+    if (!SOURCE.test(path) || path.startsWith("packages/protocol/src/")) continue;
+    if (path === "packages/plugin/src/item-noun.ts") continue;
+    const file = parsed(path);
+    walk(file, (node) => {
+      if (!ts.isObjectLiteralExpression(node) || node.properties.length < 3) return;
+      const entries = node.properties.filter(ts.isPropertyAssignment);
+      if (entries.length !== node.properties.length) return;
+      const keys = entries.map((entry) =>
+        ts.isIdentifier(entry.name) || ts.isStringLiteral(entry.name) ? entry.name.text : "",
+      );
+      if (!keys.every((key) => kindSet.has(key))) return;
+      if (!entries.every((entry) => ts.isStringLiteral(entry.initializer))) return;
+      rivals.push(`${path}:${String(lineOf(file, node))}`);
+    });
+  }
+  check(
+    "S12 no rival label table",
+    rivals.length === 0,
+    rivals.length === 0
+      ? `no second kind→noun map beside ITEM_NOUNS`
+      : `rival label vocabularies: ${list(rivals)}`,
   );
 }
 
@@ -935,7 +1319,7 @@ try {
 
   /** Mints a grant through the access door, which is where minting lives now. */
   const mint = async (request: unknown): Promise<TokenGrant> => {
-    const outcome = ActionOutcomeSchema.parse(await dispatch("core.access.mintToken", request));
+    const outcome = ActionOutcomeSchema.parse(await dispatch("core.access.mint", request));
     if (!outcome.ok) throw new Error(`mint refused: ${outcome.denial.message}`);
     return TokenGrantSchema.parse(outcome.result);
   };
@@ -992,10 +1376,11 @@ try {
   // ─────────────────────────────────────────── world setup
 
   const createdCanvas = ActionOutcomeSchema.parse(
-    await dispatch("core.views.createPad", { name: "axiom-gate" }),
+    await dispatch("core.index.createContainer", { name: "axiom-gate" }),
   );
-  if (!createdCanvas.ok) throw new Error(`createPad refused: ${createdCanvas.denial.message}`);
-  const canvasPadId = PadResponseSchema.parse(createdCanvas.result).pad.id;
+  if (!createdCanvas.ok)
+    throw new Error(`createContainer refused: ${createdCanvas.denial.message}`);
+  const canvasContainerId = ContainerResponseSchema.parse(createdCanvas.result).container.id;
 
   let machineId = "";
   await until(
@@ -1011,7 +1396,7 @@ try {
   );
 
   const wsUrl = `${origin.replace(/^http/, "ws")}/ws/session`;
-  canvasClient = new SessionClient({ url: wsUrl, padId: canvasPadId, token: ownerKey });
+  canvasClient = new SessionClient({ url: wsUrl, containerId: canvasContainerId, token: ownerKey });
   await canvasClient.connect();
 
   const terminal = await canvasClient.openTerminal({
@@ -1020,8 +1405,12 @@ try {
     rows: 24,
     machineId,
   });
-  const terminalPadId = terminal.padId;
-  terminalClient = new SessionClient({ url: wsUrl, padId: terminalPadId, token: ownerKey });
+  const terminalContainerId = terminal.containerId;
+  terminalClient = new SessionClient({
+    url: wsUrl,
+    containerId: terminalContainerId,
+    token: ownerKey,
+  });
   await terminalClient.connect();
 
   /** A stroke authored BEFORE any toggle, so R3 can watch it become a placeholder and return. */
@@ -1051,7 +1440,7 @@ try {
     await browser.typeInto("input", "axiom-gate");
     await browser.clickText("Enter manifold");
   }
-  await browser.goto(`${origin}/p/${terminalPadId}`);
+  await browser.goto(`${origin}/p/${terminalContainerId}`);
   /** Only the id: the stored grant carries this device's TOKEN and must never leave the page. */
   const viewerPrincipalId = await browser.evaluate<string>(
     `JSON.parse(localStorage.getItem('manifold.identity')).principal.id`,
@@ -1060,19 +1449,19 @@ try {
   // ─────────────────────────────────────────── R2: parity, both directions
 
   await until(
-    () => browser!.evaluate<boolean>("document.querySelectorAll('.tiled-leaf').length === 1"),
+    () => browser!.evaluate<boolean>("document.querySelectorAll('.composition-leaf').length === 1"),
     20_000,
     "terminal's composition mounted",
   );
 
   const titleText = (): Promise<string> =>
     browser!.evaluate<string>(
-      `document.querySelector('.tiled-leaf .node-titlebar__title')?.textContent ?? ''`,
+      `document.querySelector('.composition-leaf .node-titlebar__title')?.textContent ?? ''`,
     );
 
   {
     const renamed = ActionOutcomeSchema.parse(
-      await dispatch("core.terminals.rename", { sessionId: terminal.id, name: "sdk-named" }),
+      await dispatch("core.terminals.rename", { terminalId: terminal.id, name: "sdk-named" }),
     );
     const landed = await settles(async () => (await titleText()).includes("sdk-named"), 10_000);
     check(
@@ -1089,7 +1478,7 @@ try {
     // `data-action="core.terminals.rename"`, so this is the SAME door the SDK just used.
     await browser.evaluate(
       `(() => {
-        const title = document.querySelector('.tiled-leaf .node-titlebar__title');
+        const title = document.querySelector('.composition-leaf .node-titlebar__title');
         title?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         return null;
       })()`,
@@ -1097,7 +1486,7 @@ try {
     const editing = await settles(
       () =>
         browser!.evaluate<boolean>(
-          `document.querySelector('.tiled-leaf [data-action="core.terminals.rename"]') !== null`,
+          `document.querySelector('.composition-leaf [data-action="core.terminals.rename"]') !== null`,
         ),
       5_000,
     );
@@ -1107,7 +1496,7 @@ try {
       // event carrying the name "Enter" is the gesture a person makes.
       await browser.evaluate(
         `(() => {
-          const input = document.querySelector('.tiled-leaf [data-action="core.terminals.rename"]');
+          const input = document.querySelector('.composition-leaf [data-action="core.terminals.rename"]');
           input.focus();
           input.select();
           return null;
@@ -1126,25 +1515,25 @@ try {
       }
     }
     const observed = await settles(
-      () => terminalClient?.sessions.get(terminal.id)?.name === "dom-named",
+      () => terminalClient?.terminals.get(terminal.id)?.name === "dom-named",
       10_000,
     );
     check(
       "R2 DOM → SDK",
       editing && observed,
       editing
-        ? `the SDK observes "${terminalClient.sessions.get(terminal.id)?.name ?? "nothing"}"`
+        ? `the SDK observes "${terminalClient.terminals.get(terminal.id)?.name ?? "nothing"}"`
         : "the rename affordance never opened",
     );
   }
 
   // ─────────────────────────────────────────── R5: view presence and spotlight
 
-  await browser.goto(`${origin}/p/${canvasPadId}`);
+  await browser.goto(`${origin}/p/${canvasContainerId}`);
   await until(
     () => browser!.evaluate<boolean>("window.__manifold !== undefined"),
     20_000,
-    "canvas seam installed",
+    "canvas probe installed",
   );
   await until(
     () =>
@@ -1156,7 +1545,7 @@ try {
   {
     await browser.evaluate(`document.querySelector('[data-testid="toolbar-draw"]').click(), null`);
     const seen = await settles(
-      () => canvasClient?.roster.get(viewerPrincipalId)?.payload.view?.tool === "draw",
+      () => canvasClient?.attendance.get(viewerPrincipalId)?.payload.vantage?.tool === "draw",
       3_000,
     );
     check(
@@ -1173,7 +1562,11 @@ try {
   }
 
   {
-    const uri = formatManifoldUri({ kind: "element", padId: canvasPadId, elementId: strokeId });
+    const uri = formatManifoldUri({
+      kind: "element",
+      containerId: canvasContainerId,
+      elementId: strokeId,
+    });
     const outcome = ActionOutcomeSchema.parse(
       await dispatch("core.presence.focus", { targetPrincipalId: viewerPrincipalId, uri }),
     );
@@ -1194,8 +1587,8 @@ try {
 
     const scoped = await mint({
       principal: { name: "axiom-scoped", kind: "agent" },
-      caps: ["pads:read", "pads:write", "scene:write"],
-      padId: canvasPadId,
+      caps: ["containers:read", "containers:write", "scenes:write"],
+      containerId: canvasContainerId,
     });
     const refusedScoped = ActionOutcomeSchema.parse(
       await dispatch(
@@ -1211,13 +1604,13 @@ try {
     check(
       "R5 scoped focus refused",
       forbidden,
-      refusedScoped.ok ? "a pad-scoped token drove a viewport" : refusedScoped.denial.message,
+      refusedScoped.ok ? "a container-scoped token drove a viewport" : refusedScoped.denial.message,
     );
 
     // ───────────────────────── R8: the denial ladder, end to end
     const unknown = ActionOutcomeSchema.parse(await dispatch("core.nope.doThing", {}));
     const badArgs = ActionOutcomeSchema.parse(
-      await dispatch("core.terminals.rename", { sessionId: terminal.id }),
+      await dispatch("core.terminals.rename", { terminalId: terminal.id }),
     );
     const scopedManage = ActionOutcomeSchema.parse(
       await dispatch(ENGINE_SET_ENABLED_ACTION, { id: "core.draw", enabled: false }, scoped.token),
@@ -1237,7 +1630,7 @@ try {
         badArgs.ok ? "accepted" : badArgs.denial.rule,
       ],
       [
-        "forbidden (pad scope)",
+        "forbidden (container scope)",
         !scopedManage.ok &&
           scopedManage.denial.rule === "forbidden" &&
           scopedManage.denial.message.includes("scoped tokens cannot invoke workspace actions"),
@@ -1271,11 +1664,11 @@ try {
     */
     const viewer = await mint({
       principalId: viewerPrincipalId,
-      caps: ["pads:read", "pads:write", "scene:write"],
+      caps: ["containers:read", "containers:write", "scenes:write"],
     });
     const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     const panelLeaves = Object.values(before).filter(
-      (node) => node.surface !== null && node.surface.kind === "panel",
+      (node) => node.ref !== null && node.ref.kind === "panel",
     );
     check(
       "R4 workspace panel leaves",
@@ -1285,13 +1678,13 @@ try {
 
     const divider = await browser.evaluate<{ x: number; y: number } | null>(
       `(() => {
-        const seam = document.querySelector('.ws-divider');
+        const seam = document.querySelector('.workspace-divider');
         if (seam === null) return null;
         const box = seam.getBoundingClientRect();
         return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
       })()`,
     );
-    const commitsBefore = actionLog.filter((entry) => entry.name === "core.layout.set").length;
+    const commitsBefore = actionLog.filter((entry) => entry.name === "core.space.setLayout").length;
     if (divider !== null) {
       const steps = Array.from({ length: 12 }, (_unused, index) => ({
         x: divider.x + 10 * (index + 1),
@@ -1306,18 +1699,18 @@ try {
     }, 8_000);
     await sleep(1_500);
     const commits =
-      actionLog.filter((entry) => entry.name === "core.layout.set").length - commitsBefore;
+      actionLog.filter((entry) => entry.name === "core.space.setLayout").length - commitsBefore;
     check(
       "R4 divider drag commits once",
       divider !== null && moved && commits === 1,
       divider === null
         ? "no workspace divider in the DOM"
-        : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.layout.set dispatch(es)`,
+        : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.space.setLayout dispatch(es)`,
     );
 
     const other = await mint({
       principal: { name: "axiom-bystander", kind: "human" },
-      caps: ["pads:read"],
+      caps: ["containers:read"],
     });
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
     const untouched =
@@ -1353,33 +1746,34 @@ try {
   // ─────────────────────────────────────────── R6: addressing
 
   {
-    const padUri = formatManifoldUri({ kind: "pad", padId: canvasPadId });
-    const terminalUri = formatManifoldUri({ kind: "terminal", sessionId: terminal.id });
-    const padResolved = ResolveResponseSchema.parse(
-      await getJson(`/api/resolve?uri=${encodeURIComponent(padUri)}`),
+    const containerUri = formatManifoldUri({ kind: "container", containerId: canvasContainerId });
+    const terminalUri = formatManifoldUri({ kind: "terminal", terminalId: terminal.id });
+    const containerResolved = ResolveResponseSchema.parse(
+      await getJson(`/api/resolve?uri=${encodeURIComponent(containerUri)}`),
     );
     const terminalResolved = ResolveResponseSchema.parse(
       await getJson(`/api/resolve?uri=${encodeURIComponent(terminalUri)}`),
     );
     check(
       "R6 /api/resolve round-trips",
-      padResolved.exists &&
-        padResolved.uri === padUri &&
+      containerResolved.exists &&
+        containerResolved.uri === containerUri &&
         terminalResolved.exists &&
         terminalResolved.uri === terminalUri,
-      `pad "${padResolved.title ?? ""}" and terminal "${terminalResolved.title ?? ""}" both resolve`,
+      `container "${containerResolved.title ?? ""}" and terminal "${terminalResolved.title ?? ""}" both resolve`,
     );
 
-    await browser.goto(`${origin}/uri/${encodeURIComponent(padUri)}`);
+    await browser.goto(`${origin}/uri/${encodeURIComponent(containerUri)}`);
     const landed = await settles(
-      async () => (await browser!.evaluate<string>("location.pathname")) === `/p/${canvasPadId}`,
+      async () =>
+        (await browser!.evaluate<string>("location.pathname")) === `/p/${canvasContainerId}`,
       10_000,
     );
     check(
       "R6 deep link navigates",
       landed,
       landed
-        ? `/uri/<encoded> landed on /p/${canvasPadId}`
+        ? `/uri/<encoded> landed on /p/${canvasContainerId}`
         : `the deep link stopped at ${await browser.evaluate<string>("location.pathname")}`,
     );
   }
@@ -1482,10 +1876,10 @@ try {
     }
     offError();
     const renameWhileOff = ActionOutcomeSchema.parse(
-      await dispatch("core.terminals.rename", { sessionId: terminal.id, name: "nope" }),
+      await dispatch("core.terminals.rename", { terminalId: terminal.id, name: "nope" }),
     );
     const killWhileOff = ActionOutcomeSchema.parse(
-      await dispatch("core.terminals.kill", { sessionId: terminal.id }),
+      await dispatch("core.terminals.kill", { terminalId: terminal.id }),
     );
     const back = await setEnabled("core.terminals", true);
     check(

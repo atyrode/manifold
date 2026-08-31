@@ -3,13 +3,13 @@ import { resolve, sep } from "node:path";
 import { DEFAULT_WORKSPACE_LAYOUT } from "@manifold/plugin";
 import {
   ActionOutcomeSchema,
-  ContainersResponseSchema,
+  AttendanceResponseSchema,
+  ContainerCensusResponseSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
   OkResponseSchema,
   PROTOCOL_VERSION,
-  PadPresenceResponseSchema,
   PluginsResponseSchema,
   ResolveResponseSchema,
   buildProtocolJsonSchema,
@@ -138,8 +138,8 @@ export class HttpApp {
         );
       }
       if (request.method === "GET" && url.pathname === "/api/protocol") {
-        // The description publishes the LIVE vocabulary: every composed action with its
-        // schemas, and the roster that says which plugin owns each one. A stranger's agent
+        // The description publishes the LIVE vocabulary: every action the assembly holds with
+        // its schemas, and the roster that says which plugin owns each one. A stranger's agent
         // reads this document and knows every door it may knock on.
         return jsonResponse(
           buildProtocolJsonSchema({
@@ -180,34 +180,39 @@ export class HttpApp {
     return this.auth.authenticate(raw);
   }
 
-  private requireCap(context: AuthContext, cap: Exclude<Cap, "*">, padId?: string): void {
-    if (!this.auth.allows(context, cap, padId)) {
+  private requireCap(context: AuthContext, cap: Exclude<Cap, "*">, containerId?: string): void {
+    if (!this.auth.allows(context, cap, containerId)) {
       throw new RequestError("forbidden", `${cap} capability required`);
     }
   }
 
   private async api(request: Request, pathname: string): Promise<Response> {
-    if (request.method === "GET" && pathname === "/api/pad-presence") {
+    if (request.method === "GET" && pathname === "/api/attendance") {
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      const pads = this.rooms
+      this.requireCap(context, "containers:read");
+      const attendance = this.rooms
         .presence()
-        .filter((pad) => context.padScope === null || pad.padId === context.padScope);
-      return jsonResponse(PadPresenceResponseSchema.parse({ pads }));
+        .filter(
+          (entry) =>
+            context.containerScope === null || entry.containerId === context.containerScope,
+        );
+      return jsonResponse(AttendanceResponseSchema.parse({ attendance }));
     }
     /*
       The index's whole input: what every container holds and what it points at. One route
-      rather than a field on each of the pad routes, because the INDEX VISIBILITY RULE needs
-      the containment GRAPH — a row is top-level exactly when no other container references
-      it — and a graph cannot be assembled from rows fetched one at a time.
+      rather than a field on each of the container routes, because the INDEX VISIBILITY RULE
+      needs the containment GRAPH — a row is top-level exactly when no other container
+      references it — and a graph cannot be assembled from rows fetched one at a time.
      */
     if (request.method === "GET" && pathname === "/api/containers") {
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
-      if (context.padScope !== null) {
+      this.requireCap(context, "containers:read");
+      if (context.containerScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot read the container index");
       }
-      return jsonResponse(ContainersResponseSchema.parse({ containers: this.rooms.censuses() }));
+      return jsonResponse(
+        ContainerCensusResponseSchema.parse({ containers: this.rooms.censuses() }),
+      );
     }
 
     /*
@@ -216,7 +221,7 @@ export class HttpApp {
 
       Authentication only here: the caps an action requires are the ACTION's declaration, so
       the ladder inside `dispatch` is the single place authority is decided (and the single
-      place a pad-scoped token is refused). A denial answers 200 carrying `ok: false`, the
+      place a container-scoped token is refused). A denial answers 200 carrying `ok: false`, the
       shape a refused placement uses too — a refusal is an answer about authority or state,
       never a transport failure.
      */
@@ -229,12 +234,12 @@ export class HttpApp {
     }
 
     if (request.method === "GET" && pathname === "/api/plugins") {
-      // Any authenticated token, pad-scoped included — the same reasoning that makes
-      // `core.machines.list` a `scope: "pad"` read: the roster is VOCABULARY, and a scoped
+      // Any authenticated token, container-scoped included — the same reasoning that makes
+      // `core.machines.list` a `scope: "container"` read: the roster is VOCABULARY, and a scoped
       // viewer still has to render panels and know which plugin owns the placeholder it is
       // looking at.
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
+      this.requireCap(context, "containers:read");
       return jsonResponse(PluginsResponseSchema.parse({ plugins: this.plugins.roster() }));
     }
 
@@ -242,14 +247,14 @@ export class HttpApp {
       // Self-scoped by construction: a workspace tree belongs to one principal, so the door
       // takes no id and answers the caller's own — the default until they write one.
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
+      this.requireCap(context, "containers:read");
       const layout = this.store.workspaceLayout(context.principal.id) ?? DEFAULT_WORKSPACE_LAYOUT;
       return jsonResponse(LayoutResponseSchema.parse({ layout }));
     }
 
     if (request.method === "GET" && pathname === "/api/resolve") {
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:read");
+      this.requireCap(context, "containers:read");
       const raw = new URL(request.url).searchParams.get("uri");
       if (raw === null) throw new RequestError("invalid", "uri query parameter is required");
       const ref = parseManifoldUri(raw);
@@ -265,19 +270,19 @@ export class HttpApp {
       );
     }
 
-    const tileMatch = /^\/api\/pads\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
+    const tileMatch = /^\/api\/containers\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
     if (tileMatch !== null && request.method === "DELETE") {
-      const padId = decodePathSegment(tileMatch[1], "pad id");
+      const containerId = decodePathSegment(tileMatch[1], "container id");
       const context = this.authenticate(request);
-      this.requireCap(context, "pads:write");
-      if (context.padScope !== null) {
+      this.requireCap(context, "containers:write");
+      if (context.containerScope !== null) {
         throw new RequestError("forbidden", "scoped tokens cannot remove tiles");
       }
       // Leaf removal is NOT a placement: nothing accepts "nowhere" as a destination for a
       // LEAF, so a leaf is addressed directly here while every MOVE of its occupant goes
-      // through `core.layout.place`. Removing a terminal's last leaf closes the terminal.
+      // through `core.space.place`. Removing a terminal's last leaf closes the terminal.
       const tileId = decodePathSegment(tileMatch[2], "tile id");
-      const removed = this.placement.removeTile(padId, tileId);
+      const removed = this.placement.removeTile(containerId, tileId);
       if (removed === "not_found") throw new RequestError("not_found", "tile not found");
       if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
       return jsonResponse(OkResponseSchema.parse({ ok: true }));
@@ -288,7 +293,7 @@ export class HttpApp {
       requireRoot(context);
       return jsonResponse({
         rooms: this.rooms.introspect(),
-        sessions: this.broker.introspect(),
+        terminals: this.broker.introspect(),
         machines: this.store.listMachines().map((machine) => ({
           id: machine.id,
           name: machine.name,
@@ -304,10 +309,10 @@ export class HttpApp {
 
   /**
    * Existence and display title for one parsed address, asked of whichever side owns that
-   * kind of node. Container-addressed forms re-check `pads:read` FOR THAT PAD, so a
-   * pad-scoped token cannot use the resolver as a window onto the rest of the workspace;
-   * workspace-wide forms (principal, plugin, action) are vocabulary every reader already
-   * holds.
+   * kind of node. Container-addressed forms re-check `containers:read` FOR THAT CONTAINER, so
+   * a container-scoped token cannot use the resolver as a window onto the rest of the
+   * workspace; workspace-wide forms (principal, plugin, action) are vocabulary every reader
+   * already holds.
    */
   private resolveRef(
     ref: ManifoldRef,
@@ -315,28 +320,28 @@ export class HttpApp {
   ): { exists: boolean; title: string | null } {
     switch (ref.kind) {
       case "terminal": {
-        const session = this.store.getSession(ref.sessionId);
-        if (session === null) return { exists: false, title: null };
-        this.requireCap(context, "pads:read", session.padId);
-        return { exists: true, title: session.name };
+        const terminal = this.store.getTerminal(ref.terminalId);
+        if (terminal === null) return { exists: false, title: null };
+        this.requireCap(context, "containers:read", terminal.containerId);
+        return { exists: true, title: terminal.name };
       }
-      case "pad": {
-        this.requireCap(context, "pads:read", ref.padId);
-        const pad = this.store.getPad(ref.padId);
-        return { exists: pad !== null, title: pad?.name ?? null };
+      case "container": {
+        this.requireCap(context, "containers:read", ref.containerId);
+        const container = this.store.getContainer(ref.containerId);
+        return { exists: container !== null, title: container?.name ?? null };
       }
       case "element":
-        this.requireCap(context, "pads:read", ref.padId);
+        this.requireCap(context, "containers:read", ref.containerId);
         // An element and a tile have no name of their own: they are addressed THROUGH the
         // container that gives them identity, and it is the container that has a title.
-        return { exists: this.rooms.holdsElement(ref.padId, ref.elementId), title: null };
+        return { exists: this.rooms.holdsElement(ref.containerId, ref.elementId), title: null };
       case "tile":
-        this.requireCap(context, "pads:read", ref.padId);
-        return { exists: this.rooms.holdsTile(ref.padId, ref.tileId), title: null };
+        this.requireCap(context, "containers:read", ref.containerId);
+        return { exists: this.rooms.holdsTile(ref.containerId, ref.tileId), title: null };
       case "principal": {
         // Deliberately no per-principal authorization: principal identity is workspace
-        // vocabulary. Any pads:read holder already reads every principal's id, name, and
-        // color from GET /api/pad-presence, so gating the resolver here would protect
+        // vocabulary. Any containers:read holder already reads every principal's id, name,
+        // and color from GET /api/attendance, so gating the resolver here would protect
         // nothing while making one door behave unlike the doors beside it.
         const principal = this.store.getPrincipal(ref.principalId);
         return { exists: principal !== null, title: principal?.name ?? null };
@@ -348,7 +353,7 @@ export class HttpApp {
         return { exists: entry !== undefined, title: entry?.manifest.title ?? null };
       }
       case "action": {
-        const action = this.plugins.composition().actions.get(ref.actionName);
+        const action = this.plugins.assembly().actions.get(ref.actionName);
         return { exists: action !== undefined, title: action?.def.title ?? null };
       }
       default: {

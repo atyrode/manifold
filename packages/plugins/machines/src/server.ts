@@ -64,14 +64,14 @@ function dot(machine: MachineRow): MachineDot {
  * meaning intact:
  *
  * - the list is every enrolled machine in store order with live liveness from the machine
- *   gateway, unfiltered, for every caller the door lets through — including a pad-scoped
- *   one, which is why the action declares `scope: "pad"`. It reads `ctx.padScope` nowhere,
+ *   gateway, unfiltered, for every caller the door lets through — including a container-scoped
+ *   one, which is why the action declares `scope: "container"`. It reads `ctx.containerScope` nowhere,
  *   and that is not the containment obligation being waived, it is the obligation being
- *   VACUOUS: nothing in the answer is addressed by pad, so there is no pad-addressed thing
- *   in it to constrain. `scope: "pad"` says only "a pad-scoped token may open this", which
+ *   VACUOUS: nothing in the answer is addressed by container, so there is no container-addressed thing
+ *   in it to constrain. `scope: "container"` says only "a container-scoped token may open this", which
  *   is exactly what `GET /api/machines` already allowed — a share-link viewer still has to
  *   paint the machine badge on the terminal in front of it. Any future fleet door whose
- *   arguments or payload name a pad-addressed node (a session, an element, a layout) owes
+ *   arguments or payload name a container-addressed node (a terminal, an element, a layout) owes
  *   the real check;
  * - enrolment is IDEMPOTENT BY NAME (issue #40): an existing name comes back as its own row
  *   with no token minted, so a re-run provision flow can never invalidate the credential a

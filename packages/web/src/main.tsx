@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app.tsx";
 import { captureOwnerKeyFromFragment, IdentityGate } from "./identity.tsx";
-import { CompositionProvider } from "./plugin-host.tsx";
+import { AssemblyProvider } from "./plugin-host.tsx";
 import "./styles.css";
 
 captureOwnerKeyFromFragment();
@@ -17,9 +17,9 @@ createRoot(rootElement).render(
         // The composition needs the bearer token for its boot roster fetch, so it mounts
         // INSIDE the gate and above every route: the vocabulary is settled before the shell
         // asks what panels exist.
-        <CompositionProvider identity={identity}>
+        <AssemblyProvider identity={identity}>
           <App identity={identity} />
-        </CompositionProvider>
+        </AssemblyProvider>
       )}
     </IdentityGate>
   </StrictMode>,

@@ -57,8 +57,8 @@ function fixture(online: ReadonlySet<string> = new Set()): Fixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   return {
     store,
     auth,
@@ -69,22 +69,30 @@ function fixture(online: ReadonlySet<string> = new Set()): Fixture {
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
-function context(fix: Fixture, caps: readonly Cap[], padId?: string): AuthContext {
+function context(fix: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
   const grant = fix.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
       caps: [...caps],
-      ...(padId === undefined ? {} : { padId }),
+      ...(containerId === undefined ? {} : { containerId }),
     },
     fix.owner,
   );
   return fix.auth.authenticate(grant.token);
 }
 
-/** A container to scope a token to; `mintToken` refuses a scope naming a pad that is not there. */
-function pad(fix: Fixture): string {
+/**
+ * A container to scope a token to; `mintToken` refuses a scope naming a container that is
+ * not there.
+ */
+function container(fix: Fixture): string {
   const id = fix.runtime.newId();
-  fix.store.createPad({ id, name: "scoped", createdAt: fix.runtime.now(), layout: "canvas" });
+  fix.store.createContainer({
+    id,
+    name: "scoped",
+    createdAt: fix.runtime.now(),
+    discipline: "canvas",
+  });
   return id;
 }
 
@@ -154,9 +162,9 @@ describe("core.machines.enroll", () => {
     fix.store.close();
   });
 
-  test("a pad-scoped token is refused for its SCOPE, above the capability it holds", async () => {
+  test("a container-scoped token is refused for its SCOPE, above the capability it holds", async () => {
     const fix = fixture();
-    const scoped = context(fix, ["machines:mint"], pad(fix));
+    const scoped = context(fix, ["machines:mint"], container(fix));
 
     const outcome = await fix.host.dispatch(scoped, "core.machines.enroll", { name: "alpha" });
 
@@ -172,7 +180,7 @@ describe("core.machines.enroll", () => {
 
   test("without machines:mint it is forbidden, and the argument shape stays unlearnable", async () => {
     const fix = fixture();
-    const reader = context(fix, ["pads:read"]);
+    const reader = context(fix, ["containers:read"]);
 
     const outcome = await fix.host.dispatch(reader, "core.machines.enroll", {});
 
@@ -232,10 +240,10 @@ describe("core.machines.list", () => {
     fix.store.close();
   });
 
-  test('a pad-scoped reader still sees the whole fleet — the read is scope:"pad"', async () => {
+  test('a container-scoped reader still sees the whole fleet — the read is scope:"container"', async () => {
     const fix = fixture();
     await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" });
-    const scoped = context(fix, ["pads:read"], pad(fix));
+    const scoped = context(fix, ["containers:read"], container(fix));
 
     const outcome = await fix.host.dispatch(scoped, "core.machines.list", {});
 
@@ -247,16 +255,16 @@ describe("core.machines.list", () => {
     fix.store.close();
   });
 
-  test("without pads:read it is forbidden, scoped or not", async () => {
+  test("without containers:read it is forbidden, scoped or not", async () => {
     const fix = fixture();
-    const scoped = context(fix, ["terminal:write"], pad(fix));
+    const scoped = context(fix, ["terminals:write"], container(fix));
 
     const outcome = await fix.host.dispatch(scoped, "core.machines.list", {});
 
     // The scope rung lets a scoped caller reach the caps rung; it never carries them past it.
     expect(denial(outcome)).toEqual({
       rule: "forbidden",
-      message: "pads:read capability required",
+      message: "containers:read capability required",
     });
     fix.store.close();
   });
@@ -264,10 +272,12 @@ describe("core.machines.list", () => {
   test("an argument the door does not publish is invalid_args", async () => {
     const fix = fixture();
 
-    const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", { padId: "pad-1" });
+    const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", {
+      containerId: "container-1",
+    });
 
     // The fleet is not filterable, and a strict schema is how a caller finds that out rather
-    // than silently receiving everything under the impression it asked for one pad.
+    // than silently receiving everything under the impression it asked for one container.
     expect(denial(outcome).rule).toBe("invalid_args");
     fix.store.close();
   });

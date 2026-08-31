@@ -2,21 +2,21 @@ import {
   ServerMessageBodySchema,
   ServerMessageSchema,
   type PlaceResponse,
-  type PlacementSurface,
+  type PlacementRef,
   type RuntimeDeps,
   type ServerMessage,
   type ServerMessageBody,
   type TileEdge,
-  type TileSurface,
+  type TileRef,
 } from "@manifold/protocol";
+import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
-import { SERVER_PLUGIN_DEFS } from "../src/composition.ts";
 import { openDatabase } from "../src/db.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import { PlaceExecutor, compositionElementTraits, type PlaceOutcome } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, type PlaceOutcome } from "../src/placement.ts";
 import { PluginHost, type MachineLiveness } from "../src/plugin-host.ts";
 import type { RoomManager, RoomTimers } from "../src/room.ts";
-import type { RawSocket } from "../src/session-peer.ts";
+import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
 import type { TerminalBroker } from "../src/terminal-broker.ts";
 
@@ -40,12 +40,12 @@ function placed(outcome: PlaceOutcome): PlaceResponse | string {
  */
 export function unplaceElement(
   placement: PlaceExecutor,
-  padId: string,
+  containerId: string,
   elementId: string,
 ): { readonly removed: number } | string {
   const result = placed(
     placement.place({
-      surface: { kind: "element", padId, elementId },
+      ref: { kind: "element", containerId, elementId },
       destination: { kind: "unplaced" },
     }),
   );
@@ -56,11 +56,11 @@ export function unplaceElement(
 /** Every reference to an item goes, named by the item's own identity rather than a copy. */
 export function unplaceTerminal(
   placement: PlaceExecutor,
-  sessionId: string,
+  terminalId: string,
 ): { readonly removed: number } | string {
   const result = placed(
     placement.place({
-      surface: { kind: "terminal", sessionId },
+      ref: { kind: "terminal", terminalId },
       destination: { kind: "unplaced" },
     }),
   );
@@ -68,18 +68,18 @@ export function unplaceTerminal(
   return result.op === "unplace" ? { removed: result.removed } : `unexpected:${result.op}`;
 }
 
-/** A tileable surface joins a composition. */
+/** A tileable ref joins a composition. */
 export function placeTile(
   placement: PlaceExecutor,
-  padId: string,
-  surface: TileSurface,
+  containerId: string,
+  ref: TileRef,
   targetTileId: string | null,
   edge: TileEdge | null,
 ): { readonly tileId: string } | string {
   const result = placed(
     placement.place({
-      surface: tileSurfaceAsPlacement(surface, padId),
-      destination: { kind: "tile", padId, targetTileId, edge },
+      ref: tileRefAsPlacement(ref, containerId),
+      destination: { kind: "tile", containerId, targetTileId, edge },
     }),
   );
   if (typeof result === "string") return result;
@@ -87,22 +87,22 @@ export function placeTile(
 }
 
 /**
- * A leaf's occupant leaves the composition and lands on `destinationPadId`. A terminal is
- * re-homed into a fresh solo composition and referenced from there, so the returned element
- * is a portal — never an element carrying a session.
+ * A leaf's occupant leaves the composition and lands on `destinationContainerId`. A terminal
+ * is re-homed into a fresh solo composition and referenced from there, so the returned
+ * element is a portal — never an element carrying a terminal.
  */
 export function extractTile(
   placement: PlaceExecutor,
   containerId: string,
   tileId: string,
-  destinationPadId: string,
+  destinationContainerId: string,
   x: number,
   y: number,
 ): { readonly elementId: string } | string {
   const result = placed(
     placement.place({
-      surface: { kind: "tile", containerId, tileId },
-      destination: { kind: "canvas", padId: destinationPadId, x, y },
+      ref: { kind: "tile", containerId, tileId },
+      destination: { kind: "canvas", containerId: destinationContainerId, x, y },
     }),
   );
   if (typeof result === "string") return result;
@@ -112,42 +112,42 @@ export function extractTile(
 /** Two references on one canvas merge into a new composition holding both items. */
 export function composeOnCanvas(
   placement: PlaceExecutor,
-  padId: string,
+  containerId: string,
   targetElementId: string,
-  surface: PlacementSurface,
+  ref: PlacementRef,
   edge: TileEdge,
-): { readonly viewId: string; readonly tileId: string } | string {
+): { readonly containerId: string; readonly tileId: string } | string {
   const result = placed(
     placement.place({
-      surface,
-      destination: { kind: "compose", padId, targetElementId, edge },
+      ref,
+      destination: { kind: "compose", containerId, targetElementId, edge },
     }),
   );
   if (typeof result === "string") return result;
   return result.op === "compose"
-    ? { viewId: result.viewId, tileId: result.tileId }
+    ? { containerId: result.containerId, tileId: result.tileId }
     : `unexpected:${result.op}`;
 }
 
 /**
- * Storage surfaces name items the way a LEAF does; placement surfaces name them the way a
- * GESTURE does. A note is the one form where they differ, so it is translated here.
+ * Tile refs name items the way a LEAF does; placement refs name them the way a GESTURE
+ * does. A note is the one form where they differ, so it is translated here.
  */
-function tileSurfaceAsPlacement(surface: TileSurface, padId: string): PlacementSurface {
-  switch (surface.kind) {
+function tileRefAsPlacement(ref: TileRef, containerId: string): PlacementRef {
+  switch (ref.kind) {
     case "terminal":
-      return { kind: "terminal", sessionId: surface.sessionId };
-    case "pad":
-      return { kind: "pad", padId: surface.padId };
+      return { kind: "terminal", terminalId: ref.terminalId };
+    case "container":
+      return { kind: "container", containerId: ref.containerId };
     case "text":
-      return { kind: "element", padId, elementId: surface.elementId };
+      return { kind: "element", containerId, elementId: ref.elementId };
     case "panel":
-      // No placement surface names a panel: a workspace layout is written whole by
-      // `core.layout.set`, never by the placement door, so a panel leaf cannot be the
+      // No placement ref names a panel: a workspace layout is written whole by
+      // `core.space.setLayout`, never by the placement door, so a panel leaf cannot be the
       // subject of a drag this helper translates.
-      throw new Error(`panels are not placement surfaces: ${surface.panelId}`);
+      throw new Error(`panels are not placement refs: ${ref.panelId}`);
     default: {
-      const exhaustive: never = surface;
+      const exhaustive: never = ref;
       return exhaustive;
     }
   }
@@ -266,7 +266,7 @@ export function testStore(): ServerStore {
 }
 
 /**
- * The real composition, in a test. Tests compose the SAME defs production does — a fixture
+ * The real assembly, in a test. Tests assemble the SAME defs production does — a fixture
  * with a hand-written plugin list would let the action door pass here and refuse in the
  * server, which is exactly the divergence the registry exists to prevent.
  */
@@ -286,9 +286,9 @@ export function testPluginHost(
 ): PluginHost {
   /*
     The executor and the host are mutually dependent — the executor resolves legality against
-    the live composition, and a composed action drives the executor — which is exactly what
+    the live assembly, and an assembled action drives the executor — which is exactly what
     the roster THUNK exists for. Resolving it lazily through the host reproduces the
-    production wiring instead of freezing a roster a recompose would invalidate.
+    production wiring instead of freezing a roster a reassembly would invalidate.
   */
   let host: PluginHost | null = null;
   const placement = new PlaceExecutor(
@@ -296,7 +296,7 @@ export function testPluginHost(
     rooms,
     broker,
     runtime,
-    compositionElementTraits(() => host?.roster() ?? []),
+    assemblyElementTraits(() => host?.roster() ?? []),
   );
   host = new PluginHost(
     SERVER_PLUGIN_DEFS,

@@ -3,12 +3,15 @@ import {
   type CarriedItem,
   type CarryAim,
   type PlacementDestination,
-  type PlacementSurface,
+  type PlacementRef,
   type TileLayout,
 } from "@manifold/protocol";
 import { useCallback, useMemo, useRef, type RefObject } from "react";
 
-import { SURFACE_NAMES } from "./carry.ts";
+/** The one label vocabulary, as this module's fallback for a chip whose producer sent no name. */
+import { ITEM_NOUNS } from "./item-noun.ts";
+
+const CHIP_NOUNS: Readonly<Record<string, string>> = ITEM_NOUNS;
 import { carriedItem, carriedPlacement, type ItemEnvelope } from "./item-envelope.ts";
 import type { ItemDropAssessment } from "./item-drop.ts";
 import {
@@ -25,7 +28,7 @@ import { asTileTree, resolveSnapTarget } from "./tile-snap.ts";
 /**
  * THE tile drop pipeline: aim, preview, commit — one implementation shared by both drag
  * transports (HTML5 drags and React Flow node drags), both host renderers (the
- * fullscreen route and a canvas widget) and both PRODUCERS (this browser's pointer and
+ * fullscreen route and a canvas portal) and both PRODUCERS (this browser's pointer and
  * a collaborator's carry frames).
  *
  * IDENTITY IS DATA, NEVER A BRANCH. A local pointer is normalised into the WIRE form —
@@ -34,16 +37,16 @@ import { asTileTree, resolveSnapTarget } from "./tile-snap.ts";
  * the preview they see is computed from precisely the bytes their collaborators get, so
  * a wire form that cannot express something breaks visibly here instead of only for
  * them. The one legitimate local-vs-remote decision is ARBITRATION — which producer's
- * intent wins a surface — and it lives in the overlay, above this module. Nothing below
+ * intent wins a ref — and it lives in the overlay, above this module. Nothing below
  * it may ask whose intent it renders.
  *
  * The interface between a transport and targeting is A CLIENT-SPACE POINT, never a DOM
  * event target: a React Flow node drag fires no `dragover` at all, so a DOM-targeted
  * design would serve one transport and need a parallel geometric path for the other —
  * the two-implementation trap the old code was in. `aimAt` measures the tile AREA
- * element, so chrome like a widget's name strip is excluded by construction, and
+ * element, so chrome like a portal's name strip is excluded by construction, and
  * converts everything into unit space where the same numbers hold at any canvas zoom
- * and under the widget's `transform: scale()`.
+ * and under the portal's `transform: scale()`.
  */
 
 /** One axis pair of fractions: divider thickness, ring thickness. */
@@ -73,7 +76,7 @@ export interface AreaFractions {
  * the rule is subtle in exactly the way that drifts: dividers live in the tree's own
  * LAYOUT px (`offsetWidth` ignores transforms, and the divider is subtracted from a
  * layout box), while the ring is a constant ON-SCREEN thickness and therefore comes
- * from the transformed rect. A widget drawn at `scale(0.5)` inside a zoomed canvas gets
+ * from the transformed rect. A portal drawn at `scale(0.5)` inside a zoomed canvas gets
  * both right without either caller knowing it is scaled.
  *
  * Null on a degenerate box. There is deliberately no fallback extent: a `?? 1` turns
@@ -96,8 +99,8 @@ export function areaUnits(area: HTMLElement, dividerPx: number): AreaFractions |
 export interface TileDropContext {
   readonly layout: TileLayout | null;
   readonly containerId: string;
-  /** Non-null when this area is a canvas widget: which canvas, which element. */
-  readonly widget: { readonly padId: string; readonly elementId: string } | null;
+  /** Non-null when this area is a canvas portal: which canvas, which element. */
+  readonly portal: { readonly containerId: string; readonly elementId: string } | null;
   readonly units: AreaFractions;
   readonly assess: (
     destination: PlacementDestination,
@@ -109,8 +112,8 @@ export interface TileDropHost {
   readonly areaRef: RefObject<HTMLElement | null>;
   readonly layout: TileLayout | null;
   readonly containerId: string;
-  /** Non-null when this area is a canvas widget: which canvas, which element. */
-  readonly widget: { readonly padId: string; readonly elementId: string } | null;
+  /** Non-null when this area is a canvas portal: which canvas, which element. */
+  readonly portal: { readonly containerId: string; readonly elementId: string } | null;
   /** One divider's thickness in the tree's own layout px (`TileTreeClasses.dividerPx`). */
   readonly dividerPx: number;
   readonly assess: (
@@ -123,7 +126,7 @@ export interface TileDropHost {
    * move into. Only a canvas host can answer (it owns the element table); the route
    * omits it, and every element carry stays seatless there.
    */
-  readonly elementSeat?: (padId: string, elementId: string) => boolean;
+  readonly elementSeat?: (containerId: string, elementId: string) => boolean;
   /**
    * What this host calls the item in hand — the first link of the chip's label chain,
    * and the local counterpart of the name a peer's frame carries. Both ends of the
@@ -135,7 +138,8 @@ export interface TileDropHost {
 
 /** The slot's mark and name: one vocabulary, whoever produced the aim. */
 export interface TileDropChip {
-  readonly kind: PlacementSurface["kind"];
+  /** The ITEM kind in hand — a floor species or a contributed element type. */
+  readonly kind: string;
   /** Never null: the chain ends in the species name, so every slot is captioned. */
   readonly label: string;
 }
@@ -147,7 +151,7 @@ export interface TileDropChip {
 export interface TileDropState {
   /** The aim in its WIRE-COMPLETE form: what peers receive, verbatim. */
   readonly aim: CarryAim;
-  /** Where the carried surface would land, in unit space. */
+  /** Where the carried ref would land, in unit space. */
   readonly slot: UnitRect;
   /** The second rect a swap trades with, else null. */
   readonly partner: UnitRect | null;
@@ -156,7 +160,7 @@ export interface TileDropState {
   readonly assessment: ItemDropAssessment | null;
   readonly destination: PlacementDestination;
   /** What is being carried, as the placement algebra sees it. */
-  readonly surface: PlacementSurface | null;
+  readonly ref: PlacementRef | null;
   readonly chip: TileDropChip | null;
   /** The leaf this carry is vacating in THIS container, else null. */
   readonly carriedTileId: string | null;
@@ -223,13 +227,13 @@ function tileDepth(layout: TileLayout, tileId: string): number | null {
  * THE state constructor: the only code in this package that may build a
  * {@link TileDropState}.
  *
- * It takes the wire aim and the carried surface — never a pointer, never a DOM node,
+ * It takes the wire aim and the carried ref — never a pointer, never a DOM node,
  * never a producer flag — so the local pointer path and a peer's carry frame produce
  * byte-identical states for identical inputs. That is the whole design: divergence
  * between what a dragger sees and what their collaborators see is not a bug class here,
  * it is unrepresentable.
  *
- * A container whose tree this renderer cannot see (a widget whose socket has not
+ * A container whose tree this renderer cannot see (a portal whose socket has not
  * delivered yet) is modelled as the one-leaf tree it visibly is — a single pane showing
  * that container — via `asTileTree`, so the canvas door previews the real root split
  * the server will author rather than a bare painted half.
@@ -241,7 +245,8 @@ export function previewFor(
   label: string | null,
 ): TileDropState | null {
   if (wire.containerId !== context.containerId) return null;
-  const layout = context.layout ?? asTileTree({ kind: "pad", padId: context.containerId });
+  const layout =
+    context.layout ?? asTileTree({ kind: "container", containerId: context.containerId });
   const depth = tileDepth(layout, wire.tileId);
   if (depth === null) return null;
   const aim: TileAim = {
@@ -255,13 +260,13 @@ export function previewFor(
   const rootIsLeaf = root === undefined || root.dir === null;
   const destination = tileDestinationFor(aim, {
     containerId: context.containerId,
-    widget: context.widget,
+    portal: context.portal,
     rootIsLeaf,
   });
-  const surface = carried?.surface ?? null;
+  const ref = carried?.ref ?? null;
   const carriedTileId =
-    surface !== null && surface.kind === "tile" && surface.containerId === context.containerId
-      ? surface.tileId
+    ref !== null && ref.kind === "tile" && ref.containerId === context.containerId
+      ? ref.tileId
       : null;
   const prospect = tileProspect(layout, aim, carriedTileId, context.units.dividers);
   if (prospect === null) return null;
@@ -274,9 +279,14 @@ export function previewFor(
     // pointer and a peer's frame reach this call with the same two fields.
     assessment: context.assess(destination, carried ?? undefined),
     destination,
-    surface,
+    ref,
     chip:
-      surface === null ? null : { kind: surface.kind, label: label ?? SURFACE_NAMES[surface.kind] },
+      carried === null
+        ? null
+        : {
+            kind: carried.item.kind,
+            label: label ?? CHIP_NOUNS[carried.item.kind] ?? "item",
+          },
     carriedTileId,
   };
 }
@@ -322,12 +332,12 @@ export interface TileDropPipeline {
 export function useTileDrop(host: TileDropHost): TileDropPipeline {
   const localRef = useRef<LocalCache | null>(null);
   const remoteRef = useRef<RemoteCache | null>(null);
-  const { areaRef, layout, containerId, widget, dividerPx, assess, elementSeat, describeCarry } =
+  const { areaRef, layout, containerId, portal, dividerPx, assess, elementSeat, describeCarry } =
     host;
 
   const contextFor = useCallback(
-    (units: AreaFractions): TileDropContext => ({ layout, containerId, widget, units, assess }),
-    [assess, containerId, layout, widget],
+    (units: AreaFractions): TileDropContext => ({ layout, containerId, portal, units, assess }),
+    [assess, containerId, layout, portal],
   );
 
   const aimAt = useCallback(
@@ -350,7 +360,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       const envelope = carriedItem();
       const root = layout === null ? undefined : layout[ROOT_TILE_ID];
       const rootIsLeaf = root === undefined || root.dir === null;
-      const canvasDoor = widget !== null && rootIsLeaf;
+      const canvasDoor = portal !== null && rootIsLeaf;
       const cached = localRef.current;
       // The zone already held, so a pointer near a boundary — or an eye chasing the
       // FLIP's moving pixels — does not flutter between aims (hysteresis).
@@ -360,9 +370,9 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
           : null;
 
       let aim: TileAim | null = null;
-      if (canvasDoor && widget !== null) {
+      if (canvasDoor && portal !== null) {
         /*
-          A canvas-hosted SOLO container — and a widget whose layout this canvas cannot
+          A canvas-hosted SOLO container — and a portal whose layout this canvas cannot
           see (a nested card, or one still opening) — keeps the canvas door's center
           semantics: element↔element geometry swap, and dissolve-to-nearest-edge for a
           seatless carry. Resolving through `resolveSnapTarget` here is what guarantees
@@ -373,7 +383,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
         */
         const snap = resolveSnapTarget({ x: 0, y: 0, width: 1, height: 1 }, point, {
           occupied: true,
-          canSwap: envelope?.kind === "element" && envelope.padId === widget.padId,
+          canSwap: envelope?.kind === "element" && envelope.containerId === portal.containerId,
         });
         aim =
           snap === null
@@ -391,7 +401,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
             holdsTileSeat:
               envelope?.kind === "tile" ||
               (envelope?.kind === "element" &&
-                (elementSeat?.(envelope.padId, envelope.elementId) ?? false)),
+                (elementSeat?.(envelope.containerId, envelope.elementId) ?? false)),
           },
           units.dividers,
           units.ring,
@@ -430,7 +440,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       localRef.current = { layout, envelope, state };
       return state;
     },
-    [areaRef, containerId, contextFor, describeCarry, dividerPx, elementSeat, layout, widget],
+    [areaRef, containerId, contextFor, describeCarry, dividerPx, elementSeat, layout, portal],
   );
 
   const previewOf = useCallback(

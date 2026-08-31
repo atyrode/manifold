@@ -2,23 +2,23 @@ import { z } from "zod";
 
 /**
  * Machine channel (`/ws/machine`): the manifold-agent daemon dials OUT to the server and
- * multiplexes all its PTY sessions over one socket. JSON frames; `data` fields base64.
+ * multiplexes all its terminals over one socket. JSON frames; `data` fields base64.
  *
- * Sequencing contract: the agent assigns each session a strictly monotonic byte-sequence
+ * Sequencing contract: the agent assigns each terminal a strictly monotonic byte-sequence
  * counter AT EMISSION, and produces `snapshot` frames from the same ordered pipeline —
  * an output emitted before a snapshot always has seq ≤ the snapshot's seq. This is what
  * makes the server's gap-free attach handoff possible.
  */
 
 const base64 = z.base64().max(700_000);
-const sessionId = z.string().min(1);
+const terminalId = z.string().min(1);
 const geometry = {
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
 };
 
-export const AdvertisedSessionSchema = z.strictObject({
-  sessionId,
+export const AdvertisedTerminalSchema = z.strictObject({
+  terminalId,
   ...geometry,
   alive: z.boolean(),
   /** Highest output seq emitted so far (survives server restarts with the agent). */
@@ -30,7 +30,7 @@ export const AdvertisedSessionSchema = z.strictObject({
    */
   exitCode: z.number().int().nullable().optional(),
 });
-export type AdvertisedSession = z.infer<typeof AdvertisedSessionSchema>;
+export type AdvertisedTerminal = z.infer<typeof AdvertisedTerminalSchema>;
 
 export const AgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -40,25 +40,25 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     agentVersion: z.string(),
     protocolVersion: z.number().int().positive(),
     /** PTYs that survived a server restart; the new server re-adopts them. */
-    sessions: z.array(AdvertisedSessionSchema),
+    terminals: z.array(AdvertisedTerminalSchema),
   }),
-  z.strictObject({ type: z.literal("created"), sessionId }),
-  z.strictObject({ type: z.literal("create_error"), sessionId, message: z.string() }),
+  z.strictObject({ type: z.literal("created"), terminalId }),
+  z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),
   z.strictObject({
     type: z.literal("output"),
-    sessionId,
+    terminalId,
     seq: z.number().int().positive(),
     data: base64,
   }),
   z.strictObject({
     type: z.literal("snapshot"),
-    sessionId,
+    terminalId,
     seq: z.number().int().nonnegative(),
     data: base64,
   }),
   z.strictObject({
     type: z.literal("exited"),
-    sessionId,
+    terminalId,
     exitCode: z.number().int().nullable(),
   }),
   z.strictObject({ type: z.literal("pong") }),
@@ -74,16 +74,19 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("create"),
-    sessionId,
+    terminalId,
     ...geometry,
     cwd: z.string().optional(),
-    /** Injected into the PTY: MANIFOLD_URL / MANIFOLD_PAD / MANIFOLD_ELEMENT / MANIFOLD_TOKEN. */
+    /**
+     * Injected into the PTY: MANIFOLD_URL / MANIFOLD_CONTAINER / MANIFOLD_ELEMENT /
+     * MANIFOLD_TOKEN.
+     */
     env: z.record(z.string(), z.string()),
   }),
-  z.strictObject({ type: z.literal("input"), sessionId, data: base64 }),
-  z.strictObject({ type: z.literal("resize"), sessionId, ...geometry }),
-  z.strictObject({ type: z.literal("kill"), sessionId }),
-  z.strictObject({ type: z.literal("snapshot_request"), sessionId }),
+  z.strictObject({ type: z.literal("input"), terminalId, data: base64 }),
+  z.strictObject({ type: z.literal("resize"), terminalId, ...geometry }),
+  z.strictObject({ type: z.literal("kill"), terminalId }),
+  z.strictObject({ type: z.literal("snapshot_request"), terminalId }),
   z.strictObject({ type: z.literal("ping") }),
 ]);
 export type ServerToAgentMessage = z.infer<typeof ServerToAgentMessageSchema>;

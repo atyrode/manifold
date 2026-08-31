@@ -9,7 +9,7 @@ import { ControlIcon } from "./icons.tsx";
 
 /**
  * The one titlebar every container node wears. A terminal on a canvas, a view
- * widget (portal), and the composed renderer's own header are all the same
+ * portal (portal), and the composed renderer's own header are all the same
  * object seen from different distances, so they share one bar:
  *
  *   icon | title | modular middle slot | right-justified minimize/maximize/close
@@ -21,7 +21,7 @@ import { ControlIcon } from "./icons.tsx";
  *
  * Adopters keep their own class on the bar (`className`): those classes are
  * drag handles and proof hooks (TERMINAL_DRAG_HANDLE, PORTAL_DRAG_HANDLE,
- * `.tiled-header`), so the bar never owns them.
+ * `.composition-header`), so the bar never owns them.
  */
 
 /** Wrapper class of the control cluster; adopters guard bar-level gestures with it. */
@@ -57,7 +57,7 @@ export interface NodeTitleBarProps {
   /**
    * The FULL composed action name {@link NodeTitleBarProps.onRenameTitle} fires, marked into
    * the DOM as `data-action` (AGENTS invariant 12; gate S4/R7 checks every marker against the
-   * live roster). Supplied by the adopter because the same bar renames pads and compositions
+   * live roster). Supplied by the adopter because the same bar renames containers and compositions
    * too, and those doors are not actions yet.
    */
   readonly renameAction?: string | undefined;

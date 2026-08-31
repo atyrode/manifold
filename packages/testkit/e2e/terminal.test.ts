@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { tileIdForSurface } from "@manifold/scene";
+import { tileIdForRef } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
-  deletePad,
+  createContainer,
+  deleteContainer,
   enrollMachine,
-  listPadSessions,
+  listTerminalsByContainer,
   listTerminals,
   mintToken,
   startAgent,
@@ -39,7 +39,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "terminal");
+    const container = await createContainer(server, "terminal");
     const enrolled = await enrollMachine(server, "terminal-agent");
     const agent = await startAgent({
       serverUrl: server.url,
@@ -50,62 +50,62 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     expect(agent.machineId).toBe(enrolled.machineId);
 
     // Workspace-scoped grants: a terminal is born into a composition of its own, and driving
-    // it means joining that composition — an id no pad-scoped token could name.
+    // it means joining that composition — an id no container-scoped token could name.
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Alice", color: "#aa3344" },
-      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
     });
     const bob = await mintToken(server, {
       principal: { kind: "human", name: "Terminal Bob", color: "#3355cc" },
-      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
     });
-    const canvas = await connect(server, { padId: pad.id, token: alice.token });
+    const canvas = await connect(server, { containerId: container.id, token: alice.token });
     clients.push(canvas);
     if (canvas.self === null) throw new Error("terminal opener lacks self");
 
     // The canvas owns the spawn gesture; the composition the server births owns the PTY, so
     // `clientA` and every viewer below are rooms of that composition.
-    const { session, homeClient: clientA } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient: clientA } = await openTerminalAt(canvas, server, {
       elementId: "el-term-1",
       token: alice.token,
       portalAt: { x: 120, y: 90 },
     });
     clients.push(clientA);
-    expect(session.controllerId).toBe(alice.principal.id);
-    expect(session.padId).not.toBe(pad.id);
-    // What the canvas got is a REFERENCE to that composition, never the session itself.
+    expect(terminal.controllerId).toBe(alice.principal.id);
+    expect(terminal.containerId).not.toBe(container.id);
+    // What the canvas got is a REFERENCE to that composition, never the terminal itself.
     expect(canvas.elements.get("el-term-1")).toMatchObject({
       type: "portal",
-      containerId: session.padId,
+      containerId: terminal.containerId,
       x: 120,
       y: 90,
     });
-    const inventory = await listPadSessions(server);
-    const listedSession = inventory.find((candidate) => candidate.id === session.id);
-    expect(listedSession).toMatchObject({
-      id: session.id,
-      padId: session.padId,
+    const inventory = await listTerminalsByContainer(server);
+    const listedTerminal = inventory.find((candidate) => candidate.id === terminal.id);
+    expect(listedTerminal).toMatchObject({
+      id: terminal.id,
+      containerId: terminal.containerId,
       machineId: enrolled.machineId,
       status: "running",
       exitCode: null,
     });
-    expect(listedSession?.createdAt).toBeNumber();
+    expect(listedTerminal?.createdAt).toBeNumber();
 
-    const clientB = await connect(server, { padId: session.padId, token: bob.token });
+    const clientB = await connect(server, { containerId: terminal.containerId, token: bob.token });
     clients.push(clientB);
     if (clientB.self === null) throw new Error("terminal viewer lacks self");
-    await waitFor(() => clientB.sessions.get(session.id)?.status === "running", 10_000, 20);
+    await waitFor(() => clientB.terminals.get(terminal.id)?.status === "running", 10_000, 20);
 
-    const captureA = captureTerminal(clientA, session.id);
-    const captureB = captureTerminal(clientB, session.id);
+    const captureA = captureTerminal(clientA, terminal.id);
+    const captureB = captureTerminal(clientB, terminal.id);
     captures.push(captureA, captureB);
-    clientA.attachTerminal(session.id);
-    clientB.attachTerminal(session.id);
+    clientA.attachTerminal(terminal.id);
+    clientB.attachTerminal(terminal.id);
     await waitFor(() => captureA.snapshotSeq !== null && captureB.snapshotSeq !== null, 10_000, 20);
     expect(captureA.pendingOutputCount).toBe(0);
     expect(captureB.pendingOutputCount).toBe(0);
 
-    clientA.sendTerminalInput(session.id, "printf 'RT_%s\\n' ok\n");
+    clientA.sendTerminalInput(terminal.id, "printf 'RT_%s\\n' ok\n");
     await Promise.all([
       waitForTerminalText(captureA, "RT_ok", 10_000),
       waitForTerminalText(captureB, "RT_ok", 10_000),
@@ -114,22 +114,22 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     const viewers: SessionClient[] = [];
     const viewerCaptures: TerminalCapture[] = [];
     for (let index = 0; index < 10; index += 1) {
-      const viewer = await connect(server, { padId: session.padId, token: bob.token });
+      const viewer = await connect(server, { containerId: terminal.containerId, token: bob.token });
       viewers.push(viewer);
       clients.push(viewer);
-      const capture = captureTerminal(viewer, session.id);
+      const capture = captureTerminal(viewer, terminal.id);
       viewerCaptures.push(capture);
       captures.push(capture);
     }
 
-    clientA.sendTerminalInput(session.id, COUNTER_COMMAND);
+    clientA.sendTerminalInput(terminal.id, COUNTER_COMMAND);
     await Promise.all(
       viewers.map(async (viewer, index) => {
         // This e2e deliberately needs real 5-50ms network staggering to race live PTY output
         // against snapshot handoff; fake timers cannot drive independent child processes.
         const delayMs = 5 + ((index * 29 + 17) % 46);
         await Bun.sleep(delayMs);
-        viewer.attachTerminal(session.id);
+        viewer.attachTerminal(terminal.id);
       }),
     );
     await Promise.all(
@@ -165,23 +165,23 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       5_000,
       (message) => message.code === "not_controller",
     );
-    clientB.sendTerminalInput(session.id, "printf 'SHOULD_NOT_RUN\\n'\n");
+    clientB.sendTerminalInput(terminal.id, "printf 'SHOULD_NOT_RUN\\n'\n");
     expect((await deniedB).code).toBe("not_controller");
 
     const controllerChanged = nextMessage(
       clientA,
-      "session_event",
+      "terminal_event",
       5_000,
       (message) =>
-        message.sessionId === session.id &&
+        message.terminalId === terminal.id &&
         message.kind === "controller_changed" &&
         message.controllerId === bob.principal.id,
     );
-    clientB.takeTerminal(session.id);
+    clientB.takeTerminal(terminal.id);
     const changed = await controllerChanged;
     expect(changed.controllerId).toBe(bob.principal.id);
     await waitFor(
-      () => clientA.sessions.get(session.id)?.controllerId === bob.principal.id,
+      () => clientA.terminals.get(terminal.id)?.controllerId === bob.principal.id,
       5_000,
       20,
     ).catch((error: unknown) => {
@@ -189,7 +189,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     });
 
     const beforeControllerOutput = captureB.snapshotText.length + captureB.outputText.length;
-    clientB.sendTerminalInput(session.id, "printf 'CTRL_B\\n'\n");
+    clientB.sendTerminalInput(terminal.id, "printf 'CTRL_B\\n'\n");
     await waitFor(
       () =>
         (captureB.snapshotText + captureB.outputText)
@@ -206,23 +206,23 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       5_000,
       (message) => message.code === "not_controller",
     );
-    clientA.sendTerminalInput(session.id, "printf 'OLD_CONTROLLER\\n'\n");
+    clientA.sendTerminalInput(terminal.id, "printf 'OLD_CONTROLLER\\n'\n");
     expect((await deniedA).code).toBe("not_controller");
 
     const resized = nextMessage(
       clientA,
-      "session_event",
+      "terminal_event",
       5_000,
       (message) =>
-        message.sessionId === session.id &&
+        message.terminalId === terminal.id &&
         message.kind === "resized" &&
         message.cols === 100 &&
         message.rows === 30,
     );
-    clientB.resizeTerminal(session.id, 100, 30);
+    clientB.resizeTerminal(terminal.id, 100, 30);
     await resized;
     const beforeResizeProbeOutput = captureA.snapshotText.length + captureA.outputText.length;
-    clientB.sendTerminalInput(session.id, 'printf \'SIZE_%s_%s\\n\' "$LINES" "$COLUMNS"\n');
+    clientB.sendTerminalInput(terminal.id, 'printf \'SIZE_%s_%s\\n\' "$LINES" "$COLUMNS"\n');
     await waitFor(
       () =>
         (captureA.snapshotText + captureA.outputText)
@@ -238,22 +238,24 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     // is gone, not dead, and every viewer drops the row at once instead of keeping a corpse.
     const departed = nextMessage(
       clientA,
-      "session_event",
+      "terminal_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "parked",
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
-    clientB.killTerminal(session.id);
+    clientB.killTerminal(terminal.id);
     expect((await departed).kind).toBe("parked");
     await waitFor(
       () =>
-        clientA.sessions.get(session.id) === undefined &&
-        clientB.sessions.get(session.id) === undefined,
+        clientA.terminals.get(terminal.id) === undefined &&
+        clientB.terminals.get(terminal.id) === undefined,
       10_000,
       20,
     );
-    // The canvas's widget goes with it: a reference never outlives what it references.
+    // The canvas's portal goes with it: a reference never outlives what it references.
     await waitFor(() => !canvas.elements.has("el-term-1"), 10_000, 20);
-    expect((await listPadSessions(server)).find((row) => row.id === session.id)).toBeUndefined();
+    expect(
+      (await listTerminalsByContainer(server)).find((row) => row.id === terminal.id),
+    ).toBeUndefined();
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -270,7 +272,7 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "exited terminal gates");
+    const container = await createContainer(server, "exited terminal gates");
     const enrolled = await enrollMachine(server, "exited-terminal-agent");
     const agent = await startAgent({
       serverUrl: server.url,
@@ -280,14 +282,18 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
     agents.push(agent);
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
-      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
-    const canvas = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    const canvas = await connect(server, {
+      containerId: container.id,
+      token: grant.token,
+      reconnect: false,
+    });
     clients.push(canvas);
-    // No portal is authored — this grant holds no `scene:write` — because the gates under
+    // No portal is authored — this grant holds no `scenes:write` — because the gates under
     // test are the terminal's own, and an exited terminal keeps its leaf and its home either
     // way: the exit stays visible where the terminal lives.
-    const { session, homeClient: client } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient: client } = await openTerminalAt(canvas, server, {
       elementId: "el-exited-gates",
       token: grant.token,
     });
@@ -296,18 +302,18 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
     // it would destroy the terminal, and then there would be nothing left to gate.
     const exited = nextMessage(
       client,
-      "session_event",
+      "terminal_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "exited",
+      (message) => message.terminalId === terminal.id && message.kind === "exited",
     );
-    client.sendTerminalInput(session.id, "exit 3\n");
+    client.sendTerminalInput(terminal.id, "exit 3\n");
     const exitEvent = await exited;
     expect(exitEvent.kind).toBe("exited");
     if (exitEvent.kind !== "exited") throw new Error("unreachable");
     // The REAL code the shell named, carried end to end from the PTY.
     expect(exitEvent.exitCode).toBe(3);
-    await waitFor(() => client.sessions.get(session.id)?.status === "exited", 10_000, 20);
-    expect(client.sessions.get(session.id)?.exitCode).toBe(3);
+    await waitFor(() => client.terminals.get(terminal.id)?.status === "exited", 10_000, 20);
+    expect(client.terminals.get(terminal.id)?.exitCode).toBe(3);
 
     const inputConflict = nextMessage(
       client,
@@ -315,10 +321,10 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
       5_000,
       (message) =>
         message.code === "conflict" &&
-        message.ref === session.id &&
-        message.message === "session has exited",
+        message.ref === terminal.id &&
+        message.message === "terminal has exited",
     );
-    client.sendTerminalInput(session.id, "printf 'AFTER_EXIT\\n'\n");
+    client.sendTerminalInput(terminal.id, "printf 'AFTER_EXIT\\n'\n");
     expect((await inputConflict).code).toBe("conflict");
 
     const resizeConflict = nextMessage(
@@ -327,10 +333,10 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
       5_000,
       (message) =>
         message.code === "conflict" &&
-        message.ref === session.id &&
-        message.message === "session has exited",
+        message.ref === terminal.id &&
+        message.message === "terminal has exited",
     );
-    client.resizeTerminal(session.id, 120, 40);
+    client.resizeTerminal(terminal.id, 120, 40);
     expect((await resizeConflict).code).toBe("conflict");
 
     const takeConflict = nextMessage(
@@ -339,10 +345,10 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
       5_000,
       (message) =>
         message.code === "conflict" &&
-        message.ref === session.id &&
-        message.message === "session has exited",
+        message.ref === terminal.id &&
+        message.message === "terminal has exited",
     );
-    client.takeTerminal(session.id);
+    client.takeTerminal(terminal.id);
     expect((await takeConflict).code).toBe("conflict");
 
     // Dismissing it is not a conflict. A lease is a claim on a LIVE PTY, so an exited
@@ -350,13 +356,13 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
     // running one: the home hears a departure and the terminal leaves the world.
     const departed = nextMessage(
       client,
-      "session_event",
+      "terminal_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "parked",
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
-    client.killTerminal(session.id);
+    client.killTerminal(terminal.id);
     expect((await departed).kind).toBe("parked");
-    await waitFor(() => client.sessions.get(session.id) === undefined, 10_000, 20);
+    await waitFor(() => client.terminals.get(terminal.id) === undefined, 10_000, 20);
     expect(await listTerminals(server)).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
@@ -373,7 +379,7 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "multi-machine terminal");
+    const container = await createContainer(server, "multi-machine terminal");
     const firstEnrollment = await enrollMachine(server, "terminal-machine-one");
     const secondEnrollment = await enrollMachine(server, "terminal-machine-two");
     const firstAgent = await startAgent({
@@ -393,9 +399,13 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
 
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Machine Picker", color: "#287c69" },
-      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
-    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    const client = await connect(server, {
+      containerId: container.id,
+      token: grant.token,
+      reconnect: false,
+    });
     clients.push(client);
 
     const ambiguousError = nextMessage(
@@ -421,24 +431,24 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     expect((await ambiguousError).code).toBe("no_machine");
     expect(await ambiguousOpen).toBe("rejected");
 
-    const { session, homeClient: home } = await openTerminalAt(client, server, {
+    const { terminal, homeClient: home } = await openTerminalAt(client, server, {
       elementId: "el-explicit-machine",
       token: grant.token,
       machineId: secondEnrollment.machineId,
     });
     clients.push(home);
-    expect(session.machineId).toBe(secondEnrollment.machineId);
+    expect(terminal.machineId).toBe(secondEnrollment.machineId);
 
     // Killing it destroys it, so the home hears a departure and the row disappears.
     const departed = nextMessage(
       home,
-      "session_event",
+      "terminal_event",
       10_000,
-      (message) => message.sessionId === session.id && message.kind === "parked",
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
-    home.killTerminal(session.id);
+    home.killTerminal(terminal.id);
     expect((await departed).kind).toBe("parked");
-    await waitFor(() => home.sessions.get(session.id) === undefined, 10_000, 20);
+    await waitFor(() => home.terminals.get(terminal.id) === undefined, 10_000, 20);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
@@ -454,7 +464,7 @@ test("deleting the composition a terminal lives in kills its agent-owned PTY", a
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "delete running terminal");
+    const container = await createContainer(server, "delete running terminal");
     const enrolled = await enrollMachine(server, "delete-terminal-agent");
     const agent = await startAgent({
       serverUrl: server.url,
@@ -463,28 +473,32 @@ test("deleting the composition a terminal lives in kills its agent-owned PTY", a
     });
     agents.push(agent);
     const grant = await mintToken(server, {
-      principal: { kind: "human", name: "Pad Deleter", color: "#a04b39" },
-      caps: ["pads:read", "terminal:spawn", "terminal:write"],
+      principal: { kind: "human", name: "Container Deleter", color: "#a04b39" },
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
-    const client = await connect(server, { padId: pad.id, token: grant.token, reconnect: false });
+    const client = await connect(server, {
+      containerId: container.id,
+      token: grant.token,
+      reconnect: false,
+    });
     clients.push(client);
-    const session = await client.openTerminal({
+    const terminal = await client.openTerminal({
       elementId: "el-delete-running-terminal",
       cols: 80,
       rows: 24,
     });
-    expect(session.status).toBe("running");
+    expect(terminal.status).toBe("running");
     // The terminal lives in the composition born with it, not on the canvas that spawned it,
     // so THAT is the container whose deletion reaps the PTY.
-    expect(session.padId).not.toBe(pad.id);
+    expect(terminal.containerId).not.toBe(container.id);
 
-    await deletePad(server, session.padId);
+    await deleteContainer(server, terminal.containerId);
     await waitFor(
       () =>
         agent.output.stdout.some(
           (line) =>
             line.includes('"evt":"exited"') &&
-            line.includes(`"sessionId":${JSON.stringify(session.id)}`),
+            line.includes(`"terminalId":${JSON.stringify(terminal.id)}`),
         ),
       10_000,
       20,
@@ -506,50 +520,50 @@ test("the Machines + on a view births a terminal the server places as a tile, an
   try {
     const server = await startServer();
     servers.push(server);
-    const view = await createPad(server, "tiled view", "tiled");
-    expect(view.layout).toBe("tiled");
-    const enrolled = await enrollMachine(server, "tiled-open-agent");
+    const view = await createContainer(server, "composition", "composition");
+    expect(view.discipline).toBe("composition");
+    const enrolled = await enrollMachine(server, "composition-open-agent");
     const agent = await startAgent({
       serverUrl: server.url,
       machineToken: enrolled.machineToken,
-      name: "tiled-open-agent",
+      name: "composition-open-agent",
     });
     agents.push(agent);
 
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Tile Opener", color: "#557799" },
-      caps: ["pads:read", "scene:write", "terminal:spawn", "terminal:write"],
-      padId: view.id,
+      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      containerId: view.id,
     });
-    const client = await connect(server, { padId: view.id, token: grant.token });
+    const client = await connect(server, { containerId: view.id, token: grant.token });
     clients.push(client);
     if (client.self === null) throw new Error("terminal opener lacks self");
 
     // A view has no canvas to author an element on: the "+" hands placement to the
     // container, and the leaf the server wrote is read back out of the layout tree —
-    // the session record carries no placement id to trust.
-    const session = await client.openTerminal({
+    // the terminal record carries no placement id to trust.
+    const terminal = await client.openTerminal({
       elementId: "correlation-only",
       placement: "tile",
       cols: 80,
       rows: 24,
     });
-    expect(session.status).toBe("running");
-    expect(session.padId).toBe(view.id);
-    expect(session.controllerId).toBe(grant.principal.id);
+    expect(terminal.status).toBe("running");
+    expect(terminal.containerId).toBe(view.id);
+    expect(terminal.controllerId).toBe(grant.principal.id);
 
-    const surface = { kind: "terminal" as const, sessionId: session.id };
-    await waitFor(() => tileIdForSurface(client.layout(), surface) !== null, 10_000, 20);
-    const tileId = tileIdForSurface(client.layout(), surface);
+    const ref = { kind: "terminal" as const, terminalId: terminal.id };
+    await waitFor(() => tileIdForRef(client.layout(), ref) !== null, 10_000, 20);
+    const tileId = tileIdForRef(client.layout(), ref);
     // The opener never chose this id: the container did.
     expect(tileId).not.toBe("correlation-only");
-    expect(client.layout()?.[tileId ?? ""]?.surface).toEqual(surface);
+    expect(client.layout()?.[tileId ?? ""]?.ref).toEqual(ref);
 
-    const capture = captureTerminal(client, session.id);
+    const capture = captureTerminal(client, terminal.id);
     captures.push(capture);
-    client.attachTerminal(session.id);
+    client.attachTerminal(terminal.id);
     await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
-    client.sendTerminalInput(session.id, "printf 'TILE_%s\\n' ok\n");
+    client.sendTerminalInput(terminal.id, "printf 'TILE_%s\\n' ok\n");
     await waitForTerminalText(capture, "TILE_ok", 10_000);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);

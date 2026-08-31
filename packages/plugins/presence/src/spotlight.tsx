@@ -1,4 +1,4 @@
-import { recordSpotlight, type PadViewportHandle } from "@manifold/plugin";
+import { recordSpotlight, type ViewportHandle } from "@manifold/plugin";
 import type { SessionClient } from "@manifold/sdk";
 import { useCallback, useEffect, useState } from "react";
 
@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
  * "Look at this", received — `core.presence`'s receiving half (AXIOMS.md A2).
  *
  * `core.presence.focus` is the door: the server checked that the asker shares this room and
- * holds `scene:write` there, throttled the pair, and wrote `spotlight {uri, from}` into this
+ * holds `scenes:write` there, throttled the pair, and wrote `spotlight {uri, from}` into this
  * principal's presence. Everything here is the RECEIVING half — move the camera, say who
  * asked, and let the viewer switch the whole affordance off. Being pointed somewhere is an
  * interruption, so it is dismissible and refusable by construction.
@@ -39,18 +39,18 @@ function spotlightIgnored(): boolean {
  * subscribed: flipping the switch takes effect on the next ask, and nothing is remembered
  * about asks that were never applied.
  *
- * `viewport` is the HOST's, not a renderer's: the mounted pad view publishes its camera into
- * `HostServices` and this plugin asks that camera to move. Null means no pad view is mounted
+ * `viewport` is the HOST's, not a renderer's: the mounted container view publishes its camera into
+ * `HostServices` and this plugin asks that camera to move. Null means no container view is mounted
  * — a spotlight has nowhere to land, so it is not applied and no chip appears, which is the
  * honest answer rather than a chip pointing at nothing.
  *
  * There is no `active` flag any more, and that is structural rather than a simplification:
- * only the ROUTED surface mounts this plugin's overlay slots, so an embedded board can no
+ * only the ROUTED ref mounts this plugin's overlay slots, so an embedded canvas can no
  * longer be a second receiver that centres twice and stacks two chips for one ask.
  */
 export function useSpotlight(
   client: SessionClient,
-  viewport: PadViewportHandle | null,
+  viewport: ViewportHandle | null,
 ): SpotlightState | null {
   const [state, setState] = useState<{ readonly uri: string; readonly from: string } | null>(null);
 
@@ -66,7 +66,7 @@ export function useSpotlight(
       recordSpotlight(incoming.uri);
       setState({
         uri: incoming.uri,
-        from: client.roster.get(incoming.from)?.principal.name ?? incoming.from,
+        from: client.attendance.get(incoming.from)?.principal.name ?? incoming.from,
       });
     });
   }, [client, viewport]);
@@ -85,7 +85,7 @@ export function useSpotlight(
   return state === null ? null : { ...state, dismiss, ignore };
 }
 
-/** Names the asker, offers out, and offers "never again" — the consent surface, not chrome. */
+/** Names the asker, offers out, and offers "never again" — the consent ref, not chrome. */
 export function SpotlightChip({
   spotlight,
 }: {

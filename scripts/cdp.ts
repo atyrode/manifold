@@ -33,6 +33,7 @@ export class Browser {
   private socket: WebSocket | null = null;
   private proc: Bun.Subprocess | null = null;
   private nextId = 1;
+  /** DevTools protocol session (a CDP connection — canon "session", never a PTY). */
   private sessionId = "";
   private readonly pending = new Map<number, (frame: CdpFrame) => void>();
 
@@ -49,12 +50,12 @@ export class Browser {
   async launch(port = 9333): Promise<void> {
     const binary = Browser.detect();
     // GitHub's ubuntu-24.04 image 20260823.283 exports a malformed
-    // DBUS_SESSION_BUS_ADDRESS; chromium retries the bus for tens of seconds
+    // DBUS_TERMINAL_BUS_ADDRESS; chromium retries the bus for tens of seconds
     // before its devtools endpoint accepts connections (issue #44). Strip the
     // bus addresses — headless verification needs no DBus.
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
-      if (name === "DBUS_SESSION_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
+      if (name === "DBUS_TERMINAL_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
       if (value !== undefined) env[name] = value;
     }
     const proc = Bun.spawn(

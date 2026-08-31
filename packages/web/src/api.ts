@@ -3,11 +3,11 @@ import {
   BootstrapPrincipalRequestSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
-  PadPresenceResponseSchema,
-  PadSchema,
+  AttendanceResponseSchema,
+  ContainerSchema,
   TokenGrantSchema,
-  type Pad,
-  type PadPresence,
+  type Container,
+  type Attendance,
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
@@ -58,7 +58,7 @@ function authHeaders(token: string, includeJson: boolean): HeadersInit {
  * (`core.access.createPrincipal`).
  *
  * The owner key is the ONE credential that lives outside the token system, which is why
- * this boot path holds a raw secret and no session: it authenticates as root, asks the
+ * this boot path holds a raw secret and no terminal: it authenticates as root, asks the
  * access door for an identity, and keeps only the grant. It is also why `core.access` is not
  * `essential` — disabling it costs delegation, never the owner's own way in.
  */
@@ -79,19 +79,19 @@ export async function createPrincipal(
 
 /**
  * Loads one container so a direct `/p/:id` deep-link still has its name and discipline
- * (`core.views.pad`). Declared `scope: "pad"`, so a pad-scoped viewer resolves its own
- * container exactly as `GET /api/pads/:id` let it.
+ * (`core.index.readContainer`). Declared `scope: "container"`, so a container-scoped viewer resolves its own
+ * container exactly as `GET /api/containers/:id` let it.
  */
-export async function getPad(token: string, padId: string): Promise<Pad> {
-  const result = await dispatchAction(token, "core.views.pad", { padId });
-  return PadSchema.parse(fieldFromObject(result, "pad"));
+export async function getContainer(token: string, containerId: string): Promise<Container> {
+  const result = await dispatchAction(token, "core.index.readContainer", { containerId });
+  return ContainerSchema.parse(fieldFromObject(result, "container"));
 }
 
 /*
  * Renaming, deleting, machine listing and leaf removal were wrapped here too, and are not
  * any more: every one of them now belongs to a plugin that holds a `SessionClient`
- * (`renamePad`, `deletePad`, `machines`, `removePadTile` on the SDK's own surface). What is
- * left in this layer is exactly what the BOOT path needs — a token, no session, one
+ * (`renameContainer`, `deleteContainer`, `machines`, `removeContainerTile` on the SDK's own ref). What is
+ * left in this layer is exactly what the BOOT path needs — a token, no terminal, one
  * container to name and one workspace tree to fetch — which is the whole reason it exists.
  */
 
@@ -107,17 +107,17 @@ export async function getWorkspaceLayout(token: string): Promise<TileLayout> {
   return LayoutResponseSchema.parse(body).layout;
 }
 
-/** Loads principal-level presence for pads with connected viewers. */
-export async function getPadPresence(token: string): Promise<readonly PadPresence[]> {
-  const body = await requestJson("/api/pad-presence", {
+/** Loads principal-level presence for containers with connected viewers. */
+export async function getAttendance(token: string): Promise<readonly Attendance[]> {
+  const body = await requestJson("/api/attendance", {
     headers: authHeaders(token, false),
   });
-  return PadPresenceResponseSchema.parse(body).pads;
+  return AttendanceResponseSchema.parse(body).attendance;
 }
 
 /*
  * Terminals had three bespoke routes wrapped here — the index, the rename and the kill. All
- * three are the action door now (`core.terminals.list` / `.rename` / `.kill`), reached
+ * three are the action door now (`core.terminals.listAll` / `.rename` / `.kill`), reached
  * through `SessionClient` by every caller, so there is nothing left for this layer to wrap:
  * one door, and the shell reaches it exactly the way a plugin does.
  */

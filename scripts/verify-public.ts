@@ -15,7 +15,7 @@
  */
 import {
   ActionOutcomeSchema,
-  PadResponseSchema,
+  ContainerResponseSchema,
   TerminalsResponseSchema,
   type TerminalSummary,
 } from "../packages/protocol/src/index.ts";
@@ -40,11 +40,11 @@ const marker = `PUBLIC_${Date.now().toString(36).toUpperCase()}`;
 const results: { name: string; ok: boolean; detail: string }[] = [];
 
 /**
- * THE terminal index, through its door (`core.terminals.list`). The public gate reads it to
- * find the composition a session lives in, because a canvas widget only ever names the home.
+ * THE terminal index, through its door (`core.terminals.listAll`). The public gate reads it to
+ * find the composition a terminal lives in, because a canvas portal only ever names the home.
  */
 async function listTerminals(): Promise<readonly TerminalSummary[]> {
-  const res = await fetch(`${origin}/api/actions/core.terminals.list`, {
+  const res = await fetch(`${origin}/api/actions/core.terminals.listAll`, {
     method: "POST",
     headers: httpHeaders,
     body: "{}",
@@ -55,20 +55,20 @@ async function listTerminals(): Promise<readonly TerminalSummary[]> {
   return TerminalsResponseSchema.parse(outcome.result).terminals;
 }
 
-/** Every run creates a pad on the PRODUCTION origin; never leave it behind. */
-async function cleanupPad(): Promise<void> {
-  if (padId === "") return;
+/** Every run creates a container on the PRODUCTION origin; never leave it behind. */
+async function cleanupContainer(): Promise<void> {
+  if (containerId === "") return;
   try {
-    const res = await fetch(`${origin}/api/actions/core.views.deletePad`, {
+    const res = await fetch(`${origin}/api/actions/core.index.deleteContainer`, {
       method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ padId }),
+      body: JSON.stringify({ containerId }),
     });
-    if (!res.ok) console.log(`WARN  evt=verify_pad_cleanup_failed status=${res.status}`);
+    if (!res.ok) console.log(`WARN  evt=verify_container_cleanup_failed status=${res.status}`);
   } catch (error) {
     // A failed cleanup must not mask the gate verdict — but never hide it either.
     console.log(
-      `WARN  evt=verify_pad_cleanup_failed ${error instanceof Error ? error.message : "error"}`,
+      `WARN  evt=verify_container_cleanup_failed ${error instanceof Error ? error.message : "error"}`,
     );
   }
 }
@@ -87,10 +87,10 @@ async function step(name: string, run: () => Promise<string>): Promise<void> {
 
 // (sleep/until/Browser live in scripts/cdp.ts, shared with verify-convergence.ts)
 
-function newViewer(padId: string): SessionClient {
+function newViewer(containerId: string): SessionClient {
   return new SessionClient({
     url: `${wsOrigin}/ws/session`,
-    padId,
+    containerId,
     token: ownerKey,
     reconnect: false,
   });
@@ -98,8 +98,8 @@ function newViewer(padId: string): SessionClient {
 
 // ---------------------------------------------------------------- checks
 
-let padId = "";
-let sessionId = "";
+let containerId = "";
+let terminalId = "";
 // Constructed eagerly (cheap; launch() happens inside its step) so the outer
 // finally can always close it — close() is a no-op before launch.
 const browser = new Browser();
@@ -114,22 +114,22 @@ try {
   });
 
   await step("anonymous access denied through public origin", async () => {
-    const res = await fetch(`${origin}/api/pads`);
+    const res = await fetch(`${origin}/api/containers`);
     if (res.status !== 401) throw new Error(`expected 401, got ${res.status}`);
     return "401 without credentials";
   });
 
-  await step("owner creates a pad through public origin", async () => {
-    const res = await fetch(`${origin}/api/actions/core.views.createPad`, {
+  await step("owner creates a container through public origin", async () => {
+    const res = await fetch(`${origin}/api/actions/core.index.createContainer`, {
       method: "POST",
       headers: httpHeaders,
       body: JSON.stringify({ name: `public-verify ${new Date().toISOString()}` }),
     });
     if (!res.ok) throw new Error(`status ${res.status}`);
     const outcome = ActionOutcomeSchema.parse(await res.json());
-    if (!outcome.ok) throw new Error(`createPad refused: ${outcome.denial.message}`);
-    padId = PadResponseSchema.parse(outcome.result).pad.id;
-    return `pad ${padId}`;
+    if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+    containerId = ContainerResponseSchema.parse(outcome.result).container.id;
+    return `container ${containerId}`;
   });
 
   await step("real browser renders the canvas over the public origin", async () => {
@@ -137,14 +137,14 @@ try {
     // Fresh profile per run, and a real cross-document load so the app bootstraps the
     // #key fragment (a fragment-only change would be a same-document navigation).
     await browser.goto(`${origin}/#key=${ownerKey}`);
-    // Enable the read-only debug seam so later steps can assert what the drawer's OWN
+    // Enable the read-only debug probe so later steps can assert what the drawer's OWN
     // canvas holds — canonical-only assertions cannot see a canvas-side revert.
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
     if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
       await browser.typeInto("input", "verify");
       await browser.clickText("Enter manifold");
     }
-    await browser.goto(`${origin}/p/${padId}`);
+    await browser.goto(`${origin}/p/${containerId}`);
     await until(
       () => browser.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
       20_000,
@@ -156,16 +156,16 @@ try {
           "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
         ),
       20_000,
-      "session open through public origin",
+      "terminal open through public origin",
     );
     await until(
       () => browser.evaluate<boolean>("window.__manifold !== undefined"),
       10_000,
-      "debug seam installed (manifold:debug flag)",
+      "debug probe installed (manifold:debug flag)",
     );
     const path = await browser.evaluate<string>("location.pathname");
-    if (path !== `/p/${padId}`) throw new Error(`expected /p/${padId}, on ${path}`);
-    return `canvas mounted at ${path}, session open, seam active`;
+    if (path !== `/p/${containerId}`) throw new Error(`expected /p/${containerId}, on ${path}`);
+    return `canvas mounted at ${path}, terminal open, probe active`;
   });
 
   await step("embedded terminal opens and runs a command in the browser", async () => {
@@ -206,12 +206,13 @@ try {
   });
 
   await step("two simultaneous public WebSocket viewers share one terminal", async () => {
-    // Sessions live in their HOME composition, never in a canvas: find the home over
-    // HTTP, then both viewers hold a channel on it — the same thing the widget does.
+    // Terminals live in their HOME composition, never in a canvas: find the home over
+    // HTTP, then both viewers hold a channel on it — the same thing the portal does.
     const listed = await listTerminals();
     const running = listed.find((terminal) => terminal.status === "running");
-    if (running === undefined) throw new Error("no running session visible over the public origin");
-    sessionId = running.id;
+    if (running === undefined)
+      throw new Error("no running terminal visible over the public origin");
+    terminalId = running.id;
     const viewerA = newViewer(running.homeId);
     const viewerB = newViewer(running.homeId);
     await viewerA.connect();
@@ -225,46 +226,46 @@ try {
       viewer.on("terminal_output", (m) => sink.push(base64ToText(m.data)));
       viewer.on("terminal_snapshot", (m) => sink.push(base64ToText(m.data)));
     }
-    viewerA.attachTerminal(sessionId);
-    viewerB.attachTerminal(sessionId);
+    viewerA.attachTerminal(terminalId);
+    viewerB.attachTerminal(terminalId);
     await sleep(1500);
-    viewerA.takeTerminal(sessionId);
+    viewerA.takeTerminal(terminalId);
     await sleep(600);
-    viewerA.sendTerminalInput(sessionId, `printf '${marker}_TWOVIEW\\n'\n`);
+    viewerA.sendTerminalInput(terminalId, `printf '${marker}_TWOVIEW\\n'\n`);
     await until(() => seenA.join("").includes(`${marker}_TWOVIEW`), 20_000, "viewer A output");
     await until(() => seenB.join("").includes(`${marker}_TWOVIEW`), 20_000, "viewer B output");
     viewerA.close();
     viewerB.close();
-    return "both public viewers observed the same bytes on one session";
+    return "both public viewers observed the same bytes on one terminal";
   });
 
-  await step("terminal session survives all viewers disconnecting", async () => {
+  await step("terminal survives all viewers disconnecting", async () => {
     await sleep(2500);
-    const survivor = (await listTerminals()).find((terminal) => terminal.id === sessionId);
+    const survivor = (await listTerminals()).find((terminal) => terminal.id === terminalId);
     if (survivor === undefined || survivor.status !== "running") {
-      throw new Error("session did not survive viewer disconnect");
+      throw new Error("terminal did not survive viewer disconnect");
     }
     const rejoin = newViewer(survivor.homeId);
     await rejoin.connect();
-    const session = rejoin.sessions.get(sessionId);
-    if (session === undefined || session.status !== "running") {
-      throw new Error("session did not survive viewer disconnect");
+    const terminal = rejoin.terminals.get(terminalId);
+    if (terminal === undefined || terminal.status !== "running") {
+      throw new Error("terminal did not survive viewer disconnect");
     }
     const seen: string[] = [];
     rejoin.on("terminal_snapshot", (m) => seen.push(base64ToText(m.data)));
     rejoin.on("terminal_output", (m) => seen.push(base64ToText(m.data)));
-    rejoin.attachTerminal(sessionId);
+    rejoin.attachTerminal(terminalId);
     await until(
       () => seen.join("").includes(`${marker}_TWOVIEW`),
       20_000,
       "prior output replayed after reattach",
     );
     rejoin.close();
-    return "session alive and replayed prior output after all viewers left";
+    return "terminal alive and replayed prior output after all viewers left";
   });
 
   await step("scene persists across a public-origin reconnect", async () => {
-    const client = newViewer(padId);
+    const client = newViewer(containerId);
     await client.connect();
     const before = client.elements.size;
     client.transact((tx) => {
@@ -282,7 +283,7 @@ try {
     await until(() => client.elements.has(`verify-${marker}`), 10_000, "scene accepted");
     client.close();
     await sleep(2500);
-    const after = newViewer(padId);
+    const after = newViewer(containerId);
     await after.connect();
     const present = after.elements.has(`verify-${marker}`);
     const size = after.elements.size;
@@ -299,10 +300,10 @@ try {
     });
   }
 } finally {
-  // Structural guarantee: once the pad exists, no exit path may leave it behind
+  // Structural guarantee: once the container exists, no exit path may leave it behind
   // on the production origin — cleanup runs on success, failure, and throw alike.
   await browser.close().catch(() => console.log("WARN  evt=verify_browser_close_failed"));
-  await cleanupPad();
+  await cleanupContainer();
 }
 
 const failed = results.filter((r) => !r.ok);

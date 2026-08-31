@@ -4,10 +4,10 @@ import {
   type CarriedItem,
   type CarryAim,
   type PlacementItem,
-  type PlacementSurface,
+  type PlacementRef,
   type TileLayout,
-  type TileNode,
-  type TileSurface,
+  type Tile,
+  type TileRef,
 } from "@manifold/protocol";
 
 import type { RemoteTileCarry } from "../src/carry.ts";
@@ -17,10 +17,10 @@ import { tileProspect, type TileAim } from "../src/tile-geometry.ts";
 import { asTileTree } from "../src/tile-snap.ts";
 import { previewFor, sameAim, wireCarryAim, type TileDropContext } from "../src/use-tile-drop.ts";
 
-const terminal = (sessionId: string): TileSurface => ({ kind: "terminal", sessionId });
+const terminal = (terminalId: string): TileRef => ({ kind: "terminal", terminalId });
 
-function leaf(id: string, surface: TileSurface | null = null): TileNode {
-  return { id, dir: null, ratios: [], children: [], surface };
+function leaf(id: string, ref: TileRef | null = null): Tile {
+  return { id, dir: null, ratios: [], children: [], ref };
 }
 
 /** `A | B`: a root row of two occupied leaves. */
@@ -30,13 +30,13 @@ const ROW: TileLayout = {
     dir: "row",
     ratios: [1, 1],
     children: ["a", "b"],
-    surface: null,
+    ref: null,
   },
   a: leaf("a", terminal("s-a")),
   b: leaf("b", terminal("s-b")),
 };
 
-/** One occupied leaf: a solo container, which is what a canvas widget usually shows. */
+/** One occupied leaf: a solo container, which is what a canvas portal usually shows. */
 const SOLO: TileLayout = { [ROOT_TILE_ID]: leaf(ROOT_TILE_ID, terminal("s-solo")) };
 
 const UNITS = {
@@ -52,7 +52,7 @@ function context(overrides: Partial<TileDropContext> = {}): TileDropContext {
   return {
     layout: ROW,
     containerId: "view",
-    widget: null,
+    portal: null,
     units: UNITS,
     assess: ALLOW,
     ...overrides,
@@ -61,16 +61,16 @@ function context(overrides: Partial<TileDropContext> = {}): TileDropContext {
 
 /** A sidebar carry as it reaches any renderer: the address AND what it names. */
 const SIDEBAR_TERMINAL: CarriedItem = {
-  surface: { kind: "terminal", sessionId: "s-new" },
+  ref: { kind: "terminal", terminalId: "s-new" },
   item: { kind: "terminal", containerId: "home-new" },
 };
-const carrying = (surface: PlacementSurface, item: PlacementItem): CarriedItem => ({
-  surface,
+const carrying = (ref: PlacementRef, item: PlacementItem): CarriedItem => ({
+  ref,
   item,
 });
 
 describe("the one state constructor", () => {
-  test("one wire aim, one surface, one label, one layout — one state, every time", () => {
+  test("one wire aim, one ref, one label, one layout — one state, every time", () => {
     const wire: CarryAim = {
       containerId: "view",
       tileId: "b",
@@ -141,22 +141,26 @@ describe("the one state constructor", () => {
 
   test("the chip's fallback chain ends in the species name for both producers", () => {
     const wire: CarryAim = { containerId: "view", tileId: "b", edge: "left", action: "place" };
-    // A host that can name the item (a route naming its own session).
+    // A host that can name the item (a route naming its own terminal).
     expect(previewFor(context(), wire, SIDEBAR_TERMINAL, "build")?.chip).toEqual({
       kind: "terminal",
       label: "build",
     });
-    // A host that cannot — previously a bare icon locally and "view" for every viewer.
+    // A host that cannot: the chip falls back to the ONE label vocabulary, keyed by the
+    // ITEM the carry names — which is why it reads "composition" and not the address form.
     expect(
       previewFor(
         context(),
         wire,
-        carrying({ kind: "pad", padId: "p1" }, { kind: "view", containerId: "p1" }),
+        carrying(
+          { kind: "container", containerId: "p1" },
+          { kind: "composition", containerId: "p1" },
+        ),
         null,
       )?.chip,
     ).toEqual({
-      kind: "pad",
-      label: "view",
+      kind: "composition",
+      label: "composition",
     });
     expect(previewFor(context(), wire, null, null)?.chip).toBeNull();
   });
@@ -183,11 +187,11 @@ describe("the one state constructor", () => {
       return carried === undefined
         ? null
         : {
-            surface: carried.surface,
+            ref: carried.ref,
             denial: {
               rule: "not_solo" as const,
-              surface: carried.surface,
-              container: { kind: "view" as const, padId: "view" },
+              ref: carried.ref,
+              container: { kind: "composition" as const, containerId: "view" },
             },
             message: "nope",
           };
@@ -212,7 +216,7 @@ describe("the canvas door", () => {
     glide into its share. The viewer's version is what `executeCompose` actually writes,
     so the producer was the wrong one. There is now no second prospect to be wrong with.
   */
-  test("a solo widget edge aim previews the real root split, not a painted half", () => {
+  test("a solo portal edge aim previews the real root split, not a painted half", () => {
     const wire: CarryAim = {
       containerId: "view",
       tileId: ROOT_TILE_ID,
@@ -220,7 +224,7 @@ describe("the canvas door", () => {
       action: "place",
     };
     const state = previewFor(
-      context({ layout: SOLO, widget: { padId: "canvas", elementId: "el" } }),
+      context({ layout: SOLO, portal: { containerId: "canvas", elementId: "el" } }),
       wire,
       SIDEBAR_TERMINAL,
       "build",
@@ -241,13 +245,13 @@ describe("the canvas door", () => {
     // ratified "A + B" birth and in-place portal repointing.
     expect(state?.destination).toEqual({
       kind: "compose",
-      padId: "canvas",
+      containerId: "canvas",
       targetElementId: "el",
       edge: "left",
     });
   });
 
-  test("a widget whose tree has not arrived previews the one-leaf tree it visibly is", () => {
+  test("a portal whose tree has not arrived previews the one-leaf tree it visibly is", () => {
     const wire: CarryAim = {
       containerId: "view",
       tileId: ROOT_TILE_ID,
@@ -255,13 +259,13 @@ describe("the canvas door", () => {
       action: "place",
     };
     const state = previewFor(
-      context({ layout: null, widget: { padId: "canvas", elementId: "el" } }),
+      context({ layout: null, portal: { containerId: "canvas", elementId: "el" } }),
       wire,
       SIDEBAR_TERMINAL,
       "build",
     );
     const expected = tileProspect(
-      asTileTree({ kind: "pad", padId: "view" }),
+      asTileTree({ kind: "container", containerId: "view" }),
       { tileId: ROOT_TILE_ID, edge: "top", action: "place", depth: 0 },
       null,
       UNITS.dividers,
@@ -272,14 +276,14 @@ describe("the canvas door", () => {
   test("a multi-tile container aims at the leaf under the pointer, at any depth", () => {
     const wire: CarryAim = { containerId: "view", tileId: "b", edge: "bottom", action: "place" };
     const state = previewFor(
-      context({ widget: { padId: "canvas", elementId: "el" } }),
+      context({ portal: { containerId: "canvas", elementId: "el" } }),
       wire,
       SIDEBAR_TERMINAL,
       null,
     );
     expect(state?.destination).toEqual({
       kind: "tile",
-      padId: "view",
+      containerId: "view",
       targetTileId: "b",
       edge: "bottom",
     });
@@ -340,24 +344,24 @@ describe("the drop signal", () => {
 
   test("feeds merge per container, freshest wins, and retiring one keeps the others", () => {
     const store = createTileDropStore();
-    // The canvas's own room hears an older aim at this container than the widget's
-    // socket does — the widget's is the one that must show (4.2's cheap half).
+    // The canvas's own room hears an older aim at this container than the portal's
+    // socket does — the portal's is the one that must show (4.2's cheap half).
     store.setRemote("canvas", new Map([["view", carry(10, { connId: "stale" })]]));
-    store.setRemote("widget:view", new Map([["view", carry(20, { connId: "fresh" })]]));
+    store.setRemote("portal:view", new Map([["view", carry(20, { connId: "fresh" })]]));
     expect(store.get().remote.get("view")?.connId).toBe("fresh");
 
     store.setRemote("canvas", new Map([["other", carry(1, { connId: "elsewhere" })]]));
     expect(store.get().remote.size).toBe(2);
 
-    // A widget unmounting retires only its own feed.
-    store.setRemote("widget:view", new Map());
+    // A portal unmounting retires only its own feed.
+    store.setRemote("portal:view", new Map());
     expect(store.get().remote.get("view")).toBeUndefined();
     expect(store.get().remote.get("other")?.connId).toBe("elsewhere");
   });
 
   test("a transport's write cannot clobber a peer-aim feed it knows nothing about", () => {
     const store = createTileDropStore();
-    store.setRemote("widget:view", new Map([["view", carry(5)]]));
+    store.setRemote("portal:view", new Map([["view", carry(5)]]));
     store.set({ pointer: { clientX: 3, clientY: 4 }, armedElementId: null, aim: null });
     expect(store.get().pointer).toEqual({ clientX: 3, clientY: 4 });
     expect(store.get().remote.get("view")?.connId).toBe("peer");

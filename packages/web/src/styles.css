@@ -175,7 +175,7 @@ input:focus {
 }
 
 /* The workspace IS a tile tree now (D2): one flex box holding the root split. */
-.pad-browser {
+.workspace {
   position: fixed;
   inset: 0;
   display: flex;
@@ -183,7 +183,7 @@ input:focus {
   background: #121417;
 }
 
-.pad-sidebar {
+.sidebar {
   position: relative;
   z-index: 20;
   display: flex;
@@ -205,11 +205,11 @@ input:focus {
  * the collapse lasts. `:has()` is what lets the rail be presentation rather than a second,
  * competing copy of the tree.
  */
-.pad-browser.is-collapsed .ws-pane:has(> .tile-content-host > .pad-sidebar) {
+.workspace.is-collapsed .workspace-pane:has(> .tile-content-host > .sidebar) {
   flex: 0 0 3.25rem;
 }
 
-.pad-sidebar-header {
+.sidebar-header {
   display: flex;
   min-height: 2.25rem;
   align-items: center;
@@ -217,7 +217,7 @@ input:focus {
   gap: 0.5rem;
 }
 
-.pad-sidebar-brand {
+.sidebar-brand {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -227,14 +227,14 @@ input:focus {
   white-space: nowrap;
 }
 
-.pad-sidebar-brand-copy {
+.sidebar-brand-copy {
   display: grid;
   min-width: 0;
   gap: 0.08rem;
   line-height: 1.05;
 }
 
-.pad-sidebar-version {
+.sidebar-version {
   overflow: hidden;
   max-width: 10.5rem;
   border: 0;
@@ -250,13 +250,13 @@ input:focus {
   cursor: pointer;
 }
 
-.pad-sidebar-version:hover,
-.pad-sidebar-version:focus-visible {
+.sidebar-version:hover,
+.sidebar-version:focus-visible {
   color: #bac8ff;
 }
 
-.pad-sidebar-mark,
-.pad-browser-empty-mark {
+.sidebar-mark,
+.workspace-empty-mark {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
@@ -271,19 +271,19 @@ input:focus {
   box-shadow: 0 0.3rem 1rem rgb(54 79 199 / 28%);
 }
 
-.pad-sidebar-icon-button,
-.pad-sidebar-new,
-.pad-sidebar-link,
-.pad-sidebar-delete,
-.pad-sidebar-create button {
+.sidebar-icon-button,
+.sidebar-new,
+.sidebar-link,
+.sidebar-delete,
+.sidebar-create button {
   border: 1px solid transparent;
   color: inherit;
   background: transparent;
   cursor: pointer;
 }
 
-.pad-sidebar-icon-button,
-.pad-sidebar-delete {
+.sidebar-icon-button,
+.sidebar-delete {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
@@ -294,21 +294,21 @@ input:focus {
   color: #868e96;
 }
 
-.pad-sidebar-icon-button:hover,
-.pad-sidebar-delete:hover {
+.sidebar-icon-button:hover,
+.sidebar-delete:hover {
   color: #f1f3f5;
   background: #2b2e34;
 }
 
 /* Icons describe themselves (size, stroke, currentColor) — see `.mf-icon`. */
 
-.pad-sidebar-create-buttons {
+.sidebar-create-buttons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
-.pad-sidebar-new {
+.sidebar-new {
   display: flex;
   min-height: 2.35rem;
   align-items: center;
@@ -324,33 +324,33 @@ input:focus {
   white-space: nowrap;
 }
 
-.pad-sidebar-new:hover {
+.sidebar-new:hover {
   border-color: #4c6ef5;
   background: #252932;
 }
 
-.pad-browser.is-collapsed .pad-sidebar {
+.workspace.is-collapsed .sidebar {
   padding-inline: 0.6rem;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-header {
+.workspace.is-collapsed .sidebar-header {
   flex-direction: column;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-brand {
+.workspace.is-collapsed .sidebar-brand {
   justify-content: center;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-create-buttons {
+.workspace.is-collapsed .sidebar-create-buttons {
   grid-template-columns: 1fr;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-new {
+.workspace.is-collapsed .sidebar-new {
   justify-content: center;
   padding-inline: 0;
 }
 
-.pad-sidebar-create {
+.sidebar-create {
   display: grid;
   gap: 0.45rem;
   border: 1px solid #343a40;
@@ -359,41 +359,41 @@ input:focus {
   background: #202329;
 }
 
-.pad-sidebar-create input {
+.sidebar-create input {
   padding: 0.55rem 0.6rem;
   font-size: 0.82rem;
 }
 
-.pad-sidebar-create > div {
+.sidebar-create > div {
   display: flex;
   justify-content: flex-end;
   gap: 0.35rem;
 }
 
-.pad-sidebar-create button {
+.sidebar-create button {
   border-radius: 0.4rem;
   padding: 0.3rem 0.5rem;
   color: #adb5bd;
   font-size: 0.72rem;
 }
 
-.pad-sidebar-create button[type="submit"] {
+.sidebar-create button[type="submit"] {
   color: #fff;
   background: #4263eb;
 }
 
-.pad-sidebar-create button:disabled {
+.sidebar-create button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
 /*
- * Sidebar section stack: Machines, Pads, Terminals (and later Views) share one header grammar and
+ * Sidebar section stack: Machines, Containers, Terminals (and later Views) share one header grammar and
  * reorder by dragging their headers. The native summary stays the collapse control. While a header
  * is held the stack makes space: sections translate into their projected slots so the insertion gap
  * follows the pointer. Transforms only animate during that drag, so the drop itself never re-slides.
  */
-.pad-sidebar-sections {
+.sidebar-sections {
   display: flex;
   min-height: 0;
   flex: 1;
@@ -412,7 +412,7 @@ input:focus {
   background: #1d2025;
 }
 
-/* The pad tree absorbs leftover height so a short stack stays top-aligned — but only
+/* The container tree absorbs leftover height so a short stack stays top-aligned — but only
    while open: a collapsed section must shrink to its header instead of holding its slot. */
 .sidebar-section--grow[open] {
   flex: 1 1 auto;
@@ -486,25 +486,25 @@ input:focus {
 }
 
 /* Inside a section the stack owns scrolling; the tree grows with its content. */
-.sidebar-section-body .pad-sidebar-list {
+.sidebar-section-body .sidebar-list {
   flex: 0 1 auto;
   overflow: visible;
 }
 
-.pad-browser.is-collapsed .sidebar-section {
+.workspace.is-collapsed .sidebar-section {
   border: 0;
   background: transparent;
 }
 
-.pad-browser.is-collapsed .sidebar-section-header {
+.workspace.is-collapsed .sidebar-section-header {
   display: none;
 }
 
-.pad-browser.is-collapsed .sidebar-section-body {
+.workspace.is-collapsed .sidebar-section-body {
   padding: 0;
 }
 
-.pad-sidebar-section-action {
+.sidebar-section-action {
   width: 1.55rem;
   min-width: 1.55rem;
   height: 1.55rem;
@@ -517,14 +517,14 @@ input:focus {
   font-size: 0.8rem;
 }
 
-.pad-sidebar-section-action:hover,
-.pad-sidebar-section-action:focus-visible,
-.pad-sidebar-section-action.selected {
+.sidebar-section-action:hover,
+.sidebar-section-action:focus-visible,
+.sidebar-section-action.selected {
   color: #edf2ff;
   background: #292d35;
 }
 
-.pad-sidebar-list {
+.sidebar-list {
   display: grid;
   align-content: start;
   gap: 0.16rem;
@@ -535,24 +535,24 @@ input:focus {
   scrollbar-width: thin;
 }
 
-.pad-sidebar-tree {
+.sidebar-tree {
   position: relative;
 }
 
-.pad-tree-item {
+.index-item {
   position: relative;
   min-width: 0;
   border-radius: 0.55rem;
   outline: none;
 }
 
-.pad-tree-item.is-drop-target > .pad-sidebar-row {
+.index-item.is-drop-target > .sidebar-row {
   outline: 1px solid #748ffc;
   outline-offset: -1px;
   background: rgb(92 124 250 / 12%);
 }
 
-.pad-tree-drag-line {
+.index-drag-line {
   z-index: 8;
   height: 2px;
   border-radius: 999px;
@@ -561,26 +561,26 @@ input:focus {
 }
 
 /* No handle glyph: a draggable row advertises itself with the grab cursor alone. */
-.pad-tree-item > .pad-sidebar-row,
-.pad-tree-item > .pad-sidebar-row .pad-sidebar-link,
-.pad-tree-item .pad-sidebar-folder-row,
-.pad-tree-item .pad-sidebar-folder-toggle {
+.index-item > .sidebar-row,
+.index-item > .sidebar-row .sidebar-link,
+.index-item .sidebar-folder-row,
+.index-item .sidebar-folder-toggle {
   cursor: grab;
 }
 
-.pad-tree-item:active > .pad-sidebar-row,
-.pad-tree-item:active > .pad-sidebar-row .pad-sidebar-link,
-.pad-tree-item:active .pad-sidebar-folder-row,
-.pad-tree-item:active .pad-sidebar-folder-toggle {
+.index-item:active > .sidebar-row,
+.index-item:active > .sidebar-row .sidebar-link,
+.index-item:active .sidebar-folder-row,
+.index-item:active .sidebar-folder-toggle {
   cursor: grabbing;
 }
 
-.pad-tree-item:has(.is-editing) > .pad-sidebar-row,
-.pad-tree-item:has(.is-editing) > .pad-sidebar-row .pad-sidebar-link {
+.index-item:has(.is-editing) > .sidebar-row,
+.index-item:has(.is-editing) > .sidebar-row .sidebar-link {
   cursor: default;
 }
 
-.pad-sidebar-row {
+.sidebar-row {
   position: relative;
   display: flex;
   min-width: 0;
@@ -589,15 +589,15 @@ input:focus {
   border-radius: 0.55rem;
 }
 
-.pad-sidebar-row:hover {
+.sidebar-row:hover {
   background: #22252b;
 }
 
-.pad-sidebar-row.is-active {
+.sidebar-row.is-active {
   background: #292d35;
 }
 
-.pad-sidebar-link {
+.sidebar-link {
   display: flex;
   min-width: 0;
   min-height: 2.25rem;
@@ -612,13 +612,13 @@ input:focus {
   text-align: left;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-link {
+.workspace.is-collapsed .sidebar-link {
   justify-content: center;
   gap: 0;
   padding-inline: 0;
 }
 
-.pad-sidebar-collapsed-presence {
+.sidebar-collapsed-presence {
   position: absolute;
   z-index: 2;
   top: 0.05rem;
@@ -638,8 +638,8 @@ input:focus {
   line-height: 1;
 }
 
-.pad-sidebar-collapsed-presence:hover,
-.pad-sidebar-collapsed-presence:focus-visible {
+.sidebar-collapsed-presence:hover,
+.sidebar-collapsed-presence:focus-visible {
   border-color: #bac8ff;
   background: #4263eb;
 }
@@ -687,12 +687,12 @@ input:focus {
   text-transform: capitalize;
 }
 
-.pad-sidebar-pad-name {
+.sidebar-container-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pad-sidebar-session-count {
+.sidebar-terminal-count {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
@@ -706,14 +706,14 @@ input:focus {
   font-variant-numeric: tabular-nums;
 }
 
-.pad-sidebar-row.is-active .pad-sidebar-link {
+.sidebar-row.is-active .sidebar-link {
   color: #fff;
   font-weight: 650;
 }
 
-/* The index mark is the object's own species icon; see `.pad-sidebar-item-mark` below. */
+/* The index mark is the object's own species icon; see `.sidebar-item-mark` below. */
 
-.pad-sidebar-actions {
+.sidebar-actions {
   position: relative;
   width: 0;
   height: 1.75rem;
@@ -721,7 +721,7 @@ input:focus {
   transition: width 150ms ease;
 }
 
-.pad-sidebar-delete {
+.sidebar-delete {
   position: absolute;
   top: 50%;
   right: 0.2rem;
@@ -734,36 +734,36 @@ input:focus {
     transform 150ms ease;
 }
 
-.pad-sidebar-row:hover .pad-sidebar-actions,
-.pad-sidebar-row:focus-within .pad-sidebar-actions {
+.sidebar-row:hover .sidebar-actions,
+.sidebar-row:focus-within .sidebar-actions {
   width: 1.95rem;
 }
 
-.pad-sidebar-row:hover .pad-sidebar-delete,
-.pad-sidebar-row:focus-within .pad-sidebar-delete {
+.sidebar-row:hover .sidebar-delete,
+.sidebar-row:focus-within .sidebar-delete {
   opacity: 1;
   transform: translate(0, -50%);
 }
 
-.pad-sidebar-delete:hover {
+.sidebar-delete:hover {
   color: #f1f3f5;
   background: #2b2e34;
 }
 
-.pad-sidebar-muted {
+.sidebar-muted {
   margin: 0.65rem 0.55rem;
   color: #868e96;
   font-size: 0.76rem;
 }
 
-.pad-sidebar-folder-icon {
+.sidebar-folder-icon {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
   color: #868e96;
 }
 
-.pad-sidebar-folder-toggle {
+.sidebar-folder-toggle {
   display: flex;
   min-width: 0;
   min-height: 2.25rem;
@@ -779,21 +779,21 @@ input:focus {
   text-align: left;
 }
 
-.pad-sidebar-folder-toggle > strong {
+.sidebar-folder-toggle > strong {
   overflow: hidden;
   font-size: 0.8rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pad-sidebar-folder-chevron {
+.sidebar-folder-chevron {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
   color: #868e96;
 }
 
-.pad-sidebar-folder-add {
+.sidebar-folder-add {
   position: absolute;
   top: 50%;
   right: 1.95rem;
@@ -812,34 +812,34 @@ input:focus {
     transform 150ms ease;
 }
 
-.pad-sidebar-folder-row:hover .pad-sidebar-actions,
-.pad-sidebar-folder-row:focus-within .pad-sidebar-actions {
+.sidebar-folder-row:hover .sidebar-actions,
+.sidebar-folder-row:focus-within .sidebar-actions {
   width: 3.65rem;
 }
 
-.pad-sidebar-folder-row:hover .pad-sidebar-folder-add,
-.pad-sidebar-folder-row:focus-within .pad-sidebar-folder-add {
+.sidebar-folder-row:hover .sidebar-folder-add,
+.sidebar-folder-row:focus-within .sidebar-folder-add {
   transform: translate(0, -50%);
   opacity: 1;
 }
 
-.pad-sidebar-folder-add:hover,
-.pad-sidebar-folder-add:focus-visible {
+.sidebar-folder-add:hover,
+.sidebar-folder-add:focus-visible {
   color: #edf2ff;
   background: #292d35;
 }
 
-.pad-sidebar-folder-create.is-nested {
+.sidebar-folder-create.is-nested {
   margin: 0.2rem 0 0.35rem 1.3rem;
 }
 
-.pad-sidebar-session {
+.sidebar-terminal {
   margin-left: 1.35rem;
   border-left: 1px solid #343a40;
   padding-left: 0.3rem;
 }
 
-button.pad-sidebar-session.is-summary {
+button.sidebar-terminal.is-summary {
   display: grid;
   width: calc(100% - 1.35rem);
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -853,21 +853,21 @@ button.pad-sidebar-session.is-summary {
   cursor: pointer;
 }
 
-button.pad-sidebar-session.is-summary > span:nth-child(2) {
+button.sidebar-terminal.is-summary > span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-button.pad-sidebar-session.is-summary > small {
+button.sidebar-terminal.is-summary > small {
   color: #868e96;
 }
 
-.pad-sidebar-session.is-exited {
+.sidebar-terminal.is-exited {
   opacity: 0.55;
 }
 
-.pad-sidebar-identity {
+.sidebar-identity {
   display: flex;
   min-height: 2.25rem;
   align-items: center;
@@ -880,7 +880,7 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-identity {
+.workspace.is-collapsed .sidebar-identity {
   justify-content: center;
   padding-inline: 0;
 }
@@ -1007,7 +1007,7 @@ button.pad-sidebar-session.is-summary > small {
   text-underline-offset: 0.15em;
 }
 
-.pad-sidebar-action-menu {
+.sidebar-action-menu {
   position: absolute;
   z-index: 30;
   top: calc(100% + 0.25rem);
@@ -1021,7 +1021,7 @@ button.pad-sidebar-session.is-summary > small {
   box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 35%);
 }
 
-.pad-sidebar-action-menu button {
+.sidebar-action-menu button {
   display: flex;
   width: 100%;
   min-height: 2rem;
@@ -1035,36 +1035,36 @@ button.pad-sidebar-session.is-summary > small {
   text-align: left;
 }
 
-.pad-sidebar-action-menu button:hover,
-.pad-sidebar-action-menu button:focus-visible {
+.sidebar-action-menu button:hover,
+.sidebar-action-menu button:focus-visible {
   color: #f1f3f5;
   background: #2b2e34;
 }
 
-.pad-sidebar-action-menu button.is-danger {
+.sidebar-action-menu button.is-danger {
   color: #ffa8a8;
 }
 
-.pad-sidebar-action-menu button.is-danger:hover,
-.pad-sidebar-action-menu button.is-danger:focus-visible {
+.sidebar-action-menu button.is-danger:hover,
+.sidebar-action-menu button.is-danger:focus-visible {
   color: #ffc9c9;
   background: rgb(250 82 82 / 12%);
 }
 
-.pad-sidebar-presence {
+.sidebar-presence {
   display: flex;
   flex: 0 0 auto;
   margin-left: auto;
 }
 
-.pad-sidebar-presence .presence-avatar {
+.sidebar-presence .presence-avatar {
   width: 1.2rem;
   height: 1.2rem;
   border-color: #292d35;
   font-size: 0.55rem;
 }
 
-.workspace-sidebar {
+.sidebar-section-content {
   --default-border-color: #343a40;
   --island-bg-color: #202329;
   --text-primary-color: #e9ecef;
@@ -1075,7 +1075,7 @@ button.pad-sidebar-session.is-summary > small {
   flex: 0 0 auto;
 }
 
-.workspace-status {
+.sidebar-status {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -1085,12 +1085,12 @@ button.pad-sidebar-session.is-summary > small {
   color: #868e96;
 }
 
-.workspace-status > span:last-child {
+.sidebar-status > span:last-child {
   display: grid;
   min-width: 0;
 }
 
-.workspace-status strong {
+.sidebar-status strong {
   overflow: hidden;
   color: #ced4da;
   font-size: 0.66rem;
@@ -1099,7 +1099,7 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-.workspace-status small {
+.sidebar-status small {
   overflow: hidden;
   color: #868e96;
   font-size: 0.6rem;
@@ -1108,7 +1108,7 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-.workspace-machine-create {
+.sidebar-machine-create {
   width: 1.45rem;
   min-width: 1.45rem;
   height: 1.45rem;
@@ -1122,14 +1122,14 @@ button.pad-sidebar-session.is-summary > small {
   line-height: 1;
 }
 
-.workspace-machine-create:hover,
-.workspace-machine-create:focus-visible {
+.sidebar-machine-create:hover,
+.sidebar-machine-create:focus-visible {
   border-color: #495057;
   color: #edf2ff;
   background: #292d35;
 }
 
-.pad-sidebar-row.is-editing {
+.sidebar-row.is-editing {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
@@ -1137,7 +1137,7 @@ button.pad-sidebar-session.is-summary > small {
   padding: 0.32rem 0.35rem;
 }
 
-.pad-sidebar-rename-input {
+.sidebar-rename-input {
   min-width: 0;
   height: 1.8rem;
   border-color: var(--default-border-color, #495057);
@@ -1148,7 +1148,7 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.78rem;
 }
 
-.pad-sidebar-inline-action {
+.sidebar-inline-action {
   width: 1.8rem;
   min-width: 1.8rem;
   height: 1.8rem;
@@ -1160,22 +1160,22 @@ button.pad-sidebar-session.is-summary > small {
   background: transparent;
 }
 
-.pad-sidebar-inline-action:hover,
-.pad-sidebar-inline-action:focus-visible {
+.sidebar-inline-action:hover,
+.sidebar-inline-action:focus-visible {
   color: var(--text-primary-color, #f1f3f5);
   background: #2b2e34;
 }
 
-.pad-sidebar-inline-action.is-primary {
+.sidebar-inline-action.is-primary {
   color: #bac8ff;
 }
 
-.pad-sidebar-inline-action:disabled {
+.sidebar-inline-action:disabled {
   opacity: 0.4;
 }
 
 /* A panel fills the content host the tree seats it in, whatever pane that host is sitting in. */
-.pad-browser-canvas {
+.workspace-canvas {
   position: relative;
   display: flex;
   min-width: 0;
@@ -1185,7 +1185,7 @@ button.pad-sidebar-session.is-summary > small {
   background: #121417;
 }
 
-.pad-browser-empty {
+.workspace-empty {
   position: absolute;
   inset: 0;
   display: grid;
@@ -1196,7 +1196,7 @@ button.pad-sidebar-session.is-summary > small {
   background: radial-gradient(circle at center, rgb(54 79 199 / 10%), transparent 28rem), #121417;
 }
 
-.pad-browser-empty-mark {
+.workspace-empty-mark {
   width: 3.25rem;
   height: 3.25rem;
   margin-bottom: 0.9rem;
@@ -1204,17 +1204,17 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 1.05rem;
 }
 
-.pad-browser-empty h1 {
+.workspace-empty h1 {
   margin: 0;
   font-size: 1.35rem;
 }
 
-.pad-browser-empty p {
+.workspace-empty p {
   margin: 0.55rem 0 1.25rem;
   color: #868e96;
 }
 
-.pad-name-menu-item {
+.container-name-menu-item {
   max-width: 16rem;
   overflow: hidden;
   color: #adb5bd;
@@ -1251,7 +1251,7 @@ button.pad-sidebar-session.is-summary > small {
   opacity: 0.35;
 }
 
-.pad-load-error {
+.container-load-error {
   position: absolute;
   z-index: 25;
   bottom: 2.8rem;
@@ -1267,7 +1267,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 .terminal-placeholder,
-.manifold-terminal {
+.terminal-frame {
   width: 100%;
   height: 100%;
   border-radius: 0.45rem;
@@ -1281,7 +1281,7 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.82rem;
 }
 
-.manifold-terminal {
+.terminal-frame {
   position: relative;
   width: 100%;
   height: 100%;
@@ -1295,11 +1295,11 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Remote focus: the frame wears a ring in the focuser's presence color, supplied
    inline as border-color + box-shadow so there is no layout shift. */
-.manifold-terminal--remote-focus {
+.terminal-frame--remote-focus {
   border-color: transparent;
 }
 
-.manifold-terminal--panel-highlight::after {
+.terminal-frame--panel-highlight::after {
   content: "";
   position: absolute;
   z-index: 30;
@@ -1311,7 +1311,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* Idle veil — faint white haze over an unfocused terminal, readable underneath;
-   sits above the title bar too, so the whole surface reads as dimmed without intercepting input. */
+   sits above the title bar too, so the whole ref reads as dimmed without intercepting input. */
 .terminal-idle-veil {
   position: absolute;
   inset: 0;
@@ -1329,7 +1329,7 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Geometry, rhythm and controls come from the shared `.node-titlebar` block at the
    end of this file; what stays here is what makes this bar a TERMINAL's bar: it
-   floats over the xterm surface and lets the pointer through to it. */
+   floats over the xterm ref and lets the pointer through to it. */
 .terminal-titlebar {
   position: absolute;
   z-index: 3;
@@ -1459,7 +1459,7 @@ button.pad-sidebar-session.is-summary > small {
   cursor: default;
 }
 
-/* Shared presence styles are used by the pad browser's participant summaries. */
+/* Shared presence styles are used by the container browser's participant summaries. */
 .presence-wrapper {
   position: relative;
 }
@@ -1577,14 +1577,14 @@ button.pad-sidebar-session.is-summary > small {
 @media (max-width: 700px) {
   /*
    * Narrow viewports pin the sidebar's pane to the rail and let the panel float over the
-   * pad view, rather than letting the stored ratio eat the screen. The tree is untouched:
+   * container view, rather than letting the stored ratio eat the screen. The tree is untouched:
    * this is presentation, so a phone and a monitor read the same stored layout.
    */
-  .pad-browser .ws-pane:has(> .tile-content-host > .pad-sidebar) {
+  .workspace .workspace-pane:has(> .tile-content-host > .sidebar) {
     flex: 0 0 3.25rem;
   }
 
-  .pad-sidebar {
+  .sidebar {
     position: absolute;
     z-index: 20;
     inset: 0 auto 0 0;
@@ -1592,7 +1592,7 @@ button.pad-sidebar-session.is-summary > small {
     transition: width 160ms ease;
   }
 
-  .pad-browser.is-collapsed .pad-sidebar {
+  .workspace.is-collapsed .sidebar {
     width: 3.25rem;
   }
 
@@ -1659,26 +1659,26 @@ button.pad-sidebar-session.is-summary > small {
   }
 }
 
-.workspace-list {
+.sidebar-section-list {
   display: grid;
   gap: 0.2rem;
 }
 
-.workspace-empty {
+.sidebar-section-empty {
   padding: 0.45rem 0.2rem;
   color: var(--text-secondary-color, #868e96);
   font-size: 0.76rem;
 }
 
-.workspace-machine-row,
-.workspace-session-row {
+.sidebar-machine-row,
+.sidebar-terminal-row {
   min-width: 0;
   border-radius: var(--border-radius-md);
   padding: 0.4rem 0.45rem;
 }
 
-/* Machine rows share the pad-row rhythm: same leading inset, height, and label size. */
-.workspace-machine-row {
+/* Machine rows share the container-row rhythm: same leading inset, height, and label size. */
+.sidebar-machine-row {
   display: grid;
   min-height: 2.1rem;
   grid-template-columns: auto auto minmax(0, 1fr) auto auto;
@@ -1688,71 +1688,71 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.82rem;
 }
 
-.workspace-machine-row:hover,
-.workspace-session-row:hover {
+.sidebar-machine-row:hover,
+.sidebar-terminal-row:hover {
   background: rgb(134 142 150 / 8%);
 }
 
-.workspace-machine-row.is-offline,
-.workspace-session-row.is-exited {
+.sidebar-machine-row.is-offline,
+.sidebar-terminal-row.is-exited {
   opacity: 0.55;
 }
 
-.workspace-machine-row strong {
+.sidebar-machine-row strong {
   overflow: hidden;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-machine-row > span:not(.machine-dot) {
+.sidebar-machine-row > span:not(.machine-dot) {
   color: var(--text-secondary-color, #868e96);
   font-size: 0.7rem;
 }
 
-.workspace-session-row {
+.sidebar-terminal-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
 }
 
-.session-state {
+.terminal-state {
   color: var(--text-secondary-color, #868e96);
 }
 
-.session-state.is-running {
+.terminal-state.is-running {
   color: #51cf66;
 }
 
-.workspace-session-label {
+.sidebar-terminal-label {
   display: grid;
   min-width: 0;
   gap: 0.1rem;
 }
 
-.workspace-session-label strong,
-.workspace-session-label span {
+.sidebar-terminal-label strong,
+.sidebar-terminal-label span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-session-label strong {
+.sidebar-terminal-label strong {
   font-weight: 600;
 }
 
-.workspace-session-label span {
+.sidebar-terminal-label span {
   color: var(--text-secondary-color, #868e96);
   font-size: 0.66rem;
 }
 
-.workspace-session-group {
+.sidebar-terminal-group {
   display: grid;
   gap: 0.12rem;
 }
 
-.workspace-copy-list {
+.sidebar-copy-list {
   display: grid;
   gap: 0.12rem;
   margin: 0 0.35rem 0.25rem 1rem;
@@ -1760,7 +1760,7 @@ button.pad-sidebar-session.is-summary > small {
   border-left: 1px solid var(--default-border-color);
 }
 
-.workspace-copy-row {
+.sidebar-copy-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1770,17 +1770,17 @@ button.pad-sidebar-session.is-summary > small {
   border-radius: var(--border-radius-md);
 }
 
-.workspace-copy-row:hover {
+.sidebar-copy-row:hover {
   background: rgb(134 142 150 / 8%);
 }
 
-.workspace-copy-branch {
+.sidebar-copy-branch {
   width: 0.35rem;
   height: 1px;
   background: var(--default-border-color);
 }
 
-.workspace-copy-label {
+.sidebar-copy-label {
   overflow: hidden;
   color: var(--text-secondary-color, #868e96);
   font-size: 0.66rem;
@@ -1788,7 +1788,7 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-.workspace-copies-toggle {
+.sidebar-copies-toggle {
   display: inline-flex;
   width: auto;
   gap: 0.3rem;
@@ -1798,7 +1798,7 @@ button.pad-sidebar-session.is-summary > small {
   font-variant-numeric: tabular-nums;
 }
 
-.workspace-copy-chevron {
+.sidebar-copy-chevron {
   width: 0.3rem;
   height: 0.3rem;
   margin-bottom: 0.12rem;
@@ -1808,18 +1808,18 @@ button.pad-sidebar-session.is-summary > small {
   transition: transform 120ms ease;
 }
 
-.workspace-copies-toggle[aria-expanded="true"] .workspace-copy-chevron {
+.sidebar-copies-toggle[aria-expanded="true"] .sidebar-copy-chevron {
   margin-bottom: -0.08rem;
   transform: rotate(-135deg);
 }
 
-.workspace-session-actions {
+.sidebar-terminal-actions {
   display: flex;
   align-items: center;
   gap: 0.3rem;
 }
 
-.workspace-action {
+.sidebar-action {
   display: grid;
   place-items: center;
   width: 1.65rem;
@@ -1830,19 +1830,19 @@ button.pad-sidebar-session.is-summary > small {
   border-radius: var(--border-radius-md);
 }
 
-.workspace-action.is-reveal {
+.sidebar-action.is-reveal {
   color: #a5d8ff;
 }
 
-.workspace-action.is-end-session {
+.sidebar-action.is-end-terminal {
   color: #ffd8a8;
 }
 
-.workspace-action.is-remove {
+.sidebar-action.is-remove {
   color: #ffa8a8;
 }
 
-.workspace-action:hover {
+.sidebar-action:hover {
   border-color: currentColor;
   background: rgb(255 255 255 / 6%);
 }
@@ -1857,13 +1857,13 @@ button.pad-sidebar-session.is-summary > small {
   clip-path: inset(50%);
 }
 
-.flow-pad-view {
+.canvas-view {
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
 }
-.flow-presence {
+.canvas-presence {
   position: absolute;
   z-index: 10;
   top: 0.75rem;
@@ -1871,7 +1871,7 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* Zero-sized origin box: it only carries the band that keeps presence above nodes. */
-.flow-presence-layer {
+.canvas-presence-layer {
   position: absolute;
   top: 0;
   left: 0;
@@ -1880,7 +1880,7 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
-.flow-remote-cursor {
+.remote-cursor {
   position: absolute;
   display: flex;
   gap: 0.25rem;
@@ -1892,17 +1892,17 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-.flow-remote-cursor svg {
+.remote-cursor svg {
   filter: drop-shadow(0 1px 1px rgb(0 0 0 / 55%));
 }
 
-.flow-remote-cursor span {
+.remote-cursor span {
   padding: 0.1rem 0.3rem;
   border-radius: 0.25rem;
   color: #fff;
   background: color-mix(in srgb, currentColor 80%, #111);
 }
-.flow-pad-canvas {
+.canvas {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
@@ -1910,27 +1910,27 @@ button.pad-sidebar-session.is-summary > small {
 /*
  * A canvas terminal is a MONO PORTAL: the solo composition it lives in renders
  * element-chrome-first, so the terminal's own titlebar is this node's bar. These
- * rules used to be scoped to `.flow-terminal`, the retired terminal node type; that
+ * rules used to be scoped to `.canvas-terminal`, the retired terminal node type; that
  * selector matches nothing now, and `.terminal-titlebar` is `pointer-events: none`
- * by default (it floats over the xterm surface), so leaving them there made the bar
+ * by default (it floats over the xterm ref), so leaving them there made the bar
  * pointer-transparent: the node could not be dragged and its controls could not be
  * clicked by a real pointer.
  */
-.flow-portal--mono .flow-portal__tile > .manifold-terminal {
+.portal--mono .portal__tile > .terminal-frame {
   width: 100%;
   height: 100%;
 }
 /* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
-.flow-portal--mono .terminal-titlebar {
+.portal--mono .terminal-titlebar {
   pointer-events: auto;
   cursor: grab;
 }
-.flow-portal--mono .terminal-titlebar:active {
+.portal--mono .terminal-titlebar:active {
   cursor: grabbing;
 }
 /* Buttons inside the titlebar must not look draggable. */
-.flow-portal--mono .node-titlebar__actions,
-.flow-portal--mono .node-titlebar__ctl {
+.portal--mono .node-titlebar__actions,
+.portal--mono .node-titlebar__ctl {
   cursor: pointer;
 }
 /*
@@ -1939,29 +1939,29 @@ button.pad-sidebar-session.is-summary > small {
  * Flow's own `.left`/`.top`/corner rules) is the affordance. The zones are widened
  * from the library's 1px line because a 1px border is not a pointer target.
  */
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge,
-.flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge,
+.canvas .react-flow__resize-control.handle.canvas-terminal-resize-corner {
   /*
    * Above everything inside the terminal frame — including the titlebar (z 3) and its
    * pill/overlay (z 5) — exactly like an OS window, where the thin border strip wins
-   * over the titlebar it borders and the rest of the titlebar stays the drag surface.
+   * over the titlebar it borders and the rest of the titlebar stays the drag ref.
    */
   z-index: 6;
   border-color: transparent;
   background: transparent;
 }
 
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.left,
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.right {
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.left,
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.right {
   width: 8px;
 }
 
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.top,
-.flow-pad-canvas .react-flow__resize-control.line.flow-terminal-resize-edge.bottom {
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.top,
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.bottom {
   height: 8px;
 }
 
-.flow-pad-canvas .react-flow__resize-control.handle.flow-terminal-resize-corner {
+.canvas .react-flow__resize-control.handle.canvas-terminal-resize-corner {
   width: 14px;
   height: 14px;
   border: 0;
@@ -1969,11 +1969,11 @@ button.pad-sidebar-session.is-summary > small {
   background: transparent;
 }
 
-.flow-pad-canvas:focus {
+.canvas:focus {
   outline: none;
 }
 
-.flow-text {
+.canvas-text {
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -1985,7 +1985,7 @@ button.pad-sidebar-session.is-summary > small {
   cursor: text;
 }
 
-.flow-text__editor {
+.canvas-text__editor {
   width: 100%;
   height: 100%;
   resize: none;
@@ -2000,16 +2000,16 @@ button.pad-sidebar-session.is-summary > small {
   box-shadow: 0 0 0 3px rgb(116 143 252 / 18%);
 }
 
-.flow-draw {
+.draw {
   display: block;
   pointer-events: none;
 }
 
-.flow-draw path {
+.draw path {
   pointer-events: stroke;
 }
 
-.flow-toolbar {
+.canvas-toolbar {
   position: absolute;
   z-index: 20;
   bottom: 1rem;
@@ -2024,7 +2024,7 @@ button.pad-sidebar-session.is-summary > small {
   transform: translateX(-50%);
 }
 
-.flow-toolbar__button {
+.canvas-toolbar__button {
   border: 0;
   border-radius: 0.4rem;
   padding: 0.45rem 0.7rem;
@@ -2033,21 +2033,21 @@ button.pad-sidebar-session.is-summary > small {
   cursor: pointer;
 }
 
-.flow-toolbar__button:hover {
+.canvas-toolbar__button:hover {
   color: #f8f9fa;
   background: #343a40;
 }
 
-.flow-toolbar__button--active {
+.canvas-toolbar__button--active {
   color: #fff;
   background: #4263eb;
 }
 
-.flow-toolbar__button--active:hover {
+.canvas-toolbar__button--active:hover {
   background: #3b5bdb;
 }
 
-.flow-stroke-preview {
+.stroke-preview {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -2055,7 +2055,7 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
-.flow-remote-selection {
+.remote-selection {
   position: absolute;
   border: 2px solid;
   border-radius: 0.3rem;
@@ -2065,7 +2065,7 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Terminal pool (sidebar) */
 
-.pad-sidebar-terminal-pool {
+.sidebar-terminal-pool {
   display: grid;
   align-content: start;
 }
@@ -2085,14 +2085,14 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* The row's mark sits outside the label, so it carries the row's leading inset itself. */
-.pad-sidebar-row > .session-state {
+.sidebar-row > .terminal-state {
   flex: 0 0 auto;
   align-self: center;
   padding-inline-start: 0.55rem;
   line-height: 1;
 }
 
-/* Two stacked lines, kept on the pad-row height rhythm by a tighter block padding. */
+/* Two stacked lines, kept on the container-row height rhythm by a tighter block padding. */
 .terminal-pool-label {
   flex-direction: column;
   align-items: flex-start;
@@ -2126,7 +2126,7 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.7rem;
 }
 
-.pad-sidebar-row--terminal-target {
+.sidebar-row--terminal-target {
   outline: 1px solid #748ffc;
   outline-offset: -1px;
   background: rgb(92 124 250 / 12%);
@@ -2142,35 +2142,35 @@ button.pad-sidebar-session.is-summary > small {
 .react-flow__node-draw.selected {
   pointer-events: all !important;
 }
-.react-flow__node-draw .flow-draw path {
+.react-flow__node-draw .draw path {
   pointer-events: none;
 }
-.react-flow__node-draw .flow-draw path.flow-draw__hit {
+.react-flow__node-draw .draw path.draw__hit {
   pointer-events: stroke;
   cursor: pointer;
 }
 
-/* ── Tiled containers (Phase 3) ───────────────────────────────────────────────
-   The tiled discipline's renderer plus the sidebar marks that tell a view from a
+/* ── Composition containers (Phase 3) ───────────────────────────────────────────────
+   The composition discipline's renderer plus the sidebar marks that tell a view from a
    canvas. Appended as one block so the canvas rules above stay untouched. */
 
 /* Three creators do not fit one 280px row: the two container creators share the
    first row, the folder creator takes the second. */
-.pad-sidebar-new-folder {
+.sidebar-new-folder {
   grid-column: 1 / -1;
 }
 
-.pad-browser.is-collapsed .pad-sidebar-new-folder {
+.workspace.is-collapsed .sidebar-new-folder {
   grid-column: auto;
 }
 
 /* A bubble: alive only while someone is inside it. */
-.pad-sidebar-row--transient .pad-sidebar-pad-name {
+.sidebar-row--transient .sidebar-container-name {
   font-style: italic;
   color: #adb5bd;
 }
 
-.tiled-pad-view {
+.composition-view {
   display: flex;
   width: 100%;
   height: 100%;
@@ -2180,14 +2180,14 @@ button.pad-sidebar-session.is-summary > small {
 
 /* Page-level chrome of the composed renderer: taller than a node's bar, but the same
    bar (grid, title, controls) — see `.node-titlebar`. */
-.tiled-header {
+.composition-header {
   min-height: 2.35rem;
   border-bottom: 1px solid #23272e;
   padding: 0.35rem 0.6rem;
   background: #16191f;
 }
 
-.tiled-bubble-chip {
+.composition-bubble-chip {
   flex: 0 0 auto;
   border: 1px solid #495057;
   border-radius: 0.4rem;
@@ -2198,30 +2198,30 @@ button.pad-sidebar-session.is-summary > small {
   letter-spacing: 0.02em;
 }
 
-.tiled-status {
+.composition-status {
   margin-inline-start: auto;
   color: #868e96;
   font-size: 0.66rem;
 }
 
-.tiled-status.is-open {
+.composition-status.is-open {
   color: #69db7c;
 }
 
 /* The bubble's claim button: a pin glyph in the titlebar cluster rather than a
    labelled button, because in that state it sits beside minimize/maximize/close. */
-.tiled-pin {
+.composition-pin {
   font-size: 0.8rem;
 }
 
-.tiled-body {
+.composition-body {
   position: relative;
   display: flex;
   min-height: 0;
   flex: 1 1 auto;
 }
 
-.tiled-placeholder {
+.composition-placeholder {
   display: grid;
   width: 100%;
   place-items: center;
@@ -2229,23 +2229,23 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.8rem;
 }
 
-.tiled-split {
+.composition-split {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
 }
 
-.tiled-split.is-row {
+.composition-split.is-row {
   flex-direction: row;
 }
 
-.tiled-split.is-column {
+.composition-split.is-column {
   flex-direction: column;
 }
 
 /* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
-.tiled-pane {
+.composition-pane {
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -2253,26 +2253,26 @@ button.pad-sidebar-session.is-summary > small {
   flex-shrink: 1;
 }
 
-.tiled-divider {
+.composition-divider {
   flex: 0 0 0.35rem;
   background: #23272e;
   touch-action: none;
 }
 
-.tiled-divider:hover,
-.tiled-divider:active {
+.composition-divider:hover,
+.composition-divider:active {
   background: #4c6ef5;
 }
 
-.tiled-split.is-row > .tiled-divider {
+.composition-split.is-row > .composition-divider {
   cursor: col-resize;
 }
 
-.tiled-split.is-column > .tiled-divider {
+.composition-split.is-column > .composition-divider {
   cursor: row-resize;
 }
 
-.tiled-leaf {
+.composition-leaf {
   position: relative;
   display: flex;
   min-width: 0;
@@ -2282,12 +2282,12 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* Which tile takes the keystrokes: the same cue the canvas gives a selected node. */
-.tiled-leaf.is-focused {
+.composition-leaf.is-focused {
   outline: 1px solid #495057;
   outline-offset: -1px;
 }
 
-.tiled-empty {
+.composition-empty {
   display: flex;
   width: 100%;
   flex-direction: column;
@@ -2301,18 +2301,18 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.78rem;
 }
 
-.tiled-empty-glyph {
+.composition-empty-glyph {
   display: inline-grid;
   place-items: center;
   color: #495057;
 }
 
-/* ── Portal widgets and canvas composition (Phase 3 / 3b) ─────────────────────
-   The canvas face of a tiled container — a live widget onto its tiles — plus the
+/* ── Portal portals and canvas composition (Phase 3 / 3b) ─────────────────────
+   The canvas face of a composition — a live portal onto its tiles — plus the
    chrome the compose gesture paints. Appended as one block; nothing above is
    restyled. */
 
-.flow-portal {
+.portal {
   display: flex;
   width: 100%;
   height: 100%;
@@ -2326,23 +2326,23 @@ button.pad-sidebar-session.is-summary > small {
 
 /* The strip IS the React Flow drag handle (PORTAL_DRAG_HANDLE): the preview body
    below it belongs to the tile drags that decompose a view. */
-.flow-portal__strip {
+.portal__strip {
   border-bottom: 1px solid #23272e;
   background: #15181d;
   cursor: grab;
 }
 
-.flow-portal__strip:active {
+.portal__strip:active {
   cursor: grabbing;
 }
 
-.flow-portal__presence {
+.portal__presence {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 0.15rem;
 }
 
-.flow-portal__avatar {
+.portal__avatar {
   display: grid;
   width: 1.05rem;
   height: 1.05rem;
@@ -2353,12 +2353,12 @@ button.pad-sidebar-session.is-summary > small {
   place-items: center;
 }
 
-.flow-portal__avatar--more {
+.portal__avatar--more {
   color: #ced4da;
   background: #343a40;
 }
 
-.flow-portal__enter {
+.portal__enter {
   flex: 0 0 auto;
   padding: 0.1rem 0.4rem;
   border: 1px solid #343a40;
@@ -2369,12 +2369,12 @@ button.pad-sidebar-session.is-summary > small {
   cursor: pointer;
 }
 
-.flow-portal__enter:hover {
+.portal__enter:hover {
   border-color: #4c6ef5;
   color: #f8f9fa;
 }
 
-.flow-portal__viewport {
+.portal__viewport {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
@@ -2384,7 +2384,7 @@ button.pad-sidebar-session.is-summary > small {
 /* The preview is laid out at 1/PORTAL_PREVIEW_SCALE and transformed down: xterm
    fits against the computed box, which a transform leaves alone, so previewing a
    terminal never reflows the PTY for whoever is working in it. */
-.flow-portal__preview {
+.portal__preview {
   /* Everything below this box is drawn at PORTAL_PREVIEW_SCALE, so a length that has to
      be CONSTANT ON SCREEN is written double here — otherwise the transform shrinks it
      along with the paint, which is exactly how the seam's grab band ended up a third of
@@ -2397,7 +2397,7 @@ button.pad-sidebar-session.is-summary > small {
   transform-origin: top left;
 }
 
-.flow-portal__split {
+.portal-split {
   display: flex;
   width: 100%;
   height: 100%;
@@ -2405,71 +2405,71 @@ button.pad-sidebar-session.is-summary > small {
   min-height: 0;
 }
 
-/* The direction comes from a class, not an inline style: a widget's tree and the route's
+/* The direction comes from a class, not an inline style: a portal's tree and the route's
    tree are ONE component (`tile-tree.tsx`), and it speaks in is-row / is-column. */
-.flow-portal__split.is-row {
+.portal-split.is-row {
   flex-direction: row;
 }
 
-.flow-portal__split.is-column {
+.portal-split.is-column {
   flex-direction: column;
 }
 
 /* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
-.flow-portal__slot {
+.portal__slot {
   display: flex;
   flex-basis: 0;
   min-width: 0;
   min-height: 0;
 }
 
-.flow-portal__slot > * {
+.portal__slot > * {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
 }
 
-/* A widget wears the route's dividers, because it IS the route's tree: an engaged widget
+/* A portal wears the route's dividers, because it IS the route's tree: an engaged portal
    resizes its composition through the same drag and the same doc write. Exactly DOUBLE
    the route's 0.35rem, because a preview is drawn at PORTAL_PREVIEW_SCALE — the transform
    shrinks paint and hit area together, so twice the layout thickness is what makes the
    seam the same size ON SCREEN as the one the route offers. */
-.flow-portal__divider {
+.portal-divider {
   flex: 0 0 0.7rem;
   background: #23272e;
   touch-action: none;
 }
 
-.flow-portal__divider:hover,
-.flow-portal__divider:active {
+.portal-divider:hover,
+.portal-divider:active {
   background: #4c6ef5;
 }
 
-.flow-portal__split.is-row > .flow-portal__divider {
+.portal-split.is-row > .portal-divider {
   cursor: col-resize;
 }
 
-.flow-portal__split.is-column > .flow-portal__divider {
+.portal-split.is-column > .portal-divider {
   cursor: row-resize;
 }
 
-/* A WATCHING widget's dividers are structure, not controls: the composition's shape is
+/* A WATCHING portal's dividers are structure, not controls: the composition's shape is
    information, but the socket painting it is a spectator whose writes the server
    refuses, so there is no grab affordance to offer. This is the shared tree's
    `interactive: false` state, hence both skins. */
-.tiled-split > .tiled-divider.is-inert,
-.flow-portal__split > .flow-portal__divider.is-inert {
+.composition-split > .composition-divider.is-inert,
+.portal-split > .portal-divider.is-inert {
   cursor: default;
 }
 
-.tiled-divider.is-inert:hover,
-.tiled-divider.is-inert:active,
-.flow-portal__divider.is-inert:hover,
-.flow-portal__divider.is-inert:active {
+.composition-divider.is-inert:hover,
+.composition-divider.is-inert:active,
+.portal-divider.is-inert:hover,
+.portal-divider.is-inert:active {
   background: #23272e;
 }
 
-.flow-portal__tile {
+.portal__tile {
   position: relative;
   width: 100%;
   height: 100%;
@@ -2479,7 +2479,7 @@ button.pad-sidebar-session.is-summary > small {
 
 /* WATCHING: the shield keeps input out of a terminal nobody engaged, and it is the
    grab zone that extracts the tile back onto the canvas as a plain element. */
-.flow-portal__shield {
+.portal__shield {
   position: absolute;
   /* Above the previewed terminal's own bands (titlebar 3, overlays 5): the frame
      creates no stacking context, so those children would otherwise paint over it. */
@@ -2489,15 +2489,15 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* ENGAGED: the shield collapses onto its grip so the terminal underneath is reachable
-   — plain clicks, xterm selection and mouse-mode TUIs all need the real surface — while
+   — plain clicks, xterm selection and mouse-mode TUIs all need the real ref — while
    extraction stays exactly the same drag, now on a visible handle. */
-.flow-portal__shield--grip {
+.portal__shield--grip {
   inset: auto 0 0 auto;
   width: 1.6rem;
   height: 1.6rem;
 }
 
-.flow-portal__grip {
+.portal__grip {
   display: grid;
   position: absolute;
   right: 0;
@@ -2512,33 +2512,33 @@ button.pad-sidebar-session.is-summary > small {
   transition: opacity 120ms ease;
 }
 
-.flow-portal__shield:hover .flow-portal__grip {
+.portal__shield:hover .portal__grip {
   color: #dee2e6;
   opacity: 1;
 }
 
-.flow-portal__shield:active {
+.portal__shield:active {
   cursor: grabbing;
 }
 
-/* A widget being worked in is a first-class terminal host, not a preview: the frame
+/* A portal being worked in is a first-class terminal host, not a preview: the frame
    says so, and the engaging state says the occupant socket is still coming up. */
-.flow-portal--engaged {
+.portal--engaged {
   outline: 1px solid #4c6ef5;
   outline-offset: 1px;
 }
 
-.flow-portal--engaging {
+.portal--engaging {
   cursor: progress;
 }
 
-.flow-portal--engaging .flow-portal__shield {
+.portal--engaging .portal__shield {
   cursor: progress;
 }
 
-.flow-portal__empty,
-.flow-portal__pad-card,
-.flow-portal__card {
+.portal__empty,
+.portal__container-card,
+.portal__card {
   display: grid;
   width: 100%;
   height: 100%;
@@ -2551,35 +2551,35 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.7rem;
 }
 
-.flow-portal__pad-card strong {
+.portal__container-card strong {
   color: #dee2e6;
   font-size: 0.76rem;
 }
 
-.flow-portal__card {
+.portal__card {
   border-style: solid;
   border-color: #23272e;
 }
 
-.flow-portal__card-glyph {
+.portal__card-glyph {
   display: inline-grid;
   place-items: center;
   color: #748ffc;
 }
 
-.flow-portal__card-hint {
+.portal__card-hint {
   padding-inline: 0.6rem;
   text-align: center;
 }
 
-/* ── Remote cursors in the tiled discipline ───────────────────────────────────
-   Cursors are a renderer-level concern, so `.flow-remote-cursor` is shared verbatim
+/* ── Remote cursors in the composition discipline ───────────────────────────────────
+   Cursors are a renderer-level concern, so `.remote-cursor` is shared verbatim
    between the two renderers and nothing above is restyled. Only the containing block
    differs: the canvas paints inside React Flow's pannable viewport, while a view paints
-   into this layer, which fills the TILE AREA (`.tiled-body`) and therefore excludes the
+   into this layer, which fills the TILE AREA (`.composition-body`) and therefore excludes the
    header strip. Positions are `left`/`top` percentages, so the wire fractions are
    resolved by layout and a window resize needs no measurement. */
-.tiled-presence-layer {
+.composition-presence-layer {
   position: absolute;
   z-index: 60;
   inset: 0;
@@ -2589,13 +2589,13 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* ── The overlay slot ─────────────────────────────────────────────────────────
-   Where one plugin's chrome is painted over another's surface (the presence island,
+   Where one plugin's chrome is painted over another's ref (the presence island,
    the spotlight chip), addressed by slot through the projection registry. The wrapper
    exists to carry `data-overlay-slot` for the gates, never to be a box: `contents`
-   means the registered component lands in the surface's own layout exactly as it did
+   means the registered component lands in the ref's own layout exactly as it did
    when the renderer imported it directly, so mounting a slot in a flex host adds no
    child and an empty slot costs nothing. */
-.pad-overlay-slot {
+.container-overlay-slot {
   display: contents;
 }
 
@@ -2698,45 +2698,45 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* Adopter tuning: a view reads as an object with a name, a terminal as a strip. */
-.flow-portal__strip .node-titlebar__icon {
+.portal__strip .node-titlebar__icon {
   color: #748ffc;
 }
 
-.flow-portal__strip .node-titlebar__title {
+.portal__strip .node-titlebar__title {
   color: #f1f3f5;
   font-size: 0.78rem;
   font-weight: 650;
 }
 
-.tiled-header .node-titlebar__icon {
+.composition-header .node-titlebar__icon {
   color: #748ffc;
 }
 
-.tiled-header .node-titlebar__title {
+.composition-header .node-titlebar__title {
   color: #f1f3f5;
   font-size: 0.85rem;
   font-weight: 650;
 }
 
-.tiled-header .node-titlebar__title-input {
+.composition-header .node-titlebar__title-input {
   font-size: 0.85rem;
 }
 
-.tiled-header .node-titlebar__ctl {
+.composition-header .node-titlebar__ctl {
   width: 1.5rem;
   height: 1.5rem;
 }
 
-/* ── A pad placed in a composition ───────────────────────────────────────────
-   Chrome above, board below. The tile is a column: the bar takes its natural
-   height and the embedded canvas takes the rest, so the board's own pointer
+/* ── A container placed in a composition ───────────────────────────────────────────
+   Chrome above, canvas below. The tile is a column: the bar takes its natural
+   height and the embedded canvas takes the rest, so the canvas's own pointer
    handling (pan, node drags, its tools) is never overlaid by tile controls.
 
-   The frame is the TERMINAL's frame (same border, radius and depth): a pad and a
+   The frame is the TERMINAL's frame (same border, radius and depth): a container and a
    terminal are both placed objects, so a composition must not draw them as two
    different species — and copying the border is also what puts the two kinds of
    titlebar on the same baseline. */
-.tiled-pad-tile {
+.composition-tile {
   display: flex;
   width: 100%;
   height: 100%;
@@ -2750,19 +2750,19 @@ button.pad-sidebar-session.is-summary > small {
   box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
-.tiled-pad-tile__bar {
+.composition-tile__bar {
   flex: 0 0 auto;
   border-bottom: 1px solid #23272e;
   background: #14181e;
 }
 
-.tiled-pad-tile__bar .node-titlebar__icon {
+.composition-tile__bar .node-titlebar__icon {
   color: #748ffc;
 }
 
-/* The embedded board fills what the bar leaves; `min-height: 0` is what keeps a
+/* The embedded canvas fills what the bar leaves; `min-height: 0` is what keeps a
    flex child from refusing to shrink below its content. */
-.tiled-pad-tile__body {
+.composition-tile__body {
   position: relative;
   display: flex;
   min-width: 0;
@@ -2770,7 +2770,7 @@ button.pad-sidebar-session.is-summary > small {
   flex: 1 1 auto;
 }
 
-.tiled-pad-tile__body > * {
+.composition-tile__body > * {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
@@ -2781,7 +2781,7 @@ button.pad-sidebar-session.is-summary > small {
    any transformed canvas — the three places notices used to get lost. The layer
    itself is pointer-transparent; only the rows take the pointer, so a stack sitting
    over the canvas never eats a drag. */
-.toast-layer {
+.notice-layer {
   position: fixed;
   z-index: 200;
   right: 0;
@@ -2795,7 +2795,7 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
-.toast {
+.notice {
   display: flex;
   max-width: min(34rem, 100%);
   align-items: flex-start;
@@ -2809,18 +2809,18 @@ button.pad-sidebar-session.is-summary > small {
   font-size: 0.78rem;
   line-height: 1.35;
   pointer-events: auto;
-  animation: toast-enter 160ms ease-out;
+  animation: notice-enter 160ms ease-out;
 }
 
 /* A failure that leaves the app degraded reads as one: the same card, alarmed. */
-.toast--sticky {
+.notice--sticky {
   border-color: #7a3b3b;
   color: #ffc9c9;
   background: #2a2023;
 }
 
-/* Duration must match TOAST_FADE_MS in toast.tsx. */
-.toast--leaving {
+/* Duration must match NOTICE_FADE_MS in notice.tsx. */
+.notice--leaving {
   opacity: 0;
   transform: translateY(0.35rem);
   transition:
@@ -2828,11 +2828,11 @@ button.pad-sidebar-session.is-summary > small {
     transform 220ms ease-in;
 }
 
-.toast-message {
+.notice-message {
   overflow-wrap: anywhere;
 }
 
-.toast-dismiss {
+.notice-dismiss {
   width: 1.3rem;
   height: 1.3rem;
   flex: 0 0 auto;
@@ -2846,13 +2846,13 @@ button.pad-sidebar-session.is-summary > small {
   cursor: pointer;
 }
 
-.toast-dismiss:hover,
-.toast-dismiss:focus-visible {
+.notice-dismiss:hover,
+.notice-dismiss:focus-visible {
   color: #f1f3f5;
   background: #2f333a;
 }
 
-@keyframes toast-enter {
+@keyframes notice-enter {
   from {
     opacity: 0;
     transform: translateY(0.5rem);
@@ -2865,11 +2865,11 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast {
+  .notice {
     animation: none;
   }
 
-  .toast--leaving {
+  .notice--leaving {
     transform: none;
     transition: opacity 220ms linear;
   }
@@ -2880,7 +2880,7 @@ button.pad-sidebar-session.is-summary > small {
    a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its
    preview box, and the named rule rides in the element's `title`. The prose badge
    is the human half of the same denial. Legal targets keep the existing highlights
-   (`.pad-sidebar-row--terminal-target`, `.tile-preview`). */
+   (`.sidebar-row--terminal-target`, `.tile-preview`). */
 [data-drop-denial] {
   outline: 1px dashed rgb(255 107 107 / 55%);
   outline-offset: -2px;
@@ -2905,42 +2905,42 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
-.pad-sidebar-terminal-pool.is-drop-target {
+.sidebar-terminal-pool.is-drop-target {
   outline: 1px dashed rgb(116 192 252 / 50%);
   outline-offset: -2px;
 }
 
-/* ── Portal widget resize chrome (PortalResize) ────────────────────────────────
-   Resize is canvas-item chrome, so a view widget's frame border is the same grab
+/* ── Portal portal resize chrome (PortalResize) ────────────────────────────────
+   Resize is canvas-item chrome, so a view portal's frame border is the same grab
    zone a terminal's is: same 8px edge bands, same 14px corners, same transparent
    controls (the OS resize cursor React Flow supplies is the whole affordance).
    Kept as its own selectors rather than folded into the terminal block above so
    this section stays append-only; the metrics mirror
-   `.flow-terminal-resize-edge` / `.flow-terminal-resize-corner` exactly. */
-.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge,
-.flow-pad-canvas .react-flow__resize-control.handle.flow-portal-resize-corner {
+   `.canvas-terminal-resize-edge` / `.canvas-terminal-resize-corner` exactly. */
+.canvas .react-flow__resize-control.line.portal-resize-edge,
+.canvas .react-flow__resize-control.handle.portal-resize-corner {
   /*
-   * One band above the widget's shield (z 8), which is itself above the previewed
+   * One band above the portal's shield (z 8), which is itself above the previewed
    * terminal's titlebar and overlays: the border strip wins over everything inside
    * the frame, exactly like an OS window, while the shield keeps the rest of the
-   * body as the extraction grab zone and the strip stays the drag surface.
+   * body as the extraction grab zone and the strip stays the drag ref.
    */
   z-index: 9;
   border-color: transparent;
   background: transparent;
 }
 
-.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.left,
-.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.right {
+.canvas .react-flow__resize-control.line.portal-resize-edge.left,
+.canvas .react-flow__resize-control.line.portal-resize-edge.right {
   width: 8px;
 }
 
-.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.top,
-.flow-pad-canvas .react-flow__resize-control.line.flow-portal-resize-edge.bottom {
+.canvas .react-flow__resize-control.line.portal-resize-edge.top,
+.canvas .react-flow__resize-control.line.portal-resize-edge.bottom {
   height: 8px;
 }
 
-.flow-pad-canvas .react-flow__resize-control.handle.flow-portal-resize-corner {
+.canvas .react-flow__resize-control.handle.portal-resize-corner {
   width: 14px;
   height: 14px;
   border: 0;
@@ -3053,9 +3053,9 @@ button.pad-sidebar-session.is-summary > small {
   white-space: nowrap;
 }
 
-/* The leaf's grab handle inside a composition: the same corner grip a widget's tiles
+/* The leaf's grab handle inside a composition: the same corner grip a portal's tiles
    wear on a canvas, so "grab it here" is one affordance in both renderers. */
-.tiled-leaf__grip {
+.composition-leaf__grip {
   display: grid;
   position: absolute;
   right: 0;
@@ -3070,36 +3070,36 @@ button.pad-sidebar-session.is-summary > small {
   cursor: grab;
 }
 
-.tiled-leaf__grip:hover {
+.composition-leaf__grip:hover {
   color: #dee2e6;
   opacity: 1;
 }
 
-.tiled-leaf__grip:active {
+.composition-leaf__grip:active {
   cursor: grabbing;
 }
 
 /* The source mutates live for the person carrying it too: a leaf whose tile is in
    flight reads as lifted rather than as still sitting there. */
-.tiled-leaf.is-carried {
+.composition-leaf.is-carried {
   opacity: 0.55;
 }
 
-/* A mono widget IS its terminal: no widget frame padding, no name strip, and the
+/* A mono portal IS its terminal: no portal frame padding, no name strip, and the
    preview scaling a composition needs would only shrink the shell. */
-.flow-portal--mono .flow-portal__viewport {
+.portal--mono .portal__viewport {
   padding: 0;
 }
 
-.flow-portal--mono .flow-portal__tile {
+.portal--mono .portal__tile {
   width: 100%;
   height: 100%;
 }
 
-/* Watching a mono widget still shields the terminal body from stray input, but its
+/* Watching a mono portal still shields the terminal body from stray input, but its
    OWN titlebar is this element's chrome — rename and the window controls have to stay
    reachable, so the shield starts below the bar. */
-.flow-portal--mono .flow-portal__shield {
+.portal--mono .portal__shield {
   top: 1.75rem;
 }
 
@@ -3116,37 +3116,37 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* One mark per index row, whatever the row is: terminal, canvas or composition. */
-.pad-sidebar-item-mark {
+.sidebar-item-mark {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
   color: #868e96;
 }
 
-.pad-sidebar-item-mark .mf-icon {
+.sidebar-item-mark .mf-icon {
   width: 0.85rem;
   height: 0.85rem;
 }
 
-.pad-sidebar-row.is-active .pad-sidebar-item-mark {
+.sidebar-row.is-active .sidebar-item-mark {
   color: #91a7ff;
 }
 
 /* Status still reads through the mark: `is-running` tints the terminal's own icon
    green instead of adding a second dot beside it. */
-.pad-sidebar-item-mark.session-state.is-running {
+.sidebar-item-mark.terminal-state.is-running {
   color: #51cf66;
 }
 
 /* The machine row keeps its colour pip (status + identity colour) and adds the
    species mark beside it; both are quiet enough to share the row's leading inset. */
-.workspace-machine-mark {
+.sidebar-machine-mark {
   display: inline-grid;
   place-items: center;
   color: #868e96;
 }
 
-.workspace-session-row > .session-state {
+.sidebar-terminal-row > .terminal-state {
   display: inline-grid;
   place-items: center;
 }
@@ -3263,14 +3263,14 @@ button.pad-sidebar-session.is-summary > small {
    The transition sits on the classes that persist across arming, so the fade runs BOTH
    ways — easing in when a target arms and back out when it disarms — reading as a
    deliberate "stepping aside", never as the held item vanishing. */
-.flow-pad-canvas .react-flow__node.dragging,
-.flow-pad-canvas .react-flow__node.is-carried-away,
+.canvas .react-flow__node.dragging,
+.canvas .react-flow__node.is-carried-away,
 .tile-area .is-carried-away {
   transition: opacity 160ms ease;
 }
 
-.flow-pad-canvas.is-composing .react-flow__node.dragging,
-.flow-pad-canvas .react-flow__node.is-carried-away,
+.canvas.is-composing .react-flow__node.dragging,
+.canvas .react-flow__node.is-carried-away,
 .tile-area .is-carried-away {
   opacity: 0.15;
 }
@@ -3278,7 +3278,7 @@ button.pad-sidebar-session.is-summary > small {
 /* The armed fade SUPERSEDES the in-flight dim rather than multiplying with it: only the
    person holding a tile sees `is-carried` on its leaf, so without this the holder's fade
    would land on a different value than every viewer's. One value for everyone. */
-.tile-area .is-carried-away .tiled-leaf.is-carried {
+.tile-area .is-carried-away .composition-leaf.is-carried {
   opacity: 1;
 }
 
@@ -3288,30 +3288,30 @@ button.pad-sidebar-session.is-summary > small {
    together. Two things make that band actually reach:
 
    THE REACH IS A VARIABLE, because it is declared in the tree's OWN layout px while a
-   widget draws its tree under `transform: scale()`. A fixed length shrinks with the very
-   transform it exists to compensate for; `.flow-portal__preview` doubles it instead.
+   portal draws its tree under `transform: scale()`. A fixed length shrinks with the very
+   transform it exists to compensate for; `.portal__preview` doubles it instead.
 
    A LIVE SEAM IS LIFTED ABOVE THE PANES. The divider and its neighbours are all
    positioned with `z-index: auto`, and the TRAILING neighbour comes later in DOM
-   order — so a pane's own content (a terminal frame, xterm's layers, a widget's
+   order — so a pane's own content (a terminal frame, xterm's layers, a portal's
    engagement shield at z-index 8) painted over the trailing half of the band, right
    through the divider's own box. The seam you saw was not the seam you could grab: the
    live band sat entirely on the leading side, so a press on the visible seam's centre
    landed in the terminal and the resize never started. Only an INTERACTIVE seam claims
-   any of this — a watching widget's dividers are structure, so they keep their tooltip
+   any of this — a watching portal's dividers are structure, so they keep their tooltip
    and never take a pixel from the tile shields they sit between. */
-.tiled-divider,
-.flow-portal__divider {
+.composition-divider,
+.portal-divider {
   position: relative;
 }
 
-.tiled-divider:not(.is-inert),
-.flow-portal__divider:not(.is-inert) {
+.composition-divider:not(.is-inert),
+.portal-divider:not(.is-inert) {
   z-index: 10;
 }
 
-.tiled-divider:not(.is-inert)::after,
-.flow-portal__divider:not(.is-inert)::after {
+.composition-divider:not(.is-inert)::after,
+.portal-divider:not(.is-inert)::after {
   position: absolute;
   content: "";
   inset: calc(-1 * var(--tile-seam-reach, 0.375rem));
@@ -3329,9 +3329,9 @@ button.pad-sidebar-session.is-summary > small {
 }
 
 /* ── Inert plugin contributions (.plugin-placeholder) ─────────────────────────
-   The one surface for a contribution that cannot render: a disabled plugin, an id
+   The one ref for a contribution that cannot render: a disabled plugin, an id
    nothing composed, or a declared panel whose web half is absent. It is deliberately
-   the `.flow-portal__empty` idiom — dashed, muted, centred, filling whatever box it
+   the `.portal__empty` idiom — dashed, muted, centred, filling whatever box it
    is handed — so the same element reads correctly as a workspace pane and as a canvas
    node without a second skin. It NAMES what is missing; a blank tile is the bug this
    block exists to prevent. `data-plugin-state` carries the reason for the gate. */
@@ -3384,7 +3384,7 @@ button.pad-sidebar-session.is-summary > small {
 /*
   "Look at this", received. It sits above the canvas rather than inside it: a spotlight is an
   interruption somebody else caused, so naming the sender and offering the way out (and the
-  way to refuse every future one) is the whole surface.
+  way to refuse every future one) is the whole ref.
 */
 .spotlight-chip {
   position: absolute;
@@ -3424,27 +3424,27 @@ button.pad-sidebar-session.is-summary > small {
 
 /*
  * THE WORKSPACE SKIN — the tile tree's third dress (see `WORKSPACE_TREE_CLASSES`). Same shape
- * as `.tiled-*` and `.flow-portal__*`: the split is a flex box, a pane's stored ratio IS its
+ * as `.composition-*` and `.portal__*`: the split is a flex box, a pane's stored ratio IS its
  * `flex-grow`, and the divider is the seam. The workspace is a composition, so the sidebar
  * seam is the same gesture as any tile seam and needed no code of its own.
  */
-.ws-split {
+.workspace-split {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
 }
 
-.ws-split.is-row {
+.workspace-split.is-row {
   flex-direction: row;
 }
 
-.ws-split.is-column {
+.workspace-split.is-column {
   flex-direction: column;
 }
 
 /* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
-.ws-pane {
+.workspace-pane {
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -3452,47 +3452,47 @@ button.pad-sidebar-session.is-summary > small {
   flex-shrink: 1;
 }
 
-.ws-divider {
+.workspace-divider {
   z-index: 30;
   flex: 0 0 0.35rem;
   background: #23272e;
   touch-action: none;
 }
 
-.ws-divider:hover,
-.ws-divider:active {
+.workspace-divider:hover,
+.workspace-divider:active {
   background: #4c6ef5;
 }
 
-.ws-split.is-row > .ws-divider {
+.workspace-split.is-row > .workspace-divider {
   cursor: col-resize;
 }
 
-.ws-split.is-column > .ws-divider {
+.workspace-split.is-column > .workspace-divider {
   cursor: row-resize;
 }
 
 /* A workspace tree is always the caller's own, so its seams are never inert. */
-.ws-divider.is-inert {
+.workspace-divider.is-inert {
   cursor: default;
 }
 
-/* The Views section's own bar: the count and the session-tree switch the header used to hold. */
-.views-section {
+/* The Views section's own bar: the count and the terminal-tree switch the header used to hold. */
+.index-section {
   display: flex;
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
 }
 
-.views-section-bar {
+.index-section-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 0.25rem 0.2rem;
 }
 
-.views-section-error,
+.index-section-error,
 .plugin-manager-error {
   margin: 0.35rem 0.25rem;
   color: #ffa8a8;

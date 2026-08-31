@@ -71,17 +71,17 @@ function DrawStrokeNodeImpl({ data }: NodeProps): React.ReactElement {
   const path = strokePath(points);
   return (
     <svg
-      className="flow-draw"
+      className="draw"
       width="100%"
       height="100%"
       viewBox={strokeViewBox(points, strokeWidth)}
       preserveAspectRatio="none"
       overflow="visible"
     >
-      {/* Wide invisible twin: the INK is the hit surface (Excalidraw-style), never the
+      {/* Wide invisible twin: the INK is the hit ref (Excalidraw-style), never the
           bounding box — the node wrapper is pointer-transparent until selected (CSS). */}
       <path
-        className="flow-draw__hit"
+        className="draw__hit"
         d={path}
         stroke="transparent"
         strokeWidth={Math.max(strokeWidth * 3, 12)}
@@ -103,16 +103,16 @@ function DrawStrokeNodeImpl({ data }: NodeProps): React.ReactElement {
 
 /**
  * Memoized for the same reason every node renderer is: React Flow re-invokes a node component
- * on every drag frame of the board, and none of these props move with the pointer.
+ * on every drag frame of the canvas, and none of these props move with the pointer.
  */
 export const DrawStrokeNode = memo(DrawStrokeNodeImpl);
 
 /**
  * What this plugin registers in the browser, keyed by the names its manifest declared. It is
- * inert data: `packages/web/src/composition.ts` is the one file that reads it, and the host
+ * inert data: `packages/web/src/assembly.ts` is the one file that reads it, and the host
  * joins it against the server's roster before anything renders.
  *
- * The tool needs no registration: a tool is a NAME the surface owning the toolbar switches
+ * The tool needs no registration: a tool is a NAME the ref owning the toolbar switches
  * on, and the strip reads that name — with its title and its enabled state — off the
  * composition's tool registry, which the manifest already fills.
  */

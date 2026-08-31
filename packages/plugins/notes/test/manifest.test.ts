@@ -1,5 +1,5 @@
 import { PluginManifestSchema } from "@manifold/protocol";
-import { composeRoster } from "@manifold/plugin";
+import { assembleRoster } from "@manifold/plugin";
 import { describe, expect, test } from "bun:test";
 import { notesManifest } from "../src/index.ts";
 
@@ -20,9 +20,9 @@ describe("core.notes manifest", () => {
     expect(notesManifest.contributes.elements).toHaveLength(1);
     expect(element?.type).toBe("text");
     expect(element?.placement).toEqual({
-      groups: ["tileable", "canvas-item"],
+      groups: ["tileable", "canvas_item"],
       guards: [],
-      homed: "on-claim",
+      homed: "on_claim",
     });
   });
 
@@ -31,14 +31,11 @@ describe("core.notes manifest", () => {
     // protocol does not know is a refusal, not an extension point.
     expect(PluginManifestSchema.safeParse(notesManifest).success).toBe(true);
 
-    const composition = composeRoster(
-      [{ manifest: notesManifest, actions: [] }],
-      new Set<string>(),
-    );
-    expect(composition.elements.get("text")?.plugin).toBe("core.notes");
+    const assembly = assembleRoster([{ manifest: notesManifest, actions: [] }], new Set<string>());
+    expect(assembly.elements.get("text")?.plugin).toBe("core.notes");
     // No actions: every note mutation is a scene transaction (D6), so there is no door to
     // declare and nothing for the denial ladder to guard.
-    expect([...composition.actions.keys()]).toEqual([]);
+    expect([...assembly.actions.keys()]).toEqual([]);
   });
 
   test("goes dormant as a named ghost, because a note holds a user's prose", () => {

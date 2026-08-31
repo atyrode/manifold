@@ -27,18 +27,17 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { PlacementSurface } from "@manifold/protocol";
 
 /**
  * THE icon vocabulary. Every glyph in the application is named here once, in manifold's
  * own words, and nowhere else — call sites ask for `<ItemIcon kind="composition" />`, never
  * for a drawing. Three unreconciled systems used to answer that question (unicode box
- * characters in titlebars, hand-drawn SVG paths in the sidebar and session rows, CSS
+ * characters in titlebars, hand-drawn SVG paths in the sidebar and terminal rows, CSS
  * pseudo-element dots in the tree), which is why the same object wore three different marks
  * depending on which renderer painted it.
  *
  * The drawings come from lucide (see docs/decisions/0009-lucide-icons.md). That dependency is
- * an implementation detail of this module: the type surface below is closed, so re-drawing the
+ * an implementation detail of this module: the type ref below is closed, so re-drawing the
  * whole set is a change to one file and no call site.
  *
  * TAXONOMY, deliberately two vocabularies rather than one flat bag of pictures:
@@ -60,13 +59,13 @@ import type { PlacementSurface } from "@manifold/protocol";
 const ICON_SIZE = 16;
 
 /**
- * Matched to the sidebar's existing hand-drawn stroke (`.pad-sidebar svg` used 1.8) so the
+ * Matched to the sidebar's existing hand-drawn stroke (`.sidebar svg` used 1.8) so the
  * sweep changed the drawings without changing the weight of the sidebar.
  */
 const ICON_STROKE = 1.75;
 
 export interface IconProps {
-  /** Overrides the 16px default where a surface owns a different rhythm (cards, rails). */
+  /** Overrides the 16px default where a ref owns a different rhythm (cards, rails). */
   readonly size?: number;
   readonly className?: string;
 }
@@ -93,37 +92,52 @@ function glyph(Glyph: LucideIcon, { size = ICON_SIZE, className }: IconProps): R
  * What an object IS.
  *
  * `terminal`/`canvas`/`composition` are the three species of the one container object, and
- * their marks share a square-surface motif on purpose: a composition of one terminal wears
+ * their marks share a square-frame motif on purpose: a composition of one terminal wears
  * the terminal's mark, and the operator has to be able to read that substitution at 16px.
  * `note` is the fourth item that can hold a tile; `machine` and `folder` are the two things
  * that hold items rather than being one.
  *
- * DATA-PARALLEL TO `ITEM_KINDS`, not derived from it — and the parallel is worth naming
- * because the two tables answer adjacent questions about the same nouns. The floor's
- * `ITEM_KINDS` (`@manifold/protocol` placement.ts) is placement TRAITS, and it is open at the
- * edges: a contributed element kind supplies its own traits through its manifest and places
- * without the engine ever learning its name (ADR 0013 §12). This table is PRESENTATION, and
- * it is closed on purpose: a glyph set that any plugin could extend is a glyph set nobody can
- * re-draw in one edit. A plugin that wants a mark for its own kind therefore passes a node
- * (every chrome surface here takes `icon: ReactNode`) instead of widening this union — so the
- * two tables drift apart by construction rather than by neglect, and neither pretends to be
- * the other's source of truth.
+ * NAMED FOR `ITEM_KINDS`, deliberately — every floor item kind (`@manifold/protocol`
+ * placement.ts) has a glyph under its OWN name here, so a mark is looked up with the kind a
+ * carry already carries and nothing translates between two vocabularies on the way. The
+ * table that used to do that translation said `pad: "canvas"` and `tile: "composition"`
+ * while two other tables said something else, which is the disagreement `verify:axioms`
+ * S12 exists to make impossible.
+ *
+ * It stays CLOSED at the plugin edge: a glyph set any plugin could extend is a glyph set
+ * nobody can re-draw in one edit, so a contributed element kind passes a node (every chrome
+ * component here takes `icon: ReactNode`) or falls back to the note mark it shares with
+ * every other document-borne item.
  */
 export type ItemIconKind =
-  "terminal" | "canvas" | "composition" | "note" | "machine" | "folder" | "folderOpen";
+  | "terminal"
+  | "canvas"
+  | "composition"
+  | "tile"
+  | "panel"
+  | "note"
+  | "machine"
+  | "folder"
+  | "folderOpen";
 
 const ITEM_GLYPHS: Record<ItemIconKind, LucideIcon> = {
   /** A framed prompt — the bare `Terminal` chevron loses its frame beside the other species. */
   terminal: SquareTerminal,
-  /** A dashed, unbounded surface: freeform space, deliberately soft against the composition's structure. */
+  /** A dashed, unbounded plane: freeform space, deliberately soft against the composition's structure. */
   canvas: SquareDashed,
-  /** A surface subdivided into tiles: the discipline itself, drawn. */
+  /** A plane subdivided into tiles: the discipline itself, drawn. */
   composition: LayoutDashboard,
+  /** One tile of a composition wears its container's mark: it is a seat in that structure. */
+  tile: LayoutDashboard,
+  /** A plugin panel is a plane the shell mounts, so it wears the freeform plane's mark. */
+  panel: SquareDashed,
   note: StickyNote,
   machine: Server,
   folder: Folder,
   folderOpen: FolderOpen,
 };
+
+const OPEN_ITEM_GLYPHS: Readonly<Record<string, LucideIcon>> = ITEM_GLYPHS;
 
 export function ItemIcon({
   kind,
@@ -152,9 +166,9 @@ export type ControlKind =
   | "sidebarExpand"
   | "reveal"
   | "discard"
-  | "endSession"
+  | "endTerminal"
   | "restart"
-  | "sessionTree"
+  | "terminalTree"
   | "grip"
   /**
    * Two placements exchange seats. Worn by the drop preview when releasing on the exact
@@ -181,9 +195,9 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   sidebarExpand: PanelLeftOpen,
   reveal: Eye,
   discard: Trash2,
-  endSession: Power,
+  endTerminal: Power,
   restart: RotateCw,
-  sessionTree: ListTree,
+  terminalTree: ListTree,
   grip: GripVertical,
   swap: ArrowLeftRight,
 };
@@ -196,24 +210,21 @@ export function ControlIcon({
 }
 
 /**
- * The placement algebra's surface kinds, read as items. A carry ghost is a picture of the
- * thing being carried, so it must resolve to the SAME mark the object wears at rest — which
- * is why the wire payload carries a surface kind and the renderer looks the drawing up here,
- * instead of a glyph string travelling over the gesture channel.
+ * The mark for an ITEM KIND as a carry names it — the open set: a floor species, or a
+ * contributed element type this build may never have heard of. A carry ghost is a picture
+ * of the thing being carried, so it must resolve to the SAME mark the object wears at rest,
+ * which is why the gesture channel carries a kind and the renderer looks the drawing up
+ * here instead of a glyph travelling over the wire.
+ *
+ * There is no translation table: floor item kinds ARE glyph names (that agreement is what
+ * the lexicon bought), and an unknown kind is a document-borne element, which wears the
+ * note mark.
  */
-const SURFACE_ITEMS: Record<PlacementSurface["kind"], ItemIconKind> = {
-  terminal: "terminal",
-  pad: "canvas",
-  tile: "composition",
-  /** An element surface is an object with no identity outside its document — a note. */
-  element: "note",
-};
-
-export function SurfaceIcon({
+export function CarriedItemIcon({
   kind,
   ...rest
-}: IconProps & { readonly kind: PlacementSurface["kind"] }): React.ReactElement {
-  return glyph(ITEM_GLYPHS[SURFACE_ITEMS[kind]], rest);
+}: IconProps & { readonly kind: string }): React.ReactElement {
+  return glyph(OPEN_ITEM_GLYPHS[kind] ?? StickyNote, rest);
 }
 
 /**

@@ -19,11 +19,11 @@ test("moves local presence immediately without moving remote principals", () => 
   expect(
     projectLocalPresence(
       [
-        { padId: "old", principals: [self] },
-        { padId: "new", principals: [remote] },
+        { containerId: "old", principals: [self] },
+        { containerId: "new", principals: [remote] },
       ],
       self,
       "new",
     ),
-  ).toEqual([{ padId: "new", principals: [remote, self] }]);
+  ).toEqual([{ containerId: "new", principals: [remote, self] }]);
 });

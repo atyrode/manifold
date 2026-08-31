@@ -1,4 +1,4 @@
-import type { SceneElement, ServerMessageBody, SessionInfo } from "@manifold/protocol";
+import type { SceneElement, ServerMessageBody, TerminalInfo } from "@manifold/protocol";
 import { base64ToText, type SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -45,7 +45,7 @@ export function nextMessage<T extends ServerMessageBody["type"]>(
 }
 
 /**
- * Waits for the next tiled-container layout change, resolving with its provenance. Structural
+ * Waits for the next composition layout change, resolving with its provenance. Structural
  * tile writes are server-authored, so a joined renderer must observe them as remote updates.
  */
 export function nextLayoutChange(
@@ -65,8 +65,8 @@ export function nextLayoutChange(
   return promise;
 }
 
-/** Records exactly one session's terminal stream, preserving raw emission sequence numbers. */
-export function captureTerminal(client: SessionClient, sessionId: string): TerminalCapture {
+/** Records exactly one terminal's terminal stream, preserving raw emission sequence numbers. */
+export function captureTerminal(client: SessionClient, terminalId: string): TerminalCapture {
   const capture: TerminalCapture = {
     snapshotSeq: null,
     snapshotText: "",
@@ -79,12 +79,12 @@ export function captureTerminal(client: SessionClient, sessionId: string): Termi
     },
   };
   const offSnapshot = client.on("terminal_snapshot", (message) => {
-    if (message.sessionId !== sessionId) return;
+    if (message.terminalId !== terminalId) return;
     capture.snapshotSeq = message.seq;
     capture.snapshotText = base64ToText(message.data);
   });
   const offOutput = client.on("terminal_output", (message) => {
-    if (message.sessionId !== sessionId) return;
+    if (message.terminalId !== terminalId) return;
     if (capture.snapshotSeq === null) {
       capture.pendingOutputCount += 1;
       return;
@@ -104,14 +104,14 @@ export async function waitForTerminalText(
   await waitFor(() => (capture.snapshotText + capture.outputText).includes(text), timeoutMs, 20);
 }
 
-/** Attaches one client to a session and returns its capture once the snapshot has landed. */
+/** Attaches one client to a terminal and returns its capture once the snapshot has landed. */
 export async function attachedCapture(
   client: SessionClient,
-  sessionId: string,
+  terminalId: string,
   timeoutMs = 10_000,
 ): Promise<TerminalCapture> {
-  const capture = captureTerminal(client, sessionId);
-  client.attachTerminal(sessionId);
+  const capture = captureTerminal(client, terminalId);
+  client.attachTerminal(terminalId);
   try {
     await waitFor(() => capture.snapshotSeq !== null, timeoutMs, 20);
   } catch (error) {
@@ -125,7 +125,7 @@ type PortalElement = Extract<SceneElement, { type: "portal" }>;
 
 /**
  * The one way a canvas references a container — including the composition a terminal lives
- * in, which is why no element carries a session id any more.
+ * in, which is why no element carries a terminal id any more.
  */
 export function portalElement(
   id: string,
@@ -150,7 +150,7 @@ export interface OpenTerminalOptions {
   readonly elementId: string;
   /**
    * The grant the HOME client joins with. It has to be workspace-scoped: the composition a
-   * terminal is born into is server-minted, so no pad-scoped token could ever name it.
+   * terminal is born into is server-minted, so no container-scoped token could ever name it.
    */
   readonly token: string;
   readonly cols?: number;
@@ -161,10 +161,10 @@ export interface OpenTerminalOptions {
 }
 
 export interface OpenedTerminal {
-  readonly session: SessionInfo;
+  readonly terminal: TerminalInfo;
   /**
    * A client on the terminal's home composition. Every terminal message is gated on
-   * `session.padId === peer.padId`, so the canvas that spawned the PTY cannot drive it — and
+   * `terminal.containerId === peer.containerId`, so the canvas that spawned the PTY cannot drive it — and
    * since `SessionClient` pools one socket per (url, token), this second room costs no
    * second connection, exactly as it costs none in the browser.
    */
@@ -181,34 +181,34 @@ export async function openTerminalAt(
   server: TestServer,
   options: OpenTerminalOptions,
 ): Promise<OpenedTerminal> {
-  const session = await canvas.openTerminal({
+  const terminal = await canvas.openTerminal({
     elementId: options.elementId,
     cols: options.cols ?? 80,
     rows: options.rows ?? 24,
     ...(options.machineId === undefined ? {} : { machineId: options.machineId }),
   });
-  if (session.status !== "running") {
-    throw new Error(`terminal ${session.id} was born ${session.status}`);
+  if (terminal.status !== "running") {
+    throw new Error(`terminal ${terminal.id} was born ${terminal.status}`);
   }
   const portalAt = options.portalAt;
   if (portalAt !== undefined) {
     canvas.transact((tx) => {
-      tx.create(portalElement(options.elementId, session.padId, portalAt));
+      tx.create(portalElement(options.elementId, terminal.containerId, portalAt));
     });
     await waitFor(() => canvas.elements.has(options.elementId), 10_000, 20);
   }
   const homeClient = await connect(server, {
-    padId: session.padId,
+    containerId: terminal.containerId,
     token: options.token,
     reconnect: false,
   });
   try {
-    await waitFor(() => homeClient.sessions.get(session.id)?.status === "running", 10_000, 20);
+    await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "running", 10_000, 20);
   } catch (error) {
     homeClient.close();
     throw error;
   }
-  return { session, homeClient };
+  return { terminal, homeClient };
 }
 
 export function textElement(id: string, text: string): SceneElement {
@@ -279,7 +279,7 @@ export function closeClients(clients: readonly (SessionClient | null | undefined
   for (const client of clients) client?.close();
 }
 
-/** Stops every child even when an earlier stop reports an error, then surfaces the first failure. */
+/** Stops every child even when an earlier stop reports an error, then refs the first failure. */
 export async function stopProcesses(
   processes: readonly (TestServer | TestAgent | null | undefined)[],
 ): Promise<void> {

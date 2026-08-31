@@ -3,7 +3,7 @@ import type { PluginDataVersion } from "@manifold/protocol";
 /**
  * PER-PLUGIN STORAGE — the one place a plugin may keep durable data of its own.
  *
- * A plugin never sees the database. It gets a namespaced key-value surface bound to its
+ * A plugin never sees the database. It gets a namespaced key-value ref bound to its
  * manifest id, plus a versioned migration ledger, and that is the whole substrate: two
  * plugins cannot read each other's rows, a purge can erase exactly one plugin's data
  * without knowing anything about its shape, and "which plugin owns this row" is answered by
@@ -15,12 +15,12 @@ import type { PluginDataVersion } from "@manifold/protocol";
  *
  * Values are strings. A plugin that wants structure serializes it (its own schema, its own
  * versioning) exactly as the server's `meta` rows already do: the engine has no business
- * knowing whether a plugin's blob is JSON, and typing this surface as `unknown` would only
+ * knowing whether a plugin's blob is JSON, and typing this ref as `unknown` would only
  * move a `JSON.parse` from the caller into the floor.
  *
- * Wave 1 ships the surface and the ledger. The domain tables that today live in bespoke
+ * Wave 1 ships the ref and the ledger. The domain tables that today live in bespoke
  * SQLite tables owned by floor code (terminal names, machine rows, view state) move onto
- * this surface in the conversion batch — that move is what the version/ledger machinery
+ * this ref in the conversion batch — that move is what the version/ledger machinery
  * below exists for, and why it ships before its first real occupant.
  */
 export interface PluginStorage {
@@ -38,7 +38,7 @@ export interface PluginStorage {
 }
 
 /**
- * The engine's half of the same surface. `set`/`delete` on a `PluginStorage` refuse reserved
+ * The engine's half of the same ref. `set`/`delete` on a `PluginStorage` refuse reserved
  * keys, so a plugin cannot forge its own data version or ledger entry; the engine writes
  * those through here instead. `clear` is the purge verb's hands.
  */
@@ -69,7 +69,7 @@ export const MIGRATION_KEY_PREFIX = `${RESERVED_KEY_PREFIX}migration:`;
 /**
  * A value is one string, bounded so a plugin cannot turn the workspace's database into its
  * own object store by accident. A plugin with genuinely large data has a shape problem that
- * a key-value surface should not paper over.
+ * a key-value ref should not paper over.
  */
 export const MAX_STORAGE_VALUE_BYTES = 64 * 1024;
 
@@ -129,7 +129,7 @@ export function compareDataVersion(left: PluginDataVersion, right: PluginDataVer
  * transformation already run?" is the only question a ledger has to answer.
  *
  * `to` is the data version this migration produces, so a chain can be planned without
- * running anything, and `composeRoster` can refuse a migration claiming to reach past the
+ * running anything, and `assembleRoster` can refuse a migration claiming to reach past the
  * version its own code declares.
  *
  * Synchronous for the reason `PluginStorage` is: a migration is all-or-nothing over a

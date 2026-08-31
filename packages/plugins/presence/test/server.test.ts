@@ -16,7 +16,7 @@ import { presenceHandlers } from "../src/server.ts";
  */
 
 interface Attempt {
-  readonly padId: string;
+  readonly containerId: string;
   readonly principalId: string;
   readonly spotlight: { readonly uri: string; readonly from: string };
 }
@@ -30,7 +30,7 @@ interface Recorder {
 
 /**
  * A host slice under the test's control: which rooms are shared, where the caller holds
- * `scene:write`, whether the target is still there, and what time it is.
+ * `scenes:write`, whether the target is still there, and what time it is.
  */
 function recorder(options: {
   caller: string;
@@ -53,16 +53,17 @@ function recorder(options: {
     ctx: {
       principal: { id: options.caller },
       auth: {
-        allows: (_cap, padId) =>
-          padId !== undefined && (options.writable ?? options.shared ?? []).includes(padId),
+        allows: (_cap, containerId) =>
+          containerId !== undefined &&
+          (options.writable ?? options.shared ?? []).includes(containerId),
       },
       rooms: {
-        sharedPadIds: (left, right) => {
+        sharedContainerIds: (left, right) => {
           sharedAsked.push([left, right]);
           return options.shared ?? [];
         },
-        setSpotlight: (padId, principalId, spotlight) => {
-          attempts.push({ padId, principalId, spotlight });
+        setSpotlight: (containerId, principalId, spotlight) => {
+          attempts.push({ containerId, principalId, spotlight });
           return options.present ?? true;
         },
       },
@@ -71,7 +72,7 @@ function recorder(options: {
   };
 }
 
-const URI = "manifold://pad/p1/element/el-1";
+const URI = "manifold://container/p1/element/el-1";
 
 describe("core.presence.focus", () => {
   test("a target that is not an ADDRESS is refused before anything is looked up", async () => {
@@ -112,8 +113,8 @@ describe("core.presence.focus", () => {
       uri: URI,
     });
 
-    // A read-only spectator watching a board may not steer the people working on it.
-    expect(outcome).toEqual({ refused: "scene:write capability required in a shared room" });
+    // A read-only spectator watching a canvas may not steer the people working on it.
+    expect(outcome).toEqual({ refused: "scenes:write capability required in a shared room" });
     expect(host.attempts).toEqual([]);
   });
 
@@ -133,7 +134,7 @@ describe("core.presence.focus", () => {
     // us both are", so the search must not stop at the first room that fails.
     expect(outcome).toEqual({});
     expect(host.attempts).toEqual([
-      { padId: "writable", principalId: "pr-b", spotlight: { uri: URI, from: "pr-a" } },
+      { containerId: "writable", principalId: "pr-b", spotlight: { uri: URI, from: "pr-a" } },
     ]);
   });
 

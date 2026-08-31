@@ -1,4 +1,4 @@
-import { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
+import { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
 
 /**
  * `core.presence`, browser half — the presence PLANE made visible.
@@ -14,12 +14,12 @@ import { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
  *     per-connection cursor identity, gesture stepping, local-presence normalization. It is
  *     arithmetic over wire payloads — correct for any producer, any renderer — and its parties
  *     may not import each other.
- *   PAINTING REMOTE INTENT belongs to whichever surface is on screen. A cursor, a carry ghost
+ *   PAINTING REMOTE INTENT belongs to whichever ref is on screen. A cursor, a carry ghost
  *     and a selection outline mean nothing until something projects them through a viewport
  *     transform, and only the renderer holds that transform. A view consuming a peer's frame
- *     as part of its own surface is invariant 11, exactly as it consumes its own input.
- *   PRESENCE'S OWN CHROME is this plugin's, and it reaches surfaces as REGISTERED OVERLAYS
- *     (below) rather than as imports: who is here, and the consent surface for a spotlight.
+ *     as part of its own ref is invariant 11, exactly as it consumes its own input.
+ *   PRESENCE'S OWN CHROME is this plugin's, and it reaches refs as REGISTERED OVERLAYS
+ *     (below) rather than as imports: who is here, and the consent ref for a spotlight.
  *
  * Plus the door itself — `core.presence.focus` (`src/index.ts`, server half `src/server.ts`).
  *
@@ -28,21 +28,21 @@ import { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
  * 11's plainest statement, so it is engine mechanism that the shell and every renderer reach
  * through one producer-agnostic function.
  */
-export { deriveRosterRows, type RosterRow } from "./roster-model.ts";
+export { deriveAttendanceRows, type AttendanceRow } from "./attendance-model.ts";
 export { PresenceIsland } from "./presence-island.tsx";
 export { SpotlightChip, useSpotlight, type SpotlightState } from "./spotlight.tsx";
-export { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
+export { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
 
 /**
  * What this plugin registers in the browser. Two overlay slots, both painted over whichever
- * container surface is routed — the canvas today, a composition just as well tomorrow, with no
+ * container ref is routed — the canvas today, a composition just as well tomorrow, with no
  * second copy of either component and no renderer naming this package.
  *
- * Overlays carry no manifest row, exactly as `routes` do not: a slot is not a surface the
- * workspace composes, it is decoration a surface invites. The roster still decides whether
+ * Overlays carry no manifest row, exactly as `routes` do not: a slot is not a ref the
+ * workspace composes, it is decoration a ref invites. The roster still decides whether
  * this plugin is ENABLED, and a disabled plugin's overlay simply does not paint.
  */
 export const presenceWebPlugin = {
   id: "core.presence",
-  overlays: { "pad-roster": PadRosterOverlay, "pad-spotlight": PadSpotlightOverlay },
+  overlays: { "container-roster": AttendanceOverlay, "container-spotlight": SpotlightOverlay },
 };

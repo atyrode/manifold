@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { RosterRow } from "./roster-model.ts";
+import type { AttendanceRow } from "./attendance-model.ts";
 
 /**
- * Who else is here, as one surface — `core.presence`'s roster rendering.
+ * Who else is here, as one ref — `core.presence`'s roster rendering.
  *
  * It reads nothing and asks nobody: the caller hands it rows already derived from wire
- * presence ({@link deriveRosterRows}), so the island is a pure projection of the plane. That
+ * presence ({@link deriveAttendanceRows}), so the island is a pure projection of the plane. That
  * is what lets the same rows drive a canvas island, an SDK assertion and any future host
  * chrome without a second derivation living anywhere.
  */
@@ -17,8 +17,8 @@ function initials(name: string): string {
   return first === undefined ? "?" : first.toUpperCase();
 }
 
-/** One presence surface: avatar stack collapsing into a roster popover. */
-export function PresenceIsland({ rows }: { rows: readonly RosterRow[] }) {
+/** One presence ref: avatar stack collapsing into a roster popover. */
+export function PresenceIsland({ rows }: { rows: readonly AttendanceRow[] }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 

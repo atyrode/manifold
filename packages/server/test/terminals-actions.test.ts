@@ -4,15 +4,15 @@ import {
   ServerToAgentMessageSchema,
   type ActionOutcome,
   type Cap,
-  type Pad,
+  type Container,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, compositionElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
 import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
-import { SessionPeer } from "../src/session-peer.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
@@ -52,7 +52,7 @@ interface TerminalsFixture {
   readonly store: ServerStore;
   readonly auth: AuthService;
   readonly owner: AuthContext;
-  readonly pad: Pad;
+  readonly container: Container;
   readonly broker: TerminalBroker;
   readonly machine: FakeMachine;
   readonly host: PluginHost;
@@ -60,8 +60,8 @@ interface TerminalsFixture {
 }
 
 /**
- * A workspace with one tiled composition, one online machine, and the real composition of
- * plugins the server registers. Tiled because a terminal opened there is homed in the
+ * A workspace with one composition container, one online machine, and the real assembly of
+ * plugins the server registers. A composition because a terminal opened there is homed in the
  * container the opener is already looking at, which keeps the containment questions these
  * cases are about readable.
  */
@@ -71,13 +71,13 @@ function fixture(): TerminalsFixture {
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const owner = auth.authenticate(OWNER_KEY);
-  const pad: Pad = {
+  const container: Container = {
     id: runtime.newId(),
     name: "terminal composition",
     createdAt: runtime.now(),
-    layout: "tiled",
+    discipline: "composition",
   };
-  store.createPad(pad);
+  store.createContainer(container);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(
     store,
@@ -88,8 +88,8 @@ function fixture(): TerminalsFixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   // A terminal is a FLOOR item kind, and nothing here places a contributed element, so the
   // executor needs no traits from the roster.
   broker.setPlacement(
@@ -98,7 +98,7 @@ function fixture(): TerminalsFixture {
       rooms,
       broker,
       runtime,
-      compositionElementTraits(() => []),
+      assemblyElementTraits(() => []),
     ),
   );
   const enrollment = auth.enrollMachine("fake", owner);
@@ -108,16 +108,16 @@ function fixture(): TerminalsFixture {
     machines: { isOnline: () => true },
   });
   const gateway = new SessionGateway(auth, rooms, broker, host, clock, silentLogger, runtime);
-  return { runtime, store, auth, owner, pad, broker, machine, host, gateway };
+  return { runtime, store, auth, owner, container, broker, machine, host, gateway };
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
-function context(base: TerminalsFixture, caps: readonly Cap[], padId?: string): AuthContext {
+function context(base: TerminalsFixture, caps: readonly Cap[], containerId?: string): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
       caps: [...caps],
-      ...(padId === undefined ? {} : { padId }),
+      ...(containerId === undefined ? {} : { containerId }),
     },
     base.owner,
   );
@@ -129,8 +129,14 @@ function context(base: TerminalsFixture, caps: readonly Cap[], padId?: string): 
  * under test: a case about killing must not depend on creation having been allowed.
  */
 function liveTerminal(base: TerminalsFixture, opener: AuthContext = base.owner): string {
-  const peer = new SessionPeer(base.runtime.newId(), new FakeSocket(), opener, base.pad.id, "c1");
-  base.broker.open(peer, {
+  const channel = new SessionChannel(
+    base.runtime.newId(),
+    new FakeSocket(),
+    opener,
+    base.container.id,
+    "c1",
+  );
+  base.broker.open(channel, {
     type: "terminal_open",
     elementId: `open-${base.machine.sent.length}`,
     cols: 80,
@@ -139,9 +145,9 @@ function liveTerminal(base: TerminalsFixture, opener: AuthContext = base.owner):
   });
   const create = base.machine.sent.findLast((message) => message.type === "create");
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
-  base.broker.onCreated(base.machine.machineId, create.sessionId);
+  base.broker.onCreated(base.machine.machineId, create.terminalId);
   base.machine.clear();
-  return create.sessionId;
+  return create.terminalId;
 }
 
 function denial(outcome: ActionOutcome): { rule: string; message: string } {
@@ -150,45 +156,46 @@ function denial(outcome: ActionOutcome): { rule: string; message: string } {
 }
 
 describe("core.terminals doors", () => {
-  test("creation carries terminal:spawn, and an agent's own pad-scoped token holds it", async () => {
+  test("creation carries terminals:spawn, and an agent's own container-scoped token holds it", async () => {
     const base = fixture();
-    const args = { padId: base.pad.id, elementId: "el-1", cols: 80, rows: 24 };
+    const args = { containerId: base.container.id, elementId: "el-1", cols: 80, rows: 24 };
 
     // The cap the broker used to demand for itself is now DECLARED, so the message a caller
     // gets is the ladder's and the authority is published in the roster.
-    const unarmed = context(base, ["pads:read"]);
+    const unarmed = context(base, ["containers:read"]);
     expect(denial(await base.host.dispatch(unarmed, "core.terminals.open", args))).toEqual({
       rule: "forbidden",
-      message: "terminal:spawn capability required",
+      message: "terminals:spawn capability required",
     });
 
-    // The whole reason `open` is `scope: "pad"`: the per-terminal agent identity is a
-    // pad-scoped token carrying terminal:spawn, so a workspace-graded creation door would
-    // have ended agents spawning terminals — which is A2's promise, not a nicety.
-    const agentLike = context(base, ["pads:read", "terminal:spawn"], base.pad.id);
+    // The whole reason `open` is `scope: "container"`: the per-terminal agent identity is a
+    // container-scoped token carrying terminals:spawn, so a workspace-graded creation door
+    // would have ended agents spawning terminals — which is A2's promise, not a nicety.
+    const agentLike = context(base, ["containers:read", "terminals:spawn"], base.container.id);
     expect(await base.host.dispatch(agentLike, "core.terminals.open", args)).toEqual({
       ok: true,
       result: {},
     });
   });
 
-  test("a pad-scoped opener cannot have a terminal born in another container", async () => {
+  test("a container-scoped opener cannot have a terminal born in another container", async () => {
     const base = fixture();
     const elsewhere = base.runtime.newId();
-    base.store.createPad({
+    base.store.createContainer({
       id: elsewhere,
       name: "somebody else's",
       createdAt: base.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
-    const scoped = context(base, ["pads:read", "terminal:spawn"], base.pad.id);
+    const scoped = context(base, ["containers:read", "terminals:spawn"], base.container.id);
 
-    // The scope rung proved the token's cap holds for ITS pad and nothing more; the pad in
-    // the arguments is the handler's obligation, and this is that obligation firing.
+    // The scope rung proved the token's cap holds for ITS container and nothing more; the
+    // container in the arguments is the handler's obligation, and this is that obligation
+    // firing.
     expect(
       denial(
         await base.host.dispatch(scoped, "core.terminals.open", {
-          padId: elsewhere,
+          containerId: elsewhere,
           elementId: "el-elsewhere",
           cols: 80,
           rows: 24,
@@ -199,68 +206,68 @@ describe("core.terminals doors", () => {
 
   test("a live terminal is killable by its controller, not by another writer", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
-    const other = context(base, ["pads:read", "terminal:write"], base.pad.id);
+    const terminalId = liveTerminal(base);
+    const other = context(base, ["containers:read", "terminals:write"], base.container.id);
 
     // The opener holds the lease from the moment the PTY lands, so a second writer in the
     // same container is refused — claiming (`terminal_take`) comes before destroying.
-    expect(denial(await base.host.dispatch(other, "core.terminals.kill", { sessionId }))).toEqual({
+    expect(denial(await base.host.dispatch(other, "core.terminals.kill", { terminalId }))).toEqual({
       rule: "refused",
       message: "controller lease or owner capability required",
     });
-    expect(base.broker.liveSession(sessionId)).not.toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).not.toBeNull();
 
-    // The wildcard sweeps regardless: an owner clearing a terminal whose surface is already
-    // gone must not have to win a lease first.
-    expect(await base.host.dispatch(base.owner, "core.terminals.kill", { sessionId })).toEqual({
+    // The wildcard sweeps regardless: an owner clearing a terminal nothing points at any
+    // more must not have to win a lease first.
+    expect(await base.host.dispatch(base.owner, "core.terminals.kill", { terminalId })).toEqual({
       ok: true,
       result: {},
     });
-    expect(base.broker.liveSession(sessionId)).toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).toBeNull();
 
     // Killing is idempotent by absence, which is what makes it safe to offer twice.
     expect(
-      denial(await base.host.dispatch(base.owner, "core.terminals.kill", { sessionId })),
+      denial(await base.host.dispatch(base.owner, "core.terminals.kill", { terminalId })),
     ).toEqual({ rule: "refused", message: "terminal not found" });
   });
 
-  test("a pad-scoped token cannot reach a terminal in another container", async () => {
+  test("a container-scoped token cannot reach a terminal in another container", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
+    const terminalId = liveTerminal(base);
     const elsewhere = base.runtime.newId();
-    base.store.createPad({
+    base.store.createContainer({
       id: elsewhere,
       name: "another",
       createdAt: base.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
-    const scoped = context(base, ["pads:read", "terminal:write"], elsewhere);
+    const scoped = context(base, ["containers:read", "terminals:write"], elsewhere);
 
     for (const [action, args] of [
-      ["core.terminals.kill", { sessionId }],
-      ["core.terminals.rename", { sessionId, name: "not yours" }],
+      ["core.terminals.kill", { terminalId }],
+      ["core.terminals.rename", { terminalId, name: "not yours" }],
     ] as const) {
       expect(denial(await base.host.dispatch(scoped, action, args))).toEqual({
         rule: "refused",
         message: OUTSIDE_SCOPE_REFUSAL,
       });
     }
-    expect(base.broker.liveSession(sessionId)).not.toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).not.toBeNull();
   });
 
   test("renaming trims, refuses an invisible name, and refuses a name for nothing", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
+    const terminalId = liveTerminal(base);
 
     expect(
       denial(
-        await base.host.dispatch(base.owner, "core.terminals.rename", { sessionId, name: " " }),
+        await base.host.dispatch(base.owner, "core.terminals.rename", { terminalId, name: " " }),
       ),
     ).toEqual({ rule: "refused", message: "name is empty" });
     expect(
       denial(
         await base.host.dispatch(base.owner, "core.terminals.rename", {
-          sessionId: "no-such-session",
+          terminalId: "no-such-terminal",
           name: "build",
         }),
       ),
@@ -268,31 +275,31 @@ describe("core.terminals doors", () => {
 
     expect(
       await base.host.dispatch(base.owner, "core.terminals.rename", {
-        sessionId,
+        terminalId,
         name: "  build  ",
       }),
     ).toEqual({ ok: true, result: {} });
-    expect(base.store.getSession(sessionId)?.name).toBe("build");
+    expect(base.store.getTerminal(terminalId)?.name).toBe("build");
   });
 
-  test("the index is a workspace read; the per-container listing is a pad read", async () => {
+  test("the index is a workspace read; the per-container listing is a container read", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
-    const scoped = context(base, ["pads:read"], base.pad.id);
+    const terminalId = liveTerminal(base);
+    const scoped = context(base, ["containers:read"], base.container.id);
 
-    const index = await base.host.dispatch(base.owner, "core.terminals.list", {});
+    const index = await base.host.dispatch(base.owner, "core.terminals.listAll", {});
     expect(index).toEqual({
       ok: true,
       result: {
         terminals: [
           {
-            id: sessionId,
+            id: terminalId,
             machineId: base.machine.machineId,
             name: null,
-            createdAt: base.store.getSession(sessionId)?.createdAt,
+            createdAt: base.store.getTerminal(terminalId)?.createdAt,
             status: "running",
             exitCode: null,
-            homeId: base.pad.id,
+            homeId: base.container.id,
             // Nothing points at the composition this terminal lives in, which is what
             // `unplaced` MEANS — derived from the containment graph, never stored.
             unplaced: true,
@@ -303,23 +310,23 @@ describe("core.terminals doors", () => {
 
     // The route this replaced refused a scoped token outright; the rung now says so in the
     // published vocabulary instead of in one route's prose.
-    expect(denial(await base.host.dispatch(scoped, "core.terminals.list", {}))).toEqual({
+    expect(denial(await base.host.dispatch(scoped, "core.terminals.listAll", {}))).toEqual({
       rule: "forbidden",
       message: "scoped tokens cannot invoke workspace actions",
     });
 
-    // And the pad-graded read answers the same scoped token — with its own container's rows
-    // and nothing else, exactly as the pad-sessions route filtered them.
-    const own = await base.host.dispatch(scoped, "core.terminals.sessions", {});
+    // And the container-graded read answers the same scoped token — with its own container's
+    // rows and nothing else, exactly as the container-terminals route filtered them.
+    const own = await base.host.dispatch(scoped, "core.terminals.listByContainer", {});
     expect(own).toEqual({
       ok: true,
       result: {
-        sessions: [
+        terminals: [
           {
-            id: sessionId,
-            padId: base.pad.id,
+            id: terminalId,
+            containerId: base.container.id,
             machineId: base.machine.machineId,
-            createdAt: base.store.getSession(sessionId)?.createdAt,
+            createdAt: base.store.getTerminal(terminalId)?.createdAt,
             status: "running",
             exitCode: null,
           },
@@ -328,31 +335,34 @@ describe("core.terminals doors", () => {
     });
 
     const elsewhere = base.runtime.newId();
-    base.store.createPad({
+    base.store.createContainer({
       id: elsewhere,
       name: "another",
       createdAt: base.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
-    const stranger = context(base, ["pads:read"], elsewhere);
-    expect(await base.host.dispatch(stranger, "core.terminals.sessions", {})).toEqual({
+    const stranger = context(base, ["containers:read"], elsewhere);
+    expect(await base.host.dispatch(stranger, "core.terminals.listByContainer", {})).toEqual({
       ok: true,
-      result: { sessions: [] },
+      result: { terminals: [] },
     });
   });
 
   test("a disabled plugin refuses creation and naming, and still allows a kill", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
+    const terminalId = liveTerminal(base);
     expect(await base.host.setEnabled("core.terminals", false, base.owner.principal.id)).toEqual({
       ok: true,
     });
 
     for (const [action, args] of [
-      ["core.terminals.open", { padId: base.pad.id, elementId: "el-1", cols: 80, rows: 24 }],
-      ["core.terminals.rename", { sessionId, name: "build" }],
-      ["core.terminals.list", {}],
-      ["core.terminals.sessions", {}],
+      [
+        "core.terminals.open",
+        { containerId: base.container.id, elementId: "el-1", cols: 80, rows: 24 },
+      ],
+      ["core.terminals.rename", { terminalId, name: "build" }],
+      ["core.terminals.listAll", {}],
+      ["core.terminals.listByContainer", {}],
     ] as const) {
       expect(denial(await base.host.dispatch(base.owner, action, args))).toEqual({
         rule: "plugin_disabled",
@@ -362,11 +372,11 @@ describe("core.terminals doors", () => {
 
     // D12, and the whole reason `cleanup` exists: an administrator turning terminals off
     // must never leave a running PTY nobody is allowed to remove.
-    expect(await base.host.dispatch(base.owner, "core.terminals.kill", { sessionId })).toEqual({
+    expect(await base.host.dispatch(base.owner, "core.terminals.kill", { terminalId })).toEqual({
       ok: true,
       result: {},
     });
-    expect(base.broker.liveSession(sessionId)).toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).toBeNull();
   });
 });
 
@@ -392,7 +402,7 @@ function joinedSocket(base: TerminalsFixture, token: string): { id: string; sock
     JSON.stringify({
       ch: "c1",
       type: "join",
-      padId: base.pad.id,
+      containerId: base.container.id,
       token,
       protocolVersion: PROTOCOL_VERSION,
     }),
@@ -416,7 +426,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   test("a refused creation answers with the ladder's own denial, on the same frame shape", async () => {
     const base = fixture();
     const guest = base.auth.mintToken(
-      { principal: { name: "no spawner", kind: "human" }, caps: ["pads:read"] },
+      { principal: { name: "no spawner", kind: "human" }, caps: ["containers:read"] },
       base.owner,
     );
     const { id, socket } = joinedSocket(base, guest.token);
@@ -436,14 +446,14 @@ describe("session channel terminal verbs speak the ladder", () => {
     // Same frame, same `ref` correlation the SDK's `openTerminal` rejects on — and the
     // message is now the door's, not this transport's invention.
     expect(errors(socket)).toEqual([
-      { code: "forbidden", message: "terminal:spawn capability required", ref: "el-refused" },
+      { code: "forbidden", message: "terminals:spawn capability required", ref: "el-refused" },
     ]);
     expect(base.machine.sent).toEqual([]);
   });
 
   test("disabling terminals refuses new ones on the wire and still kills existing ones", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
+    const terminalId = liveTerminal(base);
     const { id, socket } = joinedSocket(base, OWNER_KEY);
     expect(await base.host.setEnabled("core.terminals", false, base.owner.principal.id)).toEqual({
       ok: true,
@@ -468,10 +478,10 @@ describe("session channel terminal verbs speak the ladder", () => {
     ]);
     expect(base.machine.sent).toEqual([]);
 
-    base.gateway.message(id, JSON.stringify({ ch: "c1", type: "terminal_kill", sessionId }));
+    base.gateway.message(id, JSON.stringify({ ch: "c1", type: "terminal_kill", terminalId }));
     await settled();
 
-    expect(base.broker.liveSession(sessionId)).toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).toBeNull();
   });
 
   test("an allowed creation still reaches the PTY, and a kill still destroys it", async () => {
@@ -496,42 +506,42 @@ describe("session channel terminal verbs speak the ladder", () => {
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(errors(socket)).toEqual([]);
-    base.broker.onCreated(base.machine.machineId, create.sessionId);
-    expect(base.broker.liveSession(create.sessionId)).not.toBeNull();
+    base.broker.onCreated(base.machine.machineId, create.terminalId);
+    expect(base.broker.liveTerminal(create.terminalId)).not.toBeNull();
 
     base.gateway.message(
       id,
-      JSON.stringify({ ch: "c1", type: "terminal_kill", sessionId: create.sessionId }),
+      JSON.stringify({ ch: "c1", type: "terminal_kill", terminalId: create.terminalId }),
     );
     await settled();
 
-    expect(base.broker.liveSession(create.sessionId)).toBeNull();
+    expect(base.broker.liveTerminal(create.terminalId)).toBeNull();
     expect(errors(socket)).toEqual([]);
   });
 
   test("a kill of somebody else's live terminal is refused with the door's reason", async () => {
     const base = fixture();
-    const sessionId = liveTerminal(base);
+    const terminalId = liveTerminal(base);
     const guest = base.auth.mintToken(
       {
         principal: { name: "second writer", kind: "human" },
-        caps: ["pads:read", "terminal:write"],
-        padId: base.pad.id,
+        caps: ["containers:read", "terminals:write"],
+        containerId: base.container.id,
       },
       base.owner,
     );
     const { id, socket } = joinedSocket(base, guest.token);
 
-    base.gateway.message(id, JSON.stringify({ ch: "c1", type: "terminal_kill", sessionId }));
+    base.gateway.message(id, JSON.stringify({ ch: "c1", type: "terminal_kill", terminalId }));
     await settled();
 
     expect(errors(socket)).toEqual([
       {
         code: "conflict",
         message: "controller lease or owner capability required",
-        ref: sessionId,
+        ref: terminalId,
       },
     ]);
-    expect(base.broker.liveSession(sessionId)).not.toBeNull();
+    expect(base.broker.liveTerminal(terminalId)).not.toBeNull();
   });
 });

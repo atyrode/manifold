@@ -25,12 +25,12 @@ const lastSpotlightAt = new Map<string, number>();
 interface PresenceCtx {
   readonly principal: { readonly id: string };
   readonly auth: {
-    allows(cap: "scene:write", padId?: string): boolean;
+    allows(cap: "scenes:write", containerId?: string): boolean;
   };
   readonly rooms: {
-    sharedPadIds(left: string, right: string): readonly string[];
+    sharedContainerIds(left: string, right: string): readonly string[];
     setSpotlight(
-      padId: string,
+      containerId: string,
       principalId: string,
       spotlight: { uri: string; from: string },
     ): boolean;
@@ -48,7 +48,7 @@ type Outcome = { refused: string } | Record<string, never>;
  * - the URI must be an address (`manifold://…`), because a spotlight names a NODE and a
  *   client cannot center on prose;
  * - the two principals must already share a live room AND the caller must hold
- *   `scene:write` there — consent is structural rather than a setting: you may point at
+ *   `scenes:write` there — consent is structural rather than a setting: you may point at
  *   somebody you are working with, in the place you are working together;
  * - one spotlight per pair per two seconds, so the door cannot be turned into a viewport
  *   jammer. A denied attempt does not consume the budget; only an accepted one does.
@@ -63,13 +63,13 @@ export const presenceHandlers = {
     }
     const caller = ctx.principal.id;
     const target = args.targetPrincipalId;
-    const shared = ctx.rooms.sharedPadIds(caller, target);
+    const shared = ctx.rooms.sharedContainerIds(caller, target);
     if (shared.length === 0) {
       return { refused: "no room shared with that principal" };
     }
-    const padId = shared.find((candidate) => ctx.auth.allows("scene:write", candidate));
-    if (padId === undefined) {
-      return { refused: "scene:write capability required in a shared room" };
+    const containerId = shared.find((candidate) => ctx.auth.allows("scenes:write", candidate));
+    if (containerId === undefined) {
+      return { refused: "scenes:write capability required in a shared room" };
     }
 
     const pair = `${caller}\u0000${target}`;
@@ -78,7 +78,7 @@ export const presenceHandlers = {
     if (previous !== undefined && now - previous < SPOTLIGHT_MIN_INTERVAL_MS) {
       return { refused: "throttled" };
     }
-    if (!ctx.rooms.setSpotlight(padId, target, { uri: args.uri, from: caller })) {
+    if (!ctx.rooms.setSpotlight(containerId, target, { uri: args.uri, from: caller })) {
       return { refused: "that principal is no longer in the room" };
     }
     if (lastSpotlightAt.size >= SPOTLIGHT_PAIRS_LIMIT) {

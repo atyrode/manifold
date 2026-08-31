@@ -13,26 +13,27 @@ export {
   enginePluginsActions,
   enginePluginsManifest,
 } from "./builtin.ts";
+export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";
 export {
-  CompositionError,
-  composeRoster,
+  AssemblyError,
+  assembleRoster,
   rosterElementTraits,
-  type Composition,
-  type CompositionAction,
-  type CompositionElement,
-  type CompositionEnv,
-  type CompositionPanel,
-  type CompositionSection,
-  type CompositionTool,
+  type Assembly,
+  type AssemblyAction,
+  type AssemblyElement,
+  type AssemblyEnv,
+  type AssemblyPanel,
+  type AssemblySection,
+  type AssemblyTool,
   type PluginAttribution,
   type PluginDef,
   type PluginStoredData,
-} from "./compose.ts";
+} from "./assemble.ts";
 export {
   LIFECYCLE_TIMEOUT_MS,
   runHook,
-  type CompositionChangedHook,
-  type CompositionDelta,
+  type AssemblyChangedHook,
+  type AssemblyDelta,
   type HookOutcome,
   type LifecycleCtx,
   type LifecycleHook,
@@ -58,24 +59,24 @@ export {
 } from "./storage.ts";
 export { DEFAULT_WORKSPACE_LAYOUT } from "./layout.ts";
 export {
-  buildPadTree,
-  projectPadTreeMove,
-  samePadTreeItems,
+  buildIndexTree,
+  projectIndexMove,
+  sameIndexEntries,
   treeItemId,
-  type PadTreeMove,
-  type PadTreeNode,
-} from "./pad-tree.ts";
+  type IndexMove,
+  type IndexBranch,
+} from "./index-tree.ts";
 export {
   lastSpotlight,
   recordSpotlight,
-  type CompositionFacet,
+  type AssemblyFacet,
   type ElementDocument,
   type ElementHost,
   type ElementProps,
   type ElementTx,
   type HostServices,
-  type PadAuthoringHandle,
-  type PadViewportHandle,
+  type AuthoringHandle,
+  type ViewportHandle,
   type PanelProps,
   type PlaceOutcome,
   type SectionProps,

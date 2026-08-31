@@ -8,10 +8,10 @@ import { useEffect, useMemo, useState } from "react";
  * A link is a NODE reference, so following one is two questions: which node, and where does
  * this browser have to be to show it. The first is `parseManifoldUri`; the second is
  * `host.navigate`, the shell's one door for "put the viewer at this address". An element or a
- * tile additionally asks the mounted pad view to look at it, which is the same host call a
+ * tile additionally asks the mounted container view to look at it, which is the same host call a
  * spotlight uses — one centering path, not a second one for links.
  *
- * A terminal is the one form this route resolves itself: a session's container is not in the
+ * A terminal is the one form this route resolves itself: a terminal's container is not in the
  * URI (a terminal lives wherever it was placed), so the index is consulted and the viewer is
  * taken to the container that holds it.
  */
@@ -25,7 +25,7 @@ import { useEffect, useMemo, useState } from "react";
 type Target =
   | { readonly state: "failed"; readonly reason: string }
   | { readonly state: "open"; readonly uri: string; readonly center: boolean }
-  | { readonly state: "terminal"; readonly sessionId: string };
+  | { readonly state: "terminal"; readonly terminalId: string };
 
 function resolveTarget(rest: string): Target {
   let decoded: string;
@@ -39,15 +39,15 @@ function resolveTarget(rest: string): Target {
     return { state: "failed", reason: `${decoded} is not a manifold:// address.` };
   }
   switch (ref.kind) {
-    case "pad":
+    case "container":
       return { state: "open", uri: decoded, center: false };
     case "element":
     case "tile":
       return { state: "open", uri: decoded, center: true };
     case "terminal":
-      // Every terminal lives in a composition of its own — `homeId`, solo from birth — and
-      // the URI names only the session, so the index is what answers "where is it".
-      return { state: "terminal", sessionId: ref.sessionId };
+      // Every terminal lives in a composition of its own — `containerId`, solo from birth — and
+      // the URI names only the terminal, so the index is what answers "where is it".
+      return { state: "terminal", terminalId: ref.terminalId };
     case "principal":
     case "plugin":
     case "action":
@@ -74,7 +74,7 @@ export function UriRoute({ rest, host }: UriRouteProps): React.ReactElement {
   const target = useMemo(() => resolveTarget(rest), [rest]);
   /*
     The one failure the address cannot predict: a syntactically perfect terminal link whose
-    session is gone. It is stamped with the address it answered for, so a second link
+    terminal is gone. It is stamped with the address it answered for, so a second link
     rendered by this same route starts clean without an effect reaching in to clear it.
   */
   const [lookupFailure, setLookupFailure] = useState<{
@@ -86,22 +86,22 @@ export function UriRoute({ rest, host }: UriRouteProps): React.ReactElement {
     if (target.state === "failed") return;
     if (target.state === "open") {
       host.navigate(target.uri);
-      // Lands immediately when the addressed pad is already on screen; after a route change
+      // Lands immediately when the addressed container is already on screen; after a route change
       // the shell's own navigation owns the centering, because this route is gone by then.
       if (target.center) host.viewport?.centerOn(target.uri);
       return;
     }
     let cancelled = false;
     void host.client
-      .terminals()
+      .allTerminals()
       .then((terminals) => {
         if (cancelled) return;
-        const session = terminals.find((candidate) => candidate.id === target.sessionId);
-        if (session === undefined) {
+        const terminal = terminals.find((candidate) => candidate.id === target.terminalId);
+        if (terminal === undefined) {
           setLookupFailure({ rest, reason: "That terminal no longer exists." });
           return;
         }
-        host.navigate(formatManifoldUri({ kind: "pad", padId: session.homeId }));
+        host.navigate(formatManifoldUri({ kind: "container", containerId: terminal.homeId }));
       })
       .catch((reason: unknown) => {
         if (cancelled) return;

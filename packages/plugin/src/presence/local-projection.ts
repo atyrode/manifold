@@ -1,24 +1,24 @@
-import type { PadPresence, Principal } from "@manifold/protocol";
+import type { Attendance, Principal } from "@manifold/protocol";
 
 /**
- * Projects this browser's route immediately while the cross-pad presence poll catches up.
+ * Projects this browser's route immediately while the cross-container presence poll catches up.
  * Remote principals remain server-owned; only the known local principal is relocated.
  */
 export function projectLocalPresence(
-  rows: readonly PadPresence[],
+  rows: readonly Attendance[],
   self: Principal,
-  padId: string | null,
-): readonly PadPresence[] {
+  containerId: string | null,
+): readonly Attendance[] {
   const withoutSelf = rows
     .map((row) => ({
       ...row,
       principals: row.principals.filter((principal) => principal.id !== self.id),
     }))
     .filter((row) => row.principals.length > 0);
-  if (padId === null) return withoutSelf;
-  const target = withoutSelf.find((row) => row.padId === padId);
-  if (target === undefined) return [...withoutSelf, { padId, principals: [self] }];
+  if (containerId === null) return withoutSelf;
+  const target = withoutSelf.find((row) => row.containerId === containerId);
+  if (target === undefined) return [...withoutSelf, { containerId, principals: [self] }];
   return withoutSelf.map((row) =>
-    row.padId === padId ? { ...row, principals: [...row.principals, self] } : row,
+    row.containerId === containerId ? { ...row, principals: [...row.principals, self] } : row,
   );
 }

@@ -12,7 +12,7 @@ import {
  * ONE socket per tab, ever. A room used to be a socket; now a room is a CHANNEL on a
  * shared connection, and this module owns that connection: dialing, keepalive, reconnect
  * with rejoin-every-channel, frame classification, and demultiplexing. `SessionClient`
- * keeps its per-room surface and becomes a channel handle on top of this.
+ * keeps its per-room ref and becomes a channel handle on top of this.
  *
  * The pool is keyed by (WebSocket factory, url, token). The factory is part of the
  * transport identity on purpose: a test that hands each client its own socket double
@@ -123,15 +123,15 @@ type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "ter
 function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
   const type = Reflect.get(raw, "type");
   const ch = Reflect.get(raw, "ch");
-  const sessionId = Reflect.get(raw, "sessionId");
+  const terminalId = Reflect.get(raw, "terminalId");
   const seq = Reflect.get(raw, "seq");
   const data = Reflect.get(raw, "data");
   return (
     (type === "terminal_output" || type === "terminal_snapshot") &&
     typeof ch === "string" &&
     ch.length > 0 &&
-    typeof sessionId === "string" &&
-    sessionId.length > 0 &&
+    typeof terminalId === "string" &&
+    terminalId.length > 0 &&
     typeof seq === "number" &&
     Number.isInteger(seq) &&
     seq >= 0 &&
@@ -331,7 +331,7 @@ class PooledConnection {
       this.stopKeepalive();
       for (const record of this.channels.values()) record.sent = false;
 
-      // 44xx codes are permanent session rejections. Retrying them cannot succeed without
+      // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
       const terminalClose =
         event.code !== MALFORMED_FRAME_CLOSE_CODE &&
@@ -343,8 +343,8 @@ class PooledConnection {
           null,
           new Error(
             reason === ""
-              ? `session rejected with close code ${event.code}`
-              : `session rejected with close code ${event.code}: ${reason}`,
+              ? `terminal rejected with close code ${event.code}`
+              : `terminal rejected with close code ${event.code}: ${reason}`,
           ),
         );
         return;
@@ -414,7 +414,7 @@ class PooledConnection {
   }
 
   /**
-   * The server dropped ONE room. A 44xx refusal is terminal for that room (the pad is
+   * The server dropped ONE room. A 44xx refusal is terminal for that room (the container is
    * gone, the cap is full) and the handle reports it; anything else — an overflowing
    * queue, state past the transport ceiling — heals exactly as a socket close did, by
    * rejoining on backoff while every other room keeps streaming.

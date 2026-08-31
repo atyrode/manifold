@@ -1,12 +1,12 @@
 import type { TileLayout } from "@manifold/protocol";
 
 /**
- * The workspace a principal gets before it has ever arranged one: sidebar left, pad view
+ * The workspace a principal gets before it has ever arranged one: sidebar left, container view
  * right, at the width the hand-written shell used to hard-code.
  *
- * It is a plain `TileLayout` whose leaves are PANEL surfaces, which is the whole point — the
+ * It is a plain `TileLayout` whose leaves are PANEL refs, which is the whole point — the
  * shell is not a bespoke frame with a resizable sidebar inside it, it is one tile tree
- * rendered by the same component every tiled container uses, and the sidebar is a plugin
+ * rendered by the same component every composition uses, and the sidebar is a plugin
  * panel like any other. Dragging the divider therefore edits ratios, and a plugin can be
  * given half the workspace without the shell learning a new arrangement.
  *
@@ -21,20 +21,20 @@ export const DEFAULT_WORKSPACE_LAYOUT: TileLayout = {
     dir: "row",
     ratios: [0.22, 0.78],
     children: ["ws-sidebar", "ws-main"],
-    surface: null,
+    ref: null,
   },
   "ws-sidebar": {
     id: "ws-sidebar",
     dir: null,
     ratios: [],
     children: [],
-    surface: { kind: "panel", panelId: "core.shell.sidebar" },
+    ref: { kind: "panel", panelId: "core.shell.sidebar" },
   },
   "ws-main": {
     id: "ws-main",
     dir: null,
     ratios: [],
     children: [],
-    surface: { kind: "panel", panelId: "core.shell.pad-view" },
+    ref: { kind: "panel", panelId: "core.shell.container-view" },
   },
 };

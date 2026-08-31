@@ -3,29 +3,24 @@ import {
   resolveCarriedPlacement,
   resolvePlacement,
   type CarriedItem,
-  type ContainerLayout,
+  type ContainerDiscipline,
   type ContainerKind,
-  type ItemKind,
-  type Pad,
+  type Container,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
   type PlacementLookup,
-  type PlacementSurface,
+  type PlacementRef,
   type PluginRoster,
   type SceneElement,
 } from "@manifold/protocol";
-import { rosterElementTraits } from "./compose.ts";
+import { rosterElementTraits } from "./assemble.ts";
+import { ITEM_NOUNS, itemNounPhrase } from "./item-noun.ts";
 import type { PlaceOutcome } from "./host.ts";
 import { useCallback, useMemo } from "react";
-import {
-  carriedPlacement,
-  envelopeSurface,
-  readEnvelope,
-  type ItemEnvelope,
-} from "./item-envelope.ts";
+import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "./item-envelope.ts";
 
 /**
  * THE drop pipeline. Every destination in the application — the canvas pane, a canvas
@@ -49,30 +44,16 @@ import {
  */
 
 /**
- * Prose per FLOOR item kind. The rule is machine-readable; this is what a person reads.
- *
- * Contributed element kinds are absent on purpose: their names belong to their plugins, so
- * a refusal about one reads the TITLE its manifest declared (see `ItemLookup.noun`). A
- * floor table naming them would be the closed table §12 just opened, rebuilt in prose.
+ * Prose per container kind, in the object position of every refusal sentence. It is
+ * DERIVED from the one label vocabulary rather than written again: a container kind is an
+ * item kind seen from the other side, so `canvas` and `composition` take their word from
+ * `ITEM_NOUNS` and only `unplaced` needs a sentence of its own — it is not a place, so it
+ * reads as the one thing it actually is: the index's top level, where an item that nothing
+ * references sits.
  */
-const ITEM_NOUN: Readonly<Record<ItemKind, string>> = {
-  terminal: "A terminal",
-  "canvas-pad": "A canvas",
-  view: "A composition",
-  tile: "A tile",
-  panel: "A panel",
-};
-
-/**
- * Prose per container kind, in the object position of every refusal sentence. `unplaced`
- * is not a place, so it reads as the one thing it actually is: the index's top level,
- * where an item that nothing references sits.
- */
-const CONTAINER_NOUN: Record<ContainerKind, string> = {
-  canvas: "a canvas",
-  view: "a composition",
-  unplaced: "the index",
-};
+function containerNoun(kind: ContainerKind): string {
+  return kind === "unplaced" ? "the index" : `a ${ITEM_NOUNS[kind]}`;
+}
 
 /**
  * State the algebra asks about, answered from what this renderer already holds: the
@@ -82,21 +63,21 @@ const CONTAINER_NOUN: Record<ContainerKind, string> = {
  */
 export interface PlacementLookupInputs {
   /** Every container the sidebar indexes; a drag source is always one of these. */
-  readonly pads: readonly Pad[];
+  readonly containers: readonly Container[];
   /** The container being rendered, whose row may not have arrived yet (a newborn view). */
-  readonly self: { readonly padId: string; readonly layout: ContainerLayout } | null;
+  readonly self: { readonly containerId: string; readonly discipline: ContainerDiscipline } | null;
   /** Live elements of `self`; empty for a composition, which places no elements freely. */
   readonly elements: ReadonlyMap<string, SceneElement>;
   /**
    * The composition each terminal lives in. Every terminal has one from birth, so a miss
-   * here means no such session — a denial, never a terminal without a home.
+   * here means no such terminal — a denial, never a terminal without a home.
    */
   readonly terminalHomes: ReadonlyMap<string, string>;
   /**
    * What a container holds when it holds exactly ONE item. This is the whole of
    * "compositions merge, never nest": placement looks THROUGH a solo composition to its
    * occupant, so a canvas portal onto a lone terminal drags as that terminal. Absent for
-   * a container this surface has no census of, which denies `not_solo` rather than
+   * a container this ref has no census of, which denies `not_solo` rather than
    * merging something it cannot see — conservative, never wrong.
    */
   readonly soloOccupants: ReadonlyMap<string, PlacementItem>;
@@ -120,38 +101,27 @@ export interface ItemLookup extends PlacementLookup {
 }
 
 export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup {
-  const layoutOf = (padId: string): ContainerLayout | null => {
-    if (inputs.self?.padId === padId) return inputs.self.layout;
-    return inputs.pads.find((pad) => pad.id === padId)?.layout ?? null;
+  const disciplineOf = (containerId: string): ContainerDiscipline | null => {
+    if (inputs.self?.containerId === containerId) return inputs.self.discipline;
+    return inputs.containers.find((container) => container.id === containerId)?.discipline ?? null;
   };
   const traits = rosterElementTraits(inputs.roster);
-  // A refusal about a contributed kind says what its PLUGIN calls it: the plugin owns the
-  // noun, the floor owns the grammar. That division is why the engine can render a sentence
-  // about a kind it has never heard of.
-  const nouns = new Map<string, string>();
-  for (const entry of inputs.roster) {
-    for (const element of entry.manifest.contributes.elements) {
-      const noun = element.title.toLowerCase();
-      nouns.set(element.type, `${/^[aeiou]/.test(noun) ? "An" : "A"} ${noun}`);
-    }
-  }
-  const floorNouns: Readonly<Record<string, string>> = ITEM_NOUN;
   return {
-    padLayout: layoutOf,
-    elementItem: (padId, elementId) => {
+    disciplineOf: disciplineOf,
+    elementItem: (containerId, elementId) => {
       // Only this renderer's own document is visible from here. Another container's
       // elements are not knowable without a socket, and no gesture addresses them.
-      if (inputs.self?.padId !== padId) return null;
+      if (inputs.self?.containerId !== containerId) return null;
       const element = inputs.elements.get(elementId);
       if (element === undefined) return null;
       if (element.type === "portal") {
         // A portal places the container it points at, so THAT container's discipline
         // decides the kind — and a portal onto an unknown container places nothing.
         // A terminal on a canvas IS this case: its portal points at its home.
-        const layout = layoutOf(element.containerId);
-        if (layout === null) return null;
+        const discipline = disciplineOf(element.containerId);
+        if (discipline === null) return null;
         return {
-          kind: layout === "canvas" ? "canvas-pad" : "view",
+          kind: discipline,
           containerId: element.containerId,
         };
       }
@@ -160,10 +130,10 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup
       // engine learning a plugin's name (§12).
       return { kind: element.type, containerId: null };
     },
-    terminalHome: (sessionId) => inputs.terminalHomes.get(sessionId) ?? null,
-    soloOccupant: (padId) => inputs.soloOccupants.get(padId) ?? null,
+    terminalHome: (terminalId) => inputs.terminalHomes.get(terminalId) ?? null,
+    soloOccupant: (containerId) => inputs.soloOccupants.get(containerId) ?? null,
     itemTraits: (kind) => traits.get(kind) ?? null,
-    noun: (kind) => floorNouns[kind] ?? nouns.get(kind) ?? "That item",
+    noun: (kind) => itemNounPhrase(kind, inputs.roster),
   };
 }
 
@@ -182,7 +152,7 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
     `${subject} has no place of its own to trade, so it cannot take that spot.`,
   not_displaceable: () =>
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
-  unknown_surface: () => "That item no longer exists.",
+  unknown_ref: () => "That item no longer exists.",
   unknown_container: () => "That container no longer exists.",
 };
 
@@ -197,25 +167,25 @@ export function itemDenialMessage(
   item: PlacementItem,
   lookup: ItemLookup,
 ): string {
-  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), CONTAINER_NOUN[denial.container.kind]);
+  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), containerNoun(denial.container.kind));
 }
 
 /**
- * The same refusal when only the SURFACE is known: the server's answer to a `place` call
- * names a surface, and the caller reading it is the one who made the call, so classifying
- * it against that caller's own lookup is the right resolution. An unclassifiable surface
+ * The same refusal when only the REF is known: the server's answer to a `place` call
+ * names a ref, and the caller reading it is the one who made the call, so classifying
+ * it against that caller's own lookup is the right resolution. An unclassifiable ref
  * says "That item" rather than inventing a species.
  */
 export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
-  const item = placementItemFor(denial.surface, lookup);
+  const item = placementItemFor(denial.ref, lookup);
   const subject = item === null ? "That item" : lookup.noun(item.kind);
-  return DENIAL_PROSE[denial.rule](subject, CONTAINER_NOUN[denial.container.kind]);
+  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container.kind));
 }
 
 /** What a carry would do at one destination: nothing to say, allowed, or refused. */
 export interface ItemDropAssessment {
-  /** The surface that was judged — the live carry's, or a peer's, as asked. */
-  readonly surface: PlacementSurface;
+  /** The ref that was judged — the live carry's, or a peer's, as asked. */
+  readonly ref: PlacementRef;
   /** Null when the placement is legal. */
   readonly denial: PlacementDenial | null;
   /** Prose for the refusal; null when legal. */
@@ -235,10 +205,7 @@ export interface RefusalProps {
 export interface UseItemDropOptions {
   readonly lookup: ItemLookup;
   /** The placement transport: a room client's `place`, or the token-bound HTTP helper. */
-  readonly place: (
-    surface: PlacementSurface,
-    destination: PlacementDestination,
-  ) => Promise<PlaceOutcome>;
+  readonly place: (ref: PlacementRef, destination: PlacementDestination) => Promise<PlaceOutcome>;
   readonly notify: (message: string) => void;
   /** Ran after a placement lands, for callers that refetch rows or pools. */
   readonly onPlaced?: (result: PlaceResponse, envelope: ItemEnvelope) => void;
@@ -252,7 +219,7 @@ export interface ItemDropApi {
    * The carry is a parameter because legality is not the local dragger's privilege: a
    * preview of a PEER's aim has to answer the same question about the peer's carry, or
    * every collaborator paints a legal-looking cue over a drop the server will refuse —
-   * and glides panes for it. What it takes is the WIRE form (surface + item), because a
+   * and glides panes for it. What it takes is the WIRE form (ref + item), because a
    * watcher must never re-resolve an address: the producer already did, and asking a
    * watcher's own index poll the same question is how a legal drag came to read "That
    * item no longer exists." on every browser but the dragger's.
@@ -276,9 +243,9 @@ export function useItemDrop({ lookup, place, notify, onPlaced }: UseItemDropOpti
       const held = carried ?? carriedPlacement();
       if (held === null) return null;
       const resolution = resolveCarriedPlacement(held, destination, lookup);
-      if (resolution.ok) return { surface: held.surface, denial: null, message: null };
+      if (resolution.ok) return { ref: held.ref, denial: null, message: null };
       return {
-        surface: held.surface,
+        ref: held.ref,
         denial: resolution.denial,
         message: itemDenialMessage(resolution.denial, held.item, lookup),
       };
@@ -302,13 +269,13 @@ export function useItemDrop({ lookup, place, notify, onPlaced }: UseItemDropOpti
       const envelope = readEnvelope(transfer);
       // Not one of our drags: staying silent is correct, the gesture was never ours.
       if (envelope === null) return;
-      const surface = envelopeSurface(envelope);
-      const resolution = resolvePlacement(surface, destination, lookup);
+      const ref = envelopeRef(envelope);
+      const resolution = resolvePlacement(ref, destination, lookup);
       if (!resolution.ok) {
         notify(denialMessage(resolution.denial, lookup));
         return;
       }
-      void place(surface, destination)
+      void place(ref, destination)
         .then((outcome) => {
           if (outcome.ok) {
             onPlaced?.(outcome.result, envelope);

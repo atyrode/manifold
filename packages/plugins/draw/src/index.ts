@@ -6,7 +6,7 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * There are no actions because a stroke is a DOCUMENT edit (D6): it is authored on the canvas
  * inside a Yjs transaction, its worst-case merge is two strokes both surviving, and no other
- * principal's authority is consulted. `scene:write` is declared for exactly that reason — the
+ * principal's authority is consulted. `scenes:write` is declared for exactly that reason — the
  * capability a viewer needs to author one — even though nothing here dispatches.
  *
  * Disabling this plugin removes the tool from the strip and turns existing strokes into named
@@ -17,7 +17,7 @@ export const drawManifest: PluginManifest = {
   version: "1.0.0",
   title: "Draw",
   description: "Freehand ink: the draw tool and the stroke element renderer.",
-  capabilities: ["scene:write"],
+  capabilities: ["scenes:write"],
   contributes: {
     panels: [],
     sections: [],

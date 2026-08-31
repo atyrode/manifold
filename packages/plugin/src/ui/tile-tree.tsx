@@ -1,4 +1,4 @@
-import { ROOT_TILE_ID, type TileLayout, type TileNode } from "@manifold/protocol";
+import { ROOT_TILE_ID, type TileLayout, type Tile } from "@manifold/protocol";
 import {
   Fragment,
   useLayoutEffect,
@@ -9,23 +9,23 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { surfaceKey } from "../tile-geometry.ts";
+import { refKey } from "../tile-geometry.ts";
 import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
 
 /**
  * THE tile tree. A composition's layout is one recursive structure, so there is one
- * component that draws it — the fullscreen route and a container widget sitting on a
+ * component that draws it — the fullscreen route and a container portal sitting on a
  * canvas render the same splits, the same ratio dividers and the same leaf frames from
- * the same code. A widget used to carry a parallel read-only mini-tree; it does not
- * any more, which is why an engaged widget's dividers drag exactly as fullscreen's do.
+ * the same code. A portal used to carry a parallel read-only mini-tree; it does not
+ * any more, which is why an engaged portal's dividers drag exactly as fullscreen's do.
  *
  * What a host renderer still owns is the LEAF (`renderLeaf`) — a leaf's chrome is
- * discipline-specific (fullscreen leaves wear the carry grip, a widget's wear the
+ * discipline-specific (fullscreen leaves wear the carry grip, a portal's wear the
  * engagement shield) — and the two policy answers this component takes as arguments:
  *
  *   `classes`     which class family the boxes wear, because both skins are proof
- *                 hooks: `.tiled-*` for the route, `.flow-portal__*` for the widget.
- *   `interactive` whether a divider is a control or just structure. A watching widget
+ *                 hooks: `.composition-*` for the route, `.portal__*` for the portal.
+ *   `interactive` whether a divider is a control or just structure. A watching portal
  *                 paints from a spectator socket whose writes the server refuses, so
  *                 its dividers render (the composition's shape is the information) and
  *                 do nothing: no pointer capture, no cursor, no doc write.
@@ -35,12 +35,12 @@ import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
  * discards and rebuilds boxes across a committed split. That must never tear down an
  * xterm, so a leaf's content is not rendered inside its box at all: each occupied
  * leaf's content renders exactly once through `createPortal` into a STABLE host
- * element keyed by SURFACE IDENTITY (`surfaceKey`), and a layout effect appends that
+ * element keyed by REF IDENTITY (`refKey`), and a layout effect appends that
  * host into whatever box the current tree drew (the `appendChild` move flexlayout and
  * dockview use). React never sees the move; the terminal's DOM, buffer and scrollback
  * ride along untouched. Confirmed by `scripts/verify-tile-drop.ts`'s remount probe.
  *
- * There is deliberately no `scale` argument even though a widget draws its tree under a
+ * There is deliberately no `scale` argument even though a portal draws its tree under a
  * `transform: scale()` (and under the canvas's own zoom). A divider drag is computed as
  * `pointer delta / box size`, and `getBoundingClientRect()` reports the box already
  * transformed, so both terms live in client space and the fraction is scale-invariant.
@@ -62,35 +62,35 @@ export interface TileTreeClasses {
 }
 
 /** The fullscreen route's skin. */
-export const TILED_TREE_CLASSES: TileTreeClasses = {
-  split: "tiled-split",
-  pane: "tiled-pane",
-  divider: "tiled-divider",
-  /** `.tiled-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
+export const COMPOSITION_TREE_CLASSES: TileTreeClasses = {
+  split: "composition-split",
+  pane: "composition-pane",
+  divider: "composition-divider",
+  /** `.composition-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
   dividerPx: 5.6,
 };
 
-/** A container widget's skin, on a canvas. */
+/** A container portal's skin, on a canvas. */
 export const PORTAL_TREE_CLASSES: TileTreeClasses = {
-  split: "flow-portal__split",
-  pane: "flow-portal__slot",
-  divider: "flow-portal__divider",
-  /** `.flow-portal__divider` is `flex: 0 0 0.7rem` = 11.2px at the root font size. */
+  split: "portal-split",
+  pane: "portal__slot",
+  divider: "portal-divider",
+  /** `.portal-divider` is `flex: 0 0 0.7rem` = 11.2px at the root font size. */
   dividerPx: 11.2,
 };
 
 /**
  * The WORKSPACE's own skin. The shell is a composition too (D2): a principal's layout is a
  * tile tree whose leaves are plugin panels, drawn by this same component — so the sidebar
- * and the pad view are panes and the seam between them is an ordinary divider, not a
+ * and the container view are panes and the seam between them is an ordinary divider, not a
  * bespoke resize handle. Third skin, same shape as the two above; nothing about the tree's
  * drag, seam or ratio behaviour differs here.
  */
 export const WORKSPACE_TREE_CLASSES: TileTreeClasses = {
-  split: "ws-split",
-  pane: "ws-pane",
-  divider: "ws-divider",
-  /** `.ws-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
+  split: "workspace-split",
+  pane: "workspace-pane",
+  divider: "workspace-divider",
+  /** `.workspace-divider` is `flex: 0 0 0.35rem` = 5.6px at the root font size. */
   dividerPx: 5.6,
 };
 
@@ -100,12 +100,12 @@ export interface TileTreeProps {
   /** False renders dividers as structure only — see the module note. */
   readonly interactive: boolean;
   readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
-  readonly renderLeaf: (node: TileNode) => ReactNode;
+  readonly renderLeaf: (node: Tile) => ReactNode;
 }
 
-/** Leaves in tree order, so duplicate-surface suffixes stay stable across renders. */
-function leafNodesInOrder(layout: TileLayout): readonly TileNode[] {
-  const out: TileNode[] = [];
+/** Leaves in tree order, so duplicate-ref suffixes stay stable across renders. */
+function leafNodesInOrder(layout: TileLayout): readonly Tile[] {
+  const out: Tile[] = [];
   const walk = (tileId: string): void => {
     const node = layout[tileId];
     if (node === undefined) return;
@@ -128,13 +128,13 @@ export function TileTree({
 }: TileTreeProps): ReactNode {
   /** The outermost box the structure pass drew; content targeting is scoped to it. */
   const rootRef = useRef<HTMLElement | null>(null);
-  /** Stable content hosts by surface identity; created once, MOVED between boxes. */
+  /** Stable content hosts by ref identity; created once, MOVED between boxes. */
   const [hosts] = useState(() => new Map<string, HTMLDivElement>());
 
   const seen = new Map<string, number>();
   const keyed = leafNodesInOrder(layout).map((node) => {
     // An empty leaf has no identity to follow; its (contentless) hint may remount.
-    const base = surfaceKey(node.surface) ?? `empty:${node.id}`;
+    const base = refKey(node.ref) ?? `empty:${node.id}`;
     const nth = seen.get(base) ?? 0;
     seen.set(base, nth + 1);
     return { node, key: nth === 0 ? base : `${base}#${String(nth)}` };
@@ -222,7 +222,7 @@ export function TileTree({
 }
 
 interface TileSplitProps {
-  readonly node: TileNode;
+  readonly node: Tile;
   readonly classes: TileTreeClasses;
   readonly interactive: boolean;
   readonly renderChild: (tileId: string) => ReactNode;
@@ -264,8 +264,8 @@ function TileSplit({
       ratios: node.ratios,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    // Stopped so the surface HOLDING this tree cannot claim the press: on a canvas a
-    // widget's ancestors would otherwise start a node drag or a selection under it.
+    // Stopped so the ref HOLDING this tree cannot claim the press: on a canvas a
+    // portal's ancestors would otherwise start a node drag or a selection under it.
     event.stopPropagation();
     event.preventDefault();
   };
@@ -318,7 +318,7 @@ function TileSplit({
       {node.children.map((childId, index) => (
         // Keyed by tile id, never by position: removing a leaf must not shift its
         // siblings onto each other's keys — and the CONTENT is immune either way,
-        // seated by surface identity from the portal list above.
+        // seated by ref identity from the portal list above.
         <Fragment key={childId}>
           {index === 0 ? null : (
             <div

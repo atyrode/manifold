@@ -20,7 +20,7 @@ const COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#db2777"
 export interface AuthContext {
   principal: Principal;
   caps: readonly Cap[];
-  padScope: string | null;
+  containerScope: string | null;
   isRoot: boolean;
   tokenId: string | null;
 }
@@ -70,7 +70,7 @@ function secretsEqual(left: string, right: string): boolean {
 export class AuthService {
   readonly ownerPrincipal: Principal;
   private readonly revokedListeners = new Set<
-    (principalId: string, padId: string | null) => void
+    (principalId: string, containerId: string | null) => void
   >();
 
   constructor(
@@ -102,7 +102,7 @@ export class AuthService {
       return {
         principal: this.ownerPrincipal,
         caps: ["*"],
-        padScope: null,
+        containerScope: null,
         isRoot: true,
         tokenId: null,
       };
@@ -116,7 +116,7 @@ export class AuthService {
     return {
       principal,
       caps: token.caps,
-      padScope: token.padId,
+      containerScope: token.containerId,
       isRoot: token.caps.includes("*"),
       tokenId: token.id,
     };
@@ -131,16 +131,20 @@ export class AuthService {
   }
 
   /**
-   * Checks a capability and, when supplied, enforces the token's pad scope.
+   * Checks a capability and, when supplied, enforces the token's container scope.
    *
    * THE AUTHORITY SEAM. This one call is where the permission waterfall lands (ADR 0011):
-   * flat caps plus an optional pad scope are the degenerate case of grants on the node tree,
-   * so the evaluator replaces this body and every caller — including the action door's
+   * flat caps plus an optional container scope are the degenerate case of grants on the node
+   * tree, so the evaluator replaces this body and every caller — including the action door's
    * declared-cap intersection — keeps asking the same question.
    */
-  allows(context: AuthContext, cap: Exclude<Cap, "*">, padId?: string): boolean {
+  allows(context: AuthContext, cap: Exclude<Cap, "*">, containerId?: string): boolean {
     if (!hasCap(context.caps, cap)) return false;
-    if (padId !== undefined && context.padScope !== null && context.padScope !== padId)
+    if (
+      containerId !== undefined &&
+      context.containerScope !== null &&
+      context.containerScope !== containerId
+    )
       return false;
     return true;
   }
@@ -162,7 +166,7 @@ export class AuthService {
   private persistToken(
     principalId: string,
     caps: readonly Cap[],
-    padId: string | null,
+    containerId: string | null,
     actorId: string | null,
   ): { raw: string; record: TokenRecord } {
     const raw = randomSecret();
@@ -172,17 +176,17 @@ export class AuthService {
       principalId,
       mintedBy: actorId,
       caps: [...caps],
-      padId,
+      containerId,
       createdAt: this.runtime.now(),
       revokedAt: null,
     };
     return this.store.transaction(() => {
       this.store.createToken(record);
-      this.store.addEvent(padId, this.runtime.now(), actorId, "token_minted", {
+      this.store.addEvent(containerId, this.runtime.now(), actorId, "token_minted", {
         tokenId: record.id,
         subjectPrincipalId: principalId,
         caps: [...caps],
-        padId,
+        containerId,
       });
       return { raw, record };
     });
@@ -193,10 +197,10 @@ export class AuthService {
     if (!actor.isRoot) throw new ServiceError("forbidden", "root capability required");
     const principal = this.createPrincipal(input);
     const minted = this.persistToken(principal.id, ["*"], null, actor.principal.id);
-    return { token: minted.raw, principal, caps: ["*"], padId: null };
+    return { token: minted.raw, principal, caps: ["*"], containerId: null };
   }
 
-  /** Mints only authority no broader than the minter's caps and optional pad scope. */
+  /** Mints only authority no broader than the minter's caps and optional container scope. */
   mintToken(input: MintTokenRequest, minter: AuthContext): TokenGrant {
     const parsed = MintTokenRequestSchema.parse(input);
     if (!this.allows(minter, "tokens:mint")) {
@@ -211,18 +215,18 @@ export class AuthService {
       }
     }
     if (
-      minter.padScope !== null &&
-      parsed.padId !== undefined &&
-      parsed.padId !== minter.padScope
+      minter.containerScope !== null &&
+      parsed.containerId !== undefined &&
+      parsed.containerId !== minter.containerScope
     ) {
-      throw new ServiceError("forbidden", "cannot widen pad scope");
+      throw new ServiceError("forbidden", "cannot widen container scope");
     }
-    const padId = minter.padScope ?? parsed.padId ?? null;
-    if (padId !== null && parsed.caps.includes("*")) {
-      throw new ServiceError("forbidden", "wildcard authority cannot be pad-scoped");
+    const containerId = minter.containerScope ?? parsed.containerId ?? null;
+    if (containerId !== null && parsed.caps.includes("*")) {
+      throw new ServiceError("forbidden", "wildcard authority cannot be container-scoped");
     }
-    if (padId !== null && this.store.getPad(padId) === null) {
-      throw new ServiceError("not_found", "pad not found");
+    if (containerId !== null && this.store.getContainer(containerId) === null) {
+      throw new ServiceError("not_found", "container not found");
     }
 
     let principal: Principal;
@@ -243,23 +247,23 @@ export class AuthService {
       throw new ServiceError("conflict", "token principal is missing");
     }
 
-    const minted = this.persistToken(principal.id, parsed.caps, padId, minter.principal.id);
-    return { token: minted.raw, principal, caps: [...parsed.caps], padId };
+    const minted = this.persistToken(principal.id, parsed.caps, containerId, minter.principal.id);
+    return { token: minted.raw, principal, caps: [...parsed.caps], containerId };
   }
 
-  /** Mints the pad-scoped agent identity injected into a newly created terminal. */
-  mintSessionAgentToken(sessionId: string, padId: string, actorId: string): TokenGrant {
+  /** Mints the container-scoped agent identity injected into a newly created terminal. */
+  mintSessionAgentToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
     const id = this.runtime.newId();
     const principal: Principal = {
       id,
       kind: "agent",
-      name: sessionId.slice(0, 64),
+      name: terminalId.slice(0, 64),
       color: stableColor(id),
     };
     this.store.createPrincipal(principal, this.runtime.now());
-    const caps: Cap[] = ["pads:read", "scene:write", "terminal:spawn", "terminal:write"];
-    const minted = this.persistToken(principal.id, caps, padId, actorId);
-    return { token: minted.raw, principal, caps, padId };
+    const caps: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
+    const minted = this.persistToken(principal.id, caps, containerId, actorId);
+    return { token: minted.raw, principal, caps, containerId };
   }
 
   private persistMachine(name: string, actorId: string): MachineEnrollment {
@@ -279,7 +283,7 @@ export class AuthService {
 
   /** Enrolls a machine only for an unscoped principal holding `machines:mint`. */
   enrollMachine(name: string, actor: AuthContext): MachineEnrollment {
-    if (!this.allows(actor, "machines:mint") || actor.padScope !== null) {
+    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
       throw new ServiceError("forbidden", "machines:mint capability required");
     }
     return this.persistMachine(name, actor.principal.id);
@@ -337,7 +341,7 @@ export class AuthService {
     return count;
   }
 
-  /** Revokes only identities the actor created (or itself), without widening pad scope. */
+  /** Revokes only identities the actor created (or itself), without widening container scope. */
   revokePrincipal(principalId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
@@ -351,24 +355,24 @@ export class AuthService {
     }
     if (actor.isRoot) return this.revokeIssuedPrincipal(principalId, actor.principal.id);
 
-    const padId = actor.padScope;
+    const containerId = actor.containerScope;
     const at = this.runtime.now();
     const count =
-      padId === null
+      containerId === null
         ? this.store.revokeTokensByPrincipal(principalId, at)
-        : this.store.revokeTokensByPrincipal(principalId, at, padId);
-    this.store.addEvent(padId, at, actor.principal.id, "token_revoked", {
+        : this.store.revokeTokensByPrincipal(principalId, at, containerId);
+    this.store.addEvent(containerId, at, actor.principal.id, "token_revoked", {
       subjectPrincipalId: principalId,
       count,
     });
     if (count > 0) {
-      for (const listener of [...this.revokedListeners]) listener(principalId, padId);
+      for (const listener of [...this.revokedListeners]) listener(principalId, containerId);
     }
     return count;
   }
 
   /** Registers a synchronous live-socket fence invoked after durable revocation commits. */
-  onRevoked(listener: (principalId: string, padId: string | null) => void): () => void {
+  onRevoked(listener: (principalId: string, containerId: string | null) => void): () => void {
     this.revokedListeners.add(listener);
     return () => {
       this.revokedListeners.delete(listener);

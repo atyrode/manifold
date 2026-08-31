@@ -18,7 +18,7 @@
     "@manifold-plugin/presence": "workspace:*",
     "@manifold-plugin/terminals": "workspace:*",
     "@manifold-plugin/uri": "workspace:*",
-    "@manifold-plugin/views": "workspace:*",
+    "@manifold-plugin/index": "workspace:*",
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",

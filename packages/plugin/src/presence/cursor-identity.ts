@@ -41,7 +41,7 @@ export function recordRemoteCursor(
   return true;
 }
 
-interface RosterConnections {
+interface AttendanceConnections {
   readonly principal: { readonly id: string };
   readonly connIds: readonly string[];
 }
@@ -54,7 +54,7 @@ interface RosterConnections {
  */
 export function pruneRemoteCursors(
   cursors: Map<string, RemoteCursor>,
-  roster: Iterable<RosterConnections>,
+  roster: Iterable<AttendanceConnections>,
 ): boolean {
   const live = new Set<string>();
   for (const state of roster) {
@@ -84,7 +84,7 @@ export function cursorLabel(name: string, connId: string, connIds: readonly stri
 /**
  * Advances every cursor one animation frame. `epsilon` is the snap threshold in the
  * room's OWN coordinate units and is required, not defaulted: a canvas room carries
- * scene pixels while a tiled room carries view-root fractions, and the pixel threshold
+ * scene pixels while a composition room carries view-root fractions, and the pixel threshold
  * applied to fractions would snap on every frame instead of easing.
  */
 export function stepRemoteCursors(
@@ -129,10 +129,10 @@ function clampUnit(value: number): number {
  * Projects a client point into unit-square fractions of a box.
  *
  * A container's coordinate space is decided by its discipline. Canvas rooms carry
- * React-Flow coordinates, which only mean anything against a shared scene. Tiled rooms
+ * React-Flow coordinates, which only mean anything against a shared scene. Composition rooms
  * have no such scene, but they do have a shared layout tree: tile ratios are CRDT state,
  * so a fraction of the view root resolves to the same tile for every viewer whatever
- * their window size. Hence fractions, not pixels, on the wire for tiled rooms.
+ * their window size. Hence fractions, not pixels, on the wire for composition rooms.
  *
  * A zero-sized box — a view that has not laid out yet — collapses to the origin instead
  * of dividing by zero.

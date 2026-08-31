@@ -100,7 +100,7 @@ describe("remote gestures", () => {
       x: 0,
       y: 0,
       carry: {
-        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        ref: { kind: "tile", containerId: "view", tileId: "leaf" },
         item: TILE_ITEM,
         label: "build",
       },
@@ -113,7 +113,7 @@ describe("remote gestures", () => {
     expect(state.get("leaf")).toMatchObject({
       kind: "carry",
       carry: {
-        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        ref: { kind: "tile", containerId: "view", tileId: "leaf" },
         item: TILE_ITEM,
         label: "build",
       },
@@ -135,7 +135,7 @@ describe("remote gestures", () => {
       x: 0,
       y: 0,
       carry: {
-        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        ref: { kind: "tile", containerId: "view", tileId: "leaf" },
         item: TILE_ITEM,
         label: "build",
         aim: { containerId: "view", tileId: "t1", edge: "right", action: "place" },
@@ -147,14 +147,14 @@ describe("remote gestures", () => {
     expect(expireGestures(state, AIM_TTL_MS)).toBe(false);
     expect(state.get("leaf")?.carry?.aim).toBeDefined();
 
-    // Past it, the preview claim is retired — the carry, its surface and its label stay,
+    // Past it, the preview claim is retired — the carry, its ref and its label stay,
     // so the peer's ghost keeps riding the geometry TTL. A lost end frame must not leave
     // every viewer's composition visibly squeezed for three seconds.
     expect(expireGestures(state, AIM_TTL_MS + 1)).toBe(true);
     const swept = state.get("leaf");
     expect(swept?.carry).toEqual({
-      surface: { kind: "tile", containerId: "view", tileId: "leaf" },
-      // The ITEM survives the aim sweep with the surface: what is carried did not change,
+      ref: { kind: "tile", containerId: "view", tileId: "leaf" },
+      // The ITEM survives the aim sweep with the ref: what is carried did not change,
       // only where it was pointing.
       item: TILE_ITEM,
       label: "build",

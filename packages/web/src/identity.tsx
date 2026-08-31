@@ -133,9 +133,9 @@ export function IdentityGate({ children }: IdentityGateProps) {
             </div>
           </fieldset>
           {/*
-            Stays an inline form error rather than a toast, for two reasons that both
+            Stays an inline form error rather than a notice, for two reasons that both
             hold. Structurally: the gate renders BEFORE the workspace, so there is no
-            ToastProvider above it — the toast layer is mounted inside the authenticated
+            NoticeProvider above it — the notice layer is mounted inside the authenticated
             application. Substantively: this is field-level validation feedback about the
             submission the user is looking at, and it belongs beside that submit button,
             not in a corner of a screen with nothing else on it.

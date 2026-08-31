@@ -1,8 +1,8 @@
 import type {
   CarriedItem,
-  ContainerLayout,
+  ContainerDiscipline,
   PlacementItem,
-  PlacementSurface,
+  PlacementRef,
 } from "@manifold/protocol";
 
 /**
@@ -13,12 +13,12 @@ import type {
  * by hand at every drop target — which is why a container dropped on bare canvas and a
  * terminal dropped on a composition row were silent no-ops: nothing structurally forced a
  * target to handle a kind it had not been written for. Here the payload names its kind,
- * and `envelopeSurface` turns it into the protocol's `PlacementSurface`, so a target
+ * and `envelopeRef` turns it into the protocol's `PlacementRef`, so a target
  * consults ONE policy (`resolvePlacement`) instead of growing a branch per source.
  *
  * The kinds follow the product vocabulary: a view is the genus, a CANVAS is the freeform
- * species and a COMPOSITION the tiled one. Both are the same stored object (`Pad`), so
- * both map to the same surface form — the discipline is carried in the kind because a
+ * species and a COMPOSITION the composed one. Both are the same stored object (`Container`), so
+ * both map to the same ref form — the discipline is carried in the kind because a
  * drag preview has to answer "is this tileable here?" without a round trip.
  *
  * One thing is NOT a placement and deliberately keeps its own mime: headless-tree's
@@ -37,21 +37,26 @@ export const ITEM_MIME = "application/x-manifold-item";
 /**
  * What is being carried. `terminal`, `canvas` and `composition` name an ITEM by identity;
  * `tile` and `element` name an existing PLACEMENT of one, which is how a single mirror of
- * a multi-placed session — or a note, which has no identity outside its document — becomes
+ * a multi-placed terminal — or a note, which has no identity outside its document — becomes
  * addressable.
  */
 export type ItemEnvelope =
-  | { readonly kind: "terminal"; readonly sessionId: string }
-  | { readonly kind: "canvas"; readonly padId: string }
-  | { readonly kind: "composition"; readonly padId: string }
+  | { readonly kind: "terminal"; readonly terminalId: string }
+  | { readonly kind: "canvas"; readonly containerId: string }
+  | { readonly kind: "composition"; readonly containerId: string }
   | { readonly kind: "tile"; readonly containerId: string; readonly tileId: string }
-  | { readonly kind: "element"; readonly padId: string; readonly elementId: string };
+  | { readonly kind: "element"; readonly containerId: string; readonly elementId: string };
 
 export type ItemEnvelopeKind = ItemEnvelope["kind"];
 
 /** A container's envelope, with its discipline decided by the row the drag came from. */
-export function containerEnvelope(padId: string, layout: ContainerLayout): ItemEnvelope {
-  return layout === "tiled" ? { kind: "composition", padId } : { kind: "canvas", padId };
+export function containerEnvelope(
+  containerId: string,
+  discipline: ContainerDiscipline,
+): ItemEnvelope {
+  return discipline === "composition"
+    ? { kind: "composition", containerId }
+    : { kind: "canvas", containerId };
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -68,16 +73,16 @@ export function validateEnvelope(value: unknown): ItemEnvelope | null {
   const record = value as Record<string, unknown>;
   switch (record["kind"]) {
     case "terminal": {
-      const sessionId = nonEmptyString(record["sessionId"]);
-      return sessionId === null ? null : { kind: "terminal", sessionId };
+      const terminalId = nonEmptyString(record["terminalId"]);
+      return terminalId === null ? null : { kind: "terminal", terminalId };
     }
     case "canvas": {
-      const padId = nonEmptyString(record["padId"]);
-      return padId === null ? null : { kind: "canvas", padId };
+      const containerId = nonEmptyString(record["containerId"]);
+      return containerId === null ? null : { kind: "canvas", containerId };
     }
     case "composition": {
-      const padId = nonEmptyString(record["padId"]);
-      return padId === null ? null : { kind: "composition", padId };
+      const containerId = nonEmptyString(record["containerId"]);
+      return containerId === null ? null : { kind: "composition", containerId };
     }
     case "tile": {
       const containerId = nonEmptyString(record["containerId"]);
@@ -85,9 +90,11 @@ export function validateEnvelope(value: unknown): ItemEnvelope | null {
       return containerId === null || tileId === null ? null : { kind: "tile", containerId, tileId };
     }
     case "element": {
-      const padId = nonEmptyString(record["padId"]);
+      const containerId = nonEmptyString(record["containerId"]);
       const elementId = nonEmptyString(record["elementId"]);
-      return padId === null || elementId === null ? null : { kind: "element", padId, elementId };
+      return containerId === null || elementId === null
+        ? null
+        : { kind: "element", containerId, elementId };
     }
     default:
       return null;
@@ -151,7 +158,7 @@ function watchDragEnd(): void {
  */
 export function beginCarry(envelope: ItemEnvelope, item: PlacementItem): void {
   watchDragEnd();
-  carried = { envelope, surface: envelopeSurface(envelope), item };
+  carried = { envelope, ref: envelopeRef(envelope), item };
 }
 
 export function endCarry(): void {
@@ -165,7 +172,7 @@ export function carriedItem(): ItemEnvelope | null {
 
 /** What is in hand, resolved — the local half of what a peer receives on the wire. */
 export function carriedPlacement(): CarriedItem | null {
-  return carried === null ? null : { surface: carried.surface, item: carried.item };
+  return carried === null ? null : { ref: carried.ref, item: carried.item };
 }
 
 /**
@@ -178,7 +185,7 @@ export function sealEnvelope(envelope: ItemEnvelope, item: PlacementItem): strin
   return JSON.stringify(envelope);
 }
 
-/** The minimal surface of a drag event this module needs; React's synthetic event fits. */
+/** The minimal ref of a drag event this module needs; React's synthetic event fits. */
 interface TransferEvent {
   readonly dataTransfer: DataTransfer;
 }
@@ -209,21 +216,21 @@ export function readEnvelope(transfer: DataTransfer | null): ItemEnvelope | null
 }
 
 /**
- * The envelope as the protocol sees it. Both container kinds collapse to one surface form
+ * The envelope as the protocol sees it. Both container kinds collapse to one ref form
  * on purpose: the server resolves a container's discipline from its own row, so a client
  * can never assert a discipline it does not have.
  */
-export function envelopeSurface(envelope: ItemEnvelope): PlacementSurface {
+export function envelopeRef(envelope: ItemEnvelope): PlacementRef {
   switch (envelope.kind) {
     case "terminal":
-      return { kind: "terminal", sessionId: envelope.sessionId };
+      return { kind: "terminal", terminalId: envelope.terminalId };
     case "canvas":
     case "composition":
-      return { kind: "pad", padId: envelope.padId };
+      return { kind: "container", containerId: envelope.containerId };
     case "tile":
       return { kind: "tile", containerId: envelope.containerId, tileId: envelope.tileId };
     case "element":
-      return { kind: "element", padId: envelope.padId, elementId: envelope.elementId };
+      return { kind: "element", containerId: envelope.containerId, elementId: envelope.elementId };
     default: {
       const exhaustive: never = envelope;
       return exhaustive;

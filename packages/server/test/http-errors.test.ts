@@ -47,8 +47,8 @@ function startFixture(runtime: RuntimeDeps, logger: Logger): RunningServer {
  * The index's creation door, which mints an id: the one request whose handler reaches the
  * runtime, and therefore the one that can be made to fail there.
  */
-function createPadRequest(running: RunningServer, body: unknown): Request {
-  return new Request(`${running.publicUrl}/api/actions/core.views.createPad`, {
+function createContainerRequest(running: RunningServer, body: unknown): Request {
+  return new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${OWNER_KEY}`,
@@ -79,7 +79,7 @@ describe("HTTP error mapping", () => {
     const running = startFixture(runtime, logger);
     runtime.failNewId = true;
 
-    const response = await fetch(createPadRequest(running, { name: "pad" }));
+    const response = await fetch(createContainerRequest(running, { name: "container" }));
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
@@ -92,7 +92,7 @@ describe("HTTP error mapping", () => {
       {
         evt: "action",
         fields: {
-          name: "core.views.createPad",
+          name: "core.index.createContainer",
           // The owner principal, minted at boot by this runtime's first id.
           principal: "id-1",
           outcome: "failed",
@@ -110,7 +110,7 @@ describe("HTTP error mapping", () => {
     const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
     const running = startFixture(new FaultRuntime(), logger);
 
-    const response = await fetch(createPadRequest(running, { name: "" }));
+    const response = await fetch(createContainerRequest(running, { name: "" }));
 
     // The action door answers 200 for every ANSWER it has, and "your arguments do not match
     // the published schema" is an answer a client renders — not a transport failure.
@@ -128,7 +128,7 @@ describe("HTTP error mapping", () => {
     // Not a schema question: a body that is not JSON never reaches a door, so this is the
     // one remaining shape of `invalid` the request layer itself still answers.
     const response = await fetch(
-      new Request(`${running.publicUrl}/api/actions/core.views.createPad`, {
+      new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
         method: "POST",
         headers: { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" },
         body: "{not json",

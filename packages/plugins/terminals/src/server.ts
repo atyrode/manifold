@@ -1,11 +1,11 @@
-import type { PadSessionSummary, TerminalSummary } from "@manifold/protocol";
+import type { ContainerTerminalSummary, TerminalSummary } from "@manifold/protocol";
 
 /** A durable terminal row, as this plugin needs to read it. */
 interface StoredTerminal {
   readonly id: string;
   readonly machineId: string;
   /** The composition the terminal lives in. Never null: a terminal is `homed: "eager"`. */
-  readonly padId: string;
+  readonly containerId: string;
   readonly name: string | null;
   readonly status: "running" | "exited";
   readonly exitCode: number | null;
@@ -14,7 +14,7 @@ interface StoredTerminal {
 
 /** The live policy facts a kill is judged by: where it lives, and who is holding it. */
 interface LiveTerminal {
-  readonly padId: string;
+  readonly containerId: string;
   readonly status: "running" | "exited";
   readonly controllerId: string | null;
 }
@@ -27,24 +27,24 @@ interface LiveTerminal {
  * is an answer this plugin has to relay, not one it can invent.
  */
 interface TerminalsCtx {
-  /** The caller's own container when its token is pad-scoped; null for a workspace token. */
-  readonly padScope: string | null;
+  /** The caller's own container when its token is container-scoped; null for a workspace token. */
+  readonly containerScope: string | null;
   /**
-   * The engine's own discharge of the containment obligation `scope: "pad"` carries. The
-   * scope rung proves the caller's caps hold at the caller's OWN pad; only a handler can
-   * resolve which container the session its arguments name actually lives in, and this is
+   * The engine's own discharge of the containment obligation `scope: "container"` carries. The
+   * scope rung proves the caller's caps hold at the caller's OWN container; only a handler can
+   * resolve which container the terminal its arguments name actually lives in, and this is
    * where that answer is judged — in one wording, shared by every plugin, so a client can
    * switch on the refusal instead of parsing four variants of it.
    */
-  outsideScope(padId: string | null): { readonly refused: string } | null;
+  outsideScope(containerId: string | null): { readonly refused: string } | null;
   readonly principal: { readonly id: string };
   readonly auth: { readonly isRoot: boolean };
-  readonly store: { listSessions(): readonly StoredTerminal[] };
+  readonly store: { listTerminals(): readonly StoredTerminal[] };
   readonly rooms: { censuses(): readonly { readonly references: readonly string[] }[] };
   readonly broker: {
-    rename(sessionId: string, name: string): "ok" | "not_found";
-    killById(sessionId: string): "ok" | "not_found";
-    liveSession(sessionId: string): LiveTerminal | null;
+    rename(terminalId: string, name: string): "ok" | "not_found";
+    killById(terminalId: string): "ok" | "not_found";
+    liveTerminal(terminalId: string): LiveTerminal | null;
   };
 }
 
@@ -53,16 +53,16 @@ type Outcome<T> = { refused: string } | T;
 
 export const terminalsHandlers = {
   /**
-   * CREATION POLICY, and the only door that mutates nothing: the PTY is born on the session
+   * CREATION POLICY, and the only door that mutates nothing: the PTY is born on the terminal
    * channel (see the action's own comment), so this answers the question and the transport
    * does the work. What is left for the handler once the ladder has run is the containment
-   * obligation — a pad-scoped opener may only be born where its token lives.
+   * obligation — a container-scoped opener may only be born where its token lives.
    */
   async open(
     ctx: TerminalsCtx,
-    args: { padId: string; elementId: string; cols: number; rows: number },
+    args: { containerId: string; elementId: string; cols: number; rows: number },
   ): Promise<Outcome<Record<string, never>>> {
-    const outside = ctx.outsideScope(args.padId);
+    const outside = ctx.outsideScope(args.containerId);
     if (outside !== null) return outside;
     return {};
   },
@@ -70,33 +70,33 @@ export const terminalsHandlers = {
   /**
    * Naming, as `PATCH /api/terminals/:id` meant it: a trimmed name, an all-whitespace name
    * refused so a titlebar edit cannot leave a terminal with an invisible label, and a
-   * missing session refused rather than silently accepted — the route answered 404, and the
+   * missing terminal refused rather than silently accepted — the route answered 404, and the
    * outcome envelope's equivalent of 404 is a refusal carrying the reason.
    */
   async rename(
     ctx: TerminalsCtx,
-    args: { sessionId: string; name: string },
+    args: { terminalId: string; name: string },
   ): Promise<Outcome<Record<string, never>>> {
     const name = args.name.trim();
     if (name.length === 0) return { refused: "name is empty" };
-    const live = ctx.broker.liveSession(args.sessionId);
+    const live = ctx.broker.liveTerminal(args.terminalId);
     if (live === null) return { refused: "terminal not found" };
-    const outside = ctx.outsideScope(live.padId);
+    const outside = ctx.outsideScope(live.containerId);
     if (outside !== null) return outside;
-    if (ctx.broker.rename(args.sessionId, name) === "not_found") {
+    if (ctx.broker.rename(args.terminalId, name) === "not_found") {
       return { refused: "terminal not found" };
     }
     return {};
   },
 
   /**
-   * Killing, unified. Two doors used to answer this and they disagreed: the session
+   * Killing, unified. Two doors used to answer this and they disagreed: the terminal
    * channel's `terminal_kill` demanded the controller lease (or the wildcard) for a LIVE
    * terminal, while `DELETE /api/terminals/:id` demanded neither. One concept, one answer
    * (invariant 14), and the answer keeps the lease where the lease means something:
    *
    * - an EXITED terminal has no controller and nothing left to protect, so dismissing it
-   *   needs only the `terminal:write` the ladder already proved. Kill and dismiss are one
+   *   needs only the `terminals:write` the ladder already proved. Kill and dismiss are one
    *   verb, and refusing here would leave dead terminals nobody could clear.
    * - a RUNNING terminal may only be killed by the principal holding its lease, or by the
    *   wildcard: pulling a live PTY out from under somebody working in it is not a janitorial
@@ -112,17 +112,17 @@ export const terminalsHandlers = {
    */
   async kill(
     ctx: TerminalsCtx,
-    args: { sessionId: string },
+    args: { terminalId: string },
   ): Promise<Outcome<Record<string, never>>> {
-    const live = ctx.broker.liveSession(args.sessionId);
+    const live = ctx.broker.liveTerminal(args.terminalId);
     if (live === null) return { refused: "terminal not found" };
-    const outside = ctx.outsideScope(live.padId);
+    const outside = ctx.outsideScope(live.containerId);
     if (outside !== null) return outside;
     const heldByAnother = live.status === "running" && live.controllerId !== ctx.principal.id;
     if (heldByAnother && !ctx.auth.isRoot) {
       return { refused: "controller lease or owner capability required" };
     }
-    if (ctx.broker.killById(args.sessionId) === "not_found") {
+    if (ctx.broker.killById(args.terminalId) === "not_found") {
       return { refused: "terminal not found" };
     }
     return {};
@@ -135,7 +135,7 @@ export const terminalsHandlers = {
    * state describing where a terminal was NOT, and the whole point of retiring it is that
    * this question now has exactly one answer and no way to go stale.
    */
-  async list(
+  async listAll(
     ctx: TerminalsCtx,
     _args: Record<string, never>,
   ): Promise<{
@@ -145,22 +145,22 @@ export const terminalsHandlers = {
     for (const census of ctx.rooms.censuses()) {
       for (const reference of census.references) referenced.add(reference);
     }
-    const terminals = ctx.store.listSessions().map((session) => ({
-      id: session.id,
-      machineId: session.machineId,
-      name: session.name,
-      createdAt: session.createdAt,
-      status: session.status,
-      exitCode: session.exitCode,
-      homeId: session.padId,
-      unplaced: !referenced.has(session.padId),
+    const terminals = ctx.store.listTerminals().map((terminal) => ({
+      id: terminal.id,
+      machineId: terminal.machineId,
+      name: terminal.name,
+      createdAt: terminal.createdAt,
+      status: terminal.status,
+      exitCode: terminal.exitCode,
+      homeId: terminal.containerId,
+      unplaced: !referenced.has(terminal.containerId),
     }));
     return { terminals };
   },
 
   /**
-   * Per-container session rows, for the counts the workspace tree paints. `scope: "pad"`
-   * carries the filter the replaced route applied by hand: a pad-scoped reader sees its own
+   * Per-container terminal rows, for the counts the workspace tree paints. `scope: "container"`
+   * carries the filter the replaced route applied by hand: a container-scoped reader sees its own
    * container's terminals and learns nothing about any other.
    *
    * A LISTING is the one place containment filters rather than refuses. Every other door
@@ -168,22 +168,22 @@ export const terminalsHandlers = {
    * is asked "what is in reach", and the honest answer for a scoped reader is its own
    * container's rows — which is exactly what the route it replaces returned.
    */
-  async sessions(
+  async listByContainer(
     ctx: TerminalsCtx,
     _args: Record<string, never>,
-  ): Promise<{ sessions: readonly PadSessionSummary[] }> {
-    const sessions: PadSessionSummary[] = [];
-    for (const session of ctx.store.listSessions()) {
-      if (ctx.outsideScope(session.padId) !== null) continue;
-      sessions.push({
-        id: session.id,
-        padId: session.padId,
-        machineId: session.machineId,
-        createdAt: session.createdAt,
-        status: session.status,
-        exitCode: session.exitCode,
+  ): Promise<{ terminals: readonly ContainerTerminalSummary[] }> {
+    const terminals: ContainerTerminalSummary[] = [];
+    for (const terminal of ctx.store.listTerminals()) {
+      if (ctx.outsideScope(terminal.containerId) !== null) continue;
+      terminals.push({
+        id: terminal.id,
+        containerId: terminal.containerId,
+        machineId: terminal.machineId,
+        createdAt: terminal.createdAt,
+        status: terminal.status,
+        exitCode: terminal.exitCode,
       });
     }
-    return { sessions };
+    return { terminals };
   },
 };

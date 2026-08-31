@@ -2,14 +2,18 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- One word per concept, everywhere: the app, its API and its database now speak a single canonical vocabulary — a **container** holds one of two **disciplines** (a freeform canvas or a tiled composition), a **terminal** is a shell while a **session** is your connection, and the sidebar's one tree is the **Index**. Capabilities (`containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`, `terminals:write`), HTTP routes, wire fields and the SQLite schema were renamed in place: your containers, terminals, folders and tokens are migrated for you behind a pre-migration backup, and protocol v16 needs the server and every enrolled machine agent restarted together. (#69, #70)
+
 ### Added
 
 - A plugin engine: core features now load through one registry, hot enable/disable from the new sidebar Plugins section takes effect everywhere without a reload, disabled features render inert named placeholders instead of vanishing, and essential plugins refuse disable. (#69, #70)
-- The workspace shell is itself a tile composition of plugin panels — the sidebar and the pad view are panels in a per-principal layout tree, and the sidebar/canvas divider is a real tile divider whose position is saved to your workspace. (#69, #70)
+- The workspace shell is itself a tile composition of plugin panels — the sidebar and the container view are panels in a per-principal layout tree, and the sidebar/canvas divider is a real tile divider whose position is saved to your workspace. (#69, #70)
 - One action door for mutations: `POST /api/actions/:name` with a published, machine-readable vocabulary (`GET /api/protocol`, `GET /api/plugins`) and named refusals — terminal rename/kill are the first occupants, and all future mutations land here. (#69, #70)
-- Sidebar sections (Machines, Views, Plugins), freehand drawing, and view presence are core plugins; a stranger's agent can author its own against `docs/PLUGINS.md`. (#69, #70)
-- `manifold://` addresses for everything — terminals, pads, elements, tiles, principals, plugins, actions — with a `GET /api/resolve` door and `/uri/…` deep links that navigate the app. (#69, #70)
-- Observable view presence: collaborators' active tool shows beside their name, and a consent-guarded spotlight action can center a peer's canvas on any address — with a dismissible chip and an ignore switch. (#69, #70)
+- Sidebar sections (Machines, Index, Plugins), freehand drawing, and vantage — the tool in hand, what someone is editing, whether their sidebar is open — are core plugins; a stranger's agent can author its own against `docs/PLUGINS.md`. (#69, #70)
+- `manifold://` addresses for everything — terminals, containers, elements, tiles, principals, plugins, actions — with a `GET /api/resolve` door and `/uri/…` deep links that navigate the app. (#69, #70)
+- Observable vantage: collaborators' active tool shows beside their name, and a consent-guarded spotlight action can center a peer's canvas on any address — with a dismissible chip and an ignore switch. (#69, #70)
 
 ### Changed
 

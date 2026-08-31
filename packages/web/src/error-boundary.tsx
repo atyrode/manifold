@@ -1,30 +1,33 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
-interface PadErrorBoundaryProps {
+interface ContainerErrorBoundaryProps {
   readonly children: ReactNode;
 }
 
-interface PadErrorBoundaryState {
+interface ContainerErrorBoundaryState {
   readonly error: Error | null;
 }
 
 /**
  * Contains canvas/runtime failures so a broken embed cannot strand the whole application.
  *
- * Deliberately NOT a toast. A toast is a message printed by a tree that is still
+ * Deliberately NOT a notice. A notice is a message printed by a tree that is still
  * rendering; this fires when the tree has stopped rendering, which is precisely when
- * the toast layer below it no longer exists to print into. It is also not advisory —
+ * the notice layer below it no longer exists to print into. It is also not advisory —
  * the only way forward is a reload — so it takes the whole screen and says so.
  */
-export class PadErrorBoundary extends Component<PadErrorBoundaryProps, PadErrorBoundaryState> {
-  override state: PadErrorBoundaryState = { error: null };
+export class ContainerErrorBoundary extends Component<
+  ContainerErrorBoundaryProps,
+  ContainerErrorBoundaryState
+> {
+  override state: ContainerErrorBoundaryState = { error: null };
 
-  static getDerivedStateFromError(reason: unknown): PadErrorBoundaryState {
+  static getDerivedStateFromError(reason: unknown): ContainerErrorBoundaryState {
     return { error: reason instanceof Error ? reason : new Error("Unexpected view error") };
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("manifold-web: pad render failed", error, info.componentStack);
+    console.error("manifold-web: container render failed", error, info.componentStack);
   }
 
   override render(): ReactNode {

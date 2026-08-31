@@ -2,7 +2,7 @@
  * `@manifold/plugin/ui` — the PLUGIN-FACING STANDARD LIBRARY.
  *
  * Everything behind this subpath is neutral chrome MECHANISM: the glyph vocabulary, the one
- * titlebar a container node wears, the consumer half of the one notice surface, and this
+ * titlebar a container node wears, the consumer half of the one notice ref, and this
  * device's published view-state store. Not one of them decides anything about a domain noun,
  * and every one of them is addressed by two parties that may not import each other — a floor
  * renderer and a plugin, or two plugins — which is the litmus that puts a thing here instead
@@ -27,7 +27,7 @@ export {
   ControlIcon,
   ItemIcon,
   RemoteCursorIcon,
-  SurfaceIcon,
+  CarriedItemIcon,
   type ControlKind,
   type IconProps,
   type ItemIconKind,
@@ -40,13 +40,13 @@ export {
 } from "./node-titlebar.tsx";
 /**
  * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
- * workspace shell's own panes, a composition's leaves, a portal widget's preview — because
+ * workspace shell's own panes, a composition's leaves, a portal portal's preview — because
  * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer
  * would be a second answer to what a divider drag means.
  */
 export {
   PORTAL_TREE_CLASSES,
-  TILED_TREE_CLASSES,
+  COMPOSITION_TREE_CLASSES,
   TileTree,
   WORKSPACE_TREE_CLASSES,
   type TileTreeClasses,
@@ -55,15 +55,10 @@ export {
 export { TilePreviewOverlay, type TilePreviewOverlayProps } from "./tile-preview-overlay.tsx";
 export { TileZoneDebug } from "./tile-zone-debug.tsx";
 export {
-  ToastContext,
-  useToast,
-  type ToastApi,
-  type ToastLifetime,
-  type ToastOptions,
-} from "./toast.ts";
-export {
-  currentViewState,
-  setViewState,
-  subscribeViewState,
-  type ViewState,
-} from "./view-state.ts";
+  NoticeContext,
+  useNotice,
+  type NoticeApi,
+  type NoticeLifetime,
+  type NoticeOptions,
+} from "./notice.ts";
+export { currentVantage, setVantage, subscribeVantage, type Vantage } from "./vantage.ts";

@@ -4,7 +4,7 @@ import { format, resolveConfig } from "prettier";
 
 const sourcePath = "CHANGELOG.md";
 const outputPath = "packages/web/src/generated-changelog.ts";
-// Dev builds surface the Unreleased section as a leading "in progress" entry so the
+// Dev builds ref the Unreleased section as a leading "in progress" entry so the
 // deployed app's history tracks the branch; release versions never take this path
 // (finalizeChangelog empties Unreleased before regeneration).
 const webVersion = ((await Bun.file("packages/web/package.json").json()) as { version: string })

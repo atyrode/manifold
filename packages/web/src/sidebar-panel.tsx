@@ -10,8 +10,8 @@ import {
 import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
 import { ControlIcon, ItemIcon } from "@manifold/plugin/ui";
-import { PluginPlaceholder, useComposition, type WebSection } from "./plugin-host.tsx";
-import { useWorkspaceShell } from "./pad-browser.tsx";
+import { PluginPlaceholder, useAssembly, type WebSection } from "./plugin-host.tsx";
+import { useWorkspaceShell } from "./workspace.tsx";
 import type { WorkspaceSidebarState } from "@manifold/plugin/hooks";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
@@ -20,11 +20,11 @@ import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
  *
  * The sidebar's CHROME (branding, the create affordances, the collapse control, the section
  * stack itself) is the workspace shell, not a contribution: it has to read the composition to
- * know which sections exist, and `useComposition` is engine state a plugin may not touch. The
+ * know which sections exist, and `useAssembly` is engine state a plugin may not touch. The
  * manifest still owns the vocabulary — `core.shell` declares this panel, the roster publishes
  * it, and a disabled shell renders a named placeholder like any other panel — so what lives
  * here is the component, never the declaration. It is attached to the manifest's `sidebar`
- * id in `composition.ts`, the one web file allowed to name plugin packages.
+ * id in `assembly.ts`, the one web file allowed to name plugin packages.
  *
  * Everything BELOW the stack is a real plugin: each section is a `ComponentType<SectionProps>`
  * that fetches its own data through `host.client`. The stack knows only the order the
@@ -41,7 +41,7 @@ function WorkspaceStatus({
   const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
   return (
     <div
-      className="workspace-status"
+      className="sidebar-status"
       title={`Connection ${status} · ${savedLabel} · revision ${rev}`}
       role="status"
       data-testid="connection-status"
@@ -134,7 +134,7 @@ function SectionShell({
 }
 
 export function SidebarPanel({ host }: PanelProps): ReactElement {
-  const composition = useComposition();
+  const assembly = useAssembly();
   /*
     Every field this panel reads is taken ONCE, here: `registerSidebarElement` is a ref
     callback, and reading further properties off the same object afterwards would be reading
@@ -193,24 +193,24 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * declared order rather than a hardcoded id — which is what makes the rail survive a
    * plugin being disabled, added, or reordered.
    */
-  const sections = composition.sections;
+  const sections = assembly.sections;
   const railSection = sections[0];
   const visible = sidebarOpen ? sections : railSection === undefined ? [] : [railSection];
 
   return (
     <>
-      <aside className="pad-sidebar" aria-label="Sidebar" ref={registerSidebarElement}>
-        <header className="pad-sidebar-header">
-          <span className="pad-sidebar-brand">
-            <span className="pad-sidebar-mark" aria-hidden="true">
+      <aside className="sidebar" aria-label="Sidebar" ref={registerSidebarElement}>
+        <header className="sidebar-header">
+          <span className="sidebar-brand">
+            <span className="sidebar-mark" aria-hidden="true">
               M
             </span>
             {sidebarOpen ? (
-              <span className="pad-sidebar-brand-copy">
+              <span className="sidebar-brand-copy">
                 <strong>manifold</strong>
                 <button
                   ref={versionButtonRef}
-                  className="pad-sidebar-version"
+                  className="sidebar-version"
                   type="button"
                   aria-label={`Open web changelog for ${WEB_VERSION_LABEL}`}
                   onClick={() => setChangelogOpen(true)}
@@ -221,7 +221,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             ) : null}
           </span>
           <button
-            className="pad-sidebar-icon-button"
+            className="sidebar-icon-button"
             type="button"
             title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -231,11 +231,11 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           </button>
         </header>
 
-        <div className="pad-sidebar-create-buttons">
+        <div className="sidebar-create-buttons">
           <button
-            className="pad-sidebar-new"
+            className="sidebar-new"
             type="button"
-            data-action="core.views.createPad"
+            data-action="core.index.createContainer"
             title="New canvas"
             aria-label="New canvas"
             onClick={() => {
@@ -248,14 +248,14 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             {sidebarOpen ? <span>New canvas</span> : null}
           </button>
           <button
-            className="pad-sidebar-new pad-sidebar-new-view"
+            className="sidebar-new container-sidebar-new-view"
             type="button"
-            data-action="core.views.createPad"
+            data-action="core.index.createContainer"
             title="New composition"
             aria-label="New composition"
             onClick={() => {
               if (!sidebarOpen) setSidebarOpen(true);
-              createContainer("tiled");
+              createContainer("composition");
             }}
             disabled={creating}
           >
@@ -263,7 +263,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             {sidebarOpen ? <span>New composition</span> : null}
           </button>
           <button
-            className="pad-sidebar-new pad-sidebar-new-folder"
+            className="sidebar-new sidebar-new-folder"
             type="button"
             title="New folder"
             aria-label="New folder"
@@ -284,7 +284,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
         */}
         {sidebarOpen && folderName !== null ? (
           <form
-            className="pad-sidebar-create pad-sidebar-folder-create"
+            className="sidebar-create sidebar-folder-create"
             onSubmit={(event) => {
               event.preventDefault();
               const trimmed = folderName.trim();
@@ -307,7 +307,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               </button>
               <button
                 type="submit"
-                data-action="core.views.createFolder"
+                data-action="core.index.createFolder"
                 disabled={creatingFolder || folderName.trim() === ""}
               >
                 {creatingFolder ? "Creating…" : "Create"}
@@ -316,7 +316,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           </form>
         ) : null}
 
-        <div className="pad-sidebar-sections">
+        <div className="sidebar-sections">
           {visible.map((section) => (
             <SectionShell
               section={section}
@@ -330,7 +330,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
                 );
               }}
               host={host}
-              pluginTitle={composition.pluginTitle(section.plugin) ?? section.plugin}
+              pluginTitle={assembly.pluginTitle(section.plugin) ?? section.plugin}
               key={`${section.plugin}.${section.id}`}
             />
           ))}
@@ -344,7 +344,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           />
         ) : null}
 
-        <footer className="pad-sidebar-identity" title={identity.principal.name}>
+        <footer className="sidebar-identity" title={identity.principal.name}>
           <span className="identity-dot" style={{ backgroundColor: identity.principal.color }} />
           {sidebarOpen ? <span>{identity.principal.name}</span> : null}
         </footer>

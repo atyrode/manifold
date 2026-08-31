@@ -1,23 +1,22 @@
 import {
   ActionOutcomeSchema,
   ContainersResponseSchema,
-  CreatePadRequestSchema,
+  CreateContainerRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
-  PadPresenceResponseSchema,
-  PadResponseSchema,
-  PadSessionsResponseSchema,
-  PadsResponseSchema,
+  AttendanceResponseSchema,
+  ContainerResponseSchema,
+  ContainerTerminalsResponseSchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
   type ActionOutcome,
   type HttpError,
   type MintTokenRequest,
-  type Pad,
-  type PadSessionSummary,
+  type Container,
+  type ContainerTerminalSummary,
   type TerminalSummary,
   type TokenGrant,
 } from "@manifold/protocol";
@@ -84,7 +83,7 @@ export interface StartAgentOptions {
 
 /** Resume hints let a fresh SDK instance exercise the documented returning-client join path. */
 export interface ConnectOptions {
-  readonly padId: string;
+  readonly containerId: string;
   readonly token: string;
   readonly lastEpoch?: string;
   readonly lastRev?: number;
@@ -105,10 +104,10 @@ export interface OwnerFetchOptions<T = unknown> extends RequestInit {
 
 const RESPONSE_SCHEMA_BY_REQUEST: Record<string, ResponseSchema<unknown>> = {
   "GET /healthz": HealthResponseSchema,
-  "GET /api/pad-presence": PadPresenceResponseSchema,
+  "GET /api/attendance": AttendanceResponseSchema,
   /*
-    No terminal route is listed here any more: the INDEX is `core.terminals.list` and the
-    per-container listing is `core.terminals.sessions`, both reached through `ownerAction`
+    No terminal route is listed here any more: the INDEX is `core.terminals.listAll` and the
+    per-container listing is `core.terminals.listByContainer`, both reached through `ownerAction`
     like every other door. The gestures that used to be endpoints (`expand`, `pin`) went the
     same way earlier, as destinations of the placement door.
    */
@@ -120,8 +119,9 @@ function defaultResponseSchema(path: string, method: string): ResponseSchema<unk
   const pathname = new URL(path, "http://manifold.test").pathname;
   const exact = RESPONSE_SCHEMA_BY_REQUEST[`${method} ${pathname}`];
   if (exact !== undefined) return exact;
-  // The one pad route left, and a read: create, rename and delete are `core.views` actions.
-  if (method === "GET" && /^\/api\/pads\/[^/]+$/.test(pathname)) return PadResponseSchema;
+  // The one container route left, and a read: create, rename and delete are `core.views` actions.
+  if (method === "GET" && /^\/api\/containers\/[^/]+$/.test(pathname))
+    return ContainerResponseSchema;
   return undefined;
 }
 
@@ -478,7 +478,7 @@ export async function ownerAction(
 
 /**
  * Mints a grant through the owner boundary and validates both request and response schemas.
- * `core.access.mintToken` replaced `POST /api/tokens`; the helper's shape is unchanged, so
+ * `core.access.mint` replaced `POST /api/tokens`; the helper's shape is unchanged, so
  * every fixture that needs an attenuated identity is unaffected by where the door lives.
  */
 export async function mintToken(
@@ -486,7 +486,7 @@ export async function mintToken(
   request: MintTokenRequest,
 ): Promise<TokenGrant> {
   const body = MintTokenRequestSchema.parse(request);
-  return TokenGrantSchema.parse(await ownerAction(server, "core.access.mintToken", body));
+  return TokenGrantSchema.parse(await ownerAction(server, "core.access.mint", body));
 }
 
 /**
@@ -509,57 +509,65 @@ export async function enrollMachine(
 
 /**
  * Creates a container through the owner boundary and returns only its protocol-validated
- * record. `core.views.createPad` replaced `POST /api/pads`; the helper's shape is unchanged,
+ * record. `core.index.createContainer` replaced `POST /api/containers`; the helper's shape is unchanged,
  * so every fixture that needs a container is unaffected by where the door lives.
  */
-export async function createPad(
+export async function createContainer(
   server: TestServer,
   name: string,
-  layout?: "canvas" | "tiled",
-): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({
+  discipline?: "canvas" | "composition",
+): Promise<Container> {
+  const request = CreateContainerRequestSchema.parse({
     name,
-    ...(layout === undefined ? {} : { layout }),
+    ...(discipline === undefined ? {} : { discipline }),
   });
-  return PadResponseSchema.parse(await ownerAction(server, "core.views.createPad", request)).pad;
+  return ContainerResponseSchema.parse(
+    await ownerAction(server, "core.index.createContainer", request),
+  ).container;
 }
 
-/** Every container the caller can see (`core.views.list`), in index order. */
-export async function listPads(server: TestServer): Promise<readonly Pad[]> {
-  return PadsResponseSchema.parse(await ownerAction(server, "core.views.list", {})).pads;
+/** Every container the caller can see (`core.index.listContainers`), in index order. */
+export async function listContainers(server: TestServer): Promise<readonly Container[]> {
+  return ContainersResponseSchema.parse(await ownerAction(server, "core.index.listContainers", {}))
+    .containers;
 }
 
-/** Reads one container by id (`core.views.pad`). */
-export async function getPad(server: TestServer, padId: string): Promise<Pad> {
-  return PadResponseSchema.parse(await ownerAction(server, "core.views.pad", { padId })).pad;
+/** Reads one container by id (`core.index.readContainer`). */
+export async function getContainer(server: TestServer, containerId: string): Promise<Container> {
+  return ContainerResponseSchema.parse(
+    await ownerAction(server, "core.index.readContainer", { containerId }),
+  ).container;
 }
 
-/** Retires a container and everything that pointed at it (`core.views.deletePad`). */
-export async function deletePad(server: TestServer, padId: string): Promise<void> {
-  await ownerAction(server, "core.views.deletePad", { padId });
+/** Retires a container and everything that pointed at it (`core.index.deleteContainer`). */
+export async function deleteContainer(server: TestServer, containerId: string): Promise<void> {
+  await ownerAction(server, "core.index.deleteContainer", { containerId });
 }
 
 /**
- * THE terminal index (`core.terminals.list`): every terminal, with the composition it lives
+ * THE terminal index (`core.terminals.listAll`): every terminal, with the composition it lives
  * in and whether anything references that home. Here rather than duplicated per suite,
  * because three e2e files were asking the same question three ways.
  */
 export async function listTerminals(server: TestServer): Promise<readonly TerminalSummary[]> {
-  return TerminalsResponseSchema.parse(await ownerAction(server, "core.terminals.list", {}))
+  return TerminalsResponseSchema.parse(await ownerAction(server, "core.terminals.listAll", {}))
     .terminals;
 }
 
-/** Terminal sessions by the container each is homed in (`core.terminals.sessions`). */
-export async function listPadSessions(server: TestServer): Promise<readonly PadSessionSummary[]> {
-  return PadSessionsResponseSchema.parse(await ownerAction(server, "core.terminals.sessions", {}))
-    .sessions;
+/** Terminals by the container each is homed in (`core.terminals.listByContainer`). */
+export async function listTerminalsByContainer(
+  server: TestServer,
+): Promise<readonly ContainerTerminalSummary[]> {
+  return ContainerTerminalsResponseSchema.parse(
+    await ownerAction(server, "core.terminals.listByContainer", {}),
+  ).terminals;
 }
 
 /** Connects the one shared SDK client and optionally seeds documented resume hints. */
 export async function connect(server: TestServer, options: ConnectOptions): Promise<SessionClient> {
   const client = new SessionClient({
     url: server.wsUrl,
-    padId: options.padId,
+    containerId: options.containerId,
     token: options.token,
     ...(options.reconnect !== undefined ? { reconnect: options.reconnect } : {}),
     ...(options.spectator === true ? { spectator: true } : {}),
@@ -575,7 +583,7 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
     await Promise.race([
       client.connect(),
       Bun.sleep(CONNECT_TIMEOUT_MS).then(() => {
-        throw new Error(`session connect timed out after ${CONNECT_TIMEOUT_MS}ms`);
+        throw new Error(`terminal connect timed out after ${CONNECT_TIMEOUT_MS}ms`);
       }),
     ]);
     return client;
