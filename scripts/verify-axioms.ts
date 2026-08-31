@@ -2568,27 +2568,43 @@ try {
 
   {
     const off = await setEnabled("core.machines", false);
-    const inert = await settles(
+    /*
+      D4′: chrome renders ABSENCE. A disabled plugin's SECTION leaves the sidebar entirely —
+      no tombstone, no "disabled" body — while the Plugins section (the one ledger) still
+      lists the plugin as off. The earlier form of this check asserted a placeholder inside
+      a surviving section; that pinned the REJECTED design, and a check that defends
+      yesterday's contract is worse than no check.
+    */
+    const vanished = await settles(
       () =>
         browser!.evaluate<boolean>(
-          `document.querySelector('[data-section-id="machines"] .plugin-placeholder[data-plugin-state="disabled"]') !== null`,
+          `document.querySelector('[data-section-id="machines"]') === null`,
         ),
       10_000,
+    );
+    const ledgered = await browser.evaluate<boolean>(
+      `(() => {
+        const row = document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.machines"] [data-testid="plugin-manager-toggle"]');
+        return row instanceof HTMLElement && row.getAttribute("aria-checked") === "false";
+      })()`,
     );
     const on = await setEnabled("core.machines", true);
     const back = await settles(
       () =>
         browser!.evaluate<boolean>(
-          `document.querySelector('[data-section-id="machines"] .plugin-placeholder') === null`,
+          `(() => {
+            const stack = [...document.querySelectorAll('[data-section-id]')].map((el) => el.getAttribute('data-section-id'));
+            return stack.includes('machines') && stack.indexOf('machines') === 1;
+          })()`,
         ),
       10_000,
     );
     check(
       "R3 core.machines section",
-      off && inert && on && back,
-      inert && back
-        ? "the Machines section goes inert and returns without a reload"
-        : `disabled: ${String(inert)}, restored: ${String(back)}`,
+      off && vanished && ledgered && on && back,
+      vanished && ledgered && back
+        ? "the Machines section VANISHES on disable (manager row stays the ledger) and returns to its manifest-ordered place, no reload"
+        : `vanished: ${String(vanished)}, ledgered: ${String(ledgered)}, restored in place: ${String(back)}`,
     );
   }
 

@@ -121,9 +121,7 @@ function SectionShell({
         <strong className="sidebar-section-title">{section.title}</strong>
       </summary>
       <div className="sidebar-section-body">
-        {!section.enabled ? (
-          <PluginPlaceholder name={pluginTitle} state="disabled" />
-        ) : Component === null ? (
+        {Component === null ? (
           <PluginPlaceholder name={pluginTitle} state="unavailable" />
         ) : (
           <Component host={host} />
@@ -193,7 +191,13 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * declared order rather than a hardcoded id — which is what makes the rail survive a
    * plugin being disabled, added, or reordered.
    */
-  const sections = assembly.sections;
+  /*
+   * D4′ (ADR 0013): chrome renders ABSENCE. A disabled plugin's section VANISHES from the
+   * stack — its order is manifest data, so re-enabling restores its exact place for free,
+   * and the Plugins section is the one ledger of what is off. A tombstone here would make
+   * the floor look like it cannot exist without the plugin — the exact smell A1 forbids.
+   */
+  const sections = assembly.sections.filter((section) => section.enabled);
   const railSection = sections[0];
   const visible = sidebarOpen ? sections : railSection === undefined ? [] : [railSection];
 

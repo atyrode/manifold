@@ -992,3 +992,22 @@ being load-bearing); or the second refusal class of §8 becomes implementable on
 census after the presence conversion (then "in use by another principal" joins `essential`); or the
 2-second lifecycle bound of §2 proves wrong in practice — in which case the number changes and the
 rule that **disable always completes** does not.
+
+---
+
+## Correction — 2026-08-31: sections render ABSENCE, not a tombstone
+
+The ratified D4′ table is PER-KIND: chrome (sidebar sections, toolbar tools) renders
+ABSENCE while the owner is disabled; scene elements ghost; stored data is retained. During
+implementation the per-kind table was mistranscribed into a universal engine placeholder,
+the R3 gate check was written against that mistranscription — so the gate actively
+DEFENDED the rejected design — and the operator caught the tombstone live, twice. §4's
+prose above stands for elements and panels; for SECTIONS the placeholder sentence is
+superseded: a disabled plugin's section vanishes from the sidebar, the Plugins section is
+the one ledger of what is off, and re-enable restores the manifest-ordered slot for free.
+Panels keep the placeholder-with-remove behavior TODAY because every panel contributor is
+essential (the dormant-collapse target for layout leaves remains ratified and becomes
+exercisable with the first disableable panel plugin — this sentence is that deferral's
+in-product-adjacent marker). Process lesson, now law-adjacent: a gate check inherits the
+authority of the contract it encodes — when a contract is amended, its checks amend in the
+SAME change, or the gate defends the past.
