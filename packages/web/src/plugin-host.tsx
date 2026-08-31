@@ -42,7 +42,7 @@ import {
 } from "react";
 import { Cover, Stack } from "@manifold/plugin/ui";
 import type { StoredIdentity } from "./api.ts";
-import { WEB_PLUGIN_DEFS } from "./assembly.ts";
+import { FEED_TOPICS, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
  * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
@@ -544,6 +544,12 @@ export function HostServicesGate({
         roster: () => assembly.roster,
         enabled: (id) => assembly.enabled(id),
       },
+      /*
+        The four collection nodes the shared feeds subscribe to, handed down from the one
+        file allowed to name a plugin. A section may not spell another plugin's id either,
+        so the terminal listing's topic reaches `core.index`'s sidebar section through here.
+       */
+      topics: FEED_TOPICS,
     }),
     [authoring, client, assembly, identity, navigateUri, containerId, viewport],
   );

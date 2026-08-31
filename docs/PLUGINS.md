@@ -126,7 +126,7 @@ export const manifest: PluginManifest = {
       },
     ],
     tools: [{ id: "draw", title: "Draw" }], // a toolbar tool
-    events: [], // reserved: the wave-2 event plane (ADR 0012). No consumer yet.
+    events: [], // event kinds THIS plugin originates (§6b); core.draw emits none — a stroke is a document edit
   },
   // entry: { web: "...", server: true }, // reserved: dynamic distribution, a later wave
 };
@@ -139,8 +139,10 @@ Rules worth knowing before you write one:
   `engine.` is **reserved**: it belongs to the engine's own builtin doors, and assembly refuses
   any plugin that claims it.
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
-  where the name is a verb phrase, as in `setEnabled`), except element `type`, which is a wire kind
-  and must be globally unique on its own.
+  where the name is a verb phrase, as in `setEnabled`), with two exceptions that are WIRE kinds
+  and therefore globally unique on their own: element `type`, and event `id`, which is
+  `snake_case` (`^[a-z][a-z0-9_]*$`, max 48) because the audit log has spelled its kinds that way
+  since before the plane existed and one concept gets one spelling.
 - **`capabilities` is a ceiling, not a request.** Every action's declared caps must be a subset
   of it; a violation refuses composition. It exists so a reader can see a plugin's maximum
   authority without reading its actions.
@@ -187,9 +189,9 @@ Rules worth knowing before you write one:
 - **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
   targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
   `engine.plugins.purge` would cost before pressing it. Nothing about disable reads it.
-- **`events` and `entry` are reserved.** Write them if you like; nothing reads them in this
-  wave. They exist so the plane and the distribution mechanism can arrive without a manifest
-  change.
+- **`events` declares the event kinds you originate** (§6b). The id is `snake_case` and globally
+  unique: a kind belongs to one plugin, and the engine refuses an emission of a kind another
+  manifest declared. `entry` is still reserved — write it if you like; nothing reads it this wave.
 
 ---
 
@@ -604,7 +606,7 @@ anything holding a user's work; `core.notes` deliberately declares no `dormant` 
 for `hide` only for chrome, never for a node holding work: hiding a record a person typed into makes
 their work invisible without deleting it, which is the one outcome worse than a placeholder.
 
-### The other three contribution kinds
+### The other four contribution kinds
 
 - **`panels`** are leaves of the workspace tile tree. The workspace layout is itself a
   `TileLayout` whose leaf refs are `{ kind: "panel", panelId }` — the shell is a
@@ -615,6 +617,8 @@ their work invisible without deleting it, which is the one outcome worse than a 
   is no user-visible section-order setting to read and no hardcoded section list to edit; the
   manifests _are_ the order.
 - **`tools`** appear in the canvas toolbar.
+- **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
+  authoring rules are §6b.
 
 ### Host services
 
@@ -679,6 +683,84 @@ Every DOM control that invokes an action carries the action's full name:
 This is not decoration. It is what lets a test, an agent, or a reviewer answer "what can this
 pixel do?" without reading the handler, and the gate checks that every `data-action` literal
 in the tree names an assembled action.
+
+---
+
+## 6b. Events: telling the workspace something happened
+
+The fourth plane (ADR 0012). Use it when something happened that another plugin wants to know
+about and nobody is editing anything: a container created, a machine enrolled, a terminal gone.
+It is not for continuous streams (PTY bytes, cursor motion, live drags — those are channel
+traffic), and it is not a way to change the world.
+
+**You declare; the engine emits.** Your manifest names the kinds you originate; the emission
+happens at the door your action already goes through. There is no publish API you can reach from
+anywhere in your code, which is the whole reason the plane cannot become a second mutation path.
+
+```ts
+// src/index.ts — the vocabulary
+contributes: {
+  events: [
+    { id: "container_created", title: "Container created" },
+    { id: "container_renamed", title: "Container renamed" },
+  ],
+}
+```
+
+```ts
+// src/server.ts — the emission, inside the handler that committed the change
+const TOPIC = { kind: "plugin", pluginId: indexManifest.id } as const;
+
+async createContainer(ctx, args) {
+  const container = { id: ctx.newId(), name: args.name, createdAt: ctx.now() };
+  ctx.store.createContainer(container);
+  ctx.emit(TOPIC, "container_created", { containerId: container.id, name: container.name });
+  return { container };
+}
+```
+
+Five rules, and they are all mechanized:
+
+- **A kind is `snake_case`, global, and owned by one plugin.** `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`,
+  max 48 characters. It is never qualified by your id — `container_created` says WHAT happened
+  and the topic says to WHOM, so a subscriber's match does not depend on which plugin currently
+  implements the concept. Two manifests declaring one kind is an `AssemblyError`, and emitting a
+  kind you did not declare is refused by name.
+- **`ctx.emit` takes a REF, never a string.** `formatManifoldUri` is the one joiner in the tree,
+  so the address is compiler-joined and there is no topic-string namespace to police.
+- **Address the most specific node that exists both before AND after the event.** When the
+  subject is being created or destroyed, or has no `manifold://` form at all (a machine, a
+  folder), that node is your COLLECTION: `manifold://plugin/<your id>`, built from your own
+  manifest id so the address and the declaration cannot drift. The engine refuses an emission on
+  another plugin's node. A collection topic is also what makes a client's whole feed one
+  subscription instead of one per row.
+- **Emission is STAGED.** `ctx.emit` buffers; the buffer flushes only after your handler returned
+  successfully and its declared result schema parsed. A handler that mutates and then refuses,
+  throws, or fails its own schema publishes nothing — refusals are not events, and you do not
+  have to remember that.
+- **The payload is a hint, not the state.** Flat and bounded, the same discipline an element
+  payload carries. It exists so a subscriber can decide whether to re-read, not so it can skip
+  the read; a receiver acting on shipped state instead of reading it back through a door is how a
+  notification plane turns into a replication plane nobody arbitrates.
+
+**Consuming.** From an SDK client, `client.subscribe(topics, handler)` returns its own
+unsubscribe; declarations are refcounted onto the socket, so two panels watching one node cost
+one `subscribe` and neither cancels the other. In the browser, do not hand-roll a listener: pass
+`topics` (and the event kinds you care about) to the shared feed
+(`usePolledResource`, `@manifold/plugin/hooks`) and keep your one fetch function. The feed reads
+once at mount, then once per burst of matching events, content-compares the answer so an
+unchanged one re-renders nobody, and falls back to a cadence in exactly two states — the socket
+is down, or the feed named no topics at all (the roomless workspace root). A timer never runs
+beside a live subscription.
+
+**What you may not do.** No request/response over events, no "command topics", no handler whose
+contract is "publish here to make something happen" — if it changes the world it is an action.
+And there are no offsets, acknowledgements or replay: an event reaches the sockets subscribed at
+the instant of emission, and catch-up is reading state. Subscribing is a READ of the topic's
+node, checked with the same authority `GET /api/resolve` uses, so a container-scoped token cannot
+subscribe to a collection — a node with no container above it is in nobody's subtree — and the
+refusal is silent by design rather than a per-topic answer that would make the plane a permission
+oracle.
 
 ---
 
@@ -811,6 +893,13 @@ are the checks that will fail _your_ plugin:
   file above the plugin boundary is RED.
 - The list of every `cleanup: true` action in the assembly is published, so the one carve-out
   from the disable rule cannot grow unnoticed.
+- **The event plane is exercised end to end** (R10): a browser subscribed to a collection, an SDK
+  peer subscribed to the same node, and a third principal mutating through the action door. The
+  frame's topic, kind and actor must be right, the browser's UI must reflect the change inside one
+  second with no timer tick behind it, and a container-scoped token asking for a foreign
+  collection must be refused in silence. `REGISTRY.md` §Budgets is the standing half of the same
+  claim: every network row is ZERO at idle, so a plugin that opens a timer onto a door shows up as
+  a rate with its own name on it.
 
 ## Further reading
 
@@ -825,4 +914,5 @@ are the checks that will fail _your_ plugin:
 - `docs/decisions/0010-plugin-engine-and-action-plane.md` — the trust model and why the action
   envelope looks like this.
 - `docs/decisions/0011-permission-waterfall.md` — where per-node authority is going.
-- `docs/decisions/0012-event-plane.md` — where `contributes.events` is going.
+- `docs/decisions/0012-event-plane.md` — the event plane: why `contributes.events` looks like
+  this, and the "Landed" section recording the shapes that shipped.

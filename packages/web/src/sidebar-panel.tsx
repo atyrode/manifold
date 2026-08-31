@@ -99,7 +99,7 @@ interface SectionShellProps {
  * One shell for every section: a disclosure header over a scrollable body. The header is the
  * engine's one {@link Disclosure} — it carries the button role, `aria-expanded` and
  * `data-state` for free, and keeps a collapsed body's content in the DOM exactly as the
- * native `<details>` it replaced did, so a folded section's pollers survive the fold. The
+ * native `<details>` it replaced did, so a folded section's feeds survive the fold. The
  * body is the engine's one {@link ScrollRegion}: each section scrolls ITSELF, vertically
  * only — horizontal overflow is refused by contract, which is what obliges every label in a
  * section to declare ellipsis or wrap.
@@ -298,8 +298,9 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
 
         {/*
           Top-level folder creation is chrome, beside the button that opens it. It used to be
-          rendered inside the Views section, which is no longer the shell's to reach into: the
-          section polls the index, so a new folder appears there on the next tick.
+          rendered inside the Index section, which is no longer the shell's to reach into: the
+          section subscribes to the index's node, so the folder's own creation event puts the
+          new row there.
         */}
         {sidebarOpen && folderName !== null ? (
           <form

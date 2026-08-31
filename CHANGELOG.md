@@ -17,17 +17,21 @@
 - Purging a disabled plugin's data is now a two-press affordance in the Plugins section, showing what the plugin declared it stores and reporting exactly what was removed. (#69, #70)
 - An audit door: `core.events.list` exposes the server's lifecycle event log to owners through the same action vocabulary as everything else. (#69, #70)
 - Layout primitives (Stack, Cluster, Sidebar, Switcher, Cover, Frame) in the plugin UI library: intrinsically responsive building blocks every plugin composes from day one, backing a rebuilt sidebar that survives any width without overflow, clipping, or overlap. (#69, #70)
+- Live updates: what one person does now shows up in everybody else's workspace in well under a second — a new container, a renamed one, a terminal opening or dying, a machine coming online, somebody arriving or leaving — with no refresh and no waiting for the next poll. Plugins can join in: a manifest declares the events it originates, and the engine emits them at the doors that already commit the change. (#72, #73)
 
 ### Changed
 
 - Terminal rename and kill moved from bespoke HTTP routes to `core.terminals.rename` / `core.terminals.kill` actions; killing a terminal keeps working even while the terminals plugin is disabled. (#69, #70)
 - Sidebar width, collapse, and section order left this device: width lives in your server-saved workspace layout, collapse is shared presence state, and section order comes from plugin manifests. (#69, #70)
+- The workspace listens instead of asking. The five things the shell and sidebar used to re-fetch on a timer — the container index, the terminal listing, terminals by home, who is present, the machine roster — now subscribe to the workspace over the connection that was already open, read once when they mount, and re-read only when something actually happened. A timer returns only while the connection is down, because a client with no connection learns nothing by waiting. (#72, #73)
 
 ### Fixed
 
 - A drag that began before the workspace index had catalogued a just-born terminal's home now still streams live motion to every collaborator — movement is unconditional, classification catches up. (#69, #70)
 - A canvas no longer re-renders in a loop while you do nothing: idle CPU on an open canvas dropped to near zero, node drags cost a tenth of their previous script time, and both improvements land below the v0.5.0 baseline. (#69, #70)
 - The browser stopped hammering the API: one shared poll per resource instead of one per component, unchanged answers render nothing, and a hidden tab makes zero requests — enforced by a new performance-budget gate. (#69, #70)
+- An idle workspace now costs nothing on the network: zero requests a minute with a canvas open and a live terminal on screen, measured against 132 a minute immediately before this change — and 232 before the shared feeds landed — with the performance-budget gate's ceilings lowered to zero to keep it there. The gate also checks that each feed is genuinely subscribed, so the zero cannot be a broken feature quietly passing. (#72, #73)
+- The sidebar keeps up with the canvas again. Parking a terminal or putting a portal away from a canvas now goes through the same placement door every other move uses, and a commit is heard by the workspace-wide listings as well as by the room it happened in — so a terminal you park reappears at the top of the Index, and a terminal you open shows up there, immediately and without a refresh. Before this, those listings only learned of it from a timer that no longer exists. (#72, #73)
 
 ### Removed
 

@@ -35,6 +35,7 @@ import {
   createPlacementLookup,
   createTileDropStore,
   debugProbeEnabled,
+  denialMessage,
   envelopeRef,
   gestureSendIntervalOverride,
   remoteCursorSocketId,
@@ -1204,12 +1205,36 @@ export function CanvasView({
    * A view portal's minimize: the WIDGET leaves this canvas and the container it
    * points at is untouched — a shared view is not this canvas's to end, and its
    * sidebar row is how everyone else still reaches it.
+   *
+   * THROUGH THE PLACEMENT DOOR, not through a tombstone, and that is the whole of it:
+   * removing the last reference to a container is what makes its terminal `unplaced`, and
+   * `unplaced` is DERIVED from the containment graph on every read (`core.terminals.listAll`).
+   * A document-plane delete moves that reading with nothing announced, so every workspace-wide
+   * surface — the index's top level above all — would only learn of it from a clock, and there
+   * is no clock behind a subscribed feed any more (ADR 0012). It is also the same verb the
+   * composition route's tile-minimize already sends (`{...} -> {kind:"unplaced"}`), so one
+   * concept has one door rather than two answering differently.
+   *
+   * The element goes when the SERVER removes it from the room, which is the same document
+   * update every other viewer of this canvas receives — so a minimize is one commit, seen
+   * once, by everybody.
    */
-  const removeElement = useCallback(
+  const unplaceElement = useCallback(
     (elementId: string): void => {
-      tombstone([elementId]);
+      void client
+        .place({ kind: "element", containerId: containerId, elementId }, UNPLACED_DESTINATION)
+        .then((outcome) => {
+          if (!outcome.ok) {
+            notify(denialMessage(outcome.denial, lookup), { key: `unplace-element:${elementId}` });
+          }
+        })
+        .catch((reason: unknown) => {
+          notify(reason instanceof Error ? reason.message : "Could not put this away", {
+            key: `unplace-element:${elementId}`,
+          });
+        });
     },
-    [tombstone],
+    [client, containerId, lookup, notify],
   );
 
   /**
@@ -1330,7 +1355,7 @@ export function CanvasView({
       host,
       machines,
       onRenameTerminal,
-      removeElement,
+      unplaceElement,
       onDeleteContainer,
       onResize: handleResize,
       onResizeEnd: handleResizeEnd,
@@ -1377,7 +1402,7 @@ export function CanvasView({
       onDeleteContainer,
       onRenameTerminal,
       openClient,
-      removeElement,
+      unplaceElement,
       tool,
       setEditingId,
     ],

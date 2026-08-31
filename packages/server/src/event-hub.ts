@@ -344,7 +344,7 @@ export class EventHub {
     const at = this.runtime.now();
     const governing = topicContainer(topic, this.deps.terminals);
     this.history.addEvent(trailContainerId ?? governing, at, actor, kind, payload);
-    this.fanOut(topic, governing, kind, at, actor, payload);
+    this.fanOut(topic, { kind: "plugin", pluginId: emitter }, governing, kind, at, actor, payload);
   }
 
   /**
@@ -377,38 +377,77 @@ export class EventHub {
   }
 
   /**
-   * The audience, resolved and written to. Four properties are load-bearing:
+   * The audience, resolved and written to, at the TWO addresses one fact has.
+   *
+   * The first is the node the emission named. The second is the emitter's own COLLECTION, and
+   * it exists because ADR 0012 §2's collection rule has a converse the landing note left
+   * implicit: a reading taken from OUTSIDE every room it reports on cannot subscribe to a node
+   * it will only learn the id of from the answer it is waiting for. The index and both terminal
+   * rosters are exactly that — a placement births a composition, absorbs another, and re-flags
+   * `unplaced`, which is derived from the containment graph — so a placement addressed only to
+   * the destination container is news no workspace-wide reader can ever hear. Reaching the
+   * door's own node makes `manifold://plugin/<owner>` mean what every feed already assumes it
+   * means: everything that plugin's doors announced. It is a delivery address, never a second
+   * emission — `emitterMayEmit` gates the emission, and a plugin's own node is the one plugin
+   * node it may always address anyway.
+   *
+   * Five properties are load-bearing:
    *
    * - ONE RULE DECIDES. `candidateKeys` narrows the registry to the two entries that could
    *   match; `topicMatches` — the protocol's relation, shared with every SDK — decides each
-   *   one. The index never admits anything the relation refuses.
+   *   one. The index never admits anything the relation refuses, and each address is delivered
+   *   under its OWN topic, so the frame a socket receives is one its own copy of the relation
+   *   routes.
    * - ONE FRAME PER SUBSCRIBER AT MOST. A socket subscribed to both a container and one of its
    *   elements is one member of a Set, so it hears the event once rather than once per
-   *   matching subscription.
-   * - SERIALIZED ONCE, not per socket — the roster frame's own shape (`session-ws.ts`).
-   *   Parsed once too, and lazily, so a malformed emission fails here rather than on N clients
-   *   and an emission nobody may hear costs nothing.
+   *   matching subscription — and `reached` carries that across both addresses, so watching a
+   *   node and its door's collection is still one frame.
+   * - ONE COMMIT, ONE ROW. The second address adds no history: the trail records the fact,
+   *   not how many audiences it had.
+   * - SERIALIZED ONCE PER ADDRESS, not per socket — the roster frame's own shape
+   *   (`session-ws.ts`). Parsed lazily too, so a malformed emission fails here rather than on
+   *   N clients and an address nobody holds costs nothing.
    * - AUTHORITY RE-DISCHARGED PER SUBSCRIBER, against the container resolved for THIS
-   *   emission. The subscribe-time check cannot be the guarantee: a terminal's home moves
-   *   (`rebindTerminal`), so a subscription authorized against container A would otherwise
-   *   keep delivering after the terminal was rebound into container B. The cost is one
-   *   capability check per matching socket, and it buys the exact property ADR 0012 claims —
-   *   an event reaches a socket only if that socket may read the topic's node AT THE INSTANT OF
-   *   EMISSION.
+   *   emission — the SAME container at both addresses, which is what keeps the collection from
+   *   widening anything. The subscribe-time check cannot be the guarantee: a terminal's home
+   *   moves (`rebindTerminal`), so a subscription authorized against container A would
+   *   otherwise keep delivering after the terminal was rebound into container B. The cost is
+   *   one capability check per matching socket, and it buys the exact property ADR 0012 claims
+   *   — an event reaches a socket only if that socket may read the topic's node AT THE INSTANT
+   *   OF EMISSION.
    */
   private fanOut(
     topic: ManifoldRef,
+    collection: ManifoldRef,
     containerId: string | null,
     kind: EventKind,
     at: number,
     actor: string | null,
     payload: EventPayload,
   ): void {
+    const reached = new Set<string>();
+    this.deliverAt(topic, containerId, kind, at, actor, payload, reached);
+    // Already the collection's own news (every floor door's shape): one address, not two.
+    if (formatManifoldUri(collection) === formatManifoldUri(topic)) return;
+    this.deliverAt(collection, containerId, kind, at, actor, payload, reached);
+  }
+
+  /** One address's audience, deduplicated against every address already delivered. */
+  private deliverAt(
+    topic: ManifoldRef,
+    containerId: string | null,
+    kind: EventKind,
+    at: number,
+    actor: string | null,
+    payload: EventPayload,
+    reached: Set<string>,
+  ): void {
     const audience = new Set<string>();
     for (const key of candidateKeys(topic)) {
       const holders = this.byTopic.get(key);
       if (holders === undefined) continue;
       for (const id of holders) {
+        if (reached.has(id)) continue;
         const subscribed = this.subscriptions.get(id)?.topics.get(key);
         if (subscribed === undefined || !topicMatches(subscribed, topic)) continue;
         audience.add(id);
@@ -419,6 +458,7 @@ export class EventHub {
       const entry = this.subscriptions.get(id);
       if (entry === undefined) continue;
       if (!this.authorized(entry.subscriber.auth, containerId)) continue;
+      reached.add(id);
       frame ??= JSON.stringify(
         CONNECTION_BODIES.event.parse({ type: "event", topic, kind, at, actor, payload }),
       );

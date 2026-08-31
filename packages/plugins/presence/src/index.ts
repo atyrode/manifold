@@ -36,8 +36,11 @@ export const presenceManifest: PluginManifest = {
       transitions a section outside the room wants to hear about, which is exactly the gap the
       event plane fills and exactly what `/api/attendance` was being polled for.
 
-      Both are addressed to the CONTAINER, because attendance is news about the room, and the
-      principal who arrived or left is the event's actor rather than its topic.
+      Both are addressed to the presence COLLECTION, not to the container: `/api/attendance`
+      is read workspace-wide by chrome that sits outside every room it reports on, so one
+      subscription replaces the poll where a container-addressed topic would have cost that
+      chrome one per container. The container travels in the payload and as the audit trail's
+      scope, and the principal who arrived or left is the event's actor rather than its topic.
      */
     events: [
       { id: "principal_joined", title: "Principal joined a container" },

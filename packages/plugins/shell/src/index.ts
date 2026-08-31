@@ -51,7 +51,10 @@ export const shellManifest: PluginManifest = {
  * workspace tree is per principal (`setWorkspaceLayout(principal.id, ...)`) and no other node
  * describes it. `item_placed` is announced on the destination CONTAINER, so a socket watching a
  * canvas or composition learns something landed in it — once per gesture, at the drop, never
- * per frame of the drag (`AXIOMS.md` §Axioms, the plane rule's commit point).
+ * per frame of the drag (`AXIOMS.md` §Axioms, the plane rule's commit point). Both are also
+ * DELIVERED at this plugin's own node, which is how the workspace-wide readings a placement
+ * moves — the index's top level, both terminal rosters — hear a commit in a room they cannot
+ * name in advance (ADR 0012 §2b). That is delivery, not a second emission: one row, one frame.
  */
 export const spaceManifest: PluginManifest = {
   id: "core.space",

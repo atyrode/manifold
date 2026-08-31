@@ -86,6 +86,7 @@ export {
   type ElementHost,
   type ElementProps,
   type ElementTx,
+  type FeedTopics,
   type HostServices,
   type AuthoringHandle,
   type ViewportHandle,
@@ -93,4 +94,5 @@ export {
   type PlaceOutcome,
   type SectionProps,
   type SessionHandle,
+  type SessionStatus,
 } from "./host.ts";

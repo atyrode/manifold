@@ -760,6 +760,49 @@ re-declares every live topic after each rejoin (never before it: the credential 
 (4002), and `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are
 dropped and logged with the socket left alone.
 
+**Which subscription hears which event** is `topicMatches(subscribed, topic)`, published by
+`@manifold/protocol` and used by BOTH halves — the server to pick sockets, the SDK to pick
+handlers. It is SELF plus exactly the one hop the address grammar states: a subscription to
+`container/<c>` hears `container/<c>` and that container's `element`/`tile` leaves, because an
+element and a tile have no identity outside their container. Nothing else nests — a terminal, a
+principal, a plugin and an action are all roots — so the relation is total over the seven forms
+and needs no store to answer, which is precisely why it can be the one rule on both sides.
+Authority is a different question, asked with the store in hand at subscribe AND again per
+subscriber at delivery, and it can only ever narrow this.
+
+**Where an event is addressed.** To the most specific node that exists both before and after it.
+When the subject is being created or destroyed, or has no `manifold://` form at all (a machine, a
+folder), that node is its COLLECTION: `manifold://plugin/<owner>`, which is also the only plugin
+node the emission check lets that plugin address. So a container created, a terminal opened, a
+machine enrolled and a principal joining are all collection-addressed, and one subscription to a
+plugin's node is how a client watches everything that plugin originates.
+
+**And it is DELIVERED at two addresses**, the node it named and its door's collection, because
+that last sentence has to be true for the emissions that name a node as well. A placement is
+addressed to the destination container, and the readings it moves are taken from chrome OUTSIDE
+every room they report on: the index's top level and both terminal rosters, whose `unplaced` is
+DERIVED from the containment graph and whose newly born compositions have ids no subscriber
+could have named in advance. So `manifold://plugin/<owner>` means what a collection subscription
+already assumes — everything that plugin's doors announced — and a room subscription is
+unchanged. It is one emission, not two: ONE audit row, and one frame per socket, since the
+audience is a set of sockets across both addresses with the named node offered first. Each
+socket receives the frame under the address that REACHED it, so `topicMatches` routes it on the
+client with no second rule. Authority is re-discharged against the SAME container at both
+addresses, so the collection can only ever narrow, never widen, who hears a room's news.
+
+**What a subscriber owes itself.** An event says something happened; it is not the new state, and
+nothing is replayed. A consumer that needs the state READS it, through the same door a fresh
+client uses — which is why the browser's shared feeds
+(`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function and traded
+only their cadence: one initial read at mount, then one read per burst of matching events, and a
+content compare so an unchanged answer reaches no subscriber. The cadence is NOT removed — it is
+the documented fallback, and it runs in exactly two states: while the socket is down (the
+reconnect gap, because a client with no channel learns nothing by waiting) and while a feed has
+no topics at all (the roomless workspace root of an instance with no containers). It never runs
+beside a live subscription; the two are mutually exclusive by construction, and `mode: "events"`
+is precisely the state in which no timer exists. `REGISTRY.md` §Budgets is the ceiling that keeps
+that honest — every network row is ZERO at idle.
+
 Handshake: the FIRST client frame on a connection MUST be
 `join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }`; the server
 answers `init { ch, protocolVersion, epoch, rev, doc, attendance, terminals, self, selfCaps,
@@ -1172,6 +1215,16 @@ gesture, and carry frames NEVER touch SQLite.
   mutation door, no secrets. Consumers: `scripts/verify-convergence.ts`,
   `scripts/verify-public.ts`. The probe exists because this boundary shipped two divergence
   bugs no wire-level test could see; keep it read-only across renderer changes.
+- **Feed report** (`packages/plugin/src/polled-resource.ts`), behind the SAME flag: the feed
+  store installs `window.__manifoldFeeds(): readonly PolledFeedReport[]`, one row per live feed
+  — `key` (`<resource>|<restartKey>`), `subscribers`, `mode` (`"events"` | `"timer"`), `live`,
+  `topics` (the subscribed nodes as `manifold://` URIs), `intervalMs` (null when no timer is
+  armed) and `reads` counted by REASON (`initial`, `event`, `timer`, `manual`, `resume`). It is
+  SEPARATE from `window.__manifold` on purpose: that probe is installed by the mounted container
+  renderer and dies with it, while a feed is floor and outlives every view, so the report is
+  present on any page rather than only where a canvas is mounted. Consumers:
+  `scripts/verify-budgets.ts` (the zero in `REGISTRY.md` §Budgets is only meaningful beside
+  `reads.timer === 0` and a live subscription) and `verify:axioms` R10. Read-only, like the other.
 - **Convergence invariant** (guarded by `bun run verify:convergence`, part of `gate`):
   after quiescence, `A.canvas ≡ A.sdkScene ≡ canonical ≡ B.sdkScene ≡ B.canvas` compared
   by element type, geometry, z-index, and type-specific content, with per-round effect

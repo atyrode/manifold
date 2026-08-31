@@ -8,8 +8,12 @@ import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
 import { IndexSection } from "@manifold-plugin/index/web";
-import { shellManifest } from "@manifold-plugin/shell";
-import { panelRefId, type WorkspacePanels } from "@manifold/plugin";
+import { indexManifest } from "@manifold-plugin/index";
+import { machinesManifest } from "@manifold-plugin/machines";
+import { presenceManifest } from "@manifold-plugin/presence";
+import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
+import { terminalsManifest } from "@manifold-plugin/terminals";
+import { panelRefId, type FeedTopics, type WorkspacePanels } from "@manifold/plugin";
 import { ContainerViewPanel } from "./container-view-panel.tsx";
 import { SidebarPanel } from "./sidebar-panel.tsx";
 import type { WebPluginDef } from "./plugin-host.tsx";
@@ -30,6 +34,45 @@ import type { WebPluginDef } from "./plugin-host.tsx";
 export const WORKSPACE_PANELS: WorkspacePanels = {
   sidebar: panelRefId(shellManifest.id, "sidebar"),
   main: panelRefId(shellManifest.id, "container-view"),
+};
+
+/**
+ * WHICH NODES each shared feed subscribes to (ADR 0012). Every entry is a COLLECTION — a
+ * plugin's own node — and each member lists every node that MOVES that reading, not only
+ * its owner's. Two of them move readings that are not their own, and both are here because
+ * the reading would otherwise go stale in a way no cadence is left to cover:
+ *
+ *   `core.space` — a placement commit births solo compositions, absorbs the emptied ones,
+ *     and re-flags terminals, because `unplaced` is DERIVED from the containment graph. So
+ *     the index and both terminal readings watch the spatial door's node beside their owners'.
+ *   `core.terminals` — a terminal is BORN with a home composition and takes it away when it
+ *     is killed (`createHome`, `dropContainer`), so a terminal's lifecycle adds and removes
+ *     rows at the index's own top level.
+ *
+ * One subscription per node, rather than one per container, because all four answers are
+ * workspace-wide readings taken from chrome outside every room they report on — which is also
+ * why a node-addressed event never reaches them and the server delivers every emission to its
+ * door's collection as well (`EventHub.fanOut`).
+ *
+ * It lives here for the same reason `WORKSPACE_PANELS` does, and it is the browser's exact
+ * counterpart of the server's `FLOOR_EVENT_OWNERS`: a topic is `manifold://plugin/<owner>`,
+ * so writing one is naming a plugin, and this is the only file in `packages/web/src` allowed
+ * to (`verify:axioms` S2). The floor shell reads it from here as a sibling floor file; the
+ * sections read it off `host.topics`, since a plugin may not name another plugin either.
+ * Swapping in a stranger's terminals plugin is one line, here.
+ */
+export const FEED_TOPICS: FeedTopics = {
+  index: [
+    { kind: "plugin", pluginId: indexManifest.id },
+    { kind: "plugin", pluginId: spaceManifest.id },
+    { kind: "plugin", pluginId: terminalsManifest.id },
+  ],
+  terminals: [
+    { kind: "plugin", pluginId: terminalsManifest.id },
+    { kind: "plugin", pluginId: spaceManifest.id },
+  ],
+  attendance: [{ kind: "plugin", pluginId: presenceManifest.id }],
+  machines: [{ kind: "plugin", pluginId: machinesManifest.id }],
 };
 
 /**

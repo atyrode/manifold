@@ -222,11 +222,13 @@ describe("the event frame", () => {
     // Absent is not null. A subscriber suppressing the echo of its own mutation reads a
     // value; an optional field would make "nobody did it" and "nobody said" the same frame.
     const { actor: _dropped, ...withoutActor } = eventFrame();
+    void _dropped;
     expect(ServerMessageSchema.safeParse(withoutActor).success).toBe(false);
   });
 
   test("payload is required and may be empty, so no consumer pays for an undefined branch", () => {
     const { payload: _dropped, ...withoutPayload } = eventFrame();
+    void _dropped;
     expect(ServerMessageSchema.safeParse(withoutPayload).success).toBe(false);
     expect(ServerMessageSchema.safeParse(eventFrame({ payload: { exitCode: 0 } })).success).toBe(
       true,

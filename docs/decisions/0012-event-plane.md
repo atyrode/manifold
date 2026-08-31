@@ -1,7 +1,7 @@
 # 0012 — The event plane: declared notifications emitted at the doors
 
 Date: 2026-08-31
-Status: designed 2026-08-31, implementation wave 2
+Status: designed 2026-08-31, **landed 2026-08-31** (wave 2, #72 / #73)
 
 Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The sidebar section it names "Views" is the **Index** section
@@ -105,6 +105,109 @@ writing ONE serialized frame to N sockets whose subscriptions die with them
 `packages/sdk/src/connection-pool.ts`). A library at the centre of that would be a six-line
 saving wrapped in an API surface — `once`, wildcards, operators, listener counts — whose every
 extra affordance is something this ADR spent its Decision section forbidding.
+
+## Landed 2026-08-31 (wave 2, #72 / #73)
+
+What shipped, recorded here because a design record whose implementation moved is a design
+record that lies. Five shapes were decided at implementation and are normative from now on; one
+of them is a deviation from this file's own wording, and it is written down as such rather than
+quietly absorbed.
+
+**1. The delivery relation is `topicMatches`, and it lives in the protocol.** Not string
+equality, not a prefix convention: a relation over the addressing grammar
+(`packages/protocol/src/events.ts`). A subscription to `S` receives an event on `T` iff `S` is
+`T`, or `S` is `container/<c>` and `T` is `container/<c>`, `container/<c>/element/<e>` or
+`container/<c>/tile/<t>` — SELF plus exactly the one hop the URI grammar itself states, since an
+element and a tile have no identity outside their container while a terminal, a principal, a
+plugin and an action are all roots. It is in the protocol because BOTH halves must decide with
+it: the server picks the sockets, the SDK picks the handler, and a rule either side could not
+evaluate would let the server deliver frames no client rule could route. The server narrows to
+at most two candidate keys before asking, so the index is a prefilter and this relation is the
+decider (`packages/server/src/event-hub.ts`).
+
+**2. Collection addressing, and the rule that produces it.** An event is addressed to the most
+specific node that exists both BEFORE and AFTER it. When the subject is being created or
+destroyed, or has no `manifold://` form at all (a machine, a folder), that node is its
+COLLECTION — `manifold://plugin/<owner>`, which is also the only plugin node `emitterMayEmit`
+lets that plugin address. This is why §6's test is passed rather than argued: each of the five
+polled feeds subscribes to exactly ONE collection topic
+(`core.index` → `manifold://plugin/core.index`, both terminal feeds →
+`manifold://plugin/core.terminals`, attendance → `manifold://plugin/core.presence`, machines →
+`manifold://plugin/core.machines`), so converting a polled section cost one options change at
+the call site and nothing else. The floor may not spell a plugin id, so the two ends name their
+owners through a registration table each — `FLOOR_EVENT_OWNERS` in
+`packages/server/src/assembly.ts` and `FEED_TOPICS` in `packages/web/src/assembly.ts`, the two
+files already permitted to.
+
+**2b. An emission is DELIVERED at two addresses: the node it named, and its door's collection.**
+Clause 2 says where an event is addressed. This says who is reached, and it exists because clause
+2's own sentence — "one subscription to a plugin's node is how a client watches everything that
+plugin originates" — is false for the emissions that name a node. The placement door addresses
+`item_placed` to the destination CONTAINER, which is right (the container exists before and
+after, and a socket watching a room should learn that something landed in it) and unreachable by
+the surfaces the commit actually moves: the index's top level and both terminal rosters are read
+from chrome OUTSIDE every room they report on, `unplaced` is DERIVED from the containment graph,
+and a placement births compositions whose ids no subscriber could have named in advance. While
+those feeds still had a cadence the gap was invisible; once §6 traded the cadence for a
+subscription it became "the index never resurfaces an unplaced terminal", which is how it was
+found (`verify:terminal-mirror`, `verify:tile-drop`).
+
+So `EventHub.fanOut` offers every emission at the named node and then at
+`manifold://plugin/<emitter>`. It is one EMISSION, not two: one audit row, and one frame per
+socket, because the audience is a set of sockets across both addresses with the named node
+offered first. Each socket receives the frame under the address that REACHED it, so clause 1
+still holds exactly — the SDK routes with its own copy of `topicMatches` and no second rule.
+Authority is re-discharged against the SAME container at both addresses (clause 3), so the
+collection narrows and never widens: a container-scoped token cannot hold a collection
+subscription at all, and an unscoped one must still pass `containers:read` for the room the
+commit happened in. The emission check is untouched — a plugin's own node is the one plugin node
+`emitterMayEmit` always lets it address, so this reaches nowhere an emitter could not have
+addressed itself.
+
+The browser half's consequence is one line in `FEED_TOPICS`: a feed lists every node that MOVES
+its reading, so the index watches `core.space` (placements) and `core.terminals` (a terminal is
+born with a home composition and takes it away when killed) beside its own. And the canvas's
+portal minimize became a PLACEMENT (`{kind:"element"} -> {kind:"unplaced"}`) instead of a
+document-plane tombstone — an unplacement carried on the document plane is a commit the event
+plane never sees, which is the same defect wearing the plane rule's clothes.
+
+**3. Authority is discharged TWICE, and it is the same authority the resolve door uses.**
+Subscribing is a read-grant question (§2), asked as `allows(context, "containers:read", <the
+topic's governing container>)`. It is asked at SUBSCRIBE, so a socket does not grow state it may
+never be told about, and again at DELIVERY per subscriber, because a terminal's home is mutable
+under a live subscription and the guarantee has to hold at the moment the frame goes out. An
+UNGOVERNED topic — `principal`, `plugin`, `action`, which is every collection — additionally
+requires the token's container scope to be null: a scoped token's authority is a subtree, and a
+node with no container above it is in nobody's subtree. The refusal is SILENT, logged as
+`session_subscribe_forbidden` and never framed, because a per-topic answer would make the event
+plane a permission oracle.
+
+**4. Deviation: there is NO terminal → home-container hop for DELIVERY.** The design brief for
+this wave had the fan-out resolve a terminal's home and deliver its news to that container's
+subscribers. It does not. The store hop survives for AUTHORITY only, where it can only ever
+narrow delivery. The reason is clause 1: a terminal is a grammar ROOT because it can be rehomed
+and keeps its identity, so its container is a fact of STATE, and the SDK — which must route the
+same frame with the same rule — cannot perform a store lookup. A store-based delivery hop would
+therefore have the server send frames that no client-side rule could route, which is a
+subscriber watching frames vanish. Terminal news still reaches every watcher because terminal
+lifecycle is collection-addressed per clause 2, and the in-room half of the same news already
+rides the session channel (`terminal_event`, attendance frames).
+
+**Two mechanisms worth naming because they are what make §4 and §5 checkable rather than
+aspirational.** Emission through the action door is STAGED: `ctx.emit` buffers, and the buffer
+flushes only after the handler returned `{ ok: true }` and its own result schema parsed, so a
+handler that mutates and then refuses, throws, or fails its schema publishes nothing —
+"refusals are not events" is mechanized rather than left to handler discipline. And emission is
+refused outright unless the assembly's declared-topics index says the emitter owns the kind
+(`emitterMayEmit`, `packages/plugin/src/emit.ts`), which is how the vocabulary stays open while
+the mechanism stays closed.
+
+**The bill.** `REGISTRY.md` §Budgets network ceilings are ZERO at idle, and the gate proves the
+zero is a subscription rather than a corpse by reading each feed's own report before it measures
+(`verify:budgets`). `verify:axioms` R10 asserts the whole plane end to end: an event frame's
+topic, kind and actor at an SDK peer, a browser's UI reflecting a third principal's mutation
+inside one second with `reads.timer` still at zero, and a container-scoped token refused a
+foreign collection in silence.
 
 ## Alternatives rejected
 

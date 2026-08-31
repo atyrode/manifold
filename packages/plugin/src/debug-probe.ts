@@ -1,4 +1,5 @@
 import { elementPayloadDigest, type SceneElement } from "@manifold/protocol";
+import type { PolledFeedReport } from "./polled-resource.ts";
 
 /**
  * Agent-facing testability probe (CONTRACTS.md §testability).
@@ -91,6 +92,14 @@ export interface ManifoldDebugProbe {
 declare global {
   interface Window {
     __manifold?: ManifoldDebugProbe;
+    /**
+     * The FEEDS' own probe (`polled-resource.ts` installs it; the type is stated here so one
+     * file owns everything this tree writes onto `window`). Separate from
+     * {@link Window.__manifold} because that one is installed by the canvas renderer and dies
+     * with its mount, while a feed is floor and outlives every view — and the budget gate has
+     * to read the feed report on any page, not only a canvas.
+     */
+    __manifoldFeeds?: () => readonly PolledFeedReport[];
   }
 }
 

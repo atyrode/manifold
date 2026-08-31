@@ -210,6 +210,8 @@ function eventsOn(socket: FakeSocket): ServerEvent[] {
 }
 
 const INDEX_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
+/** The placement door's own node: where a commit's workspace-wide half is heard. */
+const SPACE_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.space" };
 
 describe("event plane subscription authority", () => {
   test("an owner subscribes to a container and hears it; the OTHER container stays silent", async () => {
@@ -406,6 +408,67 @@ describe("event plane fan-out", () => {
     // Both subscriptions match, and the audience is a set of SOCKETS rather than of
     // subscriptions — so the fan-out cannot multiply one fact by how closely a client watches.
     expect(eventsOn(socket)).toHaveLength(1);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a node-addressed commit also reaches its door's COLLECTION, once and with one row", async () => {
+    const fixture = planeFixture();
+    const room = connect(fixture, "room");
+    const workspace = connect(fixture, "workspace");
+    subscribe(fixture, "room", [{ kind: "container", containerId: fixture.container.id }]);
+    subscribe(fixture, "workspace", [SPACE_TOPIC]);
+
+    /*
+      THE REGRESSION THIS PINS. A placement is addressed to the destination container, and the
+      readings it moves — the index and both terminal rosters — are taken from chrome OUTSIDE
+      every room they report on: `unplaced` is derived from the containment graph, and a
+      placement births compositions whose ids no subscriber could have named in advance. Once
+      those feeds traded their cadence for a subscription (ADR 0012 §6) a room-addressed frame
+      was the ONLY notice they would ever get, and it is one they cannot hear — the index
+      simply stopped resurfacing unplaced terminals. So the fan-out delivers every emission to
+      its door's own node as well, and `manifold://plugin/<owner>` means what the feeds already
+      assume: everything that plugin's doors announced.
+     */
+    await fixture.host.dispatch(fixture.owner, "core.space.place", {
+      ref: { kind: "container", containerId: fixture.other.id },
+      destination: { kind: "canvas", containerId: fixture.container.id, x: 10, y: 20 },
+    });
+
+    const inRoom = eventsOn(room);
+    const outside = eventsOn(workspace);
+    expect(inRoom.map((event) => event.topic)).toEqual([
+      { kind: "container", containerId: fixture.container.id },
+    ]);
+    // Delivered under the address that REACHED it, so the SDK's own copy of `topicMatches`
+    // routes the frame to the subscription that asked for it.
+    expect(outside.map((event) => event.topic)).toEqual([SPACE_TOPIC]);
+    expect(outside.map((event) => event.kind)).toEqual(["item_placed"]);
+    // A second audience is not a second event: the trail records the fact, not its reach.
+    expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("holding a node AND its door's collection is still one frame, at the node", async () => {
+    const fixture = planeFixture();
+    const socket = connect(fixture, "tab");
+    subscribe(fixture, "tab", [
+      { kind: "container", containerId: fixture.container.id },
+      SPACE_TOPIC,
+    ]);
+
+    await fixture.host.dispatch(fixture.owner, "core.space.place", {
+      ref: { kind: "container", containerId: fixture.other.id },
+      destination: { kind: "canvas", containerId: fixture.container.id, x: 1, y: 2 },
+    });
+
+    // The audience is a set of SOCKETS across BOTH addresses, and the node the emission named
+    // is offered first — so watching a room and its door's collection cannot double a commit.
+    const heard = eventsOn(socket);
+    expect(heard.map((event) => event.topic)).toEqual([
+      { kind: "container", containerId: fixture.container.id },
+    ]);
     fixture.gateway.shutdown();
     fixture.store.close();
   });

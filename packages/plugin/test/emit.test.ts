@@ -1,12 +1,12 @@
 import type { ManifoldRef, PluginManifest } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import {
-  AssemblyError,
   assembleRoster,
   emissionRefusal,
   emitterMayEmit,
   enginePluginsManifest,
   type Assembly,
+  type AssemblyError,
   type PluginDef,
 } from "../src/index.ts";
 

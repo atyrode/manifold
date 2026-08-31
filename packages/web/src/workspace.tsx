@@ -66,16 +66,16 @@ import {
 const LAYOUT_COMMIT_MS = 300;
 
 /**
- * Cadences of the workspace index. Everything here is HTTP because the workspace itself has
- * no event channel yet — rooms fan out, the index does not — so a container another tab
- * created becomes visible one tick later. When that channel exists (wave 2) these constants
- * and every `usePolledResource` call become subscriptions.
+ * The FALLBACK cadence of the workspace index (ADR 0012, wave 2).
  *
- * ONE cadence, deliberately. The attendance roster used to run at 1.5s here and at 2s in the
- * index section — two rates for one resource, chosen by nobody, and under the shared feed the
- * faster one simply wins for both readers. Agreeing on the index rate makes the shell and the
- * section the same subscriber to the same answer, which is what "one poller per resource"
- * has to mean before a budget can be written down for it.
+ * Every feed below now names the collection nodes its answer is news about and refreshes on
+ * an event; this number is what happens while there is no session channel to carry one — a
+ * dropped socket, or the workspace root of a brand-new workspace, which has no room and
+ * therefore nothing to subscribe through. It is never a rate a live workspace pays.
+ *
+ * ONE cadence, deliberately, for the same reason it was one before: the attendance roster
+ * used to run at 1.5s here and at 2s in the index section — two rates for one resource,
+ * chosen by nobody — and under the shared feed the faster one simply wins for both readers.
  */
 const INDEX_POLL_MS = 2_000;
 
@@ -326,16 +326,21 @@ export function WorkspaceHost({
 
   /*
    * The index the RENDERERS need: a canvas is handed every container so it can name a portal's
-   * target, and the placement algebra is answered from the terminals listing. The Views
+   * target, and the placement algebra is answered from the terminals listing. The Index
    * section reads the SAME three doors for itself — a plugin fetches its own data through
    * `host.client` and holds no wire to the shell's state — and because both name the resource
-   * rather than open a timer, the two readers are one request per tick, not two.
+   * rather than open a timer, the two readers are one subscription and one request, not two.
+   *
+   * The topics come from `host` rather than from a literal here: a `manifold://plugin/<id>`
+   * topic names a plugin, and the shell is floor (see `assembly.ts`, `FEED_TOPICS`).
    */
   const { value: treeItems, refresh: refreshTree } = usePolledResource<
     readonly IndexEntry[] | null
   >(fetchTree, INDEX_POLL_MS, {
     key: INDEX_RESOURCE,
     initial: null,
+    topics: host.topics.index,
+    events: host.client,
     equal: (current, incoming) =>
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
     onError: (reason) => {
@@ -353,6 +358,8 @@ export function WorkspaceHost({
   const { value: presence } = usePolledResource(fetchPresence, INDEX_POLL_MS, {
     key: ATTENDANCE_RESOURCE,
     initial: NO_PRESENCE,
+    topics: host.topics.attendance,
+    events: host.client,
     restartKey: requestedContainerId,
   });
 
@@ -360,7 +367,12 @@ export function WorkspaceHost({
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
     INDEX_POLL_MS,
-    { key: TERMINALS_RESOURCE, initial: NO_TERMINALS },
+    {
+      key: TERMINALS_RESOURCE,
+      initial: NO_TERMINALS,
+      topics: host.topics.terminals,
+      events: host.client,
+    },
   );
   /*
    * A terminal was born or died in the open container: ask now rather than wait out the

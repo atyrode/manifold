@@ -8,9 +8,9 @@ import { useCallback, type ReactElement } from "react";
 
 /**
  * The Machines section's browser half. Self-contained by construction: it asks the workspace
- * what machines exist through `host.client` and polls at the cadence the shell used to poll
- * for it, so nothing about it depends on which renderer — or whether any renderer — is
- * mounted beside it.
+ * what machines exist through `host.client` and re-asks when the fleet's own node says
+ * something happened — a machine enrolled, came online, went offline — so nothing about it
+ * depends on which renderer, or whether any renderer, is mounted beside it.
  *
  * The "+" is the one affordance it does not own. A terminal is born INSIDE a container, and
  * only the mounted view knows how its discipline authors one, so the button asks
@@ -20,7 +20,11 @@ import { useCallback, type ReactElement } from "react";
  * traffic this wave, and a `data-action` naming nothing would be a lie the gate would catch.
  */
 
-/** The workspace has no event channel yet; when it does this becomes a subscription. */
+/**
+ * The FALLBACK cadence (ADR 0012, wave 2). Machine liveness is a subscription on the fleet's
+ * collection node; this is what the section falls back to while there is no session channel
+ * to carry one, and a live workspace never pays it.
+ */
 const MACHINE_POLL_MS = 5_000;
 
 /** 14px to match the sidebar's row rhythm; 1.75 is the app's one stroke weight. */
@@ -31,7 +35,12 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
   const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
     fetchMachines,
     MACHINE_POLL_MS,
-    { key: MACHINES_RESOURCE, initial: null },
+    {
+      key: MACHINES_RESOURCE,
+      initial: null,
+      topics: host.topics.machines,
+      events: host.client,
+    },
   );
   const authoring = host.authoring;
   const online = machines?.filter((machine) => machine.online).length ?? 0;
