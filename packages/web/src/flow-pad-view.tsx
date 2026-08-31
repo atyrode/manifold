@@ -1000,7 +1000,7 @@ export function FlowPadView({
         machines,
         liveBindings,
         selfId: client.self?.id ?? null,
-        selfCaps: client.selfCaps,
+        selfCaps: client.selfCaps(),
       }),
     [client, liveBindings, machines],
   );

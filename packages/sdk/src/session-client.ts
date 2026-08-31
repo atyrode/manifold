@@ -1,24 +1,37 @@
 import {
+  ActionOutcomeSchema,
   ClientMessageBodySchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
+  MachinesResponseSchema,
   PROTOCOL_VERSION,
+  PadPresenceResponseSchema,
+  PadSessionsResponseSchema,
+  PadTreeResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDeniedResponseSchema,
+  TerminalsResponseSchema,
+  type ActionOutcome,
   type Cap,
   type ClientMessageBody,
   type Gesture,
+  type MachineSummary,
+  type PadPresence,
+  type PadSessionSummary,
+  type PadTreeItem,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementDestination,
   type PlacementSurface,
+  type PluginRoster,
   type PresencePayload,
   type PresenceState,
   type Principal,
   type SceneElement,
   type ServerMessageBody,
   type SessionInfo,
+  type TerminalSummary,
   type TileLayout,
 } from "@manifold/protocol";
 import {
@@ -45,6 +58,7 @@ import { bytesToBase64, textToBase64 } from "./base64.ts";
 import {
   acquireChannel,
   type ChannelFrame,
+  type ConnectionFrame,
   type JoinBody,
   type PooledChannel,
 } from "./connection-pool.ts";
@@ -62,6 +76,12 @@ import {
  * The public surface is unchanged — construct one per room, `connect()`, subscribe — and
  * reconnect, keepalive, and rejoin-every-channel live one layer down in
  * `connection-pool.ts`.
+ *
+ * Some of its surface is WORKSPACE-level rather than room-level: the action door
+ * (`action`), the workspace reads (`machines`, `padTree`, `padPresence`, `padSessions`,
+ * `terminals`), and the plugin roster (`onPlugins`). A plugin holds only this client, so
+ * the questions it asks the workspace arrive through the same handle — over HTTP and the
+ * connection-level frame category, never over a room channel.
  */
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
@@ -96,6 +116,12 @@ export interface SessionEvents {
   layout_changed: (origin: "local" | "remote" | "undo") => void;
   roster_changed: () => void;
   sessions_changed: () => void;
+  /**
+   * The workspace's plugin roster arrived (socket open) or changed (an enable/disable).
+   * It is connection-level news, not room traffic, so it never reaches `message`.
+   * Subscribe through `onPlugins`, which replays the last one it heard.
+   */
+  plugins_changed: (roster: PluginRoster) => void;
 }
 
 type EventKey = ChannelFrame["type"] | keyof SessionEvents;
@@ -154,7 +180,7 @@ export class SessionClient {
   rev = 0;
   self: Principal | null = null;
   selfConnId: string | null = null;
-  selfCaps: readonly Cap[] = [];
+  private selfCapsState: readonly Cap[] = [];
   status: ConnectionStatus = "idle";
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
@@ -164,6 +190,11 @@ export class SessionClient {
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
   private closeError: Error | null = null;
+  /**
+   * The last plugin roster this connection delivered, replayed to every late `onPlugins`
+   * subscriber. A roster is workspace state, so the newest one is the whole truth.
+   */
+  private pluginRoster: PluginRoster | null = null;
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
   private hasLocalEdits = false;
@@ -185,6 +216,16 @@ export class SessionClient {
   /** This room's channel id on that connection; it appears in every frame it exchanges. */
   get channelId(): string | null {
     return this.channel?.id ?? null;
+  }
+
+  /**
+   * The joining principal's granted caps, as the last init/resync reported them — empty
+   * until the first one lands. A method rather than a field because it is an ANSWER a
+   * caller may hold across reconnects (a plugin gating its affordances asks again), and
+   * because the plugin engine's `SessionHandle` is a method-only surface.
+   */
+  selfCaps(): readonly Cap[] {
+    return this.selfCapsState;
   }
 
   private installDoc(doc: Y.Doc): void {
@@ -336,6 +377,9 @@ export class SessionClient {
         receive: (body) => {
           this.handle(body);
         },
+        connectionFrame: (body) => {
+          this.handleConnection(body);
+        },
         transportPhase: (phase) => {
           this.setStatus(phase);
         },
@@ -365,6 +409,31 @@ export class SessionClient {
 
   // ------------------------------------------------------------------ incoming
 
+  /**
+   * A frame addressed to the SOCKET this room rides. It never touches epoch/rev, never
+   * queues, and never reaches `message`: the roster describes the workspace, not the room,
+   * and every handle on the connection hears the same one.
+   *
+   * `plugins` is the only connection-level category v14 defines, so the body is read
+   * directly; a second category makes `body.roster` a type error, which is exactly the
+   * prompt to fan the categories out here.
+   */
+  private handleConnection(body: ConnectionFrame): void {
+    this.pluginRoster = body.roster;
+    this.emit("plugins_changed", body.roster);
+  }
+
+  /**
+   * Subscribes to the workspace's plugin roster and REPLAYS the last one synchronously,
+   * so a host mounting after the socket opened renders a composition immediately instead
+   * of waiting for the next enable/disable. Returns the unsubscribe.
+   */
+  onPlugins(fn: (roster: PluginRoster) => void): () => void {
+    const off = this.on("plugins_changed", fn);
+    if (this.pluginRoster !== null) fn(this.pluginRoster);
+    return off;
+  }
+
   private handle(msg: ChannelFrame): void {
     switch (msg.type) {
       case "init":
@@ -380,7 +449,7 @@ export class SessionClient {
         this.rev = msg.rev;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
-        this.selfCaps = msg.selfCaps;
+        this.selfCapsState = msg.selfCaps;
         this.roster.clear();
         for (const p of msg.roster) this.roster.set(p.principal.id, p);
         this.sessions.clear();
@@ -601,12 +670,95 @@ export class SessionClient {
     );
   }
 
+  /**
+   * THE action call: invoke a plugin action by its full `plugin.local` name. A denial is
+   * DATA — the rule that refused and its message — exactly like a placement refusal,
+   * because a client renders it; only a broken door (non-JSON, an error envelope) throws.
+   *
+   * HTTP rather than a socket frame for the same reason placement is: an action addresses
+   * the WORKSPACE, while this client is joined to one room.
+   */
+  async action(name: string, args: unknown): Promise<ActionOutcome> {
+    const response = await fetch(`${this.apiOrigin()}/api/actions/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.opts.token}`,
+      },
+      // An argument-free action still sends an envelope: the door parses a body.
+      body: JSON.stringify(args ?? {}),
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`action ${name} returned a non-JSON response (${response.status})`);
+    }
+    if (response.ok) return ActionOutcomeSchema.parse(payload);
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success ? failure.data.error.message : `action ${name} failed (${response.status})`,
+    );
+  }
+
   /** The HTTP origin this session's socket URL implies; `apiUrl` overrides it. */
   private apiOrigin(): string {
     if (this.opts.apiUrl !== undefined) return this.opts.apiUrl.replace(/\/+$/, "");
     const url = new URL(this.opts.url);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     return url.origin;
+  }
+
+  // ---------------------------------------------------------- workspace reads
+
+  /*
+    A plugin asks the WORKSPACE these questions — which machines exist, what the index
+    holds — and it holds only this client. The reads therefore live here rather than in
+    each host's own fetch layer, which is what kept them out of reach of anything but the
+    web app: one door per concept.
+   */
+
+  /** One authed GET; a non-2xx is a failure, never data — these reads have no denials. */
+  private async getJson(path: string): Promise<unknown> {
+    const response = await fetch(`${this.apiOrigin()}${path}`, {
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`GET ${path} returned a non-JSON response (${response.status})`);
+    }
+    if (response.ok) return payload;
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success ? failure.data.error.message : `GET ${path} failed (${response.status})`,
+    );
+  }
+
+  /** The enrolled machines with live online state (`GET /api/machines`). */
+  async machines(): Promise<readonly MachineSummary[]> {
+    return MachinesResponseSchema.parse(await this.getJson("/api/machines")).machines;
+  }
+
+  /** The workspace index — pads and folders in tree order (`GET /api/pad-tree`). */
+  async padTree(): Promise<readonly PadTreeItem[]> {
+    return PadTreeResponseSchema.parse(await this.getJson("/api/pad-tree")).items;
+  }
+
+  /** Who occupies which pad right now (`GET /api/pad-presence`). */
+  async padPresence(): Promise<readonly PadPresence[]> {
+    return PadPresenceResponseSchema.parse(await this.getJson("/api/pad-presence")).pads;
+  }
+
+  /** Every pad-homed terminal session, for per-pad counts (`GET /api/pad-sessions`). */
+  async padSessions(): Promise<readonly PadSessionSummary[]> {
+    return PadSessionsResponseSchema.parse(await this.getJson("/api/pad-sessions")).sessions;
+  }
+
+  /** Every terminal in the workspace with its home composition (`GET /api/terminals`). */
+  async terminals(): Promise<readonly TerminalSummary[]> {
+    return TerminalsResponseSchema.parse(await this.getJson("/api/terminals")).terminals;
   }
 
   sendGesture(gesture: Gesture): void {
