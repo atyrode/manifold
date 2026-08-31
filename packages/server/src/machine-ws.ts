@@ -169,9 +169,11 @@ export class MachineGateway {
       return;
     }
     if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
-      // Long-lived agents survive server deploys, but the compat set currently admits only
-      // the running wire version, so an agent on an older one is refused right here. Say
-      // so out loud — a silent 4409 lockout is a diagnosed outage (2026-08-25).
+      // Long-lived agents survive server deploys, so the compat set is the whole point: it
+      // admits every wire version this server can still speak — v16 and v17, since the event
+      // plane is session-side and left the machine frames byte-identical — and refuses
+      // everything below the v16 reset right here. Say so out loud — a silent 4409 lockout is
+      // a diagnosed outage (2026-08-25).
       this.logger.warn("machine_version_rejected", {
         agentProtocolVersion: message.protocolVersion,
         serverProtocolVersion: PROTOCOL_VERSION,

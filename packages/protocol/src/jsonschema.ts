@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
+import { eventVocabulary } from "./events.ts";
 import {
   PlaceRequestSchema,
   PlaceResponseSchema,
@@ -35,6 +36,12 @@ export interface ProtocolExtras {
  * every closed set a refusal can name. It describes the SHAPE of a plugin; the `plugins`
  * key below describes the ones this server actually composed.
  *
+ * `eventContract` publishes the event plane (ADR 0012): that a topic IS a node address
+ * rather than a string convention, how a kind is spelled, what a payload may carry, and what
+ * one socket may hold. WHICH kinds this server can emit is not repeated here — every roster
+ * row already carries its own `contributes.events`, and a second copy of a live index is a
+ * second thing to keep true.
+ *
  * `extras` publishes the LIVE assembly — the ACTION vocabulary and the plugin roster
  * this server actually composed: a stranger's agent learns every door it may knock on, and
  * what each one takes, from this one document. Omitting it yields exactly the description
@@ -65,6 +72,7 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
       traits: z.toJSONSchema(PlacementTraitsSchema),
     },
     pluginContract: pluginVocabulary(),
+    eventContract: eventVocabulary(),
   };
   if (extras === undefined) return description;
   description["actions"] = extras.actions;

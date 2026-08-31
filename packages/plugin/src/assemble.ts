@@ -107,6 +107,17 @@ export interface AssemblyTool {
   readonly title: string;
 }
 
+/**
+ * One declared event kind, and who may originate it (ADR 0012). The index this inhabits is
+ * what turns `contributes.events` from a reserved field into a MECHANISM: an emission whose
+ * kind nobody declared is refused by name, so the vocabulary a live workspace can emit is
+ * closed and published while the vocabulary a build can declare stays open.
+ */
+export interface AssemblyEvent {
+  readonly plugin: string;
+  readonly title: string;
+}
+
 /** A plugin's stored data as the ledger knows it: what was stamped, and what already ran. */
 export interface PluginStoredData {
   readonly version: PluginDataVersion | null;
@@ -168,6 +179,17 @@ export interface Assembly {
   /** Keyed by wire element type (`draw`) — the same string a scene element carries. */
   readonly elements: ReadonlyMap<string, AssemblyElement>;
   readonly tools: readonly AssemblyTool[];
+  /**
+   * THE DECLARED-TOPICS INDEX: event kind → the plugin that may originate it. Keyed by kind
+   * alone, because a kind is claimed globally (D5) and a topic says WHOSE — an index keyed by
+   * the pair would make a subscriber's match depend on which plugin currently implements a
+   * concept.
+   *
+   * Iteration order is SORTED by kind rather than by registration, because this index is
+   * published vocabulary: a reader diffing two builds' event surfaces should see what changed,
+   * not where somebody moved a registration line.
+   */
+  readonly events: ReadonlyMap<string, AssemblyEvent>;
   /**
    * THE order: topological over `dependencies` ∪ `after`, ties broken by lexicographic id.
    * Derived, deterministic and total, and it is the order lifecycle hooks fan out in — which
@@ -369,6 +391,7 @@ export function assembleRoster(
   const sections: AssemblySection[] = [];
   const elements = new Map<string, AssemblyElement>();
   const tools: AssemblyTool[] = [];
+  const declaredEvents: [string, AssemblyEvent][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
 
   for (const [index, def] of defs.entries()) {
@@ -475,11 +498,14 @@ export function assembleRoster(
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });
     }
-    // Events are reserved for the wave-2 plane (ADR 0012) — nothing consumes them yet, but
-    // an event id is a GLOBAL topic name the moment it exists, so collisions refuse NOW
-    // rather than on the wave that would have had to break someone to fix them.
+    // THE EVENT PLANE's vocabulary (ADR 0012). An event kind is claimed GLOBALLY, exactly as a
+    // section slot and an element type are: `terminal_exited` names one concept, and a second
+    // plugin claiming it would make a subscriber's match depend on which of the two emitted.
+    // Indexed as well as claimed, because the index is what makes emission checkable at all —
+    // an emission whose kind nobody declared is refused rather than fanned out.
     for (const event of manifest.contributes.events) {
       claim(eventIds, event.id, manifest.id);
+      declaredEvents.push([event.id, { plugin: manifest.id, title: event.title }]);
     }
 
     // MIGRATIONS AND DATA VERSION. The declaration is checked here; the running happens in
@@ -570,6 +596,9 @@ export function assembleRoster(
   if (problems.length > 0) throw new AssemblyError(problems);
 
   sections.sort((left, right) => left.order - right.order);
+  // Sorted, not registration-ordered: this index is published vocabulary, and a diff of two
+  // builds' event surfaces should show what changed rather than where a registration moved.
+  declaredEvents.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
 
   const isEnabled = (id: string): boolean => manifests.has(id) && !disabled.has(id);
 
@@ -645,6 +674,7 @@ export function assembleRoster(
     sections,
     elements,
     tools,
+    events: new Map(declaredEvents),
     order,
     pendingMigrations,
     enabled: isEnabled,

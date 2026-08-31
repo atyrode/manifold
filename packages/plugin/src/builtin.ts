@@ -41,6 +41,22 @@ export const ENGINE_PLUGINS_ID = `${ENGINE_NAMESPACE_PREFIX}plugins`;
 export const ENGINE_SET_ENABLED_ACTION = `${ENGINE_PLUGINS_ID}.setEnabled`;
 export const ENGINE_PURGE_ACTION = `${ENGINE_PLUGINS_ID}.purge`;
 
+/**
+ * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
+ * owns outright, so it is the one place the engine declares a vocabulary of its own; every
+ * other kind belongs to the plugin that owns the concept, and the floor door that commits the
+ * change emits under THAT plugin's id. A manifest titled "Plugin engine" declaring
+ * `terminal_exited` would be a category error — and, since a kind is claimed globally, it
+ * would also lock the terminals plugin out of its own word.
+ *
+ * Three kinds, one per outcome the door has: a roster row turned on, turned off, or had its
+ * data destroyed. They are the reason the plugin-manager section can stop polling the roster:
+ * the `plugins` frame already pushes the new roster, and these say WHO did it and to WHAT.
+ */
+export const ENGINE_ENABLED_EVENT = "plugin_enabled";
+export const ENGINE_DISABLED_EVENT = "plugin_disabled";
+export const ENGINE_PURGED_EVENT = "plugin_purged";
+
 export const enginePluginsManifest: PluginManifest = {
   id: ENGINE_PLUGINS_ID,
   version: "1.0.0",
@@ -48,7 +64,17 @@ export const enginePluginsManifest: PluginManifest = {
   description:
     "The engine's own administration doors: workspace-global enablement, and the purge verb that destroys a disabled plugin's data.",
   capabilities: ["plugins:manage"],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    events: [
+      { id: ENGINE_ENABLED_EVENT, title: "Plugin enabled" },
+      { id: ENGINE_DISABLED_EVENT, title: "Plugin disabled" },
+      { id: ENGINE_PURGED_EVENT, title: "Plugin data purged" },
+    ],
+  },
 };
 
 /**

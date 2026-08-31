@@ -1,4 +1,5 @@
 import type { PluginId } from "@manifold/protocol";
+import type { EmitEvent } from "./emit.ts";
 import type { PluginStorage } from "./storage.ts";
 
 /**
@@ -20,18 +21,26 @@ import type { PluginStorage } from "./storage.ts";
 export const LIFECYCLE_TIMEOUT_MS = 2_000;
 
 /**
- * What a hook is handed: its own identity, its own storage, and the server's clock. Nothing
- * else — deliberately. A lifecycle hook exists to put a plugin's OWN durable state in order;
- * anything that touches the workspace is a mutation, and every mutation goes through an
- * action door where it can be authorized, validated, logged and observed (invariant 13).
+ * What a hook is handed: its own identity, its own storage, the server's clock, and the one
+ * emission call. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN
+ * durable state in order; anything that touches the workspace is a mutation, and every
+ * mutation goes through an action door where it can be authorized, validated, logged and
+ * observed (invariant 13).
+ *
+ * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
+ * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would
+ * have had to guard. What a hook still cannot do is change anything — including refusing or
+ * delaying the transition that fired it.
  *
  * The parameter is contravariant, so a plugin may declare the minimal slice it actually uses
  * (`(ctx: { storage: PluginStorage }) => void`) and still satisfy the hook type. That is the
- * same sandbox shape the server's action handlers use, checked at the registration site.
+ * same sandbox shape the server's action handlers use, checked at the registration site — and
+ * it is why a hook that never emits never mentions `emit`.
  */
 export interface LifecycleCtx {
   readonly pluginId: string;
   readonly storage: PluginStorage;
+  readonly emit: EmitEvent;
   now(): number;
 }
 

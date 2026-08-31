@@ -8,6 +8,7 @@ import {
   type CensusItem,
   type ClientMessageBody,
   type ContainerCensus,
+  type EventKind,
   type PresencePayload,
   type PresenceState,
   type Principal,
@@ -44,6 +45,7 @@ import {
   writeTileLeafRef,
 } from "@manifold/scene";
 import type { ElementPayloadRefusal } from "@manifold/plugin";
+import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
@@ -184,6 +186,14 @@ export class Room {
      * asks the store for a document.
      */
     private readonly payloadRefusal: (element: SceneElement) => ElementPayloadRefusal | null,
+    /**
+     * ATTENDANCE, ANNOUNCED — injected for the same reason the payload boundary above it is.
+     * A room owns its roster; which plugin declares the WORDS for a principal arriving is the
+     * assembly's business, and a floor pillar that named one would be the neutrality criterion
+     * failing (`AXIOMS.md` §Foundation law). The room says what happened and to which
+     * container; the function it is handed decides who hears it and where it is recorded.
+     */
+    private readonly announce: (containerId: string, principalId: string, kind: EventKind) => void,
   ) {
     const record = store.latestDoc(containerId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
@@ -309,15 +319,10 @@ export class Room {
       payload: this.presences.get(principalId) ?? {},
     };
     this.broadcast({ type: "attendance", joined }, false, peer);
-    if (firstConnection) {
-      this.store.addEvent(
-        this.containerId,
-        this.runtime.now(),
-        principalId,
-        "principal_joined",
-        {},
-      );
-    }
+    // A principal ARRIVES once, however many tabs it opens: the announcement is gated on the
+    // first connection exactly as the durable row always was, so the event is one per
+    // attendance change and not one per socket.
+    if (firstConnection) this.announce(this.containerId, principalId, "principal_joined");
     return true;
   }
 
@@ -339,7 +344,7 @@ export class Room {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
       this.broadcast({ type: "attendance", left: { principalId } });
-      this.store.addEvent(this.containerId, this.runtime.now(), principalId, "principal_left", {});
+      this.announce(this.containerId, principalId, "principal_left");
       if (this.connections.size === 0) this.onEmpty(this, "occupants");
       return;
     }
@@ -931,6 +936,22 @@ export class RoomManager {
    * envelope already does for a stranger type.
    */
   private payloadGuard: (element: SceneElement) => ElementPayloadRefusal | null = () => null;
+  /**
+   * ATTENDANCE ANNOUNCEMENT, history-only until the event plane is wired.
+   *
+   * The default is not a no-op, and that is the whole point: `store.addEvent` is the one
+   * writer of the durable trail and a principal arriving is recorded whether or not anybody is
+   * subscribed — the audit log is not a subscriber. Installing the hub REPLACES this rather
+   * than adding to it, so the row is written exactly once, by exactly one writer, in both
+   * worlds (ADR 0012 §5).
+   */
+  private announce: (containerId: string, principalId: string, kind: EventKind) => void = (
+    containerId,
+    principalId,
+    kind,
+  ) => {
+    this.store.addEvent(containerId, this.runtime.now(), principalId, kind, {});
+  };
 
   constructor(
     private readonly store: ServerStore,
@@ -952,6 +973,23 @@ export class RoomManager {
   /** Installs the broker's in-flight create view for residency decisions. */
   setPendingOpenProvider(provider: (containerId: string) => boolean): void {
     this.pendingOpenProvider = provider;
+  }
+
+  /**
+   * Installs the event plane.
+   *
+   * Attendance is addressed to the presence COLLECTION rather than to the container, and the
+   * container travels as the audit trail's own scope plus the payload's `containerId`. The
+   * reason is the surface: `/api/attendance` was polled WORKSPACE-WIDE, from chrome that is
+   * outside every room it reports on, so a container-addressed topic would have cost that
+   * chrome one subscription per container — while the in-room half of the same news already
+   * rides the session channel as an `attendance` frame. One subscription replaces the poll,
+   * and nothing that used to arrive stops arriving.
+   */
+  setEvents(events: EventHub): void {
+    this.announce = (containerId, principalId, kind) => {
+      events.emitCollection("attendance", kind, principalId, { containerId }, containerId);
+    };
   }
 
   /**
@@ -1031,6 +1069,9 @@ export class RoomManager {
         },
         (element) => {
           return this.payloadGuard(element);
+        },
+        (announcedContainerId, principalId, kind) => {
+          this.announce(announcedContainerId, principalId, kind);
         },
       );
       this.rooms.set(containerId, room);

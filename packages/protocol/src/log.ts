@@ -54,8 +54,15 @@ export const LOG_EVENTS = [
   // Server: session transport — channel multiplexing and connection-level frames.
   "session_channel_limit",
   "session_malformed_frame",
+  "session_subscribe_forbidden",
+  "session_subscription_limit",
   "session_unknown_channel",
   "session_unknown_frame",
+
+  // Server: the event plane (ADR 0012). An emission whose kind its emitter never declared is
+  // refused rather than fanned out, and the refusal is LOUD: a silent drop would make the
+  // declared vocabulary unfalsifiable at runtime, which is the whole reason it is declared.
+  "event_undeclared",
 
   // Server: the document plane — load, repair, size limits, snapshot flushes.
   "scene_doc_load_skipped",

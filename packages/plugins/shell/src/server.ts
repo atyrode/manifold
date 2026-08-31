@@ -1,3 +1,4 @@
+import type { EmitEvent } from "@manifold/plugin";
 import {
   placementRefusal,
   validateTileLayout,
@@ -23,6 +24,12 @@ interface LayoutCtx {
   readonly store: {
     setWorkspaceLayout(principalId: string, layout: TileLayout): void;
   };
+  /**
+   * A layout write, announced. The topic is the caller's OWN principal node, which is the only
+   * node a per-principal tree has: `setWorkspaceLayout` is keyed by principal id, and no
+   * container, element or plugin node describes "this reader's arrangement".
+   */
+  readonly emit: EmitEvent;
 }
 
 interface PlaceCtx {
@@ -34,6 +41,7 @@ interface PlaceCtx {
       | { readonly status: "denied"; readonly denial: PlacementDenial }
       | { readonly status: "failed"; readonly failure: "not_found" | "conflict" };
   };
+  readonly emit: EmitEvent;
 }
 
 /** Either the empty result the action publishes, or a refusal the door turns into a denial. */
@@ -61,6 +69,12 @@ export const spaceHandlers = {
       return { refused: `workspace leaves hold panels, not "${node.ref.kind}"` };
     }
     ctx.store.setWorkspaceLayout(ctx.principal.id, args.layout);
+    // ONE per gesture, and the gesture is already debounced to one call by the client (a
+    // divider drag paints per frame and commits once, D6) — so this line runs once per commit
+    // for the same reason the action does.
+    ctx.emit({ kind: "principal", principalId: ctx.principal.id }, "layout_set", {
+      leaves: Object.keys(args.layout).length,
+    });
     return {};
   },
 
@@ -80,13 +94,33 @@ export const spaceHandlers = {
    */
   async place(ctx: PlaceCtx, args: PlaceRequest): Promise<PlaceResponse | { refused: string }> {
     const outcome = ctx.placement.place(args);
-    if (outcome.status === "placed") return outcome.result;
     if (outcome.status === "denied") return { refused: placementRefusal(outcome.denial) };
-    return {
-      refused:
-        outcome.failure === "not_found"
-          ? "not_found: placement ref or container not found"
-          : "conflict: placement could not be carried out",
-    };
+    if (outcome.status === "failed") {
+      return {
+        refused:
+          outcome.failure === "not_found"
+            ? "not_found: placement ref or container not found"
+            : "conflict: placement could not be carried out",
+      };
+    }
+    /*
+      THE DROP, announced once, on the container the item landed IN.
+
+      Only a PLACED outcome announces: a denial and a failure are answers about state, and an
+      event is a notification that something happened. The destination carries the container for
+      all three real forms; `unplaced` carries none, because unplacing means every reference
+      goes and there is no destination left to name — so it is addressed to the item's own node,
+      which is what the ref already is. `PlacementRef`'s four forms are structurally the four
+      `ManifoldRef` forms they address, so this is the compiler joining the address rather than
+      this file spelling one.
+     */
+    ctx.emit(
+      args.destination.kind === "unplaced"
+        ? args.ref
+        : { kind: "container", containerId: args.destination.containerId },
+      "item_placed",
+      { op: outcome.result.op, item: args.ref.kind, destination: args.destination.kind },
+    );
+    return outcome.result;
   },
 };

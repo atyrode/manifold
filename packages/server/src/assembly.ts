@@ -19,6 +19,7 @@ import { uriManifest } from "@manifold-plugin/uri";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
 import { panelRefId, type WorkspacePanels } from "@manifold/plugin";
+import type { FloorEventOwners } from "./event-hub.ts";
 import type { ServerPluginDef } from "./plugin-host.ts";
 
 /**
@@ -38,6 +39,29 @@ import type { ServerPluginDef } from "./plugin-host.ts";
 export const WORKSPACE_PANELS: WorkspacePanels = {
   sidebar: panelRefId(shellManifest.id, "sidebar"),
   main: panelRefId(shellManifest.id, "container-view"),
+};
+
+/**
+ * WHICH plugin declares the vocabulary for each concept the FLOOR emits about (ADR 0012 §1:
+ * the engine emits at the doors it owns, the plugin declares the kinds).
+ *
+ * It lives here for exactly the reason `WORKSPACE_PANELS` above does, and it is the same shape
+ * of datum: the terminal broker owns a PTY's whole lifecycle, the room owns its attendance
+ * roster, and the machine registry owns liveness — but none of the three may name a plugin,
+ * because a floor file naming a favorite plugin is the neutrality criterion of
+ * `AXIOMS.md` §Foundation law failing in the one layer that must be replaceable wholesale.
+ * So each of them emits by CONCEPT (`"terminals"`, `"attendance"`, `"machines"`) and this
+ * table is where the concept meets a name. Swap `core.terminals` for a stranger's terminals
+ * plugin and this line is the whole diff.
+ *
+ * Each id must DECLARE the kinds its concept's door emits, or the hub refuses the emission by
+ * name — which is the D5 collision refusal's other half: a vocabulary nobody claimed is as
+ * refusable as one two plugins claimed.
+ */
+export const FLOOR_EVENT_OWNERS: FloorEventOwners = {
+  terminals: terminalsManifest.id,
+  attendance: presenceManifest.id,
+  machines: machinesManifest.id,
 };
 
 /**

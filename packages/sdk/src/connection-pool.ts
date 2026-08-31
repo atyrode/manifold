@@ -1,10 +1,13 @@
 import {
   MAX_SESSION_BASE64_CHARS,
+  MAX_SUBSCRIBE_TOPICS,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
+  formatManifoldUri,
   reconnectDelayMs,
   type CONNECTION_LEVEL_MESSAGE_TYPES,
   type ClientMessageBody,
+  type ManifoldRef,
   type ServerMessage,
   type ServerMessageBody,
 } from "@manifold/protocol";
@@ -43,14 +46,25 @@ export type ChannelFrame = Exclude<
 /**
  * A frame that addresses the SOCKET rather than a room, minus the one the pool answers
  * itself: `pong` is liveness and stops here. Every handle on the connection hears the
- * same connection frame — that is what "connection-level" means — and the pool replays
- * the latest of each category to a handle that attaches after it arrived, so a client
- * subscribing late is never left waiting for the next change.
+ * same connection frame — that is what "connection-level" means.
  */
 export type ConnectionFrame = Exclude<
   Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
   { type: "pong" }
 >;
+
+/**
+ * The connection frames that are STATE: the pool replays the latest of each to a handle that
+ * attaches after it arrived, so a client subscribing late is never left waiting for the next
+ * change.
+ *
+ * `event` is deliberately not one of them. An event is NEWS — it says something changed at an
+ * instant, and the thing it describes is already readable through the door a fresh client
+ * uses. Remembering the last one and handing it to a late attacher would deliver a
+ * notification about a change that had already been observed, which is the backlog ADR 0012 §5
+ * refuses, arriving through the SDK instead of through a queue.
+ */
+export type ConnectionStateFrame = Exclude<ConnectionFrame, { type: "event" }>;
 
 /** What one room handle needs from the socket it shares. */
 export interface ChannelSink {
@@ -63,8 +77,8 @@ export interface ChannelSink {
    */
   receive(body: ChannelFrame): void;
   /**
-   * One connection-level frame (the plugin roster today). Shared by every channel on the
-   * socket, so a handle treats it as workspace news rather than room state.
+   * One connection-level frame: the plugin roster, or an event. Shared by every channel on
+   * the socket, so a handle treats it as workspace news rather than room state.
    */
   connectionFrame(body: ConnectionFrame): void;
   transportPhase(phase: TransportPhase): void;
@@ -95,6 +109,18 @@ export interface PooledChannel {
   /** Whether frames may go on the wire right now (socket open and this channel joined). */
   isOpen(): boolean;
   send(body: ClientMessageBody): void;
+  /**
+   * Declares interest in a set of topics on the CONNECTION this channel rides, and answers
+   * the release. Refcounted per socket rather than per channel, because the server's
+   * subscription set is a property of the SOCKET: two handles watching one container must not
+   * be able to cancel each other's subscription by releasing first, and the wire must carry
+   * one `subscribe` for the pair rather than two.
+   *
+   * Subscriptions die with the socket, so the pool re-declares every live topic on reconnect —
+   * after the rejoins, because the credential arrives on `join`. A caller therefore never
+   * re-subscribes on a transport event; it subscribes once and releases once.
+   */
+  subscribe(topics: readonly ManifoldRef[]): () => void;
   /** Re-establishes the transport: an explicit `connect()` on a live handle asks for this. */
   redial(): void;
   /** Leaves the room, closing the socket when this was its last channel. */
@@ -177,19 +203,27 @@ interface ChannelRecord {
 }
 
 /**
- * The latest frame of each connection-level category on this socket: state, not a log. A
- * roster describes the workspace NOW, so one slot per category is the whole memory, and a
+ * The latest STATE frame of each connection-level category on this socket: state, not a log.
+ * A roster describes the workspace NOW, so one slot per category is the whole memory, and a
  * new category added to the protocol fails to compile until it is listed here.
  */
 type ConnectionState = {
-  [K in ConnectionFrame["type"]]: Extract<ConnectionFrame, { type: K }> | null;
+  [K in ConnectionStateFrame["type"]]: Extract<ConnectionStateFrame, { type: K }> | null;
 };
+
+/** One topic this socket holds, and how many handles asked for it. */
+interface TopicRecord {
+  readonly ref: ManifoldRef;
+  count: number;
+}
 
 /** One WebSocket carrying every room a tab renders. */
 class PooledConnection {
   private socket: WebSocket | null = null;
   private readonly channels = new Map<string, ChannelRecord>();
   private readonly connectionState: ConnectionState = { plugins: null };
+  /** Live subscriptions, keyed by the ONE joined form of their address. */
+  private readonly topics = new Map<string, TopicRecord>();
   private nextChannelSeq = 0;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -236,6 +270,7 @@ class PooledConnection {
       send: (body) => {
         this.sendBody(record, body);
       },
+      subscribe: (topics) => this.subscribe(topics),
       redial: () => {
         this.dial();
       },
@@ -260,6 +295,66 @@ class PooledConnection {
     const socket = this.socket;
     if (socket === null) return;
     socket.send(record.prefix + JSON.stringify(body).slice(1));
+  }
+
+  /**
+   * Puts one CONNECTION-level body on the wire untagged. The subscription pair addresses the
+   * socket, so splicing a channel prefix onto it would be a routing lie — and the server
+   * strict-parses, so it would be a closed socket rather than a warning.
+   */
+  private writeConnection(body: ClientMessageBody): void {
+    const socket = this.socket;
+    if (socket === null || socket.readyState !== 1) return;
+    socket.send(JSON.stringify(body));
+  }
+
+  /**
+   * One handle's declared interest, refcounted onto the socket's own set. Only the 0→1 and
+   * 1→0 transitions reach the wire: the server holds a SET, so re-declaring a topic it
+   * already has is noise, and dropping one another handle still wants is a bug the refcount
+   * exists to make unsayable.
+   */
+  private subscribe(topics: readonly ManifoldRef[]): () => void {
+    const added: ManifoldRef[] = [];
+    const mine: string[] = [];
+    for (const ref of topics) {
+      const key = formatManifoldUri(ref);
+      mine.push(key);
+      const held = this.topics.get(key);
+      if (held === undefined) {
+        this.topics.set(key, { ref, count: 1 });
+        added.push(ref);
+        continue;
+      }
+      held.count += 1;
+    }
+    this.declare("subscribe", added);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const dropped: ManifoldRef[] = [];
+      for (const key of mine) {
+        const held = this.topics.get(key);
+        if (held === undefined) continue;
+        held.count -= 1;
+        if (held.count > 0) continue;
+        this.topics.delete(key);
+        dropped.push(held.ref);
+      }
+      this.declare("unsubscribe", dropped);
+    };
+  }
+
+  /**
+   * Declares or withdraws topics, in frames the wire admits. The bound is the protocol's
+   * (`MAX_SUBSCRIBE_TOPICS`) and exceeding it is a MALFORMED frame, so a client watching more
+   * nodes than one frame holds sends several rather than one the server refuses to read.
+   */
+  private declare(type: "subscribe" | "unsubscribe", refs: readonly ManifoldRef[]): void {
+    for (let at = 0; at < refs.length; at += MAX_SUBSCRIBE_TOPICS) {
+      this.writeConnection({ type, topics: refs.slice(at, at + MAX_SUBSCRIBE_TOPICS) });
+    }
   }
 
   private release(record: ChannelRecord): void {
@@ -304,6 +399,18 @@ class PooledConnection {
       if (this.socket !== socket) return;
       // One socket, one dial, every room rejoined: a reconnect is N joins, not N sockets.
       for (const record of this.channels.values()) this.sendJoin(record);
+      /*
+        Subscriptions are presence-class state: they died with the previous socket, so they are
+        re-declared here rather than remembered by the server. AFTER the joins, because the
+        credential a subscription is authorized against arrives on `join` — a subscribe frame
+        ahead of it has nothing to be checked with. There is no catch-up for what happened
+        while the socket was down: a client reads state back through the door it already uses,
+        which is the whole no-replay rule arriving where it would have been tempting to break.
+      */
+      this.declare(
+        "subscribe",
+        [...this.topics.values()].map((held) => held.ref),
+      );
       this.startKeepalive();
     };
 
@@ -378,7 +485,7 @@ class PooledConnection {
       handled below stops compiling at `frame.ch`, which no connection frame carries.
      */
     if (frame.type === "pong") return;
-    if (frame.type === "plugins") {
+    if (frame.type === "plugins" || frame.type === "event") {
       this.acceptConnectionFrame(frame);
       return;
     }
@@ -399,17 +506,19 @@ class PooledConnection {
   }
 
   /**
-   * Remembers one connection-level frame and hands it to every channel on the socket.
-   * Remembering is what makes a late attach cheap (see `attach`), and fanning out to the
-   * channel sinks keeps ONE delivery mechanism: a handle hears connection news exactly the
+   * Hands one connection-level frame to every channel on the socket, remembering it when it
+   * is STATE. Remembering is what makes a late attach cheap (see `attach`), and fanning out to
+   * the channel sinks keeps ONE delivery mechanism: a handle hears connection news exactly the
    * way it hears room frames, with no second listener registry to keep in step.
    *
-   * The write is keyed by the frame's own category, so a second category (wave 2's events)
-   * stops compiling here as well as in `ConnectionState` and in `route` — three loud
-   * errors rather than a silently dropped frame.
+   * An event is the category that is NOT remembered, and the narrowing below is where that is
+   * enforced: replaying the last notification to a handle that attached afterwards would tell
+   * it about a change it can already read, which is a backlog with one entry. A third category
+   * added to the protocol stops compiling here, in `ConnectionState` and in `route` — three
+   * loud errors rather than a silently dropped frame.
    */
   private acceptConnectionFrame(frame: ConnectionFrame): void {
-    this.connectionState[frame.type] = frame;
+    if (frame.type !== "event") this.connectionState[frame.type] = frame;
     // Snapshot: a sink may release its channel while hearing this.
     for (const record of [...this.channels.values()]) record.sink.connectionFrame(frame);
   }

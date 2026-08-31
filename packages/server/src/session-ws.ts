@@ -15,6 +15,7 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
+import type { EventHub, EventSubscriber } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
@@ -29,6 +30,7 @@ type ClassifiedFrame =
 type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
 type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
 type JoinMessage = Extract<ClientMessage, { type: "join" }>;
+type SubscriptionUpdate = Extract<ClientMessage, { type: "subscribe" | "unsubscribe" }>;
 
 const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   CLIENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
@@ -65,6 +67,12 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
  * all flow to it — but every mutation is refused, so a portal's live preview can never
  * type into a PTY, resize it, move an element, or fake presence. The map is keyed by the
  * frame union itself: a new client frame cannot compile without declaring its answer.
+ *
+ * The event plane's pair is `true` for the same reason `terminal_attach` is: subscribing is a
+ * READ, answered by the same `containers:read` grant a spectator already had to hold to be
+ * watching at all, and the hub re-asks it per topic. (They never reach this table in
+ * practice — a connection-level frame routes before channel dispatch — but the table is keyed
+ * by the union, so the answer is stated rather than left to routing order.)
  */
 const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   // A duplicate join closes the socket either way; the read-only refusal must not mask it.
@@ -72,6 +80,8 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   leave: true,
   resync_request: true,
   ping: true,
+  subscribe: true,
+  unsubscribe: true,
   terminal_attach: true,
   terminal_detach: true,
   doc_update: false,
@@ -118,6 +128,21 @@ interface SessionConnection {
    * membership it replaced.
    */
   nextPeerSeq: number;
+  /**
+   * The socket's event-plane identity, seated on its FIRST successful join and never
+   * re-seated. Subscriptions are the socket's, not a channel's — a topic is a NODE, and a
+   * client watching the machine roster or a terminal in a container it never joined has no
+   * channel to hang the interest on — but the credential they are authorized against can only
+   * arrive with a join, which is why this is null until then and why a `subscribe` before the
+   * first join is refused by the handshake rule that refuses everything else.
+   *
+   * Never re-seated because a socket carries ONE credential's channels by construction (the
+   * SDK pools by token), and in the case that convention is broken the first join's context is
+   * the conservative choice: it can only be equal or NARROWER than a later join's authority,
+   * never wider, and it is a credential this socket demonstrably authenticated. A revoked
+   * credential closes the whole socket (`revokePrincipal`), so it cannot outlive its grant.
+   */
+  subscriber: EventSubscriber | null;
   cancelJoinTimeout: (() => void) | null;
   closed: boolean;
 }
@@ -162,6 +187,7 @@ export class SessionGateway {
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly runtime: RuntimeDeps,
+    private readonly events: EventHub,
   ) {
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
@@ -182,6 +208,7 @@ export class SessionGateway {
       nextPeerSeq: 0,
       channels: new Map(),
       drainCursor: 0,
+      subscriber: null,
       cancelJoinTimeout: null,
       closed: false,
     };
@@ -241,6 +268,10 @@ export class SessionGateway {
           this.joinChannel(connection, message);
           return;
         }
+        if (message.type === "subscribe" || message.type === "unsubscribe") {
+          this.routeSubscription(connection, message);
+          return;
+        }
         const channel = connection.channels.get(message.ch);
         if (channel === undefined) {
           // A frame can legitimately be in flight when the server retires its channel
@@ -257,6 +288,33 @@ export class SessionGateway {
         void exhaustive;
       }
     }
+  }
+
+  /**
+   * Routes the event plane's connection-level pair. It lands HERE rather than in `dispatch`
+   * because a topic is a NODE and a node is not a room: these frames carry no `ch` to resolve,
+   * and tying a subscription's lifetime to a room membership that has nothing to do with it is
+   * exactly the id pun the frame grammar keeps connection-level frames out of.
+   *
+   * Neither frame is answered. The hub subscribes the topics this credential may read and
+   * declines the rest silently (ADR 0012): a per-topic refusal would turn the plane into an
+   * oracle answering "does this node exist and may I read it" one probe at a time, and a
+   * client learns its authority from `selfCaps` instead.
+   */
+  private routeSubscription(connection: SessionConnection, message: SubscriptionUpdate): void {
+    const subscriber = connection.subscriber;
+    if (subscriber === null) {
+      // Unreachable through the grammar — the first frame must be a join and a join that
+      // completes seats this — so it is a close rather than a drop: a socket that got here
+      // is speaking a protocol this server does not have.
+      connection.socket.close(4002, "subscribe before join");
+      return;
+    }
+    if (message.type === "subscribe") {
+      this.events.subscribe(subscriber, message.topics);
+      return;
+    }
+    this.events.unsubscribe(subscriber.id, message.topics);
   }
 
   /** Writes a channel refusal for a channel that has no peer yet (join never completed). */
@@ -314,6 +372,16 @@ export class SessionGateway {
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
+    // THE EVENT-PLANE SEAT, taken once per socket at the first join that survives every
+    // refusal above. `context` is what the hub discharges every subscribe and every delivery
+    // against; the closure is the only thing the hub ever learns about a WebSocket.
+    connection.subscriber ??= {
+      id: connection.id,
+      auth: context,
+      deliver: (frame) => {
+        if (!connection.closed) connection.socket.send(frame);
+      },
+    };
     const peer = new SessionChannel(
       `${connection.id}.${(connection.nextPeerSeq += 1)}`,
       connection.socket,
@@ -524,7 +592,10 @@ export class SessionGateway {
     switch (message.type) {
       case "join":
       case "ping":
-        // Routed before dispatch: join creates channels, ping answers the socket.
+      case "subscribe":
+      case "unsubscribe":
+        // Routed before dispatch: join creates channels, and the three connection-level frames
+        // address the socket, so none of them has a channel for this switch to apply it to.
         return;
       case "leave":
         this.releaseChannel(connection, message.ch);
@@ -644,7 +715,11 @@ export class SessionGateway {
     connection.drainCursor = start + 1;
   }
 
-  /** Cleans every channel's room/presence/viewer state after a socket closes. */
+  /**
+   * Cleans every channel's room/presence/viewer state after a socket closes — and every
+   * subscription it held. Subscriptions are presence-class: the socket dying IS their expiry,
+   * so there is nothing to persist, nothing on a timer, and no reconnect that resumes them.
+   */
   close(id: string): void {
     const connection = this.connections.get(id);
     if (connection === undefined) return;
@@ -653,6 +728,8 @@ export class SessionGateway {
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
     for (const ch of [...connection.channels.keys()]) this.releaseChannel(connection, ch);
+    connection.subscriber = null;
+    this.events.release(id);
   }
 
   /**

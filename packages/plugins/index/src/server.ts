@@ -1,4 +1,6 @@
-import type { Container, IndexEntry } from "@manifold/protocol";
+import type { EmitEvent } from "@manifold/plugin";
+import type { Container, EventKind, IndexEntry } from "@manifold/protocol";
+import { indexManifest } from "./index.ts";
 
 /** One index item as a move addresses it: the kind, and the id inside that kind. */
 interface TreeItemRef {
@@ -44,6 +46,12 @@ interface IndexCtx {
   };
   newId(): string;
   now(): number;
+  /**
+   * The index's own news, staged on the engine and published only if this dispatch commits
+   * (ADR 0012). Declared here in the slice like every other reach: a plugin's `contributes.events`
+   * is what it may spell, and this is how it says it.
+   */
+  readonly emit: EmitEvent;
 }
 
 type Refusal = { refused: string };
@@ -80,6 +88,29 @@ function scopedTree(tree: readonly IndexEntry[], containerScope: string): readon
       item.kind === "container" ? `container:${item.container.id}` : `folder:${item.id}`,
     ),
   );
+}
+
+/**
+ * THE INDEX'S TOPIC, stated once: this plugin's OWN node.
+ *
+ * Every door below announces onto it rather than onto the row it touched, and the reason is
+ * addressability rather than convenience — a container that does not exist yet cannot be
+ * subscribed to in advance, a container that was just deleted has no address left to be a
+ * topic, and a folder has no `manifold://` form at all. The index is a view OF the collection,
+ * so the collection is the topic and WHICH row moved is the payload. One subscription replaces
+ * the section's whole poll.
+ *
+ * Built from the manifest's own id, so the address and the declaration cannot drift; the
+ * engine refuses an emission on any other plugin's node anyway.
+ */
+const INDEX_TOPIC = { kind: "plugin", pluginId: indexManifest.id } as const;
+
+/**
+ * One announcement, so every door below reads the same and none of them spells the topic.
+ * Seven doors, one collection, one address.
+ */
+function announce(ctx: IndexCtx, kind: EventKind, payload: Record<string, string | null>): void {
+  ctx.emit(INDEX_TOPIC, kind, payload);
 }
 
 /**
@@ -135,6 +166,7 @@ export const indexHandlers = {
       discipline: args.discipline ?? "canvas",
     };
     ctx.store.createContainer(container);
+    announce(ctx, "container_created", { containerId: container.id, name: container.name });
     return { container };
   },
 
@@ -148,6 +180,7 @@ export const indexHandlers = {
     if (outside !== null) return outside;
     const renamed = ctx.store.renameContainer(args.containerId, args.name);
     if (renamed === null) return { refused: "container not found" };
+    announce(ctx, "container_renamed", { containerId: renamed.id, name: renamed.name });
     return { container: renamed };
   },
 
@@ -158,6 +191,7 @@ export const indexHandlers = {
     if (ctx.store.getContainer(args.containerId) === null)
       return { refused: "container not found" };
     ctx.placement.deleteContainer(args.containerId);
+    announce(ctx, "container_deleted", { containerId: args.containerId });
     return {};
   },
 
@@ -165,11 +199,13 @@ export const indexHandlers = {
     ctx: IndexCtx,
     args: { name: string; parentId: string | null },
   ): Promise<TreeOutcome> {
+    const folderId = ctx.newId();
     const created = ctx.store.createFolder(
-      { id: ctx.newId(), name: args.name, createdAt: ctx.now() },
+      { id: folderId, name: args.name, createdAt: ctx.now() },
       args.parentId,
     );
     if (!created) return { refused: "parent folder changed while creating a folder" };
+    announce(ctx, "folder_created", { folderId, name: args.name, parentId: args.parentId });
     return { items: ctx.store.listIndex() };
   },
 
@@ -180,11 +216,13 @@ export const indexHandlers = {
     if (!ctx.store.renameFolder(args.folderId, args.name)) {
       return { refused: "container folder not found" };
     }
+    announce(ctx, "folder_renamed", { folderId: args.folderId, name: args.name });
     return { items: ctx.store.listIndex() };
   },
 
   async deleteFolder(ctx: IndexCtx, args: { folderId: string }): Promise<TreeOutcome> {
     if (!ctx.store.deleteFolder(args.folderId)) return { refused: "container folder not found" };
+    announce(ctx, "folder_deleted", { folderId: args.folderId });
     return { items: ctx.store.listIndex() };
   },
 
@@ -195,6 +233,11 @@ export const indexHandlers = {
     if (!ctx.store.moveIndexEntry(args.item, args.parentId, args.index)) {
       return { refused: "sidebar tree changed while moving an item" };
     }
+    announce(ctx, "index_moved", {
+      kind: args.item.kind,
+      id: args.item.id,
+      parentId: args.parentId,
+    });
     return { items: ctx.store.listIndex() };
   },
 };

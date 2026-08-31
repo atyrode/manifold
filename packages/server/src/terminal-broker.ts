@@ -3,11 +3,14 @@ import {
   type AdvertisedTerminal,
   type AgentMessage,
   type ClientMessageBody,
+  type EventKind,
+  type EventPayload,
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
 } from "@manifold/protocol";
 import type { AuthService } from "./auth.ts";
+import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor, TerminalPlacementPort } from "./placement.ts";
 import type { RoomManager, RoomTimers } from "./room.ts";
@@ -107,6 +110,13 @@ export class TerminalBroker implements TerminalPlacementPort {
    * with the rest of container lifecycle.
    */
   private placement: PlaceExecutor | null = null;
+  /**
+   * The event plane, installed on the same circular-wiring pattern as `placement` above: the
+   * hub reads the assembly and the assembly is built after this class. Null-tolerant for the
+   * same reason — a terminal restored at construction time has no lifecycle to announce, and a
+   * test that drives the PTY mechanism alone should not have to own a hub.
+   */
+  private events: EventHub | null = null;
 
   constructor(
     private readonly store: ServerStore,
@@ -145,15 +155,74 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.placement = placement;
   }
 
-  /** Registers the currently fenced socket for a machine id. */
+  /** Installs the event plane after circular startup wiring completes. */
+  setEvents(events: EventHub): void {
+    this.events = events;
+  }
+
+  /**
+   * ONE terminal-lifecycle announcement — the durable row and the fan-out, from one call.
+   *
+   * `store.addEvent` stays the one writer of history either way. When the plane is installed
+   * the hub calls it, so the row and the notification cannot disagree about what happened
+   * (ADR 0012 §5: durable history is that table, read as a table). When it is not — a focused
+   * PTY test, or the moment before startup wiring completes — the row still has to land,
+   * because the audit trail is not a subscriber and a terminal's birth is not less true for
+   * having nobody watching.
+   *
+   * The TOPIC is the terminals COLLECTION, not the terminal, and that follows from the matching
+   * rule rather than from taste. A terminal is a root of the addressing grammar (it can be
+   * rehomed and keeps its identity), so no container subscription can reach it — and the two
+   * surfaces that need this news, the workspace terminal index and the per-container one, both
+   * live OUTSIDE the rooms they report on and neither can know a newborn terminal's id in
+   * advance. The in-room half of the same news already rides the session channel as
+   * `terminal_event`, which is why addressing the collection loses nothing and turns a polled
+   * feed into exactly one subscription.
+   *
+   * `containerId` still travels, as the AUDIT TRAIL's container — a different question from the
+   * topic, and the one that keeps `core.events.list({ containerId })` answering exactly what it
+   * answered before. It is passed rather than resolved because a kill has already unhomed its
+   * terminal by the time the announcement is due, and the trail must still say where it lived.
+   */
+  private announce(
+    containerId: string,
+    kind: EventKind,
+    actor: string | null,
+    payload: EventPayload,
+  ): void {
+    if (this.events === null) {
+      this.store.addEvent(containerId, this.runtime.now(), actor, kind, payload);
+      return;
+    }
+    this.events.emitCollection("terminals", kind, actor, payload, containerId);
+  }
+
+  /**
+   * Registers the currently fenced socket for a machine id.
+   *
+   * The emission is gated on a genuine TRANSITION: a machine reconnecting supersedes its own
+   * socket (`machine-ws.ts`) without ever having gone offline, and an `online` for a machine
+   * that never stopped being online would be news about a socket rather than about the
+   * machine. `actor` is null because nobody asked for this — a machine dialling in is the
+   * world moving, not a principal acting.
+   */
   setMachineOnline(channel: MachineChannel): void {
+    const wasOnline = this.machines.has(channel.machineId);
     this.machines.set(channel.machineId, channel);
+    if (wasOnline) return;
+    this.events?.emitCollection("machines", "machine_online", null, {
+      machineId: channel.machineId,
+    });
   }
 
   /** Removes a socket only if it remains the active fenced channel. */
   setMachineOffline(channel: MachineChannel): void {
     if (this.machines.get(channel.machineId) !== channel) return;
     this.machines.delete(channel.machineId);
+    // The delete IS the transition; the pending-open reaping below is consequence, not commit.
+    this.events?.emitCollection("machines", "machine_offline", null, {
+      machineId: channel.machineId,
+    });
     for (const [terminalId, pending] of this.pendingOpens) {
       if (pending.machineId !== channel.machineId) continue;
       pending.cancelDeadline?.();
@@ -560,7 +629,10 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.opener,
     );
     homeRoom?.broadcast({ type: "terminal_event", terminalId, kind: "opened" });
-    this.store.addEvent(pending.homeId, this.runtime.now(), pending.createdBy, "terminal_opened", {
+    // THE BIRTH, announced once, on the terminals collection: nobody could have subscribed to a
+    // terminal that did not exist a statement ago, so the collection is the only address a
+    // watcher of the terminal index could have named.
+    this.announce(pending.homeId, "terminal_opened", pending.createdBy, {
       terminalId,
       machineId,
       elementId: home,
@@ -953,13 +1025,11 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (stored !== null && stored.agentPrincipalId !== null) {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, terminal.info.createdBy);
     }
-    this.store.addEvent(
-      containerId,
-      this.runtime.now(),
-      terminal.info.createdBy,
-      "terminal_exited",
-      { terminalId, machineId, exitCode },
-    );
+    this.announce(containerId, "terminal_exited", terminal.info.createdBy, {
+      terminalId,
+      machineId,
+      exitCode,
+    });
     this.rooms.evictIfIdle(containerId);
   }
 
@@ -977,13 +1047,10 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.rooms
       .live(containerId)
       ?.broadcast({ type: "terminal_event", terminalId, kind: "renamed", name });
-    this.store.addEvent(
-      containerId,
-      this.runtime.now(),
-      terminal.info.createdBy,
-      "terminal_renamed",
-      { terminalId, name },
-    );
+    this.announce(containerId, "terminal_renamed", terminal.info.createdBy, {
+      terminalId,
+      name,
+    });
     return "ok";
   }
 
@@ -1040,13 +1107,10 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.rooms
       .live(toContainerId)
       ?.broadcast({ type: "terminal_opened", elementId: placementId, terminal: terminal.info });
-    this.store.addEvent(
-      toContainerId,
-      this.runtime.now(),
-      terminal.info.createdBy,
-      "terminal_bound",
-      { terminalId, elementId: placementId },
-    );
+    this.announce(toContainerId, "terminal_bound", terminal.info.createdBy, {
+      terminalId,
+      elementId: placementId,
+    });
   }
 
   /**
@@ -1080,6 +1144,22 @@ export class TerminalBroker implements TerminalPlacementPort {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, terminal.info.createdBy);
     }
     this.store.deleteTerminal(terminalId);
+    /*
+      THE KILL, announced here rather than at `killById`, because this is the one place every
+      kill passes through: closing the last tile, killing by id, and deleting the composition
+      the terminal lived in all arrive at this method, and announcing at each door instead
+      would be three chances to disagree about one event (invariant 14).
+
+      The topic is the HOME CONTAINER, not the terminal. A killed terminal has no node left to
+      be a topic — its address stops resolving the instant the row is gone, and `/api/resolve`
+      would answer `exists: false` for it — so the event is addressed to the nearest node that
+      still exists, which is also the node every watcher of that terminal was already reached
+      through under the hierarchy rule. Nobody watching the home loses the news.
+     */
+    this.announce(terminal.info.containerId, "terminal_killed", terminal.info.createdBy, {
+      terminalId,
+      machineId: terminal.info.machineId,
+    });
   }
 
   /**

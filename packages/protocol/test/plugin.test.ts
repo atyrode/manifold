@@ -427,8 +427,16 @@ describe("the connection-level plugins frame", () => {
       // It is still a server frame: an inventory that forgot it would make it "unknown".
       expect(SERVER_MESSAGE_TYPES as readonly string[]).toContain(type);
     }
-    // The liveness pair are connection-level too, and neither has a body to parse.
-    expect([...CONNECTION_LEVEL_MESSAGE_TYPES]).toEqual(["ping", "pong", "plugins"]);
+    // The liveness pair are connection-level too, and neither has a body to parse; the event
+    // plane's three join them, because a topic is a NODE and a node is not a room.
+    expect([...CONNECTION_LEVEL_MESSAGE_TYPES]).toEqual([
+      "ping",
+      "pong",
+      "plugins",
+      "subscribe",
+      "unsubscribe",
+      "event",
+    ]);
   });
 });
 

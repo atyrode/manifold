@@ -72,6 +72,40 @@ in-process fan-out is a `Map<string, Set<listener>>` and that everything interes
 the authorization walk and the frame plumbing, both of which are manifold-specific; but the
 evaluation is owed in writing, not assumed.
 
+**Dependency verdict, recorded at implementation (wave 2, 2026-08-31).** The candidates, by
+name, with what each would have saved:
+
+- **`nanoevents`** (~108 bytes brotlied; `on` returns its own unbind). The API is the closest
+  fit of the four — an unbind-returning subscribe is exactly the shape both halves ended up
+  with — and it would have saved the six lines that add a listener to a set and delete it again.
+- **`mitt`** (~200 bytes, functional, `on`/`off`/`emit` plus a `"*"` listener). Saves the same
+  six lines, plus a wildcard nobody wants here: the plane deliberately has no wildcard grammar,
+  and shipping one would make "subscribe to everything" the path of least resistance.
+- **`eventemitter3`** (~2 KB, Node's `EventEmitter` surface: `once`, listener counts, removal by
+  reference). Saves the same six lines and adds `once`, which is a queue affordance in
+  disguise — a subscriber that wants one event and then stops is asking for a delivery
+  guarantee this plane refuses to make.
+- **`emittery`** / **RxJS `Subject`**. Async iteration, operators, backpressure. This is a
+  second scheduling model beside the socket's, and the ordering authority is the commit point,
+  not a pipeline.
+- **The platform's `EventTarget`.** No dependency at all, but it costs an allocation per
+  notification (`CustomEvent`), erases types at the `detail` boundary, and answers questions
+  about `capture`/`bubbles` that no topic has.
+
+**Verdict: hand-rolled, and the evaluation is the reason rather than the excuse.** What every
+candidate replaces is the `Map<key, Set<listener>>` — six lines, and the only part of this plane
+that is generic. What none of them replaces is everything that made the work: the index is keyed
+by a manifold:// ADDRESS and a match is a relation over the addressing grammar, not string
+equality (`topicMatches`, `packages/protocol/src/events.ts`); admission is a read-grant walk
+against the topic's node, re-discharged at delivery because a node's home can move under a live
+subscription; emission is refused unless the assembly's declared-topics index says the emitter
+owns the kind (`emitterMayEmit`, `packages/plugin/src/emit.ts`); and the fan-out's real job is
+writing ONE serialized frame to N sockets whose subscriptions die with them
+(`packages/server/src/event-hub.ts`, and the refcounted per-socket registry in
+`packages/sdk/src/connection-pool.ts`). A library at the centre of that would be a six-line
+saving wrapped in an API surface — `once`, wildcards, operators, listener counts — whose every
+extra affordance is something this ADR spent its Decision section forbidding.
+
 ## Alternatives rejected
 
 - **Keeping HTTP polling.** Two principals observe different instants, which is an A2

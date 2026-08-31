@@ -12,6 +12,12 @@ import type { z } from "zod";
  * `caps` is what invoking this action requires of the CALLER; it must be a subset of the
  * declaring manifest's `capabilities`, so a manifest is a readable ceiling on a plugin's
  * authority (checked by `assembleRoster`, refused loudly if violated).
+ *
+ * What an action does NOT declare is what it EMITS. An event kind is declared once, on the
+ * MANIFEST (`contributes.events`), and reached through `ctx.emit` inside the handler — because
+ * the same kind is emitted at several doors (a container is created by one action and deleted
+ * by another, both saying something about the same node), and a per-action list would be the
+ * manifest's vocabulary restated once per door, drifting one door at a time.
  */
 export interface ActionDef<In = unknown, Out = unknown> {
   /**

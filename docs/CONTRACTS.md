@@ -708,13 +708,16 @@ Grants, spotlights, and (from wave 2) event topics all name nodes this way.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v16).** One socket per tab, many rooms. Every frame is either
+**Frame grammar (v17).** One socket per tab, many rooms. Every frame is either
 connection-level or channel-level:
 
 ```
 connection-level   client → server  {"type":"ping"}
+                   client → server  {"type":"subscribe","topics":[…]}
+                   client → server  {"type":"unsubscribe","topics":[…]}
                    server → client  {"type":"pong"}
                    server → client  {"type":"plugins","roster":[…]}
+                   server → client  {"type":"event","topic":{…},"kind":"…","at":…,"actor":…,"payload":{…}}
 channel-level      both ways        {"ch":"<channelId>","type":"…", …}
 ```
 
@@ -730,13 +733,32 @@ frame twice from the same shapes — a channel-less BODY union and the wire unio
 `ch` — because a broadcast validates and serializes one body and tags it per channel.
 
 **Connection frames address the SOCKET, not a channel.** `@manifold/protocol` publishes them as
-`CONNECTION_BODIES` beside the channelized `SERVER_BODIES`, and they carry no `ch` because the
-thing they concern is the connection itself. `plugins { roster }` is the first such
-server→client frame: it is delivered once when the socket opens (before any `join`) and again
-whenever the roster changes, which is what makes enable/disable hot for every open tab. The SDK
-pool demultiplexes connection frames to pool-level listeners (`SessionClient.onPlugins`, which
-replays the latest roster to a late subscriber) instead of dropping them as frames for an
-unknown channel.
+`CONNECTION_BODIES` and `CLIENT_CONNECTION_BODIES` beside the channelized `SERVER_BODIES` and
+`CLIENT_BODIES`, and they carry no `ch` because the thing they concern is the connection
+itself. `plugins { roster }` was the first such server→client frame: it is delivered once when
+the socket opens (before any `join`) and again whenever the roster changes, which is what makes
+enable/disable hot for every open tab. The SDK pool demultiplexes connection frames to
+pool-level listeners (`SessionClient.onPlugins`, which replays the latest roster to a late
+subscriber) instead of dropping them as frames for an unknown channel.
+
+**The event plane (v17, ADR 0012).** `subscribe`/`unsubscribe { topics: ManifoldRef[] }` declare
+and withdraw interest; `event { topic, kind, at, actor, payload }` is one notification. All three
+are connection-level because a TOPIC IS A NODE — routinely a node no channel on this socket has
+joined — and topics travel as structured refs rather than `manifold://` strings, so the wire has
+nowhere to carry a hand-typed address and the namespace needs no registry
+(`REGISTRY.md` §Runtime-joined namespaces). `kind` is snake_case (`EventKindSchema`) and must be
+DECLARED by the emitting plugin's `contributes.events`; the assembly indexes those declarations
+and refuses an undeclared emission by name, so the vocabulary a live workspace emits is closed
+and published while the vocabulary a build may declare stays open. Subscribing is a READ of the
+topic's node, discharged with the same authority the resolve door uses; a topic this credential
+may not read is simply not subscribed, because a per-topic refusal frame would make the plane a
+permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets
+subscribed AT THE INSTANT OF EMISSION and catch-up is reading state back through the ordinary
+door. Subscriptions are presence-class state — they die with the socket, and the SDK pool
+re-declares every live topic after each rejoin (never before it: the credential arrives on
+`join`). Bounds: `MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed
+(4002), and `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are
+dropped and logged with the socket left alone.
 
 Handshake: the FIRST client frame on a connection MUST be
 `join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }`; the server
@@ -1004,7 +1026,7 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 - Terminal ids are opaque. A terminal's placements are read from live containers (portal
   elements and tile leaves), never from the terminal row: one terminal can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements
-  never reference terminals. Session protocol v16.
+  never reference terminals. Session protocol v17.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
@@ -1016,14 +1038,17 @@ disconnected; absence is equivalent to `null`. Such exited terminals are retaine
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16}` (protocol/version.ts), NOT strict equality:
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17}` (protocol/version.ts), NOT strict equality:
 agents are long-lived and survive server deploys, so every compatible agent version stays
 accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
 new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
 restart — which v16 did: `terminal_event`, `TerminalInfo` and `MANIFOLD_CONTAINER` renamed
-the agent wire, so the set holds v16 alone and the fleet restarts together. Every
+the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 is
+the other case and ADDED: the event plane is session-only, `AgentMessage` and
+`ServerToAgentMessage` are byte-identical, and a v16 agent keeps its terminals across the
+deploy. Every
 rejection path emits a structured server log (`machine_version_rejected`,
 `machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
 

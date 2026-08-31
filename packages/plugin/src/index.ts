@@ -7,12 +7,16 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
+  ENGINE_DISABLED_EVENT,
+  ENGINE_ENABLED_EVENT,
   ENGINE_PLUGINS_ID,
+  ENGINE_PURGED_EVENT,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
 } from "./builtin.ts";
+export { emissionRefusal, emitterMayEmit, type EmitEvent } from "./emit.ts";
 export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";
 export {
   AssemblyError,
@@ -21,6 +25,7 @@ export {
   rosterElementTraits,
   type Assembly,
   type AssemblyAction,
+  type AssemblyEvent,
   type AssemblyElement,
   type AssemblyEnv,
   type AssemblyPanel,

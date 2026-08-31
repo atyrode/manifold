@@ -28,7 +28,7 @@ import {
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, testEventHub, testPluginHost, testStore } from "./helpers.ts";
 
 /**
  * THE ACTION DOOR, rung by rung.
@@ -597,17 +597,7 @@ describe("PluginHost contract failures", () => {
   ];
 
   function brokenHost(fixture: HostFixture): PluginHost {
-    return new PluginHost(
-      BROKEN,
-      fixture.store,
-      fixture.auth,
-      fixture.rooms,
-      fixture.broker,
-      testPlacement(fixture),
-      OFFLINE_MACHINES,
-      fixture.runtime,
-      silentLogger,
-    );
+    return customHost(fixture, BROKEN);
   }
 
   test("a result that fails its published schema THROWS instead of denying", async () => {
@@ -699,7 +689,19 @@ function customHost(
   defs: readonly ServerPluginDef[],
   options: { readonly lifecycleTimeoutMs?: number } = {},
 ): PluginHost {
-  return new PluginHost(
+  // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
+  let host: PluginHost | null = null;
+  const events = testEventHub(
+    fixture.store,
+    fixture.auth,
+    fixture.broker,
+    () => {
+      if (host === null) throw new Error("the event plane read the assembly before the host");
+      return host.assembly();
+    },
+    fixture.runtime,
+  );
+  host = new PluginHost(
     defs,
     fixture.store,
     fixture.auth,
@@ -709,8 +711,10 @@ function customHost(
     OFFLINE_MACHINES,
     fixture.runtime,
     silentLogger,
+    events,
     options,
   );
+  return host;
 }
 
 describe("PluginHost lifecycle", () => {

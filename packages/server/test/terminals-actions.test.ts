@@ -16,7 +16,14 @@ import { SessionChannel } from "../src/session-channel.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testPluginHost, testStore } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testEventHub,
+  testPluginHost,
+  testStore,
+} from "./helpers.ts";
 
 /**
  * THE TERMINAL DOORS, from both sides.
@@ -105,10 +112,33 @@ function fixture(): TerminalsFixture {
   const enrollment = auth.enrollMachine("fake", owner);
   const machine = new FakeMachine(enrollment.machine.id);
   broker.setMachineOnline(machine);
-  const host = testPluginHost(store, auth, rooms, broker, runtime, {
+  let host: PluginHost | null = null;
+  const events = testEventHub(
+    store,
+    auth,
+    broker,
+    () => {
+      if (host === null) throw new Error("the event plane read the assembly before the host");
+      return host.assembly();
+    },
+    runtime,
+  );
+  host = testPluginHost(store, auth, rooms, broker, runtime, {
     machines: { isOnline: () => true },
+    events,
   });
-  const gateway = new SessionGateway(auth, rooms, broker, host, clock, silentLogger, runtime);
+  broker.setEvents(events);
+  rooms.setEvents(events);
+  const gateway = new SessionGateway(
+    auth,
+    rooms,
+    broker,
+    host,
+    clock,
+    silentLogger,
+    runtime,
+    events,
+  );
   return { runtime, store, auth, owner, container, broker, machine, host, gateway };
 }
 

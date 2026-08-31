@@ -94,6 +94,7 @@ being taught exceptions.
       "id": "transport",
       "globs": [
         "packages/server/src/session-ws.ts",
+        "packages/server/src/event-hub.ts",
         "packages/server/src/machine-ws.ts",
         "packages/server/src/terminal-broker.ts",
         "packages/server/src/agent-spawn.ts",
@@ -263,6 +264,10 @@ enforcement machinery itself, not a test of somebody else's subject.
     {
       "glob": "packages/server/src/log.ts",
       "why": "structured logging, including the one line per action dispatch"
+    },
+    {
+      "glob": "packages/server/src/event-hub.ts",
+      "why": "the event plane's one mechanism (ADR 0012): the per-connection subscription registry, the grammar-derived topic match, the read-authority arbitration at subscribe and at delivery, and the fan-out that appends every emission to the one durable trail. Floor by both criteria — it knows no kind and no plugin, and it arbitrates who may hear whose node"
     },
     {
       "glob": "packages/server/src/index.ts",
@@ -857,7 +862,25 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "plane",
-      "means": "where a piece of state lives: action, document, presence, or channel traffic",
+      "means": "where a piece of state lives: action, document, presence, event, or channel traffic",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "event",
+      "means": "a notification emitted at a mutation's commit point — one node, one kind, once. It never mutates, is delivered only to the sockets subscribed at that instant, and is never replayed; the durable audit row of the same name is the same word for the same thing, read as a table",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "topic",
+      "means": "the node an event is about and a subscription names: a manifold:// address, never a string convention, a namespace of its own, or a wildcard pattern",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "subscription",
+      "means": "one socket's declared interest in a topic: presence-class state, authorized as a read of the topic's node, dying with the connection and never persisted",
       "banned": [],
       "allow": []
     },
@@ -971,7 +994,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "kind",
-      "means": "the discriminant of a closed wire union",
+      "means": "the discriminant of a wire union, or the declared class of an event. Both senses answer \"which of these is this one\" — the union's members are closed by a schema, an event's by the assembly's declarations — and the pair inside one event frame is deliberate: topic.kind names the address form, kind names what happened",
       "banned": [],
       "allow": []
     },

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
+  type ManifoldRef,
   type SceneElement,
   type ServerMessageBody,
   type TileRef,
@@ -1195,6 +1196,168 @@ describe("the plugin roster frame", () => {
 
     // A room's frame stream is its document's history; injecting workspace news into it
     // would make every consumer that switches on frame type handle a frame about no room.
+    expect(messages).toEqual([]);
+    expect(client.rev).toBe(revBefore);
+    expect(client.status).toBe("open");
+  });
+});
+
+/**
+ * THE EVENT PLANE, from the client's end (ADR 0012).
+ *
+ * The contract this suite pins is small and easy to break in exactly three ways: a
+ * subscription that gets channelized (it addresses the SOCKET), a subscription that does not
+ * survive a reconnect (it is presence-class state the server forgets), and an event that gets
+ * remembered (it is news, and remembering it is a backlog with one entry).
+ *
+ * Frames arrive as raw JSON text on purpose: the harness stamps a channel onto object frames,
+ * and stamping these would test the opposite of the contract.
+ */
+describe("the event plane", () => {
+  const CONTAINER: ManifoldRef = { kind: "container", containerId: "container1" };
+  const MACHINES: ManifoldRef = { kind: "plugin", pluginId: "core.machines" };
+
+  const event = (topic: ManifoldRef, kind: string) =>
+    JSON.stringify({ type: "event", topic, kind, at: 1, actor: "p1", payload: {} });
+
+  const framesOfType = (socket: FakeSocket, type: string): Record<string, unknown>[] =>
+    socket.sent
+      .map((raw) => SentFrameSchema.parse(JSON.parse(raw)))
+      .filter((frame) => frame.type === type);
+
+  test("subscribe declares structured topics on the SOCKET, with no channel", () => {
+    const { client, socket } = connected();
+
+    client.subscribe([CONTAINER, MACHINES], () => undefined);
+
+    const declared = framesOfType(socket, "subscribe");
+    expect(declared).toHaveLength(1);
+    // Refs, not `manifold://` strings: the address is compiler-joined, which is what keeps the
+    // topic namespace out of REGISTRY.md §Runtime-joined namespaces.
+    expect(declared[0]).toEqual({ type: "subscribe", topics: [CONTAINER, MACHINES] });
+    expect(declared[0]?.["ch"]).toBeUndefined();
+  });
+
+  test("an event reaches the handler that named its node, and nobody else", () => {
+    const { client, socket } = connected();
+    const mine: string[] = [];
+    const theirs: string[] = [];
+    client.subscribe([CONTAINER], (frame) => mine.push(frame.kind));
+    client.subscribe([MACHINES], (frame) => theirs.push(frame.kind));
+
+    socket.receive(event(CONTAINER, "container_renamed"));
+    socket.receive(event(MACHINES, "machine_online"));
+
+    expect(mine).toEqual(["container_renamed"]);
+    expect(theirs).toEqual(["machine_online"]);
+  });
+
+  test("a container subscription hears its own leaves, because the grammar nests them", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
+
+    socket.receive(
+      event({ kind: "element", containerId: "container1", elementId: "e1" }, "element_placed"),
+    );
+    socket.receive(event({ kind: "tile", containerId: "container1", tileId: "t1" }, "tile_split"));
+    // A different container is a different node, however similar the id looks.
+    socket.receive(
+      event({ kind: "element", containerId: "container2", elementId: "e1" }, "element_placed"),
+    );
+
+    expect(seen).toEqual(["element_placed", "tile_split"]);
+  });
+
+  test("one delivery per event, however many of a subscription's topics match", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    const element: ManifoldRef = { kind: "element", containerId: "container1", elementId: "e1" };
+    client.subscribe([CONTAINER, element], (frame) => seen.push(frame.kind));
+
+    socket.receive(event(element, "element_placed"));
+
+    // A handler asked about a SET of nodes, not about a set of matches.
+    expect(seen).toEqual(["element_placed"]);
+  });
+
+  test("nothing is replayed: a handler that subscribes afterwards hears nothing", () => {
+    const { client, socket } = connected();
+    socket.receive(event(CONTAINER, "container_renamed"));
+
+    const seen: string[] = [];
+    client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
+
+    /*
+      The contrast with `onPlugins` is the whole point. A roster is STATE, so the last one is
+      replayed to a late subscriber; an event is NEWS about a change that is already readable
+      through the door a fresh client uses, and replaying it would be catch-up by backlog —
+      the one thing ADR 0012 §5 refuses.
+    */
+    expect(seen).toEqual([]);
+  });
+
+  test("two subscriptions on one socket cost ONE declaration, and neither cancels the other", () => {
+    const { client, socket } = connected();
+    const first = client.subscribe([CONTAINER], () => undefined);
+    client.subscribe([CONTAINER], () => undefined);
+
+    // The server holds a SET: re-declaring a topic it already has is noise on the wire.
+    expect(framesOfType(socket, "subscribe")).toHaveLength(1);
+
+    first();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+    const stillDelivered: string[] = [];
+    const off = client.subscribe([CONTAINER], (frame) => stillDelivered.push(frame.kind));
+    socket.receive(event(CONTAINER, "container_renamed"));
+    expect(stillDelivered).toEqual(["container_renamed"]);
+    off();
+  });
+
+  test("the last holder's release withdraws the topic", () => {
+    const { client, socket } = connected();
+    const off = client.subscribe([CONTAINER, MACHINES], () => undefined);
+
+    off();
+
+    expect(framesOfType(socket, "unsubscribe")).toEqual([
+      { type: "unsubscribe", topics: [CONTAINER, MACHINES] },
+    ]);
+    // Releasing twice is a no-op, not a second withdrawal of somebody else's subscription.
+    off();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(1);
+  });
+
+  test("a reconnect re-declares every live topic, after the rejoin", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
+    client.subscribe([CONTAINER], () => undefined);
+
+    socket.close(1006, "abnormal");
+    vi.advanceTimersByTime(5_000);
+    const replacement = FakeSocket.instances.at(-1);
+    if (!replacement || replacement === socket) throw new Error("no reconnect socket");
+    replacement.open();
+
+    /*
+      Subscriptions die with the socket, so the client re-declares them rather than the server
+      remembering them — and AFTER the join, because the credential a subscription is
+      authorized against arrives on `join`. A subscribe ahead of it has nothing to check.
+    */
+    expect(sentTypes(replacement)).toEqual(["join", "subscribe"]);
+    client.close();
+  });
+
+  test("an event is not room traffic: it never reaches `message`, and moves no revision", () => {
+    const { client, socket } = connected();
+    const messages: string[] = [];
+    client.on("message", (msg) => {
+      messages.push(msg.type);
+    });
+    const revBefore = client.rev;
+
+    socket.receive(event(CONTAINER, "container_renamed"));
+
     expect(messages).toEqual([]);
     expect(client.rev).toBe(revBefore);
     expect(client.status).toBe("open");
