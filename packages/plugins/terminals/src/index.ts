@@ -38,6 +38,9 @@ export const terminalsActions = [
     result: z.strictObject({}),
   }),
   defineAction({
+    // D12: kill is CLEANUP — it stays dispatchable while this plugin is disabled, so a
+    // disable can refuse new terminals without ever locking anyone out of removing one.
+    cleanup: true,
     name: "kill",
     title: "Kill a terminal",
     caps: ["pads:write"],

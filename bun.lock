@@ -39,15 +39,43 @@
         "react": "19.2.8",
       },
     },
+    "packages/plugins/draw": {
+      "name": "@manifold-plugin/draw",
+      "dependencies": {
+        "@manifold/protocol": "workspace:*",
+        "@xyflow/react": "12.11.5",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/machines": {
+      "name": "@manifold-plugin/machines",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
     "packages/plugins/plugin-manager": {
       "name": "@manifold-plugin/plugin-manager",
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
         "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
       },
     },
     "packages/plugins/presence": {
@@ -83,6 +111,32 @@
         "@types/bun": "^1.3.2",
       },
     },
+    "packages/plugins/uri": {
+      "name": "@manifold-plugin/uri",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/views": {
+      "name": "@manifold-plugin/views",
+      "dependencies": {
+        "@headless-tree/core": "1.7.0",
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
     "packages/protocol": {
       "name": "@manifold/protocol",
       "dependencies": {
@@ -109,10 +163,14 @@
     "packages/server": {
       "name": "@manifold/server",
       "dependencies": {
+        "@manifold-plugin/draw": "workspace:*",
+        "@manifold-plugin/machines": "workspace:*",
         "@manifold-plugin/plugin-manager": "workspace:*",
         "@manifold-plugin/presence": "workspace:*",
         "@manifold-plugin/shell": "workspace:*",
         "@manifold-plugin/terminals": "workspace:*",
+        "@manifold-plugin/uri": "workspace:*",
+        "@manifold-plugin/views": "workspace:*",
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",
@@ -138,7 +196,13 @@
       "name": "@manifold/web",
       "version": "0.5.0",
       "dependencies": {
-        "@headless-tree/core": "1.7.0",
+        "@manifold-plugin/draw": "workspace:*",
+        "@manifold-plugin/machines": "workspace:*",
+        "@manifold-plugin/plugin-manager": "workspace:*",
+        "@manifold-plugin/presence": "workspace:*",
+        "@manifold-plugin/terminals": "workspace:*",
+        "@manifold-plugin/uri": "workspace:*",
+        "@manifold-plugin/views": "workspace:*",
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",
@@ -236,6 +300,10 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@manifold-plugin/draw": ["@manifold-plugin/draw@workspace:packages/plugins/draw"],
+
+    "@manifold-plugin/machines": ["@manifold-plugin/machines@workspace:packages/plugins/machines"],
+
     "@manifold-plugin/plugin-manager": ["@manifold-plugin/plugin-manager@workspace:packages/plugins/plugin-manager"],
 
     "@manifold-plugin/presence": ["@manifold-plugin/presence@workspace:packages/plugins/presence"],
@@ -243,6 +311,10 @@
     "@manifold-plugin/shell": ["@manifold-plugin/shell@workspace:packages/plugins/shell"],
 
     "@manifold-plugin/terminals": ["@manifold-plugin/terminals@workspace:packages/plugins/terminals"],
+
+    "@manifold-plugin/uri": ["@manifold-plugin/uri@workspace:packages/plugins/uri"],
+
+    "@manifold-plugin/views": ["@manifold-plugin/views@workspace:packages/plugins/views"],
 
     "@manifold/agent": ["@manifold/agent@workspace:packages/agent"],
 

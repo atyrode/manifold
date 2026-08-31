@@ -6,10 +6,14 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@manifold-plugin/draw": "workspace:*",
+    "@manifold-plugin/machines": "workspace:*",
     "@manifold-plugin/plugin-manager": "workspace:*",
     "@manifold-plugin/presence": "workspace:*",
     "@manifold-plugin/shell": "workspace:*",
     "@manifold-plugin/terminals": "workspace:*",
+    "@manifold-plugin/uri": "workspace:*",
+    "@manifold-plugin/views": "workspace:*",
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",

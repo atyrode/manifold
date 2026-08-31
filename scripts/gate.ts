@@ -46,7 +46,24 @@ async function run(name: string, cmd: readonly string[], cwd = repoRoot): Promis
   return result;
 }
 
-const packages = ["protocol", "plugin", "scene", "sdk", "server", "agent", "testkit", "web"];
+const packages = [
+  "protocol",
+  "plugin",
+  "scene",
+  "sdk",
+  "server",
+  "agent",
+  "testkit",
+  "web",
+  "plugins/shell",
+  "plugins/plugin-manager",
+  "plugins/terminals",
+  "plugins/presence",
+  "plugins/machines",
+  "plugins/views",
+  "plugins/draw",
+  "plugins/uri",
+];
 
 try {
   const build = run(
