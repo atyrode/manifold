@@ -4,6 +4,7 @@ import {
   ClientMessageSchema,
   ClientMessageBodySchema,
   CreatePadRequestSchema,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_GESTURE_POINT_VALUES,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
@@ -595,5 +596,23 @@ describe("json schema export", () => {
     expect(schema["protocolVersion"]).toBe(PROTOCOL_VERSION);
     expect(schema["session"]).toBeDefined();
     expect(schema["machine"]).toBeDefined();
+  });
+});
+
+describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
+  test("the current version is ACCEPTED on the machine channel, with every version before it", () => {
+    /*
+      The verdict a bump owes: v14 -> v15 touched session frames and HTTP bodies only — the
+      plugin behavioral contract lives in manifests and roster rows, and an agent never sees
+      either. The agent wire (AgentMessage / ServerToAgentMessage) is byte-identical, so the
+      new version is ADDED rather than the set being reset. Forcing a fleet of long-lived
+      agents holding live PTYs to restart for a change that locks none of them out is the
+      exact failure the invariant guards against.
+    */
+    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
+    const accepted = [...MACHINE_PROTOCOL_COMPAT_VERSIONS].sort((a, b) => a - b);
+    expect(accepted).toEqual(
+      Array.from({ length: PROTOCOL_VERSION - 1 }, (_v, index) => index + 2),
+    );
   });
 });

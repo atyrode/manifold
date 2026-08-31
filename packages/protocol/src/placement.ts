@@ -96,7 +96,19 @@ export type ItemGuard = GuardsWithSite<"item">;
 /** Guards a container kind may declare. */
 export type ContainerGuard = GuardsWithSite<"container">;
 
-interface ItemDeclaration {
+/**
+ * An item kind's PLACEMENT TRAITS: everything the algebra knows about a kind, stated as
+ * data. The three fields are the whole vocabulary — the groups a container matches
+ * against, the guards that cannot be expressed as containment, and how the kind acquires
+ * a home — so a kind IS its traits and `ITEM_KINDS` below is a table of them.
+ *
+ * That completeness is the point (G1): a plugin contributing an element kind declares
+ * these same traits in its manifest, and because nothing about a kind lives outside them,
+ * the closed `ITEM_KINDS` union can later be opened to composed kinds without the algebra
+ * learning a new concept. This wave the union stays closed and the manifest traits are
+ * carried but not yet fused into it.
+ */
+export interface PlacementTraits {
   readonly groups: readonly PlacementGroup[];
   readonly guards: readonly ItemGuard[];
   /**
@@ -106,6 +118,42 @@ interface ItemDeclaration {
    */
   readonly homed: HomingMode | null;
 }
+
+/**
+ * The item-site guards as a value tuple, because a schema has to enumerate them. The
+ * completeness check below is what keeps this list from drifting from `PLACEMENT_GUARDS`:
+ * a new item guard that is not listed here fails to compile.
+ */
+export const ITEM_GUARD_NAMES = ["no-self-embed", "solo-only"] as const satisfies readonly [
+  ItemGuard,
+  ...ItemGuard[],
+];
+type MissingItemGuard = Exclude<ItemGuard, (typeof ITEM_GUARD_NAMES)[number]>;
+const itemGuardsComplete: MissingItemGuard extends never ? true : never = true;
+void itemGuardsComplete;
+
+/**
+ * The same traits on the wire, so a manifest can carry them (G1). Bounded by the
+ * vocabulary itself: a kind cannot declare a group or a guard the algebra does not define,
+ * and it cannot declare the same trait twice into a longer list than there are traits.
+ */
+export const PlacementTraitsSchema = z.strictObject({
+  groups: z.enum(PLACEMENT_GROUPS).array().max(PLACEMENT_GROUPS.length),
+  guards: z.enum(ITEM_GUARD_NAMES).array().max(ITEM_GUARD_NAMES.length),
+  homed: z.enum(HOMING_MODES).nullable(),
+}) satisfies z.ZodType<PlacementTraits>;
+
+/**
+ * What a contributed element kind means when its manifest declares no traits: free-floating
+ * canvas furniture that lives in the document holding it. This is the `draw` row verbatim —
+ * the only element kind a plugin contributes this wave — so absence reproduces exactly
+ * today's semantics rather than inventing a weaker default.
+ */
+export const DEFAULT_ELEMENT_PLACEMENT_TRAITS: PlacementTraits = {
+  groups: ["canvas-item"],
+  guards: [],
+  homed: "inline",
+};
 
 /**
  * Every placeable item kind. A container is two kinds because its discipline decides what
@@ -169,7 +217,7 @@ export const ITEM_KINDS = {
    * than as a door.
    */
   panel: { groups: ["tileable"], guards: [], homed: null },
-} as const satisfies Record<string, ItemDeclaration>;
+} as const satisfies Record<string, PlacementTraits>;
 export type ItemKind = keyof typeof ITEM_KINDS;
 
 /**

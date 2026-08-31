@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   CANVAS_OPS,
   CONTAINER_KINDS,
+  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DESTINATION_KINDS,
   DESTINATION_OPS,
   EXECUTION_ONLY_OPS,
   HOMING_MODES,
+  ITEM_GUARD_NAMES,
   ITEM_KINDS,
   PLACEMENT_DENIAL_RULES,
   PLACEMENT_DENIED_CODE,
@@ -18,6 +20,7 @@ import {
   PlacementDenialSchema,
   PlacementDestinationSchema,
   PlacementSurfaceSchema,
+  PlacementTraitsSchema,
   buildProtocolJsonSchema,
   placementItemFor,
   resolvePlacement,
@@ -659,6 +662,7 @@ describe("placement introspection", () => {
         "request",
         "response",
         "denial",
+        "traits",
       ].sort(),
     );
     expect(Object.keys(published["items"] as object)).toEqual(itemKinds);
@@ -735,5 +739,69 @@ describe("placement introspection", () => {
     );
     const unaccepted = PLACEMENT_GROUPS.filter((group) => !accepted.has(group));
     expect(unaccepted).toEqual(["embeddable"]);
+  });
+});
+
+/**
+ * THE TRAITS ARE THE KIND (G1).
+ *
+ * A plugin that contributes an element kind declares its placement behavior as manifest
+ * data, and the algebra has to be able to consume that declaration without learning a new
+ * concept. That is only true if the traits describe a kind COMPLETELY — so these cases
+ * hold the schema against the closed table itself: every shipped kind must be expressible,
+ * and nothing outside the vocabulary may be.
+ */
+describe("placement traits", () => {
+  test("every closed item kind IS a traits value, which is what lets the union open later", () => {
+    for (const [kind, declaration] of Object.entries(ITEM_KINDS)) {
+      const parsed = PlacementTraitsSchema.parse(declaration);
+      // Round-trip, not merely acceptance: a traits value that dropped `homed` or reordered
+      // groups would still parse while describing a different kind.
+      expect(parsed, kind).toEqual({
+        groups: [...declaration.groups],
+        guards: [...declaration.guards],
+        homed: declaration.homed,
+      });
+    }
+  });
+
+  test("traits are bounded BY the vocabulary: no invented group, guard or homing mode", () => {
+    const draw = { groups: ["canvas-item"], guards: [], homed: "inline" };
+    expect(PlacementTraitsSchema.safeParse(draw).success).toBe(true);
+    expect(PlacementTraitsSchema.safeParse({ ...draw, groups: ["floaty"] }).success).toBe(false);
+    expect(PlacementTraitsSchema.safeParse({ ...draw, homed: "later" }).success).toBe(false);
+    // A container-site guard on an ITEM is the one subtle mistake the site split exists to
+    // catch: `discipline-match` is asked of the destination, and an item claiming it would
+    // declare a rule nothing ever evaluates.
+    expect(PlacementTraitsSchema.safeParse({ ...draw, guards: ["discipline-match"] }).success).toBe(
+      false,
+    );
+    expect(PlacementTraitsSchema.safeParse({ ...draw, guards: ["solo-only"] }).success).toBe(true);
+    // Traits are the WHOLE description; a fourth field would be behavior living outside it.
+    expect(PlacementTraitsSchema.safeParse({ ...draw, render: "DrawNode" }).success).toBe(false);
+    for (const field of ["groups", "guards", "homed"]) {
+      const partial: Record<string, unknown> = { ...draw };
+      delete partial[field];
+      expect(PlacementTraitsSchema.safeParse(partial).success, field).toBe(false);
+    }
+  });
+
+  test("the item-guard tuple tracks the guard table, so a schema cannot fall behind it", () => {
+    const itemGuards = Object.entries(PLACEMENT_GUARDS)
+      .filter(([, guard]) => guard.site === "item")
+      .map(([name]) => name);
+    const named: readonly string[] = [...ITEM_GUARD_NAMES].sort();
+    expect(named).toEqual(itemGuards.sort());
+  });
+
+  test("the default a manifest omitting traits gets is today's contributed element", () => {
+    // Absence has to reproduce v14 exactly: the only element kind a plugin contributes this
+    // wave is `draw`, so the default IS the draw row. Anything else would silently change
+    // what an existing manifest means.
+    expect(DEFAULT_ELEMENT_PLACEMENT_TRAITS).toEqual({
+      groups: [...ITEM_KINDS.draw.groups],
+      guards: [...ITEM_KINDS.draw.guards],
+      homed: ITEM_KINDS.draw.homed,
+    });
   });
 });

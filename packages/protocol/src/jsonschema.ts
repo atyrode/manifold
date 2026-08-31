@@ -4,9 +4,10 @@ import {
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDenialSchema,
+  PlacementTraitsSchema,
   placementVocabulary,
 } from "./placement.ts";
-import type { ActionSummary, PluginRoster } from "./plugin.ts";
+import { pluginVocabulary, type ActionSummary, type PluginRoster } from "./plugin.ts";
 import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
 
@@ -29,10 +30,16 @@ export interface ProtocolExtras {
  * groups they carry, the groups each container accepts, the guards, and the denial rules.
  * A mod discovers what composes with what — and what never can — from these tables.
  *
- * `extras` publishes the ACTION vocabulary and the plugin roster the same way: a stranger's
- * agent learns every door it may knock on, and what each one takes, from this one document.
- * Omitting it yields exactly the pre-plugin description, so a caller with no composition in
- * hand (a test, a schema dump) is not obliged to invent one.
+ * `pluginContract` publishes the plugin vocabulary the same way: what a manifest may
+ * declare (including an element kind's placement traits), what a roster row can say, and
+ * every closed set a refusal can name. It describes the SHAPE of a plugin; the `plugins`
+ * key below describes the ones this server actually composed.
+ *
+ * `extras` publishes the LIVE composition — the ACTION vocabulary and the plugin roster
+ * this server actually composed: a stranger's agent learns every door it may knock on, and
+ * what each one takes, from this one document. Omitting it yields exactly the description
+ * of a server with nothing composed, so a caller with no composition in hand (a test, a
+ * schema dump) is not obliged to invent one.
  */
 export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string, unknown> {
   const description: Record<string, unknown> = {
@@ -50,7 +57,14 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
       request: z.toJSONSchema(PlaceRequestSchema),
       response: z.toJSONSchema(PlaceResponseSchema),
       denial: z.toJSONSchema(PlacementDenialSchema),
+      /**
+       * The shape a contributed element kind declares itself with (G1): the same three
+       * fields `items` above is a table of, so a mod reads one description and knows both
+       * what the shipped kinds are and how to state a new one.
+       */
+      traits: z.toJSONSchema(PlacementTraitsSchema),
     },
+    pluginContract: pluginVocabulary(),
   };
   if (extras === undefined) return description;
   description["actions"] = extras.actions;

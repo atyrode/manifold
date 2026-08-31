@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { DEFAULT_ELEMENT_PLACEMENT_TRAITS, PlacementTraitsSchema } from "./placement.ts";
 
 /**
  * The plugin vocabulary: what a plugin IS on the wire, and what invoking one of its
@@ -17,6 +18,19 @@ export const PluginIdSchema = z.string().regex(PLUGIN_ID_PATTERN).max(64);
 export type PluginId = z.infer<typeof PluginIdSchema>;
 
 /**
+ * The namespace reserved for the ENGINE's own doors. Enablement itself is a door — the
+ * thing that turns plugins on cannot be a plugin that can be turned off — so it is
+ * published as an ordinary roster row under `engine.plugins`, with the same manifest and
+ * the same action schemas as everything else, distinguished only by `source: "builtin"`.
+ * One dispatch ladder, one vocabulary, no privileged second door.
+ *
+ * The prefix is a RESERVATION: composition refuses a non-builtin plugin claiming an id
+ * under it, because a plugin that could publish `engine.*` could impersonate the engine to
+ * a client reading the roster.
+ */
+export const ENGINE_NAMESPACE_PREFIX = "engine.";
+
+/**
  * A contribution's name INSIDE its plugin. Every published name is the pair — an action is
  * `${manifest.id}.${local}` on the wire — so a plugin can never name anything outside its
  * own namespace and a full name always says who owns it.
@@ -26,7 +40,7 @@ export type PluginId = z.infer<typeof PluginIdSchema>;
  * here and there or nowhere.
  *
  * Interior capitals are allowed because the ratified vocabulary uses them where the name is
- * a verb phrase (`core.plugins.setEnabled`); a name still starts lowercase and carries no
+ * a verb phrase (`engine.plugins.setEnabled`); a name still starts lowercase and carries no
  * dot, so the segment boundary in a full name stays unambiguous.
  */
 export const LOCAL_NAME_PATTERN = /^[a-z][a-zA-Z0-9-]*$/;
@@ -53,8 +67,22 @@ const ContributesSchema = z.strictObject({
     .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema, order: z.number().int() }))
     .max(8)
     .default([]),
+  /**
+   * A contributed element kind: `type` is the wire type stored in scene documents, and
+   * `placement` is how the algebra must treat it (G1). Traits are DATA here for the same
+   * reason they are data in `ITEM_KINDS` — legality follows from the declaration, so
+   * opening the closed kind union to composed kinds is later a wiring change, not a new
+   * concept. Absent ≡ `DEFAULT_ELEMENT_PLACEMENT_TRAITS`: free-floating canvas furniture,
+   * which is what every contributed element is this wave.
+   */
   elements: z
-    .array(z.strictObject({ type: z.string().min(1).max(32), title: TitleSchema }))
+    .array(
+      z.strictObject({
+        type: z.string().min(1).max(32),
+        title: TitleSchema,
+        placement: PlacementTraitsSchema.optional(),
+      }),
+    )
     .max(8)
     .default([]),
   tools: z
@@ -67,6 +95,111 @@ const ContributesSchema = z.strictObject({
     .max(16)
     .default([]),
 });
+
+/**
+ * What one plugin needs of another. Requirement and ORDER are separate axes: `required`
+ * refuses composition when the named plugin is missing or disabled, `incompatible` refuses
+ * when it is present, `optional` refuses nothing and exists so a client can explain a
+ * degraded surface. Ordering is declared separately (`after`), because "I need X" and "put
+ * me after X" are different sentences and conflating them forces authors to invent a
+ * dependency to get a sequence.
+ *
+ * `reason` is user-facing text: a dependency failure is read by a human deciding what to
+ * turn on, and demanding the sentence at authoring time costs nothing.
+ */
+export const PLUGIN_DEPENDENCY_TYPES = ["required", "optional", "incompatible"] as const;
+export type PluginDependencyType = (typeof PLUGIN_DEPENDENCY_TYPES)[number];
+export const PluginDependencySchema = z.strictObject({
+  type: z.enum(PLUGIN_DEPENDENCY_TYPES),
+  reason: z.string().min(1).max(200).optional(),
+});
+export type PluginDependency = z.infer<typeof PluginDependencySchema>;
+
+/**
+ * The declarations, keyed BY the plugin depended on. A map rather than a list because a
+ * manifest naming the same plugin twice is not a thing to refuse at compose time — it is a
+ * thing the shape should make unsayable — and because a reader asking "what does this say
+ * about `core.shell`?" indexes instead of scanning.
+ */
+export const PluginDependencyMapSchema = z.record(PluginIdSchema, PluginDependencySchema);
+export type PluginDependencyMap = z.infer<typeof PluginDependencyMapSchema>;
+
+/**
+ * The version of the DATA a plugin owns, which is not the version of its code: a plugin
+ * ships many releases against one storage shape. The split is what makes the compatibility
+ * rule statable — minor differences proceed untouched, a major difference is a migration
+ * the plugin must name, and stored-newer-than-code is refused rather than guessed at.
+ */
+export const PluginDataVersionSchema = z.strictObject({
+  major: z.number().int().min(0),
+  minor: z.number().int().min(0),
+});
+export type PluginDataVersion = z.infer<typeof PluginDataVersionSchema>;
+
+/**
+ * How this plugin's already-placed nodes render while it is disabled. DECLARATIVE on
+ * purpose: the placeholder is drawn by the ENGINE from this data, never by a component the
+ * disabled plugin supplies — the plugin whose code may not be loaded cannot be the one
+ * asked to draw its own absence.
+ *
+ * `ghost` keeps the node visible, named and inert (the default, and the only honest answer
+ * for something holding a user's work); `hide` skips it at paint while leaving it in the
+ * document, for chrome whose absence is not a loss. `label` overrides the name the ghost
+ * shows. Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }`.
+ */
+export const PLUGIN_DORMANT_MODES = ["ghost", "hide"] as const;
+export type PluginDormantMode = (typeof PLUGIN_DORMANT_MODES)[number];
+export const DEFAULT_DORMANT_MODE: PluginDormantMode = "ghost";
+export const PluginDormantSchema = z.strictObject({
+  mode: z.enum(PLUGIN_DORMANT_MODES),
+  label: z.string().min(1).max(64).optional(),
+});
+export type PluginDormant = z.infer<typeof PluginDormantSchema>;
+
+/**
+ * Every way something of a DISABLED plugin may still be live — the complete list, closed.
+ * A disable gates a plugin's active surface; these three are the declared carve-outs that
+ * survive it, one per plane:
+ *
+ *   `cleanup`  an action stays dispatchable while disabled (D12), so nobody is ever locked
+ *              out of removing a thing the plugin created.
+ *   `dormant`  the render plane: placed nodes stay in the document and paint as declared.
+ *   `retain`   the data plane, and the ONLY data fate a disable has. Disable is reversible
+ *              in every system worth copying; destruction is a separate, separately-gated
+ *              verb (see `PLUGIN_PURGE_TARGETS`) that refuses while the plugin is enabled.
+ *
+ * The list is closed so the carve-out cannot grow quietly: a fourth residual mechanism is
+ * a protocol change reviewed as one.
+ */
+export const PLUGIN_RESIDUAL_MECHANISMS = ["cleanup", "dormant", "retain"] as const;
+export type PluginResidualMechanism = (typeof PLUGIN_RESIDUAL_MECHANISMS)[number];
+
+/**
+ * What a PURGE destroys. Purge is the deliberate opposite of disable: it is refused while
+ * the plugin is enabled, it names what it will remove before it removes it, and a manifest
+ * declares its targets so the loss is auditable from data rather than discovered from a
+ * hook's behavior.
+ *
+ *   `storage`   the plugin's namespaced rows.
+ *   `elements`  scene elements of the kinds it owns.
+ *   `ownership` its element-type reservation — after this, another plugin may claim those
+ *               kinds. Until it, the reservation stands precisely so a disabled plugin's
+ *               stored data can never be inherited by a stranger.
+ */
+export const PLUGIN_PURGE_TARGETS = ["storage", "elements", "ownership"] as const;
+export const PluginPurgeTargetSchema = z.enum(PLUGIN_PURGE_TARGETS);
+export type PluginPurgeTarget = (typeof PLUGIN_PURGE_TARGETS)[number];
+
+/**
+ * What a purge REMOVED, per target — every target accounted for, zeros included, because
+ * "nothing was there" and "that target was skipped" must not read the same to the caller
+ * who just authorised a deletion.
+ */
+export const PluginPurgeResultSchema = z.strictObject({
+  id: PluginIdSchema,
+  removed: z.record(PluginPurgeTargetSchema, z.number().int().min(0)),
+});
+export type PluginPurgeResult = z.infer<typeof PluginPurgeResultSchema>;
 
 export const PluginManifestSchema = z.strictObject({
   id: PluginIdSchema,
@@ -83,9 +216,35 @@ export const PluginManifestSchema = z.strictObject({
    * An essential plugin cannot be disabled: the workspace has no way to render itself
    * without it, so the refusal is kinder than the blank screen. `core.shell` is the only
    * essential plugin this wave.
+   *
+   * The refusal it raises is the `essential` member of `PLUGIN_REFUSAL_REASONS` — a CLASS,
+   * not a sentence, and one of several: a system with a single reason to refuse a disable
+   * grows its second one immediately (a required dependency, an owned element type), and
+   * clients that switched on prose would have to be rewritten each time.
    */
   essential: z.boolean().optional(),
   contributes: ContributesSchema,
+  /**
+   * Declared relationships. Absent ≡ none, which is every manifest written before this
+   * field existed: a plugin naming nothing composes exactly as it did.
+   */
+  dependencies: PluginDependencyMapSchema.optional(),
+  /**
+   * SOFT ordering: compose me after these, if they are here at all. A missing id in this
+   * list is not an error — that is the whole difference from a dependency — and the
+   * resulting order (topological, ties by lexicographic id) is the order lifecycle hooks
+   * fan out in, so "after" is a statement about sequence and nothing else.
+   */
+  after: PluginIdSchema.array().max(16).optional(),
+  /** Absent ≡ unversioned data: nothing to migrate, nothing to refuse. */
+  dataVersion: PluginDataVersionSchema.optional(),
+  /** Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }` — a named, inert ghost. */
+  dormant: PluginDormantSchema.optional(),
+  /**
+   * What a purge of this plugin would destroy, declared for audit visibility. It is a
+   * DESCRIPTION, never a trigger: nothing here is bound to the disable verb.
+   */
+  purges: PluginPurgeTargetSchema.array().max(PLUGIN_PURGE_TARGETS.length).optional(),
   /** reserved, dynamic wave */
   entry: z.strictObject({ web: z.string().optional(), server: z.boolean().optional() }).optional(),
 });
@@ -114,15 +273,88 @@ export const ActionSummarySchema = z.strictObject({
 export type ActionSummary = z.infer<typeof ActionSummarySchema>;
 
 /**
- * A plugin as the roster describes it. `source` says where the code came from — only
- * `builtin` exists this wave, and the field is here so a distributed plugin does not need
- * a new roster shape to be told apart from one compiled in.
+ * Where a roster row's code came from. `builtin` is the ENGINE's own doors (enablement,
+ * purge): same manifest, same action schemas, same dispatch ladder, but no toggle — the
+ * mechanism that turns plugins on is not itself a plugin. `plugin` is everything else,
+ * including every core plugin, which is what makes "core is not privileged" checkable
+ * rather than merely claimed. A distributed plugin will be `plugin` too, so the marketplace
+ * wave needs no new roster shape.
+ */
+export const PLUGIN_SOURCES = ["builtin", "plugin"] as const;
+export const PluginSourceSchema = z.enum(PLUGIN_SOURCES);
+export type PluginSource = (typeof PLUGIN_SOURCES)[number];
+
+/**
+ * What the last lifecycle transition DID, when it did not simply work. A hot toggle runs
+ * trusted in-process teardown, and teardown of arbitrary code is unreliable — so failure
+ * is a representable state rather than an assertion: the disable ALWAYS completes (a
+ * shared workspace is never wedged on one plugin's cleanup) and the roster says so, to
+ * every connected principal at once. Absent ≡ `ok`.
+ */
+export const PLUGIN_LIFECYCLE_STATES = ["ok", "enable_failed", "disable_failed"] as const;
+export const PluginLifecycleStateSchema = z.enum(PLUGIN_LIFECYCLE_STATES);
+export type PluginLifecycleState = (typeof PLUGIN_LIFECYCLE_STATES)[number];
+
+/**
+ * The named classes of refusal a plugin can meet. A refusal is a CLASS, never a sentence:
+ * clients switch on it, agents branch on it, and prose stays a courtesy. `essential` was
+ * the first one and is why this is a list — a system with one reason to refuse grows a
+ * second immediately.
+ *
+ *   `essential`               the workspace cannot render itself without it.
+ *   `builtin`                 an engine door has no toggle to flip.
+ *   `unknown_plugin`          well-formed id, no such row.
+ *   `missing_dependency`      a `required` dependency is not composed.
+ *   `incompatible_dependency` an `incompatible` dependency IS composed.
+ *   `dependency_disabled`     a `required` dependency is present but off; re-enable it
+ *                             first, rather than run this plugin against a missing peer.
+ *   `data_downgrade`          stored data is newer than the code that would read it.
+ *   `data_migration_missing`  a major data version differs and no migration names the gap.
+ *   `element_type_owned`      another plugin — possibly a disabled one — owns that element
+ *                             type. A reservation outlives a disable so stored nodes can
+ *                             never be inherited by a stranger.
+ *   `still_enabled`           a purge was asked of a plugin that is still on.
+ *
+ * A row carries at most one, and the roster carries every row, so a client renders "why"
+ * without a second call: which dependency is off is read from this row's manifest against
+ * the other rows' `enabled`.
+ */
+export const PLUGIN_REFUSAL_REASONS = [
+  "essential",
+  "builtin",
+  "unknown_plugin",
+  "missing_dependency",
+  "incompatible_dependency",
+  "dependency_disabled",
+  "data_downgrade",
+  "data_migration_missing",
+  "element_type_owned",
+  "still_enabled",
+] as const;
+export const PluginRefusalReasonSchema = z.enum(PLUGIN_REFUSAL_REASONS);
+export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
+
+/**
+ * A plugin as the roster describes it: everything a client needs to render the plugin, its
+ * doors, its state and WHO put it in that state, from one document.
+ *
+ * Attribution is on the row rather than in an event because enablement is workspace-global
+ * and hot — one principal's toggle changes what everyone else is looking at, right now —
+ * and a placeholder that can say "disabled by alex" is the difference between a change and
+ * a glitch. Both fields are absent (or null, as a store row reads them) until someone
+ * actually toggles the plugin.
  */
 export const PluginRosterEntrySchema = z.strictObject({
   manifest: PluginManifestSchema,
   enabled: z.boolean(),
-  source: z.literal("builtin"),
+  source: PluginSourceSchema,
   actions: ActionSummarySchema.array(),
+  /** Absent ≡ `ok`: the plugin's last transition did what it said. */
+  lifecycle: PluginLifecycleStateSchema.optional(),
+  /** Why this row cannot be toggled right now — a lock in the UI, not a hidden failure. */
+  refusal: PluginRefusalReasonSchema.optional(),
+  changedBy: z.string().min(1).max(128).nullish(),
+  changedAt: z.number().int().min(0).nullish(),
 });
 export type PluginRosterEntry = z.infer<typeof PluginRosterEntrySchema>;
 
@@ -165,3 +397,34 @@ export const ActionOutcomeSchema = z.union([
   z.strictObject({ ok: z.literal(false), denial: ActionDenialSchema }),
 ]);
 export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
+
+/**
+ * The plugin vocabulary, published — the counterpart of `placementVocabulary()`. A
+ * stranger's agent reading `GET /api/protocol` learns what a manifest may declare, what a
+ * roster row can say about state and attribution, and every CLOSED set a refusal can name,
+ * from the declarations themselves rather than from prose that drifts away from them.
+ *
+ * What this does NOT contain is which plugins a given server composed: that is the live
+ * composition, handed in through `ProtocolExtras`, because this package describes shapes
+ * and never their inhabitants.
+ */
+export function pluginVocabulary(): Record<string, unknown> {
+  return {
+    engineNamespace: ENGINE_NAMESPACE_PREFIX,
+    sources: PLUGIN_SOURCES,
+    dependencyTypes: PLUGIN_DEPENDENCY_TYPES,
+    dormantModes: PLUGIN_DORMANT_MODES,
+    defaultDormantMode: DEFAULT_DORMANT_MODE,
+    residualMechanisms: PLUGIN_RESIDUAL_MECHANISMS,
+    purgeTargets: PLUGIN_PURGE_TARGETS,
+    lifecycleStates: PLUGIN_LIFECYCLE_STATES,
+    refusalReasons: PLUGIN_REFUSAL_REASONS,
+    denialRules: ACTION_DENIAL_RULES,
+    defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+    manifest: z.toJSONSchema(PluginManifestSchema),
+    action: z.toJSONSchema(ActionSummarySchema),
+    outcome: z.toJSONSchema(ActionOutcomeSchema),
+    rosterEntry: z.toJSONSchema(PluginRosterEntrySchema),
+    purgeResult: z.toJSONSchema(PluginPurgeResultSchema),
+  };
+}

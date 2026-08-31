@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 15;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -65,9 +65,20 @@ export const PROTOCOL_VERSION = 14;
  * item its surface addresses, so a collaborator paints legality from the frame
  * instead of re-resolving an address against its own index poll.
  * Machine wire byte-identical, so existing agents stay accepted.
+ * v14 -> v15: session/HTTP only — the plugin behavioral contract. Manifests gained
+ * OPTIONAL `dependencies`/`after` (absent ≡ no relationships and no ordering constraint,
+ * the v14 semantics), `dataVersion` (absent ≡ unversioned: nothing migrates, nothing
+ * refuses), `dormant` (absent ≡ the engine's named ghost, which is what v14 already drew),
+ * `purges` (an audit-visible declaration bound to no verb) and per-element `placement`
+ * traits (absent ≡ canvas-item/inline, exactly today's contributed element); roster rows
+ * gained `lifecycle`, `refusal` and `changedBy`/`changedAt` (all absent ≡ a plugin nobody
+ * has toggled and nothing refuses) and their `source` widened from the literal "builtin"
+ * to "builtin" | "plugin", which every v14 value still satisfies. All of it rides
+ * `GET /api/plugins` and the connection-level `plugins` frame. The machine wire is
+ * byte-identical — an agent never sees a manifest — so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 ]);
 
 /**
