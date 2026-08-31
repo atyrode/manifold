@@ -7,19 +7,20 @@
  * pointer events, and measures:
  *
  * - remote effective Hz: distinct position updates/s observed on browser B's canvas
- *   (polled through the debug seam), i.e. what a collaborator's eye actually sees;
+ *   (polled through the debug probe), i.e. what a collaborator's eye actually sees;
  * - inter-update gap p50/p95 on B (visual choppiness);
  * - wire cost: gesture frames/s and JSON payload bytes/s at an SDK observer;
  * - input→remote latency p50/p95: the drag sweeps x monotonically on a known schedule,
  *   so each observed x maps back to its dispatch time (includes ~1-3ms CDP overhead).
  *
- * NOT measured: render CPU on B (needs a tracing session; out of scope here).
+ * NOT measured: render CPU on B (needs a tracing terminal; out of scope here).
  *
  * Usage:  bun scripts/bench-sync.ts [cadenceMs ...]     # default: 80 32 16
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
@@ -93,12 +94,16 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       "bench server healthz",
     );
     const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
-    const created = await fetch(`${origin}/api/pads`, {
+    // `core.index.createContainer` replaced `POST /api/containers`: the door answers an ActionOutcome,
+    // so the created record arrives inside a validated envelope.
+    const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
       method: "POST",
       headers: { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" },
       body: JSON.stringify({ name: `bench-${String(cadenceMs)}ms` }),
     });
-    const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+    const outcome = ActionOutcomeSchema.parse(await created.json());
+    if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+    const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
     const debugPort = 9700 + Math.floor(Math.random() * 200);
     for (const [browser, offset, name] of [
@@ -110,19 +115,19 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
       if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
         await browser.typeInto("input", name);
-        await browser.clickText("Enter manifold");
+        await browser.clickTestId("identity-enter");
       }
-      await browser.goto(`${origin}/p/${padId}`);
+      await browser.goto(`${origin}/p/${containerId}`);
       await until(
         () => browser.evaluate<boolean>("window.__manifold !== undefined"),
         15_000,
-        `${name} seam`,
+        `${name} probe`,
       );
     }
 
     const sdk = new SessionClient({
       url: `${origin.replace(/^http/, "ws")}/ws/session`,
-      padId,
+      containerId,
       token: ownerKey,
       reconnect: false,
     });

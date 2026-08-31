@@ -3,16 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  ContainersResponseSchema,
-  PadResponseSchema,
+  ActionOutcomeSchema,
+  ContainerCensusResponseSchema,
+  ContainerResponseSchema,
   ROOT_TILE_ID,
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
   censusSolo,
-  type Pad,
+  elementString,
+  type Container,
   type SceneElement,
   type ServerMessageBody,
   type ServerToAgentMessage,
+  type TerminalSummary,
 } from "@manifold/protocol";
 import {
   DEFAULT_TERMINAL_HEIGHT,
@@ -20,18 +23,20 @@ import {
   LOCAL_ORIGIN,
   readElement,
   readElements,
-  tileIdForSurface,
+  tileIdForRef,
   tileLeafIds,
   writeElement,
 } from "@manifold/scene";
+import { workspaceLayout } from "@manifold/plugin";
+import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
-import { SessionPeer } from "../src/session-peer.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
@@ -41,6 +46,7 @@ import {
   FakeRuntime,
   FakeSocket,
   placeTile,
+  testPluginHost,
   testStore,
   unplaceElement,
   unplaceTerminal,
@@ -88,8 +94,16 @@ class FakeMachine implements MachineChannel {
   }
 }
 
-/** The portal variant, named so a repoint assertion can spread one and override its target. */
-type PortalElement = Extract<SceneElement, { type: "portal" }>;
+/**
+ * The portal shape these tests author, named so a repoint assertion can spread one and
+ * override its target. An element is a neutral ENVELOPE now (ADR 0013 §16), so this is a
+ * local fixture type rather than a variant extracted from the union: `containerId` is a
+ * payload field the canvas's own kind declares, and the floor's type no longer knows it.
+ */
+interface PortalElement extends SceneElement {
+  readonly type: "portal";
+  readonly containerId: string;
+}
 
 /**
  * How a canvas shows a terminal: a portal onto the composition the terminal lives in. There
@@ -115,19 +129,19 @@ function portalElement(
   };
 }
 
-/** Broker, room manager, placement executor and HTTP surface over one store. */
+/** Broker, room manager, placement executor and HTTP app over one store. */
 interface LifecycleFixture {
   runtime: FakeRuntime;
   store: ServerStore;
   root: AuthContext;
   /** The canvas every opener in these tests spawns from; pinned resident by `opener`. */
-  canvas: Pad;
+  canvas: Container;
   rooms: RoomManager;
   broker: TerminalBroker;
   placement: PlaceExecutor;
   machine: FakeMachine;
   socket: FakeSocket;
-  opener: SessionPeer;
+  opener: SessionChannel;
   app: HttpApp;
 }
 
@@ -148,13 +162,13 @@ function lifecycleFixture(): LifecycleFixture {
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
-  const canvas: Pad = {
+  const canvas: Container = {
     id: runtime.newId(),
-    name: "canvas pad",
+    name: "canvas container",
     createdAt: runtime.now(),
-    layout: "canvas",
+    discipline: "canvas",
   };
-  store.createPad(canvas);
+  store.createContainer(canvas);
   const rooms = new RoomManager(store, runtime, clock, silentLogger);
   const broker = new TerminalBroker(
     store,
@@ -165,9 +179,19 @@ function lifecycleFixture(): LifecycleFixture {
     silentLogger,
     () => "http://localhost:7777",
   );
-  rooms.setSessionProvider((padId) => broker.listForPad(padId));
-  rooms.setPendingOpenProvider((padId) => broker.hasPendingOpenForPad(padId));
-  const placement = new PlaceExecutor(store, rooms, broker, runtime);
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
+  // The assembly first: the executor resolves contributed element traits against it
+  // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
+  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    broker,
+    runtime,
+    assemblyElementTraits(() => plugins.roster()),
+    assemblyItemNouns(() => plugins.roster()),
+  );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
     auth,
@@ -181,7 +205,7 @@ function lifecycleFixture(): LifecycleFixture {
   const machine = new FakeMachine(auth.enrollMachine(MACHINE_NAME, root).machine.id);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
-  const opener = new SessionPeer(runtime.newId(), socket, root, canvas.id, "c1");
+  const opener = new SessionChannel(runtime.newId(), socket, root, canvas.id, "c1");
   const app = new HttpApp(
     config,
     store,
@@ -190,8 +214,9 @@ function lifecycleFixture(): LifecycleFixture {
     broker,
     placement,
     machines,
-    runtime,
+    plugins,
     silentLogger,
+    workspaceLayout(WORKSPACE_PANELS),
   );
   const fixture: LifecycleFixture = {
     runtime,
@@ -212,9 +237,9 @@ function lifecycleFixture(): LifecycleFixture {
   return fixture;
 }
 
-function room(fixture: LifecycleFixture, padId: string): Room {
-  const found = fixture.rooms.get(padId);
-  if (found === null) throw new Error(`missing room ${padId}`);
+function room(fixture: LifecycleFixture, containerId: string): Room {
+  const found = fixture.rooms.get(containerId);
+  if (found === null) throw new Error(`missing room ${containerId}`);
   return found;
 }
 
@@ -222,8 +247,8 @@ function canvasDoc(fixture: LifecycleFixture): Room["doc"] {
   return room(fixture, fixture.canvas.id).doc;
 }
 
-function leafIds(fixture: LifecycleFixture, padId: string): string[] {
-  return tileLeafIds(room(fixture, padId).tileLayout() ?? {});
+function leafIds(fixture: LifecycleFixture, containerId: string): string[] {
+  return tileLeafIds(room(fixture, containerId).tileLayout() ?? {});
 }
 
 /**
@@ -231,54 +256,60 @@ function leafIds(fixture: LifecycleFixture, padId: string): string[] {
  * root's own content into a fresh leaf, so any leaf id a caller remembered from before
  * another placement is stale — which is exactly why the executor resolves one from identity.
  */
-function leafForSession(fixture: LifecycleFixture, padId: string, sessionId: string): string {
-  const tileId = tileIdForSurface(room(fixture, padId).tileLayout(), {
+function leafForTerminal(
+  fixture: LifecycleFixture,
+  containerId: string,
+  terminalId: string,
+): string {
+  const tileId = tileIdForRef(room(fixture, containerId).tileLayout(), {
     kind: "terminal",
-    sessionId,
+    terminalId,
   });
-  if (tileId === null) throw new Error(`${padId} holds no leaf for ${sessionId}`);
+  if (tileId === null) throw new Error(`${containerId} holds no leaf for ${terminalId}`);
   return tileId;
 }
 
-/** The only surface a composition of one shows; null when its single leaf is empty. */
-function soleSurface(fixture: LifecycleFixture, padId: string): unknown {
-  const layout = room(fixture, padId).tileLayout();
-  if (layout === null) throw new Error(`missing layout for ${padId}`);
+/** The only ref a composition of one holds; null when its single leaf is vacant. */
+function soleRef(fixture: LifecycleFixture, containerId: string): unknown {
+  const layout = room(fixture, containerId).tileLayout();
+  if (layout === null) throw new Error(`missing layout for ${containerId}`);
   const leaves = tileLeafIds(layout);
-  if (leaves.length !== 1) throw new Error(`expected one leaf in ${padId}, saw ${leaves.length}`);
+  if (leaves.length !== 1) {
+    throw new Error(`expected one leaf in ${containerId}, saw ${leaves.length}`);
+  }
   const leafId = leaves[0];
-  return leafId === undefined ? null : (layout[leafId]?.surface ?? null);
+  return leafId === undefined ? null : (layout[leafId]?.ref ?? null);
 }
 
-function soleLeafId(fixture: LifecycleFixture, padId: string): string {
-  const leaves = leafIds(fixture, padId);
+function soleLeafId(fixture: LifecycleFixture, containerId: string): string {
+  const leaves = leafIds(fixture, containerId);
   const leafId = leaves[0];
   if (leafId === undefined || leaves.length !== 1) {
-    throw new Error(`expected one leaf in ${padId}, saw ${leaves.length}`);
+    throw new Error(`expected one leaf in ${containerId}, saw ${leaves.length}`);
   }
   return leafId;
 }
 
-function tiledPad(fixture: LifecycleFixture, name: string): Pad {
-  const pad: Pad = {
+function compositionContainer(fixture: LifecycleFixture, name: string): Container {
+  const container: Container = {
     id: fixture.runtime.newId(),
     name,
     createdAt: fixture.runtime.now(),
-    layout: "tiled",
+    discipline: "composition",
   };
-  fixture.store.createPad(pad);
-  return pad;
+  fixture.store.createContainer(container);
+  return container;
 }
 
-function canvasPad(fixture: LifecycleFixture, name: string): Pad {
-  const pad: Pad = {
+function canvasContainer(fixture: LifecycleFixture, name: string): Container {
+  const container: Container = {
     id: fixture.runtime.newId(),
     name,
     createdAt: fixture.runtime.now(),
-    layout: "canvas",
+    discipline: "canvas",
   };
-  fixture.store.createPad(pad);
-  return pad;
+  fixture.store.createContainer(container);
+  return container;
 }
 
 type CreateFrame = Extract<ServerToAgentMessage, { type: "create" }>;
@@ -304,28 +335,28 @@ function bodiesOfType(socket: FakeSocket, type: ServerMessageBody["type"]): Serv
 
 /** A channel joined to one container, so its own socket witnesses that room's fan-out. */
 interface Witness {
-  readonly peer: SessionPeer;
+  readonly peer: SessionChannel;
   readonly socket: FakeSocket;
 }
 
-function joinPeer(fixture: LifecycleFixture, padId: string): Witness {
+function joinPeer(fixture: LifecycleFixture, containerId: string): Witness {
   const socket = new FakeSocket();
-  const peer = new SessionPeer(fixture.runtime.newId(), socket, fixture.root, padId, "c1");
-  room(fixture, padId).join(peer);
+  const peer = new SessionChannel(fixture.runtime.newId(), socket, fixture.root, containerId, "c1");
+  room(fixture, containerId).join(peer);
   return { peer, socket };
 }
 
 /** A terminal, its home composition, and the leaf that makes the home hold it. */
 interface Born {
-  readonly sessionId: string;
+  readonly terminalId: string;
   readonly homeId: string;
   readonly leafId: string;
 }
 
-/** Where a session says it lives; the one durable answer to "which composition". */
-function homeOf(fixture: LifecycleFixture, sessionId: string): string {
-  const homeId = fixture.store.getSession(sessionId)?.padId;
-  if (homeId === undefined) throw new Error(`session ${sessionId} has no row`);
+/** Where a terminal says it lives; the one durable answer to "which composition". */
+function homeOf(fixture: LifecycleFixture, terminalId: string): string {
+  const homeId = fixture.store.getTerminal(terminalId)?.containerId;
+  if (homeId === undefined) throw new Error(`terminal ${terminalId} has no row`);
   return homeId;
 }
 
@@ -338,9 +369,9 @@ function bornOnCanvas(fixture: LifecycleFixture, ref: string): Born {
     rows: 24,
   });
   const create = lastCreate(fixture.machine);
-  fixture.broker.onCreated(fixture.machine.machineId, create.sessionId);
-  const homeId = homeOf(fixture, create.sessionId);
-  return { sessionId: create.sessionId, homeId, leafId: soleLeafId(fixture, homeId) };
+  fixture.broker.onCreated(fixture.machine.machineId, create.terminalId);
+  const homeId = homeOf(fixture, create.terminalId);
+  return { terminalId: create.terminalId, homeId, leafId: soleLeafId(fixture, homeId) };
 }
 
 /** L1 from a composition: the opener IS the home, so the server writes it a leaf. */
@@ -353,12 +384,12 @@ function bornInComposition(fixture: LifecycleFixture, inside: Witness, ref: stri
     placement: "tile",
   });
   const create = lastCreate(fixture.machine);
-  fixture.broker.onCreated(fixture.machine.machineId, create.sessionId);
+  fixture.broker.onCreated(fixture.machine.machineId, create.terminalId);
   const opened = openedFrames(inside.socket).at(-1);
   if (opened === undefined) throw new Error("missing terminal_opened reply");
   return {
-    sessionId: create.sessionId,
-    homeId: homeOf(fixture, create.sessionId),
+    terminalId: create.terminalId,
+    homeId: homeOf(fixture, create.terminalId),
     leafId: opened.elementId,
   };
 }
@@ -384,6 +415,28 @@ async function call(
   return { status: response.status, payload: await response.json() };
 }
 
+/** The container an action answered with: the outcome envelope, then the row inside it. */
+function actionContainer(payload: unknown): Container {
+  const outcome = ActionOutcomeSchema.parse(payload);
+  if (!outcome.ok) throw new Error(`action refused: ${outcome.denial.message}`);
+  return ContainerResponseSchema.parse(outcome.result).container;
+}
+
+/** The terminal index, through the door that owns it (`core.terminals.listAll`). */
+async function indexRows(fixture: LifecycleFixture): Promise<readonly TerminalSummary[]> {
+  const response = await call(
+    fixture,
+    "POST",
+    "/api/actions/core.terminals.listAll",
+    OWNER_KEY,
+    {},
+  );
+  expect(response.status).toBe(200);
+  const outcome = ActionOutcomeSchema.parse(response.payload);
+  if (!outcome.ok) throw new Error(`index refused: ${outcome.denial.message}`);
+  return TerminalsResponseSchema.parse(outcome.result).terminals;
+}
+
 afterEach(() => {
   for (const path of temporaryDirectories.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -398,16 +451,16 @@ describe("L1 birth: a terminal and its home are created together", () => {
 
     // The home is a container of its own, never the canvas the gesture happened on.
     expect(born.homeId).not.toBe(fixture.canvas.id);
-    expect(fixture.store.getPad(born.homeId)).toEqual({
+    expect(fixture.store.getContainer(born.homeId)).toEqual({
       id: born.homeId,
       name: MACHINE_NAME,
       createdAt: 0,
-      layout: "tiled",
+      discipline: "composition",
     });
     expect(leafIds(fixture, born.homeId)).toEqual([ROOT_TILE_ID]);
-    expect(soleSurface(fixture, born.homeId)).toEqual({
+    expect(soleRef(fixture, born.homeId)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
     // The opener authors its own portal, client-side, under the ref it sent. A server-side
     // element here would silently double up with the client's: this zero is the contract.
@@ -415,8 +468,8 @@ describe("L1 birth: a terminal and its home are created together", () => {
     // A program inside the terminal asking where it is must be told the container it LIVES
     // in. The canvas is never that, and the agent token is scoped to the same id.
     const create = lastCreate(fixture.machine);
-    expect(create.env.MANIFOLD_PAD).toBe(born.homeId);
-    expect(create.env.MANIFOLD_PAD).not.toBe(fixture.canvas.id);
+    expect(create.env.MANIFOLD_CONTAINER).toBe(born.homeId);
+    expect(create.env.MANIFOLD_CONTAINER).not.toBe(fixture.canvas.id);
     expect(create.env.MANIFOLD_ELEMENT).toBe("ref-1");
   });
 
@@ -430,17 +483,17 @@ describe("L1 birth: a terminal and its home are created together", () => {
     const opened = openedFrames(fixture.socket).at(-1);
     expect(opened?.elementId).toBe("ref-1");
     expect(opened?.ref).toBeUndefined();
-    expect(opened?.session.padId).toBe(born.homeId);
+    expect(opened?.terminal.containerId).toBe(born.homeId);
 
-    // The mirror image, and the reason the field is polymorphic at all: a tiled opener
+    // The mirror image, and the reason the field is polymorphic at all: a composition opener
     // authors nothing, so it is told the leaf the server wrote and its ref is echoed back.
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
-    const tiled = bornInComposition(fixture, inside, "ref-2");
-    const tiledOpened = openedFrames(inside.socket).at(-1);
-    expect(tiledOpened?.elementId).toBe(tiled.leafId);
-    expect(tiledOpened?.ref).toBe("ref-2");
-    expect(tiledOpened?.session.padId).toBe(composition.id);
+    const inComposition = bornInComposition(fixture, inside, "ref-2");
+    const compositionOpened = openedFrames(inside.socket).at(-1);
+    expect(compositionOpened?.elementId).toBe(inComposition.leafId);
+    expect(compositionOpened?.ref).toBe("ref-2");
+    expect(compositionOpened?.terminal.containerId).toBe(composition.id);
   });
 
   test("a terminal's lifecycle is published in its home, never in the canvas that opened it", () => {
@@ -449,34 +502,36 @@ describe("L1 birth: a terminal and its home are created together", () => {
 
     const born = bornOnCanvas(fixture, "ref-1");
     const inHome = joinPeer(fixture, born.homeId);
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
 
-    // Nothing about a session is canvas state after the cutover: a canvas learns about the
+    // Nothing about a terminal is canvas state after the cutover: a canvas learns about the
     // terminal the same way it learns about anything else, through its own document.
     expect(bodiesOfType(onCanvas.socket, "terminal_opened")).toEqual([]);
-    expect(bodiesOfType(onCanvas.socket, "session_event")).toEqual([]);
-    expect(bodiesOfType(inHome.socket, "session_event")).toEqual([
-      { type: "session_event", sessionId: born.sessionId, kind: "exited", exitCode: 0 },
+    expect(bodiesOfType(onCanvas.socket, "terminal_event")).toEqual([]);
+    expect(bodiesOfType(inHome.socket, "terminal_event")).toEqual([
+      { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 0 },
     ]);
   });
 
-  test("a tiled opener IS the home: one leaf is written and no second composition is born", () => {
+  test("a composition opener IS the home: one leaf is written and no second composition is born", () => {
     const fixture = lifecycleFixture();
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
-    const padsBefore = fixture.store.listPads().map((pad) => pad.id);
+    const containersBefore = fixture.store.listContainers().map((container) => container.id);
 
     const born = bornInComposition(fixture, inside, "ref-1");
 
-    expect(fixture.store.listPads().map((pad) => pad.id)).toEqual(padsBefore);
+    expect(fixture.store.listContainers().map((container) => container.id)).toEqual(
+      containersBefore,
+    );
     expect(born.homeId).toBe(composition.id);
-    expect(soleSurface(fixture, composition.id)).toEqual({
+    expect(soleRef(fixture, composition.id)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
     const create = lastCreate(fixture.machine);
-    expect(create.env.MANIFOLD_PAD).toBe(composition.id);
-    // A tiled opener authors no element, so there is no element id to hand the PTY.
+    expect(create.env.MANIFOLD_CONTAINER).toBe(composition.id);
+    // A composition opener authors no element, so there is no element id to hand the PTY.
     expect(create.env.MANIFOLD_ELEMENT).toBeUndefined();
   });
 });
@@ -487,29 +542,29 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     const born = bornOnCanvas(fixture, "ref-1");
     // Two canvases point at the home, because "an exit deletes nothing" has to hold for
     // EVERY reference and not merely for the one the opener happened to author.
-    const board = canvasPad(fixture, "board");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 40, 40), LOCAL_ORIGIN);
+    const other = canvasContainer(fixture, "second canvas");
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
     writeElement(
-      room(fixture, board.id).doc,
-      portalElement("widget-b", born.homeId, 10, 10),
+      room(fixture, other.id).doc,
+      portalElement("portal-b", born.homeId, 10, 10),
       LOCAL_ORIGIN,
     );
 
     // The PTY stopped on its own. Nobody asked for it, so this is information, not a request.
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 3);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 3);
 
-    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
-    expect(soleSurface(fixture, born.homeId)).toEqual({
+    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
+    expect(soleRef(fixture, born.homeId)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
-    const stored = fixture.store.getSession(born.sessionId);
+    const stored = fixture.store.getTerminal(born.terminalId);
     expect(stored?.status).toBe("exited");
     // The REAL code. A natural exit never invents one and never loses one.
     expect(stored?.exitCode).toBe(3);
-    expect(stored?.padId).toBe(born.homeId);
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["widget-a"]);
-    expect(room(fixture, board.id).portalIdsTo(born.homeId)).toEqual(["widget-b"]);
+    expect(stored?.containerId).toBe(born.homeId);
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["portal-a"]);
+    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual(["portal-b"]);
   });
 
   test("an agent-disconnected exit keeps a null code internally and still deletes nothing", () => {
@@ -518,36 +573,36 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
 
     // No code was observed, so none is reported. Null is the honest answer and it is not a
     // third lifecycle state: the terminal exited, and what it exited with is unknown.
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, null);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, null);
 
-    expect(fixture.store.getSession(born.sessionId)).toMatchObject({
+    expect(fixture.store.getTerminal(born.terminalId)).toMatchObject({
       status: "exited",
       exitCode: null,
-      padId: born.homeId,
+      containerId: born.homeId,
     });
-    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
   });
 
   test("the prune that collects unhomed exits never fires on a natural exit", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 40, 40), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
 
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 7);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 7);
     // The reaper's whole predicate is "exited AND its home holds no leaf for it". A natural
     // exit touches no leaf, so running the prune on both the home and the canvas that
     // references it must be a no-op — otherwise dying would quietly mean being deleted.
-    fixture.broker.pruneExitedUnhomedForPad(born.homeId);
-    fixture.broker.pruneExitedUnhomedForPad(fixture.canvas.id);
+    fixture.broker.pruneExitedUnhomedForContainer(born.homeId);
+    fixture.broker.pruneExitedUnhomedForContainer(fixture.canvas.id);
 
-    expect(fixture.store.getSession(born.sessionId)?.exitCode).toBe(7);
-    expect(fixture.store.getPad(born.homeId)).not.toBeNull();
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["widget-a"]);
+    expect(fixture.store.getTerminal(born.terminalId)?.exitCode).toBe(7);
+    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["portal-a"]);
   });
 });
 
 describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
-  test("removing a running terminal's only leaf kills the PTY and forgets the session", async () => {
+  test("removing a running terminal's only leaf kills the PTY and forgets the terminal", async () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     fixture.machine.clear();
@@ -555,7 +610,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const removed = await call(
       fixture,
       "DELETE",
-      `/api/pads/${born.homeId}/tiles/${born.leafId}`,
+      `/api/containers/${born.homeId}/tiles/${born.leafId}`,
       OWNER_KEY,
     );
 
@@ -563,28 +618,28 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     expect(removed.payload).toEqual({ ok: true });
     // There is no pool to fall back into: the operator who closed the last leaf closed the
     // terminal, and nothing about that is recoverable state.
-    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
-    expect(fixture.store.getSession(born.sessionId)).toBeNull();
+    expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: born.terminalId }]);
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
     expect(fixture.broker.introspect()).toEqual([]);
   });
 
   test("removing one of two leaves for the same terminal keeps it alive", async () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    const second = room(fixture, born.homeId).placeTerminalTile(born.sessionId, null, null);
+    const second = room(fixture, born.homeId).placeTerminalTile(born.terminalId, null, null);
     if (second === null) throw new Error("second leaf refused");
     fixture.machine.clear();
 
     const removed = await call(
       fixture,
       "DELETE",
-      `/api/pads/${born.homeId}/tiles/${second}`,
+      `/api/containers/${born.homeId}/tiles/${second}`,
       OWNER_KEY,
     );
 
     expect(removed.status).toBe(200);
     expect(fixture.machine.sent).toEqual([]);
-    expect(fixture.store.getSession(born.sessionId)?.padId).toBe(born.homeId);
+    expect(fixture.store.getTerminal(born.terminalId)?.containerId).toBe(born.homeId);
   });
 
   test("killing a terminal by identity removes its home and every portal onto it at once", async () => {
@@ -592,96 +647,108 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const born = bornOnCanvas(fixture, "ref-1");
     // Three mirrors across two canvases, one of which is not resident when the kill lands:
     // "kill means poof" is a claim about the whole workspace, not about the open tab.
-    const board = canvasPad(fixture, "board");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
-    writeElement(canvasDoc(fixture), portalElement("widget-b", born.homeId, 20, 20), LOCAL_ORIGIN);
+    const other = canvasContainer(fixture, "second canvas");
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-b", born.homeId, 20, 20), LOCAL_ORIGIN);
     writeElement(
-      room(fixture, board.id).doc,
-      portalElement("widget-c", born.homeId, 30, 30),
+      room(fixture, other.id).doc,
+      portalElement("portal-c", born.homeId, 30, 30),
       LOCAL_ORIGIN,
     );
-    fixture.rooms.evictIfIdle(board.id);
+    fixture.rooms.evictIfIdle(other.id);
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      terminalId: born.terminalId,
+    });
 
     expect(killed.status).toBe(200);
-    expect(killed.payload).toEqual({ ok: true });
-    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: born.sessionId }]);
-    // The session, its home, and every reference to that home. No exited row survives the
+    expect(killed.payload).toEqual({ ok: true, result: {} });
+    expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: born.terminalId }]);
+    // The terminal, its home, and every reference to that home. No exited row survives the
     // request, so there is nothing left for anybody to dismiss.
-    expect(fixture.store.getSession(born.sessionId)).toBeNull();
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
     expect(fixture.broker.introspect()).toEqual([]);
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
-    expect(room(fixture, board.id).portalIdsTo(born.homeId)).toEqual([]);
-    const listed = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-    expect(TerminalsResponseSchema.parse(listed.payload).terminals).toEqual([]);
+    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(await indexRows(fixture)).toEqual([]);
   });
 
   test("an exit frame arriving after a kill finds nothing, so no exited row comes back", async () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      terminalId: born.terminalId,
+    });
     // The machine answers the kill the only way it can: by reporting the exit. That frame is
     // how the two halves of the lifecycle predicate could quietly become one, and the whole
-    // reason the predicate is structural — a killed session is gone before it can arrive.
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 0);
+    // reason the predicate is structural — a killed terminal is gone before it can arrive.
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
 
-    expect(fixture.store.getSession(born.sessionId)).toBeNull();
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
     expect(fixture.broker.introspect()).toEqual([]);
   });
 
   test("killing a terminal that already exited on its own sweeps it the same way", async () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
-    fixture.broker.onExited(fixture.machine.machineId, born.sessionId, 5);
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 5);
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
-    const again = await call(fixture, "DELETE", `/api/terminals/${born.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      terminalId: born.terminalId,
+    });
+    const again = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      terminalId: born.terminalId,
+    });
 
     // Dismissing a dead terminal and killing a live one are ONE verb, so an exited terminal
     // is no conflict — and there is no PTY left to ask anything of.
-    expect(killed.status).toBe(200);
+    expect(killed.payload).toEqual({ ok: true, result: {} });
     expect(fixture.machine.sent).toEqual([]);
-    expect(fixture.store.getSession(born.sessionId)).toBeNull();
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
     // Gone is gone: the second request finds no terminal rather than a tombstone.
-    expect(again.status).toBe(404);
+    expect(again.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "terminal not found" },
+    });
   });
 
   test("killing one occupant of a composition takes its tile and leaves the composition", async () => {
     const fixture = lifecycleFixture();
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const first = bornInComposition(fixture, inside, "ref-1");
     const second = bornInComposition(fixture, inside, "ref-2");
     writeElement(
       canvasDoc(fixture),
-      portalElement("widget-composition", composition.id, 40, 40),
+      portalElement("portal-composition", composition.id, 40, 40),
       LOCAL_ORIGIN,
     );
     fixture.machine.clear();
 
-    const killed = await call(fixture, "DELETE", `/api/terminals/${first.sessionId}`, OWNER_KEY);
+    const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
+      terminalId: first.terminalId,
+    });
 
-    expect(killed.status).toBe(200);
-    expect(fixture.machine.sent).toEqual([{ type: "kill", sessionId: first.sessionId }]);
-    expect(fixture.store.getSession(first.sessionId)).toBeNull();
+    expect(killed.payload).toEqual({ ok: true, result: {} });
+    expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: first.terminalId }]);
+    expect(fixture.store.getTerminal(first.terminalId)).toBeNull();
     // The composition is shared with whatever else lives in it, so killing an occupant is
-    // never permission to delete the place — nor the widget the workspace shows it through.
-    expect(fixture.store.getPad(composition.id)).not.toBeNull();
-    expect(soleSurface(fixture, composition.id)).toEqual({
+    // never permission to delete the place — nor the portal the workspace shows it through.
+    expect(fixture.store.getContainer(composition.id)).not.toBeNull();
+    expect(soleRef(fixture, composition.id)).toEqual({
       kind: "terminal",
-      sessionId: second.sessionId,
+      terminalId: second.terminalId,
     });
     expect(room(fixture, fixture.canvas.id).portalIdsTo(composition.id)).toEqual([
-      "widget-composition",
+      "portal-composition",
     ]);
   });
 
@@ -690,7 +757,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const tileBorn = bornOnCanvas(byTile, "ref-1");
     writeElement(
       canvasDoc(byTile),
-      portalElement("widget-a", tileBorn.homeId, 10, 10),
+      portalElement("portal-a", tileBorn.homeId, 10, 10),
       LOCAL_ORIGIN,
     );
     byTile.machine.clear();
@@ -698,7 +765,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const identityBorn = bornOnCanvas(byIdentity, "ref-1");
     writeElement(
       canvasDoc(byIdentity),
-      portalElement("widget-a", identityBorn.homeId, 10, 10),
+      portalElement("portal-a", identityBorn.homeId, 10, 10),
       LOCAL_ORIGIN,
     );
     byIdentity.machine.clear();
@@ -706,14 +773,15 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const closed = await call(
       byTile,
       "DELETE",
-      `/api/pads/${tileBorn.homeId}/tiles/${tileBorn.leafId}`,
+      `/api/containers/${tileBorn.homeId}/tiles/${tileBorn.leafId}`,
       OWNER_KEY,
     );
     const identityKilled = await call(
       byIdentity,
-      "DELETE",
-      `/api/terminals/${identityBorn.sessionId}`,
+      "POST",
+      "/api/actions/core.terminals.kill",
       OWNER_KEY,
+      { terminalId: identityBorn.terminalId },
     );
 
     // Two doors, one rule. If these ever diverge, closing a tile and pressing X stop meaning
@@ -725,16 +793,16 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     ): unknown => ({
       status: response.status,
       kills: fixture.machine.sent,
-      session: fixture.store.getSession(born.sessionId),
-      home: fixture.store.getPad(born.homeId),
+      terminal: fixture.store.getTerminal(born.terminalId),
+      home: fixture.store.getContainer(born.homeId),
       portals: room(fixture, fixture.canvas.id).portalIdsTo(born.homeId),
       live: fixture.broker.introspect(),
     });
     expect(observed(byTile, tileBorn, closed)).toEqual(
       observed(byIdentity, identityBorn, identityKilled),
     );
-    expect(byTile.store.getPad(tileBorn.homeId)).toBeNull();
-    expect(byTile.machine.sent).toEqual([{ type: "kill", sessionId: tileBorn.sessionId }]);
+    expect(byTile.store.getContainer(tileBorn.homeId)).toBeNull();
+    expect(byTile.machine.sent).toEqual([{ type: "kill", terminalId: tileBorn.terminalId }]);
   });
 });
 
@@ -743,26 +811,34 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    await call(fixture, "DELETE", `/api/pads/${born.homeId}/tiles/${born.leafId}`, OWNER_KEY);
+    await call(fixture, "DELETE", `/api/containers/${born.homeId}/tiles/${born.leafId}`, OWNER_KEY);
 
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
-    expect(fixture.store.listPads().map((pad) => pad.id)).toEqual([fixture.canvas.id]);
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
+    expect(fixture.store.listContainers().map((container) => container.id)).toEqual([
+      fixture.canvas.id,
+    ]);
   });
 
   test("a composition that never held anything survives having its empty root removed", async () => {
     const fixture = lifecycleFixture();
-    const created = await call(fixture, "POST", "/api/pads", OWNER_KEY, {
-      name: "new composition",
-      layout: "tiled",
-    });
+    const created = await call(
+      fixture,
+      "POST",
+      "/api/actions/core.index.createContainer",
+      OWNER_KEY,
+      {
+        name: "new composition",
+        discipline: "composition",
+      },
+    );
     expect(created.status).toBe(200);
-    const emptyId = PadResponseSchema.parse(created.payload).pad.id;
+    const emptyId = actionContainer(created.payload).id;
     expect(leafIds(fixture, emptyId)).toEqual([ROOT_TILE_ID]);
 
     const refused = await call(
       fixture,
       "DELETE",
-      `/api/pads/${emptyId}/tiles/${ROOT_TILE_ID}`,
+      `/api/containers/${emptyId}/tiles/${ROOT_TILE_ID}`,
       OWNER_KEY,
     );
 
@@ -771,19 +847,19 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
     // replaced the stored `transient` flag — it is the departure that deletes, not the
     // emptiness, and only the call site right after a removal may apply the rule.
     expect(refused.status).toBe(409);
-    expect(fixture.store.getPad(emptyId)).not.toBeNull();
+    expect(fixture.store.getContainer(emptyId)).not.toBeNull();
 
     // The other half of the asymmetry, in the same world: a home emptied BY a departure goes.
     const born = bornOnCanvas(fixture, "ref-1");
     const reaped = await call(
       fixture,
       "DELETE",
-      `/api/pads/${born.homeId}/tiles/${born.leafId}`,
+      `/api/containers/${born.homeId}/tiles/${born.leafId}`,
       OWNER_KEY,
     );
     expect(reaped.status).toBe(200);
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
-    expect(fixture.store.getPad(emptyId)).not.toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
+    expect(fixture.store.getContainer(emptyId)).not.toBeNull();
   });
 });
 
@@ -793,9 +869,9 @@ describe("L5 merge: a terminal joining a composition takes its references with i
     const born = bornOnCanvas(fixture, "ref-1");
     // The canvas shows the terminal the way a canvas always does: a portal onto its home,
     // with whatever geometry the operator gave it.
-    const widget = portalElement("widget-1", born.homeId, 210, 320, 7);
-    writeElement(canvasDoc(fixture), widget, LOCAL_ORIGIN);
-    const composition = tiledPad(fixture, "composition");
+    const portal = portalElement("portal-1", born.homeId, 210, 320, 7);
+    writeElement(canvasDoc(fixture), portal, LOCAL_ORIGIN);
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const first = bornInComposition(fixture, inside, "ref-2");
     const secondBorn = bornInComposition(fixture, inside, "ref-3");
@@ -803,30 +879,30 @@ describe("L5 merge: a terminal joining a composition takes its references with i
     const added = placeTile(
       fixture.placement,
       composition.id,
-      { kind: "terminal", sessionId: born.sessionId },
+      { kind: "terminal", terminalId: born.terminalId },
       null,
       null,
     );
     if (typeof added === "string") throw new Error(`placement failed: ${added}`);
 
-    expect(fixture.store.getSession(born.sessionId)?.padId).toBe(composition.id);
-    expect(fixture.store.getPad(born.homeId)).toBeNull();
+    expect(fixture.store.getTerminal(born.terminalId)?.containerId).toBe(composition.id);
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
     // `repointPortal`, and it is the load-bearing detail: the SAME element id with the SAME
     // geometry now points at the composition. Re-authoring under a fresh id would still
     // "show the composition" while losing every collaborator's selection and blinking the
-    // widget across the canvas.
-    expect(readElement(canvasDoc(fixture), "widget-1")).toEqual({
-      ...widget,
+    // portal across the canvas.
+    expect(readElement(canvasDoc(fixture), "portal-1")).toEqual({
+      ...portal,
       containerId: composition.id,
     });
     expect(readElements(canvasDoc(fixture)).size).toBe(1);
     const layout = room(fixture, composition.id).tileLayout();
     expect(tileLeafIds(layout ?? {})).toHaveLength(3);
-    expect(layout?.[added.tileId]?.surface).toEqual({
+    expect(layout?.[added.tileId]?.ref).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
-    expect([first.sessionId, secondBorn.sessionId].map((id) => homeOf(fixture, id))).toEqual([
+    expect([first.terminalId, secondBorn.terminalId].map((id) => homeOf(fixture, id))).toEqual([
       composition.id,
       composition.id,
     ]);
@@ -836,95 +912,95 @@ describe("L5 merge: a terminal joining a composition takes its references with i
     const fixture = lifecycleFixture();
     const alpha = bornOnCanvas(fixture, "ref-1");
     const beta = bornOnCanvas(fixture, "ref-2");
-    fixture.broker.rename(alpha.sessionId, "alpha");
-    fixture.broker.rename(beta.sessionId, "beta");
-    const target = portalElement("widget-alpha", alpha.homeId, 200, 100, 3);
-    const dragged = portalElement("widget-beta", beta.homeId, 900, 100, 4);
+    fixture.broker.rename(alpha.terminalId, "alpha");
+    fixture.broker.rename(beta.terminalId, "beta");
+    const target = portalElement("portal-alpha", alpha.homeId, 200, 100, 3);
+    const dragged = portalElement("portal-beta", beta.homeId, 900, 100, 4);
     writeElement(canvasDoc(fixture), target, LOCAL_ORIGIN);
     writeElement(canvasDoc(fixture), dragged, LOCAL_ORIGIN);
 
     const composed = composeOnCanvas(
       fixture.placement,
       fixture.canvas.id,
-      "widget-alpha",
-      { kind: "element", padId: fixture.canvas.id, elementId: "widget-beta" },
+      "portal-alpha",
+      { kind: "element", containerId: fixture.canvas.id, elementId: "portal-beta" },
       "right",
     );
     if (typeof composed === "string") throw new Error(`placement failed: ${composed}`);
 
-    expect(fixture.store.getPad(composed.viewId)).toEqual({
-      id: composed.viewId,
+    expect(fixture.store.getContainer(composed.containerId)).toEqual({
+      id: composed.containerId,
       name: "alpha + beta",
       createdAt: 0,
-      layout: "tiled",
+      discipline: "composition",
     });
     // ONE composition is born and BOTH solo homes retire into it: a merge never nests.
-    expect([...fixture.store.listPads().map((pad) => pad.id)].sort()).toEqual(
-      [fixture.canvas.id, composed.viewId].sort(),
+    expect([...fixture.store.listContainers().map((container) => container.id)].sort()).toEqual(
+      [fixture.canvas.id, composed.containerId].sort(),
     );
-    expect(fixture.store.getPad(alpha.homeId)).toBeNull();
-    expect(fixture.store.getPad(beta.homeId)).toBeNull();
+    expect(fixture.store.getContainer(alpha.homeId)).toBeNull();
+    expect(fixture.store.getContainer(beta.homeId)).toBeNull();
     // The target keeps its id and geometry and points at the newborn; the reference the drag
     // consumed is gone, because the drop consumed exactly that one.
-    expect(readElement(canvasDoc(fixture), "widget-alpha")).toEqual({
+    expect(readElement(canvasDoc(fixture), "portal-alpha")).toEqual({
       ...target,
-      containerId: composed.viewId,
+      containerId: composed.containerId,
     });
-    expect(readElement(canvasDoc(fixture), "widget-beta")).toBeNull();
+    expect(readElement(canvasDoc(fixture), "portal-beta")).toBeNull();
     expect(readElements(canvasDoc(fixture)).size).toBe(1);
-    const layout = room(fixture, composed.viewId).tileLayout();
-    expect(tileLeafIds(layout ?? {}).map((id) => layout?.[id]?.surface)).toEqual([
-      { kind: "terminal", sessionId: alpha.sessionId },
-      { kind: "terminal", sessionId: beta.sessionId },
+    const layout = room(fixture, composed.containerId).tileLayout();
+    expect(tileLeafIds(layout ?? {}).map((id) => layout?.[id]?.ref)).toEqual([
+      { kind: "terminal", terminalId: alpha.terminalId },
+      { kind: "terminal", terminalId: beta.terminalId },
     ]);
-    expect(homeOf(fixture, alpha.sessionId)).toBe(composed.viewId);
-    expect(homeOf(fixture, beta.sessionId)).toBe(composed.viewId);
+    expect(homeOf(fixture, alpha.terminalId)).toBe(composed.containerId);
+    expect(homeOf(fixture, beta.terminalId)).toBe(composed.containerId);
   });
 
   test("composing onto a reference to a MULTI composition joins it instead of nesting", () => {
     const fixture = lifecycleFixture();
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     bornInComposition(fixture, inside, "ref-1");
     bornInComposition(fixture, inside, "ref-2");
     const joining = bornOnCanvas(fixture, "ref-3");
     writeElement(
       canvasDoc(fixture),
-      portalElement("widget-composition", composition.id, 40, 40),
+      portalElement("portal-composition", composition.id, 40, 40),
       LOCAL_ORIGIN,
     );
     writeElement(
       canvasDoc(fixture),
-      portalElement("widget-joining", joining.homeId, 500, 40),
+      portalElement("portal-joining", joining.homeId, 500, 40),
       LOCAL_ORIGIN,
     );
 
     const composed = composeOnCanvas(
       fixture.placement,
       fixture.canvas.id,
-      "widget-composition",
-      { kind: "element", padId: fixture.canvas.id, elementId: "widget-joining" },
+      "portal-composition",
+      { kind: "element", containerId: fixture.canvas.id, elementId: "portal-joining" },
       "bottom",
     );
     if (typeof composed === "string") throw new Error(`placement failed: ${composed}`);
 
-    // No container is born: the widget already IS a composition, so this is a plain merge
-    // into it and the answer names that same composition.
-    expect(composed.viewId).toBe(composition.id);
-    expect([...fixture.store.listPads().map((pad) => pad.id)].sort()).toEqual(
+    // No container is born: the portal already points at a composition, so this is a plain
+    // merge into it and the answer names that same composition.
+    expect(composed.containerId).toBe(composition.id);
+    expect([...fixture.store.listContainers().map((container) => container.id)].sort()).toEqual(
       [fixture.canvas.id, composition.id].sort(),
     );
     expect(leafIds(fixture, composition.id)).toHaveLength(3);
-    expect(homeOf(fixture, joining.sessionId)).toBe(composition.id);
-    expect(fixture.store.getPad(joining.homeId)).toBeNull();
-    expect(readElement(canvasDoc(fixture), "widget-joining")).toBeNull();
+    expect(homeOf(fixture, joining.terminalId)).toBe(composition.id);
+    expect(fixture.store.getContainer(joining.homeId)).toBeNull();
+    expect(readElement(canvasDoc(fixture), "portal-joining")).toBeNull();
   });
 });
 
 describe("L6 extract: leaving a composition re-homes, unless it was already alone", () => {
   test("extracting from a multi-tile composition re-homes the terminal into a fresh solo one", () => {
     const fixture = lifecycleFixture();
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const stays = bornInComposition(fixture, inside, "ref-1");
     const leaving = bornInComposition(fixture, inside, "ref-2");
@@ -940,38 +1016,41 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     if (typeof extracted === "string") throw new Error(`placement failed: ${extracted}`);
 
     // A canvas references a terminal through the composition it lives in; the element kind
-    // that carried a session id does not exist any more.
+    // that carried a terminal id does not exist any more.
     const element = readElement(canvasDoc(fixture), extracted.elementId);
     if (element === null || element.type !== "portal") throw new Error("portal element expected");
+    const rehomed = elementString(element, "containerId");
+    if (rehomed === null) throw new Error("portal element carries no container reference");
     expect(element).toEqual({
       id: extracted.elementId,
       type: "portal",
-      containerId: element.containerId,
+      containerId: rehomed,
       x: 320,
       y: 240,
       width: DEFAULT_TERMINAL_WIDTH,
       height: DEFAULT_TERMINAL_HEIGHT,
       zIndex: 0,
     });
-    const rehomed = element.containerId;
     expect(rehomed).not.toBe(composition.id);
-    expect(fixture.store.getPad(rehomed)).toMatchObject({ layout: "tiled" });
-    expect(soleSurface(fixture, rehomed)).toEqual({
+    expect(fixture.store.getContainer(rehomed)).toMatchObject({ discipline: "composition" });
+    expect(soleRef(fixture, rehomed)).toEqual({
       kind: "terminal",
-      sessionId: leaving.sessionId,
+      terminalId: leaving.terminalId,
     });
-    expect(homeOf(fixture, leaving.sessionId)).toBe(rehomed);
+    expect(homeOf(fixture, leaving.terminalId)).toBe(rehomed);
     // The composition it left survives, holding what is still in it.
-    expect(soleSurface(fixture, composition.id)).toEqual({
+    expect(soleRef(fixture, composition.id)).toEqual({
       kind: "terminal",
-      sessionId: stays.sessionId,
+      terminalId: stays.terminalId,
     });
   });
 
   test("extracting the only leaf of a solo composition portals onto that same composition", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    const padsBefore = [...fixture.store.listPads().map((pad) => pad.id)].sort();
+    const containersBefore = [
+      ...fixture.store.listContainers().map((container) => container.id),
+    ].sort();
 
     const extracted = extractTile(
       fixture.placement,
@@ -991,24 +1070,26 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
       x: 90,
       y: 110,
     });
-    expect([...fixture.store.listPads().map((pad) => pad.id)].sort()).toEqual(padsBefore);
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
-    expect(soleSurface(fixture, born.homeId)).toEqual({
+    expect([...fixture.store.listContainers().map((container) => container.id)].sort()).toEqual(
+      containersBefore,
+    );
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
+    expect(soleRef(fixture, born.homeId)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
   });
 
   test("a composition emptied by an extraction is deleted", () => {
     const fixture = lifecycleFixture();
-    const embedded = canvasPad(fixture, "embedded canvas");
-    const composition = tiledPad(fixture, "composition");
+    const embedded = canvasContainer(fixture, "embedded canvas");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const born = bornInComposition(fixture, inside, "ref-1");
     const embeddedTile = placeTile(
       fixture.placement,
       composition.id,
-      { kind: "pad", padId: embedded.id },
+      { kind: "container", containerId: embedded.id },
       null,
       null,
     );
@@ -1017,13 +1098,13 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     const terminal = extractTile(
       fixture.placement,
       composition.id,
-      leafForSession(fixture, composition.id, born.sessionId),
+      leafForTerminal(fixture, composition.id, born.terminalId),
       fixture.canvas.id,
       10,
       20,
     );
     if (typeof terminal === "string") throw new Error(`placement failed: ${terminal}`);
-    expect(fixture.store.getPad(composition.id)).not.toBeNull();
+    expect(fixture.store.getContainer(composition.id)).not.toBeNull();
 
     // The collapse promoted the survivor into the root id, so the remaining leaf is looked
     // up rather than remembered — a placement never trusts an id the caller cached.
@@ -1037,7 +1118,7 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     );
     if (typeof surviving === "string") throw new Error(`placement failed: ${surviving}`);
 
-    expect(fixture.store.getPad(composition.id)).toBeNull();
+    expect(fixture.store.getContainer(composition.id)).toBeNull();
     expect(readElement(canvasDoc(fixture), surviving.elementId)).toMatchObject({
       type: "portal",
       containerId: embedded.id,
@@ -1045,7 +1126,7 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     // The re-homed terminal's portal points at its NEW home, so retiring the emptied
     // composition leaves it alone.
     expect(readElements(canvasDoc(fixture)).size).toBe(2);
-    expect(homeOf(fixture, born.sessionId)).not.toBe(composition.id);
+    expect(homeOf(fixture, born.terminalId)).not.toBe(composition.id);
   });
 });
 
@@ -1053,84 +1134,92 @@ describe("L7 unplace: references go, the item stays", () => {
   test("unplacing one element removes that reference only and leaves the terminal homed", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
-    writeElement(canvasDoc(fixture), portalElement("widget-b", born.homeId, 20, 20), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-b", born.homeId, 20, 20), LOCAL_ORIGIN);
 
-    expect(unplaceElement(fixture.placement, fixture.canvas.id, "widget-a")).toEqual({
+    expect(unplaceElement(fixture.placement, fixture.canvas.id, "portal-a")).toEqual({
       removed: 1,
     });
 
-    expect([...readElements(canvasDoc(fixture)).keys()]).toEqual(["widget-b"]);
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
-    expect(soleSurface(fixture, born.homeId)).toEqual({
+    expect([...readElements(canvasDoc(fixture)).keys()]).toEqual(["portal-b"]);
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
+    expect(soleRef(fixture, born.homeId)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
   });
 
   test("unplacing a terminal by identity removes its references from every canvas at once", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    const elsewhere = canvasPad(fixture, "second canvas");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    const elsewhere = canvasContainer(fixture, "second canvas");
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
     writeElement(
       room(fixture, elsewhere.id).doc,
-      portalElement("widget-b", born.homeId, 20, 20),
+      portalElement("portal-b", born.homeId, 20, 20),
       LOCAL_ORIGIN,
     );
 
-    expect(unplaceTerminal(fixture.placement, born.sessionId)).toEqual({ removed: 2 });
+    expect(unplaceTerminal(fixture.placement, born.terminalId)).toEqual({ removed: 2 });
 
     expect(readElements(canvasDoc(fixture)).size).toBe(0);
     expect(readElements(room(fixture, elsewhere.id).doc).size).toBe(0);
     // Unplaced is not a place: the terminal stays exactly where it lives.
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
-    expect(soleSurface(fixture, born.homeId)).toEqual({
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
+    expect(soleRef(fixture, born.homeId)).toEqual({
       kind: "terminal",
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
   });
 
   test("unplacing an already-unplaced terminal removes nothing and is not an error", () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("widget-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
 
-    expect(unplaceTerminal(fixture.placement, born.sessionId)).toEqual({ removed: 1 });
+    expect(unplaceTerminal(fixture.placement, born.terminalId)).toEqual({ removed: 1 });
     // Zero is a legal, meaningful answer: it says the item was already unplaced, which is
     // the difference between that and the silent no-op the algebra refuses to have.
-    expect(unplaceTerminal(fixture.placement, born.sessionId)).toEqual({ removed: 0 });
-    expect(homeOf(fixture, born.sessionId)).toBe(born.homeId);
+    expect(unplaceTerminal(fixture.placement, born.terminalId)).toEqual({ removed: 0 });
+    expect(homeOf(fixture, born.terminalId)).toBe(born.homeId);
   });
 });
 
 describe("L8 delete container: reaps what lives there, removes what points at it", () => {
   test("deleting a composition kills its terminals and deletes the portals onto it", async () => {
     const fixture = lifecycleFixture();
-    const composition = tiledPad(fixture, "composition");
+    const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const first = bornInComposition(fixture, inside, "ref-1");
     const secondBorn = bornInComposition(fixture, inside, "ref-2");
     writeElement(
       canvasDoc(fixture),
-      portalElement("widget-1", composition.id, 40, 50),
+      portalElement("portal-1", composition.id, 40, 50),
       LOCAL_ORIGIN,
     );
     fixture.machine.clear();
 
-    const deleted = await call(fixture, "DELETE", `/api/pads/${composition.id}`, OWNER_KEY);
+    const deleted = await call(
+      fixture,
+      "POST",
+      "/api/actions/core.index.deleteContainer",
+      OWNER_KEY,
+      {
+        containerId: composition.id,
+      },
+    );
 
-    expect(deleted.status).toBe(200);
-    expect(fixture.store.getPad(composition.id)).toBeNull();
+    expect(deleted.payload).toEqual({ ok: true, result: {} });
+    expect(fixture.store.getContainer(composition.id)).toBeNull();
     const killed: string[] = [];
     for (const message of fixture.machine.sent) {
-      if (message.type === "kill") killed.push(message.sessionId);
+      if (message.type === "kill") killed.push(message.terminalId);
     }
-    expect(killed.sort()).toEqual([first.sessionId, secondBorn.sessionId].sort());
-    expect(fixture.store.getSession(first.sessionId)).toBeNull();
-    expect(fixture.store.getSession(secondBorn.sessionId)).toBeNull();
+    expect(killed.sort()).toEqual([first.terminalId, secondBorn.terminalId].sort());
+    expect(fixture.store.getTerminal(first.terminalId)).toBeNull();
+    expect(fixture.store.getTerminal(secondBorn.terminalId)).toBeNull();
     expect(fixture.broker.introspect()).toEqual([]);
-    // A widget onto a container that no longer exists is a state the workspace cannot reach.
+    // A portal onto a container that no longer exists is a state the workspace cannot reach.
     // This assertion is what catches a route reimplementing the rule instead of calling it.
     expect(readElements(canvasDoc(fixture)).size).toBe(0);
   });
@@ -1140,26 +1229,26 @@ describe("the container index reads the same containment graph placement does", 
   test("a census names what a container holds and what it points at", async () => {
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("widget-1", born.homeId, 10, 20), LOCAL_ORIGIN);
+    writeElement(canvasDoc(fixture), portalElement("portal-1", born.homeId, 10, 20), LOCAL_ORIGIN);
 
     const response = await call(fixture, "GET", "/api/containers", OWNER_KEY);
 
     expect(response.status).toBe(200);
-    const containers = ContainersResponseSchema.parse(response.payload).containers;
-    expect(containers.find((census) => census.padId === fixture.canvas.id)).toEqual({
-      padId: fixture.canvas.id,
-      layout: "canvas",
-      items: [{ kind: "view", containerId: born.homeId, sessionId: null }],
+    const containers = ContainerCensusResponseSchema.parse(response.payload).containers;
+    expect(containers.find((census) => census.containerId === fixture.canvas.id)).toEqual({
+      containerId: fixture.canvas.id,
+      discipline: "canvas",
+      items: [{ kind: "composition", containerId: born.homeId, terminalId: null }],
       references: [born.homeId],
     });
-    const home = containers.find((census) => census.padId === born.homeId);
+    const home = containers.find((census) => census.containerId === born.homeId);
     if (home === undefined) throw new Error("missing home census");
     expect(home.references).toEqual([]);
     // A composition of ONE is the item it holds, for the index exactly as for placement.
     expect(censusSolo(home)).toEqual({
       kind: "terminal",
       containerId: null,
-      sessionId: born.sessionId,
+      terminalId: born.terminalId,
     });
   });
 
@@ -1167,31 +1256,23 @@ describe("the container index reads the same containment graph placement does", 
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    const unreferenced = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
-    expect(TerminalsResponseSchema.parse(unreferenced.payload)).toEqual({
-      terminals: [
-        {
-          id: born.sessionId,
-          machineId: fixture.machine.machineId,
-          name: null,
-          createdAt: 0,
-          status: "running",
-          exitCode: null,
-          homeId: born.homeId,
-          unplaced: true,
-        },
-      ],
-    });
+    expect(await indexRows(fixture)).toEqual([
+      {
+        id: born.terminalId,
+        machineId: fixture.machine.machineId,
+        name: null,
+        createdAt: 0,
+        status: "running",
+        exitCode: null,
+        homeId: born.homeId,
+        unplaced: true,
+      },
+    ]);
 
-    writeElement(canvasDoc(fixture), portalElement("widget-1", born.homeId, 0, 0), LOCAL_ORIGIN);
-    const referenced = await call(fixture, "GET", "/api/terminals", OWNER_KEY);
+    writeElement(canvasDoc(fixture), portalElement("portal-1", born.homeId, 0, 0), LOCAL_ORIGIN);
 
     // `unplaced` is derived from the containment graph on every read, so placing and
     // releasing a terminal leaves no state behind that could go stale.
-    expect(
-      TerminalsResponseSchema.parse(referenced.payload).terminals.map(
-        (terminal) => terminal.unplaced,
-      ),
-    ).toEqual([false]);
+    expect((await indexRows(fixture)).map((terminal) => terminal.unplaced)).toEqual([false]);
   });
 });

@@ -1,0 +1,38 @@
+/*
+ * THE DRAW PLUGIN'S SKIN — freehand ink and its hit stroke, plus the React Flow node type the ink is drawn into.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+.draw {
+  display: block;
+  pointer-events: none;
+}
+
+.draw path {
+  pointer-events: stroke;
+}
+
+/* Freehand hit-testing: ink selects, the bounding box never does (Excalidraw-style).
+   The unselected draw node is pointer-transparent; only the widened invisible twin
+   path catches clicks and bubbles them to React Flow. Selection re-enables the box
+   so drag/resize behave normally. */
+.react-flow__node-draw {
+  pointer-events: none !important;
+}
+
+.react-flow__node-draw.selected {
+  pointer-events: all !important;
+}
+
+.react-flow__node-draw .draw path {
+  pointer-events: none;
+}
+
+.react-flow__node-draw .draw path.draw__hit {
+  pointer-events: stroke;
+  cursor: pointer;
+}

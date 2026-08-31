@@ -1,46 +1,91 @@
+import { itemNoun, rosterElementTraits } from "@manifold/plugin";
 import {
   censusSolo,
+  elementString,
+  itemTraitsFor,
   resolvePlacement,
-  type ContainerLayout,
+  type ContainerDiscipline,
   type PlaceRequest,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementItem,
   type PlacementLookup,
-  type PlacementSurface,
+  type PlacementRef,
+  type PlacementTraits,
+  type PluginRoster,
   type RuntimeDeps,
   type SceneElement,
   type TileEdge,
   type TileLayout,
-  type TileSurface,
+  type TileRef,
 } from "@manifold/protocol";
-import { tileIdForSurface, tileLeafIds } from "@manifold/scene";
+import { tileIdForRef, tileLeafIds } from "@manifold/scene";
 import type { Room, RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 
 /**
- * THE placement executor. One entry point — `place(surface, destination)` — for every way
+ * The contributed half of the placement vocabulary, as the executor asks for it: element
+ * type → the traits its manifest declared (ADR 0013 §12).
+ *
+ * The roster arrives as a THUNK because the two objects are mutually dependent — the
+ * executor resolves legality against the assembly, and an action handler in the assembly
+ * drives the executor — and because enablement is hot: a re-assembly replaces the roster,
+ * and a table captured once would answer for a vocabulary that no longer exists. The
+ * derived table is cached on roster IDENTITY, which is stable per assembly, so a placement
+ * costs one map lookup and a re-assembly costs one rebuild.
+ */
+export function assemblyElementTraits(
+  roster: () => PluginRoster,
+): (kind: string) => PlacementTraits | null {
+  let assembled: PluginRoster | null = null;
+  let traits: ReadonlyMap<string, PlacementTraits> = new Map();
+  return (kind) => {
+    const current = roster();
+    if (current !== assembled) {
+      assembled = current;
+      traits = rosterElementTraits(current);
+    }
+    return traits.get(kind) ?? null;
+  };
+}
+
+/**
+ * The contributed half of the label vocabulary, on the same terms: element type → the word a
+ * person reads for it, which for a contributed kind is its manifest title (`itemNoun`) and for
+ * a floor kind is the floor's own noun.
+ *
+ * It exists because two of the executor's rules are about a SPECIES rather than about a wire
+ * shape, and the floor may not spell a plugin's element type to reach them. The traits answer
+ * which rule applies; this answers what to call the thing the rule fired on, through the one
+ * kind→noun table `verify:axioms` S12 allows to exist.
+ */
+export function assemblyItemNouns(roster: () => PluginRoster): (kind: string) => string {
+  return (kind) => itemNoun(kind, roster());
+}
+
+/**
+ * THE placement executor. One entry point — `place(ref, destination)` — for every way
  * an item can land in a container, with legality decided entirely by the protocol's
  * declarations (`resolvePlacement`) and never by a branch in here.
  *
  * Three invariants make this the only placement path worth having:
  *
- *   1. The surface's CURRENT location is resolved from identity (`locate`), never taken
- *      from the request. A caller cannot lie about where an item was, so it cannot strand
+ *   1. What the ref names is located from IDENTITY (`locate`), never taken from the
+ *      request. A caller cannot lie about where an item was, so it cannot strand
  *      a placement or move a terminal it does not hold.
  *   2. Every composition-homed item lives in exactly one composition, always. A terminal is
  *      born into one and is only ever MOVED between them, so there is no unbound state to
  *      handle, no pool to fall back into, and no lifecycle flag to consult.
  *   3. A reference never outlives what it references. When a composition stops existing —
  *      absorbed by a merge, emptied by extraction, deleted outright — every portal onto it
- *      goes with it, which is why a dangling widget is not a state this server can reach.
+ *      goes with it, which is why a dangling portal is not a state this server can reach.
  *
  * A refusal is a NAMED rule from the declarations, returned verbatim to the caller.
- * Operational impossibilities — a vanished session, a tree that rejects a write — travel
+ * Operational impossibilities — a vanished terminal, a tree that rejects a write — travel
  * on the separate `failed` channel, because they are not statements about what composes.
  */
 
-/** Container names clamp to `PadSchema`'s ceiling; a merge auto-names from its surfaces. */
+/** Container names clamp to `ContainerSchema`'s ceiling; a merge auto-names from its refs. */
 const MAX_CONTAINER_NAME = 120;
 
 /** Why a legal placement could not be carried out; never a statement about legality. */
@@ -53,34 +98,39 @@ export type PlaceOutcome =
   | { readonly status: "failed"; readonly failure: PlaceFailure };
 
 /**
- * The session-side seam. Placement mutates CONTAINERS, but a terminal's home, its fan-out
+ * The terminal-side seam. Placement mutates CONTAINERS, but a terminal's home, its fan-out
  * and its PTY belong to the broker — so the executor asks for exactly these five things
  * and owns everything else itself. This interface is the whole coupling between the two
  * modules, which is what makes splitting them along it worth doing.
  */
-export interface SessionPlacementPort {
-  /** Live session state; null when no such session exists. `padId` is its home composition. */
-  placedSession(sessionId: string): { readonly padId: string } | null;
+export interface TerminalPlacementPort {
+  /** Live terminal state; null when no such terminal exists. `containerId` is its home composition. */
+  placedTerminal(terminalId: string): { readonly containerId: string } | null;
   /** A terminal's operator-visible label: its own name, else its machine's, else `fallback`. */
-  terminalLabel(sessionId: string, fallback: string): string;
-  /** Publishes a session's move from one composition to another. */
-  rebindSession(sessionId: string, fromPadId: string, toPadId: string, placementId: string): void;
+  terminalLabel(terminalId: string, fallback: string): string;
+  /** Publishes a terminal's move from one composition to another. */
+  rebindTerminal(
+    terminalId: string,
+    fromContainerId: string,
+    toContainerId: string,
+    placementId: string,
+  ): void;
   /**
    * Kills and forgets a terminal whose last home leaf is gone. There is no pool for it to
    * fall into, so removing a terminal's only representation IS closing the terminal.
    */
-  reapSession(sessionId: string): void;
+  reapTerminal(terminalId: string): void;
   /** Kills and forgets every PTY homed in a container before its rows are purged. */
-  dropPad(padId: string): void;
+  dropContainer(containerId: string): void;
 }
 
-/** Every leaf holding a session, so moving the ITEM can reach all of its copies. */
-function terminalLeafIds(layout: TileLayout | null, sessionId: string): string[] {
+/** Every leaf holding a terminal, so moving the ITEM can reach all of its copies. */
+function terminalLeafIds(layout: TileLayout | null, terminalId: string): string[] {
   if (layout === null) return [];
   const ids: string[] = [];
   for (const tileId of tileLeafIds(layout)) {
-    const surface = layout[tileId]?.surface ?? null;
-    if (surface !== null && surface.kind === "terminal" && surface.sessionId === sessionId) {
+    const ref = layout[tileId]?.ref ?? null;
+    if (ref !== null && ref.kind === "terminal" && ref.terminalId === terminalId) {
       ids.push(tileId);
     }
   }
@@ -88,38 +138,38 @@ function terminalLeafIds(layout: TileLayout | null, sessionId: string): string[]
 }
 
 /**
- * Where a surface is RIGHT NOW, resolved from identity — never from the request.
+ * Where a ref points RIGHT NOW, resolved from identity — never from the request.
  *
- * The two halves are deliberately separate. `padId`/`addressed` describe the ONE
+ * The two halves are deliberately separate. `containerId`/`addressed` describe the ONE
  * representation the gesture grabbed, and are null when the request named an item by
- * identity instead of pointing at a copy of it. `sessionId`/`homeId` describe where the
+ * identity instead of pointing at a copy of it. `terminalId`/`homeId` describe where the
  * item LIVES, which is the same answer however it was addressed — and the reason a canvas
- * portal, a tile leaf, a sidebar row and a bare session id all reach one code path.
+ * portal, a tile leaf, a sidebar row and a bare terminal id all reach one code path.
  */
 interface SourceLocation {
-  readonly padId: string | null;
-  readonly layout: ContainerLayout | null;
+  readonly containerId: string | null;
+  readonly discipline: ContainerDiscipline | null;
   readonly addressed: string | null;
-  readonly sessionId: string | null;
+  readonly terminalId: string | null;
   readonly homeId: string | null;
 }
 
 const NO_SOURCE: SourceLocation = {
-  padId: null,
-  layout: null,
+  containerId: null,
+  discipline: null,
   addressed: null,
-  sessionId: null,
+  terminalId: null,
   homeId: null,
 };
 
 /**
- * A leaf's occupant, moved aside so the leaf can be given to something else: the surface
- * that was in it, the fresh solo composition built to keep it alive, and its leaf in there.
+ * A leaf's occupant, moved aside so the leaf can be given to something else: the ref that
+ * was in it, the fresh solo composition built to keep it alive, and its leaf in there.
  * Both ids are null when nothing had to be built — an embedded canvas is a reference, and
- * the pad it points at already lives in the index on its own.
+ * the container it points at already lives in the index on its own.
  */
 interface EvictedOccupant {
-  readonly surface: TileSurface;
+  readonly ref: TileRef;
   readonly homeId: string | null;
   readonly leafId: string | null;
 }
@@ -128,8 +178,22 @@ export class PlaceExecutor {
   constructor(
     private readonly store: ServerStore,
     private readonly rooms: RoomManager,
-    private readonly sessions: SessionPlacementPort,
+    private readonly terminals: TerminalPlacementPort,
     private readonly runtime: RuntimeDeps,
+    /**
+     * The assembly's contributed element traits (`assemblyElementTraits`). It is a
+     * constructor dependency rather than a lookup the executor builds, because the algebra's
+     * vocabulary is half floor and half plugin: the rules engine is this module's business,
+     * the kinds are the roster's.
+     */
+    private readonly elementTraits: (kind: string) => PlacementTraits | null,
+    /**
+     * The assembly's label vocabulary (`assemblyItemNouns`), for the same reason and on the
+     * same terms: two rules below turn on a declared TRAIT and then have to name the species
+     * they fired on, and the floor may not hold a plugin's word for that any more than it may
+     * hold a plugin's kind.
+     */
+    private readonly elementNoun: (kind: string) => string,
   ) {}
 
   /**
@@ -137,39 +201,39 @@ export class PlaceExecutor {
    * this method only decides HOW the named op is carried out.
    */
   place(request: PlaceRequest): PlaceOutcome {
-    const { surface, destination } = request;
-    const resolution = resolvePlacement(surface, destination, this.lookup());
+    const { ref, destination } = request;
+    const resolution = resolvePlacement(ref, destination, this.lookup());
     if (!resolution.ok) return { status: "denied", denial: resolution.denial };
-    const source = this.locate(surface);
+    const source = this.locate(ref);
     if (source === "not_found") return { status: "failed", failure: "not_found" };
 
     switch (destination.kind) {
       case "canvas":
         switch (resolution.op) {
           case "portal":
-            return this.executePortal(surface, resolution.item, destination, source);
+            return this.executePortal(ref, resolution.item, destination, source);
           case "move_element":
-            return this.executeMoveElement(surface, destination, source);
+            return this.executeMoveElement(ref, destination, source);
           case "extract":
-            return this.executeExtract(surface, destination, source);
+            return this.executeExtract(ref, destination, source);
           default:
-            // Unreachable: `CANVAS_OPS` maps every item kind to one of the three above.
+            // Unreachable: `canvasOpFor` maps every kind to one of the three above.
             return { status: "failed", failure: "conflict" };
         }
       case "tile":
         return this.executeAddTile(
-          surface,
+          ref,
           resolution.item,
-          destination.padId,
+          destination.containerId,
           destination.targetTileId,
           destination.edge,
           destination.between ?? false,
           source,
         );
       case "compose":
-        return this.executeCompose(surface, resolution.item, destination, source);
+        return this.executeCompose(ref, resolution.item, destination, source);
       case "unplaced":
-        return this.executeUnplace(surface, resolution.item, source);
+        return this.executeUnplace(ref, resolution.item, source);
       default: {
         const exhaustive: never = destination;
         return exhaustive;
@@ -184,48 +248,58 @@ export class PlaceExecutor {
    */
   private lookup(): PlacementLookup {
     return {
-      padLayout: (padId) => this.store.getPad(padId)?.layout ?? null,
-      terminalHome: (sessionId) => this.sessions.placedSession(sessionId)?.padId ?? null,
-      elementItem: (padId, elementId): PlacementItem | null => {
-        const element = this.rooms.get(padId)?.element(elementId) ?? null;
+      disciplineOf: (containerId) => this.store.getContainer(containerId)?.discipline ?? null,
+      terminalHome: (terminalId) => this.terminals.placedTerminal(terminalId)?.containerId ?? null,
+      elementItem: (containerId, elementId): PlacementItem | null => {
+        const element = this.rooms.get(containerId)?.element(elementId) ?? null;
         if (element === null) return null;
-        switch (element.type) {
-          case "portal": {
-            // A portal places the container it points at, so that container's discipline
-            // decides the kind — and a portal onto a deleted container places nothing.
-            const layout = this.store.getPad(element.containerId)?.layout ?? null;
-            if (layout === null) return null;
-            return {
-              kind: layout === "canvas" ? "canvas-pad" : "view",
-              containerId: element.containerId,
-            };
-          }
-          case "text":
-            return { kind: "text", containerId: null };
-          case "draw":
-            return { kind: "draw", containerId: null };
-          default: {
-            const exhaustive: never = element;
-            return exhaustive;
-          }
+        if (element.type === "portal") {
+          // A portal places the container it points at, so that container's discipline
+          // decides the kind — and a portal onto a deleted container, or onto no container
+          // at all, places nothing. The reference is read through the payload accessor
+          // because an element is a neutral envelope: the floor knows the envelope, and the
+          // plugin that declared the kind knows the fields (ADR 0013 §16).
+          const target = elementString(element, "containerId");
+          if (target === null) return null;
+          const discipline = this.store.getContainer(target)?.discipline ?? null;
+          if (discipline === null) return null;
+          return { kind: discipline, containerId: target };
         }
+        // Every other element places ITS OWN TYPE, whoever contributed it. There is no arm
+        // per element kind here any more: that switch was the floor holding a list of
+        // plugin-owned names, which is exactly what the trait fusion removes (§12).
+        return { kind: element.type, containerId: null };
       },
-      soloOccupant: (padId) => this.soloOccupant(padId)?.item ?? null,
+      soloOccupant: (containerId) => this.soloOccupant(containerId)?.item ?? null,
+      itemTraits: (kind) => this.elementTraits(kind),
     };
   }
 
   /**
-   * What a composition of ONE holds, with the session id when that item is a terminal. The
-   * algebra only needs the classification; the executor also needs the session, and reading
+   * Whether a kind is `homed: "on_claim"`: born inline in the document that created it, with
+   * no home row of its own until a placement mints one. Two of this executor's rules turn on
+   * exactly that trait and on nothing else, and both used to spell `"text"` instead — the
+   * floor naming a kind `core.notes` owns, which is the trait fusion's whole objection
+   * (ADR 0013 §12). Asked through `itemTraitsFor`, so a floor kind answers from `ITEM_KINDS`
+   * and a contributed kind from the manifest that declared it, and a SECOND on_claim kind
+   * gets both rules without either of them learning its name.
+   */
+  private bornUnhomed(kind: string): boolean {
+    return itemTraitsFor(kind, this.lookup()).homed === "on_claim";
+  }
+
+  /**
+   * What a composition of ONE holds, with the terminal id when that item is a terminal. The
+   * algebra only needs the classification; the executor also needs the terminal, and reading
    * the census twice for the two halves is how they would come apart.
    */
   private soloOccupant(
-    padId: string,
-  ): { readonly item: PlacementItem; readonly sessionId: string | null } | null {
-    const room = this.rooms.get(padId);
+    containerId: string,
+  ): { readonly item: PlacementItem; readonly terminalId: string | null } | null {
+    const room = this.rooms.get(containerId);
     if (room === null) return null;
     const census = room.census();
-    if (census.layout !== "tiled") return null;
+    if (census.discipline !== "composition") return null;
     const solo = censusSolo(census);
     if (solo === null) return null;
     return {
@@ -233,106 +307,112 @@ export class PlaceExecutor {
       // addressed from opposite sides, and every op that moves it needs exactly that id.
       item: {
         kind: solo.kind,
-        containerId: solo.kind === "terminal" ? padId : solo.containerId,
+        containerId: solo.kind === "terminal" ? containerId : solo.containerId,
       },
-      sessionId: solo.sessionId,
+      terminalId: solo.terminalId,
     };
   }
 
   /**
-   * Identity, not assertion: a terminal is wherever its session says it is, and an
+   * Identity, not assertion: a terminal is wherever the broker says it is, and an
    * addressed element or leaf is wherever it actually lives. An id that names nothing is a
    * failure, so no request can quietly become a no-op.
    */
-  private locate(surface: PlacementSurface): SourceLocation | "not_found" {
-    switch (surface.kind) {
+  private locate(ref: PlacementRef): SourceLocation | "not_found" {
+    switch (ref.kind) {
       case "terminal": {
-        // `resolvePlacement` asks the lookup for a home, so a vanished session is already a
+        // `resolvePlacement` asks the lookup for a home, so a vanished terminal is already a
         // denial there; this catches the race where it vanished in between.
-        const session = this.sessions.placedSession(surface.sessionId);
-        if (session === null) return "not_found";
-        return { ...NO_SOURCE, sessionId: surface.sessionId, homeId: session.padId };
+        const terminal = this.terminals.placedTerminal(ref.terminalId);
+        if (terminal === null) return "not_found";
+        return { ...NO_SOURCE, terminalId: ref.terminalId, homeId: terminal.containerId };
       }
-      case "pad": {
+      case "container": {
         // Naming a solo composition names the item inside it, which is what makes dragging
-        // a sidebar row and dragging its canvas widget the same placement.
-        const solo = this.soloOccupant(surface.padId);
+        // a sidebar row and dragging its canvas portal the same placement.
+        const solo = this.soloOccupant(ref.containerId);
         return {
           ...NO_SOURCE,
-          sessionId: solo?.sessionId ?? null,
-          homeId: solo?.sessionId === undefined || solo.sessionId === null ? null : surface.padId,
+          terminalId: solo?.terminalId ?? null,
+          homeId:
+            solo?.terminalId === undefined || solo.terminalId === null ? null : ref.containerId,
         };
       }
       case "element": {
-        const element = this.rooms.get(surface.padId)?.element(surface.elementId) ?? null;
+        const element = this.rooms.get(ref.containerId)?.element(ref.elementId) ?? null;
         if (element === null) return "not_found";
-        const solo = element.type === "portal" ? this.soloOccupant(element.containerId) : null;
-        const sessionId = solo?.sessionId ?? null;
+        const target = element.type === "portal" ? elementString(element, "containerId") : null;
+        const solo = target === null ? null : this.soloOccupant(target);
+        const terminalId = solo?.terminalId ?? null;
         return {
-          padId: surface.padId,
-          layout: "canvas",
-          addressed: surface.elementId,
-          sessionId,
-          homeId: sessionId === null || element.type !== "portal" ? null : element.containerId,
+          containerId: ref.containerId,
+          discipline: "canvas",
+          addressed: ref.elementId,
+          terminalId,
+          homeId: terminalId === null ? null : target,
         };
       }
       case "tile": {
-        const node = this.rooms.get(surface.containerId)?.tileLayout()?.[surface.tileId];
-        if (node === undefined || node.dir !== null) return "not_found";
-        const occupant = node.surface;
-        const sessionId = occupant?.kind === "terminal" ? occupant.sessionId : null;
+        const tile = this.rooms.get(ref.containerId)?.tileLayout()?.[ref.tileId];
+        if (tile === undefined || tile.dir !== null) return "not_found";
+        const occupant = tile.ref;
+        const terminalId = occupant?.kind === "terminal" ? occupant.terminalId : null;
         return {
-          padId: surface.containerId,
-          layout: "tiled",
-          addressed: surface.tileId,
-          sessionId,
-          homeId: sessionId === null ? null : surface.containerId,
+          containerId: ref.containerId,
+          discipline: "composition",
+          addressed: ref.tileId,
+          terminalId,
+          homeId: terminalId === null ? null : ref.containerId,
         };
       }
       default: {
-        const exhaustive: never = surface;
+        const exhaustive: never = ref;
         return exhaustive;
       }
     }
   }
 
   /** An idle room stops being resident once whatever was happening in it is done. */
-  private afterLeaving(padId: string | null): void {
-    if (padId !== null) this.rooms.evictIfIdle(padId);
+  private afterLeaving(containerId: string | null): void {
+    if (containerId !== null) this.rooms.evictIfIdle(containerId);
   }
 
   /**
-   * Every container that references `containerId`, from the census — which answers for pads
-   * whose rooms are not resident, so a reference on a canvas nobody has open is not a
-   * reference this server can miss.
+   * Every container that references `containerId`, from the census — which answers for
+   * containers whose rooms are not resident, so a reference on a canvas nobody has open is
+   * not a reference this server can miss.
    */
   private referrers(containerId: string): string[] {
-    const pads: string[] = [];
+    const containers: string[] = [];
     for (const census of this.rooms.censuses()) {
-      if (census.references.includes(containerId)) pads.push(census.padId);
+      if (census.references.includes(containerId)) containers.push(census.containerId);
     }
-    return pads;
+    return containers;
   }
 
   /**
    * Removes every reference to a container. The container itself is untouched.
    *
-   * A reference is a portal element on a canvas OR a `pad` leaf in a composition — both are
-   * what `census.references` counts, and unplacing has to mean the same thing the census
-   * means or the two describe different graphs. A composition left holding nothing by the
-   * removal retires, exactly as it would if the item had been dragged out of it.
+   * A reference is a portal element on a canvas OR a `container` leaf in a composition —
+   * both are what `census.references` counts, and unplacing has to mean the same thing the
+   * census means or the two describe different graphs. A composition left holding nothing by
+   * the removal retires, exactly as it would if the item had been dragged out of it.
    */
   private removeReferences(containerId: string): number {
     let removed = 0;
-    for (const padId of this.referrers(containerId)) {
-      const room = this.rooms.get(padId);
+    for (const referrerId of this.referrers(containerId)) {
+      const room = this.rooms.get(referrerId);
       if (room === null) continue;
       removed += room.removePortalsTo(containerId);
       const layout = room.tileLayout();
       let leaves = 0;
       for (const leafId of layout === null ? [] : tileLeafIds(layout)) {
-        const occupant = layout?.[leafId]?.surface ?? null;
-        if (occupant === null || occupant.kind !== "pad" || occupant.padId !== containerId) {
+        const occupant = layout?.[leafId]?.ref ?? null;
+        if (
+          occupant === null ||
+          occupant.kind !== "container" ||
+          occupant.containerId !== containerId
+        ) {
           continue;
         }
         if (room.removeTileLeafById(leafId)) {
@@ -340,8 +420,8 @@ export class PlaceExecutor {
           leaves += 1;
         }
       }
-      if (leaves > 0) this.deleteIfEmptied(padId);
-      this.afterLeaving(padId);
+      if (leaves > 0) this.deleteIfEmptied(referrerId);
+      this.afterLeaving(referrerId);
     }
     return removed;
   }
@@ -349,15 +429,15 @@ export class PlaceExecutor {
   /**
    * Points every reference to `fromId` at `toId` instead. A merge absorbs an item into a
    * composition, and a canvas that was showing that item should keep showing it — repointing
-   * preserves the element id and its geometry, so no collaborator's widget jumps or blinks
+   * preserves the element id and its geometry, so no collaborator's portal jumps or blinks
    * and no selection is lost.
    */
   private retargetReferences(fromId: string, toId: string): void {
-    for (const padId of this.referrers(fromId)) {
-      const room = this.rooms.get(padId);
+    for (const referrerId of this.referrers(fromId)) {
+      const room = this.rooms.get(referrerId);
       if (room === null) continue;
       for (const elementId of room.portalIdsTo(fromId)) room.repointPortal(elementId, toId);
-      this.afterLeaving(padId);
+      this.afterLeaving(referrerId);
     }
   }
 
@@ -366,16 +446,16 @@ export class PlaceExecutor {
    * something that no longer exists. Any terminal still homed here goes with it: that is
    * what deleting the place an item lives means.
    *
-   * Public because `DELETE /api/pads/:id` is the same operation. It used to do three of
-   * these four steps itself and leave portals onto the deleted container behind — the one
+   * Public because `DELETE /api/containers/:id` is the same operation. It used to do three
+   * of these four steps itself and leave portals onto the deleted container behind — the one
    * step it missed is the one this cutover made load-bearing, since a canvas terminal IS a
    * portal now, and a route reimplementing most of a rule is how the rule comes apart.
    */
-  deleteContainer(padId: string): void {
-    this.removeReferences(padId);
-    this.sessions.dropPad(padId);
-    this.rooms.drop(padId);
-    this.store.deletePad(padId);
+  deleteContainer(containerId: string): void {
+    this.removeReferences(containerId);
+    this.terminals.dropContainer(containerId);
+    this.rooms.drop(containerId);
+    this.store.deleteContainer(containerId);
   }
 
   /**
@@ -384,21 +464,23 @@ export class PlaceExecutor {
    * one whose tiles were never filled) holds nothing either, and it is the departure — not
    * the emptiness — that retires a container.
    */
-  private deleteIfEmptied(padId: string): void {
-    const pad = this.store.getPad(padId);
-    if (pad === null || pad.layout !== "tiled") return;
-    const room = this.rooms.get(padId);
+  private deleteIfEmptied(containerId: string): void {
+    const container = this.store.getContainer(containerId);
+    if (container === null || container.discipline !== "composition") return;
+    const room = this.rooms.get(containerId);
     if (room === null || room.census().items.length > 0) return;
-    this.deleteContainer(padId);
+    this.deleteContainer(containerId);
   }
 
   /** What a tileable item looks like as a leaf occupant; null when nothing is tileable. */
-  private tileSurfaceFor(item: PlacementItem, source: SourceLocation): TileSurface | null {
+  private tileRefFor(item: PlacementItem, source: SourceLocation): TileRef | null {
     if (item.kind === "terminal") {
-      return source.sessionId === null ? null : { kind: "terminal", sessionId: source.sessionId };
+      return source.terminalId === null
+        ? null
+        : { kind: "terminal", terminalId: source.terminalId };
     }
-    if (item.kind === "canvas-pad" && item.containerId !== null) {
-      return { kind: "pad", padId: item.containerId };
+    if (item.kind === "canvas" && item.containerId !== null) {
+      return { kind: "container", containerId: item.containerId };
     }
     if (item.kind === "text") {
       // A note is addressed as an element of the container holding it, and stored as the
@@ -406,14 +488,14 @@ export class PlaceExecutor {
       // element MOVES between documents rather than being copied.
       return source.addressed === null ? null : { kind: "text", elementId: source.addressed };
     }
-    if (item.kind === "tile" && source.padId !== null && source.addressed !== null) {
+    if (item.kind === "tile" && source.containerId !== null && source.addressed !== null) {
       /*
         A leaf places WHAT IT HOLDS. The algebra classifies a leaf opaquely on purpose —
         a browser dragging a leaf of a container it has not joined knows the placement and
-        not the occupant — so this is where the two views of one drag meet: the side that
-        owns the tree reads it, and every op downstream sees an ordinary tileable surface.
+        not the occupant — so this is where the two halves of one drag meet: the side that
+        owns the tree reads it, and every op downstream sees an ordinary tileable ref.
        */
-      return this.rooms.get(source.padId)?.tileLayout()?.[source.addressed]?.surface ?? null;
+      return this.rooms.get(source.containerId)?.tileLayout()?.[source.addressed]?.ref ?? null;
     }
     return null;
   }
@@ -423,55 +505,75 @@ export class PlaceExecutor {
    *
    * The occupant's new home is built BEFORE anything is taken from it, which is the order
    * extraction has always used and the reason rollback is trivial: a caller that cannot
-   * finish drops one fresh pad row, and the occupant has never been anywhere but where it
-   * already was. Nothing is destroyed here — a displaced terminal keeps running in a solo
+   * finish drops one fresh container row, and the occupant has never been anywhere but where
+   * it already was. Nothing is destroyed here — a displaced terminal keeps running in a solo
    * composition of its own, and an embedded canvas keeps living in the index.
    *
-   * Deliberately narrow: it neither rebinds the session nor removes the old leaf. A
+   * Deliberately narrow: it neither rebinds the terminal nor removes the old leaf. A
    * displacement RE-SEATS that leaf and a release REMOVES it, so each caller does both at
    * its own correct moment rather than undoing this one's guess.
    *
-   * A `text` occupant is refused by name. A note's element lives in this composition's own
-   * document and has nowhere else to be, so displacing it could only mean deleting it.
+   * An `on_claim` occupant is refused by its DECLARATION rather than by its name. Such an
+   * item is born inline in the document that created it, so it has nowhere else to be, and
+   * displacing it could only mean deleting it.
    */
   private evictLeaf(
-    view: Room,
+    composition: Room,
     containerId: string,
     tileId: string,
-    surface: PlacementSurface,
+    ref: PlacementRef,
   ): EvictedOccupant | PlaceOutcome {
-    const occupant = view.tileLayout()?.[tileId]?.surface ?? null;
+    const occupant = composition.tileLayout()?.[tileId]?.ref ?? null;
     // An empty leaf holds no item, so there is nothing to move aside and the caller was
     // asking about a spot that is not actually taken.
     if (occupant === null) return { status: "failed", failure: "conflict" };
-    if (occupant.kind === "text") {
+    // Neither of these can be moved ASIDE: an `on_claim` item lives in this document and has
+    // no home to be sent to, and a panel is not an object at all. The spot they hold is not
+    // up for grabs, so a center drop onto one is refused rather than silently destructive.
+    // `panel` is named here because it IS a floor kind; the other rule reads the trait.
+    if (this.bornUnhomed(occupant.kind) || occupant.kind === "panel") {
       return {
         status: "denied",
         denial: {
           rule: "not_displaceable",
-          surface,
-          container: { kind: "view", padId: containerId },
+          ref,
+          container: { kind: "composition", containerId },
         },
       };
     }
-    if (occupant.kind === "pad") return { surface: occupant, homeId: null, leafId: null };
+    // A container occupant is a REFERENCE: the container it points at already lives in the
+    // index on its own, so nothing has to be built for it and nothing has to move.
+    if (occupant.kind === "container") return { ref: occupant, homeId: null, leafId: null };
+    if (occupant.kind !== "terminal") {
+      // The declaration says this species HAS a home of its own, but a terminal's is the only
+      // one this executor knows how to mint. A future homed kind is refused truthfully here
+      // instead of being evicted as a terminal it is not.
+      return {
+        status: "denied",
+        denial: {
+          rule: "not_displaceable",
+          ref,
+          container: { kind: "composition", containerId },
+        },
+      };
+    }
     const homeId = this.runtime.newId();
-    this.store.createPad({
+    this.store.createContainer({
       id: homeId,
-      name: this.sessions
-        .terminalLabel(occupant.sessionId, "terminal")
+      name: this.terminals
+        .terminalLabel(occupant.terminalId, "terminal")
         .slice(0, MAX_CONTAINER_NAME),
       createdAt: this.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
     const home = this.rooms.get(homeId);
-    const leafId = home?.placeTerminalTile(occupant.sessionId, null, null) ?? null;
+    const leafId = home?.placeTerminalTile(occupant.terminalId, null, null) ?? null;
     if (home === null || leafId === null) {
       this.rooms.drop(homeId);
-      this.store.deletePad(homeId);
+      this.store.deleteContainer(homeId);
       return { status: "failed", failure: "conflict" };
     }
-    return { surface: occupant, homeId, leafId };
+    return { ref: occupant, homeId, leafId };
   }
 
   /**
@@ -482,17 +584,17 @@ export class PlaceExecutor {
   private dropEvictedHome(evicted: EvictedOccupant): void {
     if (evicted.homeId === null) return;
     this.rooms.drop(evicted.homeId);
-    this.store.deletePad(evicted.homeId);
+    this.store.deleteContainer(evicted.homeId);
   }
 
   /**
-   * The note behind a `text` surface, read before anything is written so a placement that
+   * The note behind a `text` ref, read before anything is written so a placement that
    * cannot be carried out mutates neither document. Null when the element is gone or was
    * never a note.
    */
-  private noteAt(padId: string | null, elementId: string): SceneElement | null {
-    if (padId === null) return null;
-    const element = this.rooms.get(padId)?.element(elementId) ?? null;
+  private noteAt(containerId: string | null, elementId: string): SceneElement | null {
+    if (containerId === null) return null;
+    const element = this.rooms.get(containerId)?.element(elementId) ?? null;
     return element?.type === "text" ? element : null;
   }
 
@@ -501,33 +603,52 @@ export class PlaceExecutor {
    * its own document stores the element, so the text stays collaborative through the same
    * room everyone in the composition is already joined to, with no second socket and no
    * cross-document reference to keep alive.
+   *
+   * Which payload fields were COLLABORATIVE is read from the source before the source loses
+   * the record, because only the document that held it knows, and it stops knowing the moment
+   * the record leaves (ADR 0013 §16). Reading it after the removal would silently flatten a
+   * note's shared text into a plain string on every cross-document move.
    */
   private adoptNote(source: SourceLocation, note: SceneElement, target: Room): void {
-    if (source.padId !== null && source.addressed !== null) {
-      this.rooms.get(source.padId)?.removeElementById(source.addressed);
-    }
-    target.adoptElement(note, note.x, note.y);
-    this.afterLeaving(source.padId);
+    const from = source.containerId === null ? null : this.rooms.get(source.containerId);
+    const carried = from?.collaborativeFields(note.id) ?? [];
+    if (from !== null && source.addressed !== null) from.removeElementById(source.addressed);
+    target.adoptElement(note, note.x, note.y, carried);
+    this.afterLeaving(source.containerId);
   }
 
-  /** The label a merged composition borrows from one of the surfaces it was built from. */
-  private surfaceLabel(item: PlacementItem, source: SourceLocation): string {
-    if (item.kind === "terminal" && source.sessionId !== null) {
-      return this.sessions.terminalLabel(source.sessionId, "terminal");
+  /**
+   * The label a merged composition borrows from one of the refs it was built from.
+   *
+   * The one arm that used to spell `"text"` and answer `"note"` now asks the DECLARATION
+   * twice: `bornUnhomed` for whether this species has a home of its own to be named after,
+   * and the assembly's noun table for what to call it when it does not. So a second
+   * `on_claim` element kind is named by its own manifest title through the same branch,
+   * and this file holds neither a plugin's kind nor a plugin's word.
+   */
+  private refLabel(item: PlacementItem, source: SourceLocation): string {
+    if (item.kind === "terminal" && source.terminalId !== null) {
+      return this.terminals.terminalLabel(source.terminalId, "terminal");
     }
     if (item.kind === "tile") {
-      // A leaf is called after what it HOLDS. Naming it "surface" would name the gesture
-      // that carried it, which is the one thing the operator did not put in the container.
-      const occupant = this.tileSurfaceFor(item, source);
+      // A leaf is called after what it HOLDS. Naming it "ref" would name the gesture that
+      // carried it, which is the one thing the operator did not put in the container.
+      const occupant = this.tileRefFor(item, source);
       if (occupant?.kind === "terminal") {
-        return this.sessions.terminalLabel(occupant.sessionId, "terminal");
+        return this.terminals.terminalLabel(occupant.terminalId, "terminal");
       }
-      if (occupant?.kind === "pad") return this.store.getPad(occupant.padId)?.name ?? "canvas";
-      if (occupant?.kind === "text") return "note";
+      if (occupant?.kind === "container") {
+        return this.store.getContainer(occupant.containerId)?.name ?? "canvas";
+      }
+      if (occupant !== null && this.bornUnhomed(occupant.kind)) {
+        return this.elementNoun(occupant.kind);
+      }
     }
-    if (item.kind === "text") return "note";
-    if (item.containerId !== null) return this.store.getPad(item.containerId)?.name ?? "canvas";
-    return "surface";
+    if (this.bornUnhomed(item.kind)) return this.elementNoun(item.kind);
+    if (item.containerId !== null) {
+      return this.store.getContainer(item.containerId)?.name ?? "canvas";
+    }
+    return "ref";
   }
 
   /**
@@ -539,39 +660,39 @@ export class PlaceExecutor {
    * An addressed portal MOVES instead: that is an existing reference changing seats.
    */
   private executePortal(
-    surface: PlacementSurface,
+    ref: PlacementRef,
     item: PlacementItem,
-    destination: { readonly padId: string; readonly x: number; readonly y: number },
+    destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
   ): PlaceOutcome {
     const containerId = item.containerId;
     if (containerId === null) return { status: "failed", failure: "conflict" };
-    if (surface.kind === "element" && source.padId !== null) {
-      const moved = this.moveElementPlacement(source.padId, surface.elementId, destination);
+    if (ref.kind === "element" && source.containerId !== null) {
+      const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination);
       return moved === "ok"
-        ? { status: "placed", result: { op: "portal", elementId: surface.elementId } }
+        ? { status: "placed", result: { op: "portal", elementId: ref.elementId } }
         : { status: "failed", failure: moved };
     }
-    const room = this.rooms.get(destination.padId);
+    const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
     const elementId = room.placePortalElement(containerId, destination.x, destination.y);
-    this.rooms.evictIfIdle(destination.padId);
+    this.rooms.evictIfIdle(destination.containerId);
     return { status: "placed", result: { op: "portal", elementId } };
   }
 
   /** A plain canvas item (text, ink) travelling to a canvas: reposition, or change canvas. */
   private executeMoveElement(
-    surface: PlacementSurface,
-    destination: { readonly padId: string; readonly x: number; readonly y: number },
+    ref: PlacementRef,
+    destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
   ): PlaceOutcome {
-    if (surface.kind !== "element" || source.padId === null) {
+    if (ref.kind !== "element" || source.containerId === null) {
       // Only an addressed element places text or ink: there is no other way to name one.
       return { status: "failed", failure: "conflict" };
     }
-    const moved = this.moveElementPlacement(source.padId, surface.elementId, destination);
+    const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination);
     return moved === "ok"
-      ? { status: "placed", result: { op: "move_element", elementId: surface.elementId } }
+      ? { status: "placed", result: { op: "move_element", elementId: ref.elementId } }
       : { status: "failed", failure: moved };
   }
 
@@ -581,22 +702,23 @@ export class PlaceExecutor {
    * placement — which is why text, ink and portals all travel through this one path.
    */
   private moveElementPlacement(
-    padId: string,
+    containerId: string,
     elementId: string,
-    destination: { readonly padId: string; readonly x: number; readonly y: number },
+    destination: { readonly containerId: string; readonly x: number; readonly y: number },
   ): "ok" | PlaceFailure {
-    const source = this.rooms.get(padId);
-    const target = this.rooms.get(destination.padId);
+    const source = this.rooms.get(containerId);
+    const target = this.rooms.get(destination.containerId);
     if (source === null || target === null) return "not_found";
-    if (padId === destination.padId) {
+    if (containerId === destination.containerId) {
       return source.moveElement(elementId, destination.x, destination.y) ? "ok" : "not_found";
     }
     const element = source.element(elementId);
     if (element === null) return "not_found";
+    const carried = source.collaborativeFields(elementId);
     source.removeElementById(elementId);
-    target.adoptElement(element, destination.x, destination.y);
-    this.rooms.evictIfIdle(padId);
-    this.rooms.evictIfIdle(destination.padId);
+    target.adoptElement(element, destination.x, destination.y, carried);
+    this.rooms.evictIfIdle(containerId);
+    this.rooms.evictIfIdle(destination.containerId);
     return "ok";
   }
 
@@ -617,51 +739,51 @@ export class PlaceExecutor {
    * below used to swallow the whole gesture before it could be carried out.
    */
   private executeUnplace(
-    surface: PlacementSurface,
+    ref: PlacementRef,
     item: PlacementItem,
     source: SourceLocation,
   ): PlaceOutcome {
-    if (surface.kind === "tile") {
-      const view = this.rooms.get(surface.containerId);
-      if (view === null) return { status: "failed", failure: "not_found" };
-      const occupant = view.tileLayout()?.[surface.tileId]?.surface ?? null;
+    if (ref.kind === "tile") {
+      const composition = this.rooms.get(ref.containerId);
+      if (composition === null) return { status: "failed", failure: "not_found" };
+      const occupant = composition.tileLayout()?.[ref.tileId]?.ref ?? null;
       // An empty leaf holds no item: releasing it would remove nothing, which is exactly
       // the silent no-op the algebra refuses to have.
       if (occupant === null) return { status: "failed", failure: "conflict" };
       // A composition of ONE is that item, so releasing its only leaf releases the
       // COMPOSITION. The terminal stays exactly where it lives and nothing is re-homed —
       // the same answer extraction gives a solo source, reached by the other door.
-      if (occupant.kind === "terminal" && view.census().items.length === 1) {
+      if (occupant.kind === "terminal" && composition.census().items.length === 1) {
         return {
           status: "placed",
-          result: { op: "unplace", removed: this.removeReferences(surface.containerId) },
+          result: { op: "unplace", removed: this.removeReferences(ref.containerId) },
         };
       }
-      const evicted = this.evictLeaf(view, surface.containerId, surface.tileId, surface);
+      const evicted = this.evictLeaf(composition, ref.containerId, ref.tileId, ref);
       if ("status" in evicted) return evicted;
-      if (!view.removeTileLeafById(surface.tileId)) {
+      if (!composition.removeTileLeafById(ref.tileId)) {
         this.dropEvictedHome(evicted);
         return { status: "failed", failure: "conflict" };
       }
       if (occupant.kind === "terminal" && evicted.homeId !== null && evicted.leafId !== null) {
-        this.sessions.rebindSession(
-          occupant.sessionId,
-          surface.containerId,
+        this.terminals.rebindTerminal(
+          occupant.terminalId,
+          ref.containerId,
           evicted.homeId,
           evicted.leafId,
         );
       }
-      this.deleteIfEmptied(surface.containerId);
-      this.afterLeaving(surface.containerId);
+      this.deleteIfEmptied(ref.containerId);
+      this.afterLeaving(ref.containerId);
       return { status: "placed", result: { op: "unplace", removed: 1 } };
     }
     const containerId = item.containerId;
     if (containerId === null) return { status: "failed", failure: "conflict" };
-    if (surface.kind === "element" && source.padId !== null && source.addressed !== null) {
-      const room = this.rooms.get(source.padId);
+    if (ref.kind === "element" && source.containerId !== null && source.addressed !== null) {
+      const room = this.rooms.get(source.containerId);
       if (room === null) return { status: "failed", failure: "not_found" };
       const removed = room.removeElementById(source.addressed) ? 1 : 0;
-      this.afterLeaving(source.padId);
+      this.afterLeaving(source.containerId);
       return { status: "placed", result: { op: "unplace", removed } };
     }
     return {
@@ -671,12 +793,12 @@ export class PlaceExecutor {
   }
 
   /**
-   * A tileable surface joining a composition. The leaf is written FIRST: a tree that
+   * A tileable ref joining a composition. The leaf is written FIRST: a tree that
    * refuses the write leaves the source untouched, so a rejected placement mutates nothing —
    * which is also why a note is READ before the write and moved only after it.
    *
-   * When the surface is a terminal from ANOTHER composition this is a MERGE. Its old home is
-   * absorbed: the leaf moves, the session rebinds, every reference that pointed at the old
+   * When the ref names a terminal from ANOTHER composition this is a MERGE. Its old home is
+   * absorbed: the leaf moves, the terminal rebinds, every reference that pointed at the old
    * home is repointed here so the canvases showing that terminal keep showing it, the
    * reference the gesture consumed is removed, and the emptied home retires. A second leaf
    * for a terminal already living here is simply another copy of it.
@@ -689,25 +811,25 @@ export class PlaceExecutor {
    * when it does not.
    */
   private executeAddTile(
-    surface: PlacementSurface,
+    ref: PlacementRef,
     item: PlacementItem,
-    padId: string,
+    containerId: string,
     targetTileId: string | null,
     edge: TileEdge | null,
     between: boolean,
     source: SourceLocation,
   ): PlaceOutcome {
-    const view = this.rooms.get(padId);
-    if (view === null) return { status: "failed", failure: "not_found" };
-    const dragged = this.tileSurfaceFor(item, source);
+    const composition = this.rooms.get(containerId);
+    if (composition === null) return { status: "failed", failure: "not_found" };
+    const dragged = this.tileRefFor(item, source);
     if (dragged === null) return { status: "failed", failure: "conflict" };
-    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    const fromLeaf = ref.kind === "tile" ? source.addressed : null;
     // A leaf placed beside itself is the silent no-op the algebra refuses to have.
-    if (fromLeaf !== null && source.padId === padId && fromLeaf === targetTileId) {
+    if (fromLeaf !== null && source.containerId === containerId && fromLeaf === targetTileId) {
       return { status: "failed", failure: "conflict" };
     }
     if (edge === "center" && targetTileId !== null) {
-      const occupant = view.tileLayout()?.[targetTileId]?.surface ?? null;
+      const occupant = composition.tileLayout()?.[targetTileId]?.ref ?? null;
       if (occupant !== null) {
         /*
           What the gesture HOLDS decides between the two, not what it carries. A carry
@@ -715,71 +837,70 @@ export class PlaceExecutor {
           the two trade — and a canvas ELEMENT holding a terminal is seated too (#62):
           the element is a window onto the terminal's solo home, which empties the
           instant the carry merges here, so the occupant moves INTO that home and the
-          element keeps pointing at it — the widget simply starts showing the displaced
+          element keeps pointing at it — the portal simply starts showing the displaced
           terminal, same id, same geometry, no repointing at all. A carry with no seat
-          anywhere — a sidebar row, a bare session id, a portal holding a pad — leaves
-          the occupant to be re-homed instead. Which is why a tile destination never
+          anywhere — a sidebar row, a bare terminal id, a portal holding a container —
+          leaves the occupant to be re-homed instead. Which is why a tile destination never
           answers `not_swappable`: only the canvas door does.
          */
         const seated =
-          source.layout === "tiled" && source.padId !== null && source.addressed !== null;
+          source.discipline === "composition" &&
+          source.containerId !== null &&
+          source.addressed !== null;
         if (seated) {
-          return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, source);
+          return this.executeTileSwap(ref, dragged, occupant, containerId, targetTileId, source);
         }
-        const homeSeat = this.elementHomeSeat(surface, source);
+        const homeSeat = this.elementHomeSeat(ref, source);
         if (homeSeat !== null) {
-          return this.executeTileSwap(surface, dragged, occupant, padId, targetTileId, homeSeat);
+          return this.executeTileSwap(ref, dragged, occupant, containerId, targetTileId, homeSeat);
         }
-        return this.executeReplace(surface, dragged, occupant, padId, targetTileId, source);
+        return this.executeReplace(ref, dragged, occupant, containerId, targetTileId, source);
       }
     }
     // A note carried as an ELEMENT is read before the write, so a placement that cannot be
     // carried out mutates neither document. One carried as a LEAF travels with the leaf.
     const note =
       fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.padId, dragged.elementId)
+        ? this.noteAt(source.containerId, dragged.elementId)
         : null;
     if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
-    const tileId = view.placeTile(dragged, targetTileId, edge, between);
+    const tileId = composition.placeTile(dragged, targetTileId, edge, between);
     if (tileId === null) return { status: "failed", failure: "conflict" };
     if (fromLeaf !== null) {
-      const moved = this.finishLeafMove(dragged, source, view, padId, tileId);
+      const moved = this.finishLeafMove(dragged, source, composition, containerId, tileId);
       if (moved === null) return { status: "failed", failure: "conflict" };
       return { status: "placed", result: { op: "add_tile", tileId: moved } };
     }
-    if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== padId) {
-      this.absorbHome(dragged.sessionId, source, padId, tileId);
+    if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== containerId) {
+      this.absorbHome(dragged.terminalId, source, containerId, tileId);
     }
-    if (note !== null) this.adoptNote(source, note, view);
+    if (note !== null) this.adoptNote(source, note, composition);
     return { status: "placed", result: { op: "add_tile", tileId } };
   }
 
   /**
-   * The tiled seat a canvas-element carry implicitly holds (#62): a portal element
+   * The composition seat a canvas-element carry implicitly holds (#62): a portal element
    * showing a terminal is a window onto the terminal's SOLO home composition, so the
    * home's own leaf is a seat the occupant of a center drop can move into — the
    * cross-container exchange `executeTileSwap` already performs. Null for every carry
-   * that truly has no seat: notes, ink, portals onto pads or multi compositions
+   * that truly has no seat: notes, ink, portals onto canvases or multi compositions
    * (multi never reaches the executor — `not_solo` refuses it at resolution).
    */
-  private elementHomeSeat(
-    surface: PlacementSurface,
-    source: SourceLocation,
-  ): SourceLocation | null {
-    if (surface.kind !== "element" || source.sessionId === null || source.homeId === null) {
+  private elementHomeSeat(ref: PlacementRef, source: SourceLocation): SourceLocation | null {
+    if (ref.kind !== "element" || source.terminalId === null || source.homeId === null) {
       return null;
     }
     const home = this.rooms.get(source.homeId);
     if (home === null) return null;
-    const leafId = terminalLeafIds(home.tileLayout(), source.sessionId)[0] ?? null;
+    const leafId = terminalLeafIds(home.tileLayout(), source.terminalId)[0] ?? null;
     if (leafId === null) return null;
     return {
-      padId: source.homeId,
-      layout: "tiled",
+      containerId: source.homeId,
+      discipline: "composition",
       addressed: leafId,
-      sessionId: source.sessionId,
+      terminalId: source.terminalId,
       homeId: source.homeId,
     };
   }
@@ -799,28 +920,33 @@ export class PlaceExecutor {
    * vanished between resolution and the write, which the caller reports as a failure.
    */
   private finishLeafMove(
-    dragged: TileSurface,
+    dragged: TileRef,
     source: SourceLocation,
-    view: Room,
-    padId: string,
+    composition: Room,
+    containerId: string,
     tileId: string,
   ): string | null {
-    const fromPadId = source.padId;
+    const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
-    if (fromPadId === null || fromTileId === null) return null;
-    const from = this.rooms.get(fromPadId);
+    if (fromContainerId === null || fromTileId === null) return null;
+    const from = this.rooms.get(fromContainerId);
     if (from === null) return null;
     from.removeTileLeafById(fromTileId);
-    if (fromPadId !== padId) this.handOverOccupant(dragged, from, view);
+    if (fromContainerId !== containerId) this.handOverOccupant(dragged, from, composition);
     // The read-back is why `tileId` is not simply returned: see the doc comment above.
-    const placementId = tileIdForSurface(view.tileLayout(), dragged) ?? tileId;
-    if (fromPadId !== padId) {
+    const placementId = tileIdForRef(composition.tileLayout(), dragged) ?? tileId;
+    if (fromContainerId !== containerId) {
       if (dragged.kind === "terminal") {
-        this.sessions.rebindSession(dragged.sessionId, fromPadId, padId, placementId);
+        this.terminals.rebindTerminal(
+          dragged.terminalId,
+          fromContainerId,
+          containerId,
+          placementId,
+        );
       }
-      this.retireEmptiedInto(fromPadId, padId);
+      this.retireEmptiedInto(fromContainerId, containerId);
     }
-    this.afterLeaving(fromPadId);
+    this.afterLeaving(fromContainerId);
     return placementId;
   }
 
@@ -831,15 +957,15 @@ export class PlaceExecutor {
    * selections — and only then does the emptied container retire. A container that still
    * holds something keeps its own references, because it still has something to show.
    */
-  private retireEmptiedInto(fromPadId: string, toPadId: string): void {
-    const room = this.rooms.get(fromPadId);
+  private retireEmptiedInto(fromContainerId: string, toContainerId: string): void {
+    const room = this.rooms.get(fromContainerId);
     if (room === null || room.census().items.length > 0) return;
-    this.retargetReferences(fromPadId, toPadId);
-    this.deleteIfEmptied(fromPadId);
+    this.retargetReferences(fromContainerId, toContainerId);
+    this.deleteIfEmptied(fromContainerId);
   }
 
   /**
-   * The exchange a center drop on a taken leaf means: the carried surface takes the exact
+   * The exchange a center drop on a taken leaf means: the carried ref takes the exact
    * spot it was released on, and the occupant takes the seat the carry came from.
    *
    * A swap needs a SEAT to give back, and `executeAddTile` only routes here when the
@@ -851,31 +977,31 @@ export class PlaceExecutor {
    * cannot slip past into a half-defined trade.
    */
   private executeTileSwap(
-    surface: PlacementSurface,
-    dragged: TileSurface,
-    occupant: TileSurface,
-    padId: string,
+    ref: PlacementRef,
+    dragged: TileRef,
+    occupant: TileRef,
+    containerId: string,
     targetTileId: string,
     source: SourceLocation,
   ): PlaceOutcome {
-    const fromPadId = source.padId;
+    const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
-    if (source.layout !== "tiled" || fromPadId === null || fromTileId === null) {
+    if (source.discipline !== "composition" || fromContainerId === null || fromTileId === null) {
       return {
         status: "denied",
-        denial: { rule: "not_swappable", surface, container: { kind: "view", padId } },
+        denial: { rule: "not_swappable", ref, container: { kind: "composition", containerId } },
       };
     }
     // Trading a leaf with itself is the silent no-op the algebra refuses to have.
-    if (fromPadId === padId && fromTileId === targetTileId) {
+    if (fromContainerId === containerId && fromTileId === targetTileId) {
       return { status: "failed", failure: "conflict" };
     }
-    const target = this.rooms.get(padId);
-    const from = this.rooms.get(fromPadId);
+    const target = this.rooms.get(containerId);
+    const from = this.rooms.get(fromContainerId);
     if (target === null || from === null) return { status: "failed", failure: "not_found" };
-    if (fromPadId === padId) {
+    if (fromContainerId === containerId) {
       // One tree, one transaction: neither item changed the container it lives in, so
-      // there is no session to rebind and no note to move between documents.
+      // there is no terminal to rebind and no note to move between documents.
       if (!target.swapTileLeavesById(fromTileId, targetTileId)) {
         return { status: "failed", failure: "conflict" };
       }
@@ -890,11 +1016,11 @@ export class PlaceExecutor {
       the second refusing rolls the first back — a swap that cannot complete must move
       nothing, exactly like every other placement that fails its write.
      */
-    if (!from.setTileSurface(fromTileId, occupant)) {
+    if (!from.setTileRef(fromTileId, occupant)) {
       return { status: "failed", failure: "conflict" };
     }
-    if (!target.setTileSurface(targetTileId, dragged)) {
-      from.setTileSurface(fromTileId, dragged);
+    if (!target.setTileRef(targetTileId, dragged)) {
+      from.setTileRef(fromTileId, dragged);
       return { status: "failed", failure: "conflict" };
     }
     // Both items changed the container they live in, so both are handed over before any id
@@ -902,16 +1028,21 @@ export class PlaceExecutor {
     // into the root id, which would make an id remembered from before the write a lie.
     this.handOverOccupant(dragged, from, target);
     this.handOverOccupant(occupant, target, from);
-    const placementId = tileIdForSurface(target.tileLayout(), dragged) ?? targetTileId;
-    const withPlacementId = tileIdForSurface(from.tileLayout(), occupant) ?? fromTileId;
+    const placementId = tileIdForRef(target.tileLayout(), dragged) ?? targetTileId;
+    const withPlacementId = tileIdForRef(from.tileLayout(), occupant) ?? fromTileId;
     if (dragged.kind === "terminal") {
-      this.sessions.rebindSession(dragged.sessionId, fromPadId, padId, placementId);
+      this.terminals.rebindTerminal(dragged.terminalId, fromContainerId, containerId, placementId);
     }
     if (occupant.kind === "terminal") {
-      this.sessions.rebindSession(occupant.sessionId, padId, fromPadId, withPlacementId);
+      this.terminals.rebindTerminal(
+        occupant.terminalId,
+        containerId,
+        fromContainerId,
+        withPlacementId,
+      );
     }
-    this.afterLeaving(fromPadId);
-    this.afterLeaving(padId);
+    this.afterLeaving(fromContainerId);
+    this.afterLeaving(containerId);
     return { status: "placed", result: { op: "swap", placementId, withPlacementId } };
   }
 
@@ -928,42 +1059,47 @@ export class PlaceExecutor {
    *   the occupant's new home is built before the target tree is touched, so a refusal
    *     leaves the occupant exactly where it was rather than nowhere;
    *   the target leaf is RE-SEATED, never removed, so the container is never momentarily
-   *     empty — `reapSession` can never fire on the displaced terminal, and neither
+   *     empty — `reapTerminal` can never fire on the displaced terminal, and neither
    *     `deleteIfEmptied` nor `retireEmptiedInto` can race on this side;
-   *   the displaced session rebinds only once its new leaf is real and its old one is not.
+   *   the displaced terminal rebinds only once its new leaf is real and its old one is not.
    *
    * Everything after that is the ordinary add's carry-side bookkeeping, unchanged: this op
    * differs from `add_tile` in what happens to the OCCUPANT, never in what happens to the
    * thing the operator was carrying.
    */
   private executeReplace(
-    surface: PlacementSurface,
-    dragged: TileSurface,
-    occupant: TileSurface,
-    padId: string,
+    ref: PlacementRef,
+    dragged: TileRef,
+    occupant: TileRef,
+    containerId: string,
     targetTileId: string,
     source: SourceLocation,
   ): PlaceOutcome {
-    const view = this.rooms.get(padId);
-    if (view === null) return { status: "failed", failure: "not_found" };
+    const composition = this.rooms.get(containerId);
+    if (composition === null) return { status: "failed", failure: "not_found" };
     // A note carried as an ELEMENT is read before anything is written, so a placement that
     // cannot be carried out mutates neither document. One carried as a LEAF travels with it.
-    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    const fromLeaf = ref.kind === "tile" ? source.addressed : null;
     const note =
       fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.padId, dragged.elementId)
+        ? this.noteAt(source.containerId, dragged.elementId)
         : null;
     if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
-    const evicted = this.evictLeaf(view, padId, targetTileId, surface);
+    const evicted = this.evictLeaf(composition, containerId, targetTileId, ref);
     if ("status" in evicted) return evicted;
-    if (!view.setTileSurface(targetTileId, dragged)) {
+    if (!composition.setTileRef(targetTileId, dragged)) {
       this.dropEvictedHome(evicted);
       return { status: "failed", failure: "conflict" };
     }
     if (occupant.kind === "terminal" && evicted.homeId !== null && evicted.leafId !== null) {
-      this.sessions.rebindSession(occupant.sessionId, padId, evicted.homeId, evicted.leafId);
+      this.terminals.rebindTerminal(
+        occupant.terminalId,
+        containerId,
+        evicted.homeId,
+        evicted.leafId,
+      );
     }
     let tileId = targetTileId;
     if (fromLeaf !== null) {
@@ -971,13 +1107,17 @@ export class PlaceExecutor {
       // only reachable if that dispatch ever loosens. It is the same subtraction a leaf
       // gets everywhere else, and the id is read back because pruning the old seat can
       // collapse a split and rename the one just written.
-      const moved = this.finishLeafMove(dragged, source, view, padId, targetTileId);
+      const moved = this.finishLeafMove(dragged, source, composition, containerId, targetTileId);
       if (moved === null) return { status: "failed", failure: "conflict" };
       tileId = moved;
-    } else if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== padId) {
-      this.absorbHome(dragged.sessionId, source, padId, targetTileId);
+    } else if (
+      dragged.kind === "terminal" &&
+      source.homeId !== null &&
+      source.homeId !== containerId
+    ) {
+      this.absorbHome(dragged.terminalId, source, containerId, targetTileId);
     }
-    if (note !== null) this.adoptNote(source, note, view);
+    if (note !== null) this.adoptNote(source, note, composition);
     return {
       status: "placed",
       result: { op: "replace", tileId, displacedContainerId: evicted.homeId },
@@ -990,70 +1130,75 @@ export class PlaceExecutor {
    * changed the container it lives in" is one situation however the gesture spelled it:
    *
    *   a TERMINAL lives in exactly one composition, so the mirrors its old container still
-   *     held for it go — a leaf naming a session that lives somewhere else is a reference
+   *     held for it go — a leaf naming a terminal that lives somewhere else is a reference
    *     to a place the item no longer is, which is the state invariant 3 exists to forbid;
    *   a NOTE is owned by the composition showing it, so its element travels between the two
    *     documents, or the leaf would render text nobody in the new room can read or edit;
-   *   an embedded CANVAS is a reference and needs nothing: the pad keeps living where it
-   *     lives and only which tree points at it changed.
+   *   an embedded CANVAS is a reference and needs nothing: the container keeps living where
+   *     it lives and only which tree points at it changed.
    *
    * References onto the SOURCE container are deliberately left alone here. A merge repoints
    * them because the absorbed home stops existing; a container that survives the departure
    * still has something to show, and `retireEmptiedInto` is what handles the one that does
    * not. An exchange always leaves both alive, which is why it never repoints at all.
    */
-  private handOverOccupant(surface: TileSurface, from: Room, to: Room): void {
-    if (surface.kind === "terminal") {
-      for (const leafId of terminalLeafIds(from.tileLayout(), surface.sessionId)) {
+  private handOverOccupant(ref: TileRef, from: Room, to: Room): void {
+    if (ref.kind === "terminal") {
+      for (const leafId of terminalLeafIds(from.tileLayout(), ref.terminalId)) {
         from.removeTileLeafById(leafId);
       }
       return;
     }
-    if (surface.kind === "text") {
-      const note = from.element(surface.elementId);
+    if (ref.kind === "text") {
+      const note = from.element(ref.elementId);
       if (note === null) return;
-      from.removeElementById(surface.elementId);
-      to.adoptElement(note, note.x, note.y);
+      const carried = from.collaborativeFields(ref.elementId);
+      from.removeElementById(ref.elementId);
+      to.adoptElement(note, note.x, note.y, carried);
     }
   }
 
   /**
-   * The merge itself: a terminal's old home hands it over to `toPadId` and retires. Shared
-   * by the tile drop and the canvas merge, because absorbing a solo composition is one
-   * operation however the gesture spelled it.
+   * The merge itself: a terminal's old home hands it over to `toContainerId` and retires.
+   * Shared by the tile drop and the canvas merge, because absorbing a solo composition is
+   * one operation however the gesture spelled it.
    */
   private absorbHome(
-    sessionId: string,
+    terminalId: string,
     source: SourceLocation,
-    toPadId: string,
+    toContainerId: string,
     placementId: string,
   ): void {
     const homeId = source.homeId;
     if (homeId === null) return;
     const home = this.rooms.get(homeId);
     if (home !== null) {
-      for (const leafId of terminalLeafIds(home.tileLayout(), sessionId)) {
+      for (const leafId of terminalLeafIds(home.tileLayout(), terminalId)) {
         home.removeTileLeafById(leafId);
       }
     }
-    this.sessions.rebindSession(sessionId, homeId, toPadId, placementId);
+    this.terminals.rebindTerminal(terminalId, homeId, toContainerId, placementId);
     // The reference the drag was holding is consumed by the drop; the rest follow the item.
-    if (source.layout === "canvas" && source.padId !== null && source.addressed !== null) {
-      this.rooms.get(source.padId)?.removeElementById(source.addressed);
-      this.afterLeaving(source.padId);
+    if (
+      source.discipline === "canvas" &&
+      source.containerId !== null &&
+      source.addressed !== null
+    ) {
+      this.rooms.get(source.containerId)?.removeElementById(source.addressed);
+      this.afterLeaving(source.containerId);
     }
-    this.retargetReferences(homeId, toPadId);
+    this.retargetReferences(homeId, toContainerId);
     this.deleteIfEmptied(homeId);
     this.afterLeaving(homeId);
   }
 
   /**
-   * Composition on a canvas: a surface dropped onto a reference merges the two.
+   * Composition on a canvas: a ref dropped onto a reference merges the two.
    *
-   * Dropping onto a reference to a COMPOSITION is not a merge — the widget already is a
-   * composition, so the surface joins it as a plain tile. That recursion goes back through
-   * `place`, so "compositions merge, never nest" stays a declaration (`view` denies with
-   * `not_solo`) rather than a branch here.
+   * Dropping onto a reference to a COMPOSITION is not a merge — the portal already is a
+   * composition, so the ref joins it as a plain tile. That recursion goes back through
+   * `place`, so "compositions merge, never nest" stays a declaration (a `composition`
+   * item denies with `not_solo`) rather than a branch here.
    *
    * Dropping onto a reference to a SOLO composition merges: one new composition is born
    * absorbing both items, the target's element is repointed at it keeping its exact
@@ -1066,16 +1211,16 @@ export class PlaceExecutor {
    * merging is decided.
    */
   private executeCompose(
-    surface: PlacementSurface,
+    ref: PlacementRef,
     item: PlacementItem,
     destination: {
-      readonly padId: string;
+      readonly containerId: string;
       readonly targetElementId: string;
       readonly edge: TileEdge;
     },
     source: SourceLocation,
   ): PlaceOutcome {
-    const room = this.rooms.get(destination.padId);
+    const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
     const target = room.element(destination.targetElementId);
     if (target === null) return { status: "failed", failure: "not_found" };
@@ -1083,19 +1228,20 @@ export class PlaceExecutor {
     // for any two canvas elements, so it is answered before the merge rules narrow the
     // target down to a reference.
     if (destination.edge === "center") {
-      return this.executeCanvasSwap(surface, destination, source);
+      return this.executeCanvasSwap(ref, destination, source);
     }
     // Only a REFERENCE can be composed onto. Text and ink hold no item to merge with, and a
     // canvas has no terminal element to birth a composition around any more.
     if (target.type !== "portal") return { status: "failed", failure: "conflict" };
-    const targetHomeId = target.containerId;
+    const targetHomeId = elementString(target, "containerId");
+    if (targetHomeId === null) return { status: "failed", failure: "conflict" };
     const targetSolo = this.soloOccupant(targetHomeId);
     if (targetSolo === null) {
       const added = this.place({
-        surface,
+        ref,
         destination: {
           kind: "tile",
-          padId: targetHomeId,
+          containerId: targetHomeId,
           targetTileId: null,
           edge: destination.edge,
         },
@@ -1104,104 +1250,107 @@ export class PlaceExecutor {
       if (added.result.op !== "add_tile") return { status: "failed", failure: "conflict" };
       return {
         status: "placed",
-        result: { op: "compose", viewId: targetHomeId, tileId: added.result.tileId },
+        result: { op: "compose", containerId: targetHomeId, tileId: added.result.tileId },
       };
     }
     // Merging an item with itself is a degenerate identity, not a rule about kinds.
     if (item.containerId !== null && item.containerId === targetHomeId) {
       return { status: "failed", failure: "conflict" };
     }
-    const targetSurface = this.tileSurfaceFor(targetSolo.item, {
+    const targetRef = this.tileRefFor(targetSolo.item, {
       ...NO_SOURCE,
-      padId: targetHomeId,
-      layout: "tiled",
-      sessionId: targetSolo.sessionId,
-      homeId: targetSolo.sessionId === null ? null : targetHomeId,
+      containerId: targetHomeId,
+      discipline: "composition",
+      terminalId: targetSolo.terminalId,
+      homeId: targetSolo.terminalId === null ? null : targetHomeId,
     });
-    const dragged = this.tileSurfaceFor(item, source);
-    if (targetSurface === null || dragged === null) {
+    const dragged = this.tileRefFor(item, source);
+    if (targetRef === null || dragged === null) {
       return { status: "failed", failure: "conflict" };
     }
     // A note carried as an ELEMENT is read before the write; one carried as a LEAF travels
     // with the leaf, so the same `fromLeaf` split the tile destination makes applies here.
-    const fromLeaf = surface.kind === "tile" ? source.addressed : null;
+    const fromLeaf = ref.kind === "tile" ? source.addressed : null;
     const note =
       fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.padId, dragged.elementId)
+        ? this.noteAt(source.containerId, dragged.elementId)
         : null;
     if (fromLeaf === null && dragged.kind === "text" && note === null) {
       return { status: "failed", failure: "not_found" };
     }
 
-    const viewId = this.runtime.newId();
-    const name = `${this.surfaceLabel(targetSolo.item, {
+    const compositionId = this.runtime.newId();
+    const name = `${this.refLabel(targetSolo.item, {
       ...NO_SOURCE,
-      sessionId: targetSolo.sessionId,
+      terminalId: targetSolo.terminalId,
       homeId: targetHomeId,
-    })} + ${this.surfaceLabel(item, source)}`;
-    this.store.createPad({
-      id: viewId,
+    })} + ${this.refLabel(item, source)}`;
+    this.store.createContainer({
+      id: compositionId,
       name: name.slice(0, MAX_CONTAINER_NAME),
       createdAt: this.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
-    const view = this.rooms.get(viewId);
-    const rootTileId = view?.placeTile(targetSurface, null, null) ?? null;
+    const composition = this.rooms.get(compositionId);
+    const rootTileId = composition?.placeTile(targetRef, null, null) ?? null;
     const addedTileId =
-      view === null || rootTileId === null
+      composition === null || rootTileId === null
         ? null
-        : view.placeTile(dragged, rootTileId, destination.edge);
-    if (view === null || rootTileId === null || addedTileId === null) {
+        : composition.placeTile(dragged, rootTileId, destination.edge);
+    if (composition === null || rootTileId === null || addedTileId === null) {
       // Nothing durable has moved yet, so the newborn row goes away with the failure.
-      this.rooms.drop(viewId);
-      this.store.deletePad(viewId);
+      this.rooms.drop(compositionId);
+      this.store.deleteContainer(compositionId);
       return { status: "failed", failure: "conflict" };
     }
 
     // The target's reference becomes a reference to the newborn IN PLACE, before its old
     // home retires — otherwise retiring the home would take this element with it.
-    room.repointPortal(destination.targetElementId, viewId);
-    if (targetSolo.sessionId !== null) {
+    room.repointPortal(destination.targetElementId, compositionId);
+    if (targetSolo.terminalId !== null) {
       /*
-        The target went in FIRST, filling the root — and the dragged surface then SPLIT that
+        The target went in FIRST, filling the root — and the dragged ref then SPLIT that
         root, which moves the root's occupant to a fresh leaf id. So `rootTileId` names the
         split now, not the terminal, and the id published to the composition has to be read
         back from the tree rather than remembered from before the split.
        */
-      const targetTileId = tileIdForSurface(view.tileLayout(), targetSurface) ?? rootTileId;
+      const targetTileId = tileIdForRef(composition.tileLayout(), targetRef) ?? rootTileId;
       this.absorbHome(
-        targetSolo.sessionId,
-        { ...NO_SOURCE, sessionId: targetSolo.sessionId, homeId: targetHomeId },
-        viewId,
+        targetSolo.terminalId,
+        { ...NO_SOURCE, terminalId: targetSolo.terminalId, homeId: targetHomeId },
+        compositionId,
         targetTileId,
       );
     } else {
-      this.moveNonTerminalLeaf(targetHomeId, view, viewId);
+      this.moveNonTerminalLeaf(targetHomeId, composition, compositionId);
     }
     const placedTileId =
       fromLeaf === null
         ? addedTileId
-        : // A leaf that merged onto a canvas widget MOVES: the same subtraction, hand-over
+        : // A leaf that merged onto a canvas portal MOVES: the same subtraction, hand-over
           // and absorb-if-emptied a leaf gets at a tile destination, reached by the other
           // door. Its old container is only retired when the departure left it holding
           // nothing, which is what keeps a multi-tile source from being swallowed.
-          this.finishLeafMove(dragged, source, view, viewId, addedTileId);
+          this.finishLeafMove(dragged, source, composition, compositionId, addedTileId);
     if (placedTileId === null) return { status: "failed", failure: "conflict" };
     if (fromLeaf === null && dragged.kind === "terminal") {
-      this.absorbHome(dragged.sessionId, source, viewId, addedTileId);
+      this.absorbHome(dragged.terminalId, source, compositionId, addedTileId);
     }
     // The note moves into the composition that now holds its leaf, exactly as it would for
     // a plain tile add: a merge is the same placement with a container born first.
-    if (note !== null) this.adoptNote(source, note, view);
-    this.rooms.evictIfIdle(destination.padId);
-    return { status: "placed", result: { op: "compose", viewId, tileId: placedTileId } };
+    if (note !== null) this.adoptNote(source, note, composition);
+    this.rooms.evictIfIdle(destination.containerId);
+    return {
+      status: "placed",
+      result: { op: "compose", containerId: compositionId, tileId: placedTileId },
+    };
   }
 
   /**
    * The canvas half of the center rule: two elements of ONE canvas exchange rectangles.
    *
    * The gesture must hold a canvas PLACEMENT of this canvas, because that placement is the
-   * seat the target's occupant moves into. A sidebar row, a bare session id or a tile of
+   * seat the target's occupant moves into. A sidebar row, a bare terminal id or a tile of
    * some composition names an item with no seat here to give back, so there is nothing to
    * exchange and the request is refused by name — the interface dissolves the center band
    * into its nearest edge for exactly those carries, and this rule is what keeps a
@@ -1217,22 +1366,22 @@ export class PlaceExecutor {
    * one patch of four fields per element and not a re-authoring of either.
    */
   private executeCanvasSwap(
-    surface: PlacementSurface,
-    destination: { readonly padId: string; readonly targetElementId: string },
+    ref: PlacementRef,
+    destination: { readonly containerId: string; readonly targetElementId: string },
     source: SourceLocation,
   ): PlaceOutcome {
     if (
-      surface.kind !== "element" ||
-      source.layout !== "canvas" ||
-      source.padId !== destination.padId ||
+      ref.kind !== "element" ||
+      source.discipline !== "canvas" ||
+      source.containerId !== destination.containerId ||
       source.addressed === null
     ) {
       return {
         status: "denied",
         denial: {
           rule: "not_swappable",
-          surface,
-          container: { kind: "view", padId: destination.padId },
+          ref,
+          container: { kind: "composition", containerId: destination.containerId },
         },
       };
     }
@@ -1240,12 +1389,12 @@ export class PlaceExecutor {
     if (source.addressed === destination.targetElementId) {
       return { status: "failed", failure: "conflict" };
     }
-    const room = this.rooms.get(destination.padId);
+    const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
     if (!room.swapElementGeometry(source.addressed, destination.targetElementId)) {
       return { status: "failed", failure: "not_found" };
     }
-    this.rooms.evictIfIdle(destination.padId);
+    this.rooms.evictIfIdle(destination.containerId);
     return {
       status: "placed",
       result: {
@@ -1261,26 +1410,27 @@ export class PlaceExecutor {
    * an embedded canvas is a reference, so only the leaf moves, while a note's element has to
    * travel between documents the way any note does.
    */
-  private moveNonTerminalLeaf(fromPadId: string, target: Room, toPadId: string): void {
-    const from = this.rooms.get(fromPadId);
+  private moveNonTerminalLeaf(fromContainerId: string, target: Room, toContainerId: string): void {
+    const from = this.rooms.get(fromContainerId);
     if (from !== null) {
       const layout = from.tileLayout();
       for (const leafId of layout === null ? [] : tileLeafIds(layout)) {
-        const occupant = layout?.[leafId]?.surface ?? null;
+        const occupant = layout?.[leafId]?.ref ?? null;
         if (occupant === null) continue;
         if (occupant.kind === "text") {
           const note = from.element(occupant.elementId);
           if (note !== null) {
+            const carried = from.collaborativeFields(occupant.elementId);
             from.removeElementById(occupant.elementId);
-            target.adoptElement(note, note.x, note.y);
+            target.adoptElement(note, note.x, note.y, carried);
           }
         }
         from.removeTileLeafById(leafId);
       }
     }
-    this.retargetReferences(fromPadId, toPadId);
-    this.deleteIfEmptied(fromPadId);
-    this.afterLeaving(fromPadId);
+    this.retargetReferences(fromContainerId, toContainerId);
+    this.deleteIfEmptied(fromContainerId);
+    this.afterLeaving(fromContainerId);
   }
 
   /**
@@ -1294,107 +1444,113 @@ export class PlaceExecutor {
    * A composition emptied by the extraction retires.
    */
   private executeExtract(
-    surface: PlacementSurface,
-    destination: { readonly padId: string; readonly x: number; readonly y: number },
+    ref: PlacementRef,
+    destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
   ): PlaceOutcome {
-    const containerId = source.padId;
+    const containerId = source.containerId;
     const tileId = source.addressed;
     if (containerId === null || tileId === null) {
       return { status: "failed", failure: "not_found" };
     }
-    const view = this.rooms.get(containerId);
-    const canvas = this.rooms.get(destination.padId);
-    if (view === null || canvas === null) return { status: "failed", failure: "not_found" };
-    const occupant = view.tileLayout()?.[tileId]?.surface ?? null;
+    const composition = this.rooms.get(containerId);
+    const canvas = this.rooms.get(destination.containerId);
+    if (composition === null || canvas === null) return { status: "failed", failure: "not_found" };
+    const occupant = composition.tileLayout()?.[tileId]?.ref ?? null;
     // An empty leaf holds no item: extracting it would author nothing, which is exactly the
     // silent no-op the algebra refuses to have.
     if (occupant === null) return { status: "failed", failure: "conflict" };
-    const wasSolo = view.census().items.length === 1;
+    const wasSolo = composition.census().items.length === 1;
 
     if (occupant.kind === "terminal") {
       if (wasSolo) {
         const elementId = canvas.placePortalElement(containerId, destination.x, destination.y);
-        this.rooms.evictIfIdle(destination.padId);
+        this.rooms.evictIfIdle(destination.containerId);
         return { status: "placed", result: { op: "extract", elementId } };
       }
       // The re-homing itself: the new home is built BEFORE the old leaf goes, so a tree
       // that refuses the write leaves the terminal where it was rather than nowhere. It is
       // the same displacement a center drop makes, reached by the canvas door.
-      const evicted = this.evictLeaf(view, containerId, tileId, surface);
+      const evicted = this.evictLeaf(composition, containerId, tileId, ref);
       if ("status" in evicted) return evicted;
       const { homeId, leafId } = evicted;
-      if (homeId === null || leafId === null || !view.removeTileLeafById(tileId)) {
+      if (homeId === null || leafId === null || !composition.removeTileLeafById(tileId)) {
         this.dropEvictedHome(evicted);
         return { status: "failed", failure: "conflict" };
       }
-      this.sessions.rebindSession(occupant.sessionId, containerId, homeId, leafId);
+      this.terminals.rebindTerminal(occupant.terminalId, containerId, homeId, leafId);
       const elementId = canvas.placePortalElement(homeId, destination.x, destination.y);
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
-      this.rooms.evictIfIdle(destination.padId);
+      this.rooms.evictIfIdle(destination.containerId);
       return { status: "placed", result: { op: "extract", elementId } };
     }
+    // A panel is a rendering of a plugin contribution, not an object with a document, so
+    // there is nothing to author on a canvas for it. Unreachable through the door — a canvas
+    // refuses panels by group containment — and refused here too, before the leaf is
+    // removed, so a hand-written tree holding one cannot be emptied by a failed extract.
+    if (occupant.kind === "panel") return { status: "failed", failure: "conflict" };
 
-    if (!view.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
+    if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
     if (occupant.kind === "text") {
-      const note = view.element(occupant.elementId);
+      const note = composition.element(occupant.elementId);
       if (note === null || note.type !== "text") return { status: "failed", failure: "not_found" };
-      view.removeElementById(occupant.elementId);
-      canvas.adoptElement(note, destination.x, destination.y);
+      const carried = composition.collaborativeFields(occupant.elementId);
+      composition.removeElementById(occupant.elementId);
+      canvas.adoptElement(note, destination.x, destination.y, carried);
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
-      this.rooms.evictIfIdle(destination.padId);
+      this.rooms.evictIfIdle(destination.containerId);
       return { status: "placed", result: { op: "extract", elementId: occupant.elementId } };
     }
-    const elementId = canvas.placePortalElement(occupant.padId, destination.x, destination.y);
+    const elementId = canvas.placePortalElement(occupant.containerId, destination.x, destination.y);
     this.deleteIfEmptied(containerId);
     this.afterLeaving(containerId);
-    this.rooms.evictIfIdle(destination.padId);
+    this.rooms.evictIfIdle(destination.containerId);
     return { status: "placed", result: { op: "extract", elementId } };
   }
 
   /**
-   * Removes one leaf (`DELETE /api/pads/:id/tiles/:tileId`). Removal is NOT a placement,
-   * and it is deliberately not what `tile -> unplaced` means: releasing a leaf RE-HOMES its
-   * occupant, while closing one DESTROYS it. Two verbs, two doors, and the destructive one
-   * is never reached by a drag.
+   * Removes one leaf (`DELETE /api/containers/:id/tiles/:tileId`). Removal is NOT a
+   * placement, and it is deliberately not what `tile -> unplaced` means: releasing a leaf
+   * RE-HOMES its occupant, while closing one DESTROYS it. Two verbs, two doors, and the
+   * destructive one is never reached by a drag.
    *
    * Removing a terminal's LAST home leaf destroys the terminal. That is deliberate and it
    * is the only honest reading of the model: a terminal lives in exactly one composition,
    * there is no pool to fall back into, and the operator who closed its last tile closed the
    * terminal. A composition emptied this way retires with it.
    */
-  removeTile(padId: string, tileId: string): "ok" | PlaceFailure {
-    const pad = this.store.getPad(padId);
-    if (pad === null) return "not_found";
-    if (pad.layout !== "tiled") return "conflict";
-    const room = this.rooms.get(padId);
+  removeTile(containerId: string, tileId: string): "ok" | PlaceFailure {
+    const container = this.store.getContainer(containerId);
+    if (container === null) return "not_found";
+    if (container.discipline !== "composition") return "conflict";
+    const room = this.rooms.get(containerId);
     if (room === null) return "not_found";
-    const node = room.tileLayout()?.[tileId];
-    if (node === undefined) return "not_found";
-    if (node.dir !== null) return "conflict";
-    const occupant = node.surface;
+    const tile = room.tileLayout()?.[tileId];
+    if (tile === undefined) return "not_found";
+    if (tile.dir !== null) return "conflict";
+    const occupant = tile.ref;
     if (!room.removeTileLeafById(tileId)) return "conflict";
     if (
       occupant !== null &&
       occupant.kind === "terminal" &&
-      !room.homesSession(occupant.sessionId)
+      !room.homesTerminal(occupant.terminalId)
     ) {
-      this.sessions.reapSession(occupant.sessionId);
+      this.terminals.reapTerminal(occupant.terminalId);
     }
     // A note's leaf IS its only placement, and a composition renders only its layout, so
     // leaving the element behind would be invisible garbage.
     if (occupant !== null && occupant.kind === "text") room.removeElementById(occupant.elementId);
-    if (occupant !== null) this.deleteIfEmptied(padId);
-    this.afterLeaving(padId);
+    if (occupant !== null) this.deleteIfEmptied(containerId);
+    this.afterLeaving(containerId);
     return "ok";
   }
 
   /**
-   * Removes a terminal from the world. `DELETE /api/terminals/:id`, `terminal_kill` and a
+   * Removes a terminal from the world. `core.terminals.kill`, `terminal_kill` and a
    * titlebar close all land here, and all three mean the same thing: a DELIBERATE kill is
-   * total and it is one step — every leaf its home holds for it, the session and its PTY,
+   * total and it is one step — every leaf its home holds for it, its row and its PTY,
    * and, when the terminal was the last thing its home held, the home itself along with
    * every portal onto that home, on every canvas, whether or not anybody has it open.
    *
@@ -1408,24 +1564,24 @@ export class PlaceExecutor {
    * identically — dismissing a dead terminal is the same verb as killing a live one, not a
    * second lookalike path.
    */
-  killTerminal(sessionId: string): "ok" | "not_found" {
-    const placed = this.sessions.placedSession(sessionId);
+  killTerminal(terminalId: string): "ok" | "not_found" {
+    const placed = this.terminals.placedTerminal(terminalId);
     if (placed === null) return "not_found";
-    const room = this.rooms.get(placed.padId);
+    const room = this.rooms.get(placed.containerId);
     if (room === null) {
-      // A home whose row is already gone cannot be asked what it still holds; the session
+      // A home whose row is already gone cannot be asked what it still holds; the terminal
       // has nowhere left to live either way, so it dies rather than becoming an orphan.
-      this.sessions.reapSession(sessionId);
+      this.terminals.reapTerminal(terminalId);
       return "ok";
     }
-    for (const tileId of terminalLeafIds(room.tileLayout(), sessionId)) {
+    for (const tileId of terminalLeafIds(room.tileLayout(), terminalId)) {
       room.removeTileLeafById(tileId);
     }
     // The row goes before the home is judged: `deleteIfEmptied` asks what the container
     // holds NOW, and a composition still listing the terminal it just lost would survive.
-    this.sessions.reapSession(sessionId);
-    this.deleteIfEmptied(placed.padId);
-    this.afterLeaving(placed.padId);
+    this.terminals.reapTerminal(terminalId);
+    this.deleteIfEmptied(placed.containerId);
+    this.afterLeaving(placed.containerId);
     return "ok";
   }
 
@@ -1438,32 +1594,32 @@ export class PlaceExecutor {
    * terminal's own environment are scoped to it — the row is what has to wait for a PTY that
    * might never arrive, not the identity. Returns the home's leaf id.
    */
-  createHome(homeId: string, sessionId: string, name: string): string | null {
-    this.store.createPad({
+  createHome(homeId: string, terminalId: string, name: string): string | null {
+    this.store.createContainer({
       id: homeId,
       name: name.slice(0, MAX_CONTAINER_NAME),
       createdAt: this.runtime.now(),
-      layout: "tiled",
+      discipline: "composition",
     });
-    const leafId = this.rooms.get(homeId)?.placeTerminalTile(sessionId, null, null) ?? null;
+    const leafId = this.rooms.get(homeId)?.placeTerminalTile(terminalId, null, null) ?? null;
     if (leafId === null) {
       this.rooms.drop(homeId);
-      this.store.deletePad(homeId);
+      this.store.deleteContainer(homeId);
       return null;
     }
     return leafId;
   }
 
   /**
-   * A terminal's home retires with the terminal. Called when a session is forgotten, so an
-   * exited terminal the operator dismissed leaves neither a row in the index nor a widget
+   * A terminal's home retires with the terminal. Called when a terminal is forgotten, so an
+   * exited terminal the operator dismissed leaves neither a row in the index nor a portal
    * pointing at one.
    */
-  retireHome(padId: string): void {
-    const pad = this.store.getPad(padId);
-    if (pad === null || pad.layout !== "tiled") return;
-    const room = this.rooms.get(padId);
+  retireHome(containerId: string): void {
+    const container = this.store.getContainer(containerId);
+    if (container === null || container.discipline !== "composition") return;
+    const room = this.rooms.get(containerId);
     if (room === null || room.census().items.length > 0) return;
-    this.deleteContainer(padId);
+    this.deleteContainer(containerId);
   }
 }

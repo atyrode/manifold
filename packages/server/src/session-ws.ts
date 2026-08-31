@@ -1,19 +1,24 @@
 import {
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
+  CONNECTION_BODIES,
   CURSOR_MIN_INTERVAL_MS,
   ClientMessageSchema,
   GESTURE_MIN_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
+  type ActionDenialRule,
+  type ActionOutcome,
   type ClientMessage,
+  type ErrorCode,
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
+import type { PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
-import { SessionPeer, serializeServerMessage, type RawSocket } from "./session-peer.ts";
+import { SessionChannel, serializeServerMessage, type RawSocket } from "./session-channel.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 type ClassifiedFrame =
@@ -36,9 +41,28 @@ const JOIN_DEADLINE_MS = 10_000;
 const PONG_FRAME = JSON.stringify({ type: "pong" });
 
 /**
+ * How a denial reads on a socket. The action door's five rungs are the workspace's refusal
+ * vocabulary and the session channel's error codes are the socket's; this is the one place
+ * they meet, keyed by the rung union so a new rung cannot compile without an answer here.
+ *
+ * `unknown_action` and `plugin_disabled` both land on `forbidden` because from a client's
+ * seat they are the same fact — this workspace will not do that right now — and that is the
+ * code the gateway has always sent for a refused creation. An `invalid_args` is a malformed
+ * request, and a handler's `refused` is a policy conflict, which is exactly what the broker's
+ * own `conflict` has always meant.
+ */
+const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
+  unknown_action: "forbidden",
+  plugin_disabled: "forbidden",
+  forbidden: "forbidden",
+  invalid_args: "invalid",
+  refused: "conflict",
+};
+
+/**
  * Which frames a spectator channel may send. Reading is the whole point of a watching
  * channel, so state, doc updates, terminal output and the attach/detach subscription pair
- * all flow to it — but every mutation is refused, so a widget's live preview can never
+ * all flow to it — but every mutation is refused, so a portal's live preview can never
  * type into a PTY, resize it, move an element, or fake presence. The map is keyed by the
  * frame union itself: a new client frame cannot compile without declaring its answer.
  */
@@ -66,8 +90,8 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
  * enforces are per room: a canvas being scribbled on must not starve a second room's
  * cursor stream, and a resync of one room says nothing about another.
  */
-interface SessionChannel {
-  readonly peer: SessionPeer;
+interface ChannelState {
+  readonly peer: SessionChannel;
   readonly room: Room;
   lastResyncAt: number | null;
   cancelResyncFlush: (() => void) | null;
@@ -84,11 +108,11 @@ interface SessionConnection {
   /** Bun's socket id; it prefixes every membership's `selfConnId`. */
   readonly id: string;
   /** Channel id → its room membership. Insertion ordered, which the drain rotation uses. */
-  readonly channels: Map<string, SessionChannel>;
+  readonly channels: Map<string, ChannelState>;
   /** Rotates the drain start so a chatty room cannot monopolize socket buffer space. */
   drainCursor: number;
   /**
-   * Stamps a fresh `selfConnId` on every join. A room membership is what the roster,
+   * Stamps a fresh `selfConnId` on every join. A room membership is what attendance,
    * cursor echo-suppression, and the broker's viewer registry are keyed by, so a channel
    * rejoining the SAME socket (a role swap) must never reuse the identity of the
    * membership it replaced.
@@ -128,17 +152,25 @@ function classifyClientFrame(data: unknown): ClassifiedFrame {
 export class SessionGateway {
   private readonly connections = new Map<string, SessionConnection>();
   private readonly removeRevocationListener: () => void;
+  private readonly removeRosterListener: () => void;
 
   constructor(
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
+    private readonly plugins: PluginHost,
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly runtime: RuntimeDeps,
   ) {
-    this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
-      this.revokePrincipal(principalId, padId);
+    this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
+      this.revokePrincipal(principalId, containerId);
+    });
+    this.removeRosterListener = plugins.onRosterChange((roster) => {
+      const frame = JSON.stringify(CONNECTION_BODIES.plugins.parse({ type: "plugins", roster }));
+      for (const connection of this.connections.values()) {
+        if (!connection.closed) connection.socket.send(frame);
+      }
     });
   }
 
@@ -155,6 +187,18 @@ export class SessionGateway {
     };
     this.armJoinDeadline(connection);
     this.connections.set(id, connection);
+    /*
+      The roster, before anything else and before any join. It is CONNECTION-level state:
+      it describes the workspace's vocabulary rather than any one room, so it is written
+      straight to the socket like `pong` and never passes through channel serialization —
+      a peer cannot tag it with a room, and a client with no room yet still learns what
+      exists. Delivered here on open and again on every change (D3).
+     */
+    socket.send(
+      JSON.stringify(
+        CONNECTION_BODIES.plugins.parse({ type: "plugins", roster: this.plugins.roster() }),
+      ),
+    );
   }
 
   /**
@@ -200,7 +244,7 @@ export class SessionGateway {
         const channel = connection.channels.get(message.ch);
         if (channel === undefined) {
           // A frame can legitimately be in flight when the server retires its channel
-          // (pad deleted, queue overflow). Dropping it keeps that race from killing the
+          // (container deleted, queue overflow). Dropping it keeps that race from killing the
           // rooms that are still healthy on this socket.
           this.logger.warn("session_unknown_channel", { frame: message.type });
           return;
@@ -229,7 +273,7 @@ export class SessionGateway {
   /**
    * Binds one channel id to one room. Credential and wire failures close the SOCKET
    * (they invalidate everything it carries); room-scoped failures refuse just this
-   * channel, so a widget pointing at a deleted pad never takes a tab down with it.
+   * channel, so a portal pointing at a deleted container never takes a tab down with it.
    */
   private joinChannel(connection: SessionConnection, message: JoinMessage): void {
     if (message.protocolVersion !== PROTOCOL_VERSION) {
@@ -252,36 +296,36 @@ export class SessionGateway {
       }
       return;
     }
-    if (!this.auth.allows(context, "pads:read", message.padId)) {
+    if (!this.auth.allows(context, "containers:read", message.containerId)) {
       connection.socket.close(4403, "forbidden");
       return;
     }
     if (connection.channels.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) {
-      this.logger.warn("session_channel_limit", { padId: message.padId });
+      this.logger.warn("session_channel_limit", { containerId: message.containerId });
       this.refuseChannel(connection, message.ch, CHANNEL_LIMIT_CLOSE_CODE, "channel limit reached");
       return;
     }
-    const room = this.rooms.get(message.padId);
+    const room = this.rooms.get(message.containerId);
     if (room === null) {
-      this.refuseChannel(connection, message.ch, 4404, "pad not found");
+      this.refuseChannel(connection, message.ch, 4404, "container not found");
       return;
     }
-    this.broker.pruneExitedUnhomedForPad(message.padId);
+    this.broker.pruneExitedUnhomedForContainer(message.containerId);
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
-    const peer = new SessionPeer(
+    const peer = new SessionChannel(
       `${connection.id}.${(connection.nextPeerSeq += 1)}`,
       connection.socket,
       context,
-      message.padId,
+      message.containerId,
       message.ch,
       message.spectator === true,
       (closing) => {
         this.retireChannel(connection, closing);
       },
     );
-    const channel: SessionChannel = {
+    const channel: ChannelState = {
       peer,
       room,
       lastResyncAt: null,
@@ -318,7 +362,7 @@ export class SessionGateway {
   }
 
   /** Called by a peer that closed itself (channel refusal, overflow, transport failure). */
-  private retireChannel(connection: SessionConnection, peer: SessionPeer): void {
+  private retireChannel(connection: SessionConnection, peer: SessionChannel): void {
     if (connection.channels.get(peer.channel)?.peer !== peer) return;
     this.releaseChannel(connection, peer.channel);
   }
@@ -329,7 +373,7 @@ export class SessionGateway {
    */
   private relayCursor(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     cursor: CursorUpdate,
   ): void {
     const now = this.runtime.now();
@@ -363,7 +407,7 @@ export class SessionGateway {
    */
   private relayGesture(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     gesture: GestureUpdate,
   ): void {
     const now = this.runtime.now();
@@ -401,7 +445,7 @@ export class SessionGateway {
   }
 
   /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */
-  private sendResyncIfDue(connection: SessionConnection, channel: SessionChannel): void {
+  private sendResyncIfDue(connection: SessionConnection, channel: ChannelState): void {
     const now = this.runtime.now();
     const elapsed =
       channel.lastResyncAt === null ? RESYNC_MIN_INTERVAL_MS : now - channel.lastResyncAt;
@@ -409,7 +453,7 @@ export class SessionGateway {
       channel.cancelResyncFlush?.();
       channel.cancelResyncFlush = null;
       channel.lastResyncAt = now;
-      this.broker.pruneExitedUnhomedForPad(channel.peer.padId);
+      this.broker.pruneExitedUnhomedForContainer(channel.peer.containerId);
       channel.room.sendResync(channel.peer);
       return;
     }
@@ -420,14 +464,51 @@ export class SessionGateway {
       if (connection.closed) return;
       if (connection.channels.get(channel.peer.channel) !== channel) return;
       channel.lastResyncAt = this.runtime.now();
-      this.broker.pruneExitedUnhomedForPad(channel.peer.padId);
+      this.broker.pruneExitedUnhomedForContainer(channel.peer.containerId);
       channel.room.sendResync(channel.peer);
     }, RESYNC_MIN_INTERVAL_MS - elapsed);
   }
 
+  /**
+   * Asks the action door a POLICY question on behalf of a socket, and answers the socket in
+   * its own vocabulary. Two things make this the whole bridge between the planes:
+   *
+   * - the denial travels back as the error frame the client already handles — same shape,
+   *   same `ref` correlation, and now the ladder's own message, so a refused terminal reads
+   *   the same whether it was refused over HTTP or over the wire;
+   * - it resolves to whether the caller may PROCEED, so a frame whose effect is still floor
+   *   work (a create) runs that work in the continuation, and a frame whose effect the
+   *   action itself performs (a kill) simply ignores the answer.
+   *
+   * A dispatch that THREW is a broken door rather than a denial: the host has already logged
+   * it, and the socket is told the request failed instead of being left waiting forever.
+   */
+  private async dispatchPolicy(
+    peer: SessionChannel,
+    action: string,
+    ref: string,
+    args: Record<string, unknown>,
+  ): Promise<boolean> {
+    let outcome: ActionOutcome;
+    try {
+      outcome = await this.plugins.dispatch(peer.auth, action, args);
+    } catch {
+      peer.send({ type: "error", code: "conflict", message: `${action} failed`, ref });
+      return false;
+    }
+    if (outcome.ok) return true;
+    peer.send({
+      type: "error",
+      code: DENIAL_ERROR_CODES[outcome.denial.rule],
+      message: outcome.denial.message,
+      ref,
+    });
+    return false;
+  }
+
   private dispatch(
     connection: SessionConnection,
-    channel: SessionChannel,
+    channel: ChannelState,
     message: ClientMessage,
   ): void {
     const peer = channel.peer;
@@ -449,22 +530,22 @@ export class SessionGateway {
         this.releaseChannel(connection, message.ch);
         return;
       case "doc_update":
-        if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
+        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
           peer.send({
             type: "error",
             code: "forbidden",
-            message: "scene:write capability required",
+            message: "scenes:write capability required",
           });
           return;
         }
         room.applyDocUpdate(peer, message.update);
         return;
       case "gesture":
-        if (!this.auth.allows(peer.auth, "scene:write", peer.padId)) {
+        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
           peer.send({
             type: "error",
             code: "forbidden",
-            message: "scene:write capability required",
+            message: "scenes:write capability required",
           });
           return;
         }
@@ -480,7 +561,29 @@ export class SessionGateway {
         this.sendResyncIfDue(connection, channel);
         return;
       case "terminal_open":
-        this.broker.open(peer, message);
+        /*
+          POLICY THROUGH THE LADDER. Whether a terminal may be born here, now, by this
+          principal is `core.terminals`' question, and it is asked exactly the way every
+          other caller asks it — one dispatch, one denial vocabulary, one log line. The
+          transport keeps moving bytes and stops knowing why: the PTY itself is born
+          afterwards, on this channel, because a create is a round trip whose reply is
+          socket traffic (ADR 0013 — terminal policy is a plugin, terminal bytes are floor).
+
+          Creation dies with the plugin and cleanup does not, and now that is a property of
+          the ROSTER rather than of this file: `open` is an ordinary action, so a disabled
+          plugin refuses it at rung 2, while `kill` is declared `cleanup` and outlives the
+          disable — nobody is locked out of removing what already exists (D12).
+         */
+        void this.dispatchPolicy(peer, "core.terminals.open", message.elementId, {
+          containerId: peer.containerId,
+          elementId: message.elementId,
+          cols: message.cols,
+          rows: message.rows,
+          ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
+          ...(message.placement === undefined ? {} : { placement: message.placement }),
+        }).then((allowed) => {
+          if (allowed) this.broker.open(peer, message);
+        });
         return;
       case "terminal_attach":
         this.broker.attach(peer, message);
@@ -495,10 +598,24 @@ export class SessionGateway {
         this.broker.resize(peer, message);
         return;
       case "terminal_take":
-        this.broker.take(peer, message);
+        // The LEASE is policy and the TRANSFER is transport, so this frame has `open`'s shape
+        // rather than `kill`'s: `core.terminals.take` answers whether this principal may hold
+        // the terminal, and the broker moves the lease and announces it afterwards, because a
+        // lease belongs to a connection and the `controller_changed` broadcast goes to the room
+        // that connection is joined to. The broker no longer decides anything about authority.
+        void this.dispatchPolicy(peer, "core.terminals.take", message.terminalId, {
+          terminalId: message.terminalId,
+        }).then((allowed) => {
+          if (allowed) this.broker.take(peer, message);
+        });
         return;
       case "terminal_kill":
-        this.broker.kill(peer, message);
+        // The kill is the ACTION's, whole: authority, the lease rule and the destruction all
+        // live behind one door, so this frame and the workspace index cannot answer
+        // differently about the same terminal (invariant 14).
+        void this.dispatchPolicy(peer, "core.terminals.kill", message.terminalId, {
+          terminalId: message.terminalId,
+        });
         return;
       default: {
         const exhaustive: never = message;
@@ -543,13 +660,13 @@ export class SessionGateway {
    * one credential's channels (the SDK pools by token), and a dead credential
    * invalidates all of them, so this is a socket-level close by nature.
    */
-  revokePrincipal(principalId: string, padId: string | null = null): void {
+  revokePrincipal(principalId: string, containerId: string | null = null): void {
     for (const [id, connection] of [...this.connections]) {
       let fenced = false;
       for (const channel of connection.channels.values()) {
         const peer = channel.peer;
         if (peer.auth.principal.id !== principalId) continue;
-        if (padId !== null && peer.auth.padScope !== padId) continue;
+        if (containerId !== null && peer.auth.containerScope !== containerId) continue;
         fenced = true;
         break;
       }
@@ -562,6 +679,7 @@ export class SessionGateway {
   /** Closes all session sockets and unregisters auth fanout during graceful shutdown. */
   shutdown(): void {
     this.removeRevocationListener();
+    this.removeRosterListener();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();
       connection.socket.close(1001, "server shutting down");

@@ -18,6 +18,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
 
@@ -60,12 +61,14 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "terminal-selection-gate" }),
   });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const outcome = ActionOutcomeSchema.parse(await created.json());
+  if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+  const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
   browser = new Browser();
   await browser.launch(9340);
@@ -73,18 +76,18 @@ try {
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "sel-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
-  await browser.goto(`${origin}/p/${padId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () => browser!.evaluate<boolean>("window.__manifold !== undefined"),
     20_000,
-    "debug seam installed",
+    "debug probe installed",
   );
 
   // Create a terminal directly from an online machine row in the sidebar.
   await browser.evaluate(
-    "document.querySelector('[data-testid=machines-section] > summary').click()",
+    "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
   );
   await until(
     () =>
@@ -102,7 +105,7 @@ try {
   );
   // Activate the embed (click-to-focus model), then focus xterm itself.
   await browser.evaluate(`(() => {
-    const r = document.querySelector('.manifold-terminal').getBoundingClientRect();
+    const r = document.querySelector('.terminal-frame').getBoundingClientRect();
     const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const o = { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 };
     el.dispatchEvent(new PointerEvent('pointerdown', o));
@@ -174,7 +177,7 @@ try {
   // plain two-finger scroll pans (Excalidraw convention).
   const zoomPoint = await browser.evaluate<{ readonly x: number; readonly y: number }>(
     `(() => {
-      const rect = document.querySelector('.flow-pad-canvas').getBoundingClientRect();
+      const rect = document.querySelector('.canvas').getBoundingClientRect();
       return { x: rect.right - 80, y: rect.bottom - 80 };
     })()`,
   );

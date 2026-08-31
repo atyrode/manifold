@@ -46,7 +46,7 @@ function main(): void {
         sink({
           ts: Date.now(),
           level: "error",
-          evt: "shutdown_error",
+          evt: "shutdown_failed",
           message: error instanceof Error ? error.message : String(error),
         });
         process.exit(1);

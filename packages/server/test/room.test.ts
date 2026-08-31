@@ -3,10 +3,12 @@ import {
   MAX_DOC_UPDATE_BYTES,
   ROOT_TILE_ID,
   censusSolo,
-  type Pad,
+  type Container,
+  type ContainerDiscipline,
   type Principal,
   type SceneElement,
 } from "@manifold/protocol";
+import type { ElementPayloadRefusal } from "@manifold/plugin";
 import {
   LOCAL_ORIGIN,
   Y,
@@ -22,7 +24,7 @@ import type { AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { silentLogger } from "../src/log.ts";
 import { Room, RoomManager } from "../src/room.ts";
-import { SessionPeer } from "../src/session-peer.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import { ServerStore, type DocRecord } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
 
@@ -31,17 +33,17 @@ interface CountRow {
 }
 
 class FailingDocStore extends ServerStore {
-  readonly failingPads = new Set<string>();
+  readonly failingContainers = new Set<string>();
 
   override saveDoc(
-    padId: string,
+    containerId: string,
     epoch: string,
     rev: number,
     ts: number,
     doc: Uint8Array,
   ): DocRecord {
-    if (this.failingPads.has(padId)) throw new Error("injected document failure");
-    return super.saveDoc(padId, epoch, rev, ts, doc);
+    if (this.failingContainers.has(containerId)) throw new Error("injected document failure");
+    return super.saveDoc(containerId, epoch, rev, ts, doc);
   }
 }
 
@@ -87,16 +89,25 @@ function encodedElements(...elements: SceneElement[]): string {
   return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
-function roomFixture(store: ServerStore = testStore(), layout: "canvas" | "tiled" = "canvas") {
+function roomFixture(
+  store: ServerStore = testStore(),
+  discipline: ContainerDiscipline = "canvas",
+  /**
+   * The element-payload boundary (ADR 0013 §16). Accept-all by default, because these fixtures
+   * compose no plugins and nothing declares a payload schema — the same state a production room
+   * is in before the assembly is wired. A case that is ABOUT the boundary supplies a real one.
+   */
+  payloadRefusal: (element: SceneElement) => ElementPayloadRefusal | null = () => null,
+) {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
-  const pad: Pad = {
+  const container: Container = {
     id: runtime.newId(),
-    name: "test pad",
+    name: "test container",
     createdAt: runtime.now(),
-    layout,
+    discipline,
   };
-  store.createPad(pad);
+  store.createContainer(container);
   const principal: Principal = {
     id: runtime.newId(),
     kind: "human",
@@ -107,40 +118,44 @@ function roomFixture(store: ServerStore = testStore(), layout: "canvas" | "tiled
   const context: AuthContext = {
     principal,
     caps: ["*"],
-    padScope: null,
+    containerScope: null,
     isRoot: true,
     tokenId: null,
   };
   const socket = new FakeSocket();
-  const peer = new SessionPeer(runtime.newId(), socket, context, pad.id, "c1");
+  const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
+  // The eighth argument is the element-payload boundary (ADR 0013 §16). These fixtures compose
+  // no plugins, so nothing declares a payload schema and the honest stand-in accepts every
+  // record — which is also what an unwired production room does until the assembly arrives.
   const room = new Room(
-    pad.id,
+    container.id,
     store,
     runtime,
     clock,
     silentLogger,
     () => [],
     () => {},
+    payloadRefusal,
   );
   room.join(peer);
   socket.clear();
-  return { runtime, clock, store, pad, socket, peer, room };
+  return { runtime, clock, store, container, socket, peer, room };
 }
 
 describe("Room Yjs document consistency", () => {
   test("init carries a complete encoded document", () => {
     const store = testStore();
     const runtime = new FakeRuntime();
-    const pad: Pad = {
+    const container: Container = {
       id: runtime.newId(),
       name: "persisted",
       createdAt: 0,
-      layout: "canvas",
+      discipline: "canvas",
     };
-    store.createPad(pad);
+    store.createContainer(container);
     const saved = createSceneDoc();
     writeElement(saved, portal("persisted"), LOCAL_ORIGIN);
-    store.saveDoc(pad.id, "epoch-saved", 4, 1, Y.encodeStateAsUpdate(saved));
+    store.saveDoc(container.id, "epoch-saved", 4, 1, Y.encodeStateAsUpdate(saved));
 
     const principal: Principal = {
       id: runtime.newId(),
@@ -149,22 +164,23 @@ describe("Room Yjs document consistency", () => {
       color: "#2563eb",
     };
     store.createPrincipal(principal, 0);
-    const peer = new SessionPeer(
+    const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
-      pad.id,
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      container.id,
       "c1",
     );
     const socket = peer.socket as FakeSocket;
     const room = new Room(
-      pad.id,
+      container.id,
       store,
       runtime,
       new FakeClock(runtime),
       silentLogger,
       () => [],
       () => {},
+      () => null,
     );
     room.join(peer);
 
@@ -218,13 +234,91 @@ describe("Room Yjs document consistency", () => {
       ]);
       expect(fixture.socket.messages()[1]).toMatchObject({ by: "server" });
       expect(warned).toHaveBeenCalledWith("scene_element_repaired", {
-        padId: fixture.pad.id,
+        containerId: fixture.container.id,
         id: "invalid",
       });
     } finally {
       warned.mockRestore();
       fixture.store.close();
     }
+  });
+
+  test("a malformed payload for a KNOWN element type is repaired at the scene boundary", () => {
+    /*
+      THE other half of the envelope (ADR 0013 §16 clause 5). The record below passes the
+      protocol's schema completely — the geometry is valid and the payload is inside every bound
+      — so nothing in the wire vocabulary can object to it. What refuses it is its OWNING
+      PLUGIN's payload schema, consulted here through the guard the assembly supplies, and the
+      repair is the same accept-then-repair pass a schema-invalid record already took: a Yjs
+      update is not divisible, so the update has merged by the time anything can read it.
+
+      The log line carries the owner, which is the point of refusing at a door rather than in a
+      schema: a reader learns which plugin to go and ask.
+    */
+    const fixture = roomFixture(testStore(), "canvas", (element) =>
+      element.type === "acme.chart"
+        ? {
+            elementId: element.id,
+            type: element.type,
+            plugin: "acme.charts",
+            problems: ["series Expected array"],
+          }
+        : null,
+    );
+    const warned = spyOn(silentLogger, "warn");
+    try {
+      fixture.room.applyDocUpdate(
+        fixture.peer,
+        encodedElements({
+          id: "chart-1",
+          type: "acme.chart",
+          series: "not-an-array",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          zIndex: 0,
+        }),
+      );
+
+      expect(elementsMap(fixture.room.doc).has("chart-1")).toBeFalse();
+      expect(warned).toHaveBeenCalledWith("scene_element_repaired", {
+        containerId: fixture.container.id,
+        id: "chart-1",
+        type: "acme.chart",
+        plugin: "acme.charts",
+        problems: "series Expected array",
+      });
+    } finally {
+      warned.mockRestore();
+      fixture.store.close();
+    }
+  });
+
+  test("a STRANGER element type survives the boundary, payload and all", () => {
+    // The property the opening exists for: with no schema to fail, a record whose plugin is
+    // absent from this build keeps its place in the document instead of being deleted by a
+    // reader that never heard of it.
+    const fixture = roomFixture();
+    fixture.room.applyDocUpdate(
+      fixture.peer,
+      encodedElements({
+        id: "gantt-1",
+        type: "vendor.gantt",
+        lanes: ["design", "build"],
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        zIndex: 0,
+      }),
+    );
+
+    expect(readElement(fixture.room.doc, "gantt-1")).toMatchObject({
+      type: "vendor.gantt",
+      lanes: ["design", "build"],
+    });
+    fixture.store.close();
   });
 
   test("oversized and malformed updates are rejected without broadcast", () => {
@@ -269,7 +363,7 @@ describe("Room document persistence", () => {
     ).toBe(0);
 
     fixture.clock.advance(1_500);
-    const record = fixture.store.latestDoc(fixture.pad.id);
+    const record = fixture.store.latestDoc(fixture.container.id);
     expect(record?.rev).toBe(1);
     const restored = createSceneDoc();
     Y.applyUpdate(restored, record?.doc ?? new Uint8Array());
@@ -281,14 +375,14 @@ describe("Room document persistence", () => {
   test("a failed debounced save stays isolated and retries", () => {
     const store = new FailingDocStore(openDatabase(":memory:"));
     const fixture = roomFixture(store);
-    store.failingPads.add(fixture.pad.id);
+    store.failingContainers.add(fixture.container.id);
     fixture.room.applyDocUpdate(fixture.peer, encodedElements(portal("retry")));
 
     expect(() => fixture.clock.advance(1_500)).not.toThrow();
-    expect(store.latestDoc(fixture.pad.id)).toBeNull();
-    store.failingPads.delete(fixture.pad.id);
+    expect(store.latestDoc(fixture.container.id)).toBeNull();
+    store.failingContainers.delete(fixture.container.id);
     fixture.clock.advance(1_500);
-    expect(store.latestDoc(fixture.pad.id)?.rev).toBe(1);
+    expect(store.latestDoc(fixture.container.id)?.rev).toBe(1);
     store.close();
   });
 
@@ -296,13 +390,13 @@ describe("Room document persistence", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);
     const store = testStore();
-    const pad: Pad = {
+    const container: Container = {
       id: runtime.newId(),
       name: "evict",
       createdAt: 0,
-      layout: "canvas",
+      discipline: "canvas",
     };
-    store.createPad(pad);
+    store.createContainer(container);
     const principal: Principal = {
       id: runtime.newId(),
       kind: "human",
@@ -311,13 +405,13 @@ describe("Room document persistence", () => {
     };
     store.createPrincipal(principal, 0);
     const manager = new RoomManager(store, runtime, clock, silentLogger);
-    const room = manager.get(pad.id);
+    const room = manager.get(container.id);
     if (room === null) throw new Error("missing room");
-    const peer = new SessionPeer(
+    const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
-      pad.id,
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      container.id,
       "c1",
     );
     room.join(peer);
@@ -325,21 +419,21 @@ describe("Room document persistence", () => {
 
     room.leave(peer);
     expect(manager.introspect()).toHaveLength(0);
-    expect(store.latestDoc(pad.id)?.rev).toBe(1);
+    expect(store.latestDoc(container.id)?.rev).toBe(1);
     store.close();
   });
 
-  test("dropping a pad fences each member's channel without publishing departures", () => {
+  test("dropping a container fences each member's channel without publishing departures", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);
     const store = testStore();
-    const pad: Pad = {
+    const container: Container = {
       id: runtime.newId(),
       name: "dropped",
       createdAt: 0,
-      layout: "canvas",
+      discipline: "canvas",
     };
-    store.createPad(pad);
+    store.createContainer(container);
     const principal: Principal = {
       id: runtime.newId(),
       kind: "human",
@@ -348,24 +442,24 @@ describe("Room document persistence", () => {
     };
     store.createPrincipal(principal, 0);
     const manager = new RoomManager(store, runtime, clock, silentLogger);
-    const room = manager.get(pad.id);
+    const room = manager.get(container.id);
     if (room === null) throw new Error("missing room");
     const socket = new FakeSocket();
-    const peer = new SessionPeer(
+    const peer = new SessionChannel(
       runtime.newId(),
       socket,
-      { principal, caps: ["*"], padScope: null, isRoot: true, tokenId: null },
-      pad.id,
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      container.id,
       "c1",
     );
     room.join(peer);
     socket.clear();
 
-    manager.drop(pad.id);
+    manager.drop(container.id);
 
     // The room is gone for this member, but the tab's socket keeps whatever else it holds.
     expect(socket.frames()).toEqual([
-      { type: "channel_closed", ch: "c1", code: 4404, reason: "pad deleted" },
+      { type: "channel_closed", ch: "c1", code: 4404, reason: "container deleted" },
     ]);
     expect(socket.closed).toBeNull();
     // A demolished room never announces a departure to the members it just fenced.
@@ -382,15 +476,25 @@ function containerPair() {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
-  const home: Pad = { id: runtime.newId(), name: "solo", createdAt: 0, layout: "tiled" };
-  const board: Pad = { id: runtime.newId(), name: "board", createdAt: 0, layout: "canvas" };
-  store.createPad(home);
-  store.createPad(board);
+  const home: Container = {
+    id: runtime.newId(),
+    name: "solo",
+    createdAt: 0,
+    discipline: "composition",
+  };
+  const container: Container = {
+    id: runtime.newId(),
+    name: "container",
+    createdAt: 0,
+    discipline: "canvas",
+  };
+  store.createContainer(home);
+  store.createContainer(container);
   const manager = new RoomManager(store, runtime, clock, silentLogger);
   const homeRoom = manager.get(home.id);
-  const boardRoom = manager.get(board.id);
-  if (homeRoom === null || boardRoom === null) throw new Error("missing room");
-  return { runtime, clock, store, home, board, manager, homeRoom, boardRoom };
+  const containerRoom = manager.get(container.id);
+  if (homeRoom === null || containerRoom === null) throw new Error("missing room");
+  return { runtime, clock, store, home, container, manager, homeRoom, containerRoom };
 }
 
 describe("Room element rules", () => {
@@ -426,20 +530,20 @@ describe("Room element rules", () => {
   test("repointPortal keeps the element id and geometry while changing its target", () => {
     const fixture = roomFixture();
     const geometry = { x: 40, y: 60, width: 300, height: 210, zIndex: 7 } as const;
-    const widget = portal("widget", { containerId: "old-home", ...geometry });
-    fixture.room.applyDocUpdate(fixture.peer, encodedElements(widget, note("caption")));
+    const mirror = portal("mirror", { containerId: "old-home", ...geometry });
+    fixture.room.applyDocUpdate(fixture.peer, encodedElements(mirror, note("caption")));
     const revAfterAuthoring = fixture.room.rev;
 
-    expect(fixture.room.repointPortal("widget", "new-home")).toBeTrue();
+    expect(fixture.room.repointPortal("mirror", "new-home")).toBeTrue();
     // A merge repoints instead of re-authoring precisely so nothing observable moves: same
-    // id, same geometry, same z-order, so no widget blinks and no selection is lost.
-    expect(fixture.room.element("widget")).toEqual(
-      portal("widget", { containerId: "new-home", ...geometry }),
+    // id, same geometry, same z-order, so no portal blinks and no selection is lost.
+    expect(fixture.room.element("mirror")).toEqual(
+      portal("mirror", { containerId: "new-home", ...geometry }),
     );
     expect(fixture.room.rev).toBe(revAfterAuthoring + 1);
 
     // Already pointing there: reported done, without spending a revision on nothing.
-    expect(fixture.room.repointPortal("widget", "new-home")).toBeTrue();
+    expect(fixture.room.repointPortal("mirror", "new-home")).toBeTrue();
     expect(fixture.room.rev).toBe(revAfterAuthoring + 1);
 
     // Only a REFERENCE can be repointed. Furniture has no target to change.
@@ -473,44 +577,44 @@ describe("Room element rules", () => {
 
   test("only the composition holding a terminal's leaf homes it, never a canvas onto it", () => {
     const fixture = containerPair();
-    expect(fixture.homeRoom.placeTerminalTile("session-1", null, null)).toBe(ROOT_TILE_ID);
-    const reference = fixture.boardRoom.placePortalElement(fixture.home.id, 10, 20);
+    expect(fixture.homeRoom.placeTerminalTile("terminal-1", null, null)).toBe(ROOT_TILE_ID);
+    const reference = fixture.containerRoom.placePortalElement(fixture.home.id, 10, 20);
 
     /*
       This distinction IS the model. The canvas shows the terminal and can be navigated into
       it, but it does not hold it: the composition does, through the leaf. Confusing the two
       is how a terminal ends up with two homes, or none.
      */
-    expect(fixture.homeRoom.homesSession("session-1")).toBeTrue();
-    expect(fixture.boardRoom.homesSession("session-1")).toBeFalse();
-    expect(fixture.boardRoom.portalIdsTo(fixture.home.id)).toEqual([reference]);
-    expect(fixture.homeRoom.homesSession("session-other")).toBeFalse();
+    expect(fixture.homeRoom.homesTerminal("terminal-1")).toBeTrue();
+    expect(fixture.containerRoom.homesTerminal("terminal-1")).toBeFalse();
+    expect(fixture.containerRoom.portalIdsTo(fixture.home.id)).toEqual([reference]);
+    expect(fixture.homeRoom.homesTerminal("terminal-other")).toBeFalse();
 
-    // The leaf is the whole claim: removing it un-homes the session even though the
+    // The leaf is the whole claim: removing it un-homes the terminal even though the
     // composition and the canvas reference both still exist.
     expect(fixture.homeRoom.removeTileLeafById(ROOT_TILE_ID)).toBeTrue();
-    expect(fixture.homeRoom.homesSession("session-1")).toBeFalse();
+    expect(fixture.homeRoom.homesTerminal("terminal-1")).toBeFalse();
     fixture.store.close();
   });
 
   test("census reports items and references in both disciplines, solo only at arity one", () => {
     const fixture = containerPair();
-    const homeLeaf = fixture.homeRoom.placeTerminalTile("session-1", null, null);
+    const homeLeaf = fixture.homeRoom.placeTerminalTile("terminal-1", null, null);
     expect(homeLeaf).toBe(ROOT_TILE_ID);
 
     // A solo composition: exactly one item, so `censusSolo` answers with it — that answer is
     // what lets the index draw a composition of one AS the terminal it holds.
     const solo = fixture.homeRoom.census();
     expect(solo).toEqual({
-      padId: fixture.home.id,
-      layout: "tiled",
-      items: [{ kind: "terminal", containerId: null, sessionId: "session-1" }],
+      containerId: fixture.home.id,
+      discipline: "composition",
+      items: [{ kind: "terminal", containerId: null, terminalId: "terminal-1" }],
       references: [],
     });
     expect(censusSolo(solo)).toEqual({
       kind: "terminal",
       containerId: null,
-      sessionId: "session-1",
+      terminalId: "terminal-1",
     });
 
     // Two mirrors of one home plus furniture: a canvas is counted by its elements, and each
@@ -520,16 +624,16 @@ describe("Room element rules", () => {
       portal("mirror-b", { containerId: fixture.home.id, zIndex: 2 }),
       note("caption", { zIndex: 3 }),
     ]) {
-      writeElement(fixture.boardRoom.doc, element, LOCAL_ORIGIN);
+      writeElement(fixture.containerRoom.doc, element, LOCAL_ORIGIN);
     }
-    const canvas = fixture.boardRoom.census();
+    const canvas = fixture.containerRoom.census();
     expect(canvas).toEqual({
-      padId: fixture.board.id,
-      layout: "canvas",
+      containerId: fixture.container.id,
+      discipline: "canvas",
       items: [
-        { kind: "view", containerId: fixture.home.id, sessionId: null },
-        { kind: "view", containerId: fixture.home.id, sessionId: null },
-        { kind: "text", containerId: null, sessionId: null },
+        { kind: "composition", containerId: fixture.home.id, terminalId: null },
+        { kind: "composition", containerId: fixture.home.id, terminalId: null },
+        { kind: "text", containerId: null, terminalId: null },
       ],
       references: [fixture.home.id, fixture.home.id],
     });
@@ -538,27 +642,36 @@ describe("Room element rules", () => {
     // A composition that grew past one stops being solo, and an embedded canvas is a
     // reference exactly like a portal is.
     expect(
-      fixture.homeRoom.placeTile({ kind: "pad", padId: fixture.board.id }, null, null),
+      fixture.homeRoom.placeTile(
+        { kind: "container", containerId: fixture.container.id },
+        null,
+        null,
+      ),
     ).not.toBeNull();
     const grown = fixture.homeRoom.census();
     expect(grown.items).toHaveLength(2);
     expect(grown.items).toContainEqual({
-      kind: "canvas-pad",
-      containerId: fixture.board.id,
-      sessionId: null,
+      kind: "canvas",
+      containerId: fixture.container.id,
+      terminalId: null,
     });
-    expect(grown.references).toEqual([fixture.board.id]);
+    expect(grown.references).toEqual([fixture.container.id]);
     expect(censusSolo(grown)).toBeNull();
 
     // Losing its references does not change what a container HOLDS: those are the two halves
     // of a census, and the index needs them apart.
-    expect(fixture.boardRoom.removePortalsTo(fixture.home.id)).toBe(2);
-    const stripped = fixture.boardRoom.census();
+    expect(fixture.containerRoom.removePortalsTo(fixture.home.id)).toBe(2);
+    const stripped = fixture.containerRoom.census();
     expect(stripped.references).toEqual([]);
-    expect(stripped.items).toEqual([{ kind: "text", containerId: null, sessionId: null }]);
+    expect(stripped.items).toEqual([{ kind: "text", containerId: null, terminalId: null }]);
     // Arity one, and only one: an emptied container is not solo either.
     expect(
-      censusSolo({ padId: fixture.home.id, layout: "tiled", items: [], references: [] }),
+      censusSolo({
+        containerId: fixture.home.id,
+        discipline: "composition",
+        items: [],
+        references: [],
+      }),
     ).toBeNull();
     fixture.store.close();
   });

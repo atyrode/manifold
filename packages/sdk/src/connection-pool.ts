@@ -1,7 +1,9 @@
 import {
+  MAX_SESSION_BASE64_CHARS,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   reconnectDelayMs,
+  type CONNECTION_LEVEL_MESSAGE_TYPES,
   type ClientMessageBody,
   type ServerMessage,
   type ServerMessageBody,
@@ -11,7 +13,7 @@ import {
  * ONE socket per tab, ever. A room used to be a socket; now a room is a CHANNEL on a
  * shared connection, and this module owns that connection: dialing, keepalive, reconnect
  * with rejoin-every-channel, frame classification, and demultiplexing. `SessionClient`
- * keeps its per-room surface and becomes a channel handle on top of this.
+ * keeps its per-room ref and becomes a channel handle on top of this.
  *
  * The pool is keyed by (WebSocket factory, url, token). The factory is part of the
  * transport identity on purpose: a test that hands each client its own socket double
@@ -26,18 +28,45 @@ export type JoinBody = Extract<ClientMessageBody, { type: "join" }>;
 /** Transport states a channel hears about; its own `open` comes from its own init. */
 export type TransportPhase = "connecting" | "reconnecting";
 
-/** What a room handle can be handed: every frame except the two routing-level ones. */
-export type ChannelFrame = Exclude<ServerMessageBody, { type: "pong" | "channel_closed" }>;
+/**
+ * What a room handle can be handed as ROOM traffic: every CHANNEL frame. Connection-level
+ * frames are excluded by the protocol's own classification rather than by a hand-kept
+ * list, so a new connection-level category (v14's `plugins` roster was the first with a
+ * body) can never reach a channel that has no idea what to do with it.
+ * `channel_closed` is excluded too: it is this layer's business, not a room's.
+ */
+export type ChannelFrame = Exclude<
+  ServerMessageBody,
+  { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] | "channel_closed" }
+>;
+
+/**
+ * A frame that addresses the SOCKET rather than a room, minus the one the pool answers
+ * itself: `pong` is liveness and stops here. Every handle on the connection hears the
+ * same connection frame — that is what "connection-level" means — and the pool replays
+ * the latest of each category to a handle that attaches after it arrived, so a client
+ * subscribing late is never left waiting for the next change.
+ */
+export type ConnectionFrame = Exclude<
+  Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
+  { type: "pong" }
+>;
 
 /** What one room handle needs from the socket it shares. */
 export interface ChannelSink {
   /** Built fresh per join so resume hints (epoch/rev) are always current. */
   joinBody(): JoinBody;
   /**
-   * One frame routed to this channel. The two routing-level frames never arrive here:
-   * `pong` answers the socket and `channel_closed` is this layer's own business.
+   * One ROOM frame routed to this channel. Nothing routing-level arrives here: `pong`
+   * answers the socket, `channel_closed` is this layer's own business, and a
+   * connection-level frame goes to `connectionFrame` instead.
    */
   receive(body: ChannelFrame): void;
+  /**
+   * One connection-level frame (the plugin roster today). Shared by every channel on the
+   * socket, so a handle treats it as workspace news rather than room state.
+   */
+  connectionFrame(body: ConnectionFrame): void;
   transportPhase(phase: TransportPhase): void;
   /**
    * This channel is over. `terminal` means retrying cannot help (a 44xx refusal) — the
@@ -95,20 +124,20 @@ type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "ter
 function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
   const type = Reflect.get(raw, "type");
   const ch = Reflect.get(raw, "ch");
-  const sessionId = Reflect.get(raw, "sessionId");
+  const terminalId = Reflect.get(raw, "terminalId");
   const seq = Reflect.get(raw, "seq");
   const data = Reflect.get(raw, "data");
   return (
     (type === "terminal_output" || type === "terminal_snapshot") &&
     typeof ch === "string" &&
     ch.length > 0 &&
-    typeof sessionId === "string" &&
-    sessionId.length > 0 &&
+    typeof terminalId === "string" &&
+    terminalId.length > 0 &&
     typeof seq === "number" &&
     Number.isInteger(seq) &&
     seq >= 0 &&
     typeof data === "string" &&
-    data.length <= 700_000
+    data.length <= MAX_SESSION_BASE64_CHARS
   );
 }
 
@@ -147,10 +176,20 @@ interface ChannelRecord {
   cancelRejoin: (() => void) | null;
 }
 
+/**
+ * The latest frame of each connection-level category on this socket: state, not a log. A
+ * roster describes the workspace NOW, so one slot per category is the whole memory, and a
+ * new category added to the protocol fails to compile until it is listed here.
+ */
+type ConnectionState = {
+  [K in ConnectionFrame["type"]]: Extract<ConnectionFrame, { type: K }> | null;
+};
+
 /** One WebSocket carrying every room a tab renders. */
 class PooledConnection {
   private socket: WebSocket | null = null;
   private readonly channels = new Map<string, ChannelRecord>();
+  private readonly connectionState: ConnectionState = { plugins: null };
   private nextChannelSeq = 0;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +218,10 @@ class PooledConnection {
       cancelRejoin: null,
     };
     this.channels.set(id, record);
+    // Caught up before its first join: the roster is workspace state a late channel needs.
+    for (const body of Object.values(this.connectionState)) {
+      if (body !== null) sink.connectionFrame(body);
+    }
     if (this.socket !== null && this.socket.readyState === 1) {
       sink.transportPhase("connecting");
       this.sendJoin(record);
@@ -289,7 +332,7 @@ class PooledConnection {
       this.stopKeepalive();
       for (const record of this.channels.values()) record.sent = false;
 
-      // 44xx codes are permanent session rejections. Retrying them cannot succeed without
+      // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
       const terminalClose =
         event.code !== MALFORMED_FRAME_CLOSE_CODE &&
@@ -301,8 +344,8 @@ class PooledConnection {
           null,
           new Error(
             reason === ""
-              ? `session rejected with close code ${event.code}`
-              : `session rejected with close code ${event.code}: ${reason}`,
+              ? `terminal rejected with close code ${event.code}`
+              : `terminal rejected with close code ${event.code}: ${reason}`,
           ),
         );
         return;
@@ -328,7 +371,17 @@ class PooledConnection {
 
   /** Demultiplexes one validated frame to the channel that owns it. */
   private route(frame: ServerMessage): void {
-    if (frame.type === "pong") return; // socket liveness, owned here
+    /*
+      Connection-level frames address the SOCKET, never a room, so they have no channel to
+      be routed to. Liveness is answered here and goes no further; every other category is
+      workspace news that EVERY handle on this socket hears. A future category that is not
+      handled below stops compiling at `frame.ch`, which no connection frame carries.
+     */
+    if (frame.type === "pong") return;
+    if (frame.type === "plugins") {
+      this.acceptConnectionFrame(frame);
+      return;
+    }
     const record = this.channels.get(frame.ch);
     if (record === undefined) return; // a frame for a room this tab already released
     if (frame.type === "init" || frame.type === "resync") {
@@ -346,7 +399,23 @@ class PooledConnection {
   }
 
   /**
-   * The server dropped ONE room. A 44xx refusal is terminal for that room (the pad is
+   * Remembers one connection-level frame and hands it to every channel on the socket.
+   * Remembering is what makes a late attach cheap (see `attach`), and fanning out to the
+   * channel sinks keeps ONE delivery mechanism: a handle hears connection news exactly the
+   * way it hears room frames, with no second listener registry to keep in step.
+   *
+   * The write is keyed by the frame's own category, so a second category (wave 2's events)
+   * stops compiling here as well as in `ConnectionState` and in `route` — three loud
+   * errors rather than a silently dropped frame.
+   */
+  private acceptConnectionFrame(frame: ConnectionFrame): void {
+    this.connectionState[frame.type] = frame;
+    // Snapshot: a sink may release its channel while hearing this.
+    for (const record of [...this.channels.values()]) record.sink.connectionFrame(frame);
+  }
+
+  /**
+   * The server dropped ONE room. A 44xx refusal is terminal for that room (the container is
    * gone, the cap is full) and the handle reports it; anything else — an overflowing
    * queue, state past the transport ceiling — heals exactly as a socket close did, by
    * rejoining on backoff while every other room keeps streaming.

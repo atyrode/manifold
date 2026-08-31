@@ -1,4 +1,5 @@
-import { PrincipalSchema } from "@manifold/protocol";
+import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
+import { Cover } from "@manifold/plugin/ui";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPrincipal, type StoredIdentity } from "./api.ts";
 
@@ -7,17 +8,12 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 
-/** The one color scheme: principals pick from it, machine dots hash into it. */
-export const IDENTITY_COLORS = [
-  "#e03131",
-  "#f08c00",
-  "#2f9e44",
-  "#1971c2",
-  "#6741d9",
-  "#c2255c",
-  "#0c8599",
-  "#495057",
-] as const;
+/**
+ * The one color scheme: principals pick from it, machine dots hash into it. It lives in the
+ * protocol now, because the server derives `MachineSummary.color` from the same palette and
+ * two ends agreeing on a list of colors makes it vocabulary rather than styling.
+ */
+export { IDENTITY_COLORS };
 
 /** Captures the one permitted URL-secret carrier before React renders, then cleans the URL. */
 export function captureOwnerKeyFromFragment(): void {
@@ -75,14 +71,16 @@ export function IdentityGate({ children }: IdentityGateProps) {
   if (ownerKey === null) {
     return (
       <main className="gate-screen">
-        <section className="gate-card" aria-labelledby="owner-link-title">
-          <p className="eyebrow">manifold</p>
-          <h1 id="owner-link-title">Open the URL printed by the server</h1>
-          <p>
-            This browser has no owner key or identity token. Start manifold and open its full
-            pre-authenticated URL to continue.
-          </p>
-        </section>
+        <Cover className="gate-cover">
+          <section className="gate-card" aria-labelledby="owner-link-title">
+            <p className="eyebrow">manifold</p>
+            <h1 id="owner-link-title">Open the URL printed by the server</h1>
+            <p>
+              This browser has no owner key or identity token. Start manifold and open its full
+              pre-authenticated URL to continue.
+            </p>
+          </section>
+        </Cover>
       </main>
     );
   }
@@ -106,55 +104,58 @@ export function IdentityGate({ children }: IdentityGateProps) {
 
   return (
     <main className="gate-screen">
-      <dialog className="identity-dialog" open aria-labelledby="identity-title">
-        <form onSubmit={(event) => void submit(event)}>
-          <p className="eyebrow">first visit</p>
-          <h1 id="identity-title">Choose your identity</h1>
-          <label className="field-label" htmlFor="identity-name">
-            Name
-          </label>
-          <input
-            id="identity-name"
-            autoFocus
-            maxLength={64}
-            value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
-            placeholder="How should collaborators see you?"
-          />
-          <fieldset className="color-fieldset">
-            <legend>Color</legend>
-            <div className="color-grid">
-              {IDENTITY_COLORS.map((swatch) => (
-                <button
-                  key={swatch}
-                  className={swatch === color ? "color-swatch selected" : "color-swatch"}
-                  type="button"
-                  aria-label={`Use color ${swatch}`}
-                  aria-pressed={swatch === color}
-                  style={{ backgroundColor: swatch }}
-                  onClick={() => setColor(swatch)}
-                />
-              ))}
-            </div>
-          </fieldset>
-          {/*
-            Stays an inline form error rather than a toast, for two reasons that both
-            hold. Structurally: the gate renders BEFORE the workspace, so there is no
-            ToastProvider above it — the toast layer is mounted inside the authenticated
-            application. Substantively: this is field-level validation feedback about the
-            submission the user is looking at, and it belongs beside that submit button,
-            not in a corner of a screen with nothing else on it.
-          */}
-          {error === null ? null : <p className="form-error">{error}</p>}
-          <button
-            className="primary-button"
-            type="submit"
-            disabled={submitting || name.trim() === ""}
-          >
-            {submitting ? "Creating identity…" : "Enter manifold"}
-          </button>
-        </form>
-      </dialog>
+      <Cover className="gate-cover">
+        <dialog className="identity-dialog" open aria-labelledby="identity-title">
+          <form onSubmit={(event) => void submit(event)}>
+            <p className="eyebrow">first visit</p>
+            <h1 id="identity-title">Choose your identity</h1>
+            <label className="field-label" htmlFor="identity-name">
+              Name
+            </label>
+            <input
+              id="identity-name"
+              autoFocus
+              maxLength={64}
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+              placeholder="How should collaborators see you?"
+            />
+            <fieldset className="color-fieldset">
+              <legend>Color</legend>
+              <div className="color-grid">
+                {IDENTITY_COLORS.map((swatch) => (
+                  <button
+                    key={swatch}
+                    className={swatch === color ? "color-swatch selected" : "color-swatch"}
+                    type="button"
+                    aria-label={`Use color ${swatch}`}
+                    aria-pressed={swatch === color}
+                    style={{ backgroundColor: swatch }}
+                    onClick={() => setColor(swatch)}
+                  />
+                ))}
+              </div>
+            </fieldset>
+            {/*
+              Stays an inline form error rather than a notice, for two reasons that both
+              hold. Structurally: the gate renders BEFORE the workspace, so there is no
+              NoticeProvider above it — the notice layer is mounted inside the authenticated
+              application. Substantively: this is field-level validation feedback about the
+              submission the user is looking at, and it belongs beside that submit button,
+              not in a corner of a screen with nothing else on it.
+            */}
+            {error === null ? null : <p className="form-error">{error}</p>}
+            <button
+              className="primary-button"
+              data-testid="identity-enter"
+              type="submit"
+              disabled={submitting || name.trim() === ""}
+            >
+              {submitting ? "Creating identity…" : "Enter manifold"}
+            </button>
+          </form>
+        </dialog>
+      </Cover>
     </main>
   );
 }

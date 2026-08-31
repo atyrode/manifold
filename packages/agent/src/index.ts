@@ -9,10 +9,10 @@ export {
   DEFAULT_RING_CAP_BYTES,
   OutputRing,
   PtyError,
-  PtySession,
+  PtyTerminal,
   type PtyExit,
   type PtyOutput,
-  type PtySessionOptions,
+  type PtyTerminalOptions,
   type PtySnapshot,
   type RingChunk,
-} from "./session.ts";
+} from "./terminal.ts";

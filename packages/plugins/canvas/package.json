@@ -1,0 +1,21 @@
+{
+  "name": "@manifold-plugin/canvas",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./web": "./src/web.tsx"
+  },
+  "dependencies": {
+    "@manifold/plugin": "workspace:*",
+    "@manifold/protocol": "workspace:*",
+    "@manifold/scene": "workspace:*",
+    "@manifold/sdk": "workspace:*",
+    "@xyflow/react": "12.11.5",
+    "react": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2",
+    "@types/react": "^19.2.0"
+  }
+}

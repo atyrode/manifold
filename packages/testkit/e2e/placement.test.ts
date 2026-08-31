@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
-import { PadsResponseSchema, TerminalsResponseSchema, type TileLayout } from "@manifold/protocol";
+import type { TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
+  listContainers,
+  listTerminals,
   mintToken,
-  ownerFetch,
   startAgent,
   startServer,
   waitFor,
@@ -28,12 +29,12 @@ import {
 const SENTINEL = "place-sentinel-19";
 const SENTINEL_COMMAND = "printf 'place-sentinel-%s\\n' 19\n";
 
-/** The leaf a session occupies; its id IS the session's placement inside a tiled container. */
-function tileForSession(layout: TileLayout, sessionId: string): string | null {
+/** The leaf a terminal occupies; its id IS the terminal's placement inside a composition. */
+function tileForTerminal(layout: TileLayout, terminalId: string): string | null {
   for (const node of Object.values(layout)) {
-    const surface = node.surface;
-    if (node.dir !== null || surface === null) continue;
-    if (surface.kind === "terminal" && surface.sessionId === sessionId) return node.id;
+    const ref = node.ref;
+    if (node.dir !== null || ref === null) continue;
+    if (ref.kind === "terminal" && ref.terminalId === terminalId) return node.id;
   }
   return null;
 }
@@ -46,10 +47,10 @@ test("client.place() unplaces one real terminal and then merges it into a compos
   try {
     const server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "placement canvas");
+    const container = await createContainer(server, "placement canvas");
     // A composition is the same object with the other discipline, so one endpoint places
     // into both — that is the whole point of the algebra.
-    const composition = await createPad(server, "placement composition", "tiled");
+    const composition = await createContainer(server, "placement composition", "composition");
     const enrolled = await enrollMachine(server, "placement-agent");
     const agent = await startAgent({
       serverUrl: server.url,
@@ -57,43 +58,50 @@ test("client.place() unplaces one real terminal and then merges it into a compos
       name: "placement-agent",
     });
     agents.push(agent);
-    // Workspace-scoped: a placement crosses containers, so a pad-scoped grant cannot make
+    // Workspace-scoped: a placement crosses containers, so a container-scoped grant cannot make
     // one — the endpoint refuses it with 403 before any legality question is asked.
     const owner = await mintToken(server, {
       principal: { kind: "human", name: "Placement Owner", color: "#3fa46b" },
-      caps: ["pads:read", "pads:write", "scene:write", "terminal:spawn", "terminal:write"],
+      caps: [
+        "containers:read",
+        "containers:write",
+        "scenes:write",
+        "terminals:spawn",
+        "terminals:write",
+      ],
     });
 
-    const canvas = await connect(server, { padId: pad.id, token: owner.token, reconnect: false });
+    const canvas = await connect(server, {
+      containerId: container.id,
+      token: owner.token,
+      reconnect: false,
+    });
     clients.push(canvas);
-    const { session, homeClient } = await openTerminalAt(canvas, server, {
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
       elementId: "el-place-1",
       token: owner.token,
       portalAt: { x: 200, y: 120 },
     });
     clients.push(homeClient);
-    const bornHome = session.padId;
-    const capture = await attachedCapture(homeClient, session.id);
+    const bornHome = terminal.containerId;
+    const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
-    homeClient.sendTerminalInput(session.id, SENTINEL_COMMAND);
+    homeClient.sendTerminalInput(terminal.id, SENTINEL_COMMAND);
     await waitForTerminalText(capture, SENTINEL, 10_000);
 
     // Placement 1: the element addresses ONE reference to the terminal. Unplacing removes
     // that reference and leaves the terminal where it lives — there is nowhere else to be,
     // which is the whole difference from the park this replaced.
     const unplaced = await canvas.place(
-      { kind: "element", padId: pad.id, elementId: "el-place-1" },
+      { kind: "element", containerId: container.id, elementId: "el-place-1" },
       { kind: "unplaced" },
     );
     if (!unplaced.ok) throw new Error(`unplace was refused: ${unplaced.denial.rule}`);
     expect(unplaced.result).toEqual({ op: "unplace", removed: 1 });
     await waitFor(() => !canvas.elements.has("el-place-1"), 10_000, 20);
-    const released = await ownerFetch(server, "/api/terminals", {
-      responseSchema: TerminalsResponseSchema,
-    });
-    expect(released.terminals).toEqual([
+    expect(await listTerminals(server)).toEqual([
       {
-        id: session.id,
+        id: terminal.id,
         machineId: enrolled.machineId,
         name: null,
         createdAt: expect.any(Number),
@@ -104,43 +112,45 @@ test("client.place() unplaces one real terminal and then merges it into a compos
       },
     ]);
     // Unreferenced is not dead: the room it lives in still holds it, running.
-    expect(homeClient.sessions.get(session.id)?.status).toBe("running");
+    expect(homeClient.terminals.get(terminal.id)?.status).toBe("running");
 
-    // Placement 2: the same terminal, addressed by IDENTITY this time, into a tiled
+    // Placement 2: the same terminal, addressed by IDENTITY this time, into a composition
     // container. That is a MERGE — the leaf moves across and the emptied home retires.
     const merged = await canvas.place(
-      { kind: "terminal", sessionId: session.id },
-      { kind: "tile", padId: composition.id, targetTileId: null, edge: null },
+      { kind: "terminal", terminalId: terminal.id },
+      { kind: "tile", containerId: composition.id, targetTileId: null, edge: null },
     );
     if (!merged.ok) throw new Error(`tile placement was refused: ${merged.denial.rule}`);
     if (merged.result.op !== "add_tile")
       throw new Error(`expected add_tile, got ${merged.result.op}`);
 
     const inside = await connect(server, {
-      padId: composition.id,
+      containerId: composition.id,
       token: owner.token,
       reconnect: false,
     });
     clients.push(inside);
-    await waitFor(() => inside.sessions.get(session.id)?.padId === composition.id, 10_000, 20);
+    await waitFor(
+      () => inside.terminals.get(terminal.id)?.containerId === composition.id,
+      10_000,
+      20,
+    );
     await waitFor(() => inside.layout() !== null, 10_000, 20);
     const layout = inside.layout();
     if (layout === null) throw new Error("composition published no layout tree");
-    expect(tileForSession(layout, session.id)).toBe(merged.result.tileId);
+    expect(tileForTerminal(layout, terminal.id)).toBe(merged.result.tileId);
     // The composition the terminal was born into held nothing else, so it is gone.
     await waitFor(
       async () => {
-        const listing = await ownerFetch(server, "/api/pads", {
-          responseSchema: PadsResponseSchema,
-        });
-        return listing.pads.every((row) => row.id !== bornHome);
+        const containers = await listContainers(server);
+        return containers.every((row) => row.id !== bornHome);
       },
       10_000,
       50,
     );
 
     // Same PTY, two placements later: its pre-unplace screen replays inside the composition.
-    const insideCapture = await attachedCapture(inside, session.id);
+    const insideCapture = await attachedCapture(inside, terminal.id);
     captures.push(insideCapture);
     expect(insideCapture.pendingOutputCount).toBe(0);
     expect(insideCapture.snapshotText).toContain(SENTINEL);
@@ -148,15 +158,15 @@ test("client.place() unplaces one real terminal and then merges it into a compos
     // A refusal is an ANSWER, not an exception: a container never embeds itself, however the
     // drop addresses it, and the caller renders the RULE that refused.
     const selfEmbed = await canvas.place(
-      { kind: "pad", padId: pad.id },
-      { kind: "canvas", padId: pad.id, x: 40, y: 40 },
+      { kind: "container", containerId: container.id },
+      { kind: "canvas", containerId: container.id, x: 40, y: 40 },
     );
     expect(selfEmbed.ok).toBe(false);
     if (selfEmbed.ok) throw new Error("a canvas placed on itself must be refused");
     expect(selfEmbed.denial).toEqual({
       rule: "self_embed",
-      surface: { kind: "pad", padId: pad.id },
-      container: { kind: "canvas", padId: pad.id },
+      ref: { kind: "container", containerId: container.id },
+      container: { kind: "canvas", containerId: container.id },
     });
     // Nothing moved: a denial is judged before any write.
     expect(canvas.elements.size).toBe(0);

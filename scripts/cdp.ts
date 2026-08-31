@@ -25,7 +25,40 @@ export async function until(
 
 interface CdpFrame {
   id?: number;
+  /** Set on EVENTS rather than command replies; the two arrive on one socket. */
+  method?: string;
+  params?: Record<string, unknown>;
   result?: Record<string, unknown>;
+}
+
+/**
+ * One message the PAGE produced: a console call, an uncaught exception, or a browser log
+ * entry. A gate that only reads the DOM cannot tell a handler that never ran from a
+ * handler that threw, so every driver captures these and a failing assertion dumps them.
+ */
+export interface PageMessage {
+  readonly kind: "console" | "exception" | "log";
+  readonly level: string;
+  readonly text: string;
+}
+
+/** Bounded so a chatty page cannot grow the driver without limit across a long gate. */
+const MAX_PAGE_MESSAGES = 500;
+const MAX_PAGE_MESSAGE_CHARS = 2_000;
+
+/** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
+function describeRemoteObject(value: unknown): string {
+  if (typeof value !== "object" || value === null) return String(value);
+  const object = value as {
+    type?: string;
+    value?: unknown;
+    description?: string;
+    unserializableValue?: string;
+  };
+  if (object.value !== undefined) {
+    return typeof object.value === "string" ? object.value : JSON.stringify(object.value);
+  }
+  return object.description ?? object.unserializableValue ?? object.type ?? "?";
 }
 
 /** Just enough CDP to navigate, evaluate, click, type, and drive real pointer gestures. */
@@ -33,8 +66,26 @@ export class Browser {
   private socket: WebSocket | null = null;
   private proc: Bun.Subprocess | null = null;
   private nextId = 1;
+  /** DevTools protocol session (a CDP connection — canon "session", never a PTY). */
   private sessionId = "";
   private readonly pending = new Map<number, (frame: CdpFrame) => void>();
+  private readonly messages: PageMessage[] = [];
+  /**
+   * Extra CDP events a caller asked for, beyond the three {@link capture} files by default.
+   *
+   * The budget gate is the reason this exists: what it measures — requests by resource,
+   * socket frames — is only observable as a STREAM of protocol events, and reading it out of
+   * the page instead would mean instrumenting `fetch` and `WebSocket` in the very code under
+   * measurement. The driver already owns the socket; it just never let anyone listen.
+   */
+  private readonly listeners = new Map<string, ((params: Record<string, unknown>) => void)[]>();
+
+  /** Subscribes to one CDP event by method name. Handlers run in registration order. */
+  on(method: string, handler: (params: Record<string, unknown>) => void): void {
+    const existing = this.listeners.get(method);
+    if (existing === undefined) this.listeners.set(method, [handler]);
+    else existing.push(handler);
+  }
 
   static detect(): string {
     const explicit = process.env["MANIFOLD_CHROMIUM"];
@@ -49,12 +100,12 @@ export class Browser {
   async launch(port = 9333): Promise<void> {
     const binary = Browser.detect();
     // GitHub's ubuntu-24.04 image 20260823.283 exports a malformed
-    // DBUS_SESSION_BUS_ADDRESS; chromium retries the bus for tens of seconds
+    // DBUS_TERMINAL_BUS_ADDRESS; chromium retries the bus for tens of seconds
     // before its devtools endpoint accepts connections (issue #44). Strip the
     // bus addresses — headless verification needs no DBus.
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
-      if (name === "DBUS_SESSION_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
+      if (name === "DBUS_TERMINAL_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
       if (value !== undefined) env[name] = value;
     }
     const proc = Bun.spawn(
@@ -120,7 +171,11 @@ export class Browser {
     socket.onmessage = (event: MessageEvent) => {
       if (typeof event.data !== "string") return;
       const frame = JSON.parse(event.data) as CdpFrame;
-      if (frame.id === undefined) return;
+      // Events carry a method and no id; command replies carry an id and no method.
+      if (frame.id === undefined) {
+        this.capture(frame);
+        return;
+      }
       this.pending.get(frame.id)?.(frame);
       this.pending.delete(frame.id);
     };
@@ -131,6 +186,9 @@ export class Browser {
     this.sessionId = String(attached.result?.["sessionId"]);
     await this.send("Page.enable", {});
     await this.send("Runtime.enable", {});
+    // Browser-side log entries (blocked requests, failed websockets, CSP refusals) are
+    // invisible to `Runtime` yet are exactly what a silent transport failure looks like.
+    await this.send("Log.enable", {});
   }
 
   async send(
@@ -150,6 +208,70 @@ export class Browser {
     return await promise.finally(() => clearTimeout(timer));
   }
 
+  /**
+   * Files one CDP event into the page-message buffer. Only the three that say something
+   * a DOM read cannot: what the page LOGGED, what it THREW, and what the browser itself
+   * complained about.
+   */
+  private capture(frame: CdpFrame): void {
+    const params = frame.params ?? {};
+    for (const handler of this.listeners.get(frame.method ?? "") ?? []) handler(params);
+    switch (frame.method) {
+      case "Runtime.consoleAPICalled": {
+        const args = params["args"];
+        this.record(
+          "console",
+          String(params["type"] ?? "log"),
+          (Array.isArray(args) ? args : []).map(describeRemoteObject).join(" "),
+        );
+        return;
+      }
+      case "Runtime.exceptionThrown": {
+        const details = params["exceptionDetails"] as
+          { text?: string; exception?: unknown; url?: string; lineNumber?: number } | undefined;
+        const thrown = details?.exception;
+        const where =
+          details?.url === undefined
+            ? ""
+            : ` (${details.url}:${String((details.lineNumber ?? 0) + 1)})`;
+        this.record(
+          "exception",
+          "error",
+          `${details?.text ?? "uncaught"}${
+            thrown === undefined ? "" : `: ${describeRemoteObject(thrown)}`
+          }${where}`,
+        );
+        return;
+      }
+      case "Log.entryAdded": {
+        const entry = params["entry"] as
+          { level?: string; text?: string; url?: string } | undefined;
+        this.record(
+          "log",
+          String(entry?.level ?? "info"),
+          `${entry?.text ?? ""}${entry?.url === undefined ? "" : ` (${entry.url})`}`,
+        );
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private record(kind: PageMessage["kind"], level: string, text: string): void {
+    this.messages.push({ kind, level, text: text.slice(0, MAX_PAGE_MESSAGE_CHARS) });
+    const overflow = this.messages.length - MAX_PAGE_MESSAGES;
+    if (overflow > 0) this.messages.splice(0, overflow);
+  }
+
+  /**
+   * Hands over everything the page has said since the last drain and forgets it, so a
+   * failing assertion reports the window it owns instead of the whole run.
+   */
+  drainMessages(): readonly PageMessage[] {
+    return this.messages.splice(0, this.messages.length);
+  }
+
   async goto(url: string): Promise<void> {
     await this.send("Page.navigate", { url });
     await sleep(1500);
@@ -166,17 +288,21 @@ export class Browser {
   }
 
   /**
-   * Clicks via the DOM rather than synthetic coordinates because menus and dialogs move
-   * under headless layout, and a coordinate click that lands a pixel off silently does nothing.
+   * Clicks a DECLARED gate contract, via the DOM rather than synthetic coordinates:
+   * menus and dialogs move under headless layout, and a coordinate click that lands a
+   * pixel off silently does nothing. The key is a `data-testid` because that is a
+   * declared contract (REGISTRY.md `gateContracts`, S15) whereas button copy is not — the
+   * label this replaced became "Creating identity…" the instant it was pressed.
    */
-  async clickText(text: string): Promise<void> {
+  async clickTestId(testid: string): Promise<void> {
     const clicked = await this.evaluate<boolean>(
-      `(() => { const t = ${JSON.stringify(text)};
-        const nodes = [...document.querySelectorAll('button, [role=button]')];
-        const hit = nodes.find((n) => (n.textContent ?? '').trim().includes(t));
-        if (!hit || hit.disabled) return false; hit.click(); return true; })()`,
+      `(() => { const hit = document.querySelector('[data-testid=' + ${JSON.stringify(
+        JSON.stringify(testid),
+      )} + ']');
+        if (!(hit instanceof HTMLElement) || hit.matches(':disabled')) return false;
+        hit.click(); return true; })()`,
     );
-    if (!clicked) throw new Error(`no enabled element containing ${JSON.stringify(text)}`);
+    if (!clicked) throw new Error(`no enabled element with data-testid ${JSON.stringify(testid)}`);
     await sleep(600);
   }
 

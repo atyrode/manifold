@@ -13,8 +13,8 @@
  *      root-level split above the existing tree.
  *   3. HIGHLIGHT EQUALS OUTCOME — the slot rect painted before release equals the
  *      newcomer's leaf rect after the commit, within 4px.
- *   4. CHROME EXCLUDED — on a canvas widget the drop geometry measures the tile AREA,
- *      so an aim just below `.flow-portal__strip` resolves at the area's top, not
+ *   4. CHROME EXCLUDED — on a canvas portal the drop geometry measures the tile AREA,
+ *      so an aim just below `.portal__strip` resolves at the area's top, not
  *      offset by the strip height.
  *   5. PANES REALLY MOVE — during the hover a pre-existing pane wears a non-identity
  *      transform while its terminal's LAYOUT box is untouched and no `terminal_resize`
@@ -24,7 +24,7 @@
  *      and the displaced terminal survives in a fresh home of its own.
  *   7. REMOUNT PROBE — a pane that merely gains a sibling keeps its xterm DOM across
  *      the commit (the Step-10 decision: a changed stamp means the commit remounts).
- *   8. SEAM DRAG ON A WIDGET — an engaged widget resizes its composition from a press on
+ *   8. SEAM DRAG ON A WIDGET — an engaged portal resizes its composition from a press on
  *      the seam's VISIBLE centre, the gesture the half-scale preview used to swallow.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
@@ -34,9 +34,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ActionOutcomeSchema,
   MachinesResponseSchema,
+  ContainerResponseSchema,
+  PlaceResponseSchema,
   ROOT_TILE_ID,
   TerminalsResponseSchema,
+  type PlaceResponse,
   type TerminalSummary,
   type TileLayout,
 } from "../packages/protocol/src/index.ts";
@@ -255,39 +259,69 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const listTerminals = async (): Promise<readonly TerminalSummary[]> =>
-    TerminalsResponseSchema.parse(
-      await (await fetch(`${origin}/api/terminals`, { headers: httpHeaders })).json(),
-    ).terminals;
-  const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
-    const renamed = await fetch(`${origin}/api/terminals/${terminalId}`, {
-      method: "PATCH",
-      headers: httpHeaders,
-      body: JSON.stringify({ name }),
-    });
-    if (!renamed.ok) throw new Error(`could not name the terminal ${name}`);
-  };
-  const place = async (surface: unknown, destination: unknown): Promise<Response> =>
-    await fetch(`${origin}/api/place`, {
+  const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
+    // Reads are doors too: the index is `core.terminals.listAll`, so it answers an outcome
+    // envelope exactly as the rename below does.
+    const listed = await fetch(`${origin}/api/actions/core.terminals.listAll`, {
       method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ surface, destination }),
+      body: "{}",
     });
+    const outcome = ActionOutcomeSchema.parse(await listed.json());
+    if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
+    return TerminalsResponseSchema.parse(outcome.result).terminals;
+  };
+  const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
+    const renamed = await fetch(`${origin}/api/actions/core.terminals.rename`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: JSON.stringify({ terminalId: terminalId, name }),
+    });
+    // The action door answers 200 even for a refusal, so the outcome decides, not the status.
+    const outcome = ActionOutcomeSchema.parse(await renamed.json());
+    if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
+  };
+  /**
+   * THE placement door: the action `core.space.place` (ADR 0013 §14). It answers 200 for
+   * every outcome, so the OUTCOME decides — a refusal here is a gate failure, because every
+   * placement this script asks for is one the algebra allows.
+   */
+  const place = async (ref: unknown, destination: unknown): Promise<PlaceResponse> => {
+    const response = await fetch(`${origin}/api/actions/core.space.place`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: JSON.stringify({ ref, destination }),
+    });
+    const outcome = ActionOutcomeSchema.parse(await response.json());
+    if (!outcome.ok) throw new Error(`placement refused: ${outcome.denial.message}`);
+    return PlaceResponseSchema.parse(outcome.result);
+  };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "tile-drop-gate" }),
   });
-  const canvasPadId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const createdOutcome = ActionOutcomeSchema.parse(await created.json());
+  if (!createdOutcome.ok)
+    throw new Error(`createContainer refused: ${createdOutcome.denial.message}`);
+  const canvasContainerId = ContainerResponseSchema.parse(createdOutcome.result).container.id;
 
   // The local agent must be enrolled and online before a terminal can be born.
   let machineId = "";
   await until(
     async () => {
-      const machines = MachinesResponseSchema.parse(
-        await (await fetch(`${origin}/api/machines`, { headers: httpHeaders })).json(),
-      ).machines;
+      const outcome = ActionOutcomeSchema.parse(
+        await (
+          await fetch(`${origin}/api/actions/core.machines.list`, {
+            method: "POST",
+            headers: httpHeaders,
+            body: "{}",
+          })
+        ).json(),
+      );
+      if (!outcome.ok) throw new Error(`machines list refused: ${outcome.denial.message}`);
+      const { machines } = MachinesResponseSchema.parse(outcome.result);
       machineId = machines.find((machine) => machine.online)?.id ?? "";
       return machineId !== "";
     },
@@ -297,48 +331,47 @@ try {
 
   canvasClient = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId: canvasPadId,
+    containerId: canvasContainerId,
     token: ownerKey,
   });
   await canvasClient.connect();
 
   /** A terminal born through the SDK; nothing is authored, so it starts UNPLACED. */
-  const bornTerminal = async (name: string): Promise<{ id: string; homeId: string }> => {
-    const session = await canvasClient!.openTerminal({
+  const bornTerminal = async (name: string): Promise<{ id: string; containerId: string }> => {
+    const terminal = await canvasClient!.openTerminal({
       elementId: crypto.randomUUID(),
       cols: 80,
       rows: 24,
       machineId,
     });
-    await nameTerminal(session.id, name);
-    return { id: session.id, homeId: session.padId };
+    await nameTerminal(terminal.id, name);
+    return { id: terminal.id, containerId: terminal.containerId };
   };
 
   const termA = await bornTerminal("gate-A");
   const termB = await bornTerminal("gate-B");
   const termC = await bornTerminal("gate-C");
-  const viewId = termA.homeId;
+  const containerId = termA.containerId;
 
-  // `A | B`: terminal B merges into A's home, absorbing B's own.
+  // `A | B`: terminal B merges into A's home, absorbing B's own. The helper throws on a
+  // refusal, so reaching the next line IS the assertion.
   const merged = await place(
-    { kind: "terminal", sessionId: termB.id },
-    { kind: "tile", padId: viewId, targetTileId: ROOT_TILE_ID, edge: "right" },
+    { kind: "terminal", terminalId: termB.id },
+    { kind: "tile", containerId: containerId, targetTileId: ROOT_TILE_ID, edge: "right" },
   );
-  if (!merged.ok) throw new Error("could not merge B into A's composition");
+  if (merged.op !== "add_tile") throw new Error(`merge came back as ${merged.op}`);
 
   viewClient = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId: viewId,
+    containerId: containerId,
     token: ownerKey,
   });
   await viewClient.connect();
   const layoutNow = (): TileLayout => viewClient?.layout() ?? {};
-  const leafOf = (sessionId: string): string =>
+  const leafOf = (terminalId: string): string =>
     Object.values(layoutNow()).find(
       (node) =>
-        node.dir === null &&
-        node.surface?.kind === "terminal" &&
-        node.surface.sessionId === sessionId,
+        node.dir === null && node.ref?.kind === "terminal" && node.ref.terminalId === terminalId,
     )?.id ?? "";
   await until(() => leafOf(termB.id) !== "", 10_000, "merged layout visible to SDK");
   const leafA = leafOf(termA.id);
@@ -349,18 +382,18 @@ try {
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "tile-drop-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
-  await browser.goto(`${origin}/p/${viewId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
-    () => browser!.evaluate<boolean>("document.querySelectorAll('.tiled-leaf').length === 2"),
+    () => browser!.evaluate<boolean>("document.querySelectorAll('.composition-leaf').length === 2"),
     20_000,
     "composition route mounted with two leaves",
   );
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termC.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termC.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal C's sidebar row",
@@ -368,7 +401,9 @@ try {
   // Both terminals must have a live xterm before the remount probe can stamp them.
   await until(
     () =>
-      browser!.evaluate<boolean>(`document.querySelectorAll('.tiled-leaf .xterm').length === 2`),
+      browser!.evaluate<boolean>(
+        `document.querySelectorAll('.composition-leaf .xterm').length === 2`,
+      ),
     20_000,
     "both terminals rendered",
   );
@@ -394,7 +429,7 @@ try {
 
   const drop1 = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termC.homeId}"]`,
+    `.index-item[data-tree-id="${termC.containerId}"]`,
     ".tile-area",
     [{ selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.85, holdMs: 250 }],
     true,
@@ -485,7 +520,7 @@ try {
 
   const zones = await dragSequence(
     browser,
-    `[data-tile-id="${leafA}"] .tiled-leaf__grip`,
+    `[data-tile-id="${leafA}"] .composition-leaf__grip`,
     ".tile-area",
     [
       { selector: `[data-tile-id="${leafB}"]`, fx: 0.08, fy: 0.5, holdMs: 120 },
@@ -538,14 +573,14 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termD.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termD.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal D's sidebar row",
   );
   const replaceDrop = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termD.homeId}"]`,
+    `.index-item[data-tree-id="${termD.containerId}"]`,
     ".tile-area",
     [{ selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.5, holdMs: 250 }],
     true,
@@ -559,7 +594,7 @@ try {
     `center slot classes for a sidebar carry: ${replaceSample?.className ?? "absent"}`,
   );
   const replaced = await settles(
-    () => layoutNow()[leafB]?.surface?.kind === "terminal" && leafOf(termD.id) === leafB,
+    () => layoutNow()[leafB]?.ref?.kind === "terminal" && leafOf(termD.id) === leafB,
     10_000,
   );
   check("replace re-seats the leaf", replaced, "D took B's exact leaf");
@@ -567,7 +602,7 @@ try {
   const rowB = terminalsAfterReplace.find((terminal) => terminal.id === termB.id) ?? null;
   check(
     "displaced terminal survives",
-    rowB !== null && rowB.homeId !== viewId,
+    rowB !== null && rowB.homeId !== containerId,
     rowB === null
       ? "terminal B vanished from the index"
       : `B lives on, re-homed into ${rowB.homeId}`,
@@ -579,14 +614,14 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${homeBAfter}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${homeBAfter}"] .terminal-state') !== null`,
       ),
     20_000,
     "displaced B's sidebar row",
   );
   const ringDrop = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${homeBAfter}"]`,
+    `.index-item[data-tree-id="${homeBAfter}"]`,
     ".tile-area",
     [{ selector: ".tile-area", fx: 0.5, fy: 0.985, holdMs: 250 }],
     true,
@@ -621,63 +656,62 @@ try {
       : `unexpected layout ${JSON.stringify(layoutNow())}`,
   );
 
-  /* ── Round 4: chrome excluded on a canvas widget ── */
+  /* ── Round 4: chrome excluded on a canvas portal ── */
 
   const portaled = await place(
-    { kind: "pad", padId: viewId },
-    { kind: "canvas", padId: canvasPadId, x: 160, y: 120 },
+    { kind: "container", containerId: containerId },
+    { kind: "canvas", containerId: canvasContainerId, x: 160, y: 120 },
   );
-  const portalBody = (await portaled.json()) as { elementId?: string };
-  const widgetElementId = portalBody.elementId ?? "";
-  check("widget authored", portaled.ok && widgetElementId !== "", "portal onto the composition");
+  const portalElementId = portaled.op === "portal" ? portaled.elementId : "";
+  check("portal authored", portalElementId !== "", `portal onto the composition (${portaled.op})`);
 
-  await browser.goto(`${origin}/p/${canvasPadId}`);
-  const widgetSelector = `.react-flow__node[data-id="${widgetElementId}"]`;
+  await browser.goto(`${origin}/p/${canvasContainerId}`);
+  const portalSelector = `.react-flow__node[data-id="${portalElementId}"]`;
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('${widgetSelector} .tile-area [data-tile-id]') !== null`,
+        `document.querySelector('${portalSelector} .tile-area [data-tile-id]') !== null`,
       ),
     20_000,
-    "widget mounted with its live tree",
+    "portal mounted with its live tree",
   );
   const termE = await bornTerminal("gate-E");
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termE.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termE.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal E's sidebar row",
   );
-  const widgetHover = await dragSequence(
+  const portalHover = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termE.homeId}"]`,
-    `${widgetSelector} .tile-area`,
+    `.index-item[data-tree-id="${termE.containerId}"]`,
+    `${portalSelector} .tile-area`,
     // Just below the strip: inside the top leaf's band, outside the root ring.
-    [{ selector: `${widgetSelector} .flow-portal__viewport`, fx: 0.3, fy: 0.1, holdMs: 400 }],
+    [{ selector: `${portalSelector} .portal__viewport`, fx: 0.3, fy: 0.1, holdMs: 400 }],
     false,
   );
-  const widgetSample = widgetHover.samples[0] ?? null;
-  const viewportRect = await elementRect(browser, `${widgetSelector} .flow-portal__viewport`);
-  const widgetAreaRect = await elementRect(browser, `${widgetSelector} .tile-area`);
-  const stripRect = await elementRect(browser, `${widgetSelector} .flow-portal__strip`);
+  const portalSample = portalHover.samples[0] ?? null;
+  const viewportRect = await elementRect(browser, `${portalSelector} .portal__viewport`);
+  const portalAreaRect = await elementRect(browser, `${portalSelector} .tile-area`);
+  const stripRect = await elementRect(browser, `${portalSelector} .portal__strip`);
   const topAligned =
-    widgetSample?.rect != null &&
+    portalSample?.rect != null &&
     viewportRect !== null &&
-    widgetAreaRect !== null &&
-    Math.abs(widgetSample.rect.top - viewportRect.top) <= 2 &&
-    Math.abs(widgetAreaRect.top - viewportRect.top) <= 2 &&
-    (stripRect === null || widgetSample.rect.top >= stripRect.top + stripRect.height - 2);
+    portalAreaRect !== null &&
+    Math.abs(portalSample.rect.top - viewportRect.top) <= 2 &&
+    Math.abs(portalAreaRect.top - viewportRect.top) <= 2 &&
+    (stripRect === null || portalSample.rect.top >= stripRect.top + stripRect.height - 2);
   check(
     "chrome excluded",
     topAligned,
-    `slot top ${String(widgetSample?.rect?.top)} vs viewport top ${String(viewportRect?.top)} — the strip no longer skews the zones (defect 2)`,
+    `slot top ${String(portalSample?.rect?.top)} vs viewport top ${String(viewportRect?.top)} — the strip no longer skews the zones (defect 2)`,
   );
 
   /* ── Flat inserts (#60): dividers are drop targets, same-axis edges join the row ── */
 
-  await browser.goto(`${origin}/p/${viewId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.tile-area') !== null"),
     20_000,
@@ -687,7 +721,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termF.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termF.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal F's sidebar row",
@@ -696,7 +730,7 @@ try {
   const rootBefore = layoutNow()[ROOT_TILE_ID];
   const seamDrop = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termF.homeId}"]`,
+    `.index-item[data-tree-id="${termF.containerId}"]`,
     ".tile-area",
     [{ selector: ".tile-area", fx: 0.5, fy: 0.5, holdMs: 250 }],
     true,
@@ -729,7 +763,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termG.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termG.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal G's sidebar row",
@@ -737,7 +771,7 @@ try {
   const leafBNow = leafOf(termB.id);
   const bandDrop = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termG.homeId}"]`,
+    `.index-item[data-tree-id="${termG.containerId}"]`,
     ".tile-area",
     // B's bottom band runs the parent column's own axis: it joins the row, not nests.
     [{ selector: `[data-tile-id="${leafBNow}"]`, fx: 0.5, fy: 0.9, holdMs: 250 }],
@@ -789,9 +823,9 @@ try {
   await viewer.goto(`${origin}/#key=${ownerKey}`);
   if (await viewer.evaluate<boolean>("document.querySelector('input') !== null")) {
     await viewer.typeInto("input", "tile-drop-viewer");
-    await viewer.clickText("Enter manifold");
+    await viewer.clickTestId("identity-enter");
   }
-  await viewer.goto(`${origin}/p/${viewId}`);
+  await viewer.goto(`${origin}/p/${containerId}`);
   await until(
     () => viewer!.evaluate<boolean>("document.querySelector('.tile-area [data-tile-id]') !== null"),
     20_000,
@@ -802,7 +836,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termJ.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termJ.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal J's sidebar row",
@@ -812,7 +846,7 @@ try {
   // carry frames, and the viewer re-derives the same prospect from the same kernel.
   const heldDrag = dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termJ.homeId}"]`,
+    `.index-item[data-tree-id="${termJ.containerId}"]`,
     ".tile-area",
     [
       {
@@ -966,7 +1000,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('.pad-tree-item[data-tree-id="${termK.homeId}"] .session-state') !== null`,
+        `document.querySelector('.index-item[data-tree-id="${termK.containerId}"] .terminal-state') !== null`,
       ),
     20_000,
     "terminal K's sidebar row",
@@ -975,7 +1009,7 @@ try {
   // Every stop is measured against `.tile-area`, whose box no FLIP ever transforms.
   const seamHeld = await dragSequence(
     browser,
-    `.pad-tree-item[data-tree-id="${termK.homeId}"]`,
+    `.index-item[data-tree-id="${termK.containerId}"]`,
     ".tile-area",
     [
       { selector: ".tile-area", fx: xMid, fy: fyGap, holdMs: 160 },
@@ -1057,7 +1091,7 @@ try {
   */
   const carriedLeaf = leafOf(termG.id);
   const hostLeaf = leafOf(termF.id);
-  const gripSelector = `[data-tile-id="${carriedLeaf}"] .tiled-leaf__grip`;
+  const gripSelector = `[data-tile-id="${carriedLeaf}"] .composition-leaf__grip`;
   const gripPresent = await browser.evaluate<boolean>(
     `document.querySelector(${JSON.stringify(gripSelector)}) !== null`,
   );
@@ -1154,29 +1188,29 @@ try {
     "the peer's carried pane came back to full presence with no end frame",
   );
 
-  /* ── Round 8: an engaged widget's seam drags, exactly like the route's ── */
+  /* ── Round 8: an engaged portal's seam drags, exactly like the route's ── */
 
   /*
-    THE SEAM YOU SEE IS THE SEAM YOU GRAB. A widget draws its tree under
+    THE SEAM YOU SEE IS THE SEAM YOU GRAB. A portal draws its tree under
     `transform: scale(PORTAL_PREVIEW_SCALE)` and any canvas zoom, so a seam's paint and
     its pointer band shrink together — and the band was additionally defeated on its
     trailing side by the neighbouring pane's own positioned content, which left the live
     band entirely on the LEADING side of the line a viewer aims at. Pressing the visible
     centre landed in the terminal, so the resize never started on a canvas while the
     fullscreen route (drawn 1:1) was fine. The gesture below is the operator's: engage the
-    widget, press the seam's visible centre the way a real mouse does (whole device
+    portal, press the seam's visible centre the way a real mouse does (whole device
     pixels), drag, and read the ratios back off the SERVER rather than the paint.
   */
-  await browser.goto(`${origin}/p/${canvasPadId}`);
+  await browser.goto(`${origin}/p/${canvasContainerId}`);
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('${widgetSelector} .flow-portal__divider') !== null`,
+        `document.querySelector('${portalSelector} .portal-divider') !== null`,
       ),
     20_000,
-    "widget remounted with its seams",
+    "portal remounted with its seams",
   );
-  const seamTile = await elementRect(browser, `${widgetSelector} .flow-portal__tile`);
+  const seamTile = await elementRect(browser, `${portalSelector} .portal__tile`);
   if (seamTile !== null) {
     // One real click on a tile: watching becomes working, which is what arms the seams.
     await browser.drag(
@@ -1187,7 +1221,7 @@ try {
   const seamEngaged = await settles(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('${widgetSelector} .flow-portal--engaged') !== null`,
+        `document.querySelector('${portalSelector} .portal--engaged') !== null`,
       ),
     15_000,
   );
@@ -1216,10 +1250,10 @@ try {
     readonly inert: boolean;
   } | null>(
     `(() => {
-      const widget = document.querySelector('${widgetSelector}');
-      if (widget === null) return null;
+      const portal = document.querySelector('${portalSelector}');
+      if (portal === null) return null;
       let best = null;
-      for (const div of widget.querySelectorAll('.flow-portal__divider')) {
+      for (const div of portal.querySelectorAll('.portal-divider')) {
         const split = div.parentElement;
         if (split === null) continue;
         const column = split.classList.contains('is-column');
@@ -1302,17 +1336,17 @@ try {
   /*
     Two claims, one gesture. The drag has to LAND (server-side ratios, read through the
     SDK), and the band it landed through has to be as reachable as the route's: the
-    fullscreen route answers across 18.5 device px at this font size, and a widget used to
+    fullscreen route answers across 18.5 device px at this font size, and a portal used to
     answer across 6.75 px sitting entirely LEFT of the line it painted. 16 px keeps the
     on-screen parity claim honest with room for rounding, and fails on any regression that
-    lets the widget's transform shrink the band again.
+    lets the portal's transform shrink the band again.
   */
   const SEAM_BAND_FLOOR = 16;
   check(
-    "an engaged widget's divider drags resize the split",
+    "an engaged portal's divider drags resize the split",
     seamEngaged && seam !== null && !seam.inert && seamMoved && seam.band >= SEAM_BAND_FLOOR,
     seam === null
-      ? `no seam found in the widget (engaged: ${String(seamEngaged)})`
+      ? `no seam found in the portal (engaged: ${String(seamEngaged)})`
       : `${seamSplit} ${seam.column ? "column" : "row"} shares ${shareStory(sharesBefore)} -> ${shareStory(sharesAfter)} from a 40px press on the seam's visible line; ${seam.band.toFixed(1)}px grab band (≥${String(SEAM_BAND_FLOOR)}) across a ${seam.extent.toFixed(0)}px split, inert ${String(seam.inert)}`,
   );
 } catch (error) {

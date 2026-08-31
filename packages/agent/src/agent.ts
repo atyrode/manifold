@@ -5,17 +5,18 @@ import {
   ServerToAgentMessageSchema,
   defaultRuntime,
   reconnectDelayMs,
-  type AdvertisedSession,
+  type AdvertisedTerminal,
   type AgentMessage,
+  type LogEvent,
   type RuntimeDeps,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
-import { PtySession, type PtyOutput } from "./session.ts";
+import { PtyTerminal, type PtyOutput } from "./terminal.ts";
 
 /**
  * The manifold-agent's single machine-channel client. It dials OUT to the server's
  * `/ws/machine`, multiplexes every PTY over that one socket, and survives server restarts:
- * PTYs live in {@link PtySession} objects independent of the socket, so a dropped connection
+ * PTYs live in {@link PtyTerminal} objects independent of the socket, so a dropped connection
  * only pauses streaming — on reconnect a fresh `hello` re-advertises the survivors and the
  * server re-adopts them (CONTRACTS.md §/ws/machine).
  *
@@ -33,11 +34,17 @@ export const MAX_SOCKET_BUFFERED_AMOUNT_BYTES = 8 * 1024 * 1024;
 /** Grace allowed for normal PTY termination before shutdown escalates to SIGKILL. */
 export const SHUTDOWN_GRACE_MS = 3_000;
 
-/** Structured log record; `ts` is stamped from the injected runtime clock. */
+/**
+ * Structured log record; `ts` is stamped from the injected runtime clock.
+ *
+ * `evt` is the closed vocabulary the server half shares (`LOG_EVENTS`, `@manifold/protocol`):
+ * one JSONL shape, one list of names, and e2e gates match those names inside raw agent stdout
+ * where no type can reach them (S14).
+ */
 export interface AgentLogRecord {
   readonly ts: number;
   readonly level: "info" | "warn" | "error";
-  readonly evt: string;
+  readonly evt: LogEvent;
   readonly [field: string]: unknown;
 }
 
@@ -72,7 +79,7 @@ export interface AgentOptions {
 
 type CreateMessage = Extract<ServerToAgentMessage, { type: "create" }>;
 
-/** Frame classification outcome (mirrors the SDK's session-channel classifier). */
+/** Frame classification outcome (mirrors the SDK's terminal-channel classifier). */
 type ClassifiedFrame =
   | { readonly kind: "message"; readonly message: ServerToAgentMessage }
   | { readonly kind: "unknown_type"; readonly frameType: string }
@@ -85,7 +92,7 @@ const KNOWN_SERVER_TYPES: Record<string, true> = Object.fromEntries(
 /**
  * Frame policy (CONTRACTS.md hard rule 3): unknown `type` → ignore for forward
  * compatibility; malformed frame of a KNOWN type (or non-JSON) → protocol error, close and
- * reconnect. All agent state is local, so reconnect re-establishes a clean session.
+ * reconnect. All agent state is local, so reconnect re-establishes a clean terminal.
  */
 function classifyServerFrame(data: unknown): ClassifiedFrame {
   if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
@@ -125,7 +132,7 @@ export class Agent {
   private readonly livenessTimeoutMs: number;
   private readonly shutdownGraceMs: number;
 
-  private readonly sessions = new Map<string, PtySession>();
+  private readonly terminals = new Map<string, PtyTerminal>();
   private readonly createSocket: (url: string) => WebSocket;
   private socket: WebSocket | null = null;
   private machineId: string | null = null;
@@ -135,7 +142,7 @@ export class Agent {
   private livenessTimer: Timer | null = null;
   private stopped = false;
   private welcomeWaiters: Array<() => void> = [];
-  private advertisedDeadSessions = new Map<string, PtySession>();
+  private advertisedDeadTerminals = new Map<string, PtyTerminal>();
 
   constructor(opts: AgentOptions) {
     this.machineToken = opts.machineToken;
@@ -161,9 +168,9 @@ export class Agent {
     return this.serverEpochValue;
   }
 
-  /** Count of retained PTY sessions currently owned by this agent. */
-  get sessionCount(): number {
-    return this.sessions.size;
+  /** Count of retained PTY terminals currently owned by this agent. */
+  get terminalCount(): number {
+    return this.terminals.size;
   }
 
   /** Dials the server and resolves once the first `welcome` is received. */
@@ -192,8 +199,8 @@ export class Agent {
     const socket = this.socket;
     this.socket = null;
     if (socket !== null) socket.close(1000, "shutdown");
-    const sessions = [...this.sessions.values()];
-    const kills = sessions.map((session) => session.kill());
+    const terminals = [...this.terminals.values()];
+    const kills = terminals.map((terminal) => terminal.kill());
     let graceTimer: Timer | undefined;
     await Promise.race([
       Promise.all(kills),
@@ -202,15 +209,19 @@ export class Agent {
       }),
     ]);
     clearTimeout(graceTimer);
-    for (const session of sessions) {
-      if (session.alive) session.forceKill();
+    for (const terminal of terminals) {
+      if (terminal.alive) terminal.forceKill();
     }
     await Promise.all(kills);
-    this.sessions.clear();
+    this.terminals.clear();
     this.log("info", "shutdown");
   }
 
-  private log(level: AgentLogRecord["level"], evt: string, fields?: Record<string, unknown>): void {
+  private log(
+    level: AgentLogRecord["level"],
+    evt: LogEvent,
+    fields?: Record<string, unknown>,
+  ): void {
     this.sink({ ts: this.runtime.now(), level, evt, ...fields });
   }
 
@@ -238,11 +249,11 @@ export class Agent {
   }
 
   private sendHello(socket: WebSocket): void {
-    const sessions: AdvertisedSession[] = [];
-    this.advertisedDeadSessions = new Map();
-    for (const [sessionId, session] of this.sessions) {
-      sessions.push(session.toAdvertised());
-      if (!session.alive) this.advertisedDeadSessions.set(sessionId, session);
+    const terminals: AdvertisedTerminal[] = [];
+    this.advertisedDeadTerminals = new Map();
+    for (const [terminalId, terminal] of this.terminals) {
+      terminals.push(terminal.toAdvertised());
+      if (!terminal.alive) this.advertisedDeadTerminals.set(terminalId, terminal);
     }
     this.send(socket, {
       type: "hello",
@@ -250,9 +261,9 @@ export class Agent {
       name: this.machineName,
       agentVersion: AGENT_VERSION,
       protocolVersion: PROTOCOL_VERSION,
-      sessions,
+      terminals,
     });
-    this.log("info", "hello", { sessions: sessions.length });
+    this.log("info", "hello", { terminals: terminals.length });
   }
 
   private onFrame(socket: WebSocket, data: unknown): void {
@@ -279,15 +290,15 @@ export class Agent {
         this.machineId = msg.machineId;
         this.serverEpochValue = msg.serverEpoch;
         this.attempts = 0; // handshake succeeded: reset backoff
-        // Forget only dead records included in this acknowledged hello. A live session can
+        // Forget only dead records included in this acknowledged hello. A live terminal can
         // exit after hello but before welcome and must remain for the next reconciliation.
-        for (const [sessionId, advertisedSession] of this.advertisedDeadSessions) {
-          if (this.sessions.get(sessionId) === advertisedSession) {
-            this.sessions.delete(sessionId);
-            advertisedSession.dispose();
+        for (const [terminalId, advertisedTerminal] of this.advertisedDeadTerminals) {
+          if (this.terminals.get(terminalId) === advertisedTerminal) {
+            this.terminals.delete(terminalId);
+            advertisedTerminal.dispose();
           }
         }
-        this.advertisedDeadSessions.clear();
+        this.advertisedDeadTerminals.clear();
         this.log("info", "welcome", { machineId: msg.machineId, serverEpoch: msg.serverEpoch });
         const waiters = this.welcomeWaiters;
         this.welcomeWaiters = [];
@@ -298,29 +309,29 @@ export class Agent {
         this.onCreate(socket, msg);
         return;
       case "input": {
-        const session = this.sessions.get(msg.sessionId);
-        if (session !== undefined) session.write(Buffer.from(msg.data, "base64"));
+        const terminal = this.terminals.get(msg.terminalId);
+        if (terminal !== undefined) terminal.write(Buffer.from(msg.data, "base64"));
         return;
       }
       case "resize": {
-        const session = this.sessions.get(msg.sessionId);
-        if (session !== undefined) session.resize(msg.cols, msg.rows);
+        const terminal = this.terminals.get(msg.terminalId);
+        if (terminal !== undefined) terminal.resize(msg.cols, msg.rows);
         return;
       }
       case "kill": {
-        const session = this.sessions.get(msg.sessionId);
-        if (session !== undefined) {
-          if (session.alive) {
-            void session.kill();
+        const terminal = this.terminals.get(msg.terminalId);
+        if (terminal !== undefined) {
+          if (terminal.alive) {
+            void terminal.kill();
           } else {
-            this.sessions.delete(msg.sessionId);
-            session.dispose();
+            this.terminals.delete(msg.terminalId);
+            terminal.dispose();
           }
         }
         return;
       }
       case "snapshot_request":
-        void this.onSnapshotRequest(socket, msg.sessionId);
+        void this.onSnapshotRequest(socket, msg.terminalId);
         return;
       case "ping":
         this.send(socket, { type: "pong" });
@@ -333,40 +344,40 @@ export class Agent {
   }
 
   private onCreate(socket: WebSocket, msg: CreateMessage): void {
-    if (this.sessions.has(msg.sessionId)) {
-      // Idempotent re-create (e.g. a retried request): acknowledge the existing session.
-      this.send(socket, { type: "created", sessionId: msg.sessionId });
+    if (this.terminals.has(msg.terminalId)) {
+      // Idempotent re-create (e.g. a retried request): acknowledge the existing terminal.
+      this.send(socket, { type: "created", terminalId: msg.terminalId });
       return;
     }
     try {
-      const session = new PtySession({
-        sessionId: msg.sessionId,
+      const terminal = new PtyTerminal({
+        terminalId: msg.terminalId,
         cols: msg.cols,
         rows: msg.rows,
         env: msg.env,
-        onOutput: (output) => this.onOutput(msg.sessionId, output),
+        onOutput: (output) => this.onOutput(msg.terminalId, output),
         ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
         ...(this.shellCommand !== undefined ? { command: this.shellCommand } : {}),
       });
-      this.sessions.set(msg.sessionId, session);
-      void this.watchExit(msg.sessionId, session);
-      this.send(socket, { type: "created", sessionId: msg.sessionId });
-      this.log("info", "created", { sessionId: msg.sessionId, cols: msg.cols, rows: msg.rows });
+      this.terminals.set(msg.terminalId, terminal);
+      void this.watchExit(msg.terminalId, terminal);
+      this.send(socket, { type: "created", terminalId: msg.terminalId });
+      this.log("info", "created", { terminalId: msg.terminalId, cols: msg.cols, rows: msg.rows });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.send(socket, { type: "create_error", sessionId: msg.sessionId, message });
-      this.log("error", "create_error", { sessionId: msg.sessionId, message });
+      this.send(socket, { type: "create_error", terminalId: msg.terminalId, message });
+      this.log("error", "create_error", { terminalId: msg.terminalId, message });
     }
   }
 
-  private onOutput(sessionId: string, output: PtyOutput): void {
-    // Ring + mirror were already updated inside the PtySession. Stream to the server ONLY
+  private onOutput(terminalId: string, output: PtyOutput): void {
+    // Ring + mirror were already updated inside the PtyTerminal. Stream to the server ONLY
     // when connected; disconnected output stays in ring+mirror and heals on the next attach
     // via snapshot semantics (CONTRACTS.md). Gating here also skips base64 work while down.
     const socket = this.socket;
     if (socket === null || socket.readyState !== WebSocket.OPEN) return;
-    // A websocket queue above 8 MiB is treated as a sick transport. Each session retains
-    // 2 MiB locally, so this tolerates several busy sessions before reconnect recovery takes
+    // A websocket queue above 8 MiB is treated as a sick transport. Each terminal retains
+    // 2 MiB locally, so this tolerates several busy terminals before reconnect recovery takes
     // over, while still bounding duplicate buffering in the websocket implementation.
     if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
       this.log("warn", "socket_backpressure", {
@@ -378,46 +389,46 @@ export class Agent {
     }
     this.send(socket, {
       type: "output",
-      sessionId,
+      terminalId,
       seq: output.seq,
       data: Buffer.from(output.bytes).toString("base64"),
     });
   }
 
-  private async onSnapshotRequest(socket: WebSocket, sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) return; // unknown/dead session: server handles the absence
+  private async onSnapshotRequest(socket: WebSocket, terminalId: string): Promise<void> {
+    const terminal = this.terminals.get(terminalId);
+    if (terminal === undefined) return; // unknown/dead terminal: server handles the absence
     try {
-      const snapshot = await session.snapshot();
+      const snapshot = await terminal.snapshot();
       // Reply only if the requesting socket is still current (a snapshot for a superseded
       // socket is moot — the server re-requests on the new connection).
       if (this.socket === socket) {
         // The mirror serialization is a UTF-16 string; the machine channel carries every
         // `data` field as base64 (CONTRACTS.md), so encode its UTF-8 bytes for the wire.
         const data = Buffer.from(snapshot.data, "utf8").toString("base64");
-        this.send(socket, { type: "snapshot", sessionId, seq: snapshot.seq, data });
-        this.log("info", "snapshot", { sessionId, seq: snapshot.seq });
+        this.send(socket, { type: "snapshot", terminalId, seq: snapshot.seq, data });
+        this.log("info", "snapshot", { terminalId, seq: snapshot.seq });
       }
     } catch {
       // Exiting PTYs intentionally reject a marker still queued in xterm. This handler is
       // void-dispatched, and Bun treats an unhandled rejection as fatal, so log the abandon
-      // and let the server's snapshot deadline + hello reconciliation resolve the dead session.
-      this.log("warn", "snapshot_abandoned", { sessionId });
+      // and let the server's snapshot deadline + hello reconciliation resolve the dead terminal.
+      this.log("warn", "snapshot_abandoned", { terminalId });
     }
   }
 
-  private async watchExit(sessionId: string, session: PtySession): Promise<void> {
-    const { exitCode } = await session.exited;
+  private async watchExit(terminalId: string, terminal: PtyTerminal): Promise<void> {
+    const { exitCode } = await terminal.exited;
     // A connected server receives the terminal status immediately. While disconnected, retain
     // the disposed mirror/process record so the next hello can advertise alive:false plus the
     // real exit code; welcome (or a server kill) then acknowledges and forgets that record.
     const socket = this.socket;
     if (socket !== null && socket.readyState === WebSocket.OPEN) {
-      this.send(socket, { type: "exited", sessionId, exitCode });
-      this.sessions.delete(sessionId);
+      this.send(socket, { type: "exited", terminalId, exitCode });
+      this.terminals.delete(terminalId);
     }
-    session.dispose();
-    this.log("info", "exited", { sessionId, exitCode });
+    terminal.dispose();
+    this.log("info", "exited", { terminalId, exitCode });
   }
 
   private send(socket: WebSocket, msg: AgentMessage): void {
@@ -449,7 +460,7 @@ export class Agent {
     this.socket = null;
     this.machineId = null;
     this.serverEpochValue = null;
-    this.advertisedDeadSessions.clear();
+    this.advertisedDeadTerminals.clear();
     if (this.livenessTimer !== null) {
       clearTimeout(this.livenessTimer);
       this.livenessTimer = null;

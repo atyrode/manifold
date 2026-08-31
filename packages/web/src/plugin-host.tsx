@@ -1,0 +1,655 @@
+import {
+  OVERLAY_SLOTS,
+  ProjectionProvider,
+  ViewportRegistrationProvider,
+  sessionUrl,
+  type ContainerOverlayProps,
+  type OverlayRegistrations,
+  type OverlaySlot,
+  type ContainerRendererProps,
+  type ProjectionPlaceholderProps,
+  type ProjectionRegistry,
+  type ProjectionState,
+  type RegisteredElement,
+  type RegisteredRenderer,
+  type RegisteredTool,
+  type TerminalFacet,
+} from "@manifold/plugin/hooks";
+import type {
+  HostServices,
+  AuthoringHandle,
+  ViewportHandle,
+  PanelProps,
+  SectionProps,
+} from "@manifold/plugin";
+import {
+  MANIFOLD_URI_SCHEME,
+  parseManifoldUri,
+  PluginsResponseSchema,
+  type PluginRoster,
+} from "@manifold/protocol";
+import { SessionClient } from "@manifold/sdk";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { Cover, Stack } from "@manifold/plugin/ui";
+import type { StoredIdentity } from "./api.ts";
+import { WEB_PLUGIN_DEFS } from "./assembly.ts";
+
+/**
+ * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
+ * file never imports a plugin package: `assembly.ts` is the one web file allowed to name
+ * `@manifold-plugin/*`, and it hands its registrations here as inert data.
+ *
+ * The division of labour is the whole point:
+ *
+ * - the ROSTER (`GET /api/plugins`, live on the connection-level `plugins` frame) is the
+ *   server-owned VOCABULARY: which plugins exist, whether each is enabled, and what each
+ *   declares it contributes. Every list below is derived from it.
+ * - `WEB_PLUGIN_DEFS` only ATTACHES components to names the roster already published. A web
+ *   half that registers a panel nobody declared contributes nothing; a declared panel with
+ *   no registered component renders a placeholder instead of a blank tile.
+ *
+ * Disabled plugins keep their contributions in every registry, tagged `enabled: false`, for
+ * the same reason the engine keeps them server-side: a consumer must be able to say "waiting
+ * on core.draw" rather than show nothing (D4).
+ */
+
+/**
+ * One plugin's browser registrations, keyed by the LOCAL contribution name its manifest
+ * declared (`sidebar`, not `core.shell.sidebar`) — except `elements`, which are keyed by the
+ * wire element type, because that string is what a scene document actually stores.
+ *
+ * `elements` are typed as opaque components even though the element contract IS published
+ * (`@manifold/plugin`'s `ElementProps`): a renderer declares only its identity and its stored
+ * `data`, while each MOUNT SITE hands it whatever its own frame demands — React Flow node
+ * props on a canvas, a plain render in a tile leaf. Keeping the registry opaque is what stops
+ * one frame's props from becoming the contract.
+ *
+ * FOUR of these channels have no manifest counterpart — `routes`, `renderers`, `overlays`
+ * and `terminals` — and they share one rationale: none of them is a ref the WORKSPACE
+ * composes, so there is nothing for a principal's layout or the sidebar order to name. A path
+ * is an entry point the browser hands over; a container ref, an overlay and the terminal viewer
+ * are projections one renderer asks another plugin for (`@manifold/plugin/hooks`'
+ * {@link ProjectionRegistry}). The roster still decides whether the registering plugin is
+ * ENABLED, which is what keeps every one of them painting the engine's named placeholder
+ * instead of disappearing.
+ */
+export interface WebPluginDef {
+  readonly id: string;
+  readonly panels?: Readonly<Record<string, ComponentType<PanelProps>>>;
+  readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
+  readonly elements?: Readonly<Record<string, ComponentType<never>>>;
+  /**
+   * URL space a plugin owns, keyed by FIRST PATH SEGMENT (`uri` serves `/uri/<rest>`).
+   */
+  readonly routes?: Readonly<Record<string, ComponentType<{ rest: string; host: HostServices }>>>;
+  /**
+   * Container renderers, keyed by the container DISCIPLINE they draw (`Container["discipline"]`:
+   * `canvas`, `composition`). The routed shell and every nesting renderer project a container through
+   * this one registry, which is how a canvas holds a composition and a composition holds a
+   * canvas without either plugin importing the other.
+   */
+  readonly renderers?: Readonly<Record<string, ComponentType<ContainerRendererProps>>>;
+  /**
+   * Decoration painted over a mounted container ref, keyed by slot. The key type is the closed
+   * `OverlaySlot` vocabulary, not `string`: the registrant and the `ContainerOverlayOutlet`
+   * that mounts it never import each other, and an unregistered overlay paints NOTHING, so a
+   * typo on either side of a `string` key would compile clean and simply never appear. An
+   * unregistered or disabled overlay still paints nothing — an inert box floating over
+   * someone's canvas is worse than the missing decoration — but now only for declared slots.
+   */
+  readonly overlays?: OverlayRegistrations;
+  /**
+   * Terminals, as every ref that paints one sees them: the viewer plus the machine
+   * choice a new terminal is born on. One registration, because both belong to whichever
+   * plugin owns terminals, and a ref needs both to offer the affordance honestly.
+   */
+  readonly terminals?: TerminalFacet;
+}
+
+/** A declared panel, keyed in the composition by its FULL id (`core.shell.sidebar`). */
+export interface WebPanel {
+  readonly plugin: string;
+  readonly title: string;
+  /** Null when the plugin declared the panel but registered no component. */
+  readonly Component: ComponentType<PanelProps> | null;
+  readonly enabled: boolean;
+}
+
+/** A declared sidebar section. Section ids are global (one sidebar, one slot per name). */
+export interface WebSection {
+  readonly id: string;
+  readonly plugin: string;
+  readonly title: string;
+  readonly order: number;
+  readonly Component: ComponentType<SectionProps> | null;
+  readonly enabled: boolean;
+}
+
+/**
+ * A registered URL space, keyed in the composition by its first path segment. It has no
+ * manifest row (see `WebPluginDef.routes`), so `plugin` is the registering plugin and
+ * `enabled` is that plugin's roster state.
+ */
+export interface WebRoute {
+  readonly plugin: string;
+  readonly Component: ComponentType<{ rest: string; host: HostServices }>;
+  readonly enabled: boolean;
+}
+
+/** What a plugin registered for the terminal projection, plus its roster state. */
+export interface WebTerminals {
+  readonly plugin: string;
+  readonly title: string;
+  readonly enabled: boolean;
+  readonly facet: TerminalFacet;
+}
+
+/**
+ * The browser's view of the composition: the roster plus one registry per contribution kind,
+ * with components attached. `revision` increments on every roster change, so anything that
+ * must be rebuilt when the vocabulary moves (React Flow's node-type map, for one) has a
+ * cheap memo key instead of a deep comparison.
+ *
+ * Four of the registries below are typed by `@manifold/plugin` rather than by this file
+ * ({@link RegisteredElement}, {@link RegisteredTool}, {@link RegisteredRenderer}): they are
+ * exactly what the projection registry publishes to plugin code, and a second shape for the
+ * same row would be a second answer to "what did the composition register" (invariant 14).
+ */
+export interface BrowserAssembly {
+  readonly roster: PluginRoster;
+  readonly revision: number;
+  /** False for a disabled plugin AND for an id the roster does not carry. */
+  enabled(id: string): boolean;
+  /** The plugin's human title, for placeholders and admin UI; null when unknown. */
+  pluginTitle(id: string): string | null;
+  /** Keyed by FULL panel id — the id a `panel` tile ref names. */
+  readonly panels: ReadonlyMap<string, WebPanel>;
+  /** Sorted by declared `order`; ties keep roster order. */
+  readonly sections: readonly WebSection[];
+  readonly elements: ReadonlyMap<string, RegisteredElement>;
+  /** Keyed by first path segment; a route the roster does not know is simply absent. */
+  readonly routes: ReadonlyMap<string, WebRoute>;
+  readonly tools: readonly RegisteredTool[];
+  /** Keyed by container discipline (`canvas`, `composition`). */
+  readonly renderers: ReadonlyMap<string, RegisteredRenderer<ContainerRendererProps>>;
+  /** Keyed by overlay slot; only declared slots can appear. */
+  readonly overlays: ReadonlyMap<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>;
+  /** Null until some enabled-or-disabled plugin registers the terminal facet. */
+  readonly terminals: WebTerminals | null;
+}
+
+/**
+ * Joins the server's vocabulary with the browser's registrations. Pure, and exported so the
+ * join is testable without a provider or a socket.
+ */
+export function buildBrowserAssembly(
+  roster: PluginRoster,
+  revision: number,
+  defs: readonly WebPluginDef[],
+): BrowserAssembly {
+  const byId = new Map(defs.map((def) => [def.id, def]));
+  const titles = new Map<string, string>();
+  const enabledIds = new Set<string>();
+  const panels = new Map<string, WebPanel>();
+  const sections: WebSection[] = [];
+  const elements = new Map<string, RegisteredElement>();
+  const tools: RegisteredTool[] = [];
+  const routes = new Map<string, WebRoute>();
+  const renderers = new Map<string, RegisteredRenderer<ContainerRendererProps>>();
+  const overlays = new Map<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>();
+  let terminals: WebTerminals | null = null;
+
+  for (const entry of roster) {
+    const { manifest, enabled } = entry;
+    const def = byId.get(manifest.id);
+    titles.set(manifest.id, manifest.title);
+    if (enabled) enabledIds.add(manifest.id);
+
+    for (const panel of manifest.contributes.panels) {
+      panels.set(`${manifest.id}.${panel.id}`, {
+        plugin: manifest.id,
+        title: panel.title,
+        Component: def?.panels?.[panel.id] ?? null,
+        enabled,
+      });
+    }
+    for (const section of manifest.contributes.sections) {
+      sections.push({
+        id: section.id,
+        plugin: manifest.id,
+        title: section.title,
+        order: section.order,
+        Component: def?.sections?.[section.id] ?? null,
+        enabled,
+      });
+    }
+    for (const element of manifest.contributes.elements) {
+      elements.set(element.type, {
+        plugin: manifest.id,
+        title: element.title,
+        Component: def?.elements?.[element.type] ?? null,
+        enabled,
+      });
+    }
+    for (const tool of manifest.contributes.tools) {
+      tools.push({ id: tool.id, plugin: manifest.id, title: tool.title, enabled });
+    }
+    // Routes have no manifest row to iterate, so they come from the REGISTRATION and take
+    // the registering plugin's roster state — which is what keeps a disabled plugin's deep
+    // link rendering a named placeholder instead of a dead end.
+    for (const [segment, Component] of Object.entries(def?.routes ?? {})) {
+      routes.set(segment, { plugin: manifest.id, Component, enabled });
+    }
+    /*
+      The three PROJECTION channels, and the reason they read the same way as `routes`: a
+      registration with no manifest row still belongs to a plugin, so it inherits that
+      plugin's roster state and paints the engine's placeholder (or, for an overlay, nothing)
+      the moment the plugin is disabled. `title` is the plugin's own, because that is what a
+      placeholder must name — the missing renderer has no title of its own to borrow.
+     */
+    for (const [layout, Component] of Object.entries(def?.renderers ?? {})) {
+      renderers.set(layout, {
+        plugin: manifest.id,
+        title: manifest.title,
+        Component,
+        enabled,
+      });
+    }
+    /*
+      Walked over the declared slot vocabulary rather than over the registration's own keys:
+      `Object.entries` widens the key back to `string`, which is the exact typing this join was
+      losing. Iterating OVERLAY_SLOTS keeps the key type and needs no cast.
+     */
+    for (const slot of OVERLAY_SLOTS) {
+      const Component = def?.overlays?.[slot];
+      if (Component === undefined) continue;
+      overlays.set(slot, { plugin: manifest.id, title: manifest.title, Component, enabled });
+    }
+    if (def?.terminals !== undefined) {
+      terminals = {
+        plugin: manifest.id,
+        title: manifest.title,
+        enabled,
+        facet: def.terminals,
+      };
+    }
+  }
+
+  // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
+  // the engine's `assembleRoster` applies server-side.
+  sections.sort((left, right) => left.order - right.order);
+
+  return {
+    roster,
+    revision,
+    enabled: (id) => enabledIds.has(id),
+    pluginTitle: (id) => titles.get(id) ?? null,
+    panels,
+    sections,
+    elements,
+    routes,
+    tools,
+    renderers,
+    overlays,
+    terminals,
+  };
+}
+
+const AssemblyContext = createContext<BrowserAssembly | null>(null);
+/**
+ * Kept in its OWN context, deliberately: the attach function is stable for the provider's
+ * lifetime, while the composition changes with every roster. A component that subscribes a
+ * socket must not re-subscribe just because a plugin was toggled.
+ */
+const PluginsAttachContext = createContext<((client: SessionClient) => () => void) | null>(null);
+
+/** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
+export function useAssembly(): BrowserAssembly {
+  const assembly = useContext(AssemblyContext);
+  if (assembly === null) {
+    throw new Error("useAssembly requires a <AssemblyProvider> ancestor");
+  }
+  return assembly;
+}
+
+/**
+ * Hands the live roster feed to whoever owns a session socket (the shell). Calling it
+ * subscribes the pool's connection-level `plugins` frame; the returned function detaches.
+ * Without a socket the boot fetch remains the whole truth — a roster is never a client's
+ * private guess, so there is no local fallback beyond "what the server last said".
+ */
+export function useAttachPluginsClient(): (client: SessionClient) => () => void {
+  const attach = useContext(PluginsAttachContext);
+  if (attach === null) {
+    throw new Error("useAttachPluginsClient requires a <AssemblyProvider> ancestor");
+  }
+  return attach;
+}
+
+interface AssemblyProviderProps {
+  readonly identity: StoredIdentity;
+  readonly children: ReactNode;
+}
+
+/** Roster plus revision as one unit, so a change can never bump only half of it. */
+interface RosterState {
+  readonly roster: PluginRoster;
+  readonly revision: number;
+  /** Serialized form of `roster`, so a replayed identical roster is not a "change". */
+  readonly digest: string;
+}
+
+const INITIAL_ROSTER: RosterState = { roster: [], revision: 0, digest: "" };
+
+/**
+ * Owns the roster for the authenticated terminal: fetched once at boot (this is why the
+ * provider needs the token, and why it mounts inside `IdentityGate`), then kept current by
+ * whoever attaches a session client.
+ */
+export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
+  const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
+
+  const publish = useCallback((roster: PluginRoster): void => {
+    const digest = JSON.stringify(roster);
+    setState((previous) =>
+      previous.digest === digest ? previous : { roster, revision: previous.revision + 1, digest },
+    );
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async (): Promise<void> => {
+      try {
+        const response = await fetch("/api/plugins", {
+          headers: { Authorization: `Bearer ${identity.token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
+        publish(PluginsResponseSchema.parse(await response.json()).plugins);
+      } catch (reason) {
+        if (controller.signal.aborted) return;
+        // No notice layer exists above this provider, and a missing roster is already visible
+        // as named placeholders where panels should be — so the console is the honest report.
+        console.error("evt=plugin_roster_fetch_failed", reason);
+      }
+    })();
+    return () => controller.abort();
+  }, [identity.token, publish]);
+
+  const attachPluginsClient = useCallback(
+    (client: SessionClient): (() => void) => client.onPlugins(publish),
+    [publish],
+  );
+
+  const assembly = useMemo(
+    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS),
+    [state],
+  );
+
+  return (
+    <PluginsAttachContext.Provider value={attachPluginsClient}>
+      <AssemblyContext.Provider value={assembly}>{children}</AssemblyContext.Provider>
+    </PluginsAttachContext.Provider>
+  );
+}
+
+const HostServicesContext = createContext<HostServices | null>(null);
+
+interface HostServicesProviderProps {
+  readonly value: HostServices;
+  readonly children: ReactNode;
+}
+
+/** Publishes the one host ref plugin code is allowed to touch (`@manifold/plugin`). */
+export function HostServicesProvider({ value, children }: HostServicesProviderProps): ReactElement {
+  return <HostServicesContext.Provider value={value}>{children}</HostServicesContext.Provider>;
+}
+
+/** Throws: a contribution rendered outside the host has no legal way to reach the server. */
+export function useHostServices(): HostServices {
+  const host = useContext(HostServicesContext);
+  if (host === null) {
+    throw new Error("useHostServices requires a <HostServicesProvider> ancestor");
+  }
+  return host;
+}
+
+/**
+ * The registration channel for the one facet only the MOUNTED container view can answer, and the
+ * only one whose consumer is FLOOR. Its own context for the same reason the plugins attach
+ * is: the register function is stable for the gate's lifetime, while the host value changes
+ * whenever a facet arrives, and a renderer must not re-register because a plugin was toggled.
+ *
+ * The viewport's twin lives in `@manifold/plugin/hooks`
+ * ({@link ViewportRegistrationProvider}) rather than here, because the renderer that
+ * publishes a viewport is a plugin and a plugin may not import this file.
+ */
+const AuthoringRegisterContext = createContext<((handle: AuthoringHandle | null) => void) | null>(
+  null,
+);
+
+/** The same channel for the authoring door — see {@link AuthoringHandle}. */
+export function useAuthoringRegistration(): (handle: AuthoringHandle | null) => void {
+  const register = useContext(AuthoringRegisterContext);
+  if (register === null) {
+    throw new Error("useAuthoringRegistration requires a <HostServicesGate> ancestor");
+  }
+  return register;
+}
+
+export interface HostServicesGateProps {
+  readonly identity: StoredIdentity;
+  /** The application's own navigation; the gate translates `manifold://` into it. */
+  readonly navigate: (path: string, options?: { readonly replace?: boolean }) => void;
+  /**
+   * The routed container, when the route names one. It decides only whether the gate's
+   * client JOINS a room — which is what makes `selfCaps()` answer and the roster arrive
+   * live. Every HTTP door works either way.
+   */
+  readonly containerId?: string | null;
+  readonly children: ReactNode;
+}
+
+/**
+ * Builds THE host ref and mounts it above every route — deliberately above, because a
+ * plugin route (`/uri/<encoded>`) is a contribution too and must reach the same doors the
+ * sidebar's sections do.
+ *
+ * Its session client is a SPECTATOR on the routed room: the gate watches, it never occupies.
+ * That is what a workspace-level handle has to be — it must not fake an occupant avatar in a
+ * room whose renderer already joined as one — and it is the reason `selfCaps()` and the
+ * connection-level `plugins` frame reach plugin code at all. With no route to a container
+ * (an empty workspace) the client stays unconnected: the HTTP doors still answer, and
+ * `selfCaps()` is empty until a view exists, which reads correctly as "no view, no room".
+ */
+export function HostServicesGate({
+  identity,
+  navigate,
+  containerId = null,
+  children,
+}: HostServicesGateProps): ReactElement {
+  const assembly = useAssembly();
+  const attachPluginsClient = useAttachPluginsClient();
+  const [viewport, setViewport] = useState<ViewportHandle | null>(null);
+  const [authoring, setAuthoring] = useState<AuthoringHandle | null>(null);
+
+  const client = useMemo(
+    () =>
+      new SessionClient({
+        url: sessionUrl(),
+        // The workspace is not a room. Unjoined, this is the id nothing is addressed by;
+        // it never reaches the wire, because an unconnected client sends no join.
+        containerId: containerId ?? "",
+        token: identity.token,
+        ...(containerId === null ? {} : { spectator: true }),
+      }),
+    [identity.token, containerId],
+  );
+
+  useEffect(() => {
+    if (containerId === null) return;
+    void client.connect().catch((reason: unknown) => {
+      // The renderer's own occupant socket reports room failures to the operator; this
+      // handle failing only costs the workspace its live vocabulary, so it stays quiet.
+      console.error("evt=host_services_join_failed", reason);
+    });
+    return () => client.close();
+  }, [client, containerId]);
+
+  useEffect(() => attachPluginsClient(client), [attachPluginsClient, client]);
+
+  /**
+   * One navigation door for plugin code, addressed the way the axioms address everything:
+   * a `manifold://` reference, or a plain application path for the routes the browser owns.
+   * A reference this shell cannot show as a route (a principal, a plugin, an action) is not
+   * silently swallowed — it goes to the deep-link route, whose job is exactly that.
+   */
+  const navigateUri = useCallback(
+    (uri: string): void => {
+      if (!uri.startsWith(MANIFOLD_URI_SCHEME)) {
+        navigate(uri);
+        return;
+      }
+      const ref = parseManifoldUri(uri);
+      if (ref === null) return;
+      navigate(
+        ref.kind === "container" || ref.kind === "element" || ref.kind === "tile"
+          ? `/p/${encodeURIComponent(ref.containerId)}`
+          : `/uri/${encodeURIComponent(uri)}`,
+      );
+    },
+    [navigate],
+  );
+
+  const host = useMemo<HostServices>(
+    () => ({
+      client,
+      principal: identity.principal,
+      token: identity.token,
+      containerId,
+      navigate: navigateUri,
+      viewport,
+      authoring,
+      assembly: {
+        roster: () => assembly.roster,
+        enabled: (id) => assembly.enabled(id),
+      },
+    }),
+    [authoring, client, assembly, identity, navigateUri, containerId, viewport],
+  );
+
+  /**
+   * THE PROJECTION REGISTRY, as plugin code sees it: the composition's registries plus this
+   * file's own placeholder, so every mount site in the product resolves an occupant the same
+   * way and paints the same named absence. Memoized on the composition alone — the registry
+   * carries no per-render state, so a roster change is the only reason it may move (a fresh
+   * object here would rebuild React Flow's node-type map and remount every live PTY).
+   */
+  const projection = useMemo<ProjectionRegistry>(
+    () => ({
+      revision: assembly.revision,
+      Placeholder: PluginPlaceholder,
+      terminals: assembly.terminals,
+      renderer: (layout) => assembly.renderers.get(layout) ?? null,
+      overlay: (slot) => assembly.overlays.get(slot) ?? null,
+      element: (type) => assembly.elements.get(type) ?? null,
+      elements: assembly.elements,
+      tools: assembly.tools,
+    }),
+    [assembly],
+  );
+
+  return (
+    <ViewportRegistrationProvider value={setViewport}>
+      <AuthoringRegisterContext.Provider value={setAuthoring}>
+        <ProjectionProvider value={projection}>
+          <HostServicesProvider value={host}>{children}</HostServicesProvider>
+        </ProjectionProvider>
+      </AuthoringRegisterContext.Provider>
+    </ViewportRegistrationProvider>
+  );
+}
+
+/**
+ * Why a contribution is inert. Mirrored into `data-plugin-state` for gate assertions, and an
+ * alias rather than a copy of `@manifold/plugin`'s union: the projection registry publishes
+ * these three states to plugin code, and two spellings of the same closed set is exactly the
+ * drift invariant 14 forbids.
+ */
+export type PlaceholderState = ProjectionState;
+
+const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
+  disabled: "disabled",
+  unknown: "unknown plugin",
+  unavailable: "no renderer",
+};
+
+export type PluginPlaceholderProps = ProjectionPlaceholderProps;
+
+/**
+ * The one inert-contribution ref, shared by workspace panes and canvas nodes: it NAMES
+ * what is missing, so a disabled plugin reads as "core.draw is off", never as a blank box.
+ * The remove control commits a pruned workspace tree through `core.space.setLayout`, which is why
+ * a disable can never brick a layout (D4, `[R: layout-lock blocker]`).
+ */
+export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
+  return (
+    <Cover className="plugin-placeholder" data-plugin-state={state}>
+      <Stack gap="0.3rem" align="center">
+        <strong className="plugin-placeholder__name">{name}</strong>
+        <span className="plugin-placeholder__state">{PLACEHOLDER_LABELS[state]}</span>
+        {onRemove === undefined ? null : (
+          <button
+            type="button"
+            className="plugin-placeholder__remove"
+            data-action="core.space.setLayout"
+            onClick={onRemove}
+          >
+            Remove
+          </button>
+        )}
+      </Stack>
+    </Cover>
+  );
+}
+
+export interface PanelOutletProps {
+  /** FULL panel id, exactly as a `panel` tile ref carries it. */
+  readonly panelId: string;
+  /** Offered on placeholders only: prune this leaf from the caller's own layout. */
+  readonly onRemove?: (() => void) | undefined;
+}
+
+/**
+ * Renders whatever a `panel` tile ref points at — the single call ref between the tile tree
+ * and plugin code. Every failure mode is a named placeholder rather than an empty pane:
+ * unknown id, known-but-disabled plugin, or a declared panel whose web half is absent.
+ */
+export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactElement {
+  const assembly = useAssembly();
+  const host = useHostServices();
+  const panel = assembly.panels.get(panelId);
+
+  if (panel === undefined) {
+    return <PluginPlaceholder name={panelId} state="unknown" onRemove={onRemove} />;
+  }
+  const name = assembly.pluginTitle(panel.plugin) ?? panel.plugin;
+  if (!panel.enabled) {
+    return <PluginPlaceholder name={name} state="disabled" onRemove={onRemove} />;
+  }
+  if (panel.Component === null) {
+    return <PluginPlaceholder name={name} state="unavailable" onRemove={onRemove} />;
+  }
+  const Panel = panel.Component;
+  return <Panel host={host} />;
+}

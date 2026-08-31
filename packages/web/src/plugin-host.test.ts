@@ -1,0 +1,280 @@
+import { describe, expect, test } from "bun:test";
+import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
+import { buildBrowserAssembly, type WebPluginDef } from "./plugin-host.tsx";
+
+/**
+ * THE JOIN: the server's vocabulary meets the browser's registrations.
+ *
+ * The roster decides WHAT exists and whether it is enabled (D3 — registration is shared
+ * state); `WEB_PLUGIN_DEFS` only says who draws it. Everything below defends that split:
+ * a registration for a name the server never published contributes nothing, and a declared
+ * name with no registration is still PRESENT so the outlet can render a placeholder naming
+ * the plugin it waits for rather than a blank tile (D4).
+ *
+ * Components are stand-ins here — nothing renders. What matters is which object arrives at
+ * which key, because the canvas keys React Flow's node types off exactly these identities.
+ */
+
+const Sidebar = (): null => null;
+const ContainerView = (): null => null;
+const MachinesSection = (): null => null;
+const DrawNode = (): null => null;
+const UriRoute = (): null => null;
+/** A stand-in facet: identity is all the join cares about. */
+const TERMINALS = {
+  View: (): null => null,
+  defaultMachine: (): null => null,
+  rememberMachine: (): void => undefined,
+};
+
+interface ManifestFields {
+  readonly id: string;
+  readonly title?: string;
+  readonly contributes?: Partial<PluginManifest["contributes"]>;
+}
+
+function entry(fields: ManifestFields, enabled = true): PluginRosterEntry {
+  return {
+    manifest: {
+      id: fields.id,
+      version: "0.1.0",
+      title: fields.title ?? fields.id,
+      description: "",
+      capabilities: [],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [],
+        ...fields.contributes,
+      },
+    },
+    enabled,
+    source: "builtin",
+    actions: [],
+  };
+}
+
+const SHELL = {
+  id: "core.shell",
+  title: "Shell",
+  contributes: {
+    panels: [
+      { id: "sidebar", title: "Sidebar" },
+      { id: "container-view", title: "Container" },
+    ],
+  },
+} as const satisfies ManifestFields;
+
+const MACHINES = {
+  id: "core.machines",
+  title: "Machines",
+  contributes: { sections: [{ id: "machines", title: "Machines", order: 20 }] },
+} as const satisfies ManifestFields;
+
+const DRAW = {
+  id: "core.draw",
+  title: "Drawing",
+  contributes: {
+    elements: [{ type: "draw", title: "Drawing" }],
+    tools: [{ id: "draw", title: "Draw" }],
+  },
+} as const satisfies ManifestFields;
+
+const DEFS: readonly WebPluginDef[] = [
+  { id: "core.shell", panels: { sidebar: Sidebar, "container-view": ContainerView } },
+  { id: "core.machines", sections: { machines: MachinesSection } },
+  { id: "core.draw", elements: { draw: DrawNode } },
+  { id: "core.uri", routes: { uri: UriRoute } },
+];
+
+describe("buildBrowserAssembly", () => {
+  test("registrations attach to declared names, keyed the way each kind is addressed", () => {
+    const assembly = buildBrowserAssembly([entry(SHELL), entry(MACHINES), entry(DRAW)], 3, DEFS);
+
+    // Panels are keyed by FULL id, because that is the string a `panel` tile ref holds.
+    expect([...assembly.panels.keys()]).toEqual([
+      "core.shell.sidebar",
+      "core.shell.container-view",
+    ]);
+    expect(assembly.panels.get("core.shell.sidebar")).toEqual({
+      plugin: "core.shell",
+      title: "Sidebar",
+      Component: Sidebar,
+      enabled: true,
+    });
+    // Sections are keyed globally: one sidebar, one slot per name.
+    expect(assembly.sections.map((section) => section.id)).toEqual(["machines"]);
+    expect(assembly.sections[0]?.Component).toBe(MachinesSection);
+    // Elements are keyed by the WIRE type a scene document stores, not by a local name.
+    expect(assembly.elements.get("draw")?.Component).toBe(DrawNode);
+    // The MANIFEST owns the tool vocabulary outright: a tool is a NAME the ref holding
+    // the toolbar switches on, so there is no registration to attach and nothing a web half
+    // could use to rename what the roster declared.
+    expect(assembly.tools).toEqual([
+      { id: "draw", plugin: "core.draw", title: "Draw", enabled: true },
+    ]);
+    expect(assembly.revision).toBe(3);
+    expect(assembly.roster).toHaveLength(3);
+  });
+
+  test("a declared name with no registration is PRESENT with a null component", () => {
+    // The placeholder path (D4): the outlet needs the plugin's title to name what it is
+    // waiting for, so dropping the entry would leave it with nothing to say.
+    const assembly = buildBrowserAssembly([entry(SHELL), entry(DRAW)], 1, [
+      { id: "core.shell", panels: { sidebar: Sidebar } },
+    ]);
+
+    expect(assembly.panels.get("core.shell.container-view")).toEqual({
+      plugin: "core.shell",
+      title: "Container",
+      Component: null,
+      enabled: true,
+    });
+    expect(assembly.elements.get("draw")?.Component).toBeNull();
+    expect(assembly.tools[0]?.title).toBe("Draw");
+    expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
+  });
+
+  test("a disabled plugin keeps every contribution, tagged enabled:false", () => {
+    const assembly = buildBrowserAssembly(
+      [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry({ id: "core.uri" }, false)],
+      1,
+      DEFS,
+    );
+
+    // D4: a disable is not a deletion. The vocabulary stays so a stroke authored while the
+    // plugin was on renders an inert ref NAMING the plugin, and enabling brings the ink
+    // back with no reload — which is impossible if the entry vanished.
+    expect(assembly.enabled("core.machines")).toBe(false);
+    expect(assembly.enabled("core.shell")).toBe(true);
+    expect(assembly.sections[0]).toEqual({
+      id: "machines",
+      plugin: "core.machines",
+      title: "Machines",
+      order: 20,
+      Component: MachinesSection,
+      enabled: false,
+    });
+    expect(assembly.elements.get("draw")?.enabled).toBe(false);
+    expect(assembly.tools[0]?.enabled).toBe(false);
+    // Routes have no manifest row, so their enablement can only come from the roster entry
+    // of the plugin that registered them — a disabled deep link renders the same placeholder.
+    expect(assembly.routes.get("uri")).toEqual({
+      plugin: "core.uri",
+      Component: UriRoute,
+      enabled: false,
+    });
+    // And the title survives, because that is what the placeholder prints.
+    expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
+  });
+
+  test("the three projection channels take their plugin's roster state", () => {
+    // Container refs, overlays and the terminal facet have no manifest row — like routes, they
+    // are not refs the WORKSPACE composes — so the only thing that can gate them is the
+    // registering plugin's enablement. That is what makes disabling a renderer paint the
+    // engine's named placeholder instead of leaving a blank pane (ADR 0013 §4).
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.canvas", renderers: { canvas: ContainerView } },
+      { id: "core.presence", overlays: { "container-roster": UriRoute } },
+      { id: "core.terminals", terminals: TERMINALS },
+    ];
+    const roster: PluginRoster = [
+      entry({ id: "core.canvas", title: "Canvas" }),
+      entry({ id: "core.presence", title: "Presence" }, false),
+      entry({ id: "core.terminals", title: "Terminals" }, false),
+    ];
+    const assembly = buildBrowserAssembly(roster, 1, defs);
+
+    expect(assembly.renderers.get("canvas")).toEqual({
+      plugin: "core.canvas",
+      title: "Canvas",
+      Component: ContainerView,
+      enabled: true,
+    });
+    // A registration for a discipline nobody registered is simply absent, and the outlet
+    // reads that as "unknown" rather than guessing a renderer.
+    expect(assembly.renderers.get("composition")).toBeUndefined();
+    expect(assembly.overlays.get("container-roster")?.enabled).toBe(false);
+    // The facet SURVIVES the disable, tagged, because the placeholder has to name the plugin
+    // whose viewer is missing — and re-enabling must not need a re-registration.
+    expect(assembly.terminals).toEqual({
+      plugin: "core.terminals",
+      title: "Terminals",
+      enabled: false,
+      facet: TERMINALS,
+    });
+  });
+
+  test("an id the roster never published is unknown, and unknown is not enabled", () => {
+    const assembly = buildBrowserAssembly([entry(SHELL)], 1, DEFS);
+
+    // The two states a placeholder distinguishes: "disabled" (a row saying so) versus
+    // "unknown" (no row at all — a layout naming a plugin this workspace does not have).
+    expect(assembly.enabled("core.ghost")).toBe(false);
+    expect(assembly.pluginTitle("core.ghost")).toBeNull();
+  });
+
+  test("a registration the server never published contributes NOTHING", () => {
+    // The roster is the vocabulary, so a browser build cannot invent a plugin by shipping a
+    // component for it — otherwise a stale bundle would show panels the server refuses to
+    // dispatch for, and A2 parity (every principal sees the same workspace) would break.
+    const assembly = buildBrowserAssembly([entry(SHELL)], 1, [
+      ...DEFS,
+      { id: "core.smuggled", panels: { ghost: Sidebar }, routes: { ghost: UriRoute } },
+    ]);
+
+    expect([...assembly.panels.keys()]).toEqual([
+      "core.shell.sidebar",
+      "core.shell.container-view",
+    ]);
+    expect(assembly.routes.has("ghost")).toBe(false);
+    expect(assembly.routes.has("uri")).toBe(false);
+    expect(assembly.enabled("core.smuggled")).toBe(false);
+  });
+
+  test("sections sort by declared order, and equal orders keep roster order", () => {
+    const section = (id: string, order: number): ManifestFields => ({
+      id: `core.${id}`,
+      contributes: { sections: [{ id, title: id, order }] },
+    });
+    const roster: PluginRoster = [
+      entry(section("late", 30)),
+      entry(section("tiedA", 10)),
+      entry(section("early", 1)),
+      entry(section("tiedB", 10)),
+    ];
+
+    // An unstable tiebreak would reshuffle a user's sidebar on any unrelated toggle, since
+    // every roster change rebuilds this list. Registration order is the deterministic answer,
+    // the same one the engine's `assembleRoster` gives server-side.
+    expect(buildBrowserAssembly(roster, 1, []).sections.map((row) => row.id)).toEqual([
+      "early",
+      "tiedA",
+      "tiedB",
+      "late",
+    ]);
+  });
+
+  test("an unrelated toggle leaves the ELEMENT registry byte-for-byte the same", () => {
+    /*
+      The remount hazard, defended at its source. React Flow remounts every node when its
+      node-type map changes identity, and a remount destroys live PTYs on the canvas — so the
+      canvas caches that map on a signature of (type, enabled, component) tuples. That cache
+      is only sound if hiding a sidebar section cannot perturb the element registry.
+     */
+    const before = buildBrowserAssembly([entry(MACHINES), entry(DRAW)], 1, DEFS);
+    const after = buildBrowserAssembly([entry(MACHINES, false), entry(DRAW)], 2, DEFS);
+
+    const tuples = (registry: typeof before.elements): unknown[] =>
+      [...registry].map(([type, element]) => [type, element.enabled, element.Component]);
+    expect(tuples(after.elements)).toEqual(tuples(before.elements));
+    // Identity, not equality: the SAME component object must arrive, or the signature would
+    // be stable while the map behind it changed.
+    expect(after.elements.get("draw")?.Component).toBe(before.elements.get("draw")?.Component);
+    // Whereas the toggle that DOES concern elements moves the tuple, so the cache rebuilds.
+    const drawOff = buildBrowserAssembly([entry(MACHINES, false), entry(DRAW, false)], 3, DEFS);
+    expect(tuples(drawOff.elements)).not.toEqual(tuples(before.elements));
+  });
+});

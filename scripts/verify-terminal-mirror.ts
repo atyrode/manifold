@@ -13,7 +13,7 @@
  *   1. the clone renders screen state that existed BEFORE it was created;
  *   2. live output mirrors to both views;
  *   3. after a reload both views render (no mount-race zombie);
- *   4. the mono portal's chrome is a real POINTER surface — the terminal's own titlebar is
+ *   4. the mono portal's chrome is a real POINTER ref — the terminal's own titlebar is
  *      the node's bar and drag handle, and its controls are clickable without JavaScript
  *      reaching past `pointer-events`;
  *   5. unplacing one mirror removes only that REFERENCE: the other view stays live and
@@ -22,11 +22,11 @@
  *   6. unplacing the LAST reference leaves the terminal alive and UNPLACED, and the index
  *      resurfaces it as a top-level row (the INDEX VISIBILITY RULE: top level is homes
  *      and the homeless);
- *   7. a canvas snapped into a tile renders its live board, not a name card;
+ *   7. a canvas snapped into a tile renders its live canvas, not a name card;
  *   8. composition by drag: holding a terminal over another morphs the target into
  *      container chrome with a snap preview, the release births ONE composition named
- *      after both surfaces over the target's geometry, both terminals render LIVE inside
- *      the resulting widget, ENTERING it navigates to its own renderer with screen state
+ *      after both refs over the target's geometry, both terminals render LIVE inside
+ *      the resulting portal, ENTERING it navigates to its own renderer with screen state
  *      intact, and dragging a tile back out onto the canvas re-homes that terminal into a
  *      fresh solo composition which the canvas portals at the drop point, while the source
  *      composition keeps the item it still holds.
@@ -41,8 +41,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PadResponseSchema,
-  PadsResponseSchema,
+  ActionOutcomeSchema,
+  ContainerResponseSchema,
+  ContainersResponseSchema,
+  elementString,
   TerminalsResponseSchema,
   type SceneElement,
   type TerminalSummary,
@@ -183,7 +185,7 @@ async function releaseAt(target: Browser, at: Point): Promise<void> {
 /**
  * One REAL pointer click. Distinct from `element.click()`, which reaches a listener even
  * through `pointer-events: none` — the difference is exactly how the canvas terminal's
- * titlebar became inert (a mono portal is not a `.flow-terminal`, and the rules that made
+ * titlebar became inert (a mono portal is not a `.canvas-terminal`, and the rules that made
  * the bar take the pointer were scoped to that retired node type) while every
  * synthetic-click assertion in this gate stayed green.
  */
@@ -265,41 +267,58 @@ try {
   const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  /** The whole terminal index, which is where "unplaced" is answered from. */
-  const listTerminals = async (): Promise<readonly TerminalSummary[]> =>
-    TerminalsResponseSchema.parse(
-      await (await fetch(`${origin}/api/terminals`, { headers: httpHeaders })).json(),
-    ).terminals;
+  /**
+   * The whole terminal index, which is where "unplaced" is answered from — and a DOOR, like
+   * every other read in the wave: `core.terminals.listAll` answers an outcome envelope.
+   */
+  const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
+    const listed = await fetch(`${origin}/api/actions/core.terminals.listAll`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: "{}",
+    });
+    const outcome = ActionOutcomeSchema.parse(await listed.json());
+    if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
+    return TerminalsResponseSchema.parse(outcome.result).terminals;
+  };
   /**
    * A canvas element names the CONTAINER a terminal lives in, never the terminal, so the
-   * id `PATCH /api/terminals/:id` takes is read back from the home index.
+   * id `core.terminals.rename` takes is read back from the home index.
    */
   const terminalHomedIn = async (containerId: string): Promise<string> =>
     (await listTerminals()).find((terminal) => terminal.homeId === containerId)?.id ?? "";
   const nameTerminal = async (terminalId: string, name: string): Promise<void> => {
-    const renamed = await fetch(`${origin}/api/terminals/${terminalId}`, {
-      method: "PATCH",
+    const renamed = await fetch(`${origin}/api/actions/core.terminals.rename`, {
+      method: "POST",
       headers: httpHeaders,
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ terminalId: terminalId, name }),
     });
-    if (!renamed.ok) throw new Error(`could not name the terminal ${name}`);
+    // The action door answers 200 even for a refusal, so the outcome decides, not the status.
+    const outcome = ActionOutcomeSchema.parse(await renamed.json());
+    if (!outcome.ok) throw new Error(`could not name the terminal ${name}`);
   };
 
-  const created = await fetch(`${origin}/api/pads`, {
-    method: "POST",
-    headers: httpHeaders,
-    body: JSON.stringify({ name: "terminal-mirror-gate" }),
-  });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const createContainer = async (name: string, layout?: "composition"): Promise<string> => {
+    const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
+      method: "POST",
+      headers: httpHeaders,
+      body: JSON.stringify({ name, ...(layout === undefined ? {} : { layout }) }),
+    });
+    const outcome = ActionOutcomeSchema.parse(await created.json());
+    if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+    return ContainerResponseSchema.parse(outcome.result).container.id;
+  };
+
+  const containerId = await createContainer("terminal-mirror-gate");
 
   browser = new Browser();
   await browser.launch(9345);
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "mirror-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
-  await browser.goto(`${origin}/p/${padId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
     20_000,
@@ -309,7 +328,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "document.querySelector('[data-testid=machines-section] > summary') !== null",
+        "document.querySelector('[data-testid=machines-section] button[aria-expanded]') !== null",
       ),
     20_000,
     "sidebar machine section",
@@ -317,7 +336,7 @@ try {
 
   // Create a terminal directly from an online machine row in the sidebar.
   await browser.evaluate(
-    "document.querySelector('[data-testid=machines-section] > summary').click()",
+    "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
   );
   await until(
     () =>
@@ -337,14 +356,14 @@ try {
 
   const center = () =>
     browser!.evaluate<{ x: number; y: number }>(
-      "(() => { const b = document.querySelector('.manifold-terminal').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()",
+      "(() => { const b = document.querySelector('.terminal-frame').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()",
     );
   const showing = (marker: string) =>
     browser!.evaluate<boolean[]>(
-      `[...document.querySelectorAll('.manifold-terminal')].map(t => (t.querySelector('.xterm-rows')?.textContent || '').includes('${marker}'))`,
+      `[...document.querySelectorAll('.terminal-frame')].map(t => (t.querySelector('.xterm-rows')?.textContent || '').includes('${marker}'))`,
     );
   const termCount = () =>
-    browser!.evaluate<number>("document.querySelectorAll('.manifold-terminal').length");
+    browser!.evaluate<number>("document.querySelectorAll('.terminal-frame').length");
 
   // Screen state that must exist BEFORE the clone is born.
   const c0 = await center();
@@ -363,7 +382,7 @@ try {
   // whole mirror contract: the terminal itself never has more than one home.
   observer = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId,
+    containerId,
     token: ownerKey,
     reconnect: false,
   });
@@ -391,7 +410,7 @@ try {
 
   // 2. Live output mirrors to both views.
   const first = await browser.evaluate<{ x: number; y: number }>(
-    "(() => { const b = document.querySelectorAll('.manifold-terminal')[0].getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()",
+    "(() => { const b = document.querySelectorAll('.terminal-frame')[0].getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()",
   );
   await browser.drag([first], 30);
   await sleep(500);
@@ -406,11 +425,11 @@ try {
   );
 
   // 3. Reload: both views must render (mount-race zombie).
-  await browser.goto(`${origin}/p/${padId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "document.querySelectorAll('.manifold-terminal').length === 2 && document.querySelectorAll('.xterm-rows').length === 2",
+        "document.querySelectorAll('.terminal-frame').length === 2 && document.querySelectorAll('.xterm-rows').length === 2",
       ),
     25_000,
     "both terminals re-rendered after reload",
@@ -459,10 +478,10 @@ try {
   });
   await sleep(1500);
 
-  // 4. The mono portal's chrome is a real POINTER surface. A canvas terminal renders
+  // 4. The mono portal's chrome is a real POINTER ref. A canvas terminal renders
   //    element-chrome-first: the terminal's own titlebar IS the node's bar, carrying the
   //    node's verbs and acting as its React Flow drag handle. `.terminal-titlebar` is
-  //    `pointer-events: none` by default (it floats over the xterm surface), so this is
+  //    `pointer-events: none` by default (it floats over the xterm ref), so this is
   //    the assertion that catches a bar which renders but takes no pointer — a state in
   //    which the terminal cannot be dragged and none of its controls can be pressed, and
   //    which every `element.click()` in this file would sail straight through.
@@ -474,7 +493,7 @@ try {
   }>(
     `(() => {
       const node = document.querySelector('.react-flow__node[data-id="${clone.id}"]');
-      const bar = node?.querySelector('.flow-portal--mono .terminal-titlebar');
+      const bar = node?.querySelector('.portal--mono .terminal-titlebar');
       if (!(bar instanceof HTMLElement)) {
         return { mono: false, handleOwned: false, handleCursor: "none", unreachable: [] };
       }
@@ -555,10 +574,13 @@ try {
   //    it: top level is homes and the homeless, and a terminal nothing references is
   //    homeless. A placed terminal's row is deliberately elided from the top level, so
   //    this row appearing is the whole observable difference.
-  const soloTerminalId = await terminalHomedIn(source.containerId);
-  if (soloTerminalId === "") throw new Error(`no terminal is homed in ${source.containerId}`);
+  // The protocol's element schema is a neutral envelope (ADR 0013 §16), so a portal's target is
+  // read rather than trusted: a missing reference fails the gate by name instead of by cast.
+  const sourceHome = elementString(source, "containerId") ?? "";
+  const soloTerminalId = await terminalHomedIn(sourceHome);
+  if (soloTerminalId === "") throw new Error(`no terminal is homed in ${sourceHome}`);
   await nameTerminal(soloTerminalId, "mirror-solo");
-  const soloRow = JSON.stringify(`.pad-sidebar-row [aria-label="Open terminal mirror-solo"]`);
+  const soloRow = JSON.stringify(`.sidebar-row [aria-label="Open terminal mirror-solo"]`);
   const rowWhilePlaced = await settles(
     () => browser!.evaluate<boolean>(`document.querySelector(${soloRow}) !== null`),
     4_000,
@@ -596,35 +618,30 @@ try {
   // Shared plumbing for the container rounds. The composition contract is about what a
   // COLLABORATOR sees, so a second real browser joins here: the SDK observer above can
   // read the scene but not the rendered chrome that carries the contract.
-  const padNameOf = async (id: string): Promise<string> => {
-    const listed = PadsResponseSchema.parse(
-      await (await fetch(`${origin}/api/pads`, { headers: httpHeaders })).json(),
-    );
-    return listed.pads.find((pad) => pad.id === id)?.name ?? "";
-  };
-  const padIdNamed = async (name: string): Promise<string> => {
-    const listed = PadsResponseSchema.parse(
-      await (await fetch(`${origin}/api/pads`, { headers: httpHeaders })).json(),
-    );
-    return listed.pads.find((pad) => pad.name === name)?.id ?? "";
-  };
-  const createPad = async (name: string): Promise<string> => {
-    const created = PadResponseSchema.parse(
+  const listContainers = async (): Promise<readonly { id: string; name: string }[]> => {
+    // `core.index.listContainers` is the name-bearing listing; /api/containers is the census
+    // (structure, not names) and parses with a different schema on purpose.
+    const outcome = ActionOutcomeSchema.parse(
       await (
-        await fetch(`${origin}/api/pads`, {
+        await fetch(`${origin}/api/actions/core.index.listContainers`, {
           method: "POST",
           headers: httpHeaders,
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({}),
         })
       ).json(),
     );
-    return created.pad.id;
+    if (!outcome.ok) throw new Error(`listContainers refused: ${outcome.denial.message}`);
+    return ContainersResponseSchema.parse(outcome.result).containers;
   };
+  const containerNameOf = async (id: string): Promise<string> =>
+    (await listContainers()).find((container) => container.id === id)?.name ?? "";
+  const containerIdNamed = async (name: string): Promise<string> =>
+    (await listContainers()).find((container) => container.name === name)?.id ?? "";
   const enterWorkspace = async (target: Browser, displayName: string): Promise<void> => {
     await target.goto(`${origin}/#key=${ownerKey}`);
     if (await target.evaluate<boolean>("document.querySelector('input') !== null")) {
       await target.typeInto("input", displayName);
-      await target.clickText("Enter manifold");
+      await target.clickTestId("identity-enter");
     }
   };
   const openCanvas = async (target: Browser, id: string, what: string): Promise<void> => {
@@ -646,27 +663,27 @@ try {
     );
   const tilesInside = (target: Browser, elementId: string): Promise<number> =>
     target.evaluate<number>(
-      `document.querySelectorAll('.react-flow__node[data-id="${elementId}"] .flow-portal__tile').length`,
+      `document.querySelectorAll('.react-flow__node[data-id="${elementId}"] .portal__tile').length`,
     );
-  // The sidebar's container index labels a tiled container's row "Open composition <name>". The
-  // canvas widget's own maximize button carries the same wording, so a row assertion scopes to
-  // `.pad-sidebar-row` — otherwise a widget on screen could satisfy a check about the sidebar.
+  // The sidebar's container index labels a composition's row "Open composition <name>". The
+  // canvas portal's own maximize button carries the same wording, so a row assertion scopes to
+  // `.sidebar-row` — otherwise a portal on screen could satisfy a check about the sidebar.
   const rowFor = (name: string): string =>
-    JSON.stringify(`.pad-sidebar-row [aria-label="Open composition ${name}"]`);
+    JSON.stringify(`.sidebar-row [aria-label="Open composition ${name}"]`);
 
   watcher = new Browser();
   await watcher.launch(9346);
   await enterWorkspace(watcher, "mirror-gate-watcher");
   await sleep(1200);
 
-  // 5. A canvas snapped into a tile renders its LIVE board: the tiled renderer mounts a
-  //    real React Flow instance for a pad surface, not a name card. Every terminal is
-  //    homed in a tiled composition from birth, so the source terminal's own home is the
+  // 5. A canvas snapped into a tile renders its LIVE canvas: the composition renderer mounts a
+  //    real React Flow instance for a container ref, not a name card. Every terminal is
+  //    homed in a composition from birth, so the source terminal's own home is the
   //    container this round drops into — no expand step has to manufacture one.
-  const embeddedPadId = await createPad("mirror-gate-embedded");
+  const embeddedContainerId = await createContainer("mirror-gate-embedded");
   embedded = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId: embeddedPadId,
+    containerId: embeddedContainerId,
     token: ownerKey,
     reconnect: false,
   });
@@ -686,78 +703,80 @@ try {
     }),
   );
   await sleep(800);
-  const homeId = source.containerId;
-  await browser.goto(`${origin}/p/${homeId}`);
+  const mirrorContainerId = source.containerId;
+  await browser.goto(`${origin}/p/${mirrorContainerId}`);
   await until(
-    () => browser!.evaluate<boolean>("document.querySelector('.tiled-leaf') !== null"),
+    () => browser!.evaluate<boolean>("document.querySelector('.composition-leaf') !== null"),
     25_000,
     "the terminal's home composition mounted for the canvas drop",
   );
   await sleep(1500);
-  const padDrop = await nativeDrag(
+  const containerDrop = await nativeDrag(
     browser,
-    `.pad-tree-item[data-tree-kind="pad"][data-tree-id="${embeddedPadId}"]`,
-    { selector: ".tiled-leaf", fx: 0.5, fy: 0.9 },
+    `.index-item[data-tree-kind="container"][data-tree-id="${embeddedContainerId}"]`,
+    { selector: ".composition-leaf", fx: 0.5, fy: 0.9 },
   );
   check(
     "a canvas row drag carries the one item envelope into a tile drop",
-    padDrop.ok && padDrop.types.includes("application/x-manifold-item") && padDrop.accepted,
-    `types=[${padDrop.types.join(", ")}] accepted=${String(padDrop.accepted)}`,
+    containerDrop.ok &&
+      containerDrop.types.includes("application/x-manifold-item") &&
+      containerDrop.accepted,
+    `types=[${containerDrop.types.join(", ")}] accepted=${String(containerDrop.accepted)}`,
   );
-  const liveBoard = await settles(
+  const liveCanvas = await settles(
     () =>
       browser!.evaluate<boolean>(
-        "document.querySelector('.tiled-leaf .react-flow') !== null && (document.querySelector('.tiled-leaf .flow-text')?.textContent || '').includes('EMBEDDED_CANVAS_LIVE')",
+        "document.querySelector('.composition-leaf .react-flow') !== null && (document.querySelector('.composition-leaf .canvas-text')?.textContent || '').includes('EMBEDDED_CANVAS_LIVE')",
       ),
     30_000,
   );
   check(
-    "a canvas snapped into a tile renders its live board",
-    liveBoard,
-    `nested react-flow rendering the embedded element: ${String(liveBoard)}`,
+    "a canvas snapped into a tile renders its live canvas",
+    liveCanvas,
+    `nested react-flow rendering the embedded element: ${String(liveCanvas)}`,
   );
   /*
-    An embedded canvas wears its own titlebar, and its maximize is the ONLY way into a pad
+    An embedded canvas wears its own titlebar, and its maximize is the ONLY way into a container
     that lives inside a composition — before that bar existed the jump was unreachable.
     Pressed with a real pointer, like every other control this gate exercises.
   */
-  const padTileEnter = await pointIn(
+  const containerTileEnter = await pointIn(
     browser,
-    `.tiled-pad-tile__bar [aria-label="Open canvas mirror-gate-embedded"]`,
+    `.composition-tile__bar [aria-label="Open canvas mirror-gate-embedded"]`,
     0.5,
     0.5,
   );
-  if (padTileEnter === null) throw new Error("the embedded canvas tile carries no way in");
-  await clickAt(browser, padTileEnter);
-  const padTileJumped = await settles(
+  if (containerTileEnter === null) throw new Error("the embedded canvas tile carries no way in");
+  await clickAt(browser, containerTileEnter);
+  const containerTileJumped = await settles(
     () =>
       browser!.evaluate<boolean>(
-        `location.pathname === ${JSON.stringify(`/p/${embeddedPadId}`)} &&
-         document.querySelector('.pad-browser-canvas .react-flow') !== null`,
+        `location.pathname === ${JSON.stringify(`/p/${embeddedContainerId}`)} &&
+         document.querySelector('.workspace-canvas .react-flow') !== null`,
       ),
     25_000,
   );
   check(
-    "an embedded canvas tile opens the pad it holds",
-    padTileJumped,
-    `route is the embedded pad with its own board: ${String(padTileJumped)}`,
+    "an embedded canvas tile opens the container it holds",
+    containerTileJumped,
+    `route is the embedded container with its own canvas: ${String(containerTileJumped)}`,
   );
 
   // 8. Composition by drag, the canvas-side door into a composition: holding one terminal
   //    over another morphs the target into container chrome, the release births ONE
-  //    composition absorbing both terminals in the target's own slot, the widget keeps
+  //    composition absorbing both terminals in the target's own slot, the portal keeps
   //    painting them LIVE, entering it walks into its own renderer, and dragging a tile
   //    back out re-homes that terminal into a fresh solo composition the canvas portals
   //    at the drop point.
-  const composePadId = await createPad("mirror-gate-compose");
+  const composeContainerId = await createContainer("mirror-gate-compose");
   composed = new SessionClient({
     url: `${origin.replace(/^http/, "ws")}/ws/session`,
-    padId: composePadId,
+    containerId: composeContainerId,
     token: ownerKey,
     reconnect: false,
   });
   await composed.connect();
-  await openCanvas(browser, composePadId, "compose canvas mounted");
+  await openCanvas(browser, composeContainerId, "compose canvas mounted");
   for (const ordinal of ["first", "second"] as const) {
     const before = await termCount();
     if (!(await clickIn(browser, '[aria-label^="New terminal on "]'))) {
@@ -781,8 +800,9 @@ try {
     [anchor, "alpha"],
     [mover, "beta"],
   ] as const) {
-    const terminalId = await terminalHomedIn(element.containerId);
-    if (terminalId === "") throw new Error(`no terminal is homed in ${element.containerId}`);
+    const home = elementString(element, "containerId") ?? "";
+    const terminalId = await terminalHomedIn(home);
+    if (terminalId === "") throw new Error(`no terminal is homed in ${home}`);
     await nameTerminal(terminalId, name);
   }
   // Both terminals are authored at the canvas centre at 720x480, which puts the pair
@@ -821,13 +841,13 @@ try {
 
   /*
     A marker on the anchor's screen BEFORE any composition exists. After the merge the
-    widget has to keep painting that same live terminal — a container widget previewing
+    portal has to keep painting that same live terminal — a container portal previewing
     its terminals at depth 2 is the contract, and a name card that says "alpha" would
     satisfy every structural assertion below without it.
   */
   const anchorBody = await pointIn(
     browser,
-    `.react-flow__node[data-id="${anchor.id}"] .flow-portal__shield`,
+    `.react-flow__node[data-id="${anchor.id}"] .portal__shield`,
     0.5,
     0.5,
   );
@@ -874,7 +894,7 @@ try {
     view chrome onto the node (`.flow-node--compose-target`) or paints a flow-space
     half-rect (`.flow-compose-preview`). The armed WIDGET's own overlay resolves the
     zone now — `.tile-area` wears `is-previewing` and the landing slot is a
-    `.tile-preview` inside it — so the proof hooks are the widget's.
+    `.tile-preview` inside it — so the proof hooks are the portal's.
   */
   const morphed = await settles(
     () =>
@@ -896,19 +916,19 @@ try {
   /*
     The target was ALREADY a portal — every canvas terminal is one — so the birth shows in
     its ARITY, not in the node type: it must stop wearing element-first mono chrome and
-    start wearing composition chrome. Asserting `.flow-portal` alone would pass before the
+    start wearing composition chrome. Asserting `.portal` alone would pass before the
     gesture ran.
   */
-  const composedWidget = await settles(
+  const composedPortal = await settles(
     () =>
       browser!.evaluate<boolean>(
         `(() => {
           const node = document.querySelector('.react-flow__node[data-id="${anchor.id}"]');
           if (node === null) return false;
           return (
-            node.querySelector('.flow-portal') !== null &&
-            node.querySelector('.flow-portal--mono') === null &&
-            node.querySelector('.flow-portal__strip') !== null
+            node.querySelector('.portal') !== null &&
+            node.querySelector('.portal--mono') === null &&
+            node.querySelector('.portal__strip') !== null
           );
         })()`,
       ),
@@ -917,9 +937,9 @@ try {
   const composedRect = await nodeRect(browser, anchor.id);
   const composeDrift = rectDrift(anchorRect, composedRect);
   check(
-    "the release turns the target into a composition widget in its own slot",
-    composedWidget && composeDrift <= 2,
-    `composition chrome=${String(composedWidget)} geometry drift=${composeDrift.toFixed(1)}px`,
+    "the release turns the target into a composition portal in its own slot",
+    composedPortal && composeDrift <= 2,
+    `composition chrome=${String(composedPortal)} geometry drift=${composeDrift.toFixed(1)}px`,
   );
   const bothInside = await settles(
     async () => (await tilesInside(browser!, anchor.id)) === 2,
@@ -933,13 +953,13 @@ try {
     30_000,
   );
   check(
-    "both sessions render as tiles inside the composed widget",
+    "both terminals render as tiles inside the composed portal",
     bothInside && moverConsumed,
     `tiles=${String(await tilesInside(browser, anchor.id))} dragged element consumed=${String(moverConsumed)}`,
   );
   /*
-    Depth-2 live preview: the widget joined a room it did not own a moment ago and is
-    painting a terminal it never hosted. The marker predates the composition, so a tile
+    Depth-2 live preview: the portal joined a room it did not own a moment ago and is
+    painting a terminal it never hosted. The marker predates the assembly, so a tile
     showing it proves the preview replays screen state rather than merely mounting an
     xterm — the zombie regression, one nesting level down.
   */
@@ -948,7 +968,7 @@ try {
       browser!.evaluate<boolean>(
         `(() => {
           const tiles = document.querySelectorAll(
-            '.react-flow__node[data-id="${anchor.id}"] .flow-portal__tile .xterm-rows',
+            '.react-flow__node[data-id="${anchor.id}"] .portal__tile .xterm-rows',
           );
           return (
             tiles.length === 2 &&
@@ -959,13 +979,13 @@ try {
     30_000,
   );
   check(
-    "the widget previews its terminals live, replaying state that predates it",
+    "the portal previews its terminals live, replaying state that predates it",
     previewLive,
     `two live tiles replaying the pre-composition marker: ${String(previewLive)}`,
   );
 
   /*
-    ENGAGEMENT, the two contracts that make a widget usable rather than decorative.
+    ENGAGEMENT, the two contracts that make a portal usable rather than decorative.
 
     The veil says which tile owns the keyboard: at rest every tile is dimmed, and engaging
     one undims exactly that tile. And the escalation from spectator to occupant swaps the
@@ -973,10 +993,10 @@ try {
     stamped here and counted again after engaging AND after leaving, because a rebuilt host
     loses its scrollback and flashes at both ends of the gesture.
   */
-  const widgetTiles = `.react-flow__node[data-id="${anchor.id}"] .flow-portal__tile`;
+  const portalTiles = `.react-flow__node[data-id="${anchor.id}"] .portal__tile`;
   const stamped = await browser.evaluate<number>(
     `(() => {
-      const hosts = document.querySelectorAll(${JSON.stringify(`${widgetTiles} .xterm`)});
+      const hosts = document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm`)});
       for (const host of hosts) host.setAttribute('data-gate-mark', '1');
       return hosts.length;
     })()`,
@@ -984,7 +1004,7 @@ try {
   const veils = (): Promise<{ readonly total: number; readonly dimmed: number }> =>
     browser!.evaluate(
       `(() => {
-        const all = [...document.querySelectorAll(${JSON.stringify(`${widgetTiles} .terminal-idle-veil`)})];
+        const all = [...document.querySelectorAll(${JSON.stringify(`${portalTiles} .terminal-idle-veil`)})];
         return {
           total: all.length,
           dimmed: all.filter((veil) => getComputedStyle(veil).opacity === "1").length,
@@ -992,8 +1012,8 @@ try {
       })()`,
     );
   const atRest = await veils();
-  const engageAt = await pointIn(browser, `${widgetTiles} .flow-portal__shield`, 0.5, 0.5);
-  if (engageAt === null) throw new Error("the composed widget offers no tile to engage");
+  const engageAt = await pointIn(browser, `${portalTiles} .portal__shield`, 0.5, 0.5);
+  if (engageAt === null) throw new Error("the composed portal offers no tile to engage");
   await clickAt(browser, engageAt);
   const engagedVeils = await settles(async () => {
     const state = await veils();
@@ -1001,45 +1021,45 @@ try {
   }, 15_000);
   const afterEngage = await veils();
   check(
-    "a widget dims its resting tiles and undims only the engaged one",
+    "a portal dims its resting tiles and undims only the engaged one",
     stamped === 2 && atRest.total === 2 && atRest.dimmed === 2 && engagedVeils,
     `atRest=${String(atRest.dimmed)}/${String(atRest.total)} engaged=${String(
       afterEngage.dimmed,
     )}/${String(afterEngage.total)}`,
   );
   const marksWhileEngaged = await browser.evaluate<number>(
-    `document.querySelectorAll(${JSON.stringify(`${widgetTiles} .xterm[data-gate-mark]`)}).length`,
+    `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
-  // Pressing outside the widget drops occupancy: the socket swaps back the other way.
+  // Pressing outside the portal drops occupancy: the socket swaps back the other way.
   await clickAt(browser, { x: paneFrame.paneLeft + 30, y: paneFrame.paneTop + 30 });
   const disengaged = await settles(async () => {
     const state = await veils();
     return state.total === 2 && state.dimmed === 2;
   }, 15_000);
   const marksAfter = await browser.evaluate<number>(
-    `document.querySelectorAll(${JSON.stringify(`${widgetTiles} .xterm[data-gate-mark]`)}).length`,
+    `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
   const bufferKept = await browser.evaluate<boolean>(
-    `[...document.querySelectorAll(${JSON.stringify(`${widgetTiles} .xterm-rows`)})].some(
+    `[...document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm-rows`)})].some(
        (rows) => (rows.textContent || '').includes('COMPOSED_TILE_LIVE'),
      )`,
   );
   check(
-    "engaging and leaving a widget keeps the same xterm hosts and their buffers",
+    "engaging and leaving a portal keeps the same xterm hosts and their buffers",
     marksWhileEngaged === 2 && marksAfter === 2 && disengaged && bufferKept,
     `marks engaged=${String(marksWhileEngaged)} after=${String(marksAfter)} reveiled=${String(
       disengaged,
     )} scrollback=${String(bufferKept)}`,
   );
   // The composed row is read from a FRESH mount (the tree does not poll).
-  await openCanvas(watcher, composePadId, "watcher mounted the compose canvas");
+  await openCanvas(watcher, composeContainerId, "watcher mounted the compose canvas");
   const composedRow = rowFor("alpha + beta");
   const namedRow = await settles(
     () => watcher!.evaluate<boolean>(`document.querySelector(${composedRow}) !== null`),
     25_000,
   );
   check(
-    "composition writes a row named after both surfaces",
+    "composition writes a row named after both refs",
     namedRow,
     `row “alpha + beta”: ${String(namedRow)}`,
   );
@@ -1047,42 +1067,42 @@ try {
   /*
     ENTER, which is the whole of what "expand" used to be. Under solo compositions nothing
     is born by entering: the composition already exists, so the verb is navigation to it.
-    The gate presses the widget's own maximize control with a real pointer and asserts the
+    The gate presses the portal's own maximize control with a real pointer and asserts the
     route, the composition renderer, and the marker still on the terminal's screen — the
     old "the expanded terminal replays its screen state in its tile" contract, re-expressed.
   */
-  const enterControl = `.react-flow__node[data-id="${anchor.id}"] .flow-portal__strip [aria-label="Open composition alpha + beta"]`;
+  const enterControl = `.react-flow__node[data-id="${anchor.id}"] .portal__strip [aria-label="Open composition alpha + beta"]`;
   const enterAt = await pointIn(browser, enterControl, 0.5, 0.5);
-  if (enterAt === null) throw new Error("the composed widget offers no way in");
-  const composedViewIdEntered = await padIdNamed("alpha + beta");
+  if (enterAt === null) throw new Error("the composed portal offers no way in");
+  const composedViewIdEntered = await containerIdNamed("alpha + beta");
   if (composedViewIdEntered === "") {
-    throw new Error("the composed view is missing from /api/pads");
+    throw new Error("the composed view is missing from /api/containers");
   }
   await clickAt(browser, enterAt);
   const entered = await settles(
     () =>
       browser!.evaluate<boolean>(
         `location.pathname === ${JSON.stringify(`/p/${composedViewIdEntered}`)} &&
-         document.querySelectorAll('.tiled-pad-view .tiled-leaf .xterm-rows').length === 2`,
+         document.querySelectorAll('.composition-view .composition-leaf .xterm-rows').length === 2`,
       ),
     25_000,
   );
   const enteredMarker = await settles(
     () =>
       browser!.evaluate<boolean>(
-        `[...document.querySelectorAll('.tiled-pad-view .xterm-rows')].some(
+        `[...document.querySelectorAll('.composition-view .xterm-rows')].some(
            (rows) => (rows.textContent || '').includes('COMPOSED_TILE_LIVE'),
          )`,
       ),
     25_000,
   );
   check(
-    "entering the widget navigates into the composition it points at",
+    "entering the portal navigates into the composition it points at",
     entered && enteredMarker,
     `route+two tiles=${String(entered)} marker replayed=${String(enteredMarker)}`,
   );
-  // Back to the canvas: extraction is a canvas gesture, and the widget must be on screen.
-  await openCanvas(browser, composePadId, "compose canvas remounted after entering");
+  // Back to the canvas: extraction is a canvas gesture, and the portal must be on screen.
+  await openCanvas(browser, composeContainerId, "compose canvas remounted after entering");
   await sleep(1500);
 
   // Extraction leaves ONE item behind, and a composition that still holds something is
@@ -1091,18 +1111,18 @@ try {
   const composedViewId = composedViewIdEntered;
   await watcher.goto(`${origin}/p/${composedViewId}`);
   await until(
-    () => watcher!.evaluate<boolean>("document.querySelector('.tiled-pad-view') !== null"),
+    () => watcher!.evaluate<boolean>("document.querySelector('.composition-view') !== null"),
     25_000,
     "watcher occupied the composed view",
   );
 
   const extraction = await nativeDrag(
     browser,
-    `.react-flow__node[data-id="${anchor.id}"] .flow-portal__shield`,
+    `.react-flow__node[data-id="${anchor.id}"] .portal__shield`,
     { selector: ".react-flow__pane", fx: 0.2, fy: 0.85 },
   );
   check(
-    "a tile drag out of a widget carries the one item envelope onto the canvas",
+    "a tile drag out of a portal carries the one item envelope onto the canvas",
     extraction.ok &&
       extraction.types.includes("application/x-manifold-item") &&
       extraction.accepted,
@@ -1110,7 +1130,7 @@ try {
   );
   /*
     A re-homed terminal comes back as an ELEMENT-FIRST node: a portal onto a FRESH solo
-    composition, wearing the terminal's own chrome. There is no terminal node type to look
+    assembly, wearing the terminal's own chrome. There is no terminal node type to look
     for any more, and mere node-counting would not distinguish this from the move failing:
     the source composition is down to one item and therefore renders element-first too, so
     the canvas legitimately shows two mono portals afterwards. What identifies the
@@ -1118,9 +1138,7 @@ try {
     left nor either terminal's pre-merge home, with a terminal actually homed there.
   */
   const monoTerminals = (target: Browser): Promise<number> =>
-    target.evaluate<number>(
-      "document.querySelectorAll('.react-flow__node .flow-portal--mono').length",
-    );
+    target.evaluate<number>("document.querySelectorAll('.react-flow__node .portal--mono').length");
   const extractedElement = (): SceneElement | undefined =>
     [...composed!.elements.values()].find(
       (element) => element.id !== anchor.id && element.id !== mover.id,
@@ -1128,17 +1146,19 @@ try {
   const reAuthored = await settles(async () => {
     const extracted = extractedElement();
     if (extracted?.type !== "portal") return false;
+    const extractedHome = elementString(extracted, "containerId");
+    if (extractedHome === null) return false;
     if (
-      extracted.containerId === composedViewId ||
-      extracted.containerId === anchor.containerId ||
-      extracted.containerId === mover.containerId
+      extractedHome === composedViewId ||
+      extractedHome === elementString(anchor, "containerId") ||
+      extractedHome === elementString(mover, "containerId")
     ) {
       return false;
     }
-    if ((await terminalHomedIn(extracted.containerId)) === "") return false;
+    if ((await terminalHomedIn(extractedHome)) === "") return false;
     // Rendered, and element-first: both survivors wear the terminal's own chrome now.
     const rendered = await browser!.evaluate<boolean>(
-      `document.querySelector('.react-flow__node[data-id="${extracted.id}"] .flow-portal--mono') !== null`,
+      `document.querySelector('.react-flow__node[data-id="${extracted.id}"] .portal--mono') !== null`,
     );
     return rendered && (await monoTerminals(browser!)) === 2;
   }, 30_000);
@@ -1157,9 +1177,9 @@ try {
   check(
     "the source composition keeps the item extraction left behind",
     oneTileLeft,
-    `tiles left inside the widget: ${String(await tilesInside(browser, anchor.id))}`,
+    `tiles left inside the portal: ${String(await tilesInside(browser, anchor.id))}`,
   );
-  const rowPersisted = (await padNameOf(composedViewId)) === "alpha + beta";
+  const rowPersisted = (await containerNameOf(composedViewId)) === "alpha + beta";
   check(
     "a composition that still holds an item keeps its row",
     rowPersisted,

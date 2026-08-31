@@ -3,7 +3,7 @@ import type { SceneElement } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   mintToken,
   startServer,
   waitFor,
@@ -26,23 +26,23 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
   try {
     server = await startServer();
     servers.push(server);
-    const pad = await createPad(server, "convergence");
+    const container = await createContainer(server, "convergence");
     // The scene under test is made of REFERENCES: a canvas holds portals onto containers,
-    // never an element carrying a session, so a real container id is what they point at.
-    const referenced = await createPad(server, "convergence reference");
+    // never an element carrying a terminal, so a real container id is what they point at.
+    const referenced = await createContainer(server, "convergence reference");
     const alice = await mintToken(server, {
       principal: { kind: "human", name: "Alice", color: "#aa3355" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
     const bob = await mintToken(server, {
       principal: { kind: "human", name: "Bob", color: "#3366cc" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
 
-    const clientA = await connect(server, { padId: pad.id, token: alice.token });
-    const clientB = await connect(server, { padId: pad.id, token: bob.token });
+    const clientA = await connect(server, { containerId: container.id, token: alice.token });
+    const clientB = await connect(server, { containerId: container.id, token: bob.token });
     clients.push(clientA, clientB);
 
     const initial: SceneElement[] = Array.from({ length: 40 }, (_, index) =>
@@ -106,7 +106,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     await waitFor(() => clientA.elements.size === 50, 10_000, 20);
 
     const resumedB = await connect(server, {
-      padId: pad.id,
+      containerId: container.id,
       token: bob.token,
       lastEpoch,
       lastRev,
@@ -154,7 +154,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     server = restarted;
     servers.push(restarted);
     const afterRestart = await connect(restarted, {
-      padId: pad.id,
+      containerId: container.id,
       token: alice.token,
       reconnect: false,
     });

@@ -14,7 +14,8 @@ bun test packages      # unit tests (zero external services)
 bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint
 bun run format         # prettier
-bun run gate           # all of the above + verify:convergence; green before any push
+bun run gate           # all of the above + verify:convergence + verify:axioms; green
+                       # before any push
 bun run changelog:check # generated in-app release history matches CHANGELOG.md
 bun run release -- minor # bump, finalize, verify, tag, push, publish GitHub release
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
@@ -63,18 +64,28 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
 
 ## Map
 
-| Package             | Role                                                                                                                     |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `packages/protocol` | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message. |
-| `packages/sdk`      | THE typed client (session + machine channels). Web, tests, tools all use it.                                             |
-| `packages/server`   | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                 |
-| `packages/agent`    | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                    |
-| `packages/web`      | Vite + React 19 + React Flow canvas + xterm terminals + presence UI.                                                     |
-| `packages/testkit`  | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                          |
+| Package              | Role                                                                                                                                                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/protocol`  | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message.                                                                                                                                                   |
+| `packages/sdk`       | THE typed client (session + machine channels). Web, tests, tools all use it.                                                                                                                                                                                               |
+| `packages/server`    | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                                                                                                                                                                   |
+| `packages/agent`     | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                                                                                                                                                                      |
+| `packages/web`       | Vite + React 19: the browser plugin host and the workspace shell — panel outlets, the typed HTTP client, the notice provider, the one stylesheet. Every renderer (canvas, composition, terminal, attendance) lives in its own plugin.                                      |
+| `packages/testkit`   | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                                                                                                                                                                            |
+| `packages/plugin`    | the plugin engine: manifest/action definitions, assembly and its named refusals, host contracts, the default workspace layout — plus `/hooks` (browser plane mechanism) and `/ui` (the plugin-facing standard library: glyphs, node titlebar, notice hook, vantage store). |
+| `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `assembly.ts` files, live at `GET /api/plugins` — never a prose list.                                                                                                                          |
 
-`docs/CONTRACTS.md` is the integration authority (endpoints, envs, state machines,
-persistence). `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records dated
-technology verdicts with evidence.
+`AXIOMS.md` is the constitution: the five axioms, the plane rule, the foundation law, the
+lexicon law, change control and the ratified wave roadmap. It is amended rarely and only by
+operator ratification. `REGISTRY.md` is its enforcement half: the machine-readable pillar,
+floor, lexicon, `cssFamilies`, device-local and gate-contract registries, the full-conversion
+inventory, the per-kind disable table and the S/R check inventory — amended in the same commit
+as the code it indexes. Together they — not this file — decide which code is foundation and
+which is plugin territory, and which word names which concept, and `bun run verify:axioms`
+enforces that answer; never restate the boundary here. `docs/CONTRACTS.md` is the
+integration authority (endpoints, envs, state machines, persistence). `docs/PLUGINS.md` is
+the plugin authoring guide. `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records
+dated technology verdicts with evidence.
 
 ## Invariants (violations are bugs, not style)
 
@@ -118,6 +129,57 @@ technology verdicts with evidence.
     second "remote flavor" of an existing behavior (own styling, own state derivation, own
     fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
     2026-08-30 shipped exactly that way and was operator-caught.
+12. **Everything above the floor is a plugin** (axiom A1): the registries in `REGISTRY.md` are the
+    authority on what is foundation, and a file that crosses that boundary is a registry edit in
+    the SAME commit as the code. A feature lands as a package under `packages/plugins/*` with a
+    manifest — never as a new branch in the shell. Every mutating affordance carries
+    `data-action="<action name>"`, so the DOM names the door it opens. Contributions collide
+    loudly: duplicate plugin ids, action names, panel ids, element types or tool ids fail
+    composition naming every offender, and nothing ever shadows anything. Floor files never import
+    `@manifold-plugin/*`; the two `composition.ts` registration files are the only exceptions.
+    What a plugin's data, contributions and neighbours do across an enable/disable is the
+    behavioral contract: `REGISTRY.md` §Disable semantics (D4′) and
+    `docs/decisions/0013-plugin-behavioral-contract.md`. Disable RETAINS; destruction is
+    `engine.plugins.purge`, a different verb.
+13. **Every discrete mutation is a registered action or documented plane traffic** (the plane
+    rule, `AXIOMS.md` §Axioms): an ACTION when legality or effect depends on state the actor
+    cannot see or authority it does not hold; a DOCUMENT edit when the worst-case merge is one
+    a human accepts; PRESENCE when it dies with the connection. Continuous streams (PTY I/O,
+    cursor motion, live drags) stay channel traffic, and an action fires at the COMMIT POINT of
+    a gesture, never per frame. State that reaches no plane is a bug unless it is listed in the
+    `REGISTRY.md` device-local register. `manifold://` is the canonical reference form for
+    anything addressable — grants, spotlights, `/api/resolve` and deep links all speak it, and
+    structured wire forms are its bijection, not a second address system.
+14. **One door per concept**: every concept has exactly one authoritative implementation and
+    every consumer goes through it. A second parallel implementation of an existing concept —
+    a second placement executor, a second WebSocket state machine, a second list of which
+    plugins exist, a second way to rename a terminal — is a bug, not a style choice. When a
+    concept genuinely needs a NEW door, the old one is deleted in the same change: no aliases,
+    no dual paths, no fallback readers.
+15. **The foundation is a pillar registry, admitted by a litmus test** — READ `AXIOMS.md`
+    §Foundation law before touching floor code, and `REGISTRY.md` §Pillar inventory for the rows.
+    A pillar is engine if and only if it passes all
+    three of bootstrap circularity, neutrality (zero domain nouns, no favourite plugin) and
+    arbitration; failing one means it is a plugin, and there is no third state (the `"until"` tag
+    is gone). Being floor grants no privilege — it imposes self-description: engine doors are
+    builtin roster rows, every dispatch is logged, every registry is machine-readable. Growing the
+    foundation means editing the pillar inventory plus a dated ADR that applies the litmus
+    criterion by criterion; every floor file must fall inside exactly one pillar's globs, and an
+    unmatched file is gate RED.
+16. **One word per concept, one concept per word.** The law is `AXIOMS.md` §Lexicon law and the
+    canonical registry is `REGISTRY.md`
+    §Lexicon: a machine-readable registry of every domain term — what it means, the synonyms it
+    retires, and the exemptions that survive. A banned synonym in an identifier, a wire literal,
+    a CSS selector, a file name or a doc heading fails the gate (`verify:axioms` S11), and
+    exactly ONE table in the tree may translate an item kind into a display noun (S12) — three
+    tables that disagreed about what to call a container is what having no canon cost. Adding a
+    term is a registry edit in the same commit as the code; RETIRING one — moving a word into a
+    `banned` list — takes the row plus the mechanical sweep, because a banned word with live
+    occurrences is RED by construction, so the registry cannot run ahead of the code even by
+    accident. An exemption is an `allow` row with a reason, and an exemption that stops being
+    needed stops being permitted: every `allow` row must suppress at least one real occurrence
+    or the gate fails it as dead. Prose inside comment bodies is review's job rather than the
+    scanner's — what a comment describes is covered mechanically, because its identifiers are.
 
 ## Conventions
 
@@ -132,5 +194,25 @@ technology verdicts with evidence.
   component callback, where it is hard to isolate and test.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
+- **Tests prove necessity.** A test defends a contract the system needs, never the bare fact
+  that code exists. Write it for an observable contract — a boundary, an invariant, a
+  transition, a precedence rule, a real error — and delete it when the contract goes. Code that
+  is neither tested nor documented is a defect, and the correct fix may be DELETION rather than
+  a test: a test written to cover something nobody needs makes the unneeded thing permanent.
+- **Roster restraint.** The default distribution stays small and non-opinionated. A new core
+  plugin needs the same justification discipline as a new pillar (`AXIOMS.md` §Foundation law):
+  extending an existing seat beats adding a new one, and an opinionated feature belongs on the
+  roadmap or in a third-party plugin — never in the box by default. "Everything is a plugin"
+  (A1) is a statement about MECHANISM, never a licence to ship more seats: every seat in the
+  box is a thing a stranger's agent must read before it can tell what manifold is.
+- Contradictions escalate; they are never resolved quietly. Precedence is axioms > decisions >
+  scope notes (`AXIOMS.md` §Change control): the axioms and the foundation law outrank a dated
+  ADR, and an ADR outranks a plan bullet, a roadmap row or a task brief. If a brief, plan or ADR
+  cannot be executed without violating an axiom, STOP and escalate to the operator — never pick
+  the reading that looks obvious, because a silently resolved contradiction becomes precedent
+  nobody ratified. Scope may defer work; it may never license an axiom-violating state, and a
+  deferral must be visible in-product (a named refusal, a placeholder that says what is missing, a
+  roster field), not only in prose.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
-  `sdk:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is green.
+  `sdk:`, `plugin:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is
+  green.

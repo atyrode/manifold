@@ -26,6 +26,198 @@
         "@types/bun": "^1.3.2",
       },
     },
+    "packages/plugin": {
+      "name": "@manifold/plugin",
+      "dependencies": {
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "@radix-ui/react-collapsible": "1.1.20",
+        "@radix-ui/react-scroll-area": "1.2.18",
+        "lucide-react": "1.37.0",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/react": "^19.2.0",
+        "@types/react-dom": "^19.2.0",
+      },
+      "peerDependencies": {
+        "react": "19.2.8",
+        "react-dom": "19.2.8",
+      },
+    },
+    "packages/plugins/access": {
+      "name": "@manifold-plugin/access",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+      },
+    },
+    "packages/plugins/canvas": {
+      "name": "@manifold-plugin/canvas",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "@xyflow/react": "12.11.5",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/compositions": {
+      "name": "@manifold-plugin/compositions",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/draw": {
+      "name": "@manifold-plugin/draw",
+      "dependencies": {
+        "@manifold/protocol": "workspace:*",
+        "@xyflow/react": "12.11.5",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/events": {
+      "name": "@manifold-plugin/events",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+      },
+    },
+    "packages/plugins/index": {
+      "name": "@manifold-plugin/index",
+      "dependencies": {
+        "@headless-tree/core": "1.7.0",
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/machines": {
+      "name": "@manifold-plugin/machines",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/notes": {
+      "name": "@manifold-plugin/notes",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/plugin-manager": {
+      "name": "@manifold-plugin/plugin-manager",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "lucide-react": "1.37.0",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/presence": {
+      "name": "@manifold-plugin/presence",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/shell": {
+      "name": "@manifold-plugin/shell",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+      },
+    },
+    "packages/plugins/terminals": {
+      "name": "@manifold-plugin/terminals",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "@xterm/addon-fit": "0.11.0",
+        "@xterm/xterm": "6.0.0",
+        "react": "19.2.8",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
+    "packages/plugins/uri": {
+      "name": "@manifold-plugin/uri",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
     "packages/protocol": {
       "name": "@manifold/protocol",
       "dependencies": {
@@ -52,6 +244,20 @@
     "packages/server": {
       "name": "@manifold/server",
       "dependencies": {
+        "@manifold-plugin/access": "workspace:*",
+        "@manifold-plugin/canvas": "workspace:*",
+        "@manifold-plugin/compositions": "workspace:*",
+        "@manifold-plugin/draw": "workspace:*",
+        "@manifold-plugin/events": "workspace:*",
+        "@manifold-plugin/index": "workspace:*",
+        "@manifold-plugin/machines": "workspace:*",
+        "@manifold-plugin/notes": "workspace:*",
+        "@manifold-plugin/plugin-manager": "workspace:*",
+        "@manifold-plugin/presence": "workspace:*",
+        "@manifold-plugin/shell": "workspace:*",
+        "@manifold-plugin/terminals": "workspace:*",
+        "@manifold-plugin/uri": "workspace:*",
+        "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",
         "yjs": "13.6.32",
@@ -74,16 +280,24 @@
     },
     "packages/web": {
       "name": "@manifold/web",
-      "version": "0.5.0-dev.5",
+      "version": "0.5.0",
       "dependencies": {
-        "@headless-tree/core": "1.7.0",
+        "@manifold-plugin/canvas": "workspace:*",
+        "@manifold-plugin/compositions": "workspace:*",
+        "@manifold-plugin/draw": "workspace:*",
+        "@manifold-plugin/index": "workspace:*",
+        "@manifold-plugin/machines": "workspace:*",
+        "@manifold-plugin/notes": "workspace:*",
+        "@manifold-plugin/plugin-manager": "workspace:*",
+        "@manifold-plugin/presence": "workspace:*",
+        "@manifold-plugin/shell": "workspace:*",
+        "@manifold-plugin/terminals": "workspace:*",
+        "@manifold-plugin/uri": "workspace:*",
+        "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",
         "@manifold/sdk": "workspace:*",
-        "@xterm/addon-fit": "0.11.0",
-        "@xterm/xterm": "6.0.0",
         "@xyflow/react": "12.11.5",
-        "lucide-react": "1.37.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
         "yjs": "13.6.32",
@@ -173,7 +387,35 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@manifold-plugin/access": ["@manifold-plugin/access@workspace:packages/plugins/access"],
+
+    "@manifold-plugin/canvas": ["@manifold-plugin/canvas@workspace:packages/plugins/canvas"],
+
+    "@manifold-plugin/compositions": ["@manifold-plugin/compositions@workspace:packages/plugins/compositions"],
+
+    "@manifold-plugin/draw": ["@manifold-plugin/draw@workspace:packages/plugins/draw"],
+
+    "@manifold-plugin/events": ["@manifold-plugin/events@workspace:packages/plugins/events"],
+
+    "@manifold-plugin/index": ["@manifold-plugin/index@workspace:packages/plugins/index"],
+
+    "@manifold-plugin/machines": ["@manifold-plugin/machines@workspace:packages/plugins/machines"],
+
+    "@manifold-plugin/notes": ["@manifold-plugin/notes@workspace:packages/plugins/notes"],
+
+    "@manifold-plugin/plugin-manager": ["@manifold-plugin/plugin-manager@workspace:packages/plugins/plugin-manager"],
+
+    "@manifold-plugin/presence": ["@manifold-plugin/presence@workspace:packages/plugins/presence"],
+
+    "@manifold-plugin/shell": ["@manifold-plugin/shell@workspace:packages/plugins/shell"],
+
+    "@manifold-plugin/terminals": ["@manifold-plugin/terminals@workspace:packages/plugins/terminals"],
+
+    "@manifold-plugin/uri": ["@manifold-plugin/uri@workspace:packages/plugins/uri"],
+
     "@manifold/agent": ["@manifold/agent@workspace:packages/agent"],
+
+    "@manifold/plugin": ["@manifold/plugin@workspace:packages/plugin"],
 
     "@manifold/protocol": ["@manifold/protocol@workspace:packages/protocol"],
 
@@ -188,6 +430,36 @@
     "@manifold/web": ["@manifold/web@workspace:packages/web"],
 
     "@oxc-project/types": ["@oxc-project/types@0.146.0", "", {}, "sha512-XC0QsnnhVe7sLIWmYmdPw7x5P0h4W8vUU3Nv1ySgWXtvCz8NizoAEpGXA0sOYoJQV2Rl13LgURAHQ5cI5ILCSA=="],
+
+    "@radix-ui/number": ["@radix-ui/number@1.1.3", "", {}, "sha512-Road2bidD0uu/1BGDOWNdPI06g0lIRy6IF9GZcIrDK2KGItfor8IQwQa+yM2ERgHM1MmHxaxpTzk0/Jp42lNfA=="],
+
+    "@radix-ui/primitive": ["@radix-ui/primitive@1.1.7", "", {}, "sha512-rqWnm76nYT8HoNNqEjpgJ7Pw/DrBj5iBTrmEPo6HTX5+VJyBNOqTdv4g89G63HuR5g0AaENoAcH7Is5fF2kZ8Q=="],
+
+    "@radix-ui/react-collapsible": ["@radix-ui/react-collapsible@1.1.20", "", { "dependencies": { "@radix-ui/primitive": "1.1.7", "@radix-ui/react-compose-refs": "1.1.5", "@radix-ui/react-context": "1.2.2", "@radix-ui/react-id": "1.1.4", "@radix-ui/react-presence": "1.1.10", "@radix-ui/react-primitive": "2.1.10", "@radix-ui/react-use-controllable-state": "1.2.6", "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "@types/react-dom": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc", "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react", "@types/react-dom"] }, "sha512-mcGesGplBnzN2sbvJETzpCNfSMyPnb29q1GRLU+Ib7bJrpIG2ywmRoh2V5VbA2uNvKikKUlVbAPks7JDjz4A8Q=="],
+
+    "@radix-ui/react-compose-refs": ["@radix-ui/react-compose-refs@1.1.5", "", { "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-+48PbAAbq3didjJxa+OaWY2ZwgAKsNiRGyeHKszblZMQ+kcpd9pAaT11cMkGEie0vsOi3QdeTE6d5Fe3Gn61kA=="],
+
+    "@radix-ui/react-context": ["@radix-ui/react-context@1.2.2", "", { "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-RHCUGwKHDr0hDGg4X7ma4JG4/+12qxw8rkh5QKdDldlCvtja6nUx1Ef/8HVrJze81lEsgLQlqjzjGNHantgnQA=="],
+
+    "@radix-ui/react-direction": ["@radix-ui/react-direction@1.1.4", "", { "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-5pzg4FGQNpExhnhT2zlrP1wZFaYCd1K0nYWoFAdcYoYK868IEigqMX3B3f8yIoRlAhAeDWciLI6ZdCKHF9P4Vg=="],
+
+    "@radix-ui/react-id": ["@radix-ui/react-id@1.1.4", "", { "dependencies": { "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-TMQp2llA+RYn7JcjnrMnz7wN4pcVttPZnRZo52PLQsoLVKzNlVwUeHmfePgTgRluXFvlD3GD5g5MOVVTJCO0qA=="],
+
+    "@radix-ui/react-presence": ["@radix-ui/react-presence@1.1.10", "", { "dependencies": { "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "@types/react-dom": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc", "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react", "@types/react-dom"] }, "sha512-3wyzCQ6+ubRA+D4uv9m95JYLXxmOHp05qjrkjeA7uKHHtjpPggQzc6DAb0URl7j67oR0K2foO4ip27TiX037Bw=="],
+
+    "@radix-ui/react-primitive": ["@radix-ui/react-primitive@2.1.10", "", { "dependencies": { "@radix-ui/react-slot": "1.3.3" }, "peerDependencies": { "@types/react": "*", "@types/react-dom": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc", "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react", "@types/react-dom"] }, "sha512-MucOnzh6hR5mid6VpkbglRAMYMjKLqRnGBbjXkzjK52fuQDd1qbkx78a5P40mkcnVXJdEVxm26E9OPAiUq7nBg=="],
+
+    "@radix-ui/react-scroll-area": ["@radix-ui/react-scroll-area@1.2.18", "", { "dependencies": { "@radix-ui/number": "1.1.3", "@radix-ui/primitive": "1.1.7", "@radix-ui/react-compose-refs": "1.1.5", "@radix-ui/react-context": "1.2.2", "@radix-ui/react-direction": "1.1.4", "@radix-ui/react-presence": "1.1.10", "@radix-ui/react-primitive": "2.1.10", "@radix-ui/react-use-callback-ref": "1.1.4", "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "@types/react-dom": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc", "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react", "@types/react-dom"] }, "sha512-Zn5Cd171wxsO3Dfg8HaW6RifTb9CYTKQJHs/G4+LN1GfmJpaQMZQyQxMprVPHpaz7QY4l9BxK2JwQuzHsXC8nA=="],
+
+    "@radix-ui/react-slot": ["@radix-ui/react-slot@1.3.3", "", { "dependencies": { "@radix-ui/react-compose-refs": "1.1.5" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-qx7oqnYbxnK9kYI9m317qmFmEgo6ywqWvbTogdj7cL9p3/yx4M48p7Rnw5z3H890cL/ow/EeWJsuTykeZVXP5Q=="],
+
+    "@radix-ui/react-use-callback-ref": ["@radix-ui/react-use-callback-ref@1.1.4", "", { "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-R6OUY2e2fA6Yn6s+VSx5KBV6Nx8LQEhu+cz7LCej18rQ1HLyg9PSC9jP/ZNx0o6FAIK9c0F1kHylzSxKsdlkrQ=="],
+
+    "@radix-ui/react-use-controllable-state": ["@radix-ui/react-use-controllable-state@1.2.6", "", { "dependencies": { "@radix-ui/primitive": "1.1.7", "@radix-ui/react-use-effect-event": "0.0.5", "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-uEQJGT97ZA/TgP/Hydw47lHu+/vQj6z/0jA+WeTbK1o9Rx45GImjpD0tc3W5ad3D6XTSR6e1yEO0FvGq6WQfVQ=="],
+
+    "@radix-ui/react-use-effect-event": ["@radix-ui/react-use-effect-event@0.0.5", "", { "dependencies": { "@radix-ui/react-use-layout-effect": "1.1.4" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-7cshFL8HGS/7HEiHH+9kL9HBwp2sa9yX18Knwek6KYWmXwM7pegMgta2AXMQKI+rq3JnfSj9x8wYqFMTdG1Jgg=="],
+
+    "@radix-ui/react-use-layout-effect": ["@radix-ui/react-use-layout-effect@1.1.4", "", { "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-K20DkRkUwDnxEYMBPcg3Y6voLkEy5p5QQmszZgLngKKiC7dzBR/aEuK3w1qlx2JWDUNH6FluahYdgR3BP+QbYw=="],
 
     "@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.5", "", { "os": "android", "cpu": "arm" }, "sha512-DLe/i+l8ynIBY7XEQ191TeZvCoowIGa18R+dIV30GW7DiOtp74i/xX8hs8GUjW5ARV7VZuie3d6AumSmCwbeRA=="],
 

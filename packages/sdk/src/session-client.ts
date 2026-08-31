@@ -1,25 +1,51 @@
 import {
+  ActionOutcomeSchema,
+  BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
+  MachinesResponseSchema,
+  MintTokenRequestSchema,
   PROTOCOL_VERSION,
+  AttendanceResponseSchema,
+  ContainerResponseSchema,
+  ContainerTerminalsResponseSchema,
+  IndexResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  PlacementDeniedResponseSchema,
+  RevokeRequestSchema,
+  RevokeResultSchema,
+  TerminalsResponseSchema,
+  TokenGrantSchema,
+  placementContainerFor,
+  placementRefusalRule,
+  type ActionDenial,
+  type ActionOutcome,
+  type BootstrapPrincipalRequest,
   type Cap,
   type ClientMessageBody,
   type Gesture,
+  type MachineSummary,
+  type MintTokenRequest,
+  type Container,
+  type Attendance,
+  type ContainerTerminalSummary,
+  type IndexEntry,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementDestination,
-  type PlacementSurface,
+  type PlacementRef,
+  type PluginRoster,
   type PresencePayload,
   type PresenceState,
   type Principal,
+  type RevokeResult,
   type SceneElement,
   type ServerMessageBody,
-  type SessionInfo,
+  type TerminalInfo,
+  type TerminalSummary,
   type TileLayout,
+  type TokenGrant,
 } from "@manifold/protocol";
 import {
   LOCAL_ORIGIN,
@@ -45,6 +71,7 @@ import { bytesToBase64, textToBase64 } from "./base64.ts";
 import {
   acquireChannel,
   type ChannelFrame,
+  type ConnectionFrame,
   type JoinBody,
   type PooledChannel,
 } from "./connection-pool.ts";
@@ -58,10 +85,16 @@ import {
  *
  * What it no longer owns is the SOCKET. Since v12 the transport is multiplexed: this
  * client is a channel handle on a pooled connection keyed by (url, token), so a tab
- * rendering a canvas plus five portal widgets holds ONE TCP connection with six channels.
- * The public surface is unchanged — construct one per room, `connect()`, subscribe — and
+ * rendering a canvas plus five portal portals holds ONE TCP connection with six channels.
+ * The public ref is unchanged — construct one per room, `connect()`, subscribe — and
  * reconnect, keepalive, and rejoin-every-channel live one layer down in
  * `connection-pool.ts`.
+ *
+ * Some of its ref is WORKSPACE-level rather than room-level: the action door
+ * (`action`), the workspace reads (`machines`, `index`, `attendance`, `terminalsByContainer`,
+ * `terminals`), and the plugin roster (`onPlugins`). A plugin holds only this client, so
+ * the questions it asks the workspace arrive through the same handle — over HTTP and the
+ * connection-level frame category, never over a room channel.
  */
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
@@ -74,7 +107,14 @@ export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" |
 type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 export interface SceneTx {
-  create(element: SceneElement): void;
+  /**
+   * Authors one element. `collaborative` names the PAYLOAD fields the document should hold as
+   * shared text rather than as plain values, and the author is the only party that knows: the
+   * protocol's element schema is a neutral envelope (ADR 0013 §16), so the SDK carries a record
+   * it does not interpret. Omitting it means "this record has no collaborative field", which is
+   * the truth for every kind but one.
+   */
+  create(element: SceneElement, collaborative?: readonly string[]): void;
   patch(id: string, patch: ScenePatch): boolean;
   remove(id: string): boolean;
   text(id: string): Y.Text | null;
@@ -90,12 +130,18 @@ export interface SessionEvents {
   /** Validated element projections changed inside the Yjs document. */
   elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
   /**
-   * A tiled container's layout tree changed. The tree is small and read whole, so
+   * A composition's layout tree changed. The tree is small and read whole, so
    * subscribers re-read `layout()` rather than diffing tile ids.
    */
   layout_changed: (origin: "local" | "remote" | "undo") => void;
-  roster_changed: () => void;
-  sessions_changed: () => void;
+  attendance_changed: () => void;
+  terminals_changed: () => void;
+  /**
+   * The workspace's plugin roster arrived (socket open) or changed (an enable/disable).
+   * It is connection-level news, not room traffic, so it never reaches `message`.
+   * Subscribe through `onPlugins`, which replays the last one it heard.
+   */
+  plugins_changed: (roster: PluginRoster) => void;
 }
 
 type EventKey = ChannelFrame["type"] | keyof SessionEvents;
@@ -109,14 +155,22 @@ export type PlaceOutcome =
   | { readonly ok: true; readonly result: PlaceResponse }
   | { readonly ok: false; readonly denial: PlacementDenial };
 
+/**
+ * What an access door answers: the thing it issued, or the denial that refused it. Same
+ * shape as `PlaceOutcome` and for the same reason — a caller renders a refusal, and a
+ * refused delegation is an answer rather than a broken call.
+ */
+export type AccessOutcome<T> =
+  { readonly ok: true; readonly result: T } | { readonly ok: false; readonly denial: ActionDenial };
+
 export interface SessionClientOptions {
-  /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
+  /** ws(s) URL of the terminal endpoint, e.g. ws://localhost:7777/ws/session */
   url: string;
-  padId: string;
+  containerId: string;
   token: string;
   /**
    * Joins as a spectator: this channel watches the room (state, doc updates, terminal
-   * output) without occupying it. It is absent from the roster and from pad presence,
+   * output) without occupying it. It is absent from the roster and from container presence,
    * and the server rejects any write it sends. Live previews of a container use it;
    * anything a user acts in does not.
    */
@@ -127,7 +181,7 @@ export interface SessionClientOptions {
    */
   reconnect?: boolean;
   /**
-   * DI seam for tests. It is also part of the pool key: two clients sharing a factory
+   * DI call ref for tests. It is also part of the pool key: two clients sharing a factory
    * (and url and token) share one socket, while a test handing each client its own
    * socket double keeps them genuinely separate.
    */
@@ -144,26 +198,31 @@ export interface SessionClientOptions {
 const OUTBOX_LIMIT = 256;
 
 export class SessionClient {
-  readonly roster = new Map<string, PresenceState>();
-  readonly sessions = new Map<string, SessionInfo>();
+  readonly attendance = new Map<string, PresenceState>();
+  readonly terminals = new Map<string, TerminalInfo>();
   private readonly elementsState = new Map<string, SceneElement>();
   readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
-  /** Live view refcounts per attached session (see attachTerminal). */
+  /** Live view refcounts per attached terminal (see attachTerminal). */
   private readonly attachCounts = new Map<string, number>();
   epoch = "";
   rev = 0;
   self: Principal | null = null;
   selfConnId: string | null = null;
-  selfCaps: readonly Cap[] = [];
+  private selfCapsState: readonly Cap[] = [];
   status: ConnectionStatus = "idle";
 
-  private readonly opts: Required<Pick<SessionClientOptions, "url" | "padId" | "token">> &
+  private readonly opts: Required<Pick<SessionClientOptions, "url" | "containerId" | "token">> &
     SessionClientOptions;
   /** This room's channel on the shared socket; null before connect and after close. */
   private channel: PooledChannel | null = null;
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
   private closeError: Error | null = null;
+  /**
+   * The last plugin roster this connection delivered, replayed to every late `onPlugins`
+   * subscriber. A roster is workspace state, so the newest one is the whole truth.
+   */
+  private pluginRoster: PluginRoster | null = null;
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
   private hasLocalEdits = false;
@@ -187,6 +246,16 @@ export class SessionClient {
     return this.channel?.id ?? null;
   }
 
+  /**
+   * The joining principal's granted caps, as the last init/resync reported them — empty
+   * until the first one lands. A method rather than a field because it is an ANSWER a
+   * caller may hold across reconnects (a plugin gating its affordances asks again), and
+   * because the plugin engine's `SessionHandle` is a method-only ref.
+   */
+  selfCaps(): readonly Cap[] {
+    return this.selfCapsState;
+  }
+
   private installDoc(doc: Y.Doc): void {
     const map = elementsMap(doc);
     this.undoManager = new Y.UndoManager(map, {
@@ -203,7 +272,7 @@ export class SessionClient {
       if (ids.length > 0) this.emit("elements_changed", ids, this.classifyOrigin(transaction));
     });
     // Canvas containers never write tiles, so this observer stays silent for them and
-    // a tiled container needs no second subscription path.
+    // a composition needs no second subscription path.
     layoutMap(doc).observeDeep((_events, transaction) => {
       this.emit("layout_changed", this.classifyOrigin(transaction));
     });
@@ -257,7 +326,7 @@ export class SessionClient {
       try {
         (fn as (...a: unknown[]) => void)(...args);
       } catch (error) {
-        console.error("evt=session_listener_failed", type, error);
+        console.error("evt=terminal_listener_failed", type, error);
       }
     }
   }
@@ -287,7 +356,7 @@ export class SessionClient {
       if (s === "closed") {
         offStatus();
         offInit();
-        reject(this.closeError ?? new Error("session closed before init"));
+        reject(this.closeError ?? new Error("terminal closed before init"));
       }
     });
     if (this.channel === null) this.attach();
@@ -309,7 +378,7 @@ export class SessionClient {
   private joinBody(): JoinBody {
     return {
       type: "join",
-      padId: this.opts.padId,
+      containerId: this.opts.containerId,
       token: this.opts.token,
       protocolVersion: PROTOCOL_VERSION,
       // Omitted rather than sent as false: the flag's absence IS the occupant case, and
@@ -336,6 +405,9 @@ export class SessionClient {
         receive: (body) => {
           this.handle(body);
         },
+        connectionFrame: (body) => {
+          this.handleConnection(body);
+        },
         transportPhase: (phase) => {
           this.setStatus(phase);
         },
@@ -349,8 +421,8 @@ export class SessionClient {
           this.channel = null;
           this.closeError = new Error(
             reason.trim() === ""
-              ? `session rejected with close code ${code}`
-              : `session rejected with close code ${code}: ${reason.trim()}`,
+              ? `terminal rejected with close code ${code}`
+              : `terminal rejected with close code ${code}: ${reason.trim()}`,
           );
           this.setStatus("closed");
         },
@@ -364,6 +436,31 @@ export class SessionClient {
   }
 
   // ------------------------------------------------------------------ incoming
+
+  /**
+   * A frame addressed to the SOCKET this room rides. It never touches epoch/rev, never
+   * queues, and never reaches `message`: the roster describes the workspace, not the room,
+   * and every handle on the connection hears the same one.
+   *
+   * `plugins` is the only connection-level category v14 defines, so the body is read
+   * directly; a second category makes `body.attendance` a type error, which is exactly the
+   * prompt to fan the categories out here.
+   */
+  private handleConnection(body: ConnectionFrame): void {
+    this.pluginRoster = body.roster;
+    this.emit("plugins_changed", body.roster);
+  }
+
+  /**
+   * Subscribes to the workspace's plugin roster and REPLAYS the last one synchronously,
+   * so a host mounting after the socket opened renders a composition immediately instead
+   * of waiting for the next enable/disable. Returns the unsubscribe.
+   */
+  onPlugins(fn: (roster: PluginRoster) => void): () => void {
+    const off = this.on("plugins_changed", fn);
+    if (this.pluginRoster !== null) fn(this.pluginRoster);
+    return off;
+  }
 
   private handle(msg: ChannelFrame): void {
     switch (msg.type) {
@@ -380,11 +477,11 @@ export class SessionClient {
         this.rev = msg.rev;
         this.self = msg.self;
         this.selfConnId = msg.selfConnId;
-        this.selfCaps = msg.selfCaps;
-        this.roster.clear();
-        for (const p of msg.roster) this.roster.set(p.principal.id, p);
-        this.sessions.clear();
-        for (const s of msg.sessions) this.sessions.set(s.id, s);
+        this.selfCapsState = msg.selfCaps;
+        this.attendance.clear();
+        for (const p of msg.attendance) this.attendance.set(p.principal.id, p);
+        this.terminals.clear();
+        for (const s of msg.terminals) this.terminals.set(s.id, s);
         this.setStatus("open");
         // Keepalive belongs to the socket, which the pooled connection owns and pings.
         this.flushOutbox();
@@ -404,15 +501,15 @@ export class SessionClient {
         // connection-scoped, while a same-connection resync preserves those subscriptions.
         if (previousSelfConnId !== null && previousSelfConnId !== msg.selfConnId) {
           for (const attachedId of this.attachCounts.keys()) {
-            if (this.sessions.get(attachedId)?.status === "running") {
-              this.send({ type: "terminal_attach", sessionId: attachedId });
+            if (this.terminals.get(attachedId)?.status === "running") {
+              this.send({ type: "terminal_attach", terminalId: attachedId });
             }
           }
         }
         this.emit(msg.type, msg);
         this.emit("scene_reset");
-        this.emit("roster_changed");
-        this.emit("sessions_changed");
+        this.emit("attendance_changed");
+        this.emit("terminals_changed");
         break;
       }
       case "doc_update": {
@@ -420,44 +517,44 @@ export class SessionClient {
         this.emit(msg.type, msg);
         break;
       }
-      case "roster": {
-        if (msg.joined) this.roster.set(msg.joined.principal.id, msg.joined);
-        if (msg.left) this.roster.delete(msg.left.principalId);
+      case "attendance": {
+        if (msg.joined) this.attendance.set(msg.joined.principal.id, msg.joined);
+        if (msg.left) this.attendance.delete(msg.left.principalId);
         this.emit(msg.type, msg);
-        this.emit("roster_changed");
+        this.emit("attendance_changed");
         break;
       }
       case "presence": {
-        const entry = this.roster.get(msg.principalId);
+        const entry = this.attendance.get(msg.principalId);
         if (entry) {
-          this.roster.set(msg.principalId, {
+          this.attendance.set(msg.principalId, {
             ...entry,
             payload: { ...entry.payload, ...msg.payload },
           });
         }
         this.emit(msg.type, msg);
-        this.emit("roster_changed");
+        this.emit("attendance_changed");
         break;
       }
       case "terminal_opened": {
-        this.sessions.set(msg.session.id, msg.session);
+        this.terminals.set(msg.terminal.id, msg.terminal);
         this.emit(msg.type, msg);
-        this.emit("sessions_changed");
+        this.emit("terminals_changed");
         break;
       }
-      case "session_event": {
+      case "terminal_event": {
         if (msg.kind === "parked") {
-          // A departure notice: the session is no longer in THIS room, so it is no longer
+          // A departure notice: the terminal is no longer in THIS room, so it is no longer
           // reachable over this channel. It either re-homed into another composition (a
           // merge or an extraction) or it was killed and left every room.
-          this.sessions.delete(msg.sessionId);
+          this.terminals.delete(msg.terminalId);
           this.emit(msg.type, msg);
-          this.emit("sessions_changed");
+          this.emit("terminals_changed");
           break;
         }
-        const session = this.sessions.get(msg.sessionId);
-        if (session) {
-          const next: SessionInfo = { ...session };
+        const terminal = this.terminals.get(msg.terminalId);
+        if (terminal) {
+          const next: TerminalInfo = { ...terminal };
           if (msg.kind === "exited") {
             next.status = "exited";
             next.exitCode = msg.exitCode ?? null;
@@ -468,10 +565,10 @@ export class SessionClient {
             if (msg.rows !== undefined) next.rows = msg.rows;
           }
           if (msg.kind === "renamed") next.name = msg.name ?? null;
-          this.sessions.set(msg.sessionId, next);
+          this.terminals.set(msg.terminalId, next);
         }
         this.emit(msg.type, msg);
-        this.emit("sessions_changed");
+        this.emit("terminals_changed");
         break;
       }
       case "error": {
@@ -526,7 +623,8 @@ export class SessionClient {
   transact(fn: (tx: SceneTx) => void): void {
     this.currentDoc.transact(() => {
       fn({
-        create: (element) => writeElement(this.currentDoc, element, LOCAL_ORIGIN),
+        create: (element, collaborative) =>
+          writeElement(this.currentDoc, element, LOCAL_ORIGIN, collaborative),
         patch: (id, patch) => patchElement(this.currentDoc, id, patch, LOCAL_ORIGIN),
         remove: (id) => removeElement(this.currentDoc, id, LOCAL_ORIGIN),
         text: (id) => sceneElementText(this.currentDoc, id),
@@ -548,12 +646,12 @@ export class SessionClient {
   }
 
   /**
-   * The tiled container's node table, or null for a canvas — and also for a tree that
+   * The composition's node table, or null for a canvas — and also for a tree that
    * fails validation, including one that tiles this very container: an unusable tree is
    * never handed to the renderer. Read whole on every `layout_changed`.
    */
   layout(): TileLayout | null {
-    return readTileLayout(this.currentDoc, this.opts.padId);
+    return readTileLayout(this.currentDoc, this.opts.containerId);
   }
 
   /**
@@ -567,46 +665,278 @@ export class SessionClient {
   }
 
   /**
-   * THE placement call: put an item in a container. One envelope, one endpoint, and a
-   * refusal that names the RULE which refused it — legality lives in the protocol's
-   * placement declarations, so a caller never has to know which verb this used to be.
+   * THE placement call: put an item in a container. One envelope, one verb, and a refusal
+   * that names the RULE which refused it — legality lives in the protocol's placement
+   * declarations, so a caller never has to know which verb this used to be.
    *
-   * It is HTTP rather than a socket message because placement crosses containers: this
-   * client is joined to ONE room, and the write may touch two.
+   * It dispatches `core.space.place` (ADR 0013 §14): the algebra is mechanism and stays
+   * floor, the verb is a plugin, and there is exactly one door onto "place a thing". This
+   * method survives the move because the SHAPE is the contract — callers keep asking for a
+   * ref and a destination and keep getting a `PlaceOutcome`.
+   *
+   * The denial is REBUILT rather than received: the action door's `refused` rung carries one
+   * string, which leads with the algebra's own rule, and the two other fields of a
+   * `PlacementDenial` are things this caller already holds — it sent the ref, and the
+   * container is a total function of the destination. Anything that is NOT a placement rule
+   * (a cap the caller lacks, a disabled plugin, a placement that could not be carried out)
+   * throws, exactly as the HTTP failures it replaces did.
    */
-  async place(surface: PlacementSurface, destination: PlacementDestination): Promise<PlaceOutcome> {
-    const request = PlaceRequestSchema.parse({ surface, destination });
-    const response = await fetch(`${this.apiOrigin()}/api/place`, {
+  async place(ref: PlacementRef, destination: PlacementDestination): Promise<PlaceOutcome> {
+    const request = PlaceRequestSchema.parse({ ref, destination });
+    const outcome = await this.action("core.space.place", request);
+    if (outcome.ok) return { ok: true, result: PlaceResponseSchema.parse(outcome.result) };
+    const rule = placementRefusalRule(outcome.denial.message);
+    if (rule === null) throw new Error(outcome.denial.message);
+    // A denial is an ANSWER, not a failure: the caller renders the rule (and its drag
+    // preview already asked `resolvePlacement` the same question locally).
+    return {
+      ok: false,
+      denial: { rule, ref, container: placementContainerFor(destination) },
+    };
+  }
+
+  /**
+   * THE action call: invoke a plugin action by its full `plugin.local` name. A denial is
+   * DATA — the rule that refused and its message — exactly like a placement refusal,
+   * because a client renders it; only a broken door (non-JSON, an error envelope) throws.
+   *
+   * HTTP rather than a socket frame for the same reason placement is: an action addresses
+   * the WORKSPACE, while this client is joined to one room.
+   */
+  async action(name: string, args: unknown): Promise<ActionOutcome> {
+    const response = await fetch(`${this.apiOrigin()}/api/actions/${encodeURIComponent(name)}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.opts.token}`,
       },
-      body: JSON.stringify(request),
+      // An argument-free action still sends an envelope: the door parses a body.
+      body: JSON.stringify(args ?? {}),
     });
     let payload: unknown = null;
     try {
       payload = await response.json();
     } catch {
-      throw new Error(`place returned a non-JSON response (${response.status})`);
+      throw new Error(`action ${name} returned a non-JSON response (${response.status})`);
     }
-    if (response.ok) return { ok: true, result: PlaceResponseSchema.parse(payload) };
-    const denied = PlacementDeniedResponseSchema.safeParse(payload);
-    // A denial is an ANSWER, not a failure: the caller renders the rule (and its drag
-    // preview already asked `resolvePlacement` the same question locally).
-    if (denied.success) return { ok: false, denial: denied.data.error.denial };
+    if (response.ok) return ActionOutcomeSchema.parse(payload);
     const failure = HttpErrorSchema.safeParse(payload);
     throw new Error(
-      failure.success ? failure.data.error.message : `place failed (${response.status})`,
+      failure.success ? failure.data.error.message : `action ${name} failed (${response.status})`,
     );
   }
 
-  /** The HTTP origin this session's socket URL implies; `apiUrl` overrides it. */
+  /** The HTTP origin this terminal's socket URL implies; `apiUrl` overrides it. */
   private apiOrigin(): string {
     if (this.opts.apiUrl !== undefined) return this.opts.apiUrl.replace(/\/+$/, "");
     const url = new URL(this.opts.url);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     return url.origin;
+  }
+
+  // ---------------------------------------------------------- workspace reads
+
+  /*
+    A plugin asks the WORKSPACE these questions — which machines exist, what the index
+    holds — and it holds only this client. The reads therefore live here rather than in
+    each host's own fetch layer, which is what kept them out of reach of anything but the
+    web app: one door per concept.
+   */
+
+  /** One authed GET; a non-2xx is a failure, never data — these reads have no denials. */
+  private async getJson(path: string): Promise<unknown> {
+    const response = await fetch(`${this.apiOrigin()}${path}`, {
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`GET ${path} returned a non-JSON response (${response.status})`);
+    }
+    if (response.ok) return payload;
+    const failure = HttpErrorSchema.safeParse(payload);
+    throw new Error(
+      failure.success ? failure.data.error.message : `GET ${path} failed (${response.status})`,
+    );
+  }
+
+  /**
+   * One authed write to a route that is NOT an action. Exactly one door needs it — leaf
+   * removal — and the comment there says why that door is a route.
+   */
+  private async sendJson(method: string, path: string): Promise<void> {
+    const response = await fetch(`${this.apiOrigin()}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    });
+    if (response.ok) return;
+    const failure = HttpErrorSchema.safeParse(await response.json().catch(() => null));
+    throw new Error(
+      failure.success
+        ? failure.data.error.message
+        : `${method} ${path} failed (${String(response.status)})`,
+    );
+  }
+
+  /** The enrolled machines with live online state (`core.machines.list`). */
+  async machines(): Promise<readonly MachineSummary[]> {
+    return MachinesResponseSchema.parse(await this.invoke("core.machines.list", {})).machines;
+  }
+
+  /** The workspace index — containers and folders in tree order (`core.index.read`). */
+  async index(): Promise<readonly IndexEntry[]> {
+    return IndexResponseSchema.parse(await this.invoke("core.index.read", {})).items;
+  }
+
+  /** Who occupies which container right now (`GET /api/attendance`). */
+  async attendanceByContainer(): Promise<readonly Attendance[]> {
+    return AttendanceResponseSchema.parse(await this.getJson("/api/attendance")).attendance;
+  }
+
+  /** Every container-homed terminal, for per-container counts (`core.terminals.listByContainer`). */
+  async terminalsByContainer(): Promise<readonly ContainerTerminalSummary[]> {
+    return ContainerTerminalsResponseSchema.parse(
+      await this.invoke("core.terminals.listByContainer", {}),
+    ).terminals;
+  }
+
+  /** Every terminal in the workspace with its home composition (`core.terminals.listAll`). */
+  async allTerminals(): Promise<readonly TerminalSummary[]> {
+    return TerminalsResponseSchema.parse(await this.invoke("core.terminals.listAll", {})).terminals;
+  }
+
+  // --------------------------------------------------------- workspace writes
+
+  /*
+    The workspace index's writes, beside its reads for the same reason: the section that
+    LISTS containers is the section that renames and deletes them, and it holds only this
+    client. Every one of them is now a `core.views` ACTION — the bespoke routes are gone
+    (D13) — and each wrapper keeps its name, its arguments and its answer, because a method
+    name is a contract with plugin authors while the door behind it is ours to move.
+   */
+
+  /**
+   * One action as a TYPED WRAPPER calls it: the result on success, a throw carrying the
+   * denial's message on refusal. `action` itself keeps denials as DATA, which is right for a
+   * caller that renders the rule; these wrappers replaced routes whose refusal was an HTTP
+   * error, and every caller of theirs is written around a throw. One shape per call site,
+   * chosen by the call site.
+   */
+  private async invoke(name: string, args: unknown): Promise<unknown> {
+    const outcome = await this.action(name, args);
+    if (!outcome.ok) throw new Error(outcome.denial.message);
+    return outcome.result;
+  }
+
+  /** Renames one container (`core.index.renameContainer`). */
+  async renameContainer(containerId: string, name: string): Promise<Container> {
+    const result = await this.invoke("core.index.renameContainer", { containerId, name });
+    return ContainerResponseSchema.parse(result).container;
+  }
+
+  /** Retires one container (`core.index.deleteContainer`); the door enforces root authority. */
+  async deleteContainer(containerId: string): Promise<void> {
+    await this.invoke("core.index.deleteContainer", { containerId });
+  }
+
+  /** One container's record (`core.index.readContainer`), for a reference the index has not answered. */
+  async getContainer(containerId: string): Promise<Container> {
+    const result = await this.invoke("core.index.readContainer", { containerId });
+    return ContainerResponseSchema.parse(result).container;
+  }
+
+  /**
+   * Removes one leaf from a composition (`DELETE /api/containers/:id/tiles/:tileId`). Removal is
+   * the one tile gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so
+   * it keeps its own route while every MOVE of a leaf's occupant goes through `place`.
+   */
+  async removeContainerTile(containerId: string, tileId: string): Promise<void> {
+    await this.sendJson(
+      "DELETE",
+      `/api/containers/${encodeURIComponent(containerId)}/tiles/${encodeURIComponent(tileId)}`,
+    );
+  }
+
+  /** Creates an index folder (`core.index.createFolder`); answers the whole new index. */
+  async createFolder(name: string, parentId: string | null): Promise<readonly IndexEntry[]> {
+    const result = await this.invoke("core.index.createFolder", { name, parentId });
+    return IndexResponseSchema.parse(result).items;
+  }
+
+  /** Renames an index folder (`core.index.renameFolder`). */
+  async renameFolder(folderId: string, name: string): Promise<readonly IndexEntry[]> {
+    const result = await this.invoke("core.index.renameFolder", { folderId, name });
+    return IndexResponseSchema.parse(result).items;
+  }
+
+  /** Deletes an index folder (`core.index.deleteFolder`); its children move up. */
+  async deleteFolder(folderId: string): Promise<readonly IndexEntry[]> {
+    const result = await this.invoke("core.index.deleteFolder", { folderId });
+    return IndexResponseSchema.parse(result).items;
+  }
+
+  /** Moves one index item between siblings or into a folder (`core.index.moveEntry`). */
+  async moveIndexEntry(
+    item: { readonly kind: "container" | "folder"; readonly id: string },
+    parentId: string | null,
+    index: number,
+  ): Promise<readonly IndexEntry[]> {
+    const result = await this.invoke("core.index.moveEntry", { item, parentId, index });
+    return IndexResponseSchema.parse(result).items;
+  }
+
+  // -------------------------------------------------------------- access doors
+
+  /*
+    Handing authority out, over the same client every other capability uses (A2): a remote
+    human, the browser and an agent reach `core.access` identically. Unlike the index writes
+    above, a denial here is DATA rather than a throw — "you may not mint that cap" and
+    "you may not widen your container scope" are answers a caller renders and often expects, so
+    `invoke`'s throw-on-refusal would turn a normal negotiation into an exception.
+  */
+
+  /** One access door, with its refusal kept as data. */
+  private async accessDoor<T>(
+    name: string,
+    args: unknown,
+    parse: (result: unknown) => T,
+  ): Promise<AccessOutcome<T>> {
+    const outcome = await this.action(name, args);
+    if (!outcome.ok) return { ok: false, denial: outcome.denial };
+    return { ok: true, result: parse(outcome.result) };
+  }
+
+  /**
+   * Creates a principal holding a root token (`core.access.createPrincipal`). Root-only,
+   * and the workspace's bootstrap: this is how the owner key becomes a durable identity.
+   */
+  async createPrincipal(input: BootstrapPrincipalRequest): Promise<AccessOutcome<TokenGrant>> {
+    const request = BootstrapPrincipalRequestSchema.parse(input);
+    return this.accessDoor("core.access.createPrincipal", request, (result) =>
+      TokenGrantSchema.parse(result),
+    );
+  }
+
+  /**
+   * Mints a token (`core.access.mint`) no broader than this client's own authority —
+   * the delegation path an agent uses to hand a sub-agent strictly less than it holds.
+   */
+  async mintToken(input: MintTokenRequest): Promise<AccessOutcome<TokenGrant>> {
+    const request = MintTokenRequestSchema.parse(input);
+    return this.accessDoor("core.access.mint", request, (result) => TokenGrantSchema.parse(result));
+  }
+
+  /**
+   * Revokes a principal's tokens (`core.access.revoke`) and answers HOW MANY died —
+   * zero is a success, not a refusal. Live sockets holding a revoked token are closed by
+   * the server's revocation fence, so this is the whole cutoff.
+   */
+  async revokeToken(principalId: string): Promise<AccessOutcome<RevokeResult>> {
+    const request = RevokeRequestSchema.parse({ principalId });
+    return this.accessDoor("core.access.revoke", request, (result) =>
+      RevokeResultSchema.parse(result),
+    );
   }
 
   sendGesture(gesture: Gesture): void {
@@ -630,15 +960,15 @@ export class SessionClient {
   }
 
   /**
-   * Opens a terminal and resolves with its session once the server confirms.
+   * Opens a terminal and resolves with its terminal once the server confirms.
    *
-   * A terminal is born into a COMPOSITION of its own, and `session.padId` names it. Under
+   * A terminal is born into a COMPOSITION of its own, and `terminal.containerId` names it. Under
    * the default placement the caller is a canvas, so `elementId` is both the correlation
    * token and the id the caller authors its own element under — a `portal` onto
-   * `session.padId`, never a terminal element, because a canvas only ever references the
+   * `terminal.containerId`, never a terminal element, because a canvas only ever references the
    * container a terminal lives in. `placement: "tile"` is how a TILED container births
    * one: that container IS the home, so the server writes the tile leaf itself and the
-   * caller authors nothing. Read the leaf from `layout()` (`tileIdForSurface`) once this
+   * caller authors nothing. Read the leaf from `layout()` (`tileIdForRef`) once this
    * resolves; the doc update precedes the confirmation on the same socket.
    */
   openTerminal(opts: {
@@ -649,8 +979,8 @@ export class SessionClient {
     machineId?: string;
     placement?: "tile";
     timeoutMs?: number;
-  }): Promise<SessionInfo> {
-    const { promise, resolve, reject } = Promise.withResolvers<SessionInfo>();
+  }): Promise<TerminalInfo> {
+    const { promise, resolve, reject } = Promise.withResolvers<TerminalInfo>();
     const settle = (outcome: () => void): void => {
       clearTimeout(timer);
       offOpened();
@@ -666,15 +996,17 @@ export class SessionClient {
       // A server-placed reply echoes the token as `ref`, because its `elementId` is a
       // tile id this caller never chose.
       if ((msg.ref ?? msg.elementId) !== opts.elementId) return;
-      settle(() => resolve(msg.session));
+      settle(() => resolve(msg.terminal));
     });
     const offError = this.on("error", (msg) => {
       if (msg.ref !== opts.elementId) return;
-      settle(() => reject(new Error(`terminal_open failed: ${msg.code}`)));
+      settle(() => reject(new Error(`terminal_open failed: ${msg.message ?? msg.code}`)));
     });
     const offStatus = this.on("status", (status: ConnectionStatus) => {
       if (status === "closed") {
-        settle(() => reject(this.closeError ?? new Error("session closed before terminal opened")));
+        settle(() =>
+          reject(this.closeError ?? new Error("terminal closed before terminal opened")),
+        );
       }
     });
     this.send({
@@ -698,36 +1030,36 @@ export class SessionClient {
    * refcounted because the server keys viewers by connection: a raw detach
    * from one view would starve every other view on this client.
    */
-  attachTerminal(sessionId: string): void {
-    const next = (this.attachCounts.get(sessionId) ?? 0) + 1;
-    this.attachCounts.set(sessionId, next);
-    this.send({ type: "terminal_attach", sessionId });
+  attachTerminal(terminalId: string): void {
+    const next = (this.attachCounts.get(terminalId) ?? 0) + 1;
+    this.attachCounts.set(terminalId, next);
+    this.send({ type: "terminal_attach", terminalId });
   }
 
-  detachTerminal(sessionId: string): void {
-    const current = this.attachCounts.get(sessionId) ?? 0;
+  detachTerminal(terminalId: string): void {
+    const current = this.attachCounts.get(terminalId) ?? 0;
     if (current > 1) {
-      this.attachCounts.set(sessionId, current - 1);
+      this.attachCounts.set(terminalId, current - 1);
       return;
     }
-    this.attachCounts.delete(sessionId);
-    if (current === 1) this.send({ type: "terminal_detach", sessionId });
+    this.attachCounts.delete(terminalId);
+    if (current === 1) this.send({ type: "terminal_detach", terminalId });
   }
 
-  sendTerminalInput(sessionId: string, data: string | Uint8Array): void {
+  sendTerminalInput(terminalId: string, data: string | Uint8Array): void {
     const b64 = typeof data === "string" ? textToBase64(data) : bytesToBase64(data);
-    this.send({ type: "terminal_input", sessionId, data: b64 });
+    this.send({ type: "terminal_input", terminalId, data: b64 });
   }
 
-  resizeTerminal(sessionId: string, cols: number, rows: number): void {
-    this.send({ type: "terminal_resize", sessionId, cols, rows });
+  resizeTerminal(terminalId: string, cols: number, rows: number): void {
+    this.send({ type: "terminal_resize", terminalId, cols, rows });
   }
 
-  takeTerminal(sessionId: string): void {
-    this.send({ type: "terminal_take", sessionId });
+  takeTerminal(terminalId: string): void {
+    this.send({ type: "terminal_take", terminalId });
   }
 
-  killTerminal(sessionId: string): void {
-    this.send({ type: "terminal_kill", sessionId });
+  killTerminal(terminalId: string): void {
+    this.send({ type: "terminal_kill", terminalId });
   }
 }
