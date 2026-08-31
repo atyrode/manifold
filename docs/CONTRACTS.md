@@ -596,9 +596,12 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   and hands rendering back to the durable Yjs element; a stale override expires after
   `GESTURE_TTL_MS` (3s) even when its end frame is lost. `carry` is motion as the dynamic
   half of the placement algebra: one gesture kind for anything grabbed by its chrome, naming
-  the `PlacementSurface` in flight plus the label it carried at grab time — a viewer often
-  cannot derive that label, because the item belongs to a room it has not joined. All other
-  presence fields send on change only; viewport ≤1Hz.
+  the `PlacementSurface` in flight, the `PlacementItem` that surface RESOLVES to, and the
+  label it carried at grab time — a viewer often cannot derive either, because the item
+  belongs to a room it has not joined and classifying an address takes the workspace census
+  the grabber has and the watcher may be a poll behind on. `item` is REQUIRED for exactly
+  that reason: a watcher judges legality and paints from the frame, never by re-resolving
+  somebody else's address. All other presence fields send on change only; viewport ≤1Hz.
 - **Cursor coordinate space is the room's discipline.** Cursors are container-scoped
   (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; tiled
   rooms carry fractions of the view's tile area in `[0,1]²` (ratios are shared CRDT

@@ -1,5 +1,13 @@
-import type { Carry, CarryAim, Gesture, PlacementSurface, TileSurface } from "@manifold/protocol";
-import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
+import type {
+  CarriedItem,
+  Carry,
+  CarryAim,
+  Gesture,
+  PlacementItem,
+  PlacementSurface,
+  TileSurface,
+} from "@manifold/protocol";
+import { envelopeSurface, type ItemEnvelope } from "@manifold/plugin/hooks";
 import type { GestureOverride } from "./remote-gestures.ts";
 
 /**
@@ -26,7 +34,7 @@ export interface CarryPoint {
   readonly height?: number;
 }
 
-/** One live grab: what is held, what to call it, and the placement id it streams under. */
+/** One live grab: what is held, what it IS, what to call it, and its streaming id. */
 export interface CarrySource {
   /**
    * The gesture's key. It is the carried object's PLACEMENT id wherever it has one, so
@@ -35,6 +43,13 @@ export interface CarrySource {
    */
   readonly id: string;
   readonly envelope: ItemEnvelope;
+  /**
+   * The item the envelope names, resolved where the grab happened. It rides every frame
+   * because a watcher cannot derive it: classifying a surface takes a census of
+   * containers, terminals and solo occupancy, and a watcher's copy of that census is a
+   * poll behind the drag that just started.
+   */
+  readonly item: PlacementItem;
   readonly label: string | null;
 }
 
@@ -63,9 +78,9 @@ export function carryPlacementId(envelope: ItemEnvelope): string | null {
 
 /** The wire payload of one grab; `aim` is the resolved drop target while one is armed. */
 export function carryPayload(source: CarrySource, aim?: CarryAim): Carry {
-  const surface = envelopeSurface(source.envelope);
   return {
-    surface,
+    surface: envelopeSurface(source.envelope),
+    item: source.item,
     ...(source.label === null ? {} : { label: source.label }),
     ...(aim === undefined ? {} : { aim }),
   };
@@ -218,11 +233,10 @@ export function carryGhosts(
  * overlay needs to re-derive the producer's exact split preview from the shared
  * geometry kernel.
  */
-export interface RemoteTileCarry {
+export interface RemoteTileCarry extends CarriedItem {
   readonly connId: string;
   readonly principalId: string;
   readonly aim: CarryAim;
-  readonly surface: PlacementSurface;
   readonly label: string;
   readonly updatedAt: number;
 }
@@ -250,6 +264,7 @@ export function remoteTileCarries(
       principalId: override.principalId,
       aim: carry.aim,
       surface: carry.surface,
+      item: carry.item,
       label: carry.label ?? SURFACE_NAMES[carry.surface.kind],
       updatedAt: override.updatedAt,
     });

@@ -57,8 +57,14 @@ import {
 import { TextNode } from "./flow-text-node.tsx";
 import { createGestureStream, gestureSendIntervalOverride } from "./gesture-stream.ts";
 import { RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
-import { createPlacementLookup, denialMessage, useItemDrop } from "./item-drop.ts";
-import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import {
+  carriesItem,
+  createPlacementLookup,
+  denialMessage,
+  envelopeSurface,
+  useItemDrop,
+  type ItemEnvelope,
+} from "@manifold/plugin/hooks";
 import { sessionMachine } from "./machine-visibility.ts";
 import {
   browserMachineStorage,
@@ -359,9 +365,13 @@ export function FlowPadView({
    * `describe` is what a viewer will read under the carrier's pointer. This canvas can
    * name things the frame itself cannot — its own sessions, the containers the sidebar
    * indexed — and the name has to travel, since the viewer may share neither.
+   *
+   * `resolveItem` is the other half of that: what the grab HOLDS, classified against this
+   * canvas's own lookup so the answer rides the wire instead of every viewer guessing.
    */
   const carry = useCarry({
     client,
+    resolveItem: (envelope: ItemEnvelope) => placementItemFor(envelopeSurface(envelope), lookup),
     describe: (envelope: ItemEnvelope): string | null => {
       switch (envelope.kind) {
         case "terminal":
@@ -1288,7 +1298,7 @@ export function FlowPadView({
       setEditingId(id);
       setTool("select");
     },
-    [client, identity.principal.color],
+    [client, identity.principal.color, setEditingId, setTool],
   );
 
   const completeStroke = useCallback(
@@ -1319,7 +1329,7 @@ export function FlowPadView({
       setActiveStrokePoints(null);
       setTool("select");
     },
-    [client, gestureStream, identity.principal.color],
+    [client, gestureStream, identity.principal.color, setActiveStrokePoints, setTool],
   );
 
   const flags = toolFlags(tool);
@@ -1388,6 +1398,7 @@ export function FlowPadView({
       openClient,
       removeElement,
       tool,
+      setEditingId,
     ],
   );
 

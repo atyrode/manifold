@@ -15,12 +15,26 @@ import {
   type SectionProps,
   type PadTreeNode,
 } from "@manifold/plugin";
-import { usePolledResource } from "@manifold/plugin/hooks";
+import {
+  ITEM_MIME,
+  carriesItem,
+  containerEnvelope,
+  createPlacementLookup,
+  envelopeSurface,
+  sealEnvelope,
+  useItemDrop,
+  usePolledResource,
+  type ItemDropAssessment,
+} from "@manifold/plugin/hooks";
+import { DEFAULT_CANVAS_DROP, placementItemFor } from "@manifold/protocol";
 import type {
   Pad,
   PadPresence,
   PadSessionSummary,
   PadTreeItem,
+  PlacementDestination,
+  PlacementItem,
+  SceneElement,
   TerminalSummary,
 } from "@manifold/protocol";
 import {
@@ -44,6 +58,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -71,6 +86,17 @@ const EXPANDED_FOLDERS_KEY = "manifold:expanded-pad-folders";
 const NO_SESSIONS: readonly PadSessionSummary[] = [];
 const NO_TERMINALS: readonly TerminalSummary[] = [];
 const NO_PRESENCE: readonly PadPresence[] = [];
+
+/**
+ * Releasing an item over the index's own body — past the last row, not on one — unplaces it:
+ * every reference to it goes and the item stays where it lives. That is what parking became
+ * once there was no pool to park into, and it is why the target is the index itself rather
+ * than a section of its own.
+ */
+const UNPLACED_DESTINATION: PlacementDestination = { kind: "unplaced" };
+
+/** The index joins no room, so it renders no elements: its lookup answers from rows alone. */
+const EMPTY_ELEMENTS: ReadonlyMap<string, SceneElement> = new Map();
 
 /** The tree's own root, which is never a row: it exists so folders have a parent. */
 const SIDEBAR_ROOT_ITEM: PadTreeItem = {
@@ -143,6 +169,16 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
   const [folderName, setFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [initialExpandedItems] = useState<string[]>(initialExpandedFolders);
+  /**
+   * What the row under the cursor and the index's own body would do with the current carry.
+   * Held as state rather than derived because the payload is unreadable during `dragover`:
+   * the assessment is taken when the pointer arrives and worn until it leaves.
+   */
+  const [dropRow, setDropRow] = useState<{
+    readonly padId: string;
+    readonly assessment: ItemDropAssessment | null;
+  } | null>(null);
+  const [unplaceDrop, setUnplaceDrop] = useState<ItemDropAssessment | null>(null);
   const [, renderTreeState] = useState(0);
   const reorderingRef = useRef(false);
   const treeInstanceRef = useRef<TreeInstance<PadTreeItem> | null>(null);
@@ -220,6 +256,118 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
       ) ?? null,
     [terminalByHome, treeItems],
   );
+
+  /**
+   * Every container that exists, whatever the index chooses to SHOW. A drag's source or
+   * target may be a row the visibility rule elides (a placed terminal's home), and legality
+   * is a question about what exists, never about what is on screen.
+   */
+  const pads = useMemo<readonly Pad[]>(
+    () => treeItems?.flatMap((item) => (item.kind === "pad" ? [item.pad] : [])) ?? ([] as const),
+    [treeItems],
+  );
+
+  /**
+   * The same fold as {@link terminalByHome}, in the shape the placement algebra asks for.
+   * The index is the ONLY party that can see how many items a container holds, so it owns
+   * this answer for everything below it: that is what keeps a drag preview and the server's
+   * write in agreement about "compositions merge, never nest".
+   */
+  const soloOccupants = useMemo<ReadonlyMap<string, PlacementItem>>(
+    () =>
+      new Map(
+        [...terminalByHome].map(([homeId, terminal]) => [
+          homeId,
+          { kind: "terminal" as const, containerId: terminal.homeId },
+        ]),
+      ),
+    [terminalByHome],
+  );
+
+  /**
+   * The index's placement pipeline. It joins no room, so it holds no elements and is not
+   * itself a container: every legality question it asks is answered from the rows it already
+   * polls, and every write goes through `place` — the same door the canvas and the composition
+   * renderer use, from a plugin that owns none of them.
+   */
+  const lookup = useMemo(
+    () =>
+      createPlacementLookup({
+        pads,
+        self: null,
+        elements: EMPTY_ELEMENTS,
+        terminalHomes: new Map(terminals.map((terminal) => [terminal.id, terminal.homeId])),
+        soloOccupants,
+      }),
+    [pads, soloOccupants, terminals],
+  );
+  const drop = useItemDrop({
+    lookup,
+    place: (surface, destination) => client.place(surface, destination),
+    notify: setFailure,
+    onPlaced: () => {
+      setFailure(null);
+      // A placement re-homes items and can retire an emptied container: both listings change.
+      refreshTerminals();
+      refreshTree();
+    },
+  });
+
+  /** Where a release on a container's row lands, decided by that row's own discipline. */
+  const rowDestination = (pad: Pad): PlacementDestination =>
+    pad.layout === "tiled"
+      ? { kind: "tile", padId: pad.id, targetTileId: null, edge: null }
+      : { kind: "canvas", padId: pad.id, x: DEFAULT_CANVAS_DROP.x, y: DEFAULT_CANVAS_DROP.y };
+
+  /**
+   * A container row accepts ANY carried item. The row's discipline picks the destination and
+   * the pipeline decides legality, so an item that cannot land there SAYS so instead of doing
+   * nothing. The tree's own reorder gesture is excluded by `treeOwnsDrag`: a row dragged onto
+   * a row orders the index, and only a carry from elsewhere is a placement.
+   */
+  const containerDropProps = (pad: Pad) => ({
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      // Claimed either way: a refusal has to be shown here, not handed back to the browser.
+      event.preventDefault();
+      const assessment = drop.assess(rowDestination(pad));
+      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
+      setDropRow({ padId: pad.id, assessment });
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      setDropRow((current) => (current?.padId === pad.id ? null : current));
+    },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropRow(null);
+      drop.commit(event.dataTransfer, rowDestination(pad));
+    },
+  });
+
+  /** The index's own body as a destination: a release past the last row unplaces the carry. */
+  const unplacedDropProps = {
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      event.preventDefault();
+      const assessment = drop.assess(UNPLACED_DESTINATION);
+      event.dataTransfer.dropEffect = assessment?.denial == null ? "move" : "none";
+      setUnplaceDrop(assessment);
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      setUnplaceDrop(null);
+    },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (!carriesItem(event.dataTransfer) || treeOwnsDrag()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setUnplaceDrop(null);
+      drop.commit(event.dataTransfer, UNPLACED_DESTINATION);
+    },
+  };
 
   const scheduleDndPresentation = useCallback((): void => {
     if (dndFrameRef.current !== null) return;
@@ -336,6 +484,26 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
       return data.kind === "pad" ? renameTargetId !== data.pad.id : renamingFolderId !== data.id;
     },
     canDrop: (_items, target) => isOrderedDragTarget(target) || target.item.isFolder(),
+    // A container row drag also carries the one item envelope, so the same gesture that
+    // reorders the index drops that container into a tile or onto another canvas. The
+    // envelope goes out with the item it names, resolved from THIS section's census: the
+    // index is the only party that can classify a row without asking anyone, and every
+    // renderer the drag crosses — including a collaborator's — reads that answer instead
+    // of re-deriving it from an address.
+    createForeignDragObject: (items) => {
+      const data = items[0]?.getItemData();
+      const envelope =
+        data?.kind === "pad" ? containerEnvelope(data.pad.id, data.pad.layout) : null;
+      const item = envelope === null ? null : placementItemFor(envelopeSurface(envelope), lookup);
+      return {
+        format: ITEM_MIME,
+        // A folder — or a row this section cannot classify — carries an empty payload:
+        // `carriesItem` is true but the envelope parser rejects it, so every target reads
+        // it as "not one of our drags" and stays silent.
+        data: envelope === null || item === null ? "" : sealEnvelope(envelope, item),
+        effectAllowed: "move",
+      };
+    },
     onDrop: (items, target) => {
       const moved = items[0]?.getItemData();
       if (moved === undefined || moved === null || reorderingRef.current || treeItems === null) {
@@ -640,13 +808,16 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
     const visiblePrincipals = principals.slice(0, 3);
     const summaries = padSessions.filter((session) => session.padId === pad.id);
     const runningCount = summaries.filter((session) => session.status === "running").length;
+    const rowDrop = dropRow?.padId === pad.id ? dropRow.assessment : null;
 
     const row =
       renameTargetId === pad.id ? (
         renderContainerRenameRow(pad, active)
       ) : (
         <div
-          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalByHome.get(pad.id)?.status === "exited" ? " is-exited" : ""}`}
+          className={`pad-sidebar-row${active ? " is-active" : ""}${terminalByHome.get(pad.id)?.status === "exited" ? " is-exited" : ""}${rowDrop !== null && rowDrop.denial === null ? " pad-sidebar-row--terminal-target" : ""}`}
+          {...drop.refusalProps(rowDrop)}
+          {...containerDropProps(pad)}
         >
           <button
             className="pad-sidebar-link"
@@ -937,10 +1108,17 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
           {failure}
         </p>
       )}
+      {/*
+        The index body is itself a target: releasing an item over it — anywhere a row is not —
+        unplaces it. The tree's own reorder gesture is excluded by `treeOwnsDrag`, and a row
+        under the pointer stops the event before it reaches here, so the two never contend.
+      */}
       <div
         {...tree.getContainerProps()}
-        className="pad-sidebar-list pad-sidebar-tree"
+        className={`pad-sidebar-list pad-sidebar-tree${unplaceDrop !== null && unplaceDrop.denial === null ? " is-drop-target" : ""}`}
         data-testid="pad-sidebar-list"
+        {...drop.refusalProps(unplaceDrop)}
+        {...unplacedDropProps}
       >
         {indexedTreeItems === null ? <IndexSkeleton /> : null}
         {indexedTreeItems?.length === 0 ? (

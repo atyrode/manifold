@@ -60,7 +60,10 @@ export const PROTOCOL_VERSION = 14;
  * gained an OPTIONAL `aim` so collaborators can re-derive a producer's live split
  * preview. The machine wire is byte-identical, so existing agents stay accepted.
  * v13 -> v14: session/HTTP only — connection-level plugins frame, presence
- * view/spotlight, panel tile surface, plugins:manage cap, action/resolve doors.
+ * view/spotlight, panel tile surface, plugins:manage cap, action/resolve doors,
+ * and gesture `carry` payloads gained a REQUIRED `item`: a carry now names the
+ * item its surface addresses, so a collaborator paints legality from the frame
+ * instead of re-resolving an address against its own index poll.
  * Machine wire byte-identical, so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([

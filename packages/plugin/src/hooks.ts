@@ -1,3 +1,38 @@
+/**
+ * The engine's BROWSER half. `@manifold/plugin` itself is platform-free because the server
+ * composes through it; anything that names React or a DOM type is reachable only from here,
+ * which is what lets the shell and a plugin share one drag vocabulary without dragging
+ * `DataTransfer` into the server's type graph.
+ */
+export {
+  ITEM_MIME,
+  beginCarry,
+  carriedItem,
+  carriedPlacement,
+  carriesItem,
+  containerEnvelope,
+  endCarry,
+  envelopeSurface,
+  parseEnvelope,
+  readEnvelope,
+  sealEnvelope,
+  startItemDrag,
+  validateEnvelope,
+  type ItemEnvelope,
+  type ItemEnvelopeKind,
+} from "./item-envelope.ts";
+export {
+  createPlacementLookup,
+  denialMessage,
+  itemDenialMessage,
+  useItemDrop,
+  type ItemDropApi,
+  type ItemDropAssessment,
+  type PlacementLookupInputs,
+  type RefusalProps,
+  type UseItemDropOptions,
+} from "./item-drop.ts";
+
 import {
   useCallback,
   useEffect,

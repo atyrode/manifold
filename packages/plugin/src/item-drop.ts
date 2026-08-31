@@ -1,6 +1,8 @@
 import {
   placementItemFor,
+  resolveCarriedPlacement,
   resolvePlacement,
+  type CarriedItem,
   type ContainerLayout,
   type ContainerKind,
   type ItemKind,
@@ -14,9 +16,14 @@ import {
   type PlacementSurface,
   type SceneElement,
 } from "@manifold/protocol";
-import type { PlaceOutcome } from "@manifold/sdk";
+import type { PlaceOutcome } from "./host.ts";
 import { useCallback, useMemo } from "react";
-import { carriedItem, envelopeSurface, readEnvelope, type ItemEnvelope } from "./item-envelope.ts";
+import {
+  carriedPlacement,
+  envelopeSurface,
+  readEnvelope,
+  type ItemEnvelope,
+} from "./item-envelope.ts";
 
 /**
  * THE drop pipeline. Every destination in the application — the canvas pane, a canvas
@@ -32,6 +39,11 @@ import { carriedItem, envelopeSurface, readEnvelope, type ItemEnvelope } from ".
  * canvas authors a portal because `canvas accepts canvas-item-as-portal`, and a terminal
  * dropped on a composition row lands as a tile because `view accepts tileable` — neither
  * needed a new branch, only a destination.
+ *
+ * It lives in the ENGINE, beside the envelope it reads, because "a sidebar container row"
+ * in that list is now a plugin and "the canvas pane" is still floor. Both must judge the
+ * same drag by the same rules; a plugin-side copy of the assessment would be a second
+ * answer to a question the protocol already answers once (AGENTS.md invariant 14).
  */
 
 /** Prose per item kind. The rule is machine-readable; this is what a person reads. */
@@ -143,6 +155,20 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
   unknown_container: () => "That container no longer exists.",
 };
 
+/**
+ * The refusal for an item that is ALREADY classified — a live carry, local or a peer's.
+ * The item travels with the carry, so the sentence never depends on the reader's census.
+ */
+export function itemDenialMessage(denial: PlacementDenial, item: PlacementItem): string {
+  return DENIAL_PROSE[denial.rule](ITEM_NOUN[item.kind], CONTAINER_NOUN[denial.container.kind]);
+}
+
+/**
+ * The same refusal when only the SURFACE is known: the server's answer to a `place` call
+ * names a surface, and the caller reading it is the one who made the call, so classifying
+ * it against that caller's own lookup is the right resolution. An unclassifiable surface
+ * says "That item" rather than inventing a species.
+ */
 export function denialMessage(denial: PlacementDenial, lookup: PlacementLookup): string {
   const item = placementItemFor(denial.surface, lookup);
   const subject = item === null ? "That item" : ITEM_NOUN[item.kind];
@@ -183,19 +209,20 @@ export interface UseItemDropOptions {
 
 export interface ItemDropApi {
   /**
-   * Legality of `surface` at `destination`, defaulting to whatever this browser is
-   * carrying; null when there is nothing to judge.
+   * Legality of a carry at `destination`, defaulting to whatever this browser is holding;
+   * null when there is nothing to judge.
    *
-   * The surface is a parameter because legality is not the local dragger's privilege: a
-   * preview of a PEER's aim has to answer the same question about the peer's surface,
-   * or every collaborator paints a legal-looking cue over a drop the server will refuse
-   * — and glides panes for it. The lookup already keys off surfaces, so this asks
-   * nothing new of it. A surface this renderer cannot resolve answers null, which
-   * renders as the ABSENCE of a refusal rather than as a fabricated one.
+   * The carry is a parameter because legality is not the local dragger's privilege: a
+   * preview of a PEER's aim has to answer the same question about the peer's carry, or
+   * every collaborator paints a legal-looking cue over a drop the server will refuse —
+   * and glides panes for it. What it takes is the WIRE form (surface + item), because a
+   * watcher must never re-resolve an address: the producer already did, and asking a
+   * watcher's own index poll the same question is how a legal drag came to read "That
+   * item no longer exists." on every browser but the dragger's.
    */
   readonly assess: (
     destination: PlacementDestination,
-    surface?: PlacementSurface,
+    carried?: CarriedItem,
   ) => ItemDropAssessment | null;
   readonly refusalProps: (assessment: ItemDropAssessment | null | undefined) => RefusalProps;
   /**
@@ -208,16 +235,15 @@ export interface ItemDropApi {
 
 export function useItemDrop({ lookup, place, notify, onPlaced }: UseItemDropOptions): ItemDropApi {
   const assess = useCallback(
-    (destination: PlacementDestination, surface?: PlacementSurface): ItemDropAssessment | null => {
-      const carried = carriedItem();
-      const subject = surface ?? (carried === null ? null : envelopeSurface(carried));
-      if (subject === null) return null;
-      const resolution = resolvePlacement(subject, destination, lookup);
-      if (resolution.ok) return { surface: subject, denial: null, message: null };
+    (destination: PlacementDestination, carried?: CarriedItem): ItemDropAssessment | null => {
+      const held = carried ?? carriedPlacement();
+      if (held === null) return null;
+      const resolution = resolveCarriedPlacement(held, destination, lookup);
+      if (resolution.ok) return { surface: held.surface, denial: null, message: null };
       return {
-        surface: subject,
+        surface: held.surface,
         denial: resolution.denial,
-        message: denialMessage(resolution.denial, lookup),
+        message: itemDenialMessage(resolution.denial, held.item),
       };
     },
     [lookup],

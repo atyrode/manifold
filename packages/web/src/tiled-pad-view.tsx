@@ -1,5 +1,6 @@
 import {
   CURSOR_MIN_INTERVAL_MS,
+  placementItemFor,
   type ItemKind,
   type MachineSummary,
   type Pad,
@@ -27,8 +28,14 @@ import { clampCursorFraction, cursorFraction, remoteCursorSocketId } from "./cur
 import { FlowPadView, sessionUrl } from "./flow-pad-view.tsx";
 import { TextSurface } from "./flow-text-node.tsx";
 import { ControlIcon, ItemIcon, RemoteCursorIcon, SurfaceIcon } from "./icons.tsx";
-import { createPlacementLookup, denialMessage, useItemDrop } from "./item-drop.ts";
-import { carriesItem, type ItemEnvelope } from "./item-envelope.ts";
+import {
+  carriesItem,
+  createPlacementLookup,
+  denialMessage,
+  envelopeSurface,
+  useItemDrop,
+  type ItemEnvelope,
+} from "@manifold/plugin/hooks";
 import {
   browserMachineStorage,
   chooseDefaultMachine,
@@ -181,6 +188,9 @@ export function TiledPadView({
   const remoteGestures = useRemoteGestures(client);
   const carry = useCarry({
     client,
+    // What the grab holds, classified here where the census is: a peer receives the
+    // answer with every frame instead of asking its own index poll for it.
+    resolveItem: (envelope: ItemEnvelope) => placementItemFor(envelopeSurface(envelope), lookup),
     describe: (envelope: ItemEnvelope): string | null =>
       envelope.kind === "terminal" ? (client.sessions.get(envelope.sessionId)?.name ?? null) : null,
   });

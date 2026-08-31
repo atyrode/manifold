@@ -1,5 +1,6 @@
 import {
   ROOT_TILE_ID,
+  type CarriedItem,
   type CarryAim,
   type PlacementDestination,
   type PlacementSurface,
@@ -8,8 +9,12 @@ import {
 import { useCallback, useMemo, useRef, type RefObject } from "react";
 
 import { SURFACE_NAMES } from "./carry.ts";
-import type { ItemDropAssessment } from "./item-drop.ts";
-import { carriedItem, envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
+import {
+  carriedItem,
+  carriedPlacement,
+  type ItemDropAssessment,
+  type ItemEnvelope,
+} from "@manifold/plugin/hooks";
 import {
   ROOT_RING_PX,
   resolveTileAim,
@@ -100,7 +105,7 @@ export interface TileDropContext {
   readonly units: AreaFractions;
   readonly assess: (
     destination: PlacementDestination,
-    surface?: PlacementSurface,
+    carried?: CarriedItem,
   ) => ItemDropAssessment | null;
 }
 
@@ -114,7 +119,7 @@ export interface TileDropHost {
   readonly dividerPx: number;
   readonly assess: (
     destination: PlacementDestination,
-    surface?: PlacementSurface,
+    carried?: CarriedItem,
   ) => ItemDropAssessment | null;
   /**
    * True when a canvas ELEMENT carry holds a seat to trade (#62): a portal showing a
@@ -236,7 +241,7 @@ function tileDepth(layout: TileLayout, tileId: string): number | null {
 export function previewFor(
   context: TileDropContext,
   wire: CarryAim,
-  surface: PlacementSurface | null,
+  carried: CarriedItem | null,
   label: string | null,
 ): TileDropState | null {
   if (wire.containerId !== context.containerId) return null;
@@ -257,6 +262,7 @@ export function previewFor(
     widget: context.widget,
     rootIsLeaf,
   });
+  const surface = carried?.surface ?? null;
   const carriedTileId =
     surface !== null && surface.kind === "tile" && surface.containerId === context.containerId
       ? surface.tileId
@@ -268,7 +274,9 @@ export function previewFor(
     slot: prospect.slot,
     partner: prospect.partner,
     shifts: prospect.shifts,
-    assessment: context.assess(destination, surface ?? undefined),
+    // The carry judges itself by the item it names, whoever produced it — the local
+    // pointer and a peer's frame reach this call with the same two fields.
+    assessment: context.assess(destination, carried ?? undefined),
     destination,
     surface,
     chip:
@@ -287,7 +295,7 @@ interface LocalCache {
 /** The remote producer's memo, so an unchanged peer aim does not rebuild the prospect. */
 interface RemoteCache {
   readonly layout: TileLayout | null;
-  readonly surface: PlacementSurface;
+  readonly carried: CarriedItem;
   readonly label: string | null;
   readonly state: TileDropState;
 }
@@ -302,10 +310,14 @@ export interface TileDropPipeline {
    * memo is also the hysteresis state, so a second instance would hold a second zone.
    */
   readonly aimAt: (clientX: number, clientY: number) => TileDropState | null;
-  /** The REMOTE producer: a peer's wire aim through the very same builder. */
+  /**
+   * The REMOTE producer: a peer's wire aim and its wire CARRY through the very same
+   * builder. The carry arrives resolved, so a watcher never asks its own index what the
+   * dragger is holding.
+   */
   readonly previewOf: (
     wire: CarryAim,
-    surface: PlacementSurface,
+    carried: CarriedItem,
     label: string | null,
   ) => TileDropState | null;
   readonly clear: () => void;
@@ -412,7 +424,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       const state = previewFor(
         contextFor(units),
         wire,
-        envelope === null ? null : envelopeSurface(envelope),
+        carriedPlacement(),
         envelope === null ? null : (describeCarry?.(envelope) ?? null),
       );
       if (state === null) {
@@ -426,7 +438,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
   );
 
   const previewOf = useCallback(
-    (wire: CarryAim, surface: PlacementSurface, label: string | null): TileDropState | null => {
+    (wire: CarryAim, carried: CarriedItem, label: string | null): TileDropState | null => {
       const area = areaRef.current;
       if (area === null) return null;
       const units = areaUnits(area, dividerPx);
@@ -435,14 +447,14 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       if (
         cached !== null &&
         cached.layout === layout &&
-        cached.surface === surface &&
+        cached.carried === carried &&
         cached.label === label &&
         sameAim(cached.state.aim, wire)
       ) {
         return cached.state;
       }
-      const state = previewFor(contextFor(units), wire, surface, label);
-      remoteRef.current = state === null ? null : { layout, surface, label, state };
+      const state = previewFor(contextFor(units), wire, carried, label);
+      remoteRef.current = state === null ? null : { layout, carried, label, state };
       return state;
     },
     [areaRef, contextFor, dividerPx, layout],

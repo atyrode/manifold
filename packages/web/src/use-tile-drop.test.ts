@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   ROOT_TILE_ID,
+  type CarriedItem,
   type CarryAim,
+  type PlacementItem,
   type PlacementSurface,
   type TileLayout,
   type TileNode,
@@ -9,7 +11,7 @@ import {
 } from "@manifold/protocol";
 
 import type { RemoteTileCarry } from "./carry.ts";
-import type { ItemDropAssessment } from "./item-drop.ts";
+import type { ItemDropAssessment } from "@manifold/plugin/hooks";
 import { createTileDropStore } from "./tile-drop-store.ts";
 import { tileProspect, type TileAim } from "./tile-geometry.ts";
 import { asTileTree } from "./tile-snap.ts";
@@ -57,7 +59,15 @@ function context(overrides: Partial<TileDropContext> = {}): TileDropContext {
   };
 }
 
-const SIDEBAR_TERMINAL: PlacementSurface = { kind: "terminal", sessionId: "s-new" };
+/** A sidebar carry as it reaches any renderer: the address AND what it names. */
+const SIDEBAR_TERMINAL: CarriedItem = {
+  surface: { kind: "terminal", sessionId: "s-new" },
+  item: { kind: "terminal", containerId: "home-new" },
+};
+const carrying = (surface: PlacementSurface, item: PlacementItem): CarriedItem => ({
+  surface,
+  item,
+});
 
 describe("the one state constructor", () => {
   test("one wire aim, one surface, one label, one layout — one state, every time", () => {
@@ -137,7 +147,14 @@ describe("the one state constructor", () => {
       label: "build",
     });
     // A host that cannot — previously a bare icon locally and "view" for every viewer.
-    expect(previewFor(context(), wire, { kind: "pad", padId: "p1" }, null)?.chip).toEqual({
+    expect(
+      previewFor(
+        context(),
+        wire,
+        carrying({ kind: "pad", padId: "p1" }, { kind: "view", containerId: "p1" }),
+        null,
+      )?.chip,
+    ).toEqual({
       kind: "pad",
       label: "view",
     });
@@ -146,24 +163,30 @@ describe("the one state constructor", () => {
 
   test("a carried leaf of THIS container is named in the state, whoever is carrying it", () => {
     const wire: CarryAim = { containerId: "view", tileId: "b", edge: "top", action: "place" };
-    const own: PlacementSurface = { kind: "tile", containerId: "view", tileId: "a" };
-    const foreign: PlacementSurface = { kind: "tile", containerId: "other", tileId: "a" };
+    const own = carrying(
+      { kind: "tile", containerId: "view", tileId: "a" },
+      { kind: "tile", containerId: null },
+    );
+    const foreign = carrying(
+      { kind: "tile", containerId: "other", tileId: "a" },
+      { kind: "tile", containerId: null },
+    );
     expect(previewFor(context(), wire, own, null)?.carriedTileId).toBe("a");
     expect(previewFor(context(), wire, foreign, null)?.carriedTileId).toBeNull();
   });
 
-  test("a peer's surface is judged, so a viewer paints the refusal the server would give", () => {
+  test("a peer's carry is judged, so a viewer paints the refusal the server would give", () => {
     const wire: CarryAim = { containerId: "view", tileId: "b", edge: "top", action: "place" };
-    const judged: PlacementSurface[] = [];
-    const assess = (_destination: unknown, surface?: PlacementSurface) => {
-      if (surface !== undefined) judged.push(surface);
-      return surface === undefined
+    const judged: CarriedItem[] = [];
+    const assess = (_destination: unknown, carried?: CarriedItem) => {
+      if (carried !== undefined) judged.push(carried);
+      return carried === undefined
         ? null
         : {
-            surface,
+            surface: carried.surface,
             denial: {
               rule: "not_solo" as const,
-              surface,
+              surface: carried.surface,
               container: { kind: "view" as const, padId: "view" },
             },
             message: "nope",
@@ -175,6 +198,8 @@ describe("the one state constructor", () => {
       SIDEBAR_TERMINAL,
       null,
     );
+    // The peer's own resolved carry is what was judged — not an address this viewer
+    // re-classified against its own index.
     expect(judged).toEqual([SIDEBAR_TERMINAL]);
     expect(state?.assessment?.message).toBe("nope");
   });
@@ -288,7 +313,7 @@ describe("the drop signal", () => {
     connId: "peer",
     principalId: "p",
     aim,
-    surface: SIDEBAR_TERMINAL,
+    ...SIDEBAR_TERMINAL,
     label: "build",
     updatedAt,
     ...overrides,

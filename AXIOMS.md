@@ -463,16 +463,6 @@ territory: they exercise both and are governed by their subject.
       "until": "core.compositions"
     },
     {
-      "glob": "packages/web/src/item-drop.ts",
-      "why": "client half of the placement algebra: assessment and the place call for dropped items",
-      "until": "core.compositions"
-    },
-    {
-      "glob": "packages/web/src/item-envelope.ts",
-      "why": "drag-and-drop envelope for items crossing surfaces",
-      "until": "core.compositions"
-    },
-    {
       "glob": "packages/web/src/carry.ts",
       "why": "carry previews: the dynamic half of the placement algebra",
       "until": "core.compositions"

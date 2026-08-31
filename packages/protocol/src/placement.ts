@@ -576,6 +576,30 @@ export interface PlacementItem {
 }
 
 /**
+ * The same shape on the wire. It exists because a live carry now NAMES what it holds
+ * (`CarrySchema.item`): a surface is an ADDRESS, and resolving an address into an item
+ * takes a census of containers, terminals and solo occupancy that only the grabbing
+ * client is guaranteed to have. Shipping the resolved item with the gesture is what lets
+ * a collaborator render the same preview without owning that census — identity is data
+ * (AGENTS.md invariant 11), and a wire form nobody else can interpret is the defect.
+ */
+export const PlacementItemSchema = z.strictObject({
+  kind: z.enum(ITEM_KIND_NAMES),
+  containerId: z.string().min(1).nullable(),
+}) satisfies z.ZodType<PlacementItem>;
+
+/**
+ * What a live carry HOLDS: the address a release will place, and the item that address
+ * names. One value, because the two must agree — a surface with somebody else's item is
+ * not a state any producer can reach, and every consumer of a carry needs both (the
+ * address to place, the item to judge legality and paint a species).
+ */
+export interface CarriedItem {
+  readonly surface: PlacementSurface;
+  readonly item: PlacementItem;
+}
+
+/**
  * The questions resolution asks of state. All are answerable without IO — the server reads
  * its pad rows and live room docs, the browser its props and live doc — so the same
  * function drives a drag preview and the write that follows it.
@@ -694,6 +718,41 @@ export function resolvePlacement(
   destination: PlacementDestination,
   lookup: PlacementLookup,
 ): PlacementResolution {
+  return resolveClassified(surface, () => placementItemFor(surface, lookup), destination, lookup);
+}
+
+/**
+ * The same resolution for a carry that already NAMES its item — the live-gesture form.
+ *
+ * A collaborator holds the producer's `Carry` verbatim, and the producer resolved the item
+ * at grab time from the census it owns by construction (it is the source). Re-resolving
+ * the surface here would ask the WATCHER's census a question only the grabber can answer,
+ * which is precisely how a viewer came to paint "That item no longer exists." over a
+ * perfectly legal drag: the item existed, the watcher's 2s index poll simply had not heard
+ * of it yet. The item travels, so nobody re-derives it.
+ *
+ * The destination is still resolved locally, and correctly so: the container being aimed at
+ * is the watcher's own room.
+ */
+export function resolveCarriedPlacement(
+  carried: CarriedItem,
+  destination: PlacementDestination,
+  lookup: PlacementLookup,
+): PlacementResolution {
+  return resolveClassified(carried.surface, () => carried.item, destination, lookup);
+}
+
+/**
+ * The one resolution body. `item` is a thunk rather than a value so the CHECK ORDER above
+ * holds for both doors: the destination's existence and discipline are judged before the
+ * item is classified, whether that classification costs a census walk or nothing at all.
+ */
+function resolveClassified(
+  surface: PlacementSurface,
+  itemOf: () => PlacementItem | null,
+  destination: PlacementDestination,
+  lookup: PlacementLookup,
+): PlacementResolution {
   const container = containerFor(destination);
   const declaration = DESTINATION_KINDS[destination.kind];
   const containerDeclaration = CONTAINER_KINDS[container.kind];
@@ -713,7 +772,7 @@ export function resolvePlacement(
     if (layout !== declaration.requires) return deny(PLACEMENT_GUARDS["discipline-match"].rule);
   }
 
-  const item = placementItemFor(surface, lookup);
+  const item = itemOf();
   if (item === null) return deny("unknown_surface");
 
   const itemDeclaration = ITEM_KINDS[item.kind];

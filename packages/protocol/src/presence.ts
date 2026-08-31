@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TileEdgeSchema } from "./layout.ts";
-import { PlacementSurfaceSchema } from "./placement.ts";
+import { PlacementItemSchema, PlacementSurfaceSchema } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /**
@@ -101,6 +101,14 @@ export type CarryAim = z.infer<typeof CarryAimSchema>;
 
 export const CarrySchema = z.strictObject({
   surface: PlacementSurfaceSchema,
+  /**
+   * WHAT the surface names, resolved by the producer at grab time. Required: a surface is
+   * an address, and turning an address into an item takes a census of containers,
+   * terminals and solo occupancy that only the grabber is guaranteed to hold. A viewer
+   * that had to re-resolve it painted a refusal over a legal drag whenever its index poll
+   * lagged the drag by a tick — so the answer travels with the question.
+   */
+  item: PlacementItemSchema,
   label: z.string().min(1).max(120).optional(),
   /** Set while the carry is armed over a tile target; absent means no live aim. */
   aim: CarryAimSchema.optional(),

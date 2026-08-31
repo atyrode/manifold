@@ -1,14 +1,14 @@
 import type {
+  CarriedItem,
   MachineSummary,
   PadPresence,
   PlacementDestination,
-  PlacementSurface,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext } from "react";
 import type { CarryController } from "./use-carry.ts";
 import type { CanvasTool } from "./canvas-tool.ts";
-import type { ItemDropAssessment } from "./item-drop.ts";
+import type { ItemDropAssessment } from "@manifold/plugin/hooks";
 import type { TileDropStore } from "./tile-drop-store.ts";
 import type { WidgetRole } from "./widget-engagement.ts";
 
@@ -116,13 +116,14 @@ export interface FlowPadContextValue {
   readonly dropStore: TileDropStore;
   /**
    * The canvas's placement assessment, so a widget's overlay judges a prospective
-   * drop with the same lookup the canvas's own commit will use. The surface is
-   * optional and defaults to the local carry: a widget previewing a PEER's aim passes
-   * the peer's surface, so a viewer paints the refusal the server would give.
+   * drop with the same lookup the canvas's own commit will use. The carry is optional
+   * and defaults to the local one: a widget previewing a PEER's aim passes the peer's
+   * carry — surface AND resolved item, exactly as it arrived — so a viewer paints the
+   * refusal the server would give without re-classifying somebody else's grab.
    */
   readonly assessDrop: (
     destination: PlacementDestination,
-    surface?: PlacementSurface,
+    carried?: CarriedItem,
   ) => ItemDropAssessment | null;
   /**
    * Whether a canvas ELEMENT carry holds a seat to trade at an occupied tile center

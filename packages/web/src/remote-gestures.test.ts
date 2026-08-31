@@ -9,6 +9,9 @@ import {
 } from "./remote-gestures";
 import { GESTURE_HALF_LIFE_MS } from "./interpolate.ts";
 
+/** A carried tile always classifies to this, wherever the grab happened. */
+const TILE_ITEM = { kind: "tile", containerId: null } as const;
+
 function frame(x: number, phase: "active" | "end" = "active"): ServerGesture {
   return {
     type: "gesture",
@@ -96,7 +99,11 @@ describe("remote gestures", () => {
       elementId: "leaf",
       x: 0,
       y: 0,
-      carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" }, label: "build" },
+      carry: {
+        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        item: TILE_ITEM,
+        label: "build",
+      },
     };
     applyGestureFrame(state, carried, null, 0);
     applyGestureFrame(state, { ...carried, x: 100, y: 0 }, null, 10);
@@ -105,7 +112,11 @@ describe("remote gestures", () => {
     // The WHAT survives every frame of the WHERE: a ghost must not blink out mid-motion.
     expect(state.get("leaf")).toMatchObject({
       kind: "carry",
-      carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" }, label: "build" },
+      carry: {
+        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        item: TILE_ITEM,
+        label: "build",
+      },
       current: { x: 50, y: 0 },
     });
     expect(applyGestureFrame(state, { ...carried, phase: "end" }, null, 20)).toBe(true);
@@ -125,6 +136,7 @@ describe("remote gestures", () => {
       y: 0,
       carry: {
         surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        item: TILE_ITEM,
         label: "build",
         aim: { containerId: "view", tileId: "t1", edge: "right", action: "place" },
       },
@@ -142,6 +154,9 @@ describe("remote gestures", () => {
     const swept = state.get("leaf");
     expect(swept?.carry).toEqual({
       surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+      // The ITEM survives the aim sweep with the surface: what is carried did not change,
+      // only where it was pointing.
+      item: TILE_ITEM,
       label: "build",
     });
     // Idempotent: the sweep runs every animation frame and must not keep rewriting.

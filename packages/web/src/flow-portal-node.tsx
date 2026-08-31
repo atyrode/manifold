@@ -12,7 +12,7 @@ import {
 } from "./flow-terminal-node.tsx";
 import { ControlIcon, ItemIcon } from "./icons.tsx";
 import { remoteTileCarries, surfaceDisplayLabel } from "./carry.ts";
-import type { ItemEnvelope } from "./item-envelope.ts";
+import type { ItemEnvelope } from "@manifold/plugin/hooks";
 import type { TileDropStore } from "./tile-drop-store.ts";
 import { useRemoteGestures } from "./use-carry.ts";
 import { sessionMachine } from "./machine-visibility.ts";

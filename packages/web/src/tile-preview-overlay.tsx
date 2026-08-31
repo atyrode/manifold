@@ -106,7 +106,7 @@ export function TilePreviewOverlay({
   */
   const remote = signal.remote.get(host.containerId) ?? null;
   const remoteState =
-    armed || remote === null ? null : drop.previewOf(remote.aim, remote.surface, remote.label);
+    armed || remote === null ? null : drop.previewOf(remote.aim, remote, remote.label);
   /** THE live answer for whichever input owns this area right now. */
   const live = local ?? remoteState;
   /** What is painted: the live answer, or the last one while a gap passes through. */

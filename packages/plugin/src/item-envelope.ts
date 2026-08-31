@@ -1,4 +1,9 @@
-import type { ContainerLayout, PlacementSurface } from "@manifold/protocol";
+import type {
+  CarriedItem,
+  ContainerLayout,
+  PlacementItem,
+  PlacementSurface,
+} from "@manifold/protocol";
 
 /**
  * THE transfer envelope. One mime, one typed payload, for every drag in the application
@@ -16,9 +21,16 @@ import type { ContainerLayout, PlacementSurface } from "@manifold/protocol";
  * both map to the same surface form — the discipline is carried in the kind because a
  * drag preview has to answer "is this tileable here?" without a round trip.
  *
- * Two things are NOT placements and deliberately keep their own mimes: sidebar section
- * reordering (device-local chrome, no container relationship at all) and headless-tree's
- * internal sibling reorders (ordering inside one index).
+ * One thing is NOT a placement and deliberately keeps its own mime: headless-tree's
+ * internal sibling reorders, which order rows inside one index and name no container
+ * relationship at all.
+ *
+ * It lives in the ENGINE because both sides of the boundary drag the same items: the
+ * canvas and composition renderers are floor, the workspace index that drags a container
+ * row into a tile is a plugin, and neither may import the other. A second envelope format
+ * for the plugin side would be exactly the per-source parsing this module exists to end
+ * (AGENTS.md invariant 14). The browser half of `@manifold/plugin` carries it because the
+ * carry register below is DOM-bound; the server never sees a drag.
  */
 export const ITEM_MIME = "application/x-manifold-item";
 
@@ -93,8 +105,13 @@ export function parseEnvelope(payload: string): ItemEnvelope | null {
   return validateEnvelope(parsed);
 }
 
+/** The register's own record: the addressing form plus the two resolved wire fields. */
+interface LiveCarry extends CarriedItem {
+  readonly envelope: ItemEnvelope;
+}
+
 /**
- * The item under the cursor right now.
+ * The item under the cursor right now, and what it IS.
  *
  * This register exists because the HTML5 spec hides `getData` during `dragover`: a target
  * can see the MIME TYPES of a drag but not its payload until release. With one mime that
@@ -102,8 +119,14 @@ export function parseEnvelope(payload: string): ItemEnvelope | null {
  * the gesture starts and the pipeline reads it back for legality. The payload on the
  * DataTransfer stays authoritative at drop, which is what keeps a drag from another window
  * (or a future external source) working without this register at all.
+ *
+ * It holds the RESOLVED item beside the envelope, and that is the whole point of resolving
+ * at the grab: the source is the one party guaranteed to know what it grabbed. Every
+ * consumer downstream — this browser's own previews and every collaborator's, which read
+ * the same value off the wire (`Carry.item`) — judges legality from the item instead of
+ * re-deriving it from an address against a census it may not have yet.
  */
-let carried: ItemEnvelope | null = null;
+let carried: LiveCarry | null = null;
 let watchingDragEnd = false;
 
 /**
@@ -122,18 +145,27 @@ function watchDragEnd(): void {
   window.addEventListener("dragend", () => endCarry(), true);
 }
 
-/** Starts a carry that is not backed by a DataTransfer (a React Flow node drag). */
-export function beginCarry(envelope: ItemEnvelope): void {
+/**
+ * Starts a carry that is not backed by a DataTransfer (a React Flow node drag). The item
+ * is a parameter, not a lookup, because only the grab site can answer it without a census.
+ */
+export function beginCarry(envelope: ItemEnvelope, item: PlacementItem): void {
   watchDragEnd();
-  carried = envelope;
+  carried = { envelope, surface: envelopeSurface(envelope), item };
 }
 
 export function endCarry(): void {
   carried = null;
 }
 
+/** The envelope in hand: the addressing form the drag's zone logic reads. */
 export function carriedItem(): ItemEnvelope | null {
-  return carried;
+  return carried?.envelope ?? null;
+}
+
+/** What is in hand, resolved — the local half of what a peer receives on the wire. */
+export function carriedPlacement(): CarriedItem | null {
+  return carried === null ? null : { surface: carried.surface, item: carried.item };
 }
 
 /**
@@ -141,8 +173,8 @@ export function carriedItem(): ItemEnvelope | null {
  * every source hands this string to its `dataTransfer.setData` (or to headless-tree's
  * `createForeignDragObject`, which is the only source shape that cannot run a handler).
  */
-export function sealEnvelope(envelope: ItemEnvelope): string {
-  beginCarry(envelope);
+export function sealEnvelope(envelope: ItemEnvelope, item: PlacementItem): string {
+  beginCarry(envelope, item);
   return JSON.stringify(envelope);
 }
 
@@ -152,8 +184,12 @@ interface TransferEvent {
 }
 
 /** Source-side `dragstart`: seal the payload and mark the gesture as a move. */
-export function startItemDrag(event: TransferEvent, envelope: ItemEnvelope): void {
-  event.dataTransfer.setData(ITEM_MIME, sealEnvelope(envelope));
+export function startItemDrag(
+  event: TransferEvent,
+  envelope: ItemEnvelope,
+  item: PlacementItem,
+): void {
+  event.dataTransfer.setData(ITEM_MIME, sealEnvelope(envelope, item));
   event.dataTransfer.effectAllowed = "move";
 }
 

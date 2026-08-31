@@ -9,8 +9,8 @@ import {
   type PlacementSurface,
   type SceneElement,
 } from "@manifold/protocol";
-import { createPlacementLookup, denialMessage } from "./item-drop.ts";
-import { envelopeSurface, type ItemEnvelope } from "./item-envelope.ts";
+import { createPlacementLookup, denialMessage } from "../src/item-drop.ts";
+import { envelopeSurface, type ItemEnvelope } from "../src/item-envelope.ts";
 
 function pad(id: string, layout: Pad["layout"]): Pad {
   return { id, name: id, createdAt: 0, layout };

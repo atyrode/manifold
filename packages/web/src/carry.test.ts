@@ -10,14 +10,22 @@ import {
 import type { CarrySource } from "./carry";
 import type { GestureOverride } from "./remote-gestures";
 
+/** Every fixture names its item, exactly as a real grab site resolves it once. */
+const TEXT_ITEM = { kind: "text", containerId: null } as const;
+const TERMINAL_ITEM = { kind: "terminal", containerId: "home-1" } as const;
+const TILE_ITEM = { kind: "tile", containerId: null } as const;
+const VIEW_ITEM = { kind: "view", containerId: "p" } as const;
+
 const elementCarry: CarrySource = {
   id: "element-1",
   envelope: { kind: "element", padId: "pad", elementId: "element-1" },
+  item: TEXT_ITEM,
   label: null,
 };
 const poolCarry: CarrySource = {
   id: "carry-uuid",
   envelope: { kind: "terminal", sessionId: "session-1" },
+  item: TERMINAL_ITEM,
   label: "build",
 };
 
@@ -53,7 +61,10 @@ describe("carry", () => {
       y: 6,
       width: 700,
       height: 400,
-      carry: { surface: { kind: "element", padId: "pad", elementId: "element-1" } },
+      carry: {
+        surface: { kind: "element", padId: "pad", elementId: "element-1" },
+        item: TEXT_ITEM,
+      },
     });
 
     // An unplaced item has no source box: the frame is a pointer and a name.
@@ -64,27 +75,48 @@ describe("carry", () => {
       elementId: "carry-uuid",
       x: 1,
       y: 2,
-      carry: { surface: { kind: "terminal", sessionId: "session-1" }, label: "build" },
+      carry: {
+        surface: { kind: "terminal", sessionId: "session-1" },
+        item: TERMINAL_ITEM,
+        label: "build",
+      },
     });
   });
 
   test("both container disciplines travel as one pad surface", () => {
     expect(
-      carryPayload({ id: "x", envelope: { kind: "canvas", padId: "p" }, label: null }),
-    ).toEqual({ surface: { kind: "pad", padId: "p" } });
+      carryPayload({
+        id: "x",
+        envelope: { kind: "canvas", padId: "p" },
+        item: VIEW_ITEM,
+        label: null,
+      }),
+    ).toEqual({ surface: { kind: "pad", padId: "p" }, item: VIEW_ITEM });
     expect(
-      carryPayload({ id: "x", envelope: { kind: "composition", padId: "p" }, label: null }),
-    ).toEqual({ surface: { kind: "pad", padId: "p" } });
+      carryPayload({
+        id: "x",
+        envelope: { kind: "composition", padId: "p" },
+        item: VIEW_ITEM,
+        label: null,
+      }),
+    ).toEqual({ surface: { kind: "pad", padId: "p" }, item: VIEW_ITEM });
   });
 
   test("ghosts skip what the renderer already draws and follow the eased position", () => {
     const local = override({
-      carry: { surface: { kind: "element", padId: "pad", elementId: "element-1" } },
+      carry: {
+        surface: { kind: "element", padId: "pad", elementId: "element-1" },
+        item: TEXT_ITEM,
+      },
       current: { x: 33, y: 44 },
     });
     const foreign = override({
       elementId: "carry-uuid",
-      carry: { surface: { kind: "terminal", sessionId: "session-1" }, label: "build" },
+      carry: {
+        surface: { kind: "terminal", sessionId: "session-1" },
+        item: TERMINAL_ITEM,
+        label: "build",
+      },
       current: { x: 7, y: 8 },
     });
     const plainMove = override({ elementId: "moved", kind: "move" });
@@ -112,7 +144,10 @@ describe("carry", () => {
   test("a carry with no label falls back to its species name", () => {
     const unnamed = override({
       elementId: "leaf",
-      carry: { surface: { kind: "tile", containerId: "view", tileId: "leaf" } },
+      carry: {
+        surface: { kind: "tile", containerId: "view", tileId: "leaf" },
+        item: TILE_ITEM,
+      },
     });
     expect(carryGhosts([unnamed], () => false)[0]).toMatchObject({ label: "tile" });
   });
@@ -137,6 +172,7 @@ describe("carry", () => {
       updatedAt: 10,
       carry: {
         surface: { kind: "terminal", sessionId: "s1" },
+        item: TERMINAL_ITEM,
         aim: { containerId: "view", tileId: "t1", edge: "left", action: "place" },
       },
     });
@@ -145,6 +181,7 @@ describe("carry", () => {
       updatedAt: 20,
       carry: {
         surface: { kind: "tile", containerId: "view", tileId: "t9" },
+        item: TILE_ITEM,
         label: "build",
         aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
       },
@@ -157,13 +194,17 @@ describe("carry", () => {
       updatedAt: 5,
       carry: {
         surface: { kind: "terminal", sessionId: "s3" },
+        item: TERMINAL_ITEM,
         aim: { containerId: "other-view", tileId: "t1", edge: "top", action: "place" },
       },
     });
     const aimless = override({
       connId: "no-aim",
       updatedAt: 30,
-      carry: { surface: { kind: "terminal", sessionId: "s2" } },
+      carry: {
+        surface: { kind: "terminal", sessionId: "s2" },
+        item: TERMINAL_ITEM,
+      },
     });
 
     const carries = remoteTileCarries([stale, fresh, elsewhere, aimless]);
@@ -173,6 +214,8 @@ describe("carry", () => {
       principalId: "peer",
       aim: { containerId: "view", tileId: "t2", edge: "center", action: "swap" },
       surface: { kind: "tile", containerId: "view", tileId: "t9" },
+      // The item travels: this is the value a viewer judges the drop with.
+      item: TILE_ITEM,
       label: "build",
       updatedAt: 20,
     });

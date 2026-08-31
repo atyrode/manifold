@@ -10,8 +10,8 @@ import { ROOT_TILE_ID, type TileEdge, type TileLayout, type TileSurface } from "
  * tree via `asTileTree`, while the stored object stays a plain element until composition
  * actually happens.
  *
- * Nothing here knows about drag payloads: the transfer format lives in `item-envelope.ts`
- * and legality in `item-drop.ts`, so this module stays geometry and is unit-testable
+ * Nothing here knows about drag payloads: the transfer format and its legality both live in
+ * the engine (`@manifold/plugin/hooks`), so this module stays geometry and is unit-testable
  * without a DOM.
  */
 

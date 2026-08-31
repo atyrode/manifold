@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { PlacementItem } from "@manifold/protocol";
 import {
   ITEM_MIME,
   beginCarry,
   carriedItem,
+  carriedPlacement,
   carriesItem,
   containerEnvelope,
   endCarry,
@@ -14,7 +16,7 @@ import {
   validateEnvelope,
   type ItemEnvelope,
   type ItemEnvelopeKind,
-} from "./item-envelope.ts";
+} from "../src/item-envelope.ts";
 
 /**
  * A DataTransfer stand-in. Bun's test environment has no DOM, and the envelope only ever
@@ -44,12 +46,25 @@ const ENVELOPES: Readonly<Record<ItemEnvelopeKind, ItemEnvelope>> = {
   element: { kind: "element", padId: "c1", elementId: "e7" },
 };
 
+/**
+ * The item each envelope resolves to at its grab site. A carry names what it holds because
+ * only the grabber can classify it without a census — these are the answers a real grab
+ * site computes from its own lookup.
+ */
+const ITEMS: Readonly<Record<ItemEnvelopeKind, PlacementItem>> = {
+  terminal: { kind: "terminal", containerId: "home-1" },
+  canvas: { kind: "canvas-pad", containerId: "c1" },
+  composition: { kind: "view", containerId: "v1" },
+  tile: { kind: "tile", containerId: null },
+  element: { kind: "text", containerId: null },
+};
+
 afterEach(() => endCarry());
 
 describe("envelope format", () => {
   test("every kind round-trips through the wire payload", () => {
     for (const envelope of Object.values(ENVELOPES)) {
-      expect(parseEnvelope(sealEnvelope(envelope))).toEqual(envelope);
+      expect(parseEnvelope(sealEnvelope(envelope, ITEMS[envelope.kind]))).toEqual(envelope);
     }
   });
 
@@ -107,7 +122,7 @@ describe("envelope format", () => {
 describe("drag transfer", () => {
   test("a sealed drag advertises the one mime and carries its payload", () => {
     const dataTransfer = transfer();
-    startItemDrag({ dataTransfer }, ENVELOPES.composition);
+    startItemDrag({ dataTransfer }, ENVELOPES.composition, ITEMS.composition);
     expect(carriesItem(dataTransfer)).toBe(true);
     expect(dataTransfer.types).toEqual([ITEM_MIME]);
     expect(dataTransfer.effectAllowed).toBe("move");
@@ -124,15 +139,28 @@ describe("drag transfer", () => {
 describe("carry register", () => {
   test("sealing a payload begins the carry, because they are one event", () => {
     expect(carriedItem()).toBeNull();
-    sealEnvelope(ENVELOPES.canvas);
+    sealEnvelope(ENVELOPES.canvas, ITEMS.canvas);
     // This is what makes dragover legality possible: the spec hides getData until drop.
     expect(carriedItem()).toEqual(ENVELOPES.canvas);
     endCarry();
     expect(carriedItem()).toBeNull();
   });
 
+  test("the carry holds the resolved item, which is what a peer receives", () => {
+    expect(carriedPlacement()).toBeNull();
+    beginCarry(ENVELOPES.composition, ITEMS.composition);
+    // Surface AND item: the address to place, and what it names. A watcher gets both, so
+    // nothing downstream re-derives an item from a census it may not have yet.
+    expect(carriedPlacement()).toEqual({
+      surface: { kind: "pad", padId: "v1" },
+      item: { kind: "view", containerId: "v1" },
+    });
+    endCarry();
+    expect(carriedPlacement()).toBeNull();
+  });
+
   test("a carry without a transfer is readable at drop, and the wire payload wins", () => {
-    beginCarry(ENVELOPES.element);
+    beginCarry(ENVELOPES.element, ITEMS.element);
     expect(readEnvelope(null)).toEqual(ENVELOPES.element);
     expect(readEnvelope(transfer({ [ITEM_MIME]: JSON.stringify(ENVELOPES.terminal) }))).toEqual(
       ENVELOPES.terminal,
@@ -140,7 +168,7 @@ describe("carry register", () => {
   });
 
   test("an empty payload under our own mime falls back to the live carry", () => {
-    beginCarry(ENVELOPES.tile);
+    beginCarry(ENVELOPES.tile, ITEMS.tile);
     expect(readEnvelope(transfer({ [ITEM_MIME]: "" }))).toEqual(ENVELOPES.tile);
   });
 });

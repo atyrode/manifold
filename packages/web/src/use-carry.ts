@@ -1,4 +1,4 @@
-import type { CarryAim } from "@manifold/protocol";
+import type { CarryAim, PlacementItem } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { useEffect, useRef, useState } from "react";
 import { carryFrame, carryPlacementId, type CarryPoint, type CarrySource } from "./carry.ts";
@@ -7,8 +7,14 @@ import {
   gestureSendIntervalOverride,
   type GestureStream,
 } from "./gesture-stream.ts";
-import { beginCarry, carriedItem, endCarry, startItemDrag } from "./item-envelope.ts";
-import type { ItemEnvelope } from "./item-envelope.ts";
+import {
+  beginCarry,
+  carriedItem,
+  carriedPlacement,
+  endCarry,
+  startItemDrag,
+  type ItemEnvelope,
+} from "@manifold/plugin/hooks";
 import {
   applyGestureFrame,
   expireGestures,
@@ -38,6 +44,10 @@ export interface CarryController {
    * `at` is optional because half the sources cannot answer it: an HTML5 `dragstart`
    * fires on chrome that knows nothing of the room's coordinate space. Those carries
    * simply begin streaming on their first {@link CarryController.track} frame.
+   *
+   * A grab whose item this renderer cannot classify does not begin at all: the carry's
+   * item is required data (every viewer judges legality from it), and such a gesture was
+   * already refused on release by the same lookup that cannot classify it now.
    */
   begin(
     envelope: ItemEnvelope,
@@ -68,16 +78,25 @@ export interface UseCarryOptions {
    * own sessions, its own container index. Null falls back to the species name.
    */
   readonly describe?: (envelope: ItemEnvelope) => string | null;
+  /**
+   * What a grab in THIS renderer is holding, classified against the renderer's own
+   * placement lookup. The grab site is the only party that can answer without a census,
+   * so it answers once and the answer rides every frame this carry sends. Null refuses
+   * the grab (see {@link CarryController.begin}).
+   */
+  readonly resolveItem: (envelope: ItemEnvelope) => PlacementItem | null;
 }
 
 /**
  * One carry per renderer. The controller is stable for the life of the mount, so drag
  * handlers can depend on it without re-subscribing every frame.
  */
-export function useCarry({ client, describe }: UseCarryOptions): CarryController {
+export function useCarry({ client, describe, resolveItem }: UseCarryOptions): CarryController {
   const describeRef = useRef(describe);
+  const resolveItemRef = useRef(resolveItem);
   useEffect(() => {
     describeRef.current = describe;
+    resolveItemRef.current = resolveItem;
   });
   const sourceRef = useRef<CarrySource | null>(null);
   const lastPointRef = useRef<CarryPoint | null>(null);
@@ -91,29 +110,40 @@ export function useCarry({ client, describe }: UseCarryOptions): CarryController
       });
       return streamRef.current;
     };
-    const open = (envelope: ItemEnvelope, label: string | null): CarrySource => ({
+    const open = (
+      envelope: ItemEnvelope,
+      item: PlacementItem,
+      label: string | null,
+    ): CarrySource => ({
       // Keyed by the placement wherever there is one, so a viewer's override lands on
       // the object itself and the source container moves live. An unplaced item (pool
       // row, sidebar container) gets a throwaway key: nothing here renders it anyway.
       id: carryPlacementId(envelope) ?? crypto.randomUUID(),
       envelope,
+      item,
       label,
     });
     return {
       begin(envelope, options) {
-        const source = open(envelope, options.label ?? null);
+        const item = resolveItemRef.current(envelope);
+        if (item === null) return;
+        const source = open(envelope, item, options.label ?? null);
         sourceRef.current = source;
         lastPointRef.current = options.at ?? null;
-        if (options.transfer === undefined) beginCarry(envelope);
-        else startItemDrag({ dataTransfer: options.transfer }, envelope);
+        if (options.transfer === undefined) beginCarry(envelope, item);
+        else startItemDrag({ dataTransfer: options.transfer }, envelope, item);
         if (options.at !== undefined) stream().push(carryFrame(source, options.at, "active"));
       },
       track(at, aim) {
         let source = sourceRef.current;
         if (source === null) {
+          // ADOPTION: the register already holds the grabber's own answer, and that is the
+          // one to stream — re-classifying a foreign grab here would ask this renderer's
+          // census a question the source already answered.
           const envelope = carriedItem();
-          if (envelope === null) return;
-          source = open(envelope, describeRef.current?.(envelope) ?? null);
+          const held = carriedPlacement();
+          if (envelope === null || held === null) return;
+          source = open(envelope, held.item, describeRef.current?.(envelope) ?? null);
           sourceRef.current = source;
         }
         lastPointRef.current = at;
