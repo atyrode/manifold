@@ -38,6 +38,10 @@ import {
   CompositionError,
   composeRoster,
   DEFAULT_WORKSPACE_LAYOUT,
+  ENGINE_PLUGINS_ID,
+  ENGINE_SET_ENABLED_ACTION,
+  enginePluginsActions,
+  enginePluginsManifest,
   type Composition,
 } from "../packages/plugin/src/index.ts";
 import {
@@ -245,7 +249,17 @@ function keyLiteral(node: ts.Expression, constants: ReadonlyMap<string, string>)
 
 let composition: Composition | null = null;
 try {
-  composition = composeRoster([...SERVER_PLUGIN_DEFS], new Set());
+  /*
+    The engine's own builtin row is registered by the HOST, not by `composition.ts` — so the
+    vocabulary this script compares against the live server has to include it, or every
+    check that says "/api/protocol equals the composition" would fail on the enablement door
+    itself.
+  */
+  composition = composeRoster(
+    [...SERVER_PLUGIN_DEFS, { manifest: enginePluginsManifest, actions: enginePluginsActions }],
+    new Set(),
+    { builtins: new Set([ENGINE_PLUGINS_ID]) },
+  );
   check("S1 server composition", true, `${String(composition.roster.length)} plugins composed`);
 } catch (error) {
   const detail = error instanceof CompositionError ? error.problems.join(" | ") : String(error);
@@ -670,6 +684,9 @@ for (const row of registries.floor) {
   }
   const packaged = new Set([...declaredByPackage.values()].flat());
   for (const id of pluginIds) {
+    // A builtin row is the ENGINE's, so it has no `packages/plugins/*` directory to map back
+    // to — and must not: administration of the composition is not a member of it.
+    if (composed.builtin(id)) continue;
     if (!packaged.has(id)) problems.push(`composed ${id} maps back to no packages/plugins/* dir`);
   }
   check(
@@ -924,7 +941,7 @@ try {
 
   const setEnabled = async (id: string, enabled: boolean): Promise<boolean> => {
     const outcome = ActionOutcomeSchema.parse(
-      await dispatch("core.plugins.setEnabled", { id, enabled }),
+      await dispatch(ENGINE_SET_ENABLED_ACTION, { id, enabled }),
     );
     if (outcome.ok) {
       if (enabled) disabledHere.delete(id);
@@ -1212,10 +1229,10 @@ try {
       await dispatch("core.terminals.rename", { sessionId: terminal.id }),
     );
     const scopedManage = ActionOutcomeSchema.parse(
-      await dispatch("core.plugins.setEnabled", { id: "core.draw", enabled: false }, scoped.token),
+      await dispatch(ENGINE_SET_ENABLED_ACTION, { id: "core.draw", enabled: false }, scoped.token),
     );
     const essential = ActionOutcomeSchema.parse(
-      await dispatch("core.plugins.setEnabled", { id: "core.shell", enabled: false }),
+      await dispatch(ENGINE_SET_ENABLED_ACTION, { id: "core.shell", enabled: false }),
     );
     const rungs: readonly (readonly [string, boolean, string])[] = [
       [
@@ -1515,7 +1532,7 @@ try {
     const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
     for (const id of disabledHere) {
       try {
-        await fetch(`${origin}/api/actions/core.plugins.setEnabled`, {
+        await fetch(`${origin}/api/actions/${ENGINE_SET_ENABLED_ACTION}`, {
           method: "POST",
           headers: { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" },
           body: JSON.stringify({ id, enabled: true }),
