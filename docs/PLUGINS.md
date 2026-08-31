@@ -5,7 +5,7 @@ onboarding surface; you should not need to read manifold's source to author a pl
 
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
-curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/protocol   # JSON Schemas for the wire, including every composed action's input and result
+curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/protocol   # JSON Schemas for the wire, every composed action's input/result, and `pluginContract` — the whole plugin vocabulary as data
 ```
 
 The roster is authoritative. If this document and `GET /api/plugins` disagree about what
@@ -57,15 +57,28 @@ import type { PluginManifest } from "@manifold/protocol";
 
 export const manifest: PluginManifest = {
   id: "core.draw", // /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, max 64 chars
-  version: "1.0.0",
+  version: "1.0.0", // display only
   title: "Draw",
   description: "Freehand strokes on the canvas.",
   capabilities: ["scene:write"], // the union of everything this plugin's actions may need
-  // essential: true,              // optional; disabling an essential plugin is refused
+  // essential: true,              // optional; only core.shell claims it
+  dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
+  dependencies: {
+    "core.canvas": { type: "required", reason: "strokes render on a canvas" },
+  },
+  after: ["core.shell"], // soft ordering only; a missing target is ignored
+  dormant: { mode: "ghost", label: "Drawing (plugin disabled)" }, // how your stuff looks while you are off
+  purges: ["storage", "elements", "ownership"], // audit visibility: what a purge would destroy
   contributes: {
     panels: [], // { id, title }        — a workspace tile leaf
     sections: [], // { id, title, order } — a sidebar section
-    elements: [{ type: "draw", title: "Drawing" }], // a canvas element kind + its renderer
+    elements: [
+      {
+        type: "draw",
+        title: "Drawing",
+        placement: { groups: ["canvas-item"], guards: [], homed: "inline" },
+      },
+    ],
     tools: [{ id: "draw", title: "Draw" }], // a toolbar tool
     events: [], // reserved: the wave-2 event plane (ADR 0012). No consumer yet.
   },
@@ -76,15 +89,57 @@ export const manifest: PluginManifest = {
 Rules worth knowing before you write one:
 
 - **The id must be dotted** — at least one `.` — and it namespaces everything you contribute.
-  A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`.
-- **Contribution ids are local names** (`^[a-z][a-z0-9-]*$`), except element `type`, which is
-  a wire kind and must be globally unique on its own.
+  A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`. The prefix
+  `engine.` is **reserved**: it belongs to the engine's own builtin doors, and composition refuses
+  any plugin that claims it.
+- **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
+  where the name is a verb phrase, as in `setEnabled`), except element `type`, which is a wire kind
+  and must be globally unique on its own.
 - **`capabilities` is a ceiling, not a request.** Every action's declared caps must be a subset
   of it; a violation refuses composition. It exists so a reader can see a plugin's maximum
   authority without reading its actions.
-- **`essential: true` means the workspace cannot function without you.** Only `core.shell`
-  claims it. Attempting to disable an essential plugin returns
-  `{ ok: false, denial: { rule: "refused", message: "essential" } }`.
+- **`dependencies` are declared per plugin id** with a `type` of `required`, `optional` or
+  `incompatible`, plus an optional `reason` that is shown to whoever hits the refusal. A missing or
+  disabled `required` dependency, or a present `incompatible` one, refuses composition naming both
+  sides. There is **no enable cascade**: enabling you never silently enables anything else, and
+  disabling a plugin that others require is refused, naming them.
+- **`after` is ordering, not requirement.** It contributes to the deterministic order the engine
+  composes and fires lifecycle hooks in (topological over `dependencies` ∪ `after`, ties broken by
+  lexicographic id). A cycle is a `CompositionError`.
+- **`dataVersion` governs your stored rows** (§4). Bump `minor` freely; bumping `major` without a
+  migration refuses to compose your plugin, and data written by a newer `major` than your code
+  refuses too — the engine never guesses at your schema.
+- **`dormant` is how your contributions look while you are disabled**: `ghost` (the engine's inert
+  placeholder, naming you — the default) or `hide` (record kept, nothing painted), plus an optional
+  `label`. It is **data, not a component**: the engine draws the placeholder, because a plugin that
+  is off cannot be asked to render its own absence.
+- **`essential: true` means the workspace cannot be drawn without you.** Only `core.shell` claims
+  it. Attempting to disable an essential plugin returns
+  `{ ok: false, denial: { rule: "refused", message: "essential" } }`, where the message is one
+  member of the published refusal-class set (`essential`, `builtin`, the dependency classes, the
+  data-version classes, `still_enabled`, …) — never free-form text.
+- **Element contributions carry placement traits.** An element declares how it behaves in the
+  placement algebra as manifest data, so the algebra never has to learn your kind's name:
+
+  ```ts
+  placement: {
+    groups: ["canvas-item"],   // PlacementGroup[]: tileable | mergeable | unplaceable | embeddable
+                               //   | canvas-item | canvas-item-as-portal | extractable
+    guards: [],                // ItemGuard[]: no-self-embed | solo-only
+    homed: "inline",           // HomingMode: eager | on-claim | inline — or null for "no home"
+  }
+  ```
+
+  `placement` is optional, and omitting it means `DEFAULT_ELEMENT_PLACEMENT_TRAITS`
+  (`{ groups: ["canvas-item"], guards: [], homed: "inline" }`, exported from the protocol — the
+  `draw` row verbatim). When you DO declare it, all three fields are required: `homed: null` is how
+  you say "no home", not omission. There is no canvas-operation key — the op is derived by the
+  algebra, which is the half that stays engine (ADR 0013 §12). The container-site-only guard
+  `discipline-match` is refused on an element.
+
+- **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
+  targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
+  `engine.plugins.purge` would cost before pressing it. Nothing about disable reads it.
 - **`events` and `entry` are reserved.** Write them if you like; nothing reads them in this
   wave. They exist so the plane and the distribution mechanism can arrive without a manifest
   change.
@@ -154,9 +209,9 @@ The response is always 200 with an `ActionOutcome`:
 { "ok": false, "denial": { "rule": "forbidden", "message": "pads:write capability required" } }
 ```
 
-Denials are outcomes, not HTTP errors — the same shape `POST /api/place` uses when it names
-the placement rule that refused. From a client, `client.action(name, args)` on the SDK
-`SessionClient` returns the same object.
+Denials are outcomes, not HTTP errors — the same shape the placement door returns when it names
+the placement rule that refused (`core.layout.place`). From a client,
+`client.action(name, args)` on the SDK `SessionClient` returns the same object.
 
 ### The denial ladder
 
@@ -170,15 +225,183 @@ argue an earlier denial back to allow:
 | 3   | `forbidden`       | The caller's token is **pad-scoped**. Actions are workspace-grade this wave; message is `scoped tokens cannot invoke workspace actions`. |
 | 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                      |
 | 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                           |
-| 6   | `refused`         | The handler returned `{ refused }` — a domain refusal, e.g. `essential`.                                                                 |
+| 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                       |
 
-Rule 3 is the same precedent as `POST /api/place` and every workspace route. Finer per-node
-scoping arrives with the permission waterfall (`docs/decisions/0011-permission-waterfall.md`);
-until then, a scoped token can read and render, but cannot invoke.
+Rule 3 is the same precedent as every workspace route. Finer per-node scoping arrives with the
+permission waterfall (`docs/decisions/0011-permission-waterfall.md`); until then, a scoped token
+can read and render, but cannot invoke.
+
+**Reading a `refused` message.** The message is a refusal **class**, optionally followed by the
+offenders it names: the class verbatim when there is nothing to name, otherwise
+`"<class>: <offenders, comma-separated>"`. Real answers from a live server:
+
+```
+essential
+builtin: engine.plugins
+still_enabled: core.draw
+unknown_plugin: core.ghost
+missing_dependency: test.leaf
+dependency_disabled: test.base
+incompatible_dependency: test.rival
+```
+
+Switch on the prefix before `": "`; treat the remainder as identity for display, never as meaning.
+The full class list is published at `GET /api/protocol` under `pluginContract.refusalReasons`, so a
+client can enumerate every refusal it may have to render without reading this file.
 
 ---
 
-## 4. Which plane does my feature belong to?
+## 4. Lifecycle, dormancy, and your data
+
+Everything in this section is the behavioral contract, normative in
+`docs/decisions/0013-plugin-behavioral-contract.md` and law in `AXIOMS.md` §Disable semantics (D4′).
+
+### The one rule to internalize: disable retains
+
+Being disabled gates your ACTIVE surface and destroys nothing. Your rows, your scene elements,
+your panel's leaf in every principal's layout, your section's slot, your element-type reservation
+and your migration ledger all survive, and re-enabling restores them **in place**. There is no
+manifest field that makes a disable erase anything, by design: erasure is
+`engine.plugins.purge { id }`, a separate `plugins:manage` verb that is **refused while your plugin
+is enabled** (refusal class `still_enabled`). Disable first, purge second — the first step is the
+reversible one.
+
+### The hooks
+
+```ts
+// src/server.ts
+export const serverDef = {
+  manifest,
+  actions: [rename, kill],
+  handlers: {/* … */},
+  lifecycle: {
+    // You were just turned ON (a transition, never boot). Put your own state in order.
+    onEnable: (ctx) => {
+      ctx.storage.set("lastEnabledAt", String(ctx.now()));
+    },
+    // You are being turned OFF. Flush and park — never delete user data here.
+    onDisable: (ctx) => {
+      ctx.storage.set("parked", "1");
+    },
+    // SOMEONE ELSE changed. Repair your own references to what left or arrived.
+    onCompositionChanged: (ctx, delta) => {
+      if (delta.disabled.includes("core.canvas")) ctx.storage.set("parked", "1");
+    },
+    // You are being destroyed. The engine clears your namespace and releases your element
+    // types either way; this hook is for anything only YOU know about.
+    onPurge: (ctx) => {
+      ctx.storage.delete("parked");
+    },
+  },
+};
+```
+
+A hook receives exactly `{ pluginId, storage, now() }` and may be sync or `async` — both are awaited
+under the same bound. The context is that narrow on purpose: a hook exists to order your **own**
+durable state, and anything that touches the workspace is a mutation, which goes through an action
+door where it can be authorized, validated, logged and observed (invariant 13). Because the
+parameter is contravariant you may declare only the slice you use —
+`onDisable: (ctx: { storage: PluginStorage }) => void` type-checks — the same sandbox shape action
+handlers have.
+
+- **`onCompositionChanged` fires on every SURVIVING plugin** — enabled before AND after the change —
+  in composition order, after the roster commits and before it is broadcast, with
+  `delta: { enabled, disabled }`. The plugins in the delta do not get it; they get their own
+  `onEnable`/`onDisable`, so nobody is told twice about their own transition. The plugin that needs
+  to repair state is usually not the plugin that was toggled, so this — not `onDisable` — is where
+  you notice that a peer left.
+- **These are TRANSITION hooks, not boot hooks.** At boot, everything enabled is simply live: no
+  `onEnable` fan-out and no lifecycle state invented for a start nobody triggered. If you need
+  "prepare on first use", do it lazily in your handlers, not in a hook that will not run.
+- **Every hook is bounded at 2 seconds, and disable always completes.** If your `onDisable` throws
+  or hangs, the disable still lands; your roster entry is then marked
+  `lifecycle: "disable_failed"` (or `"enable_failed"`) and every principal, human or agent, sees
+  it at `GET /api/plugins`. A failed teardown is a visible state, never a wedged workspace. The same
+  applies to `onPurge`: failing it does not stop the purge.
+- The roster also carries **`changedBy` and `changedAt`**, so the placeholder your contributions
+  leave behind can say who turned you off.
+- The purge action answers an exhaustive record —
+  `{ id, removed: { storage, elements, ownership } }`, all three keys always present — and it does
+  **not** touch documents: your element records belong to the workspace's Yjs document, and what a
+  purge releases is your claim on those kinds.
+
+### Your data: `ctx.storage` and migrations
+
+`ctx.storage` is the only place a plugin persists anything. It is namespaced to your plugin id (you
+cannot name another plugin's keys, and you never see a table name), versioned by your manifest's
+`dataVersion`, retained across disable, and cleared by a purge. A plugin that writes outside it is
+a plugin whose purge is a guess.
+
+```ts
+interface PluginStorage {
+  readonly pluginId: string;
+  get(key: string): string | null;
+  set(key: string, value: string): void;
+  delete(key: string): void;
+  keys(prefix?: string): readonly string[]; // sorted; the engine's own `$` rows are never listed
+  dataVersion(): PluginDataVersion | null; // null until something has been stamped
+  appliedMigrations(): readonly string[]; // bare names, in application order
+}
+```
+
+It is **synchronous** (the substrate is Bun's SQLite — an async facade would buy a promise per read
+and no concurrency) and **string-valued**: serialize your own structures. Keys match
+`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$` and values are ≤64 KiB; a `$` prefix is engine-reserved and
+`set`/`delete` throw on it, which is what makes the version stamp and the migration ledger something
+you can read but not forge. If you have more than 64 KiB of a thing, it is a document, and documents
+have a plane (§5).
+
+When your stored shape changes incompatibly, bump `dataVersion.major` and ship a **named**
+migration:
+
+```ts
+export const serverDef = {
+  manifest, // dataVersion: { major: 2, minor: 0 }
+  migrations: [
+    {
+      name: "2026-09-01-split-stroke-points", // the ledger records NAMES, stable under rebase
+      to: { major: 2, minor: 0 }, // the version this migration produces
+      migrate: (storage) => {
+        for (const key of storage.keys("stroke:")) {
+          const raw = storage.get(key);
+          if (raw !== null) storage.set(key, rewrite(raw));
+        }
+      },
+    },
+  ],
+  // …
+};
+```
+
+Migrations are **synchronous** for the same reason a migration must be all-or-nothing: no `await` in
+the middle of a rewrite, no dispatch interleaving with half a conversion. They run at boot for
+enabled plugins and at the enablement door for a plugin being switched on — never for a disabled
+one, whose data is retained untouched and re-judged when someone turns it back on. Applied names are
+recorded in the ledger, so none ever runs twice. The rules the engine applies, adopted from Home
+Assistant's asymmetry:
+
+| Stored vs. manifest `dataVersion` | Outcome                                            |
+| --------------------------------- | -------------------------------------------------- |
+| equal                             | compose                                            |
+| minor differs, major equal        | compose anyway; no migration needed                |
+| major differs, migration present  | run unapplied migrations in order, record, compose |
+| major differs, no migration       | refuse to compose YOUR plugin, named reason        |
+| stored major > your major         | refuse — your build is older than the data         |
+
+A refusal here is per plugin and named on the roster; it never takes the workspace down, and it never
+stops the server booting because of a plugin that is switched off.
+
+### Element types are reserved while you are away
+
+The engine records which plugin owns which element `type` (a workspace-level `meta` row, beside the
+enablement set — not something you can write). While you are disabled your types stay yours: a
+different plugin claiming one refuses composition, naming both sides. Only a purge releases them.
+This is why a disabled plugin's scene records can never be silently inherited — the alternative to
+"missing data" is "somebody else's plugin reading your rows", which is worse.
+
+---
+
+## 5. Which plane does my feature belong to?
 
 This is the question that decides whether you write an action at all. Answer it before you
 write code; getting it wrong produces state that one principal can see and another cannot,
@@ -204,7 +427,7 @@ there.
 
 ---
 
-## 5. Contributions, with `core.draw` as the worked example
+## 6. Contributions, with `core.draw` as the worked example
 
 `core.draw` is deliberately the smallest complete plugin: it contributes one element renderer
 and one tool, and it has no server half at all, because drawing a stroke is a document-plane
@@ -291,7 +514,7 @@ in the tree names a composed action.
 
 ---
 
-## 6. Composition rules
+## 7. Composition rules
 
 Composition happens at boot and on every enable/disable, on both the server and the web side.
 It either produces a roster or throws a `CompositionError` naming every offender.
@@ -302,21 +525,29 @@ It either produces a roster or throws a `CompositionError` naming every offender
   bypass, so the answer is always a refusal that names both sides.
 - **Action caps must be a subset of manifest capabilities**, checked at composition, not at
   dispatch.
-- **Enable/disable is hot and workspace-global.** `core.plugins.setEnabled` (cap
-  `plugins:manage`) flips a server-persisted flag and broadcasts the new roster on a
-  connection-level session frame; every client rebuilds live. No reload, ever.
+- **Enable/disable is hot, workspace-global, and an ENGINE door.**
+  `engine.plugins.setEnabled` (cap `plugins:manage`) is a **builtin roster row**
+  (`source: "builtin"`), not a plugin action: it flips a server-persisted flag and broadcasts the
+  new roster on a connection-level session frame, and every client rebuilds live. No reload, ever.
+  The door lives outside the composition on purpose — a door that can disable itself could never be
+  relied on to re-enable anything. `core.plugins` is the manager **UI** only, and it is an ordinary,
+  disableable plugin.
 - **Disabled and unknown contributions render inert placeholders that name the plugin** — on
-  canvases and in the workspace tree alike. A placeholder in the workspace tree carries a
-  remove control that commits the pruned layout. Disabling a plugin must never brick a
-  surface, and layout writes referencing an unknown panel are _accepted_ for exactly this
-  reason.
+  canvases and in the workspace tree alike, unless the manifest declared `dormant.mode: "hide"`.
+  A placeholder in the workspace tree carries a remove control that commits the pruned layout.
+  Disabling a plugin must never brick a surface, and layout writes referencing an unknown panel
+  are _accepted_ for exactly this reason.
 - **Disabling kills creation and administration, never cleanup.** Disabling `core.terminals`
   refuses new terminal opens and its administrative actions, but existing sessions stay
   attachable and killable. Users are never locked out of removing things.
+- **Dependencies are resolved at composition**, and the resulting order — topological, ties broken
+  by id — is the order lifecycle hooks fire in. Missing `required` dependencies, `incompatible`
+  peers, cycles, data-version mismatches and element-type squatting are all named refusals, never
+  warnings.
 
 ---
 
-## 7. What the gate checks
+## 8. What the gate checks
 
 `bun run verify:axioms` runs in `bun run gate`. It has a static half and a browser half; these
 are the checks that will fail _your_ plugin:
@@ -339,11 +570,18 @@ are the checks that will fail _your_ plugin:
 - In the browser: `/api/protocol` and `/api/plugins` agree with the composition; hot
   enable/disable takes effect without a reload; an action invoked over the SDK is observed in
   the DOM and vice versa; the denial ladder returns the documented rules.
+- Every floor file falls inside exactly one pillar of the `AXIOMS.md` pillar registry — an unowned
+  file above the plugin boundary is RED.
+- The list of every `cleanup: true` action in the composition is published, so the one carve-out
+  from the disable rule cannot grow unnoticed.
 
 ## Further reading
 
 - `AXIOMS.md` — the axioms, the taxonomy, the foundation registry, the device-local register,
   and the roadmap.
+- `docs/decisions/0013-plugin-behavioral-contract.md` — the behavioral contract: lifecycle,
+  dormancy, retain-only disable and purge, dependencies, data versions, ownership reservation, the
+  engine-owned enablement door, and the foundation litmus test.
 - `docs/CONTRACTS.md` — the wire: routes, frames, capabilities, presence payloads.
 - `docs/decisions/0010-plugin-engine-and-action-plane.md` — the trust model and why the action
   envelope looks like this.

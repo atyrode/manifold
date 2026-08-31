@@ -89,7 +89,8 @@ and produces negative geometry that the commit path then rejects.
 - Caps: `*`, `pads:read`, `pads:write`, `scene:write`, `terminal:spawn`, `terminal:write`,
   `tokens:mint`, `machines:mint`, `plugins:manage`. Reads of scene/presence come with
   `pads:read`. `terminal:write` covers input+resize+kill+take on sessions in scope.
-  `plugins:manage` authorizes plugin administration only (`core.plugins.setEnabled`).
+  `plugins:manage` authorizes plugin administration only — the engine doors
+  `engine.plugins.setEnabled` and `engine.plugins.purge`.
 - Token scope: optional `padId` restricts everything to one pad.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
@@ -115,36 +116,36 @@ real origins without re-keying anything (`AXIOMS.md` §Roadmap).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                        | Auth cap              | Req → Res                                                                                                                                      |
-| ---------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                      |
-| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                         |
-| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                     |
-| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                        |
-| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                 |
-| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                    |
-| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                         |
-| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                |
-| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
-| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                 |
-| POST /api/actions/:name            | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
-| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                      |
-| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                    |
-| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
-| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                      |
-| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                        |
-| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                    |
-| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                |
-| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                            |
-| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                        |
-| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                   |
-| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                       |
-| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                             |
-| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                      |
-| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                   |
-| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash  |
-| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                           |
-| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                             |
+| Method+Path                        | Auth cap              | Req → Res                                                                                                                                                                                                      |
+| ---------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                                                                      |
+| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                                                                         |
+| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                                                                                     |
+| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                                                                                        |
+| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                                                                                 |
+| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                                                                                    |
+| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                                                                                         |
+| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                                                                                |
+| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                                                                      |
+| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. The placement door TODAY; superseded by the action `core.layout.place` (see §Containers, placement, and the index) |
+| POST /api/actions/:name            | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                                                                 |
+| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                                                                                      |
+| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                                                                                    |
+| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                                                      |
+| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                                                                                      |
+| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                                                                                        |
+| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                                                                                    |
+| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                                                                                |
+| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                                                                                            |
+| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                                                                                        |
+| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                                                                                   |
+| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                                                                                       |
+| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                                                                                             |
+| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                                                                                      |
+| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                                                                                   |
+| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash                                                                  |
+| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                                                                                           |
+| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                                                                                             |
 
 `PadTreeItem` is either `{ kind:"pad", pad:{ id, name, createdAt }, parentId:
 string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
@@ -177,19 +178,32 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 
 ## Containers, placement, and the index
 
-A View and a Pad are ONE container object, told apart by `layout`. Everything that lands in
-one goes through a single door — `POST /api/place` — and its legality is DATA in
-`packages/protocol/src/placement.ts`, published to agents and mods through
-`GET /api/protocol`. The verb routes it replaced (bind, park, add-tile, compose, extract,
-expand, pin) are DELETED, not deprecated: expand had nothing left to create once every
-terminal already lived in a composition, and pin had nothing left to claim once no container
-dissolved under anybody.
+A View and a Pad are ONE container object, told apart by `layout`. Everything that lands in one
+goes through a single door — the action **`core.layout.place`** — and its legality is DATA in
+`packages/protocol/src/placement.ts`, published to agents and mods through `GET /api/protocol`.
+The verb routes it replaced (bind, park, add-tile, compose, extract, expand, pin) are DELETED, not
+deprecated: expand had nothing left to create once every terminal already lived in a composition,
+and pin had nothing left to claim once no container dissolved under anybody.
+
+> **Transition note.** The door is currently the bespoke route `POST /api/place` with the identical
+> request, response and refusal vocabulary. `core.layout.place` superseding it is ratified design
+> (`docs/decisions/0013-plugin-behavioral-contract.md` §14: the algebra is mechanism, the verb is a
+> plugin), and the **conversion batch** performs the cutover — action added, every caller migrated,
+> route deleted in the same change, no alias. Until that lands, read every `POST /api/place`
+> reference below as naming the same door under its old name. The refusal vocabulary does not fork:
+> the placement rule that refused travels in the action's `refused` denial, so `not_accepted` keeps
+> one wording.
 
 **Vocabulary.** Item kinds declare the capability GROUPS they belong to, container kinds
 declare the groups they accept, and the only imperative rules are three enumerated guards.
 Every nesting rule is therefore DERIVED from the tables rather than branched on in an
 executor — "compositions never nest" IS the absence of `tileable` from the `view`
-declaration — and every refusal names the declaration that refused it.
+declaration — and every refusal names the declaration that refused it. A plugin contributing an
+element kind declares the same three traits (`groups`, `guards`, `homed`) in its manifest, and
+`composeRoster` resolves them into the element registry (defaulting to
+`DEFAULT_ELEMENT_PLACEMENT_TRAITS`), so the table below is the closed union's rows in the same
+shape a contribution uses. Fusing composed kinds INTO the union is the conversion batch's work; the
+canvas operation stays a floor table (`CANVAS_OPS`), never a manifest field.
 
 | Item kind    | Groups                                                   | Guards                   | Homing   |
 | ------------ | -------------------------------------------------------- | ------------------------ | -------- |
@@ -340,15 +354,39 @@ the packages promise each other about that. Composition happens twice from the s
 `packages/server/src/composition.ts` registers server halves, `packages/web/src/composition.ts`
 web halves — and both run `composeRoster` from `@manifold/plugin`, which refuses duplicate
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
-Manifests are inert DATA: no executable fields, with `entry` and the roster's `source` reserved
-for the later dynamic-distribution wave. Plugins are trusted in-process code today (ADR 0010);
-the wire is the security boundary and every authority decision happens at a door.
+Manifests are inert DATA: no executable fields, with `entry` reserved for the later
+dynamic-distribution wave. Plugins are trusted in-process code today (ADR 0010); the wire is the
+security boundary and every authority decision happens at a door. What happens to a plugin's data,
+contributions and neighbours across an enable/disable is the **behavioral contract**
+(`docs/decisions/0013-plugin-behavioral-contract.md`, law in `AXIOMS.md` §Disable semantics).
 
-**The roster.** `GET /api/plugins` returns one entry per composed plugin
-`{ manifest, enabled, source: "builtin", actions: ActionSummary[] }`, each summary carrying
-`{ name, title, caps, input, result }` with input/result as JSON Schemas generated from the zod
-definitions. `GET /api/protocol` embeds the same vocabulary beside the wire schemas, so an agent
-learns every door from one unauthenticated read.
+**The roster.** `GET /api/plugins` returns one entry per composed row:
+
+```ts
+{
+  manifest, enabled,
+  source: "builtin" | "plugin",              // "builtin" = an ENGINE door, not a package
+  actions: ActionSummary[],                   // { name, title, caps, input, result } — JSON Schemas
+  lifecycle?: "ok" | "enable_failed" | "disable_failed",   // absent ≡ ok
+  refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
+  changedBy?: string | null, changedAt?: number | null     // who last flipped it, and when
+}
+```
+
+`GET /api/protocol` embeds the same vocabulary beside the wire schemas, plus a `pluginContract`
+block — `engineNamespace`, `sources`, `dependencyTypes`, `dormantModes`, `defaultDormantMode`,
+`residualMechanisms`, `purgeTargets`, `lifecycleStates`, `refusalReasons`, `denialRules`,
+`defaultElementPlacement`, and JSON Schemas for the manifest, actions, outcomes, roster entries and
+purge results — so an agent learns every door AND every closed enum from one read.
+
+**Manifest fields the behavioral contract adds** (all optional; absence reproduces the previous
+semantics exactly): `dependencies` (a `Record<PluginId, { type: "required"|"optional"|"incompatible", reason? }>`),
+`after` (soft ordering, a missing id is not an error), `dataVersion { major, minor }`,
+`dormant { mode: "ghost"|"hide", label? }` (absent ≡ `ghost`), `purges` (audit declaration over
+`storage`/`elements`/`ownership`, bound to no verb), and per-element `placement { groups, guards, homed }`
+(absent ≡ `DEFAULT_ELEMENT_PLACEMENT_TRAITS`). Composition order is topological over
+`dependencies` ∪ `after`, ties broken by lexicographic plugin id, and that order is the lifecycle
+fan-out order.
 
 **The action door.** `POST /api/actions/:name`, where `:name` is the FULL action name
 `<pluginId>.<local>` (e.g. `core.terminals.rename`). The body is the action's own argument
@@ -362,31 +400,83 @@ stops at the first rule that fires:
 | 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave                                |
 | 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                          |
 | 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                     |
-| 6     | `refused`         | the handler refused on domain grounds and named the reason (e.g. `essential`)                                                                                                  |
+| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                    |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
 handler's result is validated against the action's `result` schema; a mismatch is a server fault
 (500), never a denial. Every dispatch emits one structured log line (`evt:"action"`).
 
-**Enablement is workspace-global and hot.** `core.plugins.setEnabled { id, enabled }` (cap
-`plugins:manage`) flips a server-persisted flag (`meta` key `plugins:disabled`, a JSON array of
-ids) and the server pushes the new roster to every open socket; clients rebuild live, with no
-reload. A manifest may declare `essential: true`, and disabling it is refused (`refused`, message
-`essential`) — wave 1 marks only `core.shell`. Composition KEEPS a disabled plugin's
-contributions in its registries and reflects the disabled set only in `roster[].enabled` and
-`composition.enabled(id)` (false for unknown ids too): that is what lets the ladder tell
-`plugin_disabled` from `unknown_action`, and lets a placeholder NAME the plugin it is standing
-in for. Manifest, capability-subset and uniqueness validation runs across every registered
-plugin whether enabled or not, so disabling can never mask a collision. A disabled or unknown
-contribution renders an inert placeholder, on canvases and in the workspace tree alike.
+**Refusal classes are the contract; prose is not.** `PLUGIN_REFUSAL_REASONS` is closed —
+`essential`, `builtin`, `unknown_plugin`, `missing_dependency`, `incompatible_dependency`,
+`dependency_disabled`, `data_downgrade`, `data_migration_missing`, `element_type_owned`,
+`still_enabled` — and a `refused` message is the class verbatim when there is nothing to name,
+otherwise `"<class>: <offenders, comma-separated>"` (`builtin: engine.plugins`,
+`still_enabled: core.draw`, `missing_dependency: test.leaf`). Clients switch on the prefix before
+`": "`; the remainder is identity for display, never meaning.
+
+**Enablement is workspace-global, hot, and an ENGINE door.** `engine.plugins.setEnabled { id, enabled }`
+(cap `plugins:manage`) is a **builtin roster row** (`source: "builtin"`), not a plugin action: the
+mechanism that changes the composition cannot live inside the composition, or one toggle would make
+it unreachable for every principal (A2). It flips a server-persisted flag (`meta` key
+`plugins:disabled`, a JSON array of ids), records attribution (`meta` key `plugins:attribution`),
+and pushes the new roster to every open socket; clients rebuild live, with no reload. `engine.` is a
+reserved namespace (`ENGINE_NAMESPACE_PREFIX`): a plugin claiming it fails composition, and a
+`setEnabled` aimed at a builtin row is refused with class `builtin`. `core.plugins` is the manager
+**UI only** — an ordinary, disableable plugin with no actions and no `essential`. `core.shell`
+remains the one `essential` plugin; attempting to disable it is `refused`/`essential`.
+
+Composition KEEPS a disabled plugin's contributions in its registries and reflects the disabled set
+only in `roster[].enabled` and `composition.enabled(id)` (false for unknown ids too): that is what
+lets the ladder tell `plugin_disabled` from `unknown_action`, and lets a placeholder NAME the plugin
+it is standing in for. Manifest, capability-subset and uniqueness validation runs across every
+registered plugin whether enabled or not, so disabling can never mask a collision. Composition
+refuses only STRUCTURAL truths — a missing or disabled `required` dependency, a cycle, a
+self-dependency, an `engine.*` squat, an element-type squat, and (for ENABLED plugins only) a
+stored-data downgrade or a missing major migration — so one dormant plugin's stale rows can never
+stop the server booting; its data is re-judged at the enablement door instead.
+
+**Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
+destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and
+element-type reservations all survive, and re-enabling restores them in place. Contributions render
+the engine's inert placeholder naming the plugin (`dormant.mode: "ghost"`) or are skipped while their
+record stands (`"hide"`) — the placeholder is ENGINE-owned, never supplied by the plugin it stands
+in for. The residual mechanisms are the closed set `["cleanup", "dormant", "retain"]`.
+`engine.plugins.purge { id }` (cap `plugins:manage`) is the destructive verb: refused while the
+plugin is enabled (class `still_enabled`), it clears the plugin's storage namespace including its
+`$version` stamp and `$migration:` ledger, releases its element-type reservations, runs `onPurge`,
+and answers the exhaustive record `{ id, removed: { storage, elements, ownership } }`. It does NOT
+touch documents: a canvas's elements are the workspace's data, not the plugin's.
+
+**Lifecycle hooks** live on the plugin DEF (never the manifest) as
+`{ onEnable?, onDisable?, onCompositionChanged?, onPurge? }`, each receiving
+`{ pluginId, storage, now() }` and nothing else — a hook orders a plugin's own durable state, while
+anything touching the workspace goes through an action door. They are TRANSITION hooks: at boot,
+everything enabled is simply live, with no fan-out and no lifecycle state invented.
+`onCompositionChanged(ctx, delta)` fires once per SURVIVING plugin (enabled before AND after), in
+composition order, after the roster commit and before the broadcast; the plugins named in
+`delta { enabled, disabled }` get their own hook instead. Every hook is awaited under a 2-second
+bound, and a throw, a rejection or an overrun are one outcome: the transition COMPLETES, the roster
+records `lifecycle: "enable_failed" | "disable_failed"`, and one log line names the plugin and hook.
+A failing `onPurge` does not stop a purge.
 
 **Disable semantics: creation and administration die, cleanup survives.** Disabling
 `core.terminals` refuses new `terminal_open` over the session channel
 (`error { code:"forbidden" }`, "terminals plugin disabled") and refuses its administrative
 actions, but attach/detach/input and `terminal_kill` on EXISTING sessions keep working: a user is
-never locked out of removing something that already exists. Every plugin that creates durable
-things follows that shape.
+never locked out of removing something that already exists. That is the `cleanup: true` carve-out,
+and `verify:axioms` publishes every action carrying it.
+
+**Per-plugin storage.** `ctx.storage` is the only place a plugin persists anything: one SQLite table
+`plugin_kv(plugin_id, key, value)` (schema v10), namespaced per plugin, SYNCHRONOUS and
+string-valued (`get`/`set`/`delete`/`keys(prefix?)`/`dataVersion()`/`appliedMigrations()`). Keys
+match `^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`, values are ≤64 KiB, and `$`-prefixed keys are
+engine-reserved and unforgeable by plugins — that is where the version stamp and migration ledger
+live. Migrations are `{ name, to, migrate(storage): void }`, synchronous and all-or-nothing, run at
+boot for enabled plugins and at the enablement door for one being switched on; applied NAMES are
+recorded so none runs twice. Version rules: equal composes; minor-only difference composes with no
+migration; a major difference needs an unapplied migration or the plugin is refused; stored major
+greater than code major is refused as a downgrade.
 
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
 `layout:<principalId>` and read at `GET /api/layout` (`DEFAULT_WORKSPACE_LAYOUT` when unset). Its
@@ -429,7 +519,7 @@ Grants, spotlights, and (from wave 2) event topics all name nodes this way.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v14).** One socket per tab, many rooms. Every frame is either
+**Frame grammar (v15).** One socket per tab, many rooms. Every frame is either
 connection-level or channel-level:
 
 ```
@@ -717,7 +807,7 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 - Session ids are opaque. A session's placements are read from live containers (portal
   elements and tile leaves), never from the session row: one session can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements
-  never reference terminal sessions. Session protocol v14.
+  never reference terminal sessions. Session protocol v15.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
@@ -789,11 +879,17 @@ machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
 sessions(id TEXT PK, machine_id TEXT, pad_id TEXT, created_by TEXT, status TEXT,
          exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT)
                             -- pad_id IS the home composition; no element_id, no pool order
+plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
+                            -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
+                            -- engine-reserved ($version stamp, $migration:<name> ledger)
 meta(key TEXT PK, value TEXT)                         -- schema_version, plugins:disabled,
+                                                      -- plugins:attribution,
+                                                      -- plugins:element-owners,
                                                       -- layout:<principalId>
 ```
 
-Schema version 9. A migration is SQL, or CODE when the move is not expressible as SQL:
+Schema version 10 (10 adds `plugin_kv`). A migration is SQL, or CODE when the move is not
+expressible as SQL:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
 `portal` onto a newly created solo composition, keeping id, geometry and z-order so
 collaborators' element references survive; a session already living in a tiled container was

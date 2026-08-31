@@ -125,15 +125,18 @@ dated technology verdicts with evidence.
     second "remote flavor" of an existing behavior (own styling, own state derivation, own
     fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
     2026-08-30 shipped exactly that way and was operator-caught.
-12. **Everything above the floor is a plugin** (axiom A1): the floor registry in `AXIOMS.md`
-    is the authority on what is foundation, and a file that crosses that boundary is a
-    registry edit in the SAME commit as the code. A feature lands as a package under
-    `packages/plugins/*` with a manifest — never as a new branch in the shell. Every mutating
-    affordance carries `data-action="<action name>"`, so the DOM names the door it opens.
-    Contributions collide loudly: duplicate plugin ids, action names, panel ids, element types
-    or tool ids fail composition naming every offender, and nothing ever shadows anything.
-    Floor files never import `@manifold-plugin/*`; the two `composition.ts` registration files
-    are the only exceptions.
+12. **Everything above the floor is a plugin** (axiom A1): the registries in `AXIOMS.md` are the
+    authority on what is foundation, and a file that crosses that boundary is a registry edit in
+    the SAME commit as the code. A feature lands as a package under `packages/plugins/*` with a
+    manifest — never as a new branch in the shell. Every mutating affordance carries
+    `data-action="<action name>"`, so the DOM names the door it opens. Contributions collide
+    loudly: duplicate plugin ids, action names, panel ids, element types or tool ids fail
+    composition naming every offender, and nothing ever shadows anything. Floor files never import
+    `@manifold-plugin/*`; the two `composition.ts` registration files are the only exceptions.
+    What a plugin's data, contributions and neighbours do across an enable/disable is the
+    behavioral contract: `AXIOMS.md` §Disable semantics (D4′) and
+    `docs/decisions/0013-plugin-behavioral-contract.md`. Disable RETAINS; destruction is
+    `engine.plugins.purge`, a different verb.
 13. **Every discrete mutation is a registered action or documented plane traffic** (the plane
     rule, `AXIOMS.md` §Axioms): an ACTION when legality or effect depends on state the actor
     cannot see or authority it does not hold; a DOCUMENT edit when the worst-case merge is one
@@ -149,6 +152,15 @@ dated technology verdicts with evidence.
     plugins exist, a second way to rename a terminal — is a bug, not a style choice. When a
     concept genuinely needs a NEW door, the old one is deleted in the same change: no aliases,
     no dual paths, no fallback readers.
+15. **The foundation is a pillar registry, admitted by a litmus test** — READ `AXIOMS.md`
+    §Foundation law before touching floor code. A pillar is engine if and only if it passes all
+    three of bootstrap circularity, neutrality (zero domain nouns, no favourite plugin) and
+    arbitration; failing one means it is a plugin, and there is no third state (the `"until"` tag
+    is gone). Being floor grants no privilege — it imposes self-description: engine doors are
+    builtin roster rows, every dispatch is logged, every registry is machine-readable. Growing the
+    foundation means editing the pillar inventory plus a dated ADR that applies the litmus
+    criterion by criterion; every floor file must fall inside exactly one pillar's globs, and an
+    unmatched file is gate RED.
 
 ## Conventions
 
@@ -163,6 +175,14 @@ dated technology verdicts with evidence.
   component callback, where it is hard to isolate and test.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
+- Contradictions escalate; they are never resolved quietly. Precedence is axioms > decisions >
+  scope notes (`AXIOMS.md` §Change control): the axioms and the foundation law outrank a dated
+  ADR, and an ADR outranks a plan bullet, a roadmap row or a task brief. If a brief, plan or ADR
+  cannot be executed without violating an axiom, STOP and escalate to the operator — never pick
+  the reading that looks obvious, because a silently resolved contradiction becomes precedent
+  nobody ratified. Scope may defer work; it may never license an axiom-violating state, and a
+  deferral must be visible in-product (a named refusal, a placeholder that says what is missing, a
+  roster field), not only in prose.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
   `sdk:`, `plugin:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is
   green.

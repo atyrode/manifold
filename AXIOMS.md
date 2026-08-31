@@ -3,10 +3,12 @@
 This file is the constitution. `AGENTS.md` is how to operate the repo, `docs/CONTRACTS.md`
 is what the parts promise each other, `docs/PLAN.md` is where we are going; this file says
 what manifold _is_ and where the line runs between the foundation and everything built on
-it. Two sections here are machine-readable — §Foundation's `floor` registry and §Device-local
-register's `deviceLocal` registry — and `bun run verify:axioms` (part of `bun run gate`)
-parses them in both directions. Crossing the boundary without editing the registry fails the
-gate. That is the whole point: an axiom nobody can violate silently is an axiom.
+it. Three sections here are machine-readable — §Foundation law's `pillars` registry,
+§Foundation's `floor` registry and §Device-local register's `deviceLocal` registry — and
+`bun run verify:axioms` (part of `bun run gate`) parses them in both directions. Crossing the
+boundary without editing the registry fails the gate. That is the whole point: an axiom nobody
+can violate silently is an axiom. When this file and anything else disagree, this file wins
+(§Change control, precedence).
 
 ## Axioms
 
@@ -16,12 +18,17 @@ administration, view presence, the shell itself — is a plugin: a manifest decl
 contributes, plus actions declaring the capabilities they need. Plugins load through ONE
 registry, are enabled or disabled per workspace while the page keeps running, and collide
 loudly rather than shadowing each other: duplicate plugin ids, action names, panel ids,
-element types or tool ids fail composition by name. A contribution whose plugin is disabled
-or unknown renders an inert placeholder naming the plugin — on canvases and in the workspace
-tree alike — because a missing feature must be visible, not invisible. A manifest may declare
-`essential: true`; disabling an essential plugin is refused (`refused`, message `essential`).
+element types or tool ids fail composition by name. What happens to a plugin's data,
+contributions and neighbours across that toggle is the behavioral contract — §Disable semantics
+(D4′) here, normative in
+[`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md).
 There is no privileged "core" mechanism: core plugins use exactly the interfaces a stranger's
-plugin uses.
+plugin uses. The engine's own doors are the one distinction, and it is a distinction in data
+rather than in mechanism: the enablement door is a **builtin roster row** (`engine.plugins`,
+`source: "builtin"`), described by the same manifest shape and dispatched through the same ladder
+as any plugin, carrying no toggle of its own. A door that can delete itself is not a capability
+(A2), so the mechanism that changes the composition never lives inside the composition — and
+`engine.*` is a reserved namespace no plugin may claim.
 
 **A2 — Multiplayer by design.** Every capability is reachable identically by a local human,
 a remote human, and an agent, over the UI and over the API. There is no local-only path and
@@ -91,6 +98,42 @@ is designed in
 [`docs/decisions/0012-event-plane.md`](docs/decisions/0012-event-plane.md) and implemented in
 wave 2. Wave-1 code touches it only through the manifest's reserved `contributes.events`.
 
+### Disable semantics (D4′)
+
+Disable is a permission-gated, workspace-global, hot act (`engine.plugins.setEnabled`, cap
+`plugins:manage`). It gates a plugin's ACTIVE surface and **retains everything else**. Nothing
+about a disabled plugin is engine-invented: the engine supplies a default per contribution kind,
+the manifest may narrow it within a closed vocabulary, and destruction is a different verb.
+Per kind:
+
+| Kind                       | While the owner is disabled                                                                             | On re-enable                         | On purge                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------------------- |
+| **actions**                | refused `plugin_disabled`, EXCEPT `cleanup: true` actions, which stay dispatchable (D12)                | dispatchable again                   | gone with the plugin                          |
+| **element** (scene record) | data untouched; renders the engine placeholder (`dormant.mode` `ghost`, default) or is skipped (`hide`) | renders again, in place              | records released, ownership freed             |
+| **panel** (layout leaf)    | leaf stays in every principal's stored layout; paints the placeholder, which carries a remove control   | paints its component again, in place | leaf becomes an unknown-panel placeholder     |
+| **section** (sidebar)      | placeholder body in its manifest-declared slot; the slot is never re-flowed                             | body returns, same order             | slot gone                                     |
+| **tool** (toolbar)         | absent from the strip; any in-flight tool state falls back to select                                    | reappears                            | gone                                          |
+| **stored data**            | retained — `ctx.storage` namespace, migration ledger, element-type reservation all stand                | read as they were                    | cleared, ledger dropped, reservation released |
+| **route**                  | the engine's named "disabled" page                                                                      | serves again                         | 404                                           |
+
+Four rules bind that table:
+
+- **Retain-only.** No manifest field can make disable erase, reset, or migrate anything.
+  Destruction is `engine.plugins.purge`, refused while the plugin is enabled, running the
+  plugin's `onPurge` hook.
+- **The engine owns the placeholder.** Dormancy is declarative manifest data
+  (`ghost` | `hide` plus an optional label), never a component supplied by the plugin being
+  rendered in its absence.
+- **Residual mechanisms are a closed enum** — `cleanup` actions, `dormant` render mode, `retain`
+  — published in the protocol; `verify:axioms` lists every `cleanup: true` action in the
+  composition so the carve-out cannot grow unseen.
+- **Refusals are named classes, not one boolean.** `essential` (only `core.shell`), `builtin`
+  (an engine door has no toggle), the dependency classes, the data-version classes and
+  `still_enabled` are members of one published set; the roster also carries `changedBy` /
+  `changedAt`, so a placeholder can say who turned this off, and `lifecycle` (`ok` /
+  `enable_failed` / `disable_failed`), because a teardown that fails is a state every principal
+  can see rather than an assertion. Disable always completes.
+
 **"One door per concept" is not a sixth axiom.** It is an engineering law and lives as
 `AGENTS.md` invariant 14: every concept has exactly one authoritative implementation and every
 consumer goes through it. It is referenced here because the axioms above are unenforceable
@@ -101,14 +144,22 @@ the one that gets forgotten.
 
 The ratified wave order. A wave lands as one branch, one PR, one green `bun run gate`.
 
-- **Wave 1 — plugin engine, core plugins, mechanical enforcement (#69, this change).** Protocol
-  v14 (connection-level `plugins` frame, presence `view`/`spotlight`, `panel` tile surface,
-  `plugins:manage`, action and resolve doors, `manifold://` grammar); `@manifold/plugin` with
-  manifests, composition and host contracts; the server plugin host and its denial ladder; the
-  workspace shell as a tile composition of plugin panels; the core plugins themselves —
-  enumerated by `packages/plugins/*` via the two composition files and live at
-  `GET /api/plugins`, never by prose here (D10);
-  `AXIOMS.md`, `AGENTS.md` invariants 12–14, and `verify:axioms` in the gate.
+- **Wave 1 — plugin engine, TOTAL conversion, mechanical enforcement (#69, this change).**
+  Protocol v15 (connection-level `plugins` frame, presence `view`/`spotlight`, `panel` tile
+  surface, `plugins:manage`, action and resolve doors, `manifold://` grammar, and the behavioral
+  contract's manifest and roster vocabulary: dependencies, `after`, `dataVersion`, `dormant`,
+  placement traits, lifecycle states, refusal classes, the closed residual enum, purge targets,
+  `source`, `changedBy`/`changedAt`); `@manifold/plugin` with manifests, composition, dependency
+  resolution and ordering, per-plugin `ctx.storage`, and host contracts; the server plugin host,
+  its denial ladder, and the **engine-owned enablement door** (`engine.plugins`, a builtin roster
+  row); the workspace shell as a tile composition of plugin panels; the plugin behavioral contract
+  v2 (ADR 0013) — retain-only disable, engine-owned placeholders, lifecycle hooks including the
+  composition-changed broadcast, data versions with migrations, element-type ownership
+  reservation; and **zero floor-owned domain code**: every feature above the floor runs through
+  the plugin system or is explicitly sunset, enumerated by `packages/plugins/*` via the two
+  composition files and live at `GET /api/plugins`, never by prose here (D10). Plus `AXIOMS.md`
+  (including §Foundation law and the pillar registry), `AGENTS.md` invariants 12–15, and
+  `verify:axioms` in the gate.
 - **Wave 2 — the event plane** (ADR 0012). A subscribe door, emission at the existing doors
   (actions, placement, lifecycle, roster), and real consumers for `contributes.events`. It
   replaces the Machines and Views sections' HTTP polling: one fetch line per section becomes a
@@ -135,31 +186,52 @@ The ratified wave order. A wave lands as one branch, one PR, one green `bun run 
     roster's `source` field. This wave also carries the explicit **core-plugin override**
     mechanism: replacing a core plugin is disable-then-enable-a-substitute by id, never a silent
     collision (A1 has no shadowing).
+  - **App shells** — packaging manifold's client for hosts that are not a plain browser tab, and
+    ADR-gated when it is built rather than sketched now. A **PWA pass is the near milestone**:
+    installability, offline shell, and the origin-configurability the portable-lens rule already
+    demands, with no client fork. For desktop, **Electron is the ratified leading candidate** — to
+    be judged in its own ADR at that milestone — because rendering predictability matters to the
+    two surfaces manifold is hardest on (the React Flow canvas and xterm), which its own bundled
+    Chromium gives, because `WebContentsView` embeds a real web view without re-implementing one,
+    and because the local agent already fits the sidecar shape it packages well. **Tauri is
+    re-evaluated at a native-mobile milestone**, where a system web view stops being a liability
+    and binary size starts being one. Whatever ships obeys the portable-lens rule: a shell adds
+    host-composed plugins, never a second client.
 
 ### Full-conversion inventory
 
 A1 is not satisfied by a representative sample; it is satisfied when nothing above the floor is
-still wired by hand. The remaining conversions are tracked here, and each row is the prose half
-of an `"until"` tag in the `floor` registry below — `verify:axioms` S6 keeps the tags honest, so
-this ledger cannot rot into a wish.
+still wired by hand. That is the wave-1 completion scope, not a later wave, so this table is a
+work list rather than a ledger of debt: every row lands in this change.
 
-| Still floor today                                           | Converts to                       | Floor tag           |
-| ----------------------------------------------------------- | --------------------------------- | ------------------- |
-| notes/text element renderer + the text tool                 | `core.notes`                      | `core.notes`        |
-| canvas renderer, portal internals, canvas toolbar, viewport | `core.canvas`                     | `core.canvas`       |
-| tiled-route internals, tile drop gestures, carry previews   | `core.compositions`               | `core.compositions` |
-| machine enrollment + machine presentation helpers           | `core.machines` actions           | `core.machines`     |
-| pad/folder CRUD and pad-tree moves (bespoke HTTP routes)    | workspace-index actions           | —                   |
-| terminal pool/park rows, the terminal index, session rows   | `core.terminals` completion       | `core.terminals`    |
-| token and principal administration routes                   | `core.access` (waterfall wave)    | —                   |
-| cursor overlay + roster island rendering                    | `core.presence` completion        | `core.presence`     |
-| `POST /api/place`                                           | action-alias evaluation, deferred | —                   |
+| Was floor                                                   | Converts to                 | Ruling                                                         |
+| ----------------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
+| notes/text element renderer + the text tool                 | `core.notes`                | decomposes `core.shell.pad-view`                               |
+| canvas renderer, portal internals, canvas toolbar, viewport | `core.canvas`               | decomposes `core.shell.pad-view`; absorbs stroke geometry      |
+| tiled-route internals, tile drop gestures, carry previews   | `core.compositions`         | decomposes `core.shell.pad-view`                               |
+| machine enrollment + machine presentation helpers           | `core.machines`             | enrollment routes become actions                               |
+| pad/folder CRUD and pad-tree moves (bespoke HTTP routes)    | workspace-index actions     | routes deleted, callers migrated (D13)                         |
+| terminal pool/park rows, the terminal index, session rows   | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)        |
+| token and principal administration routes                   | `core.access`               | identity mechanism stays floor; administration converts now    |
+| cursor overlay + roster island rendering                    | `core.presence` completion  | the presence relay stays floor                                 |
+| `POST /api/place`                                           | `core.layout.place`         | mechanism/verb split; the route is deleted, not aliased        |
+| element placement traits (closed `ITEM_KINDS` tables)       | manifest contribution data  | the algebra becomes a trait-driven rules engine (ADR 0013 §12) |
 
 `core.canvas`, `core.notes` and `core.compositions` together decompose today's
-`core.shell.pad-view` panel. `POST /api/place` stays its own door for now on purpose: it is
-already a single door with published, data-driven legality, so aliasing it as an action buys
-vocabulary uniformity and nothing else — the decision waits for full conversion, when the cost
-of the exception is visible next to everything else that went through the action door.
+`core.shell.pad-view` panel. Two rows reverse earlier scope notes, ruled in
+[`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md)
+§14: `POST /api/place` is superseded by `core.layout.place` rather than left as a permanent
+exception (invariant 14 admits no second door onto "place a thing"), and `core.access` takes the
+token and principal administration verbs now, while the A5 evaluator (ADR 0011, grant rows,
+`effectiveCaps`) remains a later wave — "identity mechanism is floor" never made
+`POST /api/tokens` mechanism.
+
+**The `until` tag is gone.** The floor registry once carried an `"until": "<plugin>"` field on
+rows that were floor today and plugin territory tomorrow, and this table was its prose half. Total
+conversion empties that set: the field is removed from the registry vocabulary, and a row that
+still carries one is a file this change has not finished moving. Nothing replaces it — a file is
+floor because it passes the litmus test (§Foundation law), or it belongs to a plugin. There is no
+third state, and therefore no tag for one.
 
 ## Taxonomy
 
@@ -177,16 +249,222 @@ One noun per concept; a second name for an existing concept is invariant-14 debt
 | **pipe**      | The channel a reference crosses to be projected: a session channel onto a room, the machine channel onto a daemon, and — from wave 3 — an instance channel onto another manifold. |
 | **grant**     | An authority row: principal (or class) × node × capabilities × effect × reach. A token is a reference to grants; a share is a minted token bound to a subtree grant.              |
 
+## Foundation law
+
+The foundation is not "the code we did not convert". It is a small set of **pillars**, each
+admitted by a test, each carrying an obligation, and each named in a machine-readable registry
+below. This section is normative: it is the law an agent applies before touching floor code, and
+the reasoning a floor-addition ADR must show.
+
+### The litmus test (admission)
+
+A pillar belongs to the engine **if and only if it passes all three** criteria:
+
+1. **Bootstrap circularity** — plugins presuppose it. If it were a plugin, some plugin would have
+   to load before the loader, or render before the renderer. The enablement door is the worked
+   example: a door that can disable itself cannot be relied on to re-enable anything (ADR 0013
+   §10), and the placeholder for an absent plugin cannot be drawn by the absent plugin (§4).
+2. **Neutrality** — zero domain nouns, no favorite plugin. It would be unchanged if every plugin
+   in the tree were replaced by different plugins. It knows contribution _kinds_ (panel, section,
+   element, tool) and never which ones exist; it speaks the vocabulary, never the words.
+3. **Arbitration** — it referees between plugins where no plugin could be trusted to referee:
+   collisions, ordering, ownership reservation, capability intersection, placement legality. An
+   arbiter cannot be a party.
+
+**Failing any one criterion means it is a plugin.** There is no partial credit, no "mostly
+mechanism", and no third state between floor and plugin territory.
+
+### The obligation (not a power)
+
+Being floor grants no privilege; it imposes **self-description**. The foundation must be readable
+as data by a stranger's agent, or A3 has nothing to onboard against:
+
+- every engine door is a **builtin roster row** (`source: "builtin"`), described by the same
+  manifest and `ActionSummary` shapes as a plugin's and dispatched through the same ladder —
+  never a hidden entry point;
+- every dispatch is **logged**, one structured line, with the principal, the action and the
+  outcome;
+- every registry is **machine-readable** and checked in both directions: the pillar registry and
+  the floor registry here, the device-local register below, the live roster at
+  `GET /api/plugins`, the schemas at `GET /api/protocol`.
+
+A pillar that cannot be read as data is a pillar that cannot be audited, and an unauditable
+foundation is indistinguishable from a privileged core — which A1 denies exists.
+
+### The portable lens
+
+**The client is a lens onto an instance, and the browser is the baseline host.** The web floor
+stays browser-pure: no Electron, Node, or otherwise host-specific import anywhere above
+`packages/web`'s entry, and no assumption that the server it talks to is the origin it was served
+from — the instance is configurable, because a lens that can only look at its own birthplace is not
+a lens.
+
+Native capabilities — filesystem access, OS notifications, tray, deep window integration — may
+arrive **only as host-composed plugins through the same manifests**, registered by whatever shell
+is hosting the lens. Two consequences follow, and both are already the plugin rules rather than new
+ones: a host that lacks a capability composes a workspace where that plugin is simply absent, and
+absence looks exactly like any other disabled plugin (§Disable semantics — a named, inert
+placeholder, data retained), so no feature is ever conditionally compiled and no surface silently
+degrades. **A fork of the client is never the answer.** A shell that needs different behavior
+contributes plugins; if it needs the lens itself to change, that is a change to the one lens every
+host shares.
+
+### Growing the foundation
+
+Growing the foundation means **editing the pillar registry**, in the same commit as the code, with
+a dated ADR in `docs/decisions/` that applies the litmus test criterion by criterion. The litmus
+is the admission criterion reviewers apply; the registries are the mechanism that makes an
+unrecorded crossing fail the gate rather than a review. Shrinking the foundation — moving a pillar
+or part of one into `packages/plugins/*` — needs only the registry edit and the code: that is the
+direction the axioms want.
+
+### The pillar inventory
+
+One entry per pillar: `id`, the `globs` it owns, the `litmus` criteria it passes, a one-line
+`verdict`, and the `adr` that justifies its floor status. This registry is the mutable source of
+truth for _which_ pillars exist, exactly as the `floor` registry is for which files are floor.
+
+`verify:axioms` reads it for **exhaustiveness**: every floor file must fall inside exactly one
+pillar's globs, and anything unmatched is gate RED — an unowned floor file is how the
+`packages/web/src/stroke.ts` hole happened (plugin-domain geometry in the floor tree, absent from
+every registry, therefore invisible to the import walk and to registry liveness alike). Where two
+pillars' globs overlap, the **most specific glob owns the file** (longest literal prefix wins);
+two pillars claiming the same file at equal specificity is itself an error. The gate wiring lands
+with the conversion batch; the registry below is written to be consumed by it.
+
+As this section is written, exactly the rows the conversion batch still owns fall outside every
+pillar — the 34 formerly `"until"`-tagged web files plus `packages/web/src/sidebar-panel.tsx`,
+which was floor and untagged. That is the intended reading of the check: the unmatched set IS the
+work list, it empties as each file moves into its plugin, and S9 turns green when it is empty
+rather than by being taught exceptions.
+
+```json
+{
+  "pillars": [
+    {
+      "id": "protocol",
+      "globs": ["packages/protocol/src/**"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar. Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
+      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+    },
+    {
+      "id": "placement-algebra",
+      "globs": ["packages/protocol/src/placement.ts", "packages/server/src/placement.ts"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the trait-driven rules engine and its executor: which item may enter which container, and which rule refused. Traits are manifest contribution data (G1), so the engine is neutral over kinds; it arbitrates between kinds no single plugin owns. The VERB is a plugin — core.layout.place, not a bespoke route.",
+      "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
+    },
+    {
+      "id": "composition-engine",
+      "globs": [
+        "packages/plugin/src/**",
+        "packages/server/src/plugin-host.ts",
+        "packages/server/src/composition.ts",
+        "packages/server/src/main.ts",
+        "packages/server/src/http.ts",
+        "packages/server/src/config.ts",
+        "packages/server/src/index.ts"
+      ],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition.",
+      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+    },
+    {
+      "id": "identity-caps",
+      "globs": ["packages/server/src/auth.ts", "packages/web/src/identity.tsx"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the single seam the A5 evaluator replaces. Administration of principals and tokens is NOT here: those verbs are core.access.",
+      "adr": "docs/decisions/0011-permission-waterfall.md"
+    },
+    {
+      "id": "persistence",
+      "globs": [
+        "packages/server/src/db.ts",
+        "packages/server/src/stores.ts",
+        "packages/server/src/migrate-solo.ts"
+      ],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers). Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
+      "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
+    },
+    {
+      "id": "transport",
+      "globs": [
+        "packages/server/src/session-ws.ts",
+        "packages/server/src/machine-ws.ts",
+        "packages/server/src/terminal-broker.ts",
+        "packages/server/src/agent-spawn.ts",
+        "packages/server/src/log.ts",
+        "packages/agent/src/**"
+      ],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, the PTY broker's attach state machine and no-gap invariant, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — the transport moves bytes and stops knowing why.",
+      "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
+    },
+    {
+      "id": "scene-sync",
+      "globs": ["packages/scene/src/**", "packages/server/src/room.ts"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the document plane: the canonical Y.Doc per room, accept-then-repair, snapshots, and the scene representation element renderers project from. It arbitrates concurrent edits between principals; element KINDS are contribution data.",
+      "adr": "docs/decisions/0008-yjs-scene-engine.md"
+    },
+    {
+      "id": "presence-transport",
+      "globs": ["packages/server/src/session-peer.ts"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "one channel's server-side peer: frame validation, presence relay and fan-out. It carries presence payloads without reading them — cursor rendering, roster projection and view-state writing are core.presence, not floor.",
+      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+    },
+    {
+      "id": "web-plugin-host",
+      "globs": [
+        "packages/web/src/main.tsx",
+        "packages/web/src/app.tsx",
+        "packages/web/src/plugin-host.tsx",
+        "packages/web/src/composition.ts",
+        "packages/web/src/api.ts",
+        "packages/web/src/error-boundary.tsx",
+        "packages/web/src/debug-seam.ts",
+        "packages/web/src/pad-browser.tsx",
+        "packages/web/src/tile-tree.tsx",
+        "packages/web/src/tile-geometry.ts",
+        "packages/web/src/toast.tsx",
+        "packages/web/src/icons.tsx",
+        "packages/web/src/styles.css",
+        "packages/web/src/pad-memory.ts",
+        "packages/web/src/web-version.ts",
+        "packages/web/src/generated-changelog.ts",
+        "packages/web/src/changelog-references.ts"
+      ],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the registry's browser half: CompositionProvider, PanelOutlet and the engine-owned placeholder, HostServices, the one tile-tree renderer, the typed HTTP client, fault containment, and the read-only debug seam. It mounts panels without knowing which panels exist.",
+      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+    },
+    {
+      "id": "sdk",
+      "globs": ["packages/sdk/src/**"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the only WebSocket state machine plus the typed HTTP surface: dial, keepalive, rejoin, channel demux, connection frames, action dispatch. Every principal — browser, agent, remote SDK — reaches the doors through it, which is the mechanism behind A2's 'one door, every principal'.",
+      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+    },
+    {
+      "id": "gate-and-registries",
+      "globs": ["AXIOMS.md", "scripts/verify-axioms.ts", "scripts/gate.ts"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "the axioms' own enforcement machinery: the registries in this file and the script that parses them in both directions. It is the pillar that makes every other pillar falsifiable, and it is the one place a boundary crossing cannot be silent.",
+      "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
+    }
+  ]
+}
+```
+
 ## Foundation
 
-**The floor criterion.** A file is floor if, and only if, it is part of the axioms' own
-enforcement machinery:
-
-- identity and authority (who is asking, what they may do),
-- protocol schemas (the vocabulary every plane speaks),
-- plane transports — document sync, presence relay, action dispatch, the PTY broker,
-- persistence,
-- the registry itself (composition, the plugin host, the panel outlet).
+**The floor criterion is the litmus test** (§Foundation law): all three of bootstrap circularity,
+neutrality and arbitration, or it is a plugin. Every floor file belongs to exactly one pillar in
+the registry above; the rows below are the file-level view the import walk and registry-liveness
+checks read.
 
 Everything else is a feature, and features are plugins (A1). Two consequences are mechanical:
 floor files MUST NOT import `@manifold-plugin/*` — the two `composition.ts` registration files
@@ -194,12 +472,15 @@ are the sole exceptions — and packages under `packages/plugins/*` import only
 `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`, `@manifold/plugin` and their own
 sources.
 
-Rows carrying `"until"` are floor **today** and plugin territory **tomorrow**: the named plugin
-is the one that will absorb them (§Roadmap inventory). A tag is a debt marker, not an excuse —
-it makes the remaining migration machine-visible.
+There is no `"until"` field. A row is floor because its pillar passes the litmus, not because its
+conversion is scheduled; rows in this registry that still carry the old tag are files the
+conversion batch has not finished moving (§Roadmap, full-conversion inventory), and the tag leaves
+with them.
 
 Test files (`*.test.ts`), `packages/testkit`, and `scripts/` are neither floor nor plugin
-territory: they exercise both and are governed by their subject.
+territory: they exercise both and are governed by their subject. The two exceptions are named in
+the `gate-and-registries` pillar — `scripts/verify-axioms.ts` and `scripts/gate.ts` are the
+enforcement machinery itself, not a test of somebody else's subject.
 
 ```json
 {
@@ -621,18 +902,34 @@ register. Anything else is presence, document, or action state — A2 leaves no 
 
 ## Change control
 
-- **The registries are the mechanism of record.** A file that becomes floor, stops being floor,
-  or changes its `"until"` tag is a registry edit in the same commit as the code. So is a new
-  device-local key. `verify:axioms` reads both registries in both directions, so an unrecorded
-  crossing fails `bun run gate` rather than a review.
-- **Floor ADDITIONS need a dated ADR in `docs/decisions/` in the same commit**, naming what the
-  file enforces and why it cannot be a plugin. The floor is meant to shrink; growing it is a
-  decision, not a diff.
+- **The registries are the mechanism of record.** A file that becomes floor or stops being floor
+  is a registry edit — the pillar inventory and the `floor` rows — in the same commit as the code.
+  So is a new device-local key. `verify:axioms` reads the registries in both directions, so an
+  unrecorded crossing fails `bun run gate` rather than a review.
+- **Floor ADDITIONS need a dated ADR in `docs/decisions/` in the same commit**, applying the
+  litmus test (§Foundation law) criterion by criterion and naming the pillar the file joins. The
+  floor is meant to shrink; growing it is a decision, not a diff.
 - **Extractions need only the registry edit.** Moving a feature out of the floor into
   `packages/plugins/*` is the direction the axioms want; it costs a registry line and the code.
 - **Axiom text and the plane rule change by operator ratification only**, recorded here with the
   wave that carries it. An implementer who finds a decision absent from this file and from
   `docs/PLAN.md` has found a bug in the plan, not an open question.
+- **Precedence: axioms > decisions > scope notes.** This file's axioms and its foundation law
+  outrank a dated ADR; an ADR outranks a scope note, a plan bullet, a roadmap row or a task
+  brief. A lower rank may refine a higher one and may never contradict it.
+  - **A contradiction discovered mid-implementation MUST escalate.** An implementer — human or
+    agent — who finds a decision or a scope note that cannot be executed without violating an
+    axiom stops and escalates to the operator. Choosing quietly is prohibited even when the
+    choice looks obvious, because a silently resolved contradiction becomes precedent nobody
+    ratified.
+  - **Scope may DEFER work; it may never license an axiom-violating state.** "Not this wave" is a
+    legitimate answer about effort. "Broken in this wave" is not an answer about state: a
+    deferral must leave the tree in a condition every axiom still describes truthfully. The
+    `"until"` tag was removed for exactly this reason — it turned deferral into a licence.
+  - **Deferrals are visible in-product, not only in prose.** A capability that is designed but
+    not implemented shows up where a user or an agent looks: a named refusal class, a
+    placeholder that says what is missing, a roster field, a documented status. A deferral only a
+    reader of `docs/` can discover is indistinguishable from a bug.
 - **New dependencies:** `AGENTS.md` invariant 8 (no new runtime dependency without a dated ADR)
   and its converse both apply — any pattern that is not manifold-specific gets a named library
   evaluation (candidates, code and maintenance saved, opinionation cost) recorded in the owning
@@ -643,24 +940,26 @@ register. Anything else is presence, document, or action state — A2 leaves no 
 `bun run verify:axioms` (in `bun run gate`) is the axioms made falsifiable. Its static half runs
 against the source tree, its browser half against a real server and a real browser.
 
-| Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                            |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| S1    | Both composition files compose without a `CompositionError`, and every `DEFAULT_WORKSPACE_LAYOUT` panel id exists in the composition.                                                                                                                                                                                                                                                      |
-| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `composition.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                            |
-| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                           |
-| S4    | Every `data-action` literal in the source names an action the composition actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                           |
-| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every composed definition maps back to a package.                                                                                                                                                                                                                                                        |
-| S6    | Registry liveness: every `floor` glob matches at least one file — a stale row, or an `"until"` tag whose debt was silently paid, fails.                                                                                                                                                                                                                                                    |
-| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                                                                                                                                                                                                                       |
-| S8    | `SceneElementSchema`'s member types are a subset of the engine's floor element kinds plus the composition's contributed element types.                                                                                                                                                                                                                                                     |
-| R1    | Vocabulary: `GET /api/protocol` actions ≡ the composition; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                              |
-| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `session_event`.                                                                                                                                                                                                            |
-| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off renders its section body as a named inert placeholder live (D4 — contributions placeholder, never vanish); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`. |
-| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.layout.set`; another principal's layout is untouched.                                                                                                                                                                                             |
-| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `view.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug seam; a pad-scoped token invoking it is `forbidden`.                                                                                                                                                                       |
-| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a pad, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                             |
-| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                       |
-| R8    | The denial ladder end to end, including a pad-scoped token on `core.plugins.setEnabled` → `forbidden` (actions are workspace-grade this wave).                                                                                                                                                                                                                                             |
+| Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                             |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1    | Both composition files compose without a `CompositionError`, and every `DEFAULT_WORKSPACE_LAYOUT` panel id exists in the composition.                                                                                                                                                                                                                                                       |
+| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `composition.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                             |
+| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                            |
+| S4    | Every `data-action` literal in the source names an action the composition actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                            |
+| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every composed definition maps back to a package — **builtin rows excepted**: an engine door (`source: "builtin"`) has no package by design, and the script composes it explicitly.                                                                                                                       |
+| S6    | Registry liveness: every `floor` glob matches at least one file, so a stale row fails.                                                                                                                                                                                                                                                                                                      |
+| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                                                                                                                                                                                                                        |
+| S8    | `SceneElementSchema`'s member types are a subset of the engine's floor element kinds plus the composition's contributed element types.                                                                                                                                                                                                                                                      |
+| S9    | Pillar exhaustiveness: every `floor` row falls inside exactly one pillar's globs (most specific glob owns the file); an unmatched floor file is RED. Wiring lands with the conversion batch.                                                                                                                                                                                                |
+| S10   | The residual carve-out is published: the script lists every `cleanup: true` action in the composition, so growth of the disable exemption shows up in a gate diff (ADR 0013 §9).                                                                                                                                                                                                            |
+| R1    | Vocabulary: `GET /api/protocol` actions ≡ the composition; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                               |
+| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `session_event`.                                                                                                                                                                                                             |
+| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off renders its section body as a named inert placeholder live (D4′ — contributions placeholder, never vanish); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`. |
+| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.layout.set`; another principal's layout is untouched.                                                                                                                                                                                              |
+| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `view.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug seam; a pad-scoped token invoking it is `forbidden`.                                                                                                                                                                        |
+| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a pad, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                              |
+| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                        |
+| R8    | The denial ladder end to end, including a pad-scoped token on `engine.plugins.setEnabled` → `forbidden` (actions are workspace-grade this wave).                                                                                                                                                                                                                                            |
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 
@@ -671,7 +970,8 @@ Per-axiom round table — which checks would fail first if an axiom stopped hold
 | A3 moddable by design                     | `docs/PLUGINS.md` + R1, S5                                                          |
 | A4 sovereign nodes                        | R6 (addressing); wave 3 adds its own                                                |
 | A5 waterfall authority                    | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case |
-| Foundation boundary (registries)          | S2, S6, S7                                                                          |
+| Foundation law (litmus, pillars)          | S2, S6, S7, S9                                                                      |
+| D4′ disable semantics (ADR 0013)          | R3, S10                                                                             |
 | Plane rule and state discipline           | S3, S4, R7, R8                                                                      |
 
 Also standing, in `bun run gate`: `verify:convergence` (the document plane), `verify:tile-drop`
