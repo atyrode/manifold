@@ -22,18 +22,26 @@ import { z } from "zod";
  */
 export const MANIFOLD_URI_SCHEME = "manifold://";
 
+/**
+ * Every id is bounded at 128 characters — the same bounded-string discipline as
+ * `PluginIdSchema.max(64)` and friends. Server-minted ids are far shorter; the bound
+ * exists so a resolver or log line can never be handed an unbounded attacker-chosen blob
+ * wearing an address's clothes.
+ */
+const RefIdSchema = z.string().min(1).max(128);
+
 export const ManifoldRefSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("pad"), padId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("terminal"), sessionId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("pad"), padId: RefIdSchema }),
   z.strictObject({
     kind: z.literal("element"),
-    padId: z.string().min(1),
-    elementId: z.string().min(1),
+    padId: RefIdSchema,
+    elementId: RefIdSchema,
   }),
-  z.strictObject({ kind: z.literal("tile"), padId: z.string().min(1), tileId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("principal"), principalId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("plugin"), pluginId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("action"), actionName: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("tile"), padId: RefIdSchema, tileId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("principal"), principalId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -78,7 +86,9 @@ function decodeSegments(path: string): string[] | null {
     if (part.length === 0) return null;
     try {
       const decoded = decodeURIComponent(part);
-      if (decoded.length === 0) return null;
+      // The RefIdSchema bound, enforced at the parse door too: an address is refused,
+      // never truncated, when a segment exceeds what any real id can be.
+      if (decoded.length === 0 || decoded.length > 128) return null;
       out.push(decoded);
     } catch {
       return null;

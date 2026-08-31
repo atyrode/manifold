@@ -159,6 +159,7 @@ export function composeRoster(
   const sectionIds: Claims = new Map();
   const elementTypes: Claims = new Map();
   const toolIds: Claims = new Map();
+  const eventIds: Claims = new Map();
 
   const roster: PluginRosterEntry[] = [];
   const actions = new Map<string, CompositionAction>();
@@ -243,6 +244,12 @@ export function composeRoster(
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });
     }
+    // Events are reserved for the wave-2 plane (ADR 0012) — nothing consumes them yet, but
+    // an event id is a GLOBAL topic name the moment it exists, so collisions refuse NOW
+    // rather than on the wave that would have had to break someone to fix them.
+    for (const event of manifest.contributes.events) {
+      claim(eventIds, event.id, manifest.id);
+    }
 
     roster.push({
       manifest,
@@ -258,6 +265,7 @@ export function composeRoster(
   reportDuplicates(sectionIds, "section", problems);
   reportDuplicates(elementTypes, "element type", problems);
   reportDuplicates(toolIds, "tool", problems);
+  reportDuplicates(eventIds, "event", problems);
   if (problems.length > 0) throw new CompositionError(problems);
 
   sections.sort((left, right) => left.order - right.order);

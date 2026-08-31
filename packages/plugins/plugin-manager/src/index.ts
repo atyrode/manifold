@@ -13,6 +13,12 @@ export const pluginManagerManifest: PluginManifest = {
   title: "Plugins",
   description: "Lists the workspace composition and turns plugins on and off for everyone.",
   capabilities: ["plugins:manage"],
+  // Essential: this plugin IS the administration door. Without the flag, any
+  // plugins:manage holder could disable core.plugins itself — and since setEnabled would
+  // then be refused as plugin_disabled for everyone including root, the workspace's
+  // composition would be permanently frozen short of editing SQLite by hand. The exact
+  // self-lockout class D4's essential flag exists to prevent.
+  essential: true,
   contributes: {
     panels: [],
     sections: [{ id: "plugins", title: "Plugins", order: 30 }],

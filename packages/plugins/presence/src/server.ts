@@ -9,6 +9,11 @@ const SPOTLIGHT_PAIRS_LIMIT = 1_024;
  * Last accepted spotlight per (caller, target). Module state because the limit belongs to
  * the plugin's behaviour rather than to any one request, and it is deliberately ephemeral:
  * a restart forgetting who was recently pointed at costs one extra allowed interruption.
+ *
+ * Bounded, not periodically swept, ON PURPOSE: the map holds at most
+ * SPOTLIGHT_PAIRS_LIMIT rows of two short id strings (a few tens of KB at the very worst),
+ * sweeping stale rows only when the cap is reached. A timer would be recurring machinery
+ * buying nothing but a smaller number that is already small.
  */
 const lastSpotlightAt = new Map<string, number>();
 

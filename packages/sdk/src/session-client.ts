@@ -805,11 +805,7 @@ export class SessionClient {
   /** Renames one container (`PATCH /api/pads/:id`). */
   async renamePad(padId: string, name: string): Promise<Pad> {
     const request = RenamePadRequestSchema.parse({ name });
-    const body = await this.writeJson(
-      `/api/pads/${encodeURIComponent(padId)}`,
-      "PATCH",
-      request,
-    );
+    const body = await this.writeJson(`/api/pads/${encodeURIComponent(padId)}`, "PATCH", request);
     return PadResponseSchema.parse(body).pad;
   }
 
@@ -911,7 +907,7 @@ export class SessionClient {
     });
     const offError = this.on("error", (msg) => {
       if (msg.ref !== opts.elementId) return;
-      settle(() => reject(new Error(`terminal_open failed: ${msg.code}`)));
+      settle(() => reject(new Error(`terminal_open failed: ${msg.message ?? msg.code}`)));
     });
     const offStatus = this.on("status", (status: ConnectionStatus) => {
       if (status === "closed") {

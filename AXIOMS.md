@@ -2,7 +2,7 @@
 
 This file is the constitution. `AGENTS.md` is how to operate the repo, `docs/CONTRACTS.md`
 is what the parts promise each other, `docs/PLAN.md` is where we are going; this file says
-what manifold *is* and where the line runs between the foundation and everything built on
+what manifold _is_ and where the line runs between the foundation and everything built on
 it. Two sections here are machine-readable — §Foundation's `floor` registry and §Device-local
 register's `deviceLocal` registry — and `bun run verify:axioms` (part of `bun run gate`)
 parses them in both directions. Crossing the boundary without editing the registry fails the
@@ -29,7 +29,7 @@ no API-only path: a gesture in the browser and a call from an SDK land on the sa
 the door is the only place authority is decided. Solo is a room of one, never a second mode —
 local input normalizes into the wire form first and is consumed as if received (AGENTS.md
 invariant 11), so single-player is a special case of multiplayer and never the reverse.
-Per-user *view* state — the tool in hand, what is being edited, which container has focus,
+Per-user _view_ state — the tool in hand, what is being edited, which container has focus,
 whether the sidebar is open — is observable by other principals and drivable by them where
 consent allows it (`core.presence.focus` writes a spotlight into a peer's presence; the peer
 holds a kill switch). State that only one device can see is a bug unless it is registered in
@@ -143,17 +143,17 @@ still wired by hand. The remaining conversions are tracked here, and each row is
 of an `"until"` tag in the `floor` registry below — `verify:axioms` S6 keeps the tags honest, so
 this ledger cannot rot into a wish.
 
-| Still floor today                                          | Converts to                          | Floor tag           |
-| ---------------------------------------------------------- | ------------------------------------ | ------------------- |
-| notes/text element renderer + the text tool                | `core.notes`                         | `core.notes`        |
-| canvas renderer, portal internals, canvas toolbar, viewport | `core.canvas`                        | `core.canvas`       |
-| tiled-route internals, tile drop gestures, carry previews   | `core.compositions`                  | `core.compositions` |
-| machine enrollment + machine presentation helpers           | `core.machines` actions              | `core.machines`     |
-| pad/folder CRUD and pad-tree moves (bespoke HTTP routes)    | workspace-index actions              | —                   |
-| terminal pool/park rows, the terminal index, session rows   | `core.terminals` completion          | `core.terminals`    |
-| token and principal administration routes                   | `core.access` (waterfall wave)       | —                   |
-| cursor overlay + roster island rendering                    | `core.presence` completion           | `core.presence`     |
-| `POST /api/place`                                           | action-alias evaluation, deferred    | —                   |
+| Still floor today                                           | Converts to                       | Floor tag           |
+| ----------------------------------------------------------- | --------------------------------- | ------------------- |
+| notes/text element renderer + the text tool                 | `core.notes`                      | `core.notes`        |
+| canvas renderer, portal internals, canvas toolbar, viewport | `core.canvas`                     | `core.canvas`       |
+| tiled-route internals, tile drop gestures, carry previews   | `core.compositions`               | `core.compositions` |
+| machine enrollment + machine presentation helpers           | `core.machines` actions           | `core.machines`     |
+| pad/folder CRUD and pad-tree moves (bespoke HTTP routes)    | workspace-index actions           | —                   |
+| terminal pool/park rows, the terminal index, session rows   | `core.terminals` completion       | `core.terminals`    |
+| token and principal administration routes                   | `core.access` (waterfall wave)    | —                   |
+| cursor overlay + roster island rendering                    | `core.presence` completion        | `core.presence`     |
+| `POST /api/place`                                           | action-alias evaluation, deferred | —                   |
 
 `core.canvas`, `core.notes` and `core.compositions` together decompose today's
 `core.shell.pad-view` panel. `POST /api/place` stays its own door for now on purpose: it is
@@ -165,17 +165,17 @@ of the exception is visible next to everything else that went through the action
 
 One noun per concept; a second name for an existing concept is invariant-14 debt.
 
-| Noun          | Means                                                                                                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **node**      | Anything with a `manifold://` address: a pad, a terminal, an element, a tile, a principal, a plugin, an action. Grants, events and shares all name nodes.                     |
-| **item**      | A thing that can be placed — identity-bearing, addressed by identity (`terminal`, `canvas-pad`, `view`, `text`, `draw`, `tile`).                                              |
-| **placement** | One appearance of an item inside a container (a portal element, a tile leaf). An item may have many; deleting a placement never deletes the item.                             |
-| **panel**     | Contribution kind: a full surface that can be a leaf of a tile layout. The workspace shell is panels all the way down (`core.shell.sidebar`, `core.shell.pad-view`).          |
-| **section**   | Contribution kind: a collapsible block in the sidebar stack. Order comes from the manifest, not from device memory.                                                           |
-| **element**   | Contribution kind: a canvas record type plus its renderer (`draw` is the worked example).                                                                                     |
-| **tool**      | Contribution kind: a canvas toolbar mode.                                                                                                                                    |
+| Noun          | Means                                                                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **node**      | Anything with a `manifold://` address: a pad, a terminal, an element, a tile, a principal, a plugin, an action. Grants, events and shares all name nodes.                         |
+| **item**      | A thing that can be placed — identity-bearing, addressed by identity (`terminal`, `canvas-pad`, `view`, `text`, `draw`, `tile`).                                                  |
+| **placement** | One appearance of an item inside a container (a portal element, a tile leaf). An item may have many; deleting a placement never deletes the item.                                 |
+| **panel**     | Contribution kind: a full surface that can be a leaf of a tile layout. The workspace shell is panels all the way down (`core.shell.sidebar`, `core.shell.pad-view`).              |
+| **section**   | Contribution kind: a collapsible block in the sidebar stack. Order comes from the manifest, not from device memory.                                                               |
+| **element**   | Contribution kind: a canvas record type plus its renderer (`draw` is the worked example).                                                                                         |
+| **tool**      | Contribution kind: a canvas toolbar mode.                                                                                                                                         |
 | **pipe**      | The channel a reference crosses to be projected: a session channel onto a room, the machine channel onto a daemon, and — from wave 3 — an instance channel onto another manifold. |
-| **grant**     | An authority row: principal (or class) × node × capabilities × effect × reach. A token is a reference to grants; a share is a minted token bound to a subtree grant.          |
+| **grant**     | An authority row: principal (or class) × node × capabilities × effect × reach. A token is a reference to grants; a share is a minted token bound to a subtree grant.              |
 
 ## Foundation
 
@@ -653,36 +653,36 @@ register. Anything else is presence, document, or action state — A2 leaves no 
 `bun run verify:axioms` (in `bun run gate`) is the axioms made falsifiable. Its static half runs
 against the source tree, its browser half against a real server and a real browser.
 
-| Check | What it asserts                                                                                                                      |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| S1    | Both composition files compose without a `CompositionError`, and every `DEFAULT_WORKSPACE_LAYOUT` panel id exists in the composition. |
-| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `composition.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin. |
-| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                      |
-| S4    | Every `data-action` literal in the source names an action the composition actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances). |
-| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every composed definition maps back to a package.   |
-| S6    | Registry liveness: every `floor` glob matches at least one file — a stale row, or an `"until"` tag whose debt was silently paid, fails. |
-| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                |
-| S8    | `SceneElementSchema`'s member types are a subset of the engine's floor element kinds plus the composition's contributed element types. |
-| R1    | Vocabulary: `GET /api/protocol` actions ≡ the composition; `GET /api/plugins` ≡ the roster; input/result schemas are present.         |
-| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `session_event`.      |
-| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off removes its section live; `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`. |
-| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.layout.set`; another principal's layout is untouched. |
-| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `view.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug seam; a pad-scoped token invoking it is `forbidden`. |
-| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a pad, and the `/uri/<encoded>` deep link navigates.                        |
-| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                  |
-| R8    | The denial ladder end to end, including a pad-scoped token on `core.plugins.setEnabled` → `forbidden` (actions are workspace-grade this wave). |
+| Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                            |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S1    | Both composition files compose without a `CompositionError`, and every `DEFAULT_WORKSPACE_LAYOUT` panel id exists in the composition.                                                                                                                                                                                                                                                      |
+| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `composition.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                            |
+| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                           |
+| S4    | Every `data-action` literal in the source names an action the composition actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                           |
+| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every composed definition maps back to a package.                                                                                                                                                                                                                                                        |
+| S6    | Registry liveness: every `floor` glob matches at least one file — a stale row, or an `"until"` tag whose debt was silently paid, fails.                                                                                                                                                                                                                                                    |
+| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                                                                                                                                                                                                                       |
+| S8    | `SceneElementSchema`'s member types are a subset of the engine's floor element kinds plus the composition's contributed element types.                                                                                                                                                                                                                                                     |
+| R1    | Vocabulary: `GET /api/protocol` actions ≡ the composition; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                              |
+| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `session_event`.                                                                                                                                                                                                            |
+| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off renders its section body as a named inert placeholder live (D4 — contributions placeholder, never vanish); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`. |
+| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.layout.set`; another principal's layout is untouched.                                                                                                                                                                                             |
+| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `view.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug seam; a pad-scoped token invoking it is `forbidden`.                                                                                                                                                                       |
+| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a pad, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                             |
+| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                       |
+| R8    | The denial ladder end to end, including a pad-scoped token on `core.plugins.setEnabled` → `forbidden` (actions are workspace-grade this wave).                                                                                                                                                                                                                                             |
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 
-| Axiom / rule                            | Checks                              |
-| --------------------------------------- | ----------------------------------- |
-| A1 everything above the floor is a plugin | S1, S2, S5, S8, R1, R3            |
-| A2 multiplayer by design                  | R2, R4, R5                         |
-| A3 moddable by design                     | `docs/PLUGINS.md` + R1, S5         |
-| A4 sovereign nodes                        | R6 (addressing); wave 3 adds its own |
+| Axiom / rule                              | Checks                                                                              |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| A1 everything above the floor is a plugin | S1, S2, S5, S8, R1, R3                                                              |
+| A2 multiplayer by design                  | R2, R4, R5                                                                          |
+| A3 moddable by design                     | `docs/PLUGINS.md` + R1, S5                                                          |
+| A4 sovereign nodes                        | R6 (addressing); wave 3 adds its own                                                |
 | A5 waterfall authority                    | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case |
-| Foundation boundary (registries)          | S2, S6, S7                         |
-| Plane rule and state discipline           | S3, S4, R7, R8                     |
+| Foundation boundary (registries)          | S2, S6, S7                                                                          |
+| Plane rule and state discipline           | S3, S4, R7, R8                                                                      |
 
 Also standing, in `bun run gate`: `verify:convergence` (the document plane), `verify:tile-drop`
 (the placement algebra through real gestures), and the terminal e2e suites (the PTY plane).

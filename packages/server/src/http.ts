@@ -632,6 +632,10 @@ export class HttpApp {
         this.requireCap(context, "pads:read", ref.padId);
         return { exists: this.rooms.holdsTile(ref.padId, ref.tileId), title: null };
       case "principal": {
+        // Deliberately no per-principal authorization: principal identity is workspace
+        // vocabulary. Any pads:read holder already reads every principal's id, name, and
+        // color from GET /api/pad-presence, so gating the resolver here would protect
+        // nothing while making one door behave unlike the doors beside it.
         const principal = this.store.getPrincipal(ref.principalId);
         return { exists: principal !== null, title: principal?.name ?? null };
       }
