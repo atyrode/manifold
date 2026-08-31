@@ -18,7 +18,7 @@ import type { ElementDocument, ElementProps, HostServices, ViewportHandle } from
  *
  * A container renderer is a mount site for other people's work. A tile leaf holds a terminal,
  * a canvas, or a note; a canvas node holds a terminal or a nested composition. Every one of
- * those occupants belongs to a different plugin, and no plugin may import another (AXIOMS
+ * those occupants belongs to a different plugin, and no plugin may import another (REGISTRY.md
  * §Foundation), so the mount site cannot name the renderer it needs. It asks for a KIND and
  * the engine answers with whatever the composition registered for it.
  *

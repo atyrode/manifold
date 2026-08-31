@@ -6,7 +6,7 @@ Status: designed 2026-08-31, implementation wave 2
 Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The sidebar section it names "Views" is the **Index** section
 (`core.index`), and the topics it designs are `manifold://container/<id>` addresses rather than
-`manifold://pad/<id>`. Canon is `AXIOMS.md` §Lexicon.
+`manifold://pad/<id>`. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 
@@ -43,7 +43,7 @@ A fourth plane — **events** — with the following normative shape.
    anywhere in its code. Emission points are therefore auditable by reading the doors.
 2. **Topics are nodes.** A topic is a `manifold://` URI. There is no separate topic namespace,
    no string convention, no wildcard grammar to invent — the addressing algebra already exists
-   (ADR 0010's URI module, `AXIOMS.md` §Taxonomy). This has a direct consequence: **subscribing
+   (ADR 0010's URI module, `REGISTRY.md` §Lexicon). This has a direct consequence: **subscribing
    is a read-grant question**, answered by the A5 evaluator (ADR 0011) against the topic's node,
    with no second authorization vocabulary.
 3. **Subscriptions ride the session channel.** The transport is the existing WebSocket — a

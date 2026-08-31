@@ -12,6 +12,7 @@ import {
   type PluginRefusalReason,
   type PluginRosterEntry,
 } from "@manifold/protocol";
+import { Stack } from "@manifold/plugin/ui";
 import { Lock, Trash2 } from "lucide-react";
 import { useState, type ReactElement } from "react";
 
@@ -137,7 +138,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   };
 
   return (
-    <div className="plugin-manager" data-testid="plugin-manager">
+    <Stack className="plugin-manager" gap="0.2rem" data-testid="plugin-manager">
       {!canManage ? (
         <p className="sidebar-muted">
           Read-only: turning plugins on and off needs the <code>plugins:manage</code> capability.
@@ -265,6 +266,6 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
           </div>
         );
       })}
-    </div>
+    </Stack>
   );
 }

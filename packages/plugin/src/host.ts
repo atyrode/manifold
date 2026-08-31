@@ -47,7 +47,8 @@ export interface SessionHandle {
   allTerminals(): Promise<readonly TerminalSummary[]>;
   /*
     The workspace index's own writes. They are HTTP routes rather than actions this wave
-    (AXIOMS.md §Roadmap: "container/folder CRUD + tree moves → workspace-index actions"), so the
+    (REGISTRY.md §Full-conversion inventory: "container/folder CRUD + tree moves →
+    workspace-index actions"), so the
     plugin that renders the index reaches them through the same handle it reads with — one
     door per concept, and the section that lists containers is also the one that renames
     them. When those routes become actions these methods go away and `action()` carries

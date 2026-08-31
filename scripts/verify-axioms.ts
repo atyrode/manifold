@@ -3,10 +3,11 @@
  *
  * `AXIOMS.md` swears that everything above the floor is a plugin (A1), that every capability
  * is reachable identically by a browser and an SDK (A2), and that the boundary between the
- * two is a machine-readable registry rather than a promise (D10). A document nobody can
- * violate silently is the only kind worth writing, so this script reads those registries and
- * holds the tree to them — in BOTH directions, so an unrecorded crossing fails here rather
- * than in review.
+ * two is a machine-readable registry rather than a promise (D10). `REGISTRY.md` is where those
+ * registries live — enforcement data, amended in the same commit as the code it indexes. A
+ * document nobody can violate silently is the only kind worth writing, so this script reads
+ * those registries and holds the tree to them — in BOTH directions, so an unrecorded crossing
+ * fails here rather than in review.
  *
  * The static half (S1-S16) runs against the source tree with the TypeScript parser, never a
  * regex over source (D14): imports, storage keys, action markers and route literals are AST
@@ -55,6 +56,7 @@ import {
   LayoutResponseSchema,
   MachinesResponseSchema,
   ContainerResponseSchema,
+  IndexResponseSchema,
   PluginRosterSchema,
   PluginsResponseSchema,
   ResolveResponseSchema,
@@ -131,9 +133,11 @@ function justified(row: unknown, field: string): string | null {
 }
 
 /**
- * The fenced JSON in `AXIOMS.md`. Read from the document rather than imported from a module
- * because the registry's HOME is the constitution — a TypeScript copy would be a second door
- * onto "where does the boundary run", and D10's whole point is that there is exactly one.
+ * The fenced JSON in `REGISTRY.md`. Read from the document rather than imported from a module
+ * because the registry's HOME is the document beside the constitution — a TypeScript copy would
+ * be a second door onto "where does the boundary run", and D10's whole point is that there is
+ * exactly one. The law those rows enforce is `AXIOMS.md`; the rows themselves move with the
+ * code they index, which is why they are not in it.
  * A row missing its `why` is discarded here, which makes an unjustified entry fail the check
  * that reads the registry instead of quietly widening the floor.
  */
@@ -143,7 +147,7 @@ function axiomRegistries(): {
   readonly gateContracts: readonly GateContractRow[];
   readonly cssFamilies: readonly CssFamilyRow[];
 } {
-  const text = readFileSync(join(repoRoot, "AXIOMS.md"), "utf8");
+  const text = readFileSync(join(repoRoot, "REGISTRY.md"), "utf8");
   const floor: FloorRow[] = [];
   const deviceLocal: DeviceLocalRow[] = [];
   const gateContracts: GateContractRow[] = [];
@@ -191,15 +195,15 @@ function axiomRegistries(): {
       });
     }
   }
-  if (floor.length === 0) throw new Error("AXIOMS.md carries no fenced `floor` registry");
+  if (floor.length === 0) throw new Error("REGISTRY.md carries no fenced `floor` registry");
   if (deviceLocal.length === 0) {
-    throw new Error("AXIOMS.md carries no fenced `deviceLocal` register");
+    throw new Error("REGISTRY.md carries no fenced `deviceLocal` register");
   }
   if (gateContracts.length === 0) {
-    throw new Error("AXIOMS.md carries no fenced `gateContracts` register");
+    throw new Error("REGISTRY.md carries no fenced `gateContracts` register");
   }
   if (cssFamilies.length === 0) {
-    throw new Error("AXIOMS.md carries no fenced `cssFamilies` registry");
+    throw new Error("REGISTRY.md carries no fenced `cssFamilies` registry");
   }
   return { floor, deviceLocal, gateContracts, cssFamilies };
 }
@@ -560,7 +564,7 @@ for (const row of registries.floor) {
    * The four packages a plugin may name, plus the engine's two browser subpaths — `/hooks`
    * (plane mechanism: carry, drop, element host, polling) and `/ui` (the plugin-facing
    * standard library: glyphs, titlebar, the notice consumer half, view state). See
-   * AXIOMS §Plugin layer.
+   * `REGISTRY.md` §Plugin layer.
    */
   const ENGINE: Readonly<Record<string, true>> = {
     "@manifold/protocol": true,
@@ -941,7 +945,8 @@ function isMarkupValue(node: ts.StringLiteralLike): boolean {
  * Vocabulary is a TOKEN property, which is why this check reads tokens instead of following
  * edges the way S2 must: a banned synonym is banned wherever it appears, with no context that
  * redeems it except a declared `allow` row. So a scanner over words is not an approximation
- * of the rule — it IS the rule, and the registry in `AXIOMS.md` §Lexicon is its statute.
+ * of the rule — it IS the rule, and the registry in `REGISTRY.md` §Lexicon is its statute
+ * (the law it serves is `AXIOMS.md` §Lexicon law).
  *
  * SUBJECTS ARE NARROW, deliberately: identifiers, the four literal classes S4/S7 already
  * isolate (property keys, `z.literal`/`z.enum` arguments, `className`/`data-*` values, `/api/`
@@ -1001,7 +1006,7 @@ function lexiconAllow(raw: unknown): LexiconAllow | null {
 }
 
 function lexiconRegistry(): readonly LexiconRow[] {
-  const text = readFileSync(join(repoRoot, "AXIOMS.md"), "utf8");
+  const text = readFileSync(join(repoRoot, "REGISTRY.md"), "utf8");
   const rows: LexiconRow[] = [];
   const fence = /```json\n([\s\S]*?)\n```/g;
   for (;;) {
@@ -1029,7 +1034,7 @@ function lexiconRegistry(): readonly LexiconRow[] {
       });
     }
   }
-  if (rows.length === 0) throw new Error("AXIOMS.md carries no fenced `lexicon` registry");
+  if (rows.length === 0) throw new Error("REGISTRY.md carries no fenced `lexicon` registry");
   return rows;
 }
 
@@ -1077,7 +1082,14 @@ function scanTree(dir: string, out: string[]): void {
   for (const root of ["packages", "scripts"]) scanTree(root, files);
   const docs: string[] = [];
   scanTree("docs", docs);
-  for (const doc of [...docs, "AXIOMS.md", "AGENTS.md", "CHANGELOG.md", "README.md"]) {
+  for (const doc of [
+    ...docs,
+    "AXIOMS.md",
+    "REGISTRY.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+  ]) {
     if (doc.endsWith(".md")) files.push(doc);
   }
 
@@ -2652,6 +2664,276 @@ try {
         killWhileOff.ok &&
         back,
       `creation ${creationRefused ? `refused: "${list(refusals)}"` : "was allowed"}; rename ${renameWhileOff.ok ? "accepted" : renameWhileOff.denial.rule}; kill ${killWhileOff.ok ? "still works" : "refused"}`,
+    );
+  }
+
+  // ─────────────────────────────────────────── R9: layout resilience
+
+  {
+    /*
+      THE LAYOUT SYSTEM'S GATE. The sidebar, the plugin manager and a canvas terminal
+      node are recomposed on `@manifold/plugin/ui`'s layout primitives, and the claim that
+      recomposition makes is checkable: under ADVERSARIAL content (unbroken 60+ character
+      names, eight containers, a three-deep folder chain, a long terminal name) and a
+      bounded sweep of sidebar widths, four invariant classes hold in every audited
+      subtree —
+
+        overflow-x  nothing VISIBLE paints past a box whose overflow is `visible`
+        clip        nothing visible is cut by `overflow: hidden` without a declared
+                    `text-overflow: ellipsis`
+        escape      no visible descendant leaves the audited root's own box
+        overlap     no two statically-flowing siblings paint over each other
+
+      Grounded in what an observer SEES, on purpose: content at effective opacity 0
+      (the row actions' hover slide-in, the status pip's radiating ping) paints nothing,
+      and a negative-margin stack (presence avatars) is a DECLARED overlap. Text is
+      measured with Ranges because bare text in a childless nowrap element never shows
+      up as an element box. Proven RED by planting one `min-width: max-content` on the
+      index's name span: 7-8 defects per pass at every width.
+    */
+    const seededNames = [
+      "unbroken-adversarial-container-name-".padEnd(72, "x"),
+      "W".repeat(68),
+      "a".padEnd(64, "b") + "-end",
+      "🚀".repeat(24) + "-emoji-heavy-container-name",
+      "r9-home",
+      "MixedCASE-" + "m".repeat(58),
+      "dots.and.dashes-" + "d".repeat(52),
+      "final-container-" + "f".repeat(48),
+    ];
+    const seededIds: string[] = [];
+    for (const [slot, name] of seededNames.entries()) {
+      const made = ActionOutcomeSchema.parse(
+        await dispatch("core.index.createContainer", {
+          name,
+          discipline: slot % 3 === 0 ? "composition" : "canvas",
+        }),
+      );
+      if (!made.ok) throw new Error(`R9 seed container refused: ${made.denial.message}`);
+      seededIds.push(ContainerResponseSchema.parse(made.result).container.id);
+    }
+    const folderIds: string[] = [];
+    let folderParent: string | null = null;
+    for (let depth = 0; depth < 3; depth++) {
+      const name = `folder-depth-${String(depth)}-`.padEnd(62, "q");
+      const made = ActionOutcomeSchema.parse(
+        await dispatch("core.index.createFolder", { name, parentId: folderParent }),
+      );
+      if (!made.ok) throw new Error(`R9 seed folder refused: ${made.denial.message}`);
+      const { items } = IndexResponseSchema.parse(made.result);
+      const row = items.find((item) => item.kind === "folder" && item.name === name);
+      if (row === undefined || row.kind !== "folder") throw new Error("R9 folder not listed");
+      folderIds.push(row.id);
+      folderParent = row.id;
+    }
+    for (const [slot, id] of [seededIds[0], seededIds[1]].entries()) {
+      const moved = ActionOutcomeSchema.parse(
+        await dispatch("core.index.moveEntry", {
+          item: { kind: "container", id },
+          parentId: folderIds[2],
+          index: slot,
+        }),
+      );
+      if (!moved.ok) throw new Error(`R9 seed move refused: ${moved.denial.message}`);
+    }
+    /* R3's cleanup leg killed the world-setup terminal, so R9 opens its own — which is
+       also what puts a LIVE canvas terminal node's chrome on screen for the audit. */
+    const r9Terminal = await canvasClient.openTerminal({
+      elementId: crypto.randomUUID(),
+      cols: 80,
+      rows: 24,
+      machineId,
+    });
+    const longRename = ActionOutcomeSchema.parse(
+      await dispatch("core.terminals.rename", {
+        terminalId: r9Terminal.id,
+        name: "terminal-with-an-extremely-long-unbroken-name-".padEnd(78, "t"),
+      }),
+    );
+    if (!longRename.ok) throw new Error(`R9 terminal rename refused: ${longRename.denial.message}`);
+
+    // Expand the folder chain through the section's own device-local memory, then land
+    // on the terminal's composition so a canvas terminal node's chrome is on screen.
+    await browser.evaluate(
+      `localStorage.setItem('manifold:expanded-index-folders', ${JSON.stringify(
+        JSON.stringify(folderIds.map((id) => `folder:${id}`)),
+      )})`,
+    );
+    await browser.goto(`${origin}/p/${r9Terminal.containerId}`);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelectorAll('[data-testid="sidebar-list"] .index-item').length >= 10`,
+        ),
+      20_000,
+      "R9 seeded rows in the sidebar",
+    );
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector('.composition-leaf .node-titlebar') !== null`,
+        ),
+      20_000,
+      "R9 terminal node chrome mounted",
+    );
+
+    /** One audited subtree, four invariant classes; returns one row per defect. */
+    const auditExpression = (rootSelector: string): string => `((rootSelector) => {
+      const TOL = 1.5;
+      const root = document.querySelector(rootSelector);
+      if (root === null) return [{ cls: 'harness', sel: 'no ' + rootSelector, detail: '' }];
+      const rootRect = root.getBoundingClientRect();
+      const defects = [];
+      const describe = (el) => {
+        const bits = [];
+        let node = el;
+        for (let hop = 0; node !== null && node !== root.parentElement && hop < 4; hop++) {
+          const cls = typeof node.className === 'string' && node.className !== ''
+            ? '.' + node.className.trim().split(/\\s+/).slice(0, 2).join('.')
+            : '';
+          bits.unshift(node.tagName.toLowerCase() + cls);
+          node = node.parentElement;
+        }
+        return bits.join(' > ');
+      };
+      const hidden = (el) => {
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return true;
+        const rect = el.getBoundingClientRect();
+        return rect.width <= 0 && rect.height <= 0;
+      };
+      const paintOpacity = (el) => {
+        let opacity = 1;
+        for (let node = el; node !== null && node !== root.parentElement; node = node.parentElement) {
+          opacity *= parseFloat(getComputedStyle(node).opacity || '1');
+          if (opacity < 0.05) return 0;
+        }
+        return opacity;
+      };
+      const clipRect = (raw, from, stop) => {
+        const rect = { left: raw.left, right: raw.right, top: raw.top, bottom: raw.bottom };
+        let node = from;
+        while (node !== null && node !== stop && node !== root.parentElement) {
+          const style = getComputedStyle(node);
+          if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+            const clip = node.getBoundingClientRect();
+            rect.left = Math.max(rect.left, clip.left);
+            rect.right = Math.min(rect.right, clip.right);
+            rect.top = Math.max(rect.top, clip.top);
+            rect.bottom = Math.min(rect.bottom, clip.bottom);
+          }
+          node = node.parentElement;
+        }
+        return rect;
+      };
+      const paintedBeyond = (el) => {
+        const box = el.getBoundingClientRect();
+        const past = (rect) => rect.right - box.right > TOL || box.left - rect.left > TOL;
+        const range = document.createRange();
+        const textPast = (holder) => {
+          for (const node of holder.childNodes) {
+            if (node.nodeType !== Node.TEXT_NODE || node.textContent.trim() === '') continue;
+            range.selectNodeContents(node);
+            if (past(clipRect(range.getBoundingClientRect(), holder, el))) return true;
+          }
+          return false;
+        };
+        if (paintOpacity(el) > 0 && textPast(el)) return el;
+        for (const kid of el.querySelectorAll('*')) {
+          if (hidden(kid) || paintOpacity(kid) === 0) continue;
+          if (past(clipRect(kid.getBoundingClientRect(), kid.parentElement, el))) return kid;
+          if (textPast(kid)) return kid;
+        }
+        return null;
+      };
+      for (const el of [root, ...root.querySelectorAll('*')]) {
+        if (!(el instanceof HTMLElement) || hidden(el)) continue;
+        const style = getComputedStyle(el);
+        const over = el.scrollWidth - el.clientWidth;
+        if (el.clientWidth > 0 && over > TOL) {
+          const beyond = paintedBeyond(el);
+          if (beyond !== null && style.overflowX === 'visible') {
+            defects.push({ cls: 'overflow-x', sel: describe(el), detail: over + 'px past via ' + describe(beyond) });
+          } else if (
+            beyond !== null &&
+            style.textOverflow !== 'ellipsis' &&
+            style.overflowX !== 'auto' &&
+            style.overflowX !== 'scroll'
+          ) {
+            defects.push({ cls: 'clip', sel: describe(el), detail: over + 'px cut, no ellipsis, via ' + describe(beyond) });
+          }
+        }
+        if (el !== root && paintOpacity(el) > 0) {
+          const rect = clipRect(el.getBoundingClientRect(), el.parentElement, null);
+          if (rect.right - rootRect.right > TOL || rootRect.left - rect.left > TOL) {
+            defects.push({ cls: 'escape', sel: describe(el), detail: 'x ' + Math.round(rect.left) + '..' + Math.round(rect.right) + ' outside ' + Math.round(rootRect.left) + '..' + Math.round(rootRect.right) });
+          }
+        }
+        const kids = [...el.children].filter((kid) => {
+          if (!(kid instanceof HTMLElement) || hidden(kid) || paintOpacity(kid) === 0) return false;
+          const kidStyle = getComputedStyle(kid);
+          if (kidStyle.position === 'absolute' || kidStyle.position === 'fixed') return false;
+          if (kidStyle.display === 'contents') return false;
+          return parseFloat(kidStyle.marginLeft) >= 0 && parseFloat(kidStyle.marginRight) >= 0;
+        });
+        for (let a = 0; a < kids.length; a++) {
+          for (let b = a + 1; b < kids.length; b++) {
+            const ra = kids[a].getBoundingClientRect();
+            const rb = kids[b].getBoundingClientRect();
+            const x = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+            const y = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+            if (x > TOL && y > TOL) {
+              defects.push({ cls: 'overlap', sel: describe(kids[a]) + ' × ' + describe(kids[b]), detail: Math.round(x) + '×' + Math.round(y) + 'px' });
+            }
+          }
+        }
+      }
+      return defects;
+    })(${JSON.stringify(rootSelector)})`;
+
+    interface LayoutDefect {
+      readonly cls: string;
+      readonly sel: string;
+      readonly detail: string;
+    }
+    /* The sidebar pane rides its flex basis, so the sweep drives the SAME knob the
+       divider drag writes — presentation only, restored after the last pass. */
+    const sweepWidths = [168, 208, 248, 288, 336, 400];
+    const auditRoots = [".sidebar", '[data-testid="plugin-manager"]', ".composition-leaf"];
+    const broken: string[] = [];
+    let passes = 0;
+    for (const width of sweepWidths) {
+      await browser.evaluate(
+        `(() => {
+          const pane = document.querySelector('.workspace-pane:has(> .tile-content-host > .sidebar)');
+          if (pane !== null) pane.style.flex = '0 0 ${String(width)}px';
+          return null;
+        })()`,
+      );
+      await sleep(150);
+      for (const auditRoot of auditRoots) {
+        passes += 1;
+        const defects = await browser.evaluate<readonly LayoutDefect[]>(auditExpression(auditRoot));
+        for (const defect of defects.slice(0, 3)) {
+          broken.push(
+            `${String(width)}px ${auditRoot} ${defect.cls}: ${defect.sel} (${defect.detail})`,
+          );
+        }
+      }
+    }
+    await browser.evaluate(
+      `(() => {
+        const pane = document.querySelector('.workspace-pane:has(> .tile-content-host > .sidebar)');
+        if (pane !== null) pane.style.removeProperty('flex');
+        return null;
+      })()`,
+    );
+    check(
+      "R9 layout resilience",
+      broken.length === 0,
+      broken.length === 0
+        ? `${String(passes)} audits (${String(sweepWidths.length)} widths × ${String(auditRoots.length)} roots) under adversarial content: no undeclared overflow, no clip without ellipsis, no child escapes, no sibling overlap`
+        : list(broken),
     );
   }
 } catch (error) {

@@ -8,7 +8,7 @@ cites moved in the lexicon cut. `padScope` is `containerScope`, `padId` is `cont
 the subtree grant a token's scope stands for is at `manifold://container/<id>` rather than
 `manifold://pad/<id>`. The degenerate cap array it describes reads
 `containers:read` / `containers:write` / `scenes:write` / `terminals:spawn` / `terminals:write`
-today. Canon is `AXIOMS.md` §Lexicon.
+today. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 
@@ -122,7 +122,7 @@ minter does not hold at that node.
   per-action grants would create a second authority vocabulary beside capabilities, which is an
   invariant-14 violation.
 - **No UI this wave, and none implied.** Grant administration is a later plugin (`core.access`
-  in the `AXIOMS.md` §Roadmap conversion inventory), not part of the evaluator.
+  in `REGISTRY.md` §Full-conversion inventory), not part of the evaluator.
 
 ## Alternatives rejected
 

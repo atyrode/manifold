@@ -42,6 +42,37 @@ export {
   type NodeTitleBarProps,
 } from "./node-titlebar.tsx";
 /**
+ * THE LAYOUT ALGEBRA — six intrinsic boxes (Stack, Cluster, Sidebar, Switcher, Cover,
+ * Frame) that answer "how do things sit together?" once, so no plugin body re-invents
+ * flex soup. Start with {@link Stack} for vertical rhythm and {@link Cluster} for a
+ * wrapping row; the module doc on `layout.tsx` teaches the whole algebra, including the
+ * `min-width: 0` / gap / clamp() discipline every primitive enforces for you.
+ */
+export {
+  Cluster,
+  Cover,
+  Frame,
+  Sidebar,
+  Stack,
+  Switcher,
+  type ClusterProps,
+  type CoverProps,
+  type FrameProps,
+  type LayoutProps,
+  type SidebarProps,
+  type StackProps,
+  type SwitcherProps,
+} from "./layout.tsx";
+/**
+ * The behavior chrome: THE disclosure (a header that folds the body under it, keyboard
+ * and ARIA included, body kept mounted while closed) and THE scroll container (vertical
+ * only, slim overlay thumb, horizontal overflow refused by contract). Their behavior
+ * engine is an internals decision — nothing Radix crosses these signatures
+ * (docs/decisions/2026-08-31-radix-behavior-primitives.md).
+ */
+export { Disclosure, type DisclosureProps } from "./disclosure.tsx";
+export { ScrollRegion, type ScrollRegionProps } from "./scroll-region.tsx";
+/**
  * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
  * workspace shell's own panes, a composition's leaves, a portal portal's preview — because
  * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer

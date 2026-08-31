@@ -26,7 +26,7 @@ export interface WorkspacePanels {
  * it is unchanged if every plugin in the tree is replaced by different plugins, which is the
  * neutrality criterion (AXIOMS.md §Foundation law). WHICH panels fill the two leaves is plugin
  * data, and plugin data reaches the floor only as an argument — the two `assembly.ts` files
- * are the sole places allowed to name a plugin (§Foundation, gate S2), so they pass the ids in
+ * are the sole places allowed to name a plugin (REGISTRY.md §Foundation, gate S2), so they pass the ids in
  * and this function stays a function of them.
  *
  * A layout referencing a panel no live plugin provides is legal and renders a placeholder

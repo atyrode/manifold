@@ -75,10 +75,13 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
 | `packages/plugin`    | the plugin engine: manifest/action definitions, assembly and its named refusals, host contracts, the default workspace layout — plus `/hooks` (browser plane mechanism) and `/ui` (the plugin-facing standard library: glyphs, node titlebar, notice hook, vantage store). |
 | `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `assembly.ts` files, live at `GET /api/plugins` — never a prose list.                                                                                                                          |
 
-`AXIOMS.md` is the constitution: the five axioms, the plane rule, the machine-readable
-pillar, floor, device-local and lexicon registries, and the ratified wave roadmap. It — not
-this file — decides which code is foundation and which is plugin territory, and which word
-names which concept, and `bun run verify:axioms`
+`AXIOMS.md` is the constitution: the five axioms, the plane rule, the foundation law, the
+lexicon law, change control and the ratified wave roadmap. It is amended rarely and only by
+operator ratification. `REGISTRY.md` is its enforcement half: the machine-readable pillar,
+floor, lexicon, `cssFamilies`, device-local and gate-contract registries, the full-conversion
+inventory, the per-kind disable table and the S/R check inventory — amended in the same commit
+as the code it indexes. Together they — not this file — decide which code is foundation and
+which is plugin territory, and which word names which concept, and `bun run verify:axioms`
 enforces that answer; never restate the boundary here. `docs/CONTRACTS.md` is the
 integration authority (endpoints, envs, state machines, persistence). `docs/PLUGINS.md` is
 the plugin authoring guide. `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records
@@ -126,7 +129,7 @@ dated technology verdicts with evidence.
     second "remote flavor" of an existing behavior (own styling, own state derivation, own
     fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
     2026-08-30 shipped exactly that way and was operator-caught.
-12. **Everything above the floor is a plugin** (axiom A1): the registries in `AXIOMS.md` are the
+12. **Everything above the floor is a plugin** (axiom A1): the registries in `REGISTRY.md` are the
     authority on what is foundation, and a file that crosses that boundary is a registry edit in
     the SAME commit as the code. A feature lands as a package under `packages/plugins/*` with a
     manifest — never as a new branch in the shell. Every mutating affordance carries
@@ -135,7 +138,7 @@ dated technology verdicts with evidence.
     composition naming every offender, and nothing ever shadows anything. Floor files never import
     `@manifold-plugin/*`; the two `composition.ts` registration files are the only exceptions.
     What a plugin's data, contributions and neighbours do across an enable/disable is the
-    behavioral contract: `AXIOMS.md` §Disable semantics (D4′) and
+    behavioral contract: `REGISTRY.md` §Disable semantics (D4′) and
     `docs/decisions/0013-plugin-behavioral-contract.md`. Disable RETAINS; destruction is
     `engine.plugins.purge`, a different verb.
 13. **Every discrete mutation is a registered action or documented plane traffic** (the plane
@@ -144,7 +147,7 @@ dated technology verdicts with evidence.
     a human accepts; PRESENCE when it dies with the connection. Continuous streams (PTY I/O,
     cursor motion, live drags) stay channel traffic, and an action fires at the COMMIT POINT of
     a gesture, never per frame. State that reaches no plane is a bug unless it is listed in the
-    `AXIOMS.md` device-local register. `manifold://` is the canonical reference form for
+    `REGISTRY.md` device-local register. `manifold://` is the canonical reference form for
     anything addressable — grants, spotlights, `/api/resolve` and deep links all speak it, and
     structured wire forms are its bijection, not a second address system.
 14. **One door per concept**: every concept has exactly one authoritative implementation and
@@ -154,7 +157,8 @@ dated technology verdicts with evidence.
     concept genuinely needs a NEW door, the old one is deleted in the same change: no aliases,
     no dual paths, no fallback readers.
 15. **The foundation is a pillar registry, admitted by a litmus test** — READ `AXIOMS.md`
-    §Foundation law before touching floor code. A pillar is engine if and only if it passes all
+    §Foundation law before touching floor code, and `REGISTRY.md` §Pillar inventory for the rows.
+    A pillar is engine if and only if it passes all
     three of bootstrap circularity, neutrality (zero domain nouns, no favourite plugin) and
     arbitration; failing one means it is a plugin, and there is no third state (the `"until"` tag
     is gone). Being floor grants no privilege — it imposes self-description: engine doors are
@@ -162,7 +166,8 @@ dated technology verdicts with evidence.
     foundation means editing the pillar inventory plus a dated ADR that applies the litmus
     criterion by criterion; every floor file must fall inside exactly one pillar's globs, and an
     unmatched file is gate RED.
-16. **One word per concept, one concept per word.** The canonical lexicon is `AXIOMS.md`
+16. **One word per concept, one concept per word.** The law is `AXIOMS.md` §Lexicon law and the
+    canonical registry is `REGISTRY.md`
     §Lexicon: a machine-readable registry of every domain term — what it means, the synonyms it
     retires, and the exemptions that survive. A banned synonym in an identifier, a wire literal,
     a CSS selector, a file name or a doc heading fails the gate (`verify:axioms` S11), and

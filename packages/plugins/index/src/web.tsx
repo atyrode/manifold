@@ -25,6 +25,10 @@ import {
   sealEnvelope,
   useItemDrop,
   usePolledResource,
+  ATTENDANCE_RESOURCE,
+  CONTAINER_TERMINALS_RESOURCE,
+  INDEX_RESOURCE,
+  TERMINALS_RESOURCE,
   type ItemDropAssessment,
 } from "@manifold/plugin/hooks";
 import { DEFAULT_CANVAS_DROP, placementItemFor } from "@manifold/protocol";
@@ -38,6 +42,7 @@ import type {
   SceneElement,
   TerminalSummary,
 } from "@manifold/protocol";
+import { Cluster, Stack } from "@manifold/plugin/ui";
 import {
   Check,
   ChevronDown,
@@ -80,7 +85,7 @@ import { useHeadlessTree } from "./use-headless-tree.ts";
 /** Index cadence, matching what the shell used to poll on the section's behalf. */
 const INDEX_POLL_MS = 2_000;
 
-/** Device-local presentation memory. Both keys are listed in the AXIOMS.md register. */
+/** Device-local presentation memory. Both keys are listed in the REGISTRY.md register. */
 const TERMINAL_TREE_KEY = "manifold:show-container-terminals";
 const EXPANDED_FOLDERS_KEY = "manifold:expanded-index-folders";
 
@@ -206,6 +211,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     setValue: setTreeItems,
     refresh: refreshTree,
   } = usePolledResource<readonly IndexEntry[] | null>(fetchTree, INDEX_POLL_MS, {
+    key: INDEX_RESOURCE,
     initial: null,
     hold: treeOwnsDrag,
     equal: (current, incoming) =>
@@ -213,10 +219,12 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     onError: (reason) => report(reason, "Could not load the index"),
   });
   const { value: terminalsByContainer } = usePolledResource(fetchByContainer, INDEX_POLL_MS, {
+    key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,
     hold: treeOwnsDrag,
   });
   const { value: presence } = usePolledResource(fetchPresence, INDEX_POLL_MS, {
+    key: ATTENDANCE_RESOURCE,
     initial: NO_PRESENCE,
     hold: treeOwnsDrag,
     restartKey: activeContainerId,
@@ -224,7 +232,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
     INDEX_POLL_MS,
-    { initial: NO_TERMINALS, hold: treeOwnsDrag },
+    { key: TERMINALS_RESOURCE, initial: NO_TERMINALS, hold: treeOwnsDrag },
   );
 
   /**
@@ -1122,8 +1130,8 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   const containerCount = indexedTreeItems?.filter((item) => item.kind === "container").length ?? 0;
 
   return (
-    <div className="index-section">
-      <div className="index-section-bar">
+    <Stack className="index-section" gap="0">
+      <Cluster className="index-section-bar" justify="space-between" gap="0.3rem">
         <span className="sidebar-section-count">{containerCount}</span>
         <button
           className="sidebar-section-action"
@@ -1146,7 +1154,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
         >
           <Glyph icon={ListTree} />
         </button>
-      </div>
+      </Cluster>
       {failure === null ? null : (
         <p className="index-section-error" role="alert">
           {failure}
@@ -1188,6 +1196,6 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             })}
         <div style={{ display: "none" }} className="index-drag-line" />
       </div>
-    </div>
+    </Stack>
   );
 }

@@ -328,7 +328,7 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "document.querySelector('[data-testid=machines-section] > summary') !== null",
+        "document.querySelector('[data-testid=machines-section] button[aria-expanded]') !== null",
       ),
     20_000,
     "sidebar machine section",
@@ -336,7 +336,7 @@ try {
 
   // Create a terminal directly from an online machine row in the sidebar.
   await browser.evaluate(
-    "document.querySelector('[data-testid=machines-section] > summary').click()",
+    "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
   );
   await until(
     () =>

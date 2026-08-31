@@ -87,7 +87,7 @@ try {
 
   // Create a terminal directly from an online machine row in the sidebar.
   await browser.evaluate(
-    "document.querySelector('[data-testid=machines-section] > summary').click()",
+    "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
   );
   await until(
     () =>

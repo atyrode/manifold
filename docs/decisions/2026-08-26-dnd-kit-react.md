@@ -5,7 +5,7 @@
 
 **Lexicon addendum 2026-08-31 (#69):** this record is history and is not rewritten, title
 included; superseded by `2026-08-26-headless-tree.md`. What it calls "pad ordering" is ordering
-the workspace **index** of **containers** and folders. Canon is `AXIOMS.md` §Lexicon.
+the workspace **index** of **containers** and folders. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 

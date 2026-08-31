@@ -11,7 +11,7 @@ import { memo } from "react";
  * box, and it fills the box with ink. That is the whole element contract.
  *
  * The path math is here rather than shared with the canvas because a plugin package may not
- * import web floor modules (AXIOMS.md §Foundation import boundary) — and because the shape of
+ * import web floor modules (REGISTRY.md §Foundation import boundary) — and because the shape of
  * a stroke IS this plugin's business. The engine's copy survives only for the in-flight
  * gesture preview it still owns (`until core.canvas`).
  */

@@ -4,6 +4,9 @@ import {
   ContainerRouteProvider,
   projectLocalPresence,
   usePolledResource,
+  ATTENDANCE_RESOURCE,
+  INDEX_RESOURCE,
+  TERMINALS_RESOURCE,
   type ContainerRoute,
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
@@ -67,9 +70,14 @@ const LAYOUT_COMMIT_MS = 300;
  * no event channel yet — rooms fan out, the index does not — so a container another tab
  * created becomes visible one tick later. When that channel exists (wave 2) these constants
  * and every `usePolledResource` call become subscriptions.
+ *
+ * ONE cadence, deliberately. The attendance roster used to run at 1.5s here and at 2s in the
+ * index section — two rates for one resource, chosen by nobody, and under the shared feed the
+ * faster one simply wins for both readers. Agreeing on the index rate makes the shell and the
+ * section the same subscriber to the same answer, which is what "one poller per resource"
+ * has to mean before a budget can be written down for it.
  */
 const INDEX_POLL_MS = 2_000;
-const PRESENCE_POLL_MS = 1_500;
 
 /** Stable empty snapshots: a fresh literal per render would reseed nothing but churn. */
 const NO_TERMINALS: readonly TerminalSummary[] = [];
@@ -82,7 +90,7 @@ const DEFAULT_CONTAINER_NAME = "Untitled";
  * The one device-local mirror of the sidebar's collapse state. The state itself is PRESENCE
  * (`view.sidebarCollapsed`, observable by every principal, A2); this key exists only so the
  * first paint after a reload matches what the tab looked like before it, before any socket
- * has answered. It is listed in the AXIOMS.md device-local register.
+ * has answered. It is listed in the REGISTRY.md device-local register.
  */
 const COLLAPSE_MIRROR_KEY = "manifold:sidebar-collapsed-mirror";
 
@@ -213,7 +221,7 @@ export function WorkspaceHost({
           A workspace with no readable tree is a workspace with no shell, so the engine's
           default arrangement stands in rather than leaving the viewer with nothing to look at.
           The ARRANGEMENT is the floor's; the two panel NAMES come from `assembly.ts`, the one
-          file here allowed to know which plugin draws a workspace (AXIOMS.md §Foundation).
+          file here allowed to know which plugin draws a workspace (REGISTRY.md §Foundation).
         */
         console.error("evt=workspace_layout_fetch_failed", reason);
         const fallback = workspaceLayout(WORKSPACE_PANELS);
@@ -319,13 +327,14 @@ export function WorkspaceHost({
   /*
    * The index the RENDERERS need: a canvas is handed every container so it can name a portal's
    * target, and the placement algebra is answered from the terminals listing. The Views
-   * section polls the same doors for itself — a plugin fetches its own data through
-   * `host.client` and holds no wire to the shell's state — which is one duplicated request per
-   * tick until the event plane replaces both with one subscription (wave 2).
+   * section reads the SAME three doors for itself — a plugin fetches its own data through
+   * `host.client` and holds no wire to the shell's state — and because both name the resource
+   * rather than open a timer, the two readers are one request per tick, not two.
    */
   const { value: treeItems, refresh: refreshTree } = usePolledResource<
     readonly IndexEntry[] | null
   >(fetchTree, INDEX_POLL_MS, {
+    key: INDEX_RESOURCE,
     initial: null,
     equal: (current, incoming) =>
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
@@ -341,7 +350,8 @@ export function WorkspaceHost({
     indexLoadedRef.current = treeItems !== null;
   }, [treeItems]);
 
-  const { value: presence } = usePolledResource(fetchPresence, PRESENCE_POLL_MS, {
+  const { value: presence } = usePolledResource(fetchPresence, INDEX_POLL_MS, {
+    key: ATTENDANCE_RESOURCE,
     initial: NO_PRESENCE,
     restartKey: requestedContainerId,
   });
@@ -350,8 +360,17 @@ export function WorkspaceHost({
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
     INDEX_POLL_MS,
-    { initial: NO_TERMINALS, restartKey: activeTerminalCount },
+    { key: TERMINALS_RESOURCE, initial: NO_TERMINALS },
   );
+  /*
+   * A terminal was born or died in the open container: ask now rather than wait out the
+   * interval. This used to be a `restartKey`, which under a SHARED feed would have partitioned
+   * the listing by a count — one cached answer per number of terminals, and no sharing with
+   * the index section, which asks the same door with no count at all.
+   */
+  useEffect(() => {
+    refreshTerminals();
+  }, [activeTerminalCount, refreshTerminals]);
 
   const containers = useMemo(
     () =>
@@ -581,11 +600,14 @@ export function WorkspaceHost({
    * mechanism rather than `core.presence`'s, and deliberately: the projection is neutral
    * arithmetic over wire payloads, and routing it through a plugin registration would put a
    * second producer of "where is this principal" beside the server's.
+   *
+   * MEMOIZED, load-bearing: the projection allocates, it sits in `route`'s dependency list, and
+   * a renderer publishes back into this component — so an unmemoized call here rebuilt the
+   * route on every render and every route-keyed effect below re-ran on every render.
    */
-  const displayedPresence = projectLocalPresence(
-    presence,
-    identity.principal,
-    requestedContainerId,
+  const displayedPresence = useMemo(
+    () => projectLocalPresence(presence, identity.principal, requestedContainerId),
+    [presence, identity.principal, requestedContainerId],
   );
 
   /**

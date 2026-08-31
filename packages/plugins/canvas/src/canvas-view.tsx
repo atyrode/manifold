@@ -567,6 +567,30 @@ export function CanvasView({
     [client],
   );
 
+  /**
+   * This device's selection, on the wire — and NOTHING when the selection did not move.
+   *
+   * Both halves of that are load-bearing. React Flow's selection subscription re-arms
+   * whenever the handler's identity changes and FIRES on arm, so an inline arrow here
+   * published a presence frame per render; the server merges presence and echoes it back as
+   * `attendance_changed`, which this canvas counts as an invalidation and re-renders on — a
+   * closed socket-speed loop that saturated the main thread and the connection with one idle
+   * tab (measured: ~1.3k presence frames per second, both directions). A stable handler stops
+   * the re-arm; the equality check stops the echo from re-publishing anything even if some
+   * other cause fires it. Presence is a statement about what changed, not a heartbeat.
+   */
+  const lastSelectionRef = useRef<string>("");
+  const publishSelection = useCallback(
+    ({ nodes: selectedNodes }: { readonly nodes: readonly Node[] }): void => {
+      const selection = selectedNodes.map((node) => node.id);
+      const stamp = selection.join("\u0000");
+      if (stamp === lastSelectionRef.current) return;
+      lastSelectionRef.current = stamp;
+      client.sendPresence({ selection, vantage: currentVantage() });
+    },
+    [client],
+  );
+
   /*
     A peer's carried element eases away exactly like the node in your own hand. The fade
     is a property of the CARRY — an override whose carry has an armed aim — not of being
@@ -1363,18 +1387,27 @@ export function CanvasView({
     What the shell still needs from the live canvas: connection state and the one creation
     verb a section can offer. Only the ROUTED canvas reports: an embedded one is not what "the
     open container" means, and two reporters would fight over one row.
+
+    The dependency is the shell's REPORTING CHANNEL, never the route object that carries it.
+    `ContainerRoute` is rebuilt whenever anything the shell derives per render moves, and this
+    effect's own publish re-renders the shell — so depending on the whole route closed a cycle
+    that re-published (and therefore re-rendered the entire workspace) as fast as the main
+    thread would allow. The verb is passed by identity for the same reason: a fresh arrow here
+    is a fresh workspace row, which is a fresh `authoring` handle in the host gate, which is
+    another full-tree render.
   */
+  const publishWorkspace = route.onWorkspaceChange;
   useEffect(() => {
     if (!routed) return;
-    route.onWorkspaceChange({
+    publishWorkspace({
       status,
       savedAt,
       rev: sceneRevision,
       terminalCount,
-      onCreateTerminal: (machine) => void createTerminal(machine),
+      onCreateTerminal: createTerminal,
     });
-    return () => route.onWorkspaceChange(null);
-  }, [createTerminal, route, routed, savedAt, sceneRevision, terminalCount, status]);
+    return () => publishWorkspace(null);
+  }, [createTerminal, publishWorkspace, routed, savedAt, sceneRevision, terminalCount, status]);
 
   useEffect(() => {
     if (!debugProbeEnabled()) return;
@@ -1652,12 +1685,7 @@ export function CanvasView({
             onNodesChange={handleNodesChange}
             onNodeDragStart={handleNodeDragStart}
             onNodeDrag={handleNodeDrag}
-            onSelectionChange={({ nodes: selectedNodes }) => {
-              client.sendPresence({
-                selection: selectedNodes.map((node) => node.id),
-                vantage: currentVantage(),
-              });
-            }}
+            onSelectionChange={publishSelection}
             onNodeDragStop={handleNodeDragStop}
             nodesDraggable={flags.nodesDraggable}
             panOnDrag={flags.panOnDrag}

@@ -170,8 +170,8 @@ export function createPortalElement(
  * The payload field a fresh note holds as COLLABORATIVE text, declared beside the factory that
  * authors one (ADR 0013 §16 clause 6).
  *
- * The canvas names it because the canvas owns the text TOOL — that ruling is AXIOMS.md
- * §Roadmap's full-conversion inventory, "the text TOOL is canvas chrome" — while `core.notes`
+ * The canvas names it because the canvas owns the text TOOL — that ruling is REGISTRY.md
+ * §Full-conversion inventory, "the text TOOL is canvas chrome" — while `core.notes`
  * owns the element's renderer, its editor and its payload SCHEMA. One statement, so the author
  * and the schema cannot drift into disagreeing about which field a person types into.
  */

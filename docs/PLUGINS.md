@@ -13,7 +13,7 @@ exists, the endpoint is right and this document has a bug — report it. Prose n
 core plugins; `packages/plugins/*` and the roster do.
 
 Everything above the foundation floor is a plugin. The floor is a machine-readable registry in
-`AXIOMS.md` (fenced JSON, checked in both directions by `bun run verify:axioms`), not a
+`REGISTRY.md` (fenced JSON, checked in both directions by `bun run verify:axioms`), not a
 judgement call: identity and auth, protocol schemas, the plane transports, persistence, and
 the registry itself. Anything else — the sidebar, the drawing tool, the terminal lifecycle,
 vantage presence, the shell — is plugin territory, and the shipped ones are your worked examples.
@@ -73,7 +73,7 @@ import "./styles.css";
 
 Vite follows the edge and emits your rules into the built CSS, so the sheet arrives with the
 code that paints against it and leaves with the package. The floor's stylesheet is NOT the
-place to put them, and that is now mechanical rather than a request: `AXIOMS.md` §Lexicon's
+place to put them, and that is now mechanical rather than a request: `REGISTRY.md` §Lexicon's
 `cssFamilies` registry names one owning stylesheet per selector family, and S13 fails a family
 painted from anybody else's file. Adding a family is one registry row, in the same commit —
 the same cheap direction as adding a lexicon term.
@@ -343,7 +343,8 @@ client can enumerate every refusal it may have to render without reading this fi
 ## 4. Lifecycle, dormancy, and your data
 
 Everything in this section is the behavioral contract, normative in
-`docs/decisions/0013-plugin-behavioral-contract.md` and law in `AXIOMS.md` §Disable semantics (D4′).
+`docs/decisions/0013-plugin-behavioral-contract.md`, with the ratified per-kind table in
+`REGISTRY.md` §Disable semantics (D4′) and its law in `AXIOMS.md` A1.
 
 ### The one rule to internalize: disable retains
 
@@ -510,7 +511,7 @@ performance bug and an audit-log flood.
 
 State that belongs to none of the four is **unplaned**, and unplaned state is a bug. There is
 one legitimate escape: genuinely device-local presentation state (a remembered viewport, "this
-browser prefers the sidebar collapsed"), which must be registered in the `AXIOMS.md`
+browser prefers the sidebar collapsed"), which must be registered in the `REGISTRY.md`
 device-local register. `verify:axioms` fails on any `localStorage` key that is not listed
 there.
 
@@ -651,7 +652,7 @@ behind an isolation boundary. If you need data the host does not expose, add a t
 the SDK — never a direct `fetch` against a route, and never a deep import.
 
 **When a plugin and the floor must both touch one value, the slot lives in `@manifold/plugin`.**
-Neither side may import the other (`AXIOMS.md` §Foundation), so a value with a writer on one side
+Neither side may import the other (`REGISTRY.md` §Foundation), so a value with a writer on one side
 and a reader on the other has exactly one legal home: the engine package both already depend on.
 The shipped example is the spotlight — `core.presence` applies one and calls `recordSpotlight(uri)`;
 the web floor's debug probe reads `lastSpotlight()` for the axioms gate. One mutable slot, because
@@ -686,7 +687,7 @@ in the tree names an assembled action.
 Assembly happens at boot and on every enable/disable, on both the server and the web side.
 It either produces a roster or throws an `AssemblyError` naming every offender. The word is
 deliberate: **assembly** is the plugin-roster join, while a **composition** is a container whose
-discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon).
+discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.md` §Lexicon).
 
 - **Collisions refuse; nothing ever shadows.** Duplicate plugin ids, action full names, panel
   ids, element types, or tool ids fail assembly loudly. There is no last-write-wins, no
@@ -731,6 +732,43 @@ writes them up in this section. Until then: read `packages/web/src/assembly.ts` 
 
 ---
 
+## 7b. Layout primitives
+
+`@manifold/plugin/ui` ships a small layout algebra; compose your section and renderer
+bodies with it instead of writing bespoke flex/overflow CSS. Six intrinsic boxes:
+
+- **`Stack`** — vertical rhythm (`gap`, optional `align`). The default for any section body.
+- **`Cluster`** — a row that WRAPS instead of overflowing: toolbars, label-beside-count.
+- **`Sidebar`** — the two-column content+aside pattern; self-stacks when the content pane
+  would drop under its declared minimum share.
+- **`Switcher`** — row → column past a container-width threshold, all-or-nothing.
+- **`Cover`** — full-height box with a vertically centered principal: empties, placeholders.
+- **`Frame`** — an aspect-boxed window for media; clipping is its declared contract.
+
+Each is a thin `<div>` + one CSS family; knobs travel as CSS custom properties
+(`gap="0.4rem"`), and every primitive merges `className`/`style` and forwards div
+attributes, so you can tighten or entirely out-style one — a baseline, never a prison.
+The discipline they enforce for you: `min-width: 0` on every child, gap-based spacing
+(never margins between siblings), `clamp()`ed adaptive defaults. Two obligations remain
+yours:
+
+1. **Every text node declares an overflow contract** — ellipsis
+   (`overflow: hidden; text-overflow: ellipsis; white-space: nowrap`) for labels, or wrap
+   (`overflow-wrap: anywhere`) for prose. R9 sweeps adversarial names through the sidebar
+   and fails undeclared overflow, undeclared clipping, child-escapes and sibling overlaps.
+2. **Constraints, not fixed widths** — `max-width: min(10rem, 100%)`, never a bare pixel
+   width that a narrow pane cannot honor.
+
+Behavior chrome lives beside the algebra: `Disclosure` (a header that folds the body
+under it; body stays mounted while closed) and `ScrollRegion` (vertical-only scrolling
+with the product's overlay thumb; horizontal overflow is refused by contract — a child
+that cannot shrink must declare ellipsis or wrap). Their engines are internals
+(`docs/decisions/2026-08-31-radix-behavior-primitives.md`); never import `@radix-ui/*`
+directly — S2 fails the gate.
+
+The sidebar element is a size container (`container: sidebar / inline-size`), so your
+section CSS may density-query it: `@container sidebar (max-width: 236px) { … }`.
+
 ## 8. What the gate checks
 
 `bun run verify:axioms` runs in `bun run gate`. It has a static half and a browser half; these
@@ -742,9 +780,9 @@ are the checks that will fail _your_ plugin:
   import `@manifold-plugin/*` — the two `assembly.ts` files are the only exceptions — and
   plugin packages may import only `@manifold/{protocol,scene,sdk,plugin}`.
 - **Every `data-action` literal names an assembled action.**
-- **Every `localStorage` key in `packages/{web,plugins}` is listed in the `AXIOMS.md`
+- **Every `localStorage` key in `packages/{web,plugins}` is listed in the `REGISTRY.md`
   device-local register.**
-- **Every word you name things with is in the `AXIOMS.md` §Lexicon registry** (S11): a retired
+- **Every word you name things with is in the `REGISTRY.md` §Lexicon registry** (S11): a retired
   synonym in an identifier, a wire literal, a CSS selector, a file name or a doc heading fails
   the gate, and so does an `allow` exemption that no longer suppresses anything. This is the check
   most likely to fail a NEW plugin, because a new plugin brings new words: if your feature needs a
@@ -762,22 +800,24 @@ are the checks that will fail _your_ plugin:
 - Every `SceneElementSchema` member type is either an engine floor kind or an assembled element
   type.
 - **Your stylesheet paints only families you own** (S13): every selector family in every `.css`
-  file under `packages/` resolves to an `AXIOMS.md` §Lexicon `cssFamilies` row, and every rule
+  file under `packages/` resolves to a `REGISTRY.md` §Lexicon `cssFamilies` row, and every rule
   is defined by the owner of the leftmost family it scopes into. A family painted from another
   package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless
   rule outside the floor sheet — each is RED, named by file and selector.
 - In the browser: `/api/protocol` and `/api/plugins` agree with the assembly; hot
   enable/disable takes effect without a reload; an action invoked over the SDK is observed in
   the DOM and vice versa; the denial ladder returns the documented rules.
-- Every floor file falls inside exactly one pillar of the `AXIOMS.md` pillar registry — an unowned
+- Every floor file falls inside exactly one pillar of the `REGISTRY.md` pillar inventory — an unowned
   file above the plugin boundary is RED.
 - The list of every `cleanup: true` action in the assembly is published, so the one carve-out
   from the disable rule cannot grow unnoticed.
 
 ## Further reading
 
-- `AXIOMS.md` — the axioms, the lexicon, the foundation registry, the device-local register,
-  and the roadmap.
+- `AXIOMS.md` — the axioms, the plane rule, the foundation law, the lexicon law and the roadmap.
+- `REGISTRY.md` — the enforcement data those laws index: the pillar inventory, the floor
+  registry, the lexicon and `cssFamilies` rows, the device-local register, the gate contracts,
+  the per-kind disable table and the check inventory.
 - `docs/decisions/0013-plugin-behavioral-contract.md` — the behavioral contract: lifecycle,
   dormancy, retain-only disable and purge, dependencies, data versions, ownership reservation, the
   engine-owned enablement door, and the foundation litmus test.

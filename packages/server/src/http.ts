@@ -127,7 +127,7 @@ export class HttpApp {
      * INJECTED, not imported, and that is the whole point of the parameter. The default is a
      * neutral arrangement (`workspaceLayout()` in `@manifold/plugin`) filled with two PANEL
      * ids, and a panel id names a plugin. This file is floor and may not import
-     * `@manifold-plugin/*` (AXIOMS.md §Foundation, gate S2), so it cannot learn those names
+     * `@manifold-plugin/*` (REGISTRY.md §Foundation, gate S2), so it cannot learn those names
      * itself and must not try: `main.ts` reads them from `assembly.ts` — the one server file
      * sanctioned to name a plugin — builds the tree there, and hands the result down. The HTTP
      * door therefore serves a `TileLayout` it can neither author nor recognise, which is

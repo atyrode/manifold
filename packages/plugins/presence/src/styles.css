@@ -2,7 +2,7 @@
  * THE PRESENCE PLUGIN'S SKIN — the attendance stack and its popover, the peer chips, remote cursors and selections, and the spotlight a peer can throw.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
- * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
  * §Lexicon names this file as the owner of the families below, and any of them painted from
  * another stylesheet is gate RED.
  */

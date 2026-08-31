@@ -49,7 +49,7 @@ already sets.
 That module was `packages/web/src/icons.tsx` when this was decided; the plugin conversion moved
 it verbatim to `@manifold/plugin/ui`, because plugins draw manifold's chrome too and a plugin
 may not import a floor module. The decision is unchanged — one module, one dependency, closed
-vocabularies — and the registry in `AXIOMS.md` is where its current home is recorded.
+vocabularies — and the registry in `REGISTRY.md` is where its current home is recorded.
 
 Status stays out of the vocabulary: the machine pip, the running/exited tint and the
 connection dot are live state (and, for a machine, an identity colour), which a stroke icon

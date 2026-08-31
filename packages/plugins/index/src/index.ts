@@ -19,7 +19,7 @@ import { z } from "zod";
  *
  * It owns the index's DOOR as well as its rendering: reading the tree, creating, renaming
  * and deleting containers and folders, and moving any of them. The rows themselves stay in
- * the server's SQLite schema, which is persistence substrate (AXIOMS.md §Foundation); what
+ * the server's SQLite schema, which is persistence substrate (REGISTRY.md §Foundation); what
  * moved here is the policy — which caller may ask, what a refusal says, and what the answer
  * looks like.
  *

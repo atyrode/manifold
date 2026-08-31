@@ -27,10 +27,12 @@ import {
 import { itemNoun } from "@manifold/plugin";
 import {
   ControlIcon,
+  Cover,
   ItemIcon,
   NodeTitleBar,
   RemoteCursorIcon,
   COMPOSITION_TREE_CLASSES,
+  Stack,
   TilePreviewOverlay,
   TileTree,
   TileZoneDebug,
@@ -83,7 +85,7 @@ import {
  * geometric ratio write goes straight into the doc.
  *
  * Nothing a leaf HOLDS is drawn here. A terminal, an embedded container and a note each
- * belong to a different plugin, and this one may not import any of them (AXIOMS §Foundation),
+ * belong to a different plugin, and this one may not import any of them (REGISTRY.md §Foundation),
  * so every occupant arrives through the engine's projection registry
  * (`@manifold/plugin/hooks`) and every absent one paints the engine's named placeholder. What
  * this file owns is the tree, the gestures that land things in it, and the chrome each leaf
@@ -847,12 +849,14 @@ export function CompositionView({
   const renderRef = (node: Tile, ref: TileRef | null): ReactNode => {
     if (ref === null) {
       return (
-        <div className="composition-empty">
-          <span className="composition-empty-glyph" aria-hidden="true">
-            <ItemIcon kind="composition" size={22} />
-          </span>
-          <span>Drop a terminal, a canvas or a note here</span>
-        </div>
+        <Cover className="composition-empty">
+          <Stack gap="0.5rem" align="center">
+            <span className="composition-empty-glyph" aria-hidden="true">
+              <ItemIcon kind="composition" size={22} />
+            </span>
+            <span>Drop a terminal, a canvas or a note here</span>
+          </Stack>
+        </Cover>
       );
     }
     switch (ref.kind) {
@@ -1024,9 +1028,9 @@ export function CompositionView({
 
   const body =
     layout === null ? (
-      <div className="composition-placeholder">
+      <Cover className="composition-placeholder">
         {status === "open" ? "Preparing this view…" : "Connecting to this view…"}
-      </div>
+      </Cover>
     ) : (
       /*
         THE tile tree — the same component a container portal draws on a canvas. Here it

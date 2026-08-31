@@ -6,7 +6,7 @@
 **Lexicon addendum 2026-08-31 (#69):** this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The sidebar tree it decides is the workspace **index**, its rows
 are `IndexEntry` (was `PadTreeItem`) and `IndexBranch`, and a "pad" here is a **container** whose
-discipline is `canvas`. Canon is `AXIOMS.md` §Lexicon.
+discipline is `canvas`. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 

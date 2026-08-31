@@ -26,9 +26,12 @@ import {
   type WheelEvent,
 } from "react";
 import {
+  Cluster,
   ControlIcon,
+  Cover,
   ItemIcon,
   NodeTitleBar,
+  Stack,
   TITLEBAR_ACTIONS_CLASS,
   currentVantage,
   useNotice,
@@ -577,7 +580,7 @@ export function TerminalView({
       onBlur={handleBlur}
     >
       {remoteFocuser === null ? null : (
-        <div className="terminal-presence" aria-hidden="true">
+        <Cluster className="terminal-presence" gap="0.25rem" justify="center" aria-hidden="true">
           {remoteFocusers.slice(0, 3).map((principal) => (
             <span
               key={principal.id}
@@ -591,7 +594,7 @@ export function TerminalView({
               <span className="terminal-presence__name">{principal.name}</span>
             </span>
           ))}
-        </div>
+        </Cluster>
       )}
       <NodeTitleBar
         className="terminal-titlebar"
@@ -660,45 +663,47 @@ export function TerminalView({
         </button>
       ) : null}
       {terminal?.status === "exited" || offlineMachine !== null ? (
-        <div className="terminal-exited">
-          {offlineMachine !== null ? (
-            <span>machine offline — {offlineMachine.name}</span>
-          ) : (
-            // A null code is a shell that never reported one; "unknown" told the
-            // operator nothing the missing number did not already say.
-            <span>
-              {typeof terminal?.exitCode === "number"
-                ? `exited (${String(terminal.exitCode)})`
-                : "exited"}
-            </span>
-          )}
-          {terminal?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
-            <button
-              type="button"
-              className="terminal-restart"
-              title="Restart terminal (new shell, same spot)"
-              disabled={isRestarting}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => {
-                setIsRestarting(true);
-                void onRestart()
-                  .catch((reason: unknown) => {
-                    // The button that started the restart is the one place that knows a
-                    // restart was attempted at all, so it is where the failure is reported.
-                    // Keyed per terminal: hammering restart replaces the notice, never stacks.
-                    notify(
-                      reason instanceof Error ? reason.message : "Could not restart terminal",
-                      { key: `terminal-restart:${terminalId}` },
-                    );
-                  })
-                  .finally(() => setIsRestarting(false));
-              }}
-            >
-              <ControlIcon kind="restart" />
-              <span>{isRestarting ? "restarting…" : "restart"}</span>
-            </button>
-          ) : null}
-        </div>
+        <Cover className="terminal-exited">
+          <Stack gap="0.6rem" align="center">
+            {offlineMachine !== null ? (
+              <span>machine offline — {offlineMachine.name}</span>
+            ) : (
+              // A null code is a shell that never reported one; "unknown" told the
+              // operator nothing the missing number did not already say.
+              <span>
+                {typeof terminal?.exitCode === "number"
+                  ? `exited (${String(terminal.exitCode)})`
+                  : "exited"}
+              </span>
+            )}
+            {terminal?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
+              <button
+                type="button"
+                className="terminal-restart"
+                title="Restart terminal (new shell, same spot)"
+                disabled={isRestarting}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  setIsRestarting(true);
+                  void onRestart()
+                    .catch((reason: unknown) => {
+                      // The button that started the restart is the one place that knows a
+                      // restart was attempted at all, so it is where the failure is reported.
+                      // Keyed per terminal: hammering restart replaces the notice, never stacks.
+                      notify(
+                        reason instanceof Error ? reason.message : "Could not restart terminal",
+                        { key: `terminal-restart:${terminalId}` },
+                      );
+                    })
+                    .finally(() => setIsRestarting(false));
+                }}
+              >
+                <ControlIcon kind="restart" />
+                <span>{isRestarting ? "restarting…" : "restart"}</span>
+              </button>
+            ) : null}
+          </Stack>
+        </Cover>
       ) : null}
     </div>
   );

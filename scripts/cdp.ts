@@ -70,6 +70,22 @@ export class Browser {
   private sessionId = "";
   private readonly pending = new Map<number, (frame: CdpFrame) => void>();
   private readonly messages: PageMessage[] = [];
+  /**
+   * Extra CDP events a caller asked for, beyond the three {@link capture} files by default.
+   *
+   * The budget gate is the reason this exists: what it measures — requests by resource,
+   * socket frames — is only observable as a STREAM of protocol events, and reading it out of
+   * the page instead would mean instrumenting `fetch` and `WebSocket` in the very code under
+   * measurement. The driver already owns the socket; it just never let anyone listen.
+   */
+  private readonly listeners = new Map<string, ((params: Record<string, unknown>) => void)[]>();
+
+  /** Subscribes to one CDP event by method name. Handlers run in registration order. */
+  on(method: string, handler: (params: Record<string, unknown>) => void): void {
+    const existing = this.listeners.get(method);
+    if (existing === undefined) this.listeners.set(method, [handler]);
+    else existing.push(handler);
+  }
 
   static detect(): string {
     const explicit = process.env["MANIFOLD_CHROMIUM"];
@@ -199,6 +215,7 @@ export class Browser {
    */
   private capture(frame: CdpFrame): void {
     const params = frame.params ?? {};
+    for (const handler of this.listeners.get(frame.method ?? "") ?? []) handler(params);
     switch (frame.method) {
       case "Runtime.consoleAPICalled": {
         const args = params["args"];
@@ -274,7 +291,7 @@ export class Browser {
    * Clicks a DECLARED gate contract, via the DOM rather than synthetic coordinates:
    * menus and dialogs move under headless layout, and a coordinate click that lands a
    * pixel off silently does nothing. The key is a `data-testid` because that is a
-   * declared contract (AXIOMS.md `gateContracts`, S15) whereas button copy is not — the
+   * declared contract (REGISTRY.md `gateContracts`, S15) whereas button copy is not — the
    * label this replaced became "Creating identity…" the instant it was pressed.
    */
   async clickTestId(testid: string): Promise<void> {

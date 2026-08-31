@@ -2,22 +2,24 @@
  * THE PLUGIN MANAGER'S SKIN — one row per assembled plugin, its toggle, and the lock an essential plugin wears.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
- * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
  * §Lexicon names this file as the owner of the families below, and any of them painted from
  * another stylesheet is gate RED.
  */
 
-/* Same failure prose as the index section's (packages/plugins/index/src/styles.css). */
+/* Same failure prose as the index section's (packages/plugins/index/src/styles.css).
+   Prose WRAPS — that is its declared overflow contract. */
 .plugin-manager-error {
   margin: 0.35rem 0.25rem;
   color: #ffa8a8;
   font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }
 
+/* The list box is a layout `Stack` (arrangement lives in the primitive); the class
+   remains the section's root hook for the gate contract and the row family. */
 .plugin-manager {
-  display: grid;
-  align-content: start;
-  gap: 0.2rem;
+  min-width: 0;
 }
 
 .plugin-manager-row {
@@ -129,4 +131,5 @@
   margin: 0.35rem 0.25rem;
   color: #a5d8a5;
   font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }

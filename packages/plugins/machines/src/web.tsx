@@ -1,7 +1,8 @@
 import "./styles.css";
-import { usePolledResource } from "@manifold/plugin/hooks";
+import { MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
 import type { SectionProps } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
+import { Stack } from "@manifold/plugin/ui";
 import { Plus, Server } from "lucide-react";
 import { useCallback, type ReactElement } from "react";
 
@@ -30,19 +31,19 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
   const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
     fetchMachines,
     MACHINE_POLL_MS,
-    { initial: null },
+    { key: MACHINES_RESOURCE, initial: null },
   );
   const authoring = host.authoring;
   const online = machines?.filter((machine) => machine.online).length ?? 0;
 
   return (
-    <div className="sidebar-section-content workspace-machines">
+    <Stack className="sidebar-section-content" gap="0.35rem">
       {/* The count used to live in the section header, which is chrome the shell owns; a
           section now says everything it has to say inside its own body. */}
       <span className="sidebar-section-count">
         {online}/{machines?.length ?? 0} online
       </span>
-      <div className="sidebar-section-list" data-testid="machines-rail">
+      <Stack gap="0.2rem" data-testid="machines-rail">
         {machines === null ? (
           <span className="sidebar-section-empty">Loading machines…</span>
         ) : machines.length === 0 ? (
@@ -77,7 +78,7 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
             </div>
           ))
         )}
-      </div>
-    </div>
+      </Stack>
+    </Stack>
   );
 }

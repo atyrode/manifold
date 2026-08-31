@@ -13,7 +13,7 @@ tiled **discipline**, which is now the word's only container sense. The placemen
 container-scoped rung (`containerScope`); `pads:write` is `containers:write`; item kind
 `canvas-pad` is `canvas` and the guard `discipline-match` is `discipline_match` (wire enum
 literals are snake_case); `/api/pads/…` reads `/api/containers/…`; and `PadTreeItem` is
-`IndexEntry`. Canon is `AXIOMS.md` §Lexicon.
+`IndexEntry`. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 
@@ -693,7 +693,7 @@ cannot be read as data is floor that A3 cannot onboard against, and an unauditab
 indistinguishable from the privileged core A1 denies exists.
 
 The mechanism stays what it was: the litmus is what a floor-addition ADR must argue, criterion by
-criterion, and the gates are what cannot be talked around. `AXIOMS.md` carries the **pillar
+criterion, and the gates are what cannot be talked around. `REGISTRY.md` carries the **pillar
 inventory** as a machine-readable registry — one entry per pillar with its globs, the criteria it
 passes, its verdict and its justifying ADR — and `verify:axioms` checks exhaustiveness against it:
 every floor file falls inside exactly one pillar's globs, most specific glob winning, and anything
@@ -737,7 +737,8 @@ moving bytes and stops knowing why.
 the capability intersection at the door, and `auth.ts` as the future A5 evaluator seam are floor by
 every part of the litmus — nothing loads without them, they are neutral over plugins, they arbitrate,
 and they publish their vocabulary. The **administrative verbs** — mint a token, create a principal,
-revoke — are a plugin, `core.access`, over that mechanism. AXIOMS.md's conversion inventory currently
+revoke — are a plugin, `core.access`, over that mechanism. The conversion inventory
+(`REGISTRY.md` §Full-conversion inventory) currently
 schedules `core.access` for the permission-waterfall wave, and the floor audit read that as correctly
 deferred. Under total conversion the two halves separate: the _evaluator_ (ADR 0011, grant rows,
 `effectiveCaps`) stays a later wave, and the _administration routes_ convert now, because "identity
@@ -829,7 +830,7 @@ an element's PAYLOAD.
 
 **The defect.** `SceneElementSchema` was a `z.discriminatedUnion("type", …)` over three members —
 `portal`, `text`, `draw` — sitting in `packages/protocol/src/**`, a pillar whose admission verdict
-reads "the vocabulary every plane speaks … it names no plugin" (`AXIOMS.md` §Foundation law). Those
+reads "the vocabulary every plane speaks … it names no plugin" (`REGISTRY.md` §Pillar inventory). Those
 three names are `core.canvas`'s, `core.notes`' and `core.draw`'s respectively, and the neutrality
 criterion is not a style preference: it is the second of three litmus criteria, and failing any one
 means the thing is a plugin. The union also had a harder consequence than an unclean registry. A

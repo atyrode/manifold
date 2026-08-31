@@ -24,7 +24,7 @@ import {
  *
  * The first and the third reach the refs that need them through the engine's PROJECTION
  * registry rather than through an import: a container renderer paints terminals it does not
- * own and offers to open one, and no plugin may import another (AXIOMS §Foundation). So
+ * own and offers to open one, and no plugin may import another (REGISTRY.md §Foundation). So
  * {@link terminalsWebPlugin} registers one facet — the viewer plus the birth policy — and a
  * canvas or a composition asks for it by name. Disabling this plugin therefore makes every
  * terminal on screen paint the engine's named placeholder and every "new terminal" affordance

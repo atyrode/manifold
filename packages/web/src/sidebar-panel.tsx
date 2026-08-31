@@ -9,7 +9,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
-import { ControlIcon, ItemIcon } from "@manifold/plugin/ui";
+import {
+  Cluster,
+  ControlIcon,
+  Disclosure,
+  ItemIcon,
+  ScrollRegion,
+  Stack,
+} from "@manifold/plugin/ui";
 import { PluginPlaceholder, useAssembly, type WebSection } from "./plugin-host.tsx";
 import { useWorkspaceShell } from "./workspace.tsx";
 import type { WorkspaceSidebarState } from "@manifold/plugin/hooks";
@@ -89,9 +96,13 @@ interface SectionShellProps {
 }
 
 /**
- * One shell for every section: a disclosure header over a body. The native `summary` stays
- * the collapse control — it carries the button role and expanded state for free, keeps
- * content in the DOM while collapsed, and holds the chevron marker.
+ * One shell for every section: a disclosure header over a scrollable body. The header is the
+ * engine's one {@link Disclosure} — it carries the button role, `aria-expanded` and
+ * `data-state` for free, and keeps a collapsed body's content in the DOM exactly as the
+ * native `<details>` it replaced did, so a folded section's pollers survive the fold. The
+ * body is the engine's one {@link ScrollRegion}: each section scrolls ITSELF, vertically
+ * only — horizontal overflow is refused by contract, which is what obliges every label in a
+ * section to declare ellipsis or wrap.
  *
  * A section supplies no header count and no header actions any more: a plugin renders its own
  * body and nothing else, so anything it wants to say about itself it says inside that body.
@@ -106,28 +117,32 @@ function SectionShell({
 }: SectionShellProps): ReactElement {
   const Component: ComponentType<SectionProps> | null = section.Component;
   return (
-    <details
+    <Disclosure
       className={`sidebar-section${grow ? " sidebar-section--grow" : ""}`}
       data-testid={`${section.id}-section`}
       data-section-id={section.id}
       data-plugin={section.plugin}
       open={!collapsed}
-      onToggle={(event) => onCollapsedChange(section.id, !event.currentTarget.open)}
+      onOpenChange={(open) => onCollapsedChange(section.id, !open)}
+      headerClassName="sidebar-section-header"
+      bodyClassName="sidebar-section-body"
+      header={
+        <>
+          <span className="sidebar-section-chevron" aria-hidden="true">
+            <ControlIcon kind="collapsed" size={13} />
+          </span>
+          <strong className="sidebar-section-title">{section.title}</strong>
+        </>
+      }
     >
-      <summary className="sidebar-section-header">
-        <span className="sidebar-section-chevron" aria-hidden="true">
-          <ControlIcon kind="collapsed" size={13} />
-        </span>
-        <strong className="sidebar-section-title">{section.title}</strong>
-      </summary>
-      <div className="sidebar-section-body">
+      <ScrollRegion className="sidebar-section-scroll">
         {Component === null ? (
           <PluginPlaceholder name={pluginTitle} state="unavailable" />
         ) : (
           <Component host={host} />
         )}
-      </div>
-    </details>
+      </ScrollRegion>
+    </Disclosure>
   );
 }
 
@@ -305,7 +320,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               autoFocus
               disabled={creatingFolder}
             />
-            <div>
+            <Cluster justify="flex-end" gap="0.35rem">
               <button type="button" onClick={() => setFolderName(null)} disabled={creatingFolder}>
                 Cancel
               </button>
@@ -316,11 +331,11 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               >
                 {creatingFolder ? "Creating…" : "Create"}
               </button>
-            </div>
+            </Cluster>
           </form>
         ) : null}
 
-        <div className="sidebar-sections">
+        <Stack className="sidebar-sections" gap="0.4rem">
           {visible.map((section) => (
             <SectionShell
               section={section}
@@ -338,7 +353,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               key={`${section.plugin}.${section.id}`}
             />
           ))}
-        </div>
+        </Stack>
 
         {sidebarOpen && workspace !== null ? (
           <WorkspaceStatus

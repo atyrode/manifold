@@ -143,6 +143,7 @@ try {
         () => run("verify:terminal-selection", ["bun", "scripts/verify-terminal-selection.ts"]),
         () => run("verify:terminal-mirror", ["bun", "scripts/verify-terminal-mirror.ts"]),
         () => run("verify:tile-drop", ["bun", "scripts/verify-tile-drop.ts"]),
+        () => run("verify:budgets", ["bun", "scripts/verify-budgets.ts"]),
         () => run("verify:axioms", ["bun", "scripts/verify-axioms.ts"]),
       ])
     : [];

@@ -11,9 +11,11 @@ import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ControlIcon,
+  Cover,
   ItemIcon,
   NodeTitleBar,
   PORTAL_TREE_CLASSES,
+  Stack,
   TilePreviewOverlay,
   TileTree,
   TileZoneDebug,
@@ -452,20 +454,22 @@ function PortalContainerTile({
   const container = useCanvas();
   const name = useContainerName(container.host, containerId);
   return (
-    <div className="portal__container-card">
-      <span className="portal__card-glyph" aria-hidden="true">
-        <ItemIcon kind="canvas" size={22} />
-      </span>
-      <strong>{name ?? itemNoun("canvas", container.host.assembly.roster())}</strong>
-      <button
-        type="button"
-        className="portal__enter"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={() => container.navigate(`/p/${encodeURIComponent(containerId)}`)}
-      >
-        Open
-      </button>
-    </div>
+    <Cover className="portal__container-card">
+      <Stack gap="0.3rem" align="center">
+        <span className="portal__card-glyph" aria-hidden="true">
+          <ItemIcon kind="canvas" size={22} />
+        </span>
+        <strong>{name ?? itemNoun("canvas", container.host.assembly.roster())}</strong>
+        <button
+          type="button"
+          className="portal__enter"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => container.navigate(`/p/${encodeURIComponent(containerId)}`)}
+        >
+          Open
+        </button>
+      </Stack>
+    </Cover>
   );
 }
 
@@ -514,7 +518,7 @@ function PortalLeaf({
   mono,
 }: PortalLeafProps): React.ReactElement {
   const ref = node.ref;
-  if (ref === null) return <div className="portal__empty">empty tile</div>;
+  if (ref === null) return <Cover className="portal__empty">empty tile</Cover>;
   switch (ref.kind) {
     case "terminal":
       return (
@@ -946,14 +950,16 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
             // The card form still hosts the overlay: a portal whose layout this canvas
             // cannot see keeps the canvas door, so drops on it stay targetable.
             <div className="tile-area" ref={areaRef}>
-              <div className="portal__card">
-                <span className="portal__card-glyph" aria-hidden="true">
-                  <ItemIcon kind="composition" size={22} />
-                </span>
-                <span className="portal__card-hint">
-                  {live ? "opening composition…" : "nested composition — open it to work inside"}
-                </span>
-              </div>
+              <Cover className="portal__card">
+                <Stack gap="0.3rem" align="center">
+                  <span className="portal__card-glyph" aria-hidden="true">
+                    <ItemIcon kind="composition" size={22} />
+                  </span>
+                  <span className="portal__card-hint">
+                    {live ? "opening composition…" : "nested composition — open it to work inside"}
+                  </span>
+                </Stack>
+              </Cover>
               {overlay}
             </div>
           )}

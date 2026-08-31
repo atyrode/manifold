@@ -42,7 +42,7 @@ export const WORKSPACE_PANELS: WorkspacePanels = {
 
 /**
  * THE registration point, and the only server file allowed to import `@manifold-plugin/*`
- * (AXIOMS.md floor registry, enforced by `verify:axioms`). Everything above the floor
+ * (REGISTRY.md floor registry, enforced by `verify:axioms`). Everything above the floor
  * arrives here or does not exist.
  *
  * This table is the input to the ASSEMBLY: the join the host computes over the enabled

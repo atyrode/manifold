@@ -2,7 +2,7 @@
  * THE TERMINALS PLUGIN'S SKIN — the terminal frame and its titlebar, the idle veil, the focus-presence chips, the xterm host, the exited/restart states, and the sidebar terminal pool's rows.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
- * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
  * §Lexicon names this file as the owner of the families below, and any of them painted from
  * another stylesheet is gate RED.
  */
@@ -92,15 +92,15 @@
 }
 
 /* Focus-presence chips: who (other than you) is on this terminal right now. */
+/* The chip row is a layout Cluster (it WRAPS at a narrow terminal instead of
+   escaping it); this positions and constrains it. */
 .terminal-presence {
   position: absolute;
   z-index: 5;
   top: 0.18rem;
   left: 50%;
   transform: translateX(-50%);
-  display: flex;
   max-width: 70%;
-  gap: 0.25rem;
   pointer-events: none;
 }
 
@@ -168,14 +168,11 @@
   color: #fff;
 }
 
+/* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
 .terminal-exited {
   position: absolute;
   z-index: 5;
   inset: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 0.6rem;
   color: #ced4da;
   background: rgb(11 13 16 / 72%);
   font-size: 0.9rem;

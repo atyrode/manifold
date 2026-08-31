@@ -26,7 +26,8 @@ import { z } from "zod";
  *
  * What is NOT here yet: the canvas's `text` TOOL (double-click-to-author, the default width,
  * height, font and colour of a fresh note) is still engine chrome inside
- * `core.shell.container-view`, and it moves with `core.canvas` — AXIOMS.md §Roadmap keeps that row.
+ * `core.shell.container-view`, and it moves with `core.canvas` — REGISTRY.md
+ * §Full-conversion inventory keeps that row.
  *
  * It declares an `optional` dependency on `core.canvas`, which is the honest reading of the
  * `optional` type rather than a decoration: a note is `tileable` as well as `canvas_item`, so

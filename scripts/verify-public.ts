@@ -170,7 +170,7 @@ try {
 
   await step("embedded terminal opens and runs a command in the browser", async () => {
     await browser.evaluate(
-      "document.querySelector('[data-testid=machines-section] > summary').click()",
+      "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
     );
     await until(
       () =>

@@ -2,7 +2,7 @@
  * THE INDEX PLUGIN'S SKIN — the sidebar tree's own rows, its drag line, its section bar and its skeleton. The sidebar rows it lands in are the shell's (packages/web/src/shell.css).
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
- * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
  * §Lexicon names this file as the owner of the families below, and any of them painted from
  * another stylesheet is gate RED.
  */
@@ -83,25 +83,23 @@
   }
 }
 
-/* The Views section's own bar: the count and the terminal-tree switch the header used to hold. */
+/* The section is a layout `Stack` and the bar a `Cluster`; arrangement lives in the
+   primitives. What stays here is participation: the section fills its ScrollRegion's
+   column so a release past the last row still finds the unplace target. */
 .index-section {
-  display: flex;
-  min-height: 0;
   flex: 1 1 auto;
-  flex-direction: column;
 }
 
 .index-section-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 0 0.25rem 0.2rem;
 }
 
 /* A section that cannot load says so in its own body, in the same red the plugin
-   manager's failure row uses (packages/plugins/plugin-manager/src/styles.css). */
+   manager's failure row uses (packages/plugins/plugin-manager/src/styles.css).
+   Prose WRAPS — its declared overflow contract. */
 .index-section-error {
   margin: 0.35rem 0.25rem;
   color: #ffa8a8;
   font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }

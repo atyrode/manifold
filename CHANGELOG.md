@@ -8,7 +8,7 @@
 
 ### Added
 
-- A plugin engine: core features now load through one registry, hot enable/disable from the new sidebar Plugins section takes effect everywhere without a reload, disabled features render inert named placeholders instead of vanishing, and essential plugins refuse disable. (#69, #70)
+- A plugin engine: core features now load through one registry, hot enable/disable from the new sidebar Plugins section takes effect everywhere without a reload — a disabled plugin's chrome vanishes while its data stays as named ghosts — and essential plugins refuse disable. (#69, #70)
 - The workspace shell is itself a tile composition of plugin panels — the sidebar and the container view are panels in a per-principal layout tree, and the sidebar/canvas divider is a real tile divider whose position is saved to your workspace. (#69, #70)
 - One action door for mutations: `POST /api/actions/:name` with a published, machine-readable vocabulary (`GET /api/protocol`, `GET /api/plugins`) and named refusals — terminal rename/kill are the first occupants, and all future mutations land here. (#69, #70)
 - Sidebar sections (Machines, Index, Plugins), freehand drawing, and vantage — the tool in hand, what someone is editing, whether their sidebar is open — are core plugins; a stranger's agent can author its own against `docs/PLUGINS.md`. (#69, #70)
@@ -16,6 +16,7 @@
 - Observable vantage: collaborators' active tool shows beside their name, and a consent-guarded spotlight action can center a peer's canvas on any address — with a dismissible chip and an ignore switch. (#69, #70)
 - Purging a disabled plugin's data is now a two-press affordance in the Plugins section, showing what the plugin declared it stores and reporting exactly what was removed. (#69, #70)
 - An audit door: `core.events.list` exposes the server's lifecycle event log to owners through the same action vocabulary as everything else. (#69, #70)
+- Layout primitives (Stack, Cluster, Sidebar, Switcher, Cover, Frame) in the plugin UI library: intrinsically responsive building blocks every plugin composes from day one, backing a rebuilt sidebar that survives any width without overflow, clipping, or overlap. (#69, #70)
 
 ### Changed
 
@@ -25,6 +26,8 @@
 ### Fixed
 
 - A drag that began before the workspace index had catalogued a just-born terminal's home now still streams live motion to every collaborator — movement is unconditional, classification catches up. (#69, #70)
+- A canvas no longer re-renders in a loop while you do nothing: idle CPU on an open canvas dropped to near zero, node drags cost a tenth of their previous script time, and both improvements land below the v0.5.0 baseline. (#69, #70)
+- The browser stopped hammering the API: one shared poll per resource instead of one per component, unchanged answers render nothing, and a hidden tab makes zero requests — enforced by a new performance-budget gate. (#69, #70)
 
 ### Removed
 

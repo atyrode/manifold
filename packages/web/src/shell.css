@@ -5,7 +5,7 @@
  * This file is the one asymmetry in the split, and it is worth naming. Every other owner's
  * stylesheet lives in that owner's package; the shell's cannot, because the shell is not a
  * package. Its components are FLOOR — the workspace host, the `core.shell.sidebar` panel and
- * the `core.shell.container-view` panel are floor rows in AXIOMS.md §Foundation — and a floor
+ * the `core.shell.container-view` panel are floor rows in REGISTRY.md §Foundation — and a floor
  * file may not import `@manifold-plugin/*`. So the shell's skin stays inside `packages/web`,
  * beside the components that paint it, and is registered as its own owner in the cssFamilies
  * registry rather than being folded back into the floor stylesheet. Separate owner, same
@@ -25,6 +25,9 @@
   background: #121417;
 }
 
+/* The sidebar is a size CONTAINER (`sidebar / inline-size`): the layout primitives'
+   clamp()ed gaps and this sheet's own @container queries read ITS width, so density
+   follows the rail instead of the window. */
 .sidebar {
   position: relative;
   z-index: 20;
@@ -35,6 +38,7 @@
   flex-direction: column;
   gap: 0.55rem;
   overflow: hidden;
+  container: sidebar / inline-size;
   border-right: 1px solid #2e3238;
   padding: 0.65rem;
   color: #e9ecef;
@@ -79,7 +83,7 @@
 
 .sidebar-version {
   overflow: hidden;
-  max-width: 10.5rem;
+  max-width: min(10.5rem, 100%);
   border: 0;
   padding: 0;
   color: #868e96;
@@ -91,6 +95,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+}
+
+/* The wordmark's declared overflow contract: truncate, never push the collapse control. */
+.sidebar-brand-copy > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-version:hover,
@@ -151,8 +161,21 @@
   gap: 0.35rem;
 }
 
+/* A narrow rail cannot seat two creators side by side; the CONTAINER says when,
+   so the same rule holds wherever the pane's divider was dragged. */
+@container sidebar (max-width: 236px) {
+  .sidebar-create-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar-new-folder {
+    grid-column: auto;
+  }
+}
+
 .sidebar-new {
   display: flex;
+  min-width: 0;
   min-height: 2.35rem;
   align-items: center;
   gap: 0.65rem;
@@ -165,6 +188,12 @@
   text-align: left;
   background: #202329;
   white-space: nowrap;
+}
+
+/* A creator label's declared contract: truncate; the title attribute still says it all. */
+.sidebar-new > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-new:hover {
@@ -203,6 +232,7 @@
 }
 
 .sidebar-create input {
+  min-width: 0;
   padding: 0.55rem 0.6rem;
   font-size: 0.82rem;
 }
@@ -231,54 +261,55 @@
 }
 
 /*
- * Sidebar section stack: Machines, Containers, Terminals (and later Views) share one header grammar and
- * reorder by dragging their headers. The native summary stays the collapse control. While a header
- * is held the stack makes space: sections translate into their projected slots so the insertion gap
- * follows the pointer. Transforms only animate during that drag, so the drop itself never re-slides.
+ * Sidebar section stack: Machines, Containers, Terminals (and later Views) share one header
+ * grammar and reorder by dragging their headers. The stack itself is a layout `Stack`
+ * (direction and gap live in the primitive); each section is the engine's one Disclosure
+ * over its one ScrollRegion, so the stack never scrolls — a section that outgrows its slot
+ * scrolls ITSELF. While a header is held the stack makes space: sections translate into
+ * their projected slots so the insertion gap follows the pointer.
  */
 .sidebar-sections {
-  display: flex;
   min-height: 0;
   flex: 1;
-  flex-direction: column;
-  gap: 0.4rem;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  overflow: hidden;
 }
 
 .sidebar-section {
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #30343b;
   border-radius: 0.65rem;
   background: #1d2025;
 }
 
+/* An OPEN section never shrinks past its header and a row: crushing a section to a
+   sliver helps nobody; past this floor its own ScrollRegion takes over. */
+.sidebar-section[data-state="open"] {
+  min-height: 4.4rem;
+}
+
 /* The container tree absorbs leftover height so a short stack stays top-aligned — but only
    while open: a collapsed section must shrink to its header instead of holding its slot. */
-.sidebar-section--grow[open] {
+.sidebar-section--grow[data-state="open"] {
   flex: 1 1 auto;
 }
 
+/* The header IS the disclosure's toggle button (`.disclosure__header` resets the
+   button chrome); it never shrinks — the body under it does the giving. */
 .sidebar-section-header {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.4rem;
   min-height: 2.15rem;
+  flex-shrink: 0;
   padding: 0.4rem 0.5rem;
   color: #adb5bd;
-  cursor: pointer;
   font-size: 0.67rem;
   font-weight: 700;
   letter-spacing: 0.045em;
-  list-style: none;
   text-transform: uppercase;
-}
-
-.sidebar-section-header::-webkit-details-marker {
-  display: none;
 }
 
 .sidebar-section-header:hover,
@@ -286,7 +317,7 @@
   color: #f1f3f5;
 }
 
-.sidebar-section[open] > .sidebar-section-header {
+.sidebar-section[data-state="open"] > .sidebar-section-header {
   border-bottom: 1px solid #30343b;
 }
 
@@ -299,7 +330,7 @@
   transition: transform 120ms ease;
 }
 
-.sidebar-section[open] > .sidebar-section-header > .sidebar-section-chevron {
+.sidebar-section[data-state="open"] > .sidebar-section-header > .sidebar-section-chevron {
   transform: rotate(90deg);
 }
 
@@ -320,18 +351,16 @@
   white-space: nowrap;
 }
 
+/* Padding and rhythm only: the flex column, the height absorption and the closed
+   state's hiding are the disclosure body's own (`.disclosure__body`). */
 .sidebar-section-body {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
   gap: 0.35rem;
   padding: 0.3rem;
 }
 
-/* Inside a section the stack owns scrolling; the tree grows with its content. */
-.sidebar-section-body .sidebar-list {
-  flex: 0 1 auto;
-  overflow: visible;
+/* Each section scrolls itself: the region absorbs the body's height. */
+.sidebar-section-scroll {
+  flex: 1 1 auto;
 }
 
 .workspace.is-collapsed .sidebar-section {
@@ -367,15 +396,14 @@
   background: #292d35;
 }
 
+/* The section's ScrollRegion owns scrolling now; the list only lays rows out and
+   grows to fill its section so the release-past-the-last-row target survives. */
 .sidebar-list {
   display: grid;
   align-content: start;
   gap: 0.16rem;
   min-height: 0;
   flex: 1;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 .sidebar-tree {
@@ -553,10 +581,12 @@
   background: #2b2e34;
 }
 
+/* Prose, so it WRAPS — the one sidebar text contract that is not an ellipsis. */
 .sidebar-muted {
   margin: 0.65rem 0.55rem;
   color: #868e96;
   font-size: 0.76rem;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-folder-icon {
@@ -681,6 +711,12 @@ button.sidebar-terminal.is-summary > small {
   color: #adb5bd;
   font-size: 0.78rem;
   white-space: nowrap;
+}
+
+/* The principal's name truncates; the title attribute carries the whole of it. */
+.sidebar-identity > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workspace.is-collapsed .sidebar-identity {
@@ -867,13 +903,13 @@ button.sidebar-terminal.is-summary > small {
   font-size: 0.55rem;
 }
 
+/* The vars stay: a section body reads the shell's tones through them. The box
+   itself is a layout `Stack` now, so arrangement lives in the primitive. */
 .sidebar-section-content {
   --default-border-color: #343a40;
   --island-bg-color: #202329;
   --text-primary-color: #e9ecef;
   --text-secondary-color: #868e96;
-  display: grid;
-  gap: 0.35rem;
   min-width: 0;
   flex: 0 0 auto;
 }
@@ -988,12 +1024,10 @@ button.sidebar-terminal.is-summary > small {
   background: #121417;
 }
 
+/* Centering and rhythm are the layout Cover+Stack's; this is skin and position. */
 .workspace-empty {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
   padding: 2rem;
   text-align: center;
   background: radial-gradient(circle at center, rgb(54 79 199 / 10%), transparent 28rem), #121417;
@@ -1002,7 +1036,6 @@ button.sidebar-terminal.is-summary > small {
 .workspace-empty-mark {
   width: 3.25rem;
   height: 3.25rem;
-  margin-bottom: 0.9rem;
   border-radius: 0.85rem;
   font-size: 1.05rem;
 }
@@ -1013,7 +1046,7 @@ button.sidebar-terminal.is-summary > small {
 }
 
 .workspace-empty p {
-  margin: 0.55rem 0 1.25rem;
+  margin: 0;
   color: #868e96;
 }
 
@@ -1126,15 +1159,11 @@ button.sidebar-terminal.is-summary > small {
   }
 }
 
-.sidebar-section-list {
-  display: grid;
-  gap: 0.2rem;
-}
-
 .sidebar-section-empty {
   padding: 0.45rem 0.2rem;
   color: var(--text-secondary-color, #868e96);
   font-size: 0.76rem;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-machine-row,

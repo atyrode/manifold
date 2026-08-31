@@ -16,7 +16,7 @@ import { createContext, createElement, useContext, type ReactElement, type React
  * It lives in the engine because its two ends may not import each other. The shell writes it
  * and `core.canvas` / `core.compositions` read it; a floor module and a plugin module,
  * addressing one concept, which is precisely the litmus that puts a thing in `@manifold/plugin`
- * rather than in whichever package used it first (AXIOMS.md §Plugin layer).
+ * rather than in whichever package used it first (REGISTRY.md §Plugin layer).
  *
  * It carries NO identity: `HostServices` already answers "who is this device" for every
  * contribution, and a second answer here would be a second door onto the same question

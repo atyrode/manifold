@@ -9,7 +9,7 @@ cites moved in the lexicon cut. The plugin-roster join is **assembly**, so `comp
 that join, never the tiled container discipline that now owns the word. A "pad-scoped" token is
 container-scoped (`AuthContext.containerScope`), `POST /api/place` became
 `core.space.place`, and the capabilities it discusses are `containers:read` / `containers:write`
-/ `scenes:write` / `terminals:spawn` / `terminals:write`. Canon is `AXIOMS.md` §Lexicon.
+/ `scenes:write` / `terminals:spawn` / `terminals:write`. Canon is `REGISTRY.md` §Lexicon.
 
 ## Context
 
@@ -135,7 +135,7 @@ transport libraries before extending the WebSocket stack.
   the two must never be the same lever.
 - **A privileged core beside a plugin API (the Pi and Zed model).** A closed union plus a
   `switch` for core kinds is exactly the structure the audits found 34 instances of; keeping it
-  would make A1 unenforceable. Core features load through the same registry, and `AXIOMS.md`
+  would make A1 unenforceable. Core features load through the same registry, and `REGISTRY.md`
   makes the remaining floor a machine-readable, gate-checked list rather than a habit.
 - **A capability-per-feature RPC pair (the VS Code `MainThreadX`/`ExtHostX` model).** ~120
   hand-written bridge files is a per-feature tax that does not scale to "every capability,

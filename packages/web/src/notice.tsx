@@ -10,6 +10,7 @@ import {
 import {
   ControlIcon,
   NoticeContext,
+  Stack,
   type NoticeApi,
   type NoticeLifetime,
   type NoticeOptions,
@@ -179,7 +180,7 @@ export function NoticeProvider({ children }: NoticeProviderProps): ReactElement 
       {children}
       {/* Fixed, pointer-transparent, and outside every renderer: the layer never
           steals a canvas drag, and no collapse state can hide it. */}
-      <div className="notice-layer">
+      <Stack className="notice-layer" gap="0.4rem" align="center">
         {queue.map((entry) => (
           <div
             key={entry.id}
@@ -198,7 +199,7 @@ export function NoticeProvider({ children }: NoticeProviderProps): ReactElement 
             </button>
           </div>
         ))}
-      </div>
+      </Stack>
     </NoticeContext.Provider>
   );
 }

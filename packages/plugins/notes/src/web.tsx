@@ -23,7 +23,7 @@ const FALLBACK_COLOR = "#f8f9fa";
 
 /**
  * A fresh single-line note's height, and therefore the floor for a grown one. It repeats the
- * engine's own creation default because a plugin may not import web floor modules (AXIOMS.md
+ * engine's own creation default because a plugin may not import web floor modules (REGISTRY.md
  * §Foundation import boundary) — and because how tall prose is IS this plugin's business: the
  * engine only needs a box to put a new element in, while the ratio below is the note's own
  * typography. The canvas's authoring default moves here with `core.canvas`.

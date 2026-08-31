@@ -62,7 +62,7 @@ sections are manifest contributions — each plugin declares
 than device memory. Folder membership and tree order are durable server state; sidebar WIDTH
 is the workspace layout's root ratio (`core.space.setLayout`), collapse is presence
 (`vantage.sidebarCollapsed`, with a device-local mirror for first paint), and terminal-row
-visibility plus folder expansion stay device-local (`AXIOMS.md` §Device-local register). The
+visibility plus folder expansion stay device-local (`REGISTRY.md` §Device-local register). The
 server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
 fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
 storing it.
@@ -107,7 +107,7 @@ the node tree — `{ principal | class, node: "manifold://…", caps, effect, re
 root→node, deeper beating shallower, `deny` beating `allow` at equal specificity. Today's cap
 array is a synthesized root grant; today's `containerScope` is a subtree grant at
 `manifold://container/<id>`; a share will be a minted token bound to a subtree grant.
-`packages/server/src/auth.ts` is the tagged evaluator call surface (`AXIOMS.md` floor
+`packages/server/src/auth.ts` is the tagged evaluator call surface (`REGISTRY.md` floor
 registry): the
 evaluator replaces ONE call surface and the action door's declared-capability intersection
 sits unchanged on top of it.
@@ -392,7 +392,8 @@ Manifests are inert DATA: no executable fields, with `entry` reserved for the la
 dynamic-distribution wave. Plugins are trusted in-process code today (ADR 0010); the wire is the
 security boundary and every authority decision happens at a door. What happens to a plugin's data,
 contributions and neighbours across an enable/disable is the **behavioral contract**
-(`docs/decisions/0013-plugin-behavioral-contract.md`, law in `AXIOMS.md` §Disable semantics).
+(`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
+§Disable semantics).
 
 **The roster.** `GET /api/plugins` returns one entry per assembled row:
 
@@ -1095,7 +1096,7 @@ collaborators' element references survive; a terminal already living in a compos
 already homed and is left alone; the retired pool position becomes its composition's
 position in the index; then `pads.transient`, `pads.origin_pad_id` and
 `sessions.sort_order` are dropped (its body names the pre-rename schema on purpose — replayed
-history, allowlisted in `AXIOMS.md` §Lexicon).
+history, allowlisted in `REGISTRY.md` §Lexicon).
 Migration 11 (`packages/server/src/migrate-lexicon.ts`) is the lexicon cut applied to durable
 state, and it is CODE for one non-stylistic reason: two of the renamed names are DOCUMENT data.
 The schema half renames `pads`→`containers`, `pad_folders`→`container_folders`,

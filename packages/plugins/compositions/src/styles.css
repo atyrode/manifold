@@ -2,7 +2,7 @@
  * THE COMPOSITIONS PLUGIN'S SKIN — the tiled discipline's renderer: its page chrome, tiles, leaves and grips, its placeholder and empty states, and the presence layer over them.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
- * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
  * §Lexicon names this file as the owner of the families below, and any of them painted from
  * another stylesheet is gate RED.
  */
@@ -58,12 +58,12 @@
   flex: 1 1 auto;
 }
 
+/* Centering is the layout Cover's; skin and constraint stay. */
 .composition-placeholder {
-  display: grid;
   width: 100%;
-  place-items: center;
   color: #868e96;
   font-size: 0.8rem;
+  text-align: center;
 }
 
 .composition-leaf {
@@ -82,17 +82,13 @@
 }
 
 .composition-empty {
-  display: flex;
   width: 100%;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
   border: 1px dashed #343a40;
   border-radius: 0.45rem;
   margin: 0.35rem;
   color: #868e96;
   font-size: 0.78rem;
+  text-align: center;
 }
 
 .composition-empty-glyph {

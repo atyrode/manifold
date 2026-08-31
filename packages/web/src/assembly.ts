@@ -34,7 +34,7 @@ export const WORKSPACE_PANELS: WorkspacePanels = {
 
 /**
  * THE registration file, and the ONE file in `packages/web/src` allowed to name
- * `@manifold-plugin/*` (AXIOMS.md §Foundation; `verify:axioms` S2 asserts the exception is
+ * `@manifold-plugin/*` (REGISTRY.md §Foundation; `verify:axioms` S2 asserts the exception is
  * exactly this file). Everything below it is engine floor that must not know a plugin exists;
  * everything above it is a plugin that must not know the engine's internals.
  *

@@ -40,11 +40,12 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { Cover, Stack } from "@manifold/plugin/ui";
 import type { StoredIdentity } from "./api.ts";
 import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
- * The browser half of the plugin engine — FLOOR (AXIOMS.md §Foundation), which is why this
+ * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
  * file never imports a plugin package: `assembly.ts` is the one web file allowed to name
  * `@manifold-plugin/*`, and it hands its registrations here as inert data.
  *
@@ -603,20 +604,22 @@ export type PluginPlaceholderProps = ProjectionPlaceholderProps;
  */
 export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
   return (
-    <div className="plugin-placeholder" data-plugin-state={state}>
-      <strong className="plugin-placeholder__name">{name}</strong>
-      <span className="plugin-placeholder__state">{PLACEHOLDER_LABELS[state]}</span>
-      {onRemove === undefined ? null : (
-        <button
-          type="button"
-          className="plugin-placeholder__remove"
-          data-action="core.space.setLayout"
-          onClick={onRemove}
-        >
-          Remove
-        </button>
-      )}
-    </div>
+    <Cover className="plugin-placeholder" data-plugin-state={state}>
+      <Stack gap="0.3rem" align="center">
+        <strong className="plugin-placeholder__name">{name}</strong>
+        <span className="plugin-placeholder__state">{PLACEHOLDER_LABELS[state]}</span>
+        {onRemove === undefined ? null : (
+          <button
+            type="button"
+            className="plugin-placeholder__remove"
+            data-action="core.space.setLayout"
+            onClick={onRemove}
+          >
+            Remove
+          </button>
+        )}
+      </Stack>
+    </Cover>
   );
 }
 

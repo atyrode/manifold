@@ -1,5 +1,6 @@
 import type { PanelProps } from "@manifold/plugin";
 import { ContainerRenderer, useContainerRoute } from "@manifold/plugin/hooks";
+import { Cover, Stack } from "@manifold/plugin/ui";
 import type { ReactElement } from "react";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 
@@ -47,9 +48,9 @@ export function ContainerViewPanel({ host }: PanelProps): ReactElement {
         containers === null ? (
           <CanvasSkeleton />
         ) : (
-          <div className="workspace-empty">
+          <Cover className="workspace-empty">
             {containers.length === 0 ? (
-              <>
+              <Stack gap="0.6rem" align="center">
                 <span className="workspace-empty-mark">M</span>
                 <h1>Your canvas starts here</h1>
                 <p>Create a canvas from the sidebar to begin.</p>
@@ -61,9 +62,9 @@ export function ContainerViewPanel({ host }: PanelProps): ReactElement {
                 >
                   Create your first canvas
                 </button>
-              </>
+              </Stack>
             ) : null}
-          </div>
+          </Cover>
         )
       ) : routedDiscipline === "unknown" ? (
         // A cold deep-link only: every id this tab has already seen answered above. The

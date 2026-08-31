@@ -8,7 +8,7 @@
  * more than one owner animates with.
  *
  * Every family that belongs to somebody is somewhere else, and `verify:axioms` S13 keeps
- * it that way: the cssFamilies registry in AXIOMS.md §Lexicon names one owning stylesheet
+ * it that way: the cssFamilies registry in REGISTRY.md §Lexicon names one owning stylesheet
  * per selector family, and a family painted outside its owner is gate RED.
  */
 
@@ -59,15 +59,17 @@ button {
 }
 
 .gate-screen {
-  min-height: 100%;
+  height: 100%;
   overflow: auto;
+  padding: 1.5rem;
   background: radial-gradient(circle at 25% 10%, rgb(54 79 199 / 18%), transparent 34rem), #101216;
 }
 
-.gate-screen {
-  display: grid;
-  place-items: center;
-  padding: 1.5rem;
+/* Vertical centering is the layout Cover's; the auto margins seat the card on the
+   inline axis inside the stretched principal, where its percentage width resolves. */
+.gate-cover > .layout-cover__principal > .gate-card,
+.gate-cover > .layout-cover__principal > .identity-dialog {
+  margin-inline: auto;
 }
 
 .gate-card,
@@ -216,10 +218,6 @@ input:focus {
   right: 0;
   bottom: 1.1rem;
   left: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.4rem;
   padding: 0 1rem;
   pointer-events: none;
 }
@@ -339,13 +337,10 @@ input:focus {
    is handed — so the same element reads correctly as a workspace pane and as a canvas
    node without a second skin. It NAMES what is missing; a blank tile is the bug this
    block exists to prevent. `data-plugin-state` carries the reason for the gate. */
+/* Centering and rhythm are the layout Cover+Stack's; this is skin: the dashed box. */
 .plugin-placeholder {
-  display: grid;
   width: 100%;
   height: 100%;
-  align-content: center;
-  justify-items: center;
-  gap: 0.3rem;
   border: 1px dashed #343a40;
   border-radius: 0.4rem;
   padding: 0.5rem;

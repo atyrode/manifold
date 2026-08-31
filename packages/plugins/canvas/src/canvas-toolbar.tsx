@@ -1,4 +1,5 @@
 import { useProjection } from "@manifold/plugin/hooks";
+import { Cluster } from "@manifold/plugin/ui";
 import { useMemo } from "react";
 import { CANVAS_TOOLS, type CanvasTool } from "./canvas-tool.ts";
 
@@ -38,7 +39,13 @@ export function CanvasToolbar({ tool, onChange }: CanvasToolbarProps): React.Rea
   }, [projection.tools]);
 
   return (
-    <div className="canvas-toolbar" role="toolbar" aria-label="Canvas tools">
+    <Cluster
+      className="canvas-toolbar"
+      gap="0.25rem"
+      justify="center"
+      role="toolbar"
+      aria-label="Canvas tools"
+    >
       {items.map((item) => {
         const active = item.id === tool;
         return (
@@ -54,6 +61,6 @@ export function CanvasToolbar({ tool, onChange }: CanvasToolbarProps): React.Rea
           </button>
         );
       })}
-    </div>
+    </Cluster>
   );
 }

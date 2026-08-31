@@ -130,7 +130,7 @@ export type SceneElementPayload = z.infer<typeof SceneElementPayloadSchema>;
  * The FLOOR keeps exactly one element kind of its own — `portal` ({@link PortalPayloadSchema}),
  * which is ADDRESSING rather than content: the projection of one container inside another, and
  * therefore A4's business rather than any plugin's. It is not an exception to neutrality, it is
- * what neutrality leaves behind: a kind no plugin contributes, named by a canon word (AXIOMS.md
+ * what neutrality leaves behind: a kind no plugin contributes, named by a canon word (REGISTRY.md
  * §Lexicon), whose payload the floor validates because the floor is its owner.
  */
 export const SceneElementSchema = z
