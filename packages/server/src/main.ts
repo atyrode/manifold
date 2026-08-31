@@ -81,15 +81,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     because both consult it: the session gateway pushes the roster and refuses terminal
     creation for a disabled terminals plugin, and the HTTP app serves the action door.
    */
-  const plugins = new PluginHost(
-    SERVER_PLUGIN_DEFS,
-    store,
-    auth,
-    rooms,
-    broker,
-    runtime,
-    logger,
-  );
+  const plugins = new PluginHost(SERVER_PLUGIN_DEFS, store, auth, rooms, broker, runtime, logger);
   const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
   const machines = new MachineGateway(
     auth,

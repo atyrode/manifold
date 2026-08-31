@@ -54,9 +54,7 @@ export const PresencePayloadSchema = z.strictObject({
    * it from every client payload, so a peer cannot forge a request to hijack a viewport
    * and every spotlight carries the authority check the action performed.
    */
-  spotlight: z
-    .strictObject({ uri: z.string().min(1).max(512), from: z.string().min(1) })
-    .nullish(),
+  spotlight: z.strictObject({ uri: z.string().min(1).max(512), from: z.string().min(1) }).nullish(),
 });
 export type PresencePayload = z.infer<typeof PresencePayloadSchema>;
 

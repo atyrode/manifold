@@ -9,7 +9,7 @@ manifold has three planes and each one has a rule (the plane rule, `AXIOMS.md` �
 legality or effect depends on state the actor cannot see, or authority it does not hold →
 **action**; a per-element edit whose worst-case merge a human accepts → **document** (Yjs);
 state that dies with the connection → **presence**. Continuous streams — PTY I/O, cursor
-motion, live drags — stay channel traffic, and an action fires at the *commit point* of a
+motion, live drags — stay channel traffic, and an action fires at the _commit point_ of a
 gesture, never per frame.
 
 There is a gap those three do not cover: "something happened that a plugin wants to know
@@ -34,7 +34,7 @@ A fourth plane — **events** — with the following normative shape.
 1. **The engine emits; plugins do not.** Events are emitted by the engine at the doors it
    already owns: action dispatch, placement, node lifecycle, and roster change. A plugin
    declares the event kinds it originates via `contributes.events`, but the emission happens
-   when the plugin's *action* runs at the door, not by a plugin calling an emit API from
+   when the plugin's _action_ runs at the door, not by a plugin calling an emit API from
    anywhere in its code. Emission points are therefore auditable by reading the doors.
 2. **Topics are nodes.** A topic is a `manifold://` URI. There is no separate topic namespace,
    no string convention, no wildcard grammar to invent — the addressing algebra already exists
@@ -45,7 +45,7 @@ A fourth plane — **events** — with the following normative shape.
    `subscribe` client frame and an `event` server frame, in the connection/channel frame
    categories the roster frame pioneered in wave 1. No new socket, no new endpoint, no new
    reconnect state machine; the SDK's one pool keeps owning dial, keepalive, and rejoin.
-4. **An event never mutates.** An event is a notification. A plugin that wants to *do*
+4. **An event never mutates.** An event is a notification. A plugin that wants to _do_
    something in response calls an action, which goes through the door, which performs the
    authority check, which emits the next event. **RPC-over-pubsub is banned**: no
    request/response correlation over events, no "command topics", no handler whose contract is

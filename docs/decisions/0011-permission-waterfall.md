@@ -18,7 +18,7 @@ human in this room may read but not write", "this share is a subtree of that pad
 another instance". It also cannot express a denial, only the absence of a grant.
 
 The plugin engine (ADR 0010) intersects a caller's capabilities with an action's declared
-capabilities at the door. That intersection is orthogonal to *where* the caller's capabilities
+capabilities at the door. That intersection is orthogonal to _where_ the caller's capabilities
 come from and survives this change untouched. What changes is the left-hand side of the
 intersection: a flat token cap set becomes an evaluated, node-relative cap set.
 
@@ -57,7 +57,7 @@ type Grant = {
 };
 ```
 
-A grant is data. It names *who*, *where*, *what*, *allow or deny*, and *how far down*. It never
+A grant is data. It names _who_, _where_, _what_, _allow or deny_, and _how far down_. It never
 names an action: actions declare the capabilities they need, grants grant capabilities, and the
 two meet at the door.
 

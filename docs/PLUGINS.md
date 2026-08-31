@@ -30,10 +30,10 @@ A plugin is a workspace package under `packages/plugins/<name>`, published as
 {
   "name": "@manifold-plugin/draw",
   "exports": {
-    ".": "./src/index.ts",        // the manifest + action definitions (shared)
+    ".": "./src/index.ts", // the manifest + action definitions (shared)
     "./server": "./src/server.ts", // action handlers (omit if the plugin has no server half)
-    "./web": "./src/web.tsx"       // panels, sections, element renderers, tools (omit if headless)
-  }
+    "./web": "./src/web.tsx", // panels, sections, element renderers, tools (omit if headless)
+  },
 }
 ```
 
@@ -56,18 +56,18 @@ server validates it with a strict schema (unknown keys are rejected).
 import type { PluginManifest } from "@manifold/protocol";
 
 export const manifest: PluginManifest = {
-  id: "core.draw",                 // /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, max 64 chars
+  id: "core.draw", // /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, max 64 chars
   version: "1.0.0",
   title: "Draw",
   description: "Freehand strokes on the canvas.",
-  capabilities: ["scene:write"],   // the union of everything this plugin's actions may need
+  capabilities: ["scene:write"], // the union of everything this plugin's actions may need
   // essential: true,              // optional; disabling an essential plugin is refused
   contributes: {
-    panels: [],                    // { id, title }        — a workspace tile leaf
-    sections: [],                  // { id, title, order } — a sidebar section
+    panels: [], // { id, title }        — a workspace tile leaf
+    sections: [], // { id, title, order } — a sidebar section
     elements: [{ type: "draw", title: "Drawing" }], // a canvas element kind + its renderer
-    tools: [{ id: "draw", title: "Draw" }],         // a toolbar tool
-    events: [],                    // reserved: the wave-2 event plane (ADR 0012). No consumer yet.
+    tools: [{ id: "draw", title: "Draw" }], // a toolbar tool
+    events: [], // reserved: the wave-2 event plane (ADR 0012). No consumer yet.
   },
   // entry: { web: "...", server: true }, // reserved: dynamic distribution, a later wave
 };
@@ -101,9 +101,9 @@ import { defineAction } from "@manifold/plugin";
 import { z } from "zod";
 
 export const rename = defineAction({
-  name: "rename",                     // LOCAL name; full name is `core.terminals.rename`
+  name: "rename", // LOCAL name; full name is `core.terminals.rename`
   title: "Rename terminal",
-  caps: ["pads:write"],               // MUST be ⊆ manifest.capabilities
+  caps: ["pads:write"], // MUST be ⊆ manifest.capabilities
   input: z.strictObject({ sessionId: z.string().min(1), name: z.string().min(1).max(120) }),
   result: z.strictObject({ sessionId: z.string(), name: z.string() }),
 });
@@ -163,14 +163,14 @@ the placement rule that refused. From a client, `client.action(name, args)` on t
 Dispatch runs one monotonic ladder. The first rule that fires wins, and no later step can
 argue an earlier denial back to allow:
 
-| # | Rule | Fires when |
-| --- | --- | --- |
-| 1 | `unknown_action` | No composed action by that full name. |
-| 2 | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12). |
-| 3 | `forbidden` | The caller's token is **pad-scoped**. Actions are workspace-grade this wave; message is `scoped tokens cannot invoke workspace actions`. |
-| 4 | `forbidden` | The caller lacks one of the action's declared caps. |
-| 5 | `invalid_args` | The payload fails the action's `input` schema. |
-| 6 | `refused` | The handler returned `{ refused }` — a domain refusal, e.g. `essential`. |
+| #   | Rule              | Fires when                                                                                                                               |
+| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `unknown_action`  | No composed action by that full name.                                                                                                    |
+| 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                     |
+| 3   | `forbidden`       | The caller's token is **pad-scoped**. Actions are workspace-grade this wave; message is `scoped tokens cannot invoke workspace actions`. |
+| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                      |
+| 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                           |
+| 6   | `refused`         | The handler returned `{ refused }` — a domain refusal, e.g. `essential`.                                                                 |
 
 Rule 3 is the same precedent as `POST /api/place` and every workspace route. Finer per-node
 scoping arrives with the permission waterfall (`docs/decisions/0011-permission-waterfall.md`);
@@ -184,12 +184,12 @@ This is the question that decides whether you write an action at all. Answer it 
 write code; getting it wrong produces state that one principal can see and another cannot,
 which is the bug class the axioms exist to prevent.
 
-| Plane | Rule | Mechanism |
-| --- | --- | --- |
-| **Action** | Legality or effect depends on state the actor cannot see, or authority it does not hold. | A registered action. `POST /api/actions/:name`. |
-| **Document** | A per-element edit whose worst-case merge outcome a human would accept. | The Yjs scene document. |
-| **Presence** | It dies with the connection. | The presence payload (cursor, selection, viewport, `view`). |
-| **Channel traffic** | A continuous stream — PTY bytes, cursor motion, a live drag. | Existing channel frames or local echo. |
+| Plane               | Rule                                                                                     | Mechanism                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| **Action**          | Legality or effect depends on state the actor cannot see, or authority it does not hold. | A registered action. `POST /api/actions/:name`.             |
+| **Document**        | A per-element edit whose worst-case merge outcome a human would accept.                  | The Yjs scene document.                                     |
+| **Presence**        | It dies with the connection.                                                             | The presence payload (cursor, selection, viewport, `view`). |
+| **Channel traffic** | A continuous stream — PTY bytes, cursor motion, a live drag.                             | Existing channel frames or local echo.                      |
 
 The continuous-stream row has a corollary you must obey: **an action fires at the commit point
 of a gesture, never per frame.** Dragging a workspace divider paints locally for every pointer
@@ -221,7 +221,7 @@ import { manifest } from "./index";
 export const webDef = {
   manifest,
   elements: { draw: DrawNode }, // keyed by the element `type` from contributes.elements
-  tools: { draw: DrawTool },    // keyed by the tool id
+  tools: { draw: DrawTool }, // keyed by the tool id
 };
 ```
 
@@ -237,7 +237,7 @@ disappears and existing strokes render as placeholders, live, without a reload.
   by the same `TileTree` component that renders a pad. One tree vocabulary everywhere.
 - **`sections`** are rows in the sidebar stack, ordered by the manifest's `order` field. There
   is no user-visible section-order setting to read and no hardcoded section list to edit; the
-  manifests *are* the order.
+  manifests _are_ the order.
 - **`tools`** appear in the canvas toolbar.
 
 ### Host services
@@ -245,13 +245,17 @@ disappears and existing strokes render as placeholders, live, without a reload.
 A panel or section component receives exactly one prop:
 
 ```ts
-interface PanelProps   { host: HostServices }
-interface SectionProps { host: HostServices }
+interface PanelProps {
+  host: HostServices;
+}
+interface SectionProps {
+  host: HostServices;
+}
 
 interface HostServices {
-  client: SessionHandle;              // the SDK surface: action(), place(), machines(),
-                                      // padTree(), padPresence(), terminals()
-  navigate(uri: string): void;        // a manifold:// URI, or an app path
+  client: SessionHandle; // the SDK surface: action(), place(), machines(),
+  // padTree(), padPresence(), terminals()
+  navigate(uri: string): void; // a manifold:// URI, or an app path
   viewport: PadViewportHandle | null; // null until a pad view is mounted
 }
 
@@ -304,7 +308,7 @@ It either produces a roster or throws a `CompositionError` naming every offender
 - **Disabled and unknown contributions render inert placeholders that name the plugin** — on
   canvases and in the workspace tree alike. A placeholder in the workspace tree carries a
   remove control that commits the pruned layout. Disabling a plugin must never brick a
-  surface, and layout writes referencing an unknown panel are *accepted* for exactly this
+  surface, and layout writes referencing an unknown panel are _accepted_ for exactly this
   reason.
 - **Disabling kills creation and administration, never cleanup.** Disabling `core.terminals`
   refuses new terminal opens and its administrative actions, but existing sessions stay
@@ -315,7 +319,7 @@ It either produces a roster or throws a `CompositionError` naming every offender
 ## 7. What the gate checks
 
 `bun run verify:axioms` runs in `bun run gate`. It has a static half and a browser half; these
-are the checks that will fail *your* plugin:
+are the checks that will fail _your_ plugin:
 
 - Both composition files compose without a `CompositionError`, and every panel id referenced by
   the default workspace layout exists.

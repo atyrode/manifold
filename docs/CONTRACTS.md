@@ -115,36 +115,36 @@ real origins without re-keying anything (`AXIOMS.md` §Roadmap).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                        | Auth cap              | Req → Res                                                                                                                                                       |
-| ---------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                       |
-| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                  |
-| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                                      |
-| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                                         |
-| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                                  |
-| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                                     |
-| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                                          |
-| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                                 |
-| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                       |
-| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                                  |
-| POST /api/actions/:name            | per action (declared)  | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door             |
-| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                                 |
-| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                               |
-| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
-| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                                       |
-| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                                         |
-| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                                     |
-| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                                 |
-| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                                             |
-| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                                         |
-| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                                    |
-| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                                        |
-| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                                              |
-| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                                       |
-| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                                    |
-| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash                   |
-| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                                            |
-| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                                              |
+| Method+Path                        | Auth cap              | Req → Res                                                                                                                                      |
+| ---------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                      |
+| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                         |
+| GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                     |
+| GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                        |
+| POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                 |
+| GET /api/pads/:id                  | pads:read             | → `{ pad }`                                                                                                                                    |
+| PATCH /api/pads/:id                | pads:write            | `{ name }` → `{ pad }`                                                                                                                         |
+| DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                |
+| DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
+| POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                 |
+| POST /api/actions/:name            | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
+| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                      |
+| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                    |
+| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
+| GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                      |
+| GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                        |
+| GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                    |
+| PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                |
+| POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                            |
+| PATCH /api/pad-folders/:id         | pads:write            | `{ name }` → `{ items: PadTreeItem[] }`                                                                                                        |
+| DELETE /api/pad-folders/:id        | pads:write            | → `{ items: PadTreeItem[] }`                                                                                                                   |
+| GET /api/pad-sessions              | pads:read             | → `{ sessions: [{id,padId,machineId,createdAt,status,exitCode}] }`, `padId` = the home; scoped tokens see only their pad                       |
+| POST /api/principals               | `*` (owner bootstrap) | `{ name, color?, kind? }` → `{ principal, token }` (token caps `["*"]` for humans)                                                             |
+| POST /api/tokens                   | tokens:mint           | `{ principal: {kind,name,color?} \| principalId, caps, padId? }` → `{ token, principal }`                                                      |
+| POST /api/tokens/revoke            | tokens:mint           | `{ principalId }` → `{ ok }`                                                                                                                   |
+| POST /api/machines                 | machines:mint         | `{ name, rotateToken? }` → `{ machine: {id, name}, machineToken? }` — idempotent by name; raw token returned exactly once, DB stores the hash  |
+| GET /api/machines                  | pads:read             | → `{ machines: [{id,name,online}] }`                                                                                                           |
+| GET /api/introspect                | `*`                   | → live rooms/sessions/machines/principals snapshot                                                                                             |
 
 `PadTreeItem` is either `{ kind:"pad", pad:{ id, name, createdAt }, parentId:
 string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
@@ -355,14 +355,14 @@ learns every door from one unauthenticated read.
 object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
 stops at the first rule that fires:
 
-| Order | `rule`            | Fires when                                                                                                                                    |
-| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `unknown_action`  | no composed action carries that name                                                                                                          |
+| Order | `rule`            | Fires when                                                                                                                                                                     |
+| ----- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | `unknown_action`  | no composed action carries that name                                                                                                                                           |
 | 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant) |
-| 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave |
-| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                          |
-| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                    |
-| 6     | `refused`         | the handler refused on domain grounds and named the reason (e.g. `essential`)                                                                  |
+| 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave                                |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                          |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                     |
+| 6     | `refused`         | the handler refused on domain grounds and named the reason (e.g. `essential`)                                                                                                  |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A

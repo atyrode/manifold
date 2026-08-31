@@ -158,11 +158,7 @@ export class PluginHost {
     return outcome;
   }
 
-  private async run(
-    auth: AuthContext,
-    fullName: string,
-    rawArgs: unknown,
-  ): Promise<ActionOutcome> {
+  private async run(auth: AuthContext, fullName: string, rawArgs: unknown): Promise<ActionOutcome> {
     const entry = this.composed.actions.get(fullName);
     if (entry === undefined) {
       return {

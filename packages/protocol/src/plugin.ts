@@ -45,7 +45,10 @@ const TitleSchema = z.string().min(1).max(64);
  * element renderers keyed by wire type, `tools` are toolbar tools.
  */
 const ContributesSchema = z.strictObject({
-  panels: z.array(z.strictObject({ id: LocalNameSchema, title: TitleSchema })).max(8).default([]),
+  panels: z
+    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
+    .max(8)
+    .default([]),
   sections: z
     .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema, order: z.number().int() }))
     .max(8)
@@ -54,9 +57,15 @@ const ContributesSchema = z.strictObject({
     .array(z.strictObject({ type: z.string().min(1).max(32), title: TitleSchema }))
     .max(8)
     .default([]),
-  tools: z.array(z.strictObject({ id: LocalNameSchema, title: TitleSchema })).max(8).default([]),
+  tools: z
+    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
+    .max(8)
+    .default([]),
   /** reserved: event plane, wave 2 (ADR 0012); no wave-1 consumer */
-  events: z.array(z.strictObject({ id: LocalNameSchema, title: TitleSchema })).max(16).default([]),
+  events: z
+    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
+    .max(16)
+    .default([]),
 });
 
 export const PluginManifestSchema = z.strictObject({

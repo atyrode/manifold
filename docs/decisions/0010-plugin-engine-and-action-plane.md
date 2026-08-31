@@ -22,7 +22,7 @@ before deciding. Evidence one-liners, each from the pinned reads recorded in the
   Composition is a data file of ~90 declarative rows addressed by stable `id`
   (`packages/bundle/base/cordis.patch.yml`), which is why its roster can be diffed and
   published — but its dynamic packages are "session-scoped and process-local", and authority
-  is a *mount-time* composition fact (`disabled: true` rows, `tools.restrict()` bound at
+  is a _mount-time_ composition fact (`disabled: true` rows, `tools.restrict()` bound at
   registration), so presence in the tree implies permission. Copy the data-addressed roster;
   refuse mount-time authority, because a plugin mounted for the owner would then be reachable
   by a scoped guest token. Its manifest also interpolates `!!js` expressions at boot —
@@ -39,7 +39,7 @@ before deciding. Evidence one-liners, each from the pinned reads recorded in the
   only one where core really loads through the extension path (97 directories under
   `extensions/`, same manifest + `contributes` machinery), and its one id-addressable
   `CommandsRegistry` is the shape worth copying — but `ICommandHandler` carries no caller
-  identity, and `enablement` predicates are explicitly *not* an authority check ("does not
+  identity, and `enablement` predicates are explicitly _not_ an authority check ("does not
   prevent executing the command by other means"). Obsidian hands plugins live `HTMLElement`s
   from a manifest with zero contribution declarations, so every contribution is invisible to
   every other principal by construction. Zed has the best permission primitive — declare in
@@ -70,7 +70,7 @@ pretence of one.
    capabilities; arguments and results are zod-schema'd and JSON-serializable; no host
    internals appear in a plugin signature (a plugin sees `HostServices`, never the store, the
    room map, or the broker). An isolated runner for untrusted third-party code can therefore
-   be added later *behind the same manifest*, without redesigning the contract — the seam is
+   be added later _behind the same manifest_, without redesigning the contract — the seam is
    reserved, not built.
 4. **The action envelope reuses the placement precedent.** `POST /api/actions/:name` returns
    an `ActionOutcome` — `{ ok: true, result }` or `{ ok: false, denial: { rule, message } }` —
@@ -91,12 +91,12 @@ now law too: any pattern that is not manifold-specific gets a named library eval
 candidates, code and maintenance saved, opinionation cost — recorded in the owning decision
 before it is hand-rolled. This wave adds **no** runtime dependency. The verdicts:
 
-| Pattern | Verdict | Reasoning |
-| --- | --- | --- |
-| Composition registry (`composeRoster`, uniqueness, cap-superset checks) | **Hand-rolled**, over a `zod`-driven generic registry | The rules are manifold-specific (caps ⊆ manifest caps, panel/element/tool id uniqueness across plugins, essential-flag semantics) and the implementation is tens of lines. `zod` is already the schema authority and validates the manifest itself; wrapping the *rules* in a schema DSL would add indirection without removing code. |
-| Action envelope | **Placement-precedent shape**; JSON-RPC 2.0 evaluated and **rejected** | JSON-RPC brings request `id` correlation, a `jsonrpc` version field, batch semantics, and a numeric error-code space. HTTP-per-action already correlates by request, versions by `PROTOCOL_VERSION`, and names denials by rule. The machinery would be pure ceremony, and it would create a second refusal vocabulary beside `placement_denied` — an invariant 14 violation on day one. |
-| Import-boundary enforcement in `verify:axioms` | **`typescript` package's parser** (`ts.createSourceFile`, walk import and export-from specifiers); regex over source is **banned** | `typescript` is already a devDependency. A regex cannot see type-only imports, multi-line specifiers, or re-exports, so a regex gate is a gate that lies. |
-| `manifold://` URI parsing | **Hand-rolled** over WHATWG `URL` | `URL` mis-parses custom hierarchical schemes (non-special schemes do not populate `host`/`pathname` the way `http:` does). Percent-encoding still comes from the standard library (`encodeURIComponent`/`decodeURIComponent`); only the grammar walk is ours. |
+| Pattern                                                                 | Verdict                                                                                                                            | Reasoning                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Composition registry (`composeRoster`, uniqueness, cap-superset checks) | **Hand-rolled**, over a `zod`-driven generic registry                                                                              | The rules are manifold-specific (caps ⊆ manifest caps, panel/element/tool id uniqueness across plugins, essential-flag semantics) and the implementation is tens of lines. `zod` is already the schema authority and validates the manifest itself; wrapping the _rules_ in a schema DSL would add indirection without removing code.                                                   |
+| Action envelope                                                         | **Placement-precedent shape**; JSON-RPC 2.0 evaluated and **rejected**                                                             | JSON-RPC brings request `id` correlation, a `jsonrpc` version field, batch semantics, and a numeric error-code space. HTTP-per-action already correlates by request, versions by `PROTOCOL_VERSION`, and names denials by rule. The machinery would be pure ceremony, and it would create a second refusal vocabulary beside `placement_denied` — an invariant 14 violation on day one. |
+| Import-boundary enforcement in `verify:axioms`                          | **`typescript` package's parser** (`ts.createSourceFile`, walk import and export-from specifiers); regex over source is **banned** | `typescript` is already a devDependency. A regex cannot see type-only imports, multi-line specifiers, or re-exports, so a regex gate is a gate that lies.                                                                                                                                                                                                                               |
+| `manifold://` URI parsing                                               | **Hand-rolled** over WHATWG `URL`                                                                                                  | `URL` mis-parses custom hierarchical schemes (non-special schemes do not populate `host`/`pathname` the way `http:` does). Percent-encoding still comes from the standard library (`encodeURIComponent`/`decodeURIComponent`); only the grammar walk is ours.                                                                                                                           |
 
 Standing duties recorded here so they are not forgotten: ADR 0011 must evaluate `casbin` and
 `CASL` before the permission-waterfall evaluator is hand-built; ADR 0012 must evaluate small
@@ -118,7 +118,7 @@ transport libraries before extending the WebSocket stack.
   problem, not an architecture problem, and it is scheduled as its own wave in `AXIOMS.md`
   §Roadmap.
 - **Mount-time authority (the DeepSeek model).** Withdrawing a capability by editing the
-  composition collapses *mounted* into *allowed*. manifold's authority is per principal and
+  composition collapses _mounted_ into _allowed_. manifold's authority is per principal and
   per request; enable/disable is a composition question, permission is a door question, and
   the two must never be the same lever.
 - **A privileged core beside a plugin API (the Pi and Zed model).** A closed union plus a
