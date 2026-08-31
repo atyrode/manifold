@@ -14,7 +14,8 @@ bun test packages      # unit tests (zero external services)
 bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint
 bun run format         # prettier
-bun run gate           # all of the above + verify:convergence; green before any push
+bun run gate           # all of the above + verify:convergence + verify:axioms; green
+                       # before any push
 bun run changelog:check # generated in-app release history matches CHANGELOG.md
 bun run release -- minor # bump, finalize, verify, tag, push, publish GitHub release
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
@@ -71,10 +72,16 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
 | `packages/agent`    | manifold-agent daemon: owns PTYs (`Bun.Terminal`), dials out to the server, survives server restarts.                    |
 | `packages/web`      | Vite + React 19 + React Flow canvas + xterm terminals + presence UI.                                                     |
 | `packages/testkit`  | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                          |
+| `packages/plugin`    | the plugin engine: manifest/action definitions, composition and its named refusals, host contracts, the default workspace layout.                    |
+| `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `composition.ts` files, live at `GET /api/plugins` — never a prose list. |
 
-`docs/CONTRACTS.md` is the integration authority (endpoints, envs, state machines,
-persistence). `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records dated
-technology verdicts with evidence.
+`AXIOMS.md` is the constitution: the five axioms, the plane rule, the machine-readable
+floor and device-local registries, and the ratified wave roadmap. It — not this file —
+decides which code is foundation and which is plugin territory, and `bun run verify:axioms`
+enforces that answer; never restate the boundary here. `docs/CONTRACTS.md` is the
+integration authority (endpoints, envs, state machines, persistence). `docs/PLUGINS.md` is
+the plugin authoring guide. `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records
+dated technology verdicts with evidence.
 
 ## Invariants (violations are bugs, not style)
 
@@ -118,6 +125,30 @@ technology verdicts with evidence.
     second "remote flavor" of an existing behavior (own styling, own state derivation, own
     fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
     2026-08-30 shipped exactly that way and was operator-caught.
+12. **Everything above the floor is a plugin** (axiom A1): the floor registry in `AXIOMS.md`
+    is the authority on what is foundation, and a file that crosses that boundary is a
+    registry edit in the SAME commit as the code. A feature lands as a package under
+    `packages/plugins/*` with a manifest — never as a new branch in the shell. Every mutating
+    affordance carries `data-action="<action name>"`, so the DOM names the door it opens.
+    Contributions collide loudly: duplicate plugin ids, action names, panel ids, element types
+    or tool ids fail composition naming every offender, and nothing ever shadows anything.
+    Floor files never import `@manifold-plugin/*`; the two `composition.ts` registration files
+    are the only exceptions.
+13. **Every discrete mutation is a registered action or documented plane traffic** (the plane
+    rule, `AXIOMS.md` §Axioms): an ACTION when legality or effect depends on state the actor
+    cannot see or authority it does not hold; a DOCUMENT edit when the worst-case merge is one
+    a human accepts; PRESENCE when it dies with the connection. Continuous streams (PTY I/O,
+    cursor motion, live drags) stay channel traffic, and an action fires at the COMMIT POINT of
+    a gesture, never per frame. State that reaches no plane is a bug unless it is listed in the
+    `AXIOMS.md` device-local register. `manifold://` is the canonical reference form for
+    anything addressable — grants, spotlights, `/api/resolve` and deep links all speak it, and
+    structured wire forms are its bijection, not a second address system.
+14. **One door per concept**: every concept has exactly one authoritative implementation and
+    every consumer goes through it. A second parallel implementation of an existing concept —
+    a second placement executor, a second WebSocket state machine, a second list of which
+    plugins exist, a second way to rename a terminal — is a bug, not a style choice. When a
+    concept genuinely needs a NEW door, the old one is deleted in the same change: no aliases,
+    no dual paths, no fallback readers.
 
 ## Conventions
 
@@ -133,4 +164,5 @@ technology verdicts with evidence.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
-  `sdk:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is green.
+  `sdk:`, `plugin:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is
+  green.

@@ -55,13 +55,16 @@ canvases, compositions, and the terminals that live in them are rows of the same
 (titled "Views"), with folders over all three, because a pad and a composition are lenses on
 one object and a row's glyph carries the difference. A solo composition wears its terminal's
 name, mark and actions — a composition of one IS the item it holds — and renaming that row
-renames the TERMINAL. Sections (`views`, `machines`, views first) are uniform collapsible
-shells in a user-reorderable stack. Folder membership and tree order are durable server
-state; section order (`manifold:sidebar-section-order`), per-section collapse
-(`manifold:sidebar-section-collapsed`), session-tree visibility, and sidebar width
-(`manifold:sidebar-width`) are device-local presentation state. The server SPA-fallbacks
-every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL fragment is
-reserved for `#key=<owner-key>` bootstrap and is stripped by the client after storing it.
+renames the TERMINAL. The sidebar is itself a plugin panel (`core.shell.sidebar`) and its
+sections are manifest contributions — each plugin declares
+`sections: [{ id, title, order }]` — so the stack's ORDER is workspace vocabulary rather
+than device memory. Folder membership and tree order are durable server state; sidebar WIDTH
+is the workspace layout's root ratio (`core.layout.set`), collapse is presence
+(`view.sidebarCollapsed`, with a device-local mirror for first paint), and session-tree
+visibility plus folder expansion stay device-local (`AXIOMS.md` §Device-local register). The
+server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
+fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
+storing it.
 
 Canvas resize affordances differ by element on purpose. A canvas widget is a window: a
 portal's frame border is a grab zone under the select tool (the same 8px edges and 14px
@@ -84,18 +87,38 @@ and produces negative geometry that the commit path then rejects.
   token.
 - **Owner key** = hex-64 secret; acts as a token with cap `*`. Generated on first boot.
 - Caps: `*`, `pads:read`, `pads:write`, `scene:write`, `terminal:spawn`, `terminal:write`,
-  `tokens:mint`, `machines:mint`. Reads of scene/presence come with `pads:read`.
-  `terminal:write` covers input+resize+kill+take on sessions in scope.
+  `tokens:mint`, `machines:mint`, `plugins:manage`. Reads of scene/presence come with
+  `pads:read`. `terminal:write` covers input+resize+kill+take on sessions in scope.
+  `plugins:manage` authorizes plugin administration only (`core.plugins.setEnabled`).
 - Token scope: optional `padId` restricts everything to one pad.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
+
+### Authority (planned)
+
+Today's model is flat and stays flat this wave: a token carries a `Cap[]` plus an optional
+`padScope`, and `AuthContext.allows(cap, padId)` answers every authority question. That is
+deliberately the DEGENERATE case of the ratified design in
+`docs/decisions/0011-permission-waterfall.md`, where authority is a waterfall of grants on
+the node tree — `{ principal | class, node: "manifold://…", caps, effect, reach }` evaluated
+root→node, deeper beating shallower, `deny` beating `allow` at equal specificity. Today's cap
+array is a synthesized root grant; today's `padScope` is a subtree grant at
+`manifold://pad/<id>`; a share will be a minted token bound to a subtree grant.
+`packages/server/src/auth.ts` is the tagged evaluator seam (`AXIOMS.md` floor registry): the
+evaluator replaces ONE call surface and the action door's declared-capability intersection
+sits unchanged on top of it.
+
+Principals reserve a future `origin` notion — which instance a principal belongs to — for
+cross-instance sharing. Wave 1 writes no such field, and the SDK's channel pool is
+conceptually keyed by `(origin, padId)` with origin fixed to this instance, so wave 3 supplies
+real origins without re-keying anything (`AXIOMS.md` §Roadmap).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
 | Method+Path                        | Auth cap              | Req → Res                                                                                                                                                       |
 | ---------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET /healthz                       | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                       |
-| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary                                                                           |
+| GET /api/protocol                  | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                  |
 | GET /api/pads                      | pads:read             | → `{ pads: Pad[] }`, `Pad { id, name, createdAt, layout }`                                                                                                      |
 | GET /api/pad-presence              | pads:read             | → `{ pads: [{padId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their pad                                                         |
 | POST /api/pads                     | pads:write            | `{ name, layout? }` → `{ pad }` (`layout` defaults `"canvas"`)                                                                                                  |
@@ -104,10 +127,12 @@ and produces negative geometry that the commit path then rejects.
 | DELETE /api/pads/:id               | `*`                   | → `{ ok }`; sweeps every reference to the container, then every PTY homed in it                                                                                 |
 | DELETE /api/pads/:id/tiles/:tileId | pads:write            | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                       |
 | POST /api/place                    | pads:write            | `PlaceRequest` → `PlaceResponse`, or 409 `placement_denied` carrying the rule that refused. THE placement door                                                  |
+| POST /api/actions/:name            | per action (declared)  | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door             |
+| GET /api/plugins                   | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Pad-scoped tokens included: the roster is vocabulary                                 |
+| GET /api/layout                    | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                               |
+| GET /api/resolve?uri=              | pads:read             | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
 | GET /api/containers                | pads:read             | → `{ containers: ContainerCensus[] }` — what every container holds and points at; the index's whole input                                                       |
 | GET /api/terminals                 | pads:read             | → `{ terminals: [{id,machineId,name,createdAt,status,exitCode,homeId,unplaced}] }` — every terminal, `unplaced` derived                                         |
-| PATCH /api/terminals/:id           | pads:write            | `{ name }` → `{ ok }`; broadcasts `session_event { kind:"renamed" }` into the home                                                                              |
-| DELETE /api/terminals/:id          | pads:write            | → `{ ok }` (kill): the session, its home, and every portal onto that home, at once. 404 only when no such terminal exists — an exited one is swept the same way |
 | GET /api/pad-tree                  | pads:read             | → `{ items: PadTreeItem[] }`; scoped tokens receive only their pad and its ancestor folders                                                                     |
 | PUT /api/pad-tree                  | pads:write            | `{ item: {kind:"pad",id} \| {kind:"folder",id}, parentId: string \| null, index }` → `{ items: PadTreeItem[] }`                                                 |
 | POST /api/pad-folders              | pads:write            | `{ name, parentId? }` (default `null`) → `{ items: PadTreeItem[] }`                                                                                             |
@@ -125,10 +150,15 @@ and produces negative geometry that the commit path then rejects.
 string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name, createdAt,
 parentId: string|null, sortOrder: nonnegative integer }`. A pad-tree move's `item` is exactly
 `{ kind:"pad", id }` or `{ kind:"folder", id }`, and `index` is a nonnegative integer.
-Every WORKSPACE-WIDE route rejects pad-scoped tokens even when they hold the cap: pad-tree
-organization (`PUT /api/pad-tree` and folder create/rename/delete), the terminal index and
-its mutations, the container census, `POST /api/place`, and leaf removal. A placement moves
-items between containers, so a token scoped to one container can never authorize it.
+Every WORKSPACE-WIDE door rejects pad-scoped tokens even when they hold the cap: pad-tree
+organization (`PUT /api/pad-tree` and folder create/rename/delete), the terminal index, the
+container census, `POST /api/place`, leaf removal, and — this wave — every action
+(`POST /api/actions/:name` refuses `padScope !== null` with denial `forbidden`, message
+"scoped tokens cannot invoke workspace actions"). A placement moves items between containers,
+so a token scoped to one container can never authorize it; finer per-node scoping arrives with
+the permission waterfall (§Authority (planned)). `GET /api/plugins` and `GET /api/layout` are
+the two exceptions by construction: the roster is global vocabulary, and a layout read is
+self-scoped.
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
@@ -275,14 +305,15 @@ anybody.
   because there is nowhere else to be.
 - **Reaping, and the ONE lifecycle predicate.** A terminal stops in exactly one of two ways,
   and the whole difference is INTENT.
-  - **KILLED** — somebody asked for it: `terminal_kill`, `DELETE /api/terminals/:id`, or
-    `DELETE /api/pads/:id/tiles/:tileId` on its last leaf. All three are one write: the PTY,
-    the session row, every leaf its home held for it, and — when the terminal was the last
-    thing its home held — the home itself plus EVERY portal onto that home, on every canvas,
-    whether or not anybody has it open. Nothing lingers, so there is no exited row to find
-    afterwards and no exit code to report, because nothing is left to report it on. The tile
-    door is the one tile gesture that is NOT a placement (nothing accepts "nowhere" as a
-    destination for a LEAF); a note's leaf is its only placement, so its element goes with it.
+  - **KILLED** — somebody asked for it: `terminal_kill`, the action
+    `core.terminals.kill { sessionId }`, or `DELETE /api/pads/:id/tiles/:tileId` on its last
+    leaf. All three are one write: the PTY, the session row, every leaf its home held for it,
+    and — when the terminal was the last thing its home held — the home itself plus EVERY
+    portal onto that home, on every canvas, whether or not anybody has it open. Nothing
+    lingers, so there is no exited row to find afterwards and no exit code to report, because
+    nothing is left to report it on. The tile door is the one tile gesture that is NOT a
+    placement (nothing accepts "nowhere" as a destination for a LEAF); a note's leaf is its
+    only placement, so its element goes with it.
   - **EXITED** — the PTY stopped on its own. That is INFORMATION, so nothing at all is
     deleted: the row keeps its REAL exit code (`null` only when none was observed, e.g. an
     agent-disconnected exit), its home keeps its leaf, and every portal onto that home keeps
@@ -301,14 +332,109 @@ anybody.
   PTY still homed in it, then drops its room and row. A reference never outlives what it
   references, which is why a widget pointing at nothing is not a state this server can reach.
 
+## Plugins, actions, and the workspace layout
+
+Everything above the foundation floor is a plugin (`AXIOMS.md` axiom A1); this section is what
+the packages promise each other about that. Composition happens twice from the same manifests —
+`packages/server/src/composition.ts` registers server halves, `packages/web/src/composition.ts`
+web halves — and both run `composeRoster` from `@manifold/plugin`, which refuses duplicate
+plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
+Manifests are inert DATA: no executable fields, with `entry` and the roster's `source` reserved
+for the later dynamic-distribution wave. Plugins are trusted in-process code today (ADR 0010);
+the wire is the security boundary and every authority decision happens at a door.
+
+**The roster.** `GET /api/plugins` returns one entry per composed plugin
+`{ manifest, enabled, source: "builtin", actions: ActionSummary[] }`, each summary carrying
+`{ name, title, caps, input, result }` with input/result as JSON Schemas generated from the zod
+definitions. `GET /api/protocol` embeds the same vocabulary beside the wire schemas, so an agent
+learns every door from one unauthenticated read.
+
+**The action door.** `POST /api/actions/:name`, where `:name` is the FULL action name
+`<pluginId>.<local>` (e.g. `core.terminals.rename`). The body is the action's own argument
+object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
+stops at the first rule that fires:
+
+| Order | `rule`            | Fires when                                                                                                                                    |
+| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `unknown_action`  | no composed action carries that name                                                                                                          |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace                                                                                               |
+| 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                          |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                    |
+| 6     | `refused`         | the handler refused on domain grounds and named the reason (e.g. `essential`)                                                                  |
+
+Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
+facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
+handler's result is validated against the action's `result` schema; a mismatch is a server fault
+(500), never a denial. Every dispatch emits one structured log line (`evt:"action"`).
+
+**Enablement is workspace-global and hot.** `core.plugins.setEnabled { id, enabled }` (cap
+`plugins:manage`) flips a server-persisted flag (`meta` key `plugins:disabled`, a JSON array of
+ids) and the server pushes the new roster to every open socket; clients rebuild live, with no
+reload. A manifest may declare `essential: true`, and disabling it is refused (`refused`, message
+`essential`) — wave 1 marks only `core.shell`. Composition KEEPS a disabled plugin's
+contributions in its registries and reflects the disabled set only in `roster[].enabled` and
+`composition.enabled(id)` (false for unknown ids too): that is what lets the ladder tell
+`plugin_disabled` from `unknown_action`, and lets a placeholder NAME the plugin it is standing
+in for. Manifest, capability-subset and uniqueness validation runs across every registered
+plugin whether enabled or not, so disabling can never mask a collision. A disabled or unknown
+contribution renders an inert placeholder, on canvases and in the workspace tree alike.
+
+**Disable semantics: creation and administration die, cleanup survives.** Disabling
+`core.terminals` refuses new `terminal_open` over the session channel
+(`error { code:"forbidden" }`, "terminals plugin disabled") and refuses its administrative
+actions, but attach/detach/input and `terminal_kill` on EXISTING sessions keep working: a user is
+never locked out of removing something that already exists. Every plugin that creates durable
+things follows that shape.
+
+**Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
+`layout:<principalId>` and read at `GET /api/layout` (`DEFAULT_WORKSPACE_LAYOUT` when unset). Its
+leaves are `{ kind:"panel", panelId }` surfaces — the shell IS a composition, rendered by the
+same `TileTree` a tiled pad uses, so there is one tree vocabulary everywhere. The ONLY writer is
+`core.layout.set { layout }` (self-targeted; the ladder already refuses pad-scoped tokens), and
+its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf surface is a panel".
+Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
+and those leaves render placeholders whose chrome offers a remove control that commits the pruned
+tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
+frame, ONE `core.layout.set` at the commit point, never one per frame.
+
+**Deleted with this wave, with no aliases and no dual paths:** `PATCH /api/terminals/:id` and
+`DELETE /api/terminals/:id`. Their replacements are the actions
+`core.terminals.rename { sessionId, name }` and `core.terminals.kill { sessionId }`, both cap
+`pads:write` (exactly the routes' own requirement), with the routes' semantics verbatim — the
+rename broadcasts `session_event { kind:"renamed", name }` into the home; the kill sweeps the
+session, its home, and every portal onto that home. `GET /api/terminals` stays. Mutating
+affordances in the DOM carry `data-action="<action name>"`, which is how the gate proves the UI
+and the API share one door.
+
+**`manifold://` addressing.** One canonical serialization of the addressing algebra, bijective
+with the structured wire forms (`parseManifoldUri` / `formatManifoldUri`,
+`packages/protocol/src/uri.ts`). Seven forms; every id segment is percent-encoded:
+
+```
+manifold://pad/<padId>
+manifold://pad/<padId>/element/<elementId>
+manifold://pad/<padId>/tile/<tileId>
+manifold://terminal/<sessionId>
+manifold://principal/<principalId>
+manifold://plugin/<pluginId>
+manifold://action/<actionName>
+```
+
+An unknown scheme or shape parses to `null` — nothing guesses. `GET /api/resolve?uri=` answers
+`ResolveResponse { uri, ref, exists, title }`, the round trip that turns a reference into
+something an agent can name; `/uri/<encoded>` is the browser deep link onto the same grammar.
+Grants, spotlights, and (from wave 2) event topics all name nodes this way.
+
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v12).** One socket per tab, many rooms. Every frame is either
+**Frame grammar (v14).** One socket per tab, many rooms. Every frame is either
 connection-level or channel-level:
 
 ```
 connection-level   client → server  {"type":"ping"}
                    server → client  {"type":"pong"}
+                   server → client  {"type":"plugins","roster":[…]}
 channel-level      both ways        {"ch":"<channelId>","type":"…", …}
 ```
 
@@ -321,6 +447,15 @@ watching preview), so a pad-keyed channel would be an id pun that collides. Live
 property of the socket, so ping/pong carry no `ch`. `@manifold/protocol` publishes each
 frame twice from the same shapes — a channel-less BODY union and the wire union that adds
 `ch` — because a broadcast validates and serializes one body and tags it per peer.
+
+**Connection frames address the SOCKET, not a channel.** `@manifold/protocol` publishes them as
+`CONNECTION_BODIES` beside the channelized `SERVER_BODIES`, and they carry no `ch` because the
+thing they concern is the connection itself. `plugins { roster }` is the first such
+server→client frame: it is delivered once when the socket opens (before any `join`) and again
+whenever the roster changes, which is what makes enable/disable hot for every open tab. The SDK
+pool demultiplexes connection frames to pool-level listeners (`SessionClient.onPlugins`, which
+replays the latest roster to a late subscriber) instead of dropping them as frames for an
+unknown channel.
 
 Handshake: the FIRST client frame on a connection MUST be
 `join { ch, padId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }`; the server
@@ -413,13 +548,15 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   `surface` null) or leaves whose `surface` is `{ kind:"terminal", sessionId }`,
   `{ kind:"pad", padId }` (an embedded canvas — never the container itself), or
   `{ kind:"text", elementId }` (a note the composition's OWN document stores, so placing a
-  note into a composition MOVES the element instead of referencing it across two docs).
-  `validateTileLayout` gates every read: root exists, child references resolve, nothing is
-  reachable twice, ratios stay parallel to children, surfaces sit on leaves only, and a
-  container never tiles itself; unreachable nodes are inert garbage the next structural
-  write prunes. Ratio drags are CRDT writes (`setTileRatios` through the SDK); every
-  STRUCTURAL mutation is HTTP — `POST /api/place` and the one leaf-removal route — applied
-  under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
+  note into a composition MOVES the element instead of referencing it across two docs). The
+  fourth surface kind, `{ kind:"panel", panelId }`, belongs to WORKSPACE layouts only: a room
+  document never carries one, and the placement algebra refuses `panel` items into any
+  container (`not_accepted`). `validateTileLayout` gates every read: root exists, child
+  references resolve, nothing is reachable twice, ratios stay parallel to children, surfaces
+  sit on leaves only, and a container never tiles itself; unreachable nodes are inert garbage
+  the next structural write prunes. Ratio drags are CRDT writes (`setTileRatios` through the
+  SDK); every STRUCTURAL mutation is HTTP — `POST /api/place` and the one leaf-removal
+  route — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
 - **Portal elements.** A canvas record `{ type:"portal", containerId, ...geometry }` renders
   another container in place. This is also how a TERMINAL appears on a canvas: the portal
   points at the composition the session lives in, so one element kind covers both. Nesting
@@ -434,7 +571,21 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 ### Presence (ephemeral, never persisted)
 
 - `presence { payload }` where payload is a partial of
-  `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done" }`.
+  `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done", view: {…} | undefined, spotlight: {…} | null }`.
+- **View state is presence** (axiom A2: per-user view state is observable AND drivable).
+  `view { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed? }` is written by the
+  CLIENT through the same throttled presence writer as every other field and dies with the
+  connection, so a peer can see which tool somebody holds, what they are editing, and whether
+  their sidebar is open. It is descriptive, never authoritative: nothing downstream branches on
+  whose view it renders.
+- **`spotlight { uri, from }` is SERVER-written only.** The server strips `spotlight` from any
+  client payload; the sole writer is the action `core.presence.focus { targetPrincipalId, uri }`
+  (cap `scene:write`), which requires that the target shares a joined room with the caller and
+  that the caller holds `scene:write` on that room, and which is throttled to one per 2s per
+  (caller, target). The recipient's client centers on `uri` with a source chip and a dismiss,
+  and a device-local kill switch (`manifold:ignore-spotlight`) ignores spotlights entirely:
+  driving someone else's view is consented, rate-limited, and attributable, or it does not
+  happen.
 - `cursor { x, y }` is its own high-rate message: clients throttle to
   `CURSOR_MIN_INTERVAL_MS` (16ms) and the server re-applies the same cadence per channel,
   retaining only the newest (latest-wins) and dropping under backpressure. `gesture
@@ -451,8 +602,9 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; tiled
   rooms carry fractions of the view's tile area in `[0,1]²` (ratios are shared CRDT
   state, so a fraction resolves to the same tile for every viewer regardless of window
-  size). Receivers clamp to the unit square. The sidebar is personal chrome — device-local
-  order/collapse/scroll — so it never carries cursors; there is no workspace-level cursor.
+  size). Receivers clamp to the unit square. The workspace shell is not a room: its panels
+  carry no cursors and there is no workspace-level cursor channel. What another principal sees
+  of a peer's shell is the `view` payload above, relayed per room like the rest of presence.
 - Roster: `init.roster` lists occupying principals; server broadcasts
   `roster { joined?, left? }` deltas. Presence for a principal dies with its last channel
   in that room.
@@ -542,10 +694,10 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
   `{ id, machineId, name, createdAt, status, exitCode, homeId, unplaced }`. The pool's
   durable `sort_order` is retired with it: an unplaced terminal's position is its home
   composition's position in the one pad tree.
-- Terminals carry a durable nullable `name` (rename via `PATCH /api/terminals/:id
-{ name }`; the new label broadcasts into the home as `session_event { kind:"renamed", name }`,
-  where every titlebar and index row picks it up without a refetch). Labels everywhere are
-  `name ?? machine name`.
+- Terminals carry a durable nullable `name`, renamed through the action
+  `core.terminals.rename { sessionId, name }` (cap `pads:write`); the new label broadcasts into
+  the home as `session_event { kind:"renamed", name }`, where every titlebar and index row picks
+  it up without a refetch. Labels everywhere are `name ?? machine name`.
 - `output { sessionId, seq, data }` streams to all LIVE viewers; `session_event
 { kind:"exited", exitCode }` on a PTY that stopped ON ITS OWN. Such a terminal stays listed
   (status `exited`, real code) with its leaf and every portal onto its home intact, so the
@@ -561,7 +713,7 @@ controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
 - Session ids are opaque. A session's placements are read from live containers (portal
   elements and tile leaves), never from the session row: one session can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements
-  never reference terminal sessions. Session protocol v12.
+  never reference terminal sessions. Session protocol v14.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
@@ -573,7 +725,7 @@ disconnected; absence is equivalent to `null`. Such exited sessions are retained
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{2…12}` (protocol/version.ts), NOT strict equality:
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{2…14}` (protocol/version.ts), NOT strict equality:
 agents are long-lived and survive server deploys, so every compatible agent version stays
 accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
 new version to the set; a strictly additive-optional change also adds it when every old
@@ -633,7 +785,8 @@ machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
 sessions(id TEXT PK, machine_id TEXT, pad_id TEXT, created_by TEXT, status TEXT,
          exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT)
                             -- pad_id IS the home composition; no element_id, no pool order
-meta(key TEXT PK, value TEXT)                         -- schema_version etc.
+meta(key TEXT PK, value TEXT)                         -- schema_version, plugins:disabled,
+                                                      -- layout:<principalId>
 ```
 
 Schema version 9. A migration is SQL, or CODE when the move is not expressible as SQL:
