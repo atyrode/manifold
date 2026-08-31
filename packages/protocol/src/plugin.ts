@@ -20,11 +20,14 @@ export type PluginId = z.infer<typeof PluginIdSchema>;
  * A contribution's name INSIDE its plugin. Every published name is the pair — an action is
  * `${manifest.id}.${local}` on the wire — so a plugin can never name anything outside its
  * own namespace and a full name always says who owns it.
+ *
+ * Exported because the composition engine validates every action's local name against this
+ * exact rule before it builds a full name: one door per concept, so a local name is legal
+ * here and there or nowhere.
  */
-const LocalNameSchema = z
-  .string()
-  .regex(/^[a-z][a-z0-9-]*$/)
-  .max(32);
+export const LOCAL_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+export const LocalNameSchema = z.string().regex(LOCAL_NAME_PATTERN).max(32);
+export type LocalName = z.infer<typeof LocalNameSchema>;
 
 const TitleSchema = z.string().min(1).max(64);
 

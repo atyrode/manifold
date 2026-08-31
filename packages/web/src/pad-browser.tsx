@@ -7,6 +7,7 @@ import {
   type ItemInstance,
   type TreeInstance,
 } from "@headless-tree/core";
+import { usePolledResource } from "@manifold/plugin/hooks";
 import { DEFAULT_CANVAS_DROP } from "@manifold/protocol";
 import type {
   MachineSummary,
@@ -85,7 +86,6 @@ import {
 import { useToast } from "./toast.tsx";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
-import { usePolledResource } from "./use-polled-resource.ts";
 
 function renderChangelogChange(change: string): ReactNode {
   return parseChangelogReferences(change).map((part, index) =>

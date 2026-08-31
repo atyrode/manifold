@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@headless-tree/core": "1.7.0",
+    "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "@manifold/sdk": "workspace:*",

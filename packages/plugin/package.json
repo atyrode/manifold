@@ -1,0 +1,19 @@
+{
+  "name": "@manifold/plugin",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./hooks": "./src/hooks.ts"
+  },
+  "dependencies": {
+    "@manifold/protocol": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "react": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0"
+  }
+}
