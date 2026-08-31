@@ -73,6 +73,8 @@ export function sameSurface(a: TileSurface, b: TileSurface): boolean {
       return b.kind === "pad" && a.padId === b.padId;
     case "text":
       return b.kind === "text" && a.elementId === b.elementId;
+    case "panel":
+      return b.kind === "panel" && a.panelId === b.panelId;
     default: {
       const exhaustive: never = a;
       return exhaustive;

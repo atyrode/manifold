@@ -1,4 +1,5 @@
 import {
+  CONNECTION_LEVEL_MESSAGE_TYPES,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   reconnectDelayMs,
@@ -26,8 +27,17 @@ export type JoinBody = Extract<ClientMessageBody, { type: "join" }>;
 /** Transport states a channel hears about; its own `open` comes from its own init. */
 export type TransportPhase = "connecting" | "reconnecting";
 
-/** What a room handle can be handed: every frame except the two routing-level ones. */
-export type ChannelFrame = Exclude<ServerMessageBody, { type: "pong" | "channel_closed" }>;
+/**
+ * What a room handle can be handed: every CHANNEL frame. Connection-level frames are
+ * excluded by the protocol's own classification rather than by a hand-kept list, so a new
+ * connection-level category (v14's `plugins` roster was the first with a body) reaches the
+ * pool's own listeners and never a channel that has no idea what to do with it.
+ * `channel_closed` is excluded too: it is this layer's business, not a room's.
+ */
+export type ChannelFrame = Exclude<
+  ServerMessageBody,
+  { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] | "channel_closed" }
+>;
 
 /** What one room handle needs from the socket it shares. */
 export interface ChannelSink {
@@ -328,7 +338,13 @@ class PooledConnection {
 
   /** Demultiplexes one validated frame to the channel that owns it. */
   private route(frame: ServerMessage): void {
-    if (frame.type === "pong") return; // socket liveness, owned here
+    /*
+      Connection-level frames address the SOCKET, never a room, so neither of them has a
+      channel to be routed to: liveness is owned here, and the plugin roster describes the
+      whole workspace. The roster has no subscriber inside the pool yet — the web host is
+      what asks for it — so it is classified and dropped rather than misrouted.
+     */
+    if (frame.type === "pong" || frame.type === "plugins") return;
     const record = this.channels.get(frame.ch);
     if (record === undefined) return; // a frame for a room this tab already released
     if (frame.type === "init" || frame.type === "resync") {

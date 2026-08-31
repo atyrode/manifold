@@ -160,6 +160,11 @@ export function surfaceDisplayLabel(
       const text = lookups.noteText(surface.elementId);
       return text === null ? null : noteTitle(text);
     }
+    case "panel":
+      // A panel's human title lives in the composition, which this module deliberately
+      // cannot see: labelling reads DOCUMENTS, and a panel is not in one. The panel id is
+      // fully qualified, so it is a truthful name rather than a placeholder.
+      return surface.panelId;
     case undefined:
       return null;
     default: {

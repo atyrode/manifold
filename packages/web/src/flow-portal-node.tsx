@@ -519,6 +519,14 @@ function PortalLeaf({
             : null}
         </div>
       );
+    case "panel":
+      /*
+        A widget preview is a window onto a ROOM's tree, and no room's tree holds panels:
+        panels are leaves of a principal's workspace layout, which the shell renders. A
+        panel reaching here is therefore a layout written by something that had no business
+        writing it, so this says exactly that instead of pretending to draw a panel.
+      */
+      return <div className="plugin-placeholder">{surface.panelId}</div>;
     default: {
       const exhaustiveSurface: never = surface;
       return exhaustiveSurface;

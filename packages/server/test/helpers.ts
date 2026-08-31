@@ -136,6 +136,11 @@ function tileSurfaceAsPlacement(surface: TileSurface, padId: string): PlacementS
       return { kind: "pad", padId: surface.padId };
     case "text":
       return { kind: "element", padId, elementId: surface.elementId };
+    case "panel":
+      // No placement surface names a panel: a workspace layout is written whole by
+      // `core.layout.set`, never by the placement door, so a panel leaf cannot be the
+      // subject of a drag this helper translates.
+      throw new Error(`panels are not placement surfaces: ${surface.panelId}`);
     default: {
       const exhaustive: never = surface;
       return exhaustive;

@@ -68,6 +68,12 @@ const ELEMENTS: Readonly<Record<string, PlacementItem>> = {
   "el-portal-solo": { kind: "view", containerId: "solo-1" },
   "el-portal-multi": { kind: "view", containerId: "multi-2" },
   "el-portal-canvas": { kind: "canvas-pad", containerId: "canvas-2" },
+  /**
+   * A panel item, reachable in this world only because the lookup says so: no wire SURFACE
+   * form names a panel (workspace layouts are written whole by `core.layout.set`), and the
+   * matrix still has to be able to ask the algebra what a panel does at every door.
+   */
+  "el-panel": { kind: "panel", containerId: null },
 };
 
 const lookup: PlacementLookup = {
@@ -91,6 +97,7 @@ const SURFACES: Readonly<Record<ItemKind, PlacementSurface>> = {
   text: { kind: "element", padId: "canvas-1", elementId: "el-text" },
   draw: { kind: "element", padId: "canvas-1", elementId: "el-draw" },
   tile: { kind: "tile", containerId: "multi-1", tileId: "t1" },
+  panel: { kind: "element", padId: "canvas-1", elementId: "el-panel" },
 };
 
 /** One destination per declared form, each aimed at a container the item is not. */
@@ -162,6 +169,19 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
     compose: "compose",
     unplaced: "unplace",
   },
+  /*
+    A panel is `tileable` and nothing else: it composes into a tiled container (that is what
+    the workspace shell IS) and a canvas refuses it by GROUP CONTAINMENT — `not_accepted`,
+    decided before any op is consulted, which is why `CANVAS_OPS.panel` is unreachable
+    bookkeeping rather than a rule. `unplaced` refuses it too: a panel is a rendering of a
+    plugin contribution, so there is no object to leave lying around.
+   */
+  panel: {
+    canvas: "not_accepted",
+    tile: "add_tile",
+    compose: "compose",
+    unplaced: "not_accepted",
+  },
 };
 
 const itemKinds = Object.keys(ITEM_KINDS) as ItemKind[];
@@ -209,6 +229,20 @@ describe("placement matrix", () => {
         );
       }
     }
+  });
+
+  test("a panel is refused by a canvas through containment, before any op is consulted", () => {
+    const result = resolvePlacement(SURFACES.panel, DESTINATIONS.canvas, lookup);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // `not_accepted` and nothing else: a panel carries only `tileable`, and a canvas takes
+    // none of the groups it would need. `CANVAS_OPS.panel` exists to keep the table total
+    // and must stay unreachable — the day this denial changes rule, that entry has become a
+    // real rule and has to be reviewed as one.
+    expect(result.denial.rule).toBe("not_accepted" satisfies PlacementDenialRule);
+    expect(result.denial.surface).toEqual(SURFACES.panel);
+    expect(result.denial.container).toEqual({ kind: "canvas", padId: "canvas-1" });
+    expect(CANVAS_OPS.panel).toBe("portal");
   });
 
   test("every op resolution can name is reachable, and only those", () => {
@@ -315,8 +349,8 @@ describe("solo compositions", () => {
 });
 
 describe("placement homing", () => {
-  test("every item kind declares a homing mode drawn from the vocabulary", () => {
-    const modes: readonly string[] = HOMING_MODES;
+  test("every item kind declares a homing mode drawn from the vocabulary, or none at all", () => {
+    const modes: readonly (string | null)[] = [...HOMING_MODES, null];
     for (const declaration of Object.values(ITEM_KINDS)) {
       expect(modes).toContain(declaration.homed);
     }
@@ -329,6 +363,9 @@ describe("placement homing", () => {
     expect(ITEM_KINDS.text.homed).toBe("on-claim");
     // Needs no home: a stroke exists in the document that holds it.
     expect(ITEM_KINDS.draw.homed).toBe("inline");
+    // A panel is a rendering of a plugin contribution, not an object with a document:
+    // there is no composition for it to acquire, so the question does not apply.
+    expect(ITEM_KINDS.panel.homed).toBeNull();
   });
 });
 

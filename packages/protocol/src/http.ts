@@ -3,6 +3,7 @@ import { CapSchema } from "./capabilities.ts";
 import { ContainerLayoutSchema } from "./layout.ts";
 import { ITEM_KIND_NAMES } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
+import { ManifoldRefSchema } from "./uri.ts";
 
 /** REST surface schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
@@ -242,3 +243,20 @@ export const MachineEnrollResponseSchema = z.strictObject({
    */
   machineToken: z.string().min(1).optional(),
 });
+
+/**
+ * `GET /api/resolve?uri=` — what a `manifold://` address points at, answered by the one
+ * side that can see every node: the URI echoed back in canonical form, its structured
+ * reference, whether the node exists RIGHT NOW, and its display title when it has one.
+ *
+ * Existence is a separate field rather than a 404 because a dead reference is a legitimate
+ * answer about a live address — a link to a terminal that has since been killed resolves
+ * fine and reports `exists: false`, which is what a renderer needs to say so.
+ */
+export const ResolveResponseSchema = z.strictObject({
+  uri: z.string().min(1),
+  ref: ManifoldRefSchema,
+  exists: z.boolean(),
+  title: z.string().nullable(),
+});
+export type ResolveResponse = z.infer<typeof ResolveResponseSchema>;

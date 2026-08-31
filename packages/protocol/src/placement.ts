@@ -99,8 +99,12 @@ export type ContainerGuard = GuardsWithSite<"container">;
 interface ItemDeclaration {
   readonly groups: readonly PlacementGroup[];
   readonly guards: readonly ItemGuard[];
-  /** How the item acquires the composition it lives in. */
-  readonly homed: HomingMode;
+  /**
+   * How the item acquires the composition it lives in, or null when the question does not
+   * apply: a panel is a RENDERING of a plugin contribution rather than an object with a
+   * document, so it never acquires a home and none of the three modes describes it.
+   */
+  readonly homed: HomingMode | null;
 }
 
 /**
@@ -156,6 +160,15 @@ export const ITEM_KINDS = {
    * this group was missing the button could only ever toast a refusal.
    */
   tile: { groups: ["tileable", "extractable", "unplaceable"], guards: [], homed: "inline" },
+  /**
+   * A plugin PANEL, the leaf form the workspace shell is composed of. It is `tileable` and
+   * nothing else: a panel is a rendering of a plugin's contribution, so it has no existence
+   * outside a tile tree — there is no canvas element to author for it and nowhere for it to
+   * sit unplaced. No wire SURFACE names one this wave: workspace layouts are written whole
+   * by `core.layout.set`, so the kind is here as the algebra's answer for panels rather
+   * than as a door.
+   */
+  panel: { groups: ["tileable"], guards: [], homed: null },
 } as const satisfies Record<string, ItemDeclaration>;
 export type ItemKind = keyof typeof ITEM_KINDS;
 
@@ -282,6 +295,13 @@ export const CANVAS_OPS = {
   text: "move_element",
   draw: "move_element",
   tile: "extract",
+  /**
+   * Unreachable by construction, and declared anyway so the table stays total: a canvas
+   * accepts `canvas-item`, `canvas-item-as-portal` and `extractable`, and a panel carries
+   * none of them, so group containment refuses panel -> canvas with `not_accepted` before
+   * `resolvePlacement` ever consults an op.
+   */
+  panel: "portal",
 } as const satisfies Record<ItemKind, PlacementOp>;
 
 /** Op per non-canvas destination; the canvas destination consults `CANVAS_OPS`. */

@@ -1,4 +1,8 @@
-import { ServerMessageBodySchema, type ServerMessageBody } from "@manifold/protocol";
+import {
+  CONNECTION_LEVEL_MESSAGE_TYPES,
+  ServerMessageBodySchema,
+  type ServerMessageBody,
+} from "@manifold/protocol";
 import type { AuthContext } from "./auth.ts";
 
 /**
@@ -21,10 +25,14 @@ export interface RawSocket {
 }
 
 /**
- * Everything a peer can be sent: the channel-level frames. `pong` answers the SOCKET,
- * so the gateway writes it directly and no peer can accidentally tag it with a room.
+ * Everything a peer can be sent: the channel-level frames. Connection-level frames answer
+ * the SOCKET — `pong` and the plugin roster — so the gateway writes those directly and no
+ * peer can accidentally tag one with a room.
  */
-export type ChannelMessage = Exclude<ServerMessageBody, { type: "pong" }>;
+export type ChannelMessage = Exclude<
+  ServerMessageBody,
+  { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }
+>;
 
 /** One schema-checked wire payload reusable across every peer in a room broadcast. */
 export interface SerializedServerMessage {

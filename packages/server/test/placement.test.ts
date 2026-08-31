@@ -375,6 +375,9 @@ function surfaces(fixture: PlacementFixture): Readonly<Record<ItemKind, Placemen
       containerId: fixture.view.id,
       tileId: terminalLeafId(fixture, fixture.view.id, fixture.occupant),
     },
+    // Deliberately an address that resolves to nothing: no element is ever a panel, and no
+    // other surface form names one either (see the golden rows below).
+    panel: { kind: "element", padId: fixture.canvas.id, elementId: "el-panel" },
   };
 }
 
@@ -501,6 +504,17 @@ describe("the placement algebra, executed", () => {
       // And releasing a leaf re-homes its occupant instead of destroying it, which is what
       // makes the fullscreen tile-minimize button do something at last.
       "tile -> unplaced=unplace",
+      /*
+        A panel has no wire SURFACE form at all: a principal's workspace layout is written
+        whole by `core.layout.set`, so the placement door can never be handed one. The
+        matrix still has to ask, and the honest answer from THIS side is that the address
+        resolves to nothing — the algebra's own panel rules are exercised in
+        `packages/protocol/test/placement.test.ts`, where a lookup can produce a panel item.
+       */
+      "panel -> canvas=denied:unknown_surface",
+      "panel -> tile=denied:unknown_surface",
+      "panel -> compose=denied:unknown_surface",
+      "panel -> unplaced=denied:unknown_surface",
     ]);
   });
 

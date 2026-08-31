@@ -30,6 +30,15 @@ export const TileSurfaceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), sessionId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("pad"), padId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("text"), elementId: z.string().min(1) }),
+  /**
+   * A plugin PANEL, named by its fully qualified panel id (`core.shell.sidebar`). This is
+   * the form that makes the workspace shell itself a composition: a principal's workspace
+   * layout is a tile tree whose leaves are panels, rendered by the same component every
+   * other tiled container uses. A panel id naming no live panel — an unknown plugin, or a
+   * disabled one — is legal on the wire and renders an inert placeholder, because a
+   * disabled plugin must never make a layout unwritable.
+   */
+  z.strictObject({ kind: z.literal("panel"), panelId: z.string().min(1).max(96) }),
 ]);
 export type TileSurface = z.infer<typeof TileSurfaceSchema>;
 

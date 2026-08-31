@@ -444,7 +444,10 @@ export class PlaceExecutor {
     // An empty leaf holds no item, so there is nothing to move aside and the caller was
     // asking about a spot that is not actually taken.
     if (occupant === null) return { status: "failed", failure: "conflict" };
-    if (occupant.kind === "text") {
+    // Neither of these can be moved ASIDE: a note lives in this document and has no home to
+    // be sent to, and a panel is not an object at all. The spot they hold is not up for
+    // grabs, so a center drop onto one is refused rather than silently destructive.
+    if (occupant.kind === "text" || occupant.kind === "panel") {
       return {
         status: "denied",
         denial: {
@@ -1335,6 +1338,11 @@ export class PlaceExecutor {
       this.rooms.evictIfIdle(destination.padId);
       return { status: "placed", result: { op: "extract", elementId } };
     }
+    // A panel is a rendering of a plugin contribution, not an object with a document, so
+    // there is nothing to author on a canvas for it. Unreachable through the door — a canvas
+    // refuses panels by group containment — and refused here too, before the leaf is
+    // removed, so a hand-written tree holding one cannot be emptied by a failed extract.
+    if (occupant.kind === "panel") return { status: "failed", failure: "conflict" };
 
     if (!view.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
     if (occupant.kind === "text") {

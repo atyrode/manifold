@@ -14,6 +14,8 @@ export const CAPS = [
   "terminal:write",
   "tokens:mint",
   "machines:mint",
+  /** Enable and disable plugins for the whole workspace: composition administration. */
+  "plugins:manage",
 ] as const;
 
 export const CapSchema = z.enum(CAPS);

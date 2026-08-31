@@ -665,6 +665,8 @@ export function surfaceKey(surface: TileSurface | null): string | null {
       return `pad:${surface.padId}`;
     case "text":
       return `text:${surface.elementId}`;
+    case "panel":
+      return `panel:${surface.panelId}`;
     default: {
       const exhaustive: never = surface;
       return exhaustive;

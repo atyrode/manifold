@@ -1,5 +1,6 @@
 import {
   CURSOR_MIN_INTERVAL_MS,
+  type ItemKind,
   type MachineSummary,
   type Pad,
   type PadPresence,
@@ -72,6 +73,18 @@ const NOTE_FALLBACK_FONT_SIZE = 20;
 const NOTE_FALLBACK_COLOR = "#f8f9fa";
 
 /**
+ * The item kind a leaf's occupant IS, by surface form. A record over the surface union
+ * rather than a chain of tests, so a new tileable form cannot be added without saying what
+ * the placement algebra should call it.
+ */
+const SOLO_ITEM_KINDS: Record<TileSurface["kind"], ItemKind> = {
+  terminal: "terminal",
+  pad: "canvas-pad",
+  text: "text",
+  panel: "panel",
+};
+
+/**
  * What this composition holds when it holds exactly ONE thing — the arity fact the
  * placement algebra looks through. An empty second leaf still counts as a second leaf:
  * splitting is how someone declares a container to be a composition.
@@ -90,7 +103,7 @@ function soloOccupancy(
     only = node.surface;
   }
   if (only === null) return NO_SOLO_OCCUPANTS;
-  const kind = only.kind === "terminal" ? "terminal" : only.kind === "text" ? "text" : "canvas-pad";
+  const kind = SOLO_ITEM_KINDS[only.kind];
   return new Map<string, PlacementItem>([[padId, { kind, containerId: padId }]]);
 }
 
@@ -852,6 +865,14 @@ export function TiledPadView({
           </div>
         );
       }
+      case "panel":
+        /*
+          Panels are leaves of a PRINCIPAL's workspace layout, not of a pad's document, so
+          this route never legitimately draws one — the shell does, through its panel
+          outlet. Rendering the inert placeholder keeps a stray leaf visible and nameable
+          instead of blanking the tile.
+        */
+        return <div className="plugin-placeholder">{surface.panelId}</div>;
       default: {
         const exhaustive: never = surface;
         return exhaustive;

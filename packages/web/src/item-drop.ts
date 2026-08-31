@@ -42,6 +42,7 @@ const ITEM_NOUN: Record<ItemKind, string> = {
   text: "A note",
   draw: "A stroke",
   tile: "A tile",
+  panel: "A panel",
 };
 
 /**

@@ -104,9 +104,36 @@ export {
   type PresenceStatus,
 } from "./presence.ts";
 export {
+  ACTION_DENIAL_RULES,
+  ActionDenialSchema,
+  ActionOutcomeSchema,
+  ActionSummarySchema,
+  PLUGIN_ID_PATTERN,
+  PluginIdSchema,
+  PluginManifestSchema,
+  PluginRosterEntrySchema,
+  PluginRosterSchema,
+  type ActionDenial,
+  type ActionDenialRule,
+  type ActionOutcome,
+  type ActionSummary,
+  type PluginId,
+  type PluginManifest,
+  type PluginRoster,
+  type PluginRosterEntry,
+} from "./plugin.ts";
+export {
+  MANIFOLD_URI_SCHEME,
+  ManifoldRefSchema,
+  formatManifoldUri,
+  parseManifoldUri,
+  type ManifoldRef,
+} from "./uri.ts";
+export {
   CHANNEL_ID_PATTERN,
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
+  CONNECTION_BODIES,
   CONNECTION_LEVEL_MESSAGE_TYPES,
   ChannelIdSchema,
   ClientMessageBodySchema,
@@ -161,7 +188,7 @@ export {
   type TokenGrant,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
-export { buildProtocolJsonSchema } from "./jsonschema.ts";
+export { buildProtocolJsonSchema, type ProtocolExtras } from "./jsonschema.ts";
 export {
   HealthResponseSchema,
   EnrollMachineRequestSchema,
@@ -187,6 +214,8 @@ export {
   TerminalSummarySchema,
   TerminalsResponseSchema,
   RenameTerminalRequestSchema,
+  ResolveResponseSchema,
+  type ResolveResponse,
   type TerminalSummary,
   type TerminalsResponse,
   type RenameTerminalRequest,

@@ -7,16 +7,18 @@ import {
   PresencePayloadSchema,
   PresenceStateSchema,
 } from "./presence.ts";
+import { PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v12) — one socket per tab, many rooms. Every frame is either
+ * FRAME GRAMMAR (v14) — one socket per tab, many rooms. Every frame is either
  * connection-level or channel-level:
  *
  *   connection-level   client → server  {"type":"ping"}
  *                      server → client  {"type":"pong"}
+ *                      server → client  {"type":"plugins","roster":[…]}
  *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
  *
  * A CHANNEL is one client-chosen handle onto one room. `ch` is opaque to the server,
@@ -24,7 +26,9 @@ import { PrincipalSchema } from "./principal.ts";
  * address the SAME pad with different roles (an occupant view and a widget's watching
  * preview), so a pad-keyed channel would be an id pun that collides. `join` binds a
  * fresh `ch` to a pad, `leave` frees it, and every other channel frame routes by it.
- * Liveness is a property of the socket, not of a room, so ping/pong carry no `ch`.
+ * Liveness is a property of the socket, not of a room, so ping/pong carry no `ch`; neither
+ * does the plugin roster, which describes the whole workspace rather than any one room (see
+ * CONNECTION_BODIES).
  *
  * Handshake: the FIRST client frame on a connection MUST be `join` (ten-second
  * deadline, re-armed whenever the last channel leaves); the server answers `init` on
@@ -381,6 +385,24 @@ const SERVER_BODIES = {
 /** Connection-level: the answer to a socket-level keepalive. */
 const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
 
+/**
+ * CONNECTION-LEVEL server frames: they address the SOCKET, not a channel, so they carry no
+ * `ch` at all. Until v14 the only such frames were the liveness pair, whose bodies are a
+ * bare type; this is the first category with a payload, and it exists because plugin
+ * REGISTRATION is workspace-global — the roster is not a property of any room, so tagging
+ * it with one room's channel would be an id pun and fanning it out per channel would send
+ * one fact N times.
+ *
+ * A roster frame is delivered on socket open (before any `join`) and again on every change,
+ * which is what lets a client rebuild its composition live instead of reloading.
+ *
+ * Kept as a keyed table so routing can look a frame's parser up by type. `pong` stays a
+ * bare literal beside it rather than joining the table: it has no body to parse.
+ */
+export const CONNECTION_BODIES = {
+  plugins: z.strictObject({ type: z.literal("plugins"), roster: PluginRosterSchema }),
+} as const;
+
 export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.init,
   SERVER_BODIES.resync,
@@ -397,6 +419,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
   ServerPongSchema,
+  CONNECTION_BODIES.plugins,
 ]);
 export type ServerMessageBody = z.infer<typeof ServerMessageBodySchema>;
 
@@ -416,6 +439,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.error),
   channelized(SERVER_BODIES.channel_closed),
   ServerPongSchema,
+  // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
+  CONNECTION_BODIES.plugins,
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
@@ -450,6 +475,7 @@ export const SERVER_MESSAGE_TYPES = [
   "error",
   "channel_closed",
   "pong",
+  "plugins",
 ] as const satisfies readonly ServerMessage["type"][];
 
 export const CLIENT_MESSAGE_TYPES = [
@@ -471,17 +497,32 @@ export const CLIENT_MESSAGE_TYPES = [
 ] as const satisfies readonly ClientMessage["type"][];
 
 /**
- * Frames that carry no `ch`: the socket's own liveness pair. Routing reads this to tell
- * a connection-level frame from a channel-level one without a second discriminator.
+ * Frames that carry no `ch`: the socket's own liveness pair, plus the server frames that
+ * describe the CONNECTION's world rather than a room's (the plugin roster). Routing reads
+ * this to tell a connection-level frame from a channel-level one without a second
+ * discriminator, and a channel handle is never handed one of these.
  */
-export const CONNECTION_LEVEL_MESSAGE_TYPES = ["ping", "pong"] as const;
+export const CONNECTION_LEVEL_MESSAGE_TYPES = ["ping", "pong", "plugins"] as const;
 
 type MissingServerType = Exclude<ServerMessage["type"], (typeof SERVER_MESSAGE_TYPES)[number]>;
 type MissingClientType = Exclude<ClientMessage["type"], (typeof CLIENT_MESSAGE_TYPES)[number]>;
+/** Every payload-carrying connection frame must be classified as one, and be a real frame. */
+type UnclassifiedConnectionType = Exclude<
+  keyof typeof CONNECTION_BODIES,
+  (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number]
+>;
+type UnwiredConnectionType = Exclude<keyof typeof CONNECTION_BODIES, ServerMessage["type"]>;
 const serverInventoryComplete: MissingServerType extends never ? true : never = true;
 const clientInventoryComplete: MissingClientType extends never ? true : never = true;
+const connectionInventoryComplete: [UnclassifiedConnectionType, UnwiredConnectionType] extends [
+  never,
+  never,
+]
+  ? true
+  : never = true;
 void serverInventoryComplete;
 void clientInventoryComplete;
+void connectionInventoryComplete;
 
 /** Body and wire unions must stay the same frame set: only routing separates them. */
 type BodyWithoutFrame = Exclude<ServerMessageBody["type"], ServerMessage["type"]>;

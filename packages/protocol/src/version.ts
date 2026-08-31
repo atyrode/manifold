@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 13;
+export const PROTOCOL_VERSION = 14;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -59,9 +59,12 @@ export const PROTOCOL_VERSION = 13;
  * drop can mean "wedge between both neighbors" on the wire; gesture `carry` payloads
  * gained an OPTIONAL `aim` so collaborators can re-derive a producer's live split
  * preview. The machine wire is byte-identical, so existing agents stay accepted.
+ * v13 -> v14: session/HTTP only — connection-level plugins frame, presence
+ * view/spotlight, panel tile surface, plugins:manage cap, action/resolve doors.
+ * Machine wire byte-identical, so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
 ]);
 
 /**
