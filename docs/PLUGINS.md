@@ -109,6 +109,11 @@ export const rename = defineAction({
 });
 ```
 
+An action that REMOVES things may declare `cleanup: true`: the dispatcher then skips only
+the `plugin_disabled` rung, so disabling your plugin refuses creation and administration
+but never locks anyone out of deleting what already exists (D12; `core.terminals.kill` is
+the canonical example). Caps and schemas still apply.
+
 The server half supplies the handler:
 
 ```ts
@@ -161,7 +166,7 @@ argue an earlier denial back to allow:
 | # | Rule | Fires when |
 | --- | --- | --- |
 | 1 | `unknown_action` | No composed action by that full name. |
-| 2 | `plugin_disabled` | The owning plugin is disabled in this workspace. |
+| 2 | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12). |
 | 3 | `forbidden` | The caller's token is **pad-scoped**. Actions are workspace-grade this wave; message is `scoped tokens cannot invoke workspace actions`. |
 | 4 | `forbidden` | The caller lacks one of the action's declared caps. |
 | 5 | `invalid_args` | The payload fails the action's `input` schema. |

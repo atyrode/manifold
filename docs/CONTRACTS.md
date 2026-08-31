@@ -199,6 +199,7 @@ declaration — and every refusal names the declaration that refused it.
 | `text`       | tileable, canvas-item                                    | —                        | on-claim |
 | `draw`       | canvas-item                                              | —                        | inline   |
 | `tile`       | extractable                                              | —                        | inline   |
+| `panel`      | tileable                                                 | —                        | none     |
 
 Containers: `canvas` accepts canvas-item, canvas-item-as-portal, extractable; `view` accepts
 tileable, mergeable; `unplaced` accepts unplaceable — "nowhere" is listed as a destination so
@@ -357,7 +358,7 @@ stops at the first rule that fires:
 | Order | `rule`            | Fires when                                                                                                                                    |
 | ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | `unknown_action`  | no composed action carries that name                                                                                                          |
-| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace                                                                                               |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant) |
 | 3     | `forbidden`       | the caller is pad-scoped (`padScope !== null`) — message "scoped tokens cannot invoke workspace actions"; actions are workspace-grade this wave |
 | 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                          |
 | 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                    |

@@ -23,6 +23,12 @@ export interface ActionDef<In = unknown, Out = unknown> {
   readonly caps: readonly Cap[];
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
+  /**
+   * Marks a CLEANUP action: one that removes things and therefore keeps working while the
+   * plugin is disabled (D12 — creation and administration die, cleanup survives). The
+   * dispatcher skips only the `plugin_disabled` rung for it; caps and schemas still apply.
+   */
+  readonly cleanup?: boolean;
 }
 
 /**

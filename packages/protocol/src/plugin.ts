@@ -93,6 +93,12 @@ export const ActionSummarySchema = z.strictObject({
   name: z.string(),
   title: z.string(),
   caps: CapSchema.array(),
+  /**
+   * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
+   * administration die on disable, removal survives — nobody is locked out of deleting).
+   * Published so a client can tell which affordances outlive a toggle.
+   */
+  cleanup: z.boolean().optional(),
   input: z.record(z.string(), z.unknown()),
   result: z.record(z.string(), z.unknown()),
 });

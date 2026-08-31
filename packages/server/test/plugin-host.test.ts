@@ -110,6 +110,22 @@ describe("PluginHost denial ladder", () => {
     fixture.store.close();
   });
 
+  test("a cleanup action survives its plugin's disable (D12): kill works, rename does not", async () => {
+    const fixture = hostFixture();
+    expect(fixture.host.setEnabled("core.terminals", false)).toEqual({ ok: true });
+
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.kill", {
+      sessionId: "s1",
+    });
+
+    // The disable must refuse creation and administration, never removal — otherwise an
+    // administrator toggling a plugin off locks every canvas out of deleting terminals.
+    // The kill still walks the REST of the ladder: here it reaches the handler, which
+    // refuses on state (no such session) rather than on the disable.
+    expect(denial(outcome).rule).toBe("refused");
+    fixture.store.close();
+  });
+
   test("a pad-scoped token is refused for its scope even when it holds the capability", async () => {
     const fixture = hostFixture();
     const pad = fixture.runtime.newId();

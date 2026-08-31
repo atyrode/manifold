@@ -210,6 +210,7 @@ export function composeRoster(
         name,
         title: action.title,
         caps: [...action.caps],
+        ...(action.cleanup === true ? { cleanup: true } : {}),
         input: publishSchema(action.input, "input", `action "${name}" input`, problems),
         result: publishSchema(action.result, "output", `action "${name}" result`, problems),
       });

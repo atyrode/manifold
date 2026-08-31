@@ -105,8 +105,9 @@ The ratified wave order. A wave lands as one branch, one PR, one green `bun run 
   v14 (connection-level `plugins` frame, presence `view`/`spotlight`, `panel` tile surface,
   `plugins:manage`, action and resolve doors, `manifold://` grammar); `@manifold/plugin` with
   manifests, composition and host contracts; the server plugin host and its denial ladder; the
-  workspace shell as a tile composition of plugin panels; `core.shell`, `core.machines`,
-  `core.views`, `core.plugins`, `core.terminals`, `core.draw`, `core.presence`, `core.uri`;
+  workspace shell as a tile composition of plugin panels; the core plugins themselves —
+  enumerated by `packages/plugins/*` via the two composition files and live at
+  `GET /api/plugins`, never by prose here (D10);
   `AXIOMS.md`, `AGENTS.md` invariants 12–14, and `verify:axioms` in the gate.
 - **Wave 2 — the event plane** (ADR 0012). A subscribe door, emission at the existing doors
   (actions, placement, lifecycle, roster), and real consumers for `contributes.events`. It
@@ -332,6 +333,15 @@ territory: they exercise both and are governed by their subject.
       "why": "the workspace host: fetches the per-principal layout and renders its panel leaves through TileTree"
     },
     {
+      "glob": "packages/web/src/sidebar-panel.tsx",
+      "why": "the core.shell.sidebar panel: sidebar chrome and the section stack, which must read the composition to know which sections exist"
+    },
+    {
+      "glob": "packages/web/src/pad-view-panel.tsx",
+      "why": "the core.shell.pad-view panel: the routed renderer switch, still holding the canvas and tiled routes",
+      "until": "core.canvas"
+    },
+    {
       "glob": "packages/web/src/tile-tree.tsx",
       "why": "the one tile-tree renderer — the workspace layout and every composition share it (one tree vocabulary everywhere)"
     },
@@ -530,6 +540,16 @@ territory: they exercise both and are governed by their subject.
     {
       "glob": "packages/web/src/top-right.tsx",
       "why": "presence rendering: the roster island (avatars, statuses, view chips)",
+      "until": "core.presence"
+    },
+    {
+      "glob": "packages/web/src/view-presence.ts",
+      "why": "presence writing: this device's published view state (tool, text edit, focused container, sidebar collapse) — the store every presence writer merges",
+      "until": "core.presence"
+    },
+    {
+      "glob": "packages/web/src/spotlight.tsx",
+      "why": "presence receiving: applies a spotlight to the mounted pad view, names the asker, and holds the device kill-switch (register: manifold:ignore-spotlight)",
       "until": "core.presence"
     }
   ]

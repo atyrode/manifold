@@ -171,7 +171,9 @@ export class PluginHost {
       };
     }
     const pluginId = entry.plugin.id;
-    if (!this.composed.enabled(pluginId)) {
+    if (!this.composed.enabled(pluginId) && entry.def.cleanup !== true) {
+      // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
+      // creation and administration, never the ability to remove what already exists.
       return {
         ok: false,
         denial: { rule: "plugin_disabled", message: `plugin "${pluginId}" is disabled` },
