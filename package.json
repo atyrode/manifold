@@ -18,6 +18,7 @@
     "verify:terminal-selection": "bun scripts/verify-terminal-selection.ts",
     "verify:terminal-mirror": "bun scripts/verify-terminal-mirror.ts",
     "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
+    "verify:axioms": "bun scripts/verify-axioms.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",
