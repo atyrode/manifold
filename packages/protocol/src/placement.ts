@@ -103,10 +103,10 @@ export type ContainerGuard = GuardsWithSite<"container">;
  * a home — so a kind IS its traits and `ITEM_KINDS` below is a table of them.
  *
  * That completeness is the point (G1): a plugin contributing an element kind declares
- * these same traits in its manifest, and because nothing about a kind lives outside them,
- * the closed `ITEM_KINDS` union can later be opened to composed kinds without the algebra
- * learning a new concept. This wave the union stays closed and the manifest traits are
- * carried but not yet fused into it.
+ * these same traits in its manifest, `composeRoster` resolves them onto the element
+ * registry, and the resolver reads THEM for any kind `ITEM_KINDS` does not declare (ADR
+ * 0013 §12). So `ITEM_KINDS` holds the floor's own kinds — the structural surfaces no
+ * plugin owns — and an element kind places without the engine ever learning its name.
  */
 export interface PlacementTraits {
   readonly groups: readonly PlacementGroup[];
@@ -144,10 +144,15 @@ export const PlacementTraitsSchema = z.strictObject({
 }) satisfies z.ZodType<PlacementTraits>;
 
 /**
- * What a contributed element kind means when its manifest declares no traits: free-floating
- * canvas furniture that lives in the document holding it. This is the `draw` row verbatim —
- * the only element kind a plugin contributes this wave — so absence reproduces exactly
- * today's semantics rather than inventing a weaker default.
+ * What an element kind means when nobody declared traits for it: free-floating canvas
+ * furniture that lives in the document holding it.
+ *
+ * It is read twice. A manifest that contributes an element without a `placement` block
+ * gets these traits at composition time, and the resolver falls back to them for a kind no
+ * composition claims at all — an element whose plugin is absent from this build. Refusing
+ * such a kind instead would strand elements sitting in documents right now behind a rule
+ * about who is installed, which is a statement about the build rather than about what
+ * composes.
  */
 export const DEFAULT_ELEMENT_PLACEMENT_TRAITS: PlacementTraits = {
   groups: ["canvas-item"],
@@ -156,10 +161,15 @@ export const DEFAULT_ELEMENT_PLACEMENT_TRAITS: PlacementTraits = {
 };
 
 /**
- * Every placeable item kind. A container is two kinds because its discipline decides what
- * it can be: a canvas tiles and embeds live, a composition only ever appears elsewhere as
- * a portal — the absence of `tileable` IS the no-nesting rule, and `mergeable` plus the
- * `solo-only` guard is what replaces it for the one case that is not nesting at all.
+ * The FLOOR's own item kinds: the structural surfaces the algebra arbitrates between and
+ * no plugin owns. A container is two kinds because its discipline decides what it can be:
+ * a canvas tiles and embeds live, a composition only ever appears elsewhere as a portal —
+ * the absence of `tileable` IS the no-nesting rule, and `mergeable` plus the `solo-only`
+ * guard is what replaces it for the one case that is not nesting at all.
+ *
+ * ELEMENT kinds are NOT here: they are manifest contribution data, resolved through
+ * `PlacementLookup.itemTraits` (ADR 0013 §12). A kind is looked up in this table first, so
+ * the floor's rows can never be redefined by a manifest.
  */
 export const ITEM_KINDS = {
   /**
@@ -183,14 +193,6 @@ export const ITEM_KINDS = {
     guards: ["no-self-embed", "solo-only"],
     homed: "inline",
   },
-  /**
-   * A note tiles: a composition owns the note's element in its own document, which is
-   * what makes `TileSurface`'s `text` form an element id rather than a cross-document
-   * reference. Ink stays canvas-only — a stroke is positioned in canvas coordinates,
-   * and a tile has none to give it.
-   */
-  text: { groups: ["tileable", "canvas-item"], guards: [], homed: "on-claim" },
-  draw: { groups: ["canvas-item"], guards: [], homed: "inline" },
   /**
    * A leaf of a tiled container, addressed as the PLACEMENT it is rather than as the item
    * it holds — which is what makes one mirror of a multi-placed session grabbable.
@@ -221,11 +223,17 @@ export const ITEM_KINDS = {
 export type ItemKind = keyof typeof ITEM_KINDS;
 
 /**
- * The same kinds as a value tuple, so a schema that must enumerate them is generated from
- * the declarations rather than restating them — a new kind cannot be added without every
- * enumeration following it.
+ * The floor's kinds and the contributed traits for everything else, as one answer.
+ *
+ * A kind is resolved in a fixed order — floor table, then the composition, then the
+ * element default — and the order is the contract: a manifest can never redefine a
+ * structural kind, a composed element kind places by its declared traits, and a kind
+ * nobody claims is ordinary canvas furniture rather than a refusal about who is installed.
  */
-export const ITEM_KIND_NAMES = Object.keys(ITEM_KINDS) as [ItemKind, ...ItemKind[]];
+export function itemTraitsFor(kind: string, lookup: PlacementLookup): PlacementTraits {
+  const floor: Readonly<Record<string, PlacementTraits>> = ITEM_KINDS;
+  return floor[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS;
+}
 
 interface ContainerDeclaration {
   readonly accepts: readonly PlacementGroup[];
@@ -335,13 +343,17 @@ export type PlacementOp = (typeof PLACEMENT_OPS)[number];
 export const EXECUTION_ONLY_OPS = ["swap", "replace"] as const satisfies readonly PlacementOp[];
 export type ExecutionOnlyOp = (typeof EXECUTION_ONLY_OPS)[number];
 
-/** What landing on a canvas MEANS per item kind; a canvas is the one polymorphic door. */
+/**
+ * What landing on a canvas MEANS per FLOOR item kind; a canvas is the one polymorphic
+ * door. The canvas operation is never manifest data (ADR 0013 §12): letting a plugin name
+ * the op a canvas performs on its kind would move an arbitration decision into a party's
+ * declaration, so contributed kinds are answered by `canvasOpFor` from this table's own
+ * rule instead.
+ */
 export const CANVAS_OPS = {
   terminal: "portal",
   "canvas-pad": "portal",
   view: "portal",
-  text: "move_element",
-  draw: "move_element",
   tile: "extract",
   /**
    * Unreachable by construction, and declared anyway so the table stays total: a canvas
@@ -351,6 +363,19 @@ export const CANVAS_OPS = {
    */
   panel: "portal",
 } as const satisfies Record<ItemKind, PlacementOp>;
+
+/**
+ * The op a canvas performs on any kind, floor or contributed.
+ *
+ * Only ELEMENT kinds are contributed, and an element landing on a canvas is a MOVE: it
+ * keeps its identity and changes documents. That is a floor ruling about the canvas, not a
+ * property a manifest declares — which is exactly why it is one line here rather than a
+ * field the algebra reads out of somebody's declaration.
+ */
+export function canvasOpFor(kind: string): PlacementOp {
+  const floor: Readonly<Record<string, PlacementOp>> = CANVAS_OPS;
+  return floor[kind] ?? "move_element";
+}
 
 /** Op per non-canvas destination; the canvas destination consults `CANVAS_OPS`. */
 export const DESTINATION_OPS = {
@@ -492,7 +517,7 @@ const destinationsComplete: MissingDestinationKind extends never
   : never = true;
 void destinationsComplete;
 
-/** The one placement envelope: `POST /api/place` and `client.place()` both carry this. */
+/** The one placement envelope: `core.layout.place` and `client.place()` both carry this. */
 export const PlaceRequestSchema = z.strictObject({
   surface: PlacementSurfaceSchema,
   destination: PlacementDestinationSchema,
@@ -528,13 +553,38 @@ export const PlacementDenialSchema = z.strictObject({
 export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
 
 /**
+ * A denial as the ACTION door carries it, and back again.
+ *
+ * `core.layout.place` refuses on the `refused` rung, and that rung carries one string — so
+ * the string leads with the algebra's own rule name, in the refusal format every plugin
+ * refusal uses (`<class>: <offenders>`, ADR 0013). The class is a member of the published
+ * closed set `PLACEMENT_DENIAL_RULES`, which is what makes reading it back mechanical
+ * rather than prose-parsing: `placementRefusalRule` accepts the class and nothing else.
+ *
+ * The surface and the container do not travel, because the caller already holds both — it
+ * sent the surface, and the container is a total function of the destination
+ * (`placementContainerFor`). So the denial is REBUILT client-side rather than duplicated
+ * on the wire, and `not_accepted` keeps exactly one wording (ADR 0013 §14).
+ */
+export function placementRefusal(denial: PlacementDenial): string {
+  return `${denial.rule}: ${denial.surface.kind} -> ${denial.container.kind}`;
+}
+
+/** The rule a refusal message leads with, or null when the refusal is not a placement's. */
+export function placementRefusalRule(message: string): PlacementDenialRule | null {
+  const head = message.split(":", 1)[0]?.trim() ?? "";
+  const rules: readonly string[] = PLACEMENT_DENIAL_RULES;
+  return rules.includes(head) ? (head as PlacementDenialRule) : null;
+}
+
+/**
  * What an executed placement RETURNS, tagged by the op that ran — which is the op that
  * ACTUALLY ran, not the one resolution predicted: a center placement onto a taken spot
  * comes back as `swap` or `replace`. Each op yields exactly the id its caller needs to
  * keep rendering: the placement it authored (`elementId` / `tileId`), the container a
  * composition was born into (`viewId`), the two seats an exchange moved between, the home
  * a displaced occupant went to, or the number of references a release removed.
- * `POST /api/place` serves this shape verbatim.
+ * `core.layout.place` serves this shape verbatim as its action result.
  */
 export const PlaceResponseSchema = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("portal"), elementId: z.string().min(1) }),
@@ -593,23 +643,6 @@ const responsesComplete: MissingResponseOp extends never
   : never = true;
 void responsesComplete;
 
-/** The HTTP error code a denial travels under; distinct from the generic error codes. */
-export const PLACEMENT_DENIED_CODE = "placement_denied";
-
-/**
- * A denied placement on the wire: HTTP 409 with the derived denial beside the code, so a
- * client renders the RULE that refused rather than parsing prose. The message is a
- * courtesy for logs and toasts; the `denial` is the contract.
- */
-export const PlacementDeniedResponseSchema = z.strictObject({
-  error: z.strictObject({
-    code: z.literal(PLACEMENT_DENIED_CODE),
-    message: z.string(),
-    denial: PlacementDenialSchema,
-  }),
-});
-export type PlacementDeniedResponse = z.infer<typeof PlacementDeniedResponseSchema>;
-
 // ------------------------------------------------------------------ resolution
 
 /**
@@ -619,7 +652,12 @@ export type PlacementDeniedResponse = z.infer<typeof PlacementDeniedResponseSche
  * from two sides, and every op that needs an id needs exactly this one.
  */
 export interface PlacementItem {
-  readonly kind: ItemKind;
+  /**
+   * A floor kind (`ITEM_KINDS`) or a composed ELEMENT type. It is a plain string because
+   * the set is open by design: a plugin contributes an element without the engine learning
+   * its name, and the traits that decide its legality arrive with it (ADR 0013 §12).
+   */
+  readonly kind: string;
   readonly containerId: string | null;
 }
 
@@ -632,7 +670,8 @@ export interface PlacementItem {
  * (AGENTS.md invariant 11), and a wire form nobody else can interpret is the defect.
  */
 export const PlacementItemSchema = z.strictObject({
-  kind: z.enum(ITEM_KIND_NAMES),
+  // Bounded exactly like a manifest's element type, which is what an open kind can be.
+  kind: z.string().min(1).max(32),
   containerId: z.string().min(1).nullable(),
 }) satisfies z.ZodType<PlacementItem>;
 
@@ -657,7 +696,8 @@ export interface PlacementLookup {
   padLayout(padId: string): ContainerLayout | null;
   /**
    * What an existing canvas placement places: a portal places the container it points at
-   * (hence `containerId`), text places text. Null when the element is absent.
+   * (hence `containerId`), any other element places its own type. Null when the element
+   * is absent.
    */
   elementItem(padId: string, elementId: string): PlacementItem | null;
   /**
@@ -672,6 +712,14 @@ export interface PlacementLookup {
    * `tileable` placement of that occupant and no op has to know it happened.
    */
   soloOccupant(padId: string): PlacementItem | null;
+  /**
+   * The traits a COMPOSED element kind declared, or null for a kind this reader's
+   * composition does not know. Floor kinds never reach here — `itemTraitsFor` consults
+   * `ITEM_KINDS` first — so this is exactly the plugin half of the algebra's vocabulary
+   * (ADR 0013 §12), read from the roster the server published rather than from a table
+   * the engine had to edit.
+   */
+  itemTraits(kind: string): PlacementTraits | null;
 }
 
 export type PlacementResolution =
@@ -683,7 +731,12 @@ export type PlacementResolution =
     }
   | { readonly ok: false; readonly denial: PlacementDenial };
 
-function containerFor(destination: PlacementDestination): PlacementContainer {
+/**
+ * The container a destination names, total over the destination union. Exported because a
+ * caller reading a refusal off the action door rebuilds the denial it was sent, and the
+ * container half of that denial is this function of the destination it already holds.
+ */
+export function placementContainerFor(destination: PlacementDestination): PlacementContainer {
   switch (destination.kind) {
     case "canvas":
       return { kind: "canvas", padId: destination.padId };
@@ -801,7 +854,7 @@ function resolveClassified(
   destination: PlacementDestination,
   lookup: PlacementLookup,
 ): PlacementResolution {
-  const container = containerFor(destination);
+  const container = placementContainerFor(destination);
   const declaration = DESTINATION_KINDS[destination.kind];
   const containerDeclaration = CONTAINER_KINDS[container.kind];
   const deny = (rule: PlacementDenialRule): PlacementResolution => ({
@@ -823,7 +876,7 @@ function resolveClassified(
   const item = itemOf();
   if (item === null) return deny("unknown_surface");
 
-  const itemDeclaration = ITEM_KINDS[item.kind];
+  const itemDeclaration = itemTraitsFor(item.kind, lookup);
   const accepted = itemDeclaration.groups.some((group) =>
     (containerDeclaration.accepts as readonly PlacementGroup[]).includes(group),
   );
@@ -844,13 +897,18 @@ function resolveClassified(
   }
 
   const op =
-    destination.kind === "canvas" ? CANVAS_OPS[item.kind] : DESTINATION_OPS[destination.kind];
+    destination.kind === "canvas" ? canvasOpFor(item.kind) : DESTINATION_OPS[destination.kind];
   return { ok: true, op, item, container };
 }
 
 /**
  * The algebra, published. `GET /api/protocol` serves this so agents and mods discover
  * what composes with what — and what cannot — from the declarations themselves.
+ *
+ * `items` and `canvasOps` are the FLOOR's kinds. A contributed element kind's traits are
+ * published where the kind itself is — on its plugin's roster row at `GET /api/plugins` —
+ * because a reader that learned the kind from one door should not have to learn its
+ * legality from another.
  */
 export function placementVocabulary(): Record<string, unknown> {
   return {

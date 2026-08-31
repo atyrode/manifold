@@ -292,6 +292,9 @@ describe("the plugin roster", () => {
         title: "Kill terminal",
         caps: ["pads:write"],
         cleanup: true,
+        // A cleanup door confined to one container: `scope` is required on the OUTPUT type
+        // because the schema defaults it, so a summary always states its authority grade.
+        scope: "pad",
         input: { type: "object" },
         result: { type: "object" },
       },

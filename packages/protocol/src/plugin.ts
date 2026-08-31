@@ -251,6 +251,27 @@ export const PluginManifestSchema = z.strictObject({
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
 /**
+ * WHAT AUTHORITY AN ACTION IS GRADED FOR.
+ *
+ * `workspace` is the default and the wave-1 rule: a token scoped to one container cannot
+ * authorize a workspace-grade mutation, the precedent `core.layout.place` and every
+ * workspace route already set.
+ *
+ * `pad` says the action's whole effect is confined to ONE container, so a pad-scoped token
+ * may open it — the door then evaluates the action's declared caps AT that pad, and the
+ * handler is contractually bound to keep every effect inside it. The pad comes from the
+ * TOKEN (`ctx.padScope`), never from the arguments: authority that depended on parsed
+ * arguments would force the ladder to validate shape before authority, and a caller would
+ * learn an action's schema by knocking on a door it may not open.
+ *
+ * A workspace-grade caller invoking a `pad` action gets `padScope: null` and the handler
+ * resolves its target the way it always did.
+ */
+export const ACTION_SCOPES = ["workspace", "pad"] as const;
+export const ActionScopeSchema = z.enum(ACTION_SCOPES);
+export type ActionScope = (typeof ACTION_SCOPES)[number];
+
+/**
  * One action, published. `input` and `result` are JSON Schemas rather than zod shapes,
  * because the audience is a stranger's agent reading `GET /api/protocol` — the door's own
  * validators are generated from the same definitions, so the published schema is the
@@ -267,6 +288,12 @@ export const ActionSummarySchema = z.strictObject({
    * Published so a client can tell which affordances outlive a toggle.
    */
   cleanup: z.boolean().optional(),
+  /**
+   * The authority grade this door is written for. Published (defaulted, so an older reader
+   * that never saw the field reads the conservative answer) because "may my pad-scoped token
+   * call this?" is a question a client must be able to answer from the vocabulary alone.
+   */
+  scope: ActionScopeSchema.default("workspace"),
   input: z.record(z.string(), z.unknown()),
   result: z.record(z.string(), z.unknown()),
 });
@@ -389,7 +416,7 @@ export type ActionDenialRule = (typeof ACTION_DENIAL_RULES)[number];
 
 /**
  * What the action door answers. A denial is a 200 carrying `ok: false` — the same shape
- * `POST /api/place` uses for a refused placement, because a refusal is an ANSWER about
+ * `core.layout.place` uses for a refused placement, because a refusal is an ANSWER about
  * authority or state, not a transport failure.
  */
 export const ActionOutcomeSchema = z.union([
@@ -420,6 +447,7 @@ export function pluginVocabulary(): Record<string, unknown> {
     lifecycleStates: PLUGIN_LIFECYCLE_STATES,
     refusalReasons: PLUGIN_REFUSAL_REASONS,
     denialRules: ACTION_DENIAL_RULES,
+    actionScopes: ACTION_SCOPES,
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
     manifest: z.toJSONSchema(PluginManifestSchema),
     action: z.toJSONSchema(ActionSummarySchema),

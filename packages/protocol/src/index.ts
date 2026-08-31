@@ -6,7 +6,7 @@ export {
 } from "./version.ts";
 export { reconnectDelayMs } from "./backoff.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
-export { PrincipalSchema, type Principal } from "./principal.ts";
+export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";
 export {
   HEX_COLOR,
   MAX_DOC_UPDATE_BYTES,
@@ -46,22 +46,24 @@ export {
   HOMING_MODES,
   ITEM_GUARD_NAMES,
   ITEM_KINDS,
-  ITEM_KIND_NAMES,
   PLACEMENT_DENIAL_RULES,
-  PLACEMENT_DENIED_CODE,
   PLACEMENT_GROUPS,
   PLACEMENT_GUARDS,
   PLACEMENT_OPS,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementContainerSchema,
-  PlacementDeniedResponseSchema,
   PlacementDenialSchema,
   PlacementDestinationSchema,
   PlacementItemSchema,
   PlacementSurfaceSchema,
   PlacementTraitsSchema,
+  canvasOpFor,
+  itemTraitsFor,
+  placementContainerFor,
   placementItemFor,
+  placementRefusal,
+  placementRefusalRule,
   placementVocabulary,
   resolveCarriedPlacement,
   resolvePlacement,
@@ -76,7 +78,6 @@ export {
   type PlaceRequest,
   type PlaceResponse,
   type PlacementContainer,
-  type PlacementDeniedResponse,
   type PlacementDenial,
   type PlacementDenialRule,
   type PlacementDestination,
@@ -112,8 +113,10 @@ export {
 } from "./presence.ts";
 export {
   ACTION_DENIAL_RULES,
+  ACTION_SCOPES,
   ActionDenialSchema,
   ActionOutcomeSchema,
+  ActionScopeSchema,
   ActionSummarySchema,
   DEFAULT_DORMANT_MODE,
   ENGINE_NAMESPACE_PREFIX,
@@ -144,6 +147,7 @@ export {
   type ActionDenial,
   type ActionDenialRule,
   type ActionOutcome,
+  type ActionScope,
   type ActionSummary,
   type LocalName,
   type PluginDataVersion,
@@ -217,6 +221,7 @@ export {
   PadSchema,
   RenamePadRequestSchema,
   RevokeRequestSchema,
+  RevokeResultSchema,
   TokenGrantSchema,
   TreeParentIdSchema,
   type BootstrapPrincipalRequest,
@@ -226,6 +231,7 @@ export {
   type PadPresence,
   type Pad,
   type PadSessionSummary,
+  type RevokeResult,
   type TokenGrant,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
@@ -234,6 +240,7 @@ export {
   HealthResponseSchema,
   EnrollMachineRequestSchema,
   MachineEnrollResponseSchema,
+  type MachineEnrollResponse,
   MachineSummarySchema,
   type MachineSummary,
   MachinesResponseSchema,

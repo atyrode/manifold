@@ -73,9 +73,12 @@ export const PROTOCOL_VERSION = 15;
  * traits (absent ≡ canvas-item/inline, exactly today's contributed element); roster rows
  * gained `lifecycle`, `refusal` and `changedBy`/`changedAt` (all absent ≡ a plugin nobody
  * has toggled and nothing refuses) and their `source` widened from the literal "builtin"
- * to "builtin" | "plugin", which every v14 value still satisfies. All of it rides
- * `GET /api/plugins` and the connection-level `plugins` frame. The machine wire is
- * byte-identical — an agent never sees a manifest — so existing agents stay accepted.
+ * to "builtin" | "plugin", which every v14 value still satisfies. Published actions gained
+ * `scope` ∈ {workspace, pad}, DEFAULTED to `workspace`, which is the v14 rule verbatim: a
+ * pad-scoped token is refused every action that does not declare itself confined to one
+ * container. All of it rides `GET /api/plugins`, `GET /api/protocol` and the
+ * connection-level `plugins` frame. The machine wire is byte-identical — an agent never
+ * sees a manifest — so existing agents stay accepted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,

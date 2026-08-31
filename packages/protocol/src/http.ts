@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { HEX_COLOR } from "./elements.ts";
 import { ContainerLayoutSchema, TileLayoutSchema } from "./layout.ts";
-import { ITEM_KIND_NAMES } from "./placement.ts";
 import { PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
@@ -99,6 +99,18 @@ export const RevokeRequestSchema = z.strictObject({
   principalId: z.string().min(1),
 });
 
+/**
+ * What a revocation ANSWERS: how many tokens actually died. Zero is a success — asking
+ * twice about a principal whose tokens are already dead is what a nervous administrator
+ * does — and it must not read as the same event as three. Published here rather than
+ * inside `core.access` so the door's declared result and every client's parse are one
+ * schema (`core.access.revokeToken`).
+ */
+export const RevokeResultSchema = z.strictObject({
+  revoked: z.number().int().nonnegative(),
+});
+export type RevokeResult = z.infer<typeof RevokeResultSchema>;
+
 // ---------------------------------------------------------------------------- responses
 
 /** Exact response envelopes; servers MUST return these shapes, clients parse with them. */
@@ -166,9 +178,13 @@ export type TerminalsResponse = z.infer<typeof TerminalsResponseSchema>;
  * One item a container holds, classified with the placement algebra's own vocabulary so a
  * census answer and a placement resolution can never disagree about what something is.
  * `containerId` is set when the item IS a container; `sessionId` when it is a terminal.
+ *
+ * `kind` is an open string for the same reason `PlacementItem.kind` is: a canvas holds
+ * whatever element kinds the composition contributes, and the census must be able to say so
+ * without the engine enumerating them (ADR 0013 §12).
  */
 export const CensusItemSchema = z.strictObject({
-  kind: z.enum(ITEM_KIND_NAMES),
+  kind: z.string().min(1).max(32),
   containerId: z.string().min(1).nullable(),
   sessionId: z.string().min(1).nullable(),
 });
@@ -205,20 +221,29 @@ export function censusSolo(census: ContainerCensus): CensusItem | null {
   return census.items.length === 1 ? (census.items[0] ?? null) : null;
 }
 
-/**
+/*
  * Everything that used to be a verb here — bind, park, add-tile, compose, extract, and
- * (with the solo-composition cutover) expand and pin — is now `POST /api/place` carrying
- * `PlaceRequest`, whose legality comes from the placement declarations rather than from a
- * schema per gesture. Expand had nothing left to do once every terminal already lived in a
+ * (with the solo-composition cutover) expand and pin — is now the action
+ * `core.layout.place` carrying `PlaceRequest`, whose legality comes from the placement
+ * declarations rather than from a schema per gesture. Expand had nothing left to do once
+ * every terminal already lived in a
  * composition: entering one is navigation to something that exists. Pin had nothing left to
  * claim once no container dissolved under anybody. Only leaf REMOVAL kept its own route
  * (`DELETE /api/pads/:id/tiles/:tileId`), because removal is not a placement: it addresses
  * the leaf rather than moving its occupant anywhere.
  */
+/**
+ * A machine as `core.machines.list` publishes it. `color` is DERIVED, not stored: the
+ * server hashes the machine id into the shared identity palette (`identityColorFor`) so
+ * every viewer — browser, agent, a second client nobody wrote yet — paints the same dot
+ * without re-implementing the hash. Optional because a machine row is identity first and
+ * presentation second; a consumer that only wants liveness ignores it.
+ */
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),
   online: z.boolean(),
+  color: z.string().regex(HEX_COLOR).optional(),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({
@@ -230,7 +255,11 @@ export const EnrollMachineRequestSchema = z.strictObject({
   rotateToken: z.boolean().optional(),
 });
 export const MachineEnrollResponseSchema = z.strictObject({
-  machine: z.strictObject({ id: z.string().min(1), name: z.string().min(1) }),
+  machine: z.strictObject({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    color: z.string().regex(HEX_COLOR).optional(),
+  }),
   /**
    * Raw token — returned exactly once, only when a token was minted (new machine or explicit
    * rotation); the DB keeps only its hash. Absent on an idempotent re-enroll of an existing
@@ -238,6 +267,7 @@ export const MachineEnrollResponseSchema = z.strictObject({
    */
   machineToken: z.string().min(1).optional(),
 });
+export type MachineEnrollResponse = z.infer<typeof MachineEnrollResponseSchema>;
 
 /**
  * `GET /api/resolve?uri=` — what a `manifold://` address points at, answered by the one

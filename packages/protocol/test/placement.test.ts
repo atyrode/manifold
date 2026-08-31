@@ -10,31 +10,33 @@ import {
   ITEM_GUARD_NAMES,
   ITEM_KINDS,
   PLACEMENT_DENIAL_RULES,
-  PLACEMENT_DENIED_CODE,
   PLACEMENT_GROUPS,
   PLACEMENT_GUARDS,
   PLACEMENT_OPS,
   PlaceRequestSchema,
   PlaceResponseSchema,
-  PlacementDeniedResponseSchema,
   PlacementDenialSchema,
   PlacementDestinationSchema,
   PlacementSurfaceSchema,
   PlacementTraitsSchema,
   buildProtocolJsonSchema,
+  canvasOpFor,
+  itemTraitsFor,
   placementItemFor,
+  placementRefusal,
+  placementRefusalRule,
   resolvePlacement,
   type ContainerLayout,
   type DestinationKind,
   type ItemKind,
   type PlaceResponse,
-  type PlacementDeniedResponse,
   type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
   type PlacementLookup,
   type PlacementOp,
   type PlacementSurface,
+  type PlacementTraits,
 } from "@manifold/protocol";
 
 /**
@@ -79,12 +81,31 @@ const ELEMENTS: Readonly<Record<string, PlacementItem>> = {
   "el-panel": { kind: "panel", containerId: null },
 };
 
+/**
+ * The COMPOSED half of the algebra's vocabulary: the element kinds this world's plugins
+ * contribute, with the traits their manifests declare (ADR 0013 §12). `text` is
+ * `core.notes` declaring its own; `draw` is `core.draw` declaring nothing and taking the
+ * engine's default; `chart` is nobody — a kind sitting in a document whose plugin is not in
+ * this build.
+ *
+ * The floor table knows none of these names, which is the whole point: the matrix below
+ * exercises contributed kinds through the same resolution floor kinds go through.
+ */
+const CONTRIBUTED_TRAITS: Readonly<Record<string, PlacementTraits>> = {
+  text: { groups: ["tileable", "canvas-item"], guards: [], homed: "on-claim" },
+  draw: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+};
+
+/** Every kind this world can place: the floor's own, plus what its plugins contribute. */
+type WorldKind = ItemKind | "text" | "draw";
+
 const lookup: PlacementLookup = {
   padLayout: (padId) => PAD_LAYOUTS[padId] ?? null,
   elementItem: (padId, elementId) =>
     PAD_LAYOUTS[padId] === undefined ? null : (ELEMENTS[elementId] ?? null),
   terminalHome: (sessionId) => TERMINAL_HOMES[sessionId] ?? null,
   soloOccupant: (padId) => SOLO_OCCUPANTS[padId] ?? null,
+  itemTraits: (kind) => CONTRIBUTED_TRAITS[kind] ?? null,
 };
 
 /**
@@ -93,7 +114,7 @@ const lookup: PlacementLookup = {
  * MULTI-tile composition because a solo one is classified as its occupant instead — that
  * reclassification is what the focused tests below cover.
  */
-const SURFACES: Readonly<Record<ItemKind, PlacementSurface>> = {
+const SURFACES: Readonly<Record<WorldKind, PlacementSurface>> = {
   terminal: { kind: "terminal", sessionId: "session-1" },
   "canvas-pad": { kind: "pad", padId: "canvas-2" },
   view: { kind: "pad", padId: "multi-2" },
@@ -116,7 +137,7 @@ const DESTINATIONS: Readonly<Record<DestinationKind, PlacementDestination>> = {
  * The PAIRS are enumerated from the declarations below — this table only records the
  * expected answer, and a new kind or destination cannot compile without one.
  */
-const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>>>> = {
+const MATRIX: Readonly<Record<WorldKind, Readonly<Record<DestinationKind, string>>>> = {
   // A terminal on a canvas is a PORTAL onto its home, never an element carrying the
   // session, and releasing it is `unplace` because there is no pool left to park in.
   terminal: { canvas: "portal", tile: "add_tile", compose: "compose", unplaced: "unplace" },
@@ -188,6 +209,7 @@ const MATRIX: Readonly<Record<ItemKind, Readonly<Record<DestinationKind, string>
 };
 
 const itemKinds = Object.keys(ITEM_KINDS) as ItemKind[];
+const worldKinds = [...itemKinds, ...Object.keys(CONTRIBUTED_TRAITS)] as WorldKind[];
 const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
 const ops: readonly string[] = PLACEMENT_OPS;
 const denialRules: readonly string[] = PLACEMENT_DENIAL_RULES;
@@ -195,7 +217,7 @@ const denialRules: readonly string[] = PLACEMENT_DENIAL_RULES;
 describe("placement matrix", () => {
   test("every declared item kind x destination resolves to an op or a named denial", () => {
     const seen: string[] = [];
-    for (const itemKind of itemKinds) {
+    for (const itemKind of worldKinds) {
       for (const destinationKind of destinationKinds) {
         const label = `${itemKind} -> ${destinationKind}`;
         seen.push(label);
@@ -213,17 +235,17 @@ describe("placement matrix", () => {
       }
     }
     // Exhaustive by construction: the declarations, not this file, decide the pair count.
-    expect(seen).toHaveLength(itemKinds.length * destinationKinds.length);
+    expect(seen).toHaveLength(worldKinds.length * destinationKinds.length);
     expect(seen.length).toBeGreaterThan(0);
   });
 
   test("acceptance follows group containment, so the table cannot drift from declarations", () => {
-    for (const itemKind of itemKinds) {
+    for (const itemKind of worldKinds) {
       for (const destinationKind of destinationKinds) {
         const container = DESTINATION_KINDS[destinationKind].container;
         const accepts: readonly string[] = CONTAINER_KINDS[container].accepts;
-        const overlaps = (ITEM_KINDS[itemKind].groups as readonly string[]).some((group) =>
-          accepts.includes(group),
+        const overlaps = (itemTraitsFor(itemKind, lookup).groups as readonly string[]).some(
+          (group) => accepts.includes(group),
         );
         const result = resolvePlacement(SURFACES[itemKind], DESTINATIONS[destinationKind], lookup);
         const refusedByContainment = !result.ok && result.denial.rule === "not_accepted";
@@ -250,7 +272,7 @@ describe("placement matrix", () => {
 
   test("every op resolution can name is reachable, and only those", () => {
     const reached = new Set<PlacementOp>();
-    for (const itemKind of itemKinds) {
+    for (const itemKind of worldKinds) {
       for (const destinationKind of destinationKinds) {
         const result = resolvePlacement(SURFACES[itemKind], DESTINATIONS[destinationKind], lookup);
         if (result.ok) reached.add(result.op);
@@ -352,20 +374,21 @@ describe("solo compositions", () => {
 });
 
 describe("placement homing", () => {
-  test("every item kind declares a homing mode drawn from the vocabulary, or none at all", () => {
+  test("every kind resolves a homing mode drawn from the vocabulary, or none at all", () => {
     const modes: readonly (string | null)[] = [...HOMING_MODES, null];
-    for (const declaration of Object.values(ITEM_KINDS)) {
-      expect(modes).toContain(declaration.homed);
+    for (const kind of worldKinds) {
+      expect(modes).toContain(itemTraitsFor(kind, lookup).homed);
     }
   });
 
   test("the paradigm's three homing modes are pinned by name", () => {
     // Server-born: its composition exists before its first frame of output.
     expect(ITEM_KINDS.terminal.homed).toBe("eager");
-    // Born inline in the document that created it; its home materialises on first claim.
-    expect(ITEM_KINDS.text.homed).toBe("on-claim");
+    // Born inline in the document that created it; its home materialises on first claim —
+    // declared by the plugin that owns notes, and read back through the same resolution.
+    expect(itemTraitsFor("text", lookup).homed).toBe("on-claim");
     // Needs no home: a stroke exists in the document that holds it.
-    expect(ITEM_KINDS.draw.homed).toBe("inline");
+    expect(itemTraitsFor("draw", lookup).homed).toBe("inline");
     // A panel is a rendering of a plugin contribution, not an object with a document:
     // there is no composition for it to acquire, so the question does not apply.
     expect(ITEM_KINDS.panel.homed).toBeNull();
@@ -590,29 +613,34 @@ describe("placement wire shapes", () => {
     expect(PlaceResponseSchema.safeParse({ op: "replace", tileId: "t1" }).success).toBe(false);
   });
 
-  test("a denied placement carries its code and the denial itself", () => {
-    const body: PlacementDeniedResponse = {
-      error: {
-        code: PLACEMENT_DENIED_CODE,
-        message: "compositions merge, never nest",
-        denial: {
-          rule: "not_solo" satisfies PlacementDenialRule,
-          surface: SURFACES.view,
-          container: { kind: "view" as const, padId: "multi-1" },
-        },
-      },
-    };
-    expect(PlacementDeniedResponseSchema.parse(body)).toEqual(body);
+  test("a denial survives the action door's one string, rule first", () => {
+    /*
+      `core.layout.place` refuses on the `refused` rung, which carries a message and nothing
+      else — so the message LEADS with the algebra's rule, and reading it back is a lookup in
+      the published closed set rather than prose-parsing. The surface and container do not
+      travel: the caller sent one and can derive the other.
+     */
+    for (const rule of PLACEMENT_DENIAL_RULES) {
+      const message = placementRefusal({
+        rule,
+        surface: SURFACES.view,
+        container: { kind: "view", padId: "multi-1" },
+      });
+      expect(message.startsWith(`${rule}:`)).toBe(true);
+      expect(placementRefusalRule(message)).toBe(rule);
+    }
+    // A refusal from any other door is not a placement's, and must not be read as one.
+    expect(placementRefusalRule("dependencies: core.terminals")).toBeNull();
+    expect(placementRefusalRule("essential")).toBeNull();
+    expect(placementRefusalRule("")).toBeNull();
+    // The offenders name what was offered and what refused it, for a log line and a toast.
     expect(
-      PlacementDeniedResponseSchema.safeParse({
-        error: { code: "conflict", message: "x", denial: body.error.denial },
-      }).success,
-    ).toBe(false);
-    expect(
-      PlacementDeniedResponseSchema.safeParse({
-        error: { code: PLACEMENT_DENIED_CODE, message: "x" },
-      }).success,
-    ).toBe(false);
+      placementRefusal({
+        rule: "not_accepted",
+        surface: SURFACES.terminal,
+        container: { kind: "canvas", padId: "canvas-1" },
+      }),
+    ).toBe("not_accepted: terminal -> canvas");
   });
 
   test("a denial names a declared rule, the surface offered, and the container refusing", () => {
@@ -794,14 +822,50 @@ describe("placement traits", () => {
     expect(named).toEqual(itemGuards.sort());
   });
 
-  test("the default a manifest omitting traits gets is today's contributed element", () => {
-    // Absence has to reproduce v14 exactly: the only element kind a plugin contributes this
-    // wave is `draw`, so the default IS the draw row. Anything else would silently change
-    // what an existing manifest means.
+  test("the default a manifest omitting traits gets is free-floating canvas furniture", () => {
+    // `core.draw` declares no `placement` block, so this default IS how ink places — the
+    // row the floor table used to carry, now arriving through the composition instead.
+    expect(itemTraitsFor("draw", lookup)).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
     expect(DEFAULT_ELEMENT_PLACEMENT_TRAITS).toEqual({
-      groups: [...ITEM_KINDS.draw.groups],
-      guards: [...ITEM_KINDS.draw.guards],
-      homed: ITEM_KINDS.draw.homed,
+      groups: ["canvas-item"],
+      guards: [],
+      homed: "inline",
     });
+  });
+
+  test("a kind is resolved floor first, then the composition, then the default", () => {
+    // A floor kind can never be redefined by a manifest: the table wins by order.
+    const shadowed: PlacementLookup = {
+      ...lookup,
+      itemTraits: () => ({ groups: ["canvas-item"], guards: [], homed: "inline" }),
+    };
+    expect(itemTraitsFor("terminal", shadowed)).toEqual(ITEM_KINDS.terminal);
+    // A contributed kind resolves to what its manifest declared.
+    expect(itemTraitsFor("text", lookup)).toEqual({
+      groups: ["tileable", "canvas-item"],
+      guards: [],
+      homed: "on-claim",
+    });
+    // A kind no composition claims is ordinary canvas furniture rather than a refusal
+    // about who is installed: the element is sitting in a document either way.
+    expect(itemTraitsFor("chart", lookup)).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
+  });
+
+  test("a contributed kind places by its declared traits, floor kinds untouched", () => {
+    // `text` is tileable BECAUSE core.notes said so — the engine has no row for it — and a
+    // canvas MOVES an element it holds, which is a floor ruling about canvases (§12).
+    const tiled = resolvePlacement(SURFACES.text, DESTINATIONS.tile, lookup);
+    expect(tiled.ok && tiled.op).toBe("add_tile");
+    const moved = resolvePlacement(SURFACES.text, DESTINATIONS.canvas, lookup);
+    expect(moved.ok && moved.op).toBe("move_element");
+    // Take the declaration away and the same gesture is refused by group containment: the
+    // traits, not the engine, are what made it legal.
+    const unclaimed: PlacementLookup = { ...lookup, itemTraits: () => null };
+    const refused = resolvePlacement(SURFACES.text, DESTINATIONS.tile, unclaimed);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.denial.rule).toBe("not_accepted");
+    expect(canvasOpFor("text")).toBe("move_element");
+    expect(canvasOpFor("chart")).toBe("move_element");
+    expect(canvasOpFor("terminal")).toBe("portal");
   });
 });
