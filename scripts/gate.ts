@@ -65,6 +65,32 @@ const packages = [
   "plugins/uri",
 ];
 
+/**
+ * Bounded fan-out for the per-package typechecks. Wave 1 doubled the package count to 17,
+ * and 17 unbounded tsc processes peak past what a 32 GB box under normal desktop load can
+ * give — the kernel reaps a few (SIGTERM, empty output) and the gate reads that as a
+ * nondeterministic type failure. Six at a time keeps the wall clock flat on big machines
+ * and the memory ceiling honest on small ones.
+ */
+async function runLimited(
+  limit: number,
+  jobs: readonly (() => Promise<TaskResult>)[],
+): Promise<TaskResult[]> {
+  const results: TaskResult[] = [];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, jobs.length) }, async () => {
+    while (next < jobs.length) {
+      const index = next;
+      next += 1;
+      const job = jobs[index];
+      if (job === undefined) break;
+      results[index] = await job();
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 try {
   const build = run(
     "build:web (shared dist)",
@@ -72,19 +98,23 @@ try {
     join(repoRoot, "packages", "web"),
   );
 
-  const staticChecks: Promise<TaskResult>[] = [
-    run("changelog:check", ["bun", "scripts/generate-web-changelog.ts", "--check"]),
-    ...packages.map((name) => run(`tsc ${name}`, ["bunx", "tsc", "-p", `packages/${name}`])),
-    run("tsc scripts", ["bunx", "tsc", "-p", "tsconfig.scripts.json"]),
-    run("lint", ["bunx", "eslint", "."]),
-    run("format:check", ["bunx", "prettier", "--check", "."]),
-    run("unit tests", [
-      "bun",
-      "test",
-      ...packages.filter((name) => name !== "testkit").map((name) => `packages/${name}`),
-    ]),
-    run("e2e (testkit)", ["bun", "test", "packages/testkit", "--timeout", "60000"]),
-  ];
+  // Everything that is not a browser gate rides one bounded pool: eslint's compiler pass
+  // and bun's test runners are as memory-hungry as tsc, and any of them reaped under
+  // pressure reads as a phantom failure with empty output.
+  const staticChecks = runLimited(6, [
+    ...packages.map((name) => () => run(`tsc ${name}`, ["bunx", "tsc", "-p", `packages/${name}`])),
+    () => run("tsc scripts", ["bunx", "tsc", "-p", "tsconfig.scripts.json"]),
+    () => run("changelog:check", ["bun", "scripts/generate-web-changelog.ts", "--check"]),
+    () => run("lint", ["bunx", "eslint", "."]),
+    () => run("format:check", ["bunx", "prettier", "--check", "."]),
+    () =>
+      run("unit tests", [
+        "bun",
+        "test",
+        ...packages.filter((name) => name !== "testkit").map((name) => `packages/${name}`),
+      ]),
+    () => run("e2e (testkit)", ["bun", "test", "packages/testkit", "--timeout", "60000"]),
+  ]);
 
   const built = await build;
   const browserGates: Promise<TaskResult>[] = built.ok
@@ -97,7 +127,7 @@ try {
       ]
     : [];
 
-  const results = [built, ...(await Promise.all([...staticChecks, ...browserGates]))];
+  const results = [built, ...(await staticChecks), ...(await Promise.all(browserGates))];
   const failed = results.filter((result) => !result.ok);
   console.log(
     failed.length === 0
