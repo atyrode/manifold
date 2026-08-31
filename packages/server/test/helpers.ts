@@ -276,6 +276,16 @@ export function testPluginHost(
   rooms: RoomManager,
   broker: TerminalBroker,
   runtime: RuntimeDeps,
+  options: { readonly lifecycleTimeoutMs?: number } = {},
 ): PluginHost {
-  return new PluginHost(SERVER_PLUGIN_DEFS, store, auth, rooms, broker, runtime, silentLogger);
+  return new PluginHost(
+    SERVER_PLUGIN_DEFS,
+    store,
+    auth,
+    rooms,
+    broker,
+    runtime,
+    silentLogger,
+    options,
+  );
 }

@@ -1,6 +1,17 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  DATA_VERSION_KEY,
+  MIGRATION_KEY_PREFIX,
+  RESERVED_KEY_PREFIX,
+  assertStorageKey,
+  assertStorageValue,
+  formatDataVersion,
+  parseDataVersion,
+  type PluginAttribution,
+  type PluginStorageAdmin,
+} from "@manifold/plugin";
+import {
   CapSchema,
   PadSchema,
   PadTreeItemSchema,
@@ -23,7 +34,38 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 
 /** Workspace-global plugin enablement and per-principal shells live in `meta`. */
 const PLUGINS_DISABLED_META = "plugins:disabled";
+const PLUGINS_ATTRIBUTION_META = "plugins:attribution";
+const ELEMENT_OWNERS_META = "plugins:element-owners";
 const DisabledPluginsSchema = z.array(z.string().min(1)).max(256);
+const AttributionSchema = z.record(
+  z.string().min(1),
+  z.strictObject({ by: z.string().min(1), at: z.number().int() }),
+);
+const ElementOwnersSchema = z.record(z.string().min(1), z.string().min(1));
+
+/**
+ * A `meta` row holding JSON, read defensively. Every caller treats an unparseable value as
+ * "nothing recorded": the alternative is a workspace that refuses to boot because one row
+ * lost its brackets, and none of these facts is worth that.
+ */
+function readJsonMeta(raw: string | null): unknown {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+interface PluginKvRow {
+  value: string;
+}
+interface PluginKvKeyRow {
+  key: string;
+}
+interface PluginKvCountRow {
+  total: number;
+}
 
 interface PadRow {
   id: string;
@@ -275,23 +317,159 @@ export class ServerStore {
    * lost its brackets.
    */
   disabledPlugins(): ReadonlySet<string> {
-    const raw = this.getMeta(PLUGINS_DISABLED_META);
-    if (raw === null) return new Set();
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(raw);
-    } catch {
-      return new Set();
-    }
-    const parsed = DisabledPluginsSchema.safeParse(decoded);
+    const parsed = DisabledPluginsSchema.safeParse(
+      readJsonMeta(this.getMeta(PLUGINS_DISABLED_META)),
+    );
     return new Set(parsed.success ? parsed.data : []);
   }
 
-  setPluginEnabled(id: string, enabled: boolean): void {
+  /**
+   * Flips one plugin, and records WHO and WHEN. Attribution is workspace-global shared
+   * state like the flag itself: "the machines section vanished" is a question every
+   * principal in the workspace can now answer without reading a log they cannot see.
+   */
+  setPluginEnabled(id: string, enabled: boolean, changedBy: string, changedAt: number): void {
     const disabled = new Set(this.disabledPlugins());
     if (enabled) disabled.delete(id);
     else disabled.add(id);
     this.setMeta(PLUGINS_DISABLED_META, JSON.stringify([...disabled].sort()));
+    const attribution = new Map(this.pluginAttribution());
+    attribution.set(id, { by: changedBy, at: changedAt });
+    this.setMeta(
+      PLUGINS_ATTRIBUTION_META,
+      JSON.stringify(
+        Object.fromEntries([...attribution].sort(([left], [right]) => (left < right ? -1 : 1))),
+      ),
+    );
+  }
+
+  /** Who last flipped each plugin, and when. A corrupt row reads as "nobody knows". */
+  pluginAttribution(): ReadonlyMap<string, PluginAttribution> {
+    const parsed = AttributionSchema.safeParse(
+      readJsonMeta(this.getMeta(PLUGINS_ATTRIBUTION_META)),
+    );
+    return new Map(Object.entries(parsed.success ? parsed.data : {}));
+  }
+
+  /**
+   * ELEMENT-TYPE RESERVATIONS — wire type → the plugin that claimed it. A tombstone, not a
+   * cache: it survives the owner being disabled, going dormant, or leaving the build, because
+   * the documents that stored `type: "draw"` survive all three. Composition refuses a
+   * different plugin claiming a reserved type, so a canvas full of one plugin's elements can
+   * never be silently reinterpreted by whatever ships next under that name.
+   */
+  elementOwners(): ReadonlyMap<string, string> {
+    const parsed = ElementOwnersSchema.safeParse(readJsonMeta(this.getMeta(ELEMENT_OWNERS_META)));
+    return new Map(Object.entries(parsed.success ? parsed.data : {}));
+  }
+
+  /** Claims unreserved types for `pluginId`; existing reservations are left alone. */
+  claimElementTypes(pluginId: string, types: readonly string[]): void {
+    const owners = new Map(this.elementOwners());
+    let changed = false;
+    for (const type of types) {
+      if (owners.has(type)) continue;
+      owners.set(type, pluginId);
+      changed = true;
+    }
+    if (!changed) return;
+    this.writeElementOwners(owners);
+  }
+
+  /** Releases every reservation held by `pluginId` — the purge verb's hands, and only its. */
+  releaseElementTypes(pluginId: string): number {
+    const owners = new Map(this.elementOwners());
+    let released = 0;
+    for (const [type, owner] of owners) {
+      if (owner !== pluginId) continue;
+      owners.delete(type);
+      released += 1;
+    }
+    if (released > 0) this.writeElementOwners(owners);
+    return released;
+  }
+
+  private writeElementOwners(owners: ReadonlyMap<string, string>): void {
+    this.setMeta(
+      ELEMENT_OWNERS_META,
+      JSON.stringify(
+        Object.fromEntries([...owners].sort(([left], [right]) => (left < right ? -1 : 1))),
+      ),
+    );
+  }
+
+  /**
+   * PER-PLUGIN STORAGE, bound to one plugin id. The engine hands this to a plugin as
+   * `ctx.storage`; the plugin sees a namespaced key-value surface and never the database,
+   * so two plugins cannot read each other's rows and a purge erases exactly one namespace.
+   *
+   * Returned as the ADMIN handle. `PluginHost` keeps that and hands plugins the narrower
+   * `PluginStorage` view, whose `set`/`delete` refuse the engine's reserved keys — a plugin
+   * cannot forge its own data version or a ledger entry saying a migration already ran.
+   */
+  pluginStorage(pluginId: string): PluginStorageAdmin {
+    const read = (key: string): string | null =>
+      this.db
+        .query<PluginKvRow, [string, string]>(
+          "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
+        )
+        .get(pluginId, key)?.value ?? null;
+    const write = (key: string, value: string): void => {
+      this.db
+        .query<void, [string, string, string]>(
+          "INSERT OR REPLACE INTO plugin_kv(plugin_id, key, value) VALUES (?, ?, ?)",
+        )
+        .run(pluginId, key, value);
+    };
+    const drop = (key: string): void => {
+      this.db
+        .query<void, [string, string]>("DELETE FROM plugin_kv WHERE plugin_id = ? AND key = ?")
+        .run(pluginId, key);
+    };
+    const scan = (prefix: string): readonly string[] =>
+      this.db
+        .query<PluginKvKeyRow, [string, string]>(
+          "SELECT key FROM plugin_kv WHERE plugin_id = ? AND key LIKE ? || '%' ORDER BY key",
+        )
+        .all(pluginId, prefix)
+        .map((row) => row.key);
+    return {
+      pluginId,
+      get: (key) => read(key),
+      set: (key, value) => {
+        assertStorageKey(key);
+        assertStorageValue(key, value);
+        write(key, value);
+      },
+      delete: (key) => {
+        assertStorageKey(key);
+        drop(key);
+      },
+      // A plugin's own keys only: the engine's reserved rows are not part of the surface it
+      // iterates, or every `keys()` consumer would have to learn to skip them.
+      keys: (prefix) => scan(prefix ?? "").filter((key) => !key.startsWith(RESERVED_KEY_PREFIX)),
+      dataVersion: () => {
+        const raw = read(DATA_VERSION_KEY);
+        return raw === null ? null : parseDataVersion(raw);
+      },
+      appliedMigrations: () =>
+        scan(MIGRATION_KEY_PREFIX).map((key) => key.slice(MIGRATION_KEY_PREFIX.length)),
+      stampDataVersion: (version) => {
+        write(DATA_VERSION_KEY, formatDataVersion(version));
+      },
+      recordMigration: (name, applied) => {
+        write(`${MIGRATION_KEY_PREFIX}${name}`, String(applied));
+      },
+      clear: () => {
+        const removed = this.db
+          .query<PluginKvCountRow, [string]>(
+            "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
+          )
+          .get(pluginId)?.total;
+        this.db.query<void, [string]>("DELETE FROM plugin_kv WHERE plugin_id = ?").run(pluginId);
+        return removed ?? 0;
+      },
+    };
   }
 
   /**

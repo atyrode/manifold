@@ -348,11 +348,14 @@ describe("migration 9: solo compositions", () => {
       seedPreV9(path);
       const db = openDatabase(path);
 
+      // Migration 9 is a step, not the top of the stack: opening a pre-v9 database runs every
+      // later migration too, so the row must equal the CURRENT version rather than this
+      // case's own number.
       expect(
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
-      ).toBe("9");
-      expect(SCHEMA_VERSION).toBe(9);
+      ).toBe(String(SCHEMA_VERSION));
+      expect(SCHEMA_VERSION).toBe(10);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.

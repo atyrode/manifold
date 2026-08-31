@@ -88,7 +88,8 @@ export interface PadAuthoringHandle {
  * The composition, as DATA. A plugin that administers plugins needs to read the roster it
  * is listing; it must not be able to compose, register, or override anything — so this is
  * two questions, both answers, no levers. Mutating the composition is an action
- * (`core.plugins.setEnabled`), like every other authority-bearing change.
+ * (`engine.plugins.setEnabled`, the engine's own builtin door), like every other
+ * authority-bearing change.
  */
 export interface CompositionFacet {
   roster(): PluginRoster;

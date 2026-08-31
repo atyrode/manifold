@@ -270,25 +270,31 @@ describe("ServerStore plugin enablement", () => {
 
     // D4: enablement is workspace-global shared state, not a per-client preference.
     expect([...store.disabledPlugins()]).toEqual([]);
-    store.setPluginEnabled("core.draw", false);
-    store.setPluginEnabled("core.machines", false);
+    store.setPluginEnabled("core.draw", false, "admin", 10);
+    store.setPluginEnabled("core.machines", false, "admin", 20);
     expect([...store.disabledPlugins()].sort()).toEqual(["core.draw", "core.machines"]);
 
     // Re-enabling REMOVES the row rather than recording an "enabled" fact: the absence of a
     // plugin from this set is what makes a newly-composed plugin default to on.
-    store.setPluginEnabled("core.draw", true);
+    store.setPluginEnabled("core.draw", true, "admin", 30);
     expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
     // Idempotent in both directions — a double toggle is not a second disable.
-    store.setPluginEnabled("core.machines", false);
+    store.setPluginEnabled("core.machines", false, "admin", 40);
     expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
-    store.setPluginEnabled("core.draw", true);
+    store.setPluginEnabled("core.draw", true, "admin", 50);
     expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
+
+    // Attribution rides along: who changed what, and when, is shared state too — every
+    // principal in the workspace can answer "why did that section vanish", not just whoever
+    // can read the server's logs.
+    expect(store.pluginAttribution().get("core.draw")).toEqual({ by: "admin", at: 50 });
+    expect(store.pluginAttribution().get("core.machines")).toEqual({ by: "admin", at: 40 });
     store.close();
   });
 
   test("a corrupt enablement row reads as NOTHING disabled, never as everything dark", () => {
     const store = testStore();
-    store.setPluginEnabled("core.draw", false);
+    store.setPluginEnabled("core.draw", false, "admin", 1);
 
     for (const corrupt of ["not json", '"core.draw"', "[42]", "{}", '["", "core.draw"]']) {
       store.setMeta("plugins:disabled", corrupt);
@@ -298,8 +304,25 @@ describe("ServerStore plugin enablement", () => {
     }
 
     // And the store recovers the moment a real write lands.
-    store.setPluginEnabled("core.draw", false);
+    store.setPluginEnabled("core.draw", false, "admin", 2);
     expect([...store.disabledPlugins()]).toEqual(["core.draw"]);
+    store.close();
+  });
+
+  test("element-type reservations are tombstones: claimed once, released only by purge", () => {
+    const store = testStore();
+
+    store.claimElementTypes("core.draw", ["draw"]);
+    // A second claim by the FIRST owner is a no-op, and a later claimant does not steal it:
+    // the reservation is what stops a canvas full of `draw` elements from being silently
+    // reinterpreted by whatever ships next under that name. Composition refuses the squat.
+    store.claimElementTypes("core.draw", ["draw"]);
+    store.claimElementTypes("evil.draw", ["draw"]);
+    expect(store.elementOwners().get("draw")).toBe("core.draw");
+
+    expect(store.releaseElementTypes("evil.draw")).toBe(0);
+    expect(store.releaseElementTypes("core.draw")).toBe(1);
+    expect(store.elementOwners().has("draw")).toBe(false);
     store.close();
   });
 });

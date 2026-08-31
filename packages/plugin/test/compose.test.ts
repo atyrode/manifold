@@ -1,4 +1,9 @@
-import { TileLayoutSchema, validateTileLayout, type PluginManifest } from "@manifold/protocol";
+import {
+  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  TileLayoutSchema,
+  validateTileLayout,
+  type PluginManifest,
+} from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
@@ -77,7 +82,9 @@ describe("composeRoster", () => {
       "core.terminals",
       "core.shell",
     ]);
-    expect(composition.roster.every((entry) => entry.enabled && entry.source === "builtin")).toBe(
+    // `source` distinguishes rows the ENGINE published (its own builtin doors) from plugin
+    // rows; nothing composed here is a builtin, so every row says so.
+    expect(composition.roster.every((entry) => entry.enabled && entry.source === "plugin")).toBe(
       true,
     );
 
@@ -106,7 +113,13 @@ describe("composeRoster", () => {
     expect(composition.sections).toEqual([
       { id: "machines", plugin: "core.shell", title: "Machines", order: 20 },
     ]);
-    expect(composition.elements.get("draw")).toEqual({ plugin: "core.shell", title: "Drawing" });
+    // The manifest declared no placement traits, so the registry resolves the default (G1):
+    // a reader sees traits, never an absence it would have to know the default for.
+    expect(composition.elements.get("draw")).toEqual({
+      plugin: "core.shell",
+      title: "Drawing",
+      placement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+    });
     expect(composition.tools).toEqual([
       { id: "terminal", plugin: "core.terminals", title: "Terminal" },
     ]);
@@ -495,5 +508,346 @@ describe("DEFAULT_WORKSPACE_LAYOUT", () => {
       if (node.surface === null || node.surface.kind !== "panel") continue;
       expect(composition.panels.has(node.surface.panelId)).toBe(true);
     }
+  });
+});
+
+/**
+ * CONTRACT V2 in the ENGINE — dependencies, ordering, reservations and stored data.
+ *
+ * What composition refuses is deliberately narrow: STRUCTURAL truths no toggle can fix. The
+ * cases below pin both halves of that line, because the failure mode of getting it wrong is
+ * a workspace that will not boot over a plugin nobody is using.
+ */
+describe("composeRoster dependencies and order", () => {
+  function dep(id: string, dependencies: PluginManifest["dependencies"]): PluginDef {
+    return { manifest: { ...manifest({ id }), dependencies }, actions: [] };
+  }
+
+  function after(id: string, targets: readonly string[]): PluginDef {
+    return { manifest: { ...manifest({ id }), after: [...targets] }, actions: [] };
+  }
+
+  test("order is topological, and ties break lexicographically rather than by registration", () => {
+    const composition = composeRoster(
+      [
+        after("core.zulu", ["core.mike"]),
+        dep("core.mike", { "core.base": { type: "required" } }),
+        dep("core.base", {}),
+        dep("core.alpha", {}),
+      ],
+      NONE,
+    );
+
+    // Dependencies and `after` both order; among plugins nothing separates, the id decides.
+    // Registration order deliberately DISAGREES with the answer, because an order that
+    // happened to match the array would not prove anything.
+    expect(composition.order).toEqual(["core.alpha", "core.base", "core.mike", "core.zulu"]);
+
+    // ...and the same defs in any other order compose to the same sequence: the lifecycle
+    // fan-out rides this, so "deterministic" has to mean input-order-independent.
+    const shuffled = composeRoster(
+      [
+        dep("core.alpha", {}),
+        dep("core.base", {}),
+        after("core.zulu", ["core.mike"]),
+        dep("core.mike", { "core.base": { type: "required" } }),
+      ],
+      NONE,
+    );
+    expect(shuffled.order).toEqual(composition.order);
+  });
+
+  test("a required dependency nothing composed refuses, naming both plugins", () => {
+    let thrown: unknown = null;
+    try {
+      composeRoster(
+        [dep("core.leaf", { "core.absent": { type: "required", reason: "needs its storage" } })],
+        NONE,
+      );
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    // STRUCTURAL: no toggle produces a plugin that is not in the build, so this cannot be a
+    // door refusal — there is nothing an administrator could do about it later.
+    expect(thrown).toBeInstanceOf(CompositionError);
+    expect((thrown as CompositionError).problems).toEqual([
+      'plugin "core.leaf" requires plugin "core.absent", which is not composed (needs its storage)',
+    ]);
+  });
+
+  test("a merely DISABLED dependency composes: the refusal belongs at the door", () => {
+    const composition = composeRoster(
+      [dep("core.base", {}), dep("core.leaf", { "core.base": { type: "required" } })],
+      new Set(["core.base"]),
+    );
+
+    /*
+      No cascade in either direction (ADR 0013 §5.4/§5.5). `core.leaf` stays enabled state-wise
+      — `enabled` is the ADMINISTRATIVE truth and the only one — while the roster names the
+      obstacle through `unmet`, and the enablement door refuses the moves that would break it.
+      A cascade here would be other principals' surfaces vanishing without their consent.
+     */
+    expect(composition.enabled("core.leaf")).toBe(true);
+    expect(composition.enabled("core.base")).toBe(false);
+    expect(composition.unmet("core.leaf")).toEqual(["core.base"]);
+    expect(composition.requiredBy("core.base")).toEqual(["core.leaf"]);
+    // The disabled row advertises WHY it cannot simply be switched back on.
+    const base = composition.roster.find((entry) => entry.manifest.id === "core.base");
+    expect(base?.refusal).toBeUndefined();
+    const stranded = composeRoster(
+      [dep("core.base", {}), dep("core.leaf", { "core.base": { type: "required" } })],
+      new Set(["core.base", "core.leaf"]),
+    ).roster.find((entry) => entry.manifest.id === "core.leaf");
+    expect(stranded?.refusal).toBe("dependency_disabled");
+  });
+
+  test("an optional dependency orders but never requires; a missing `after` is ignored", () => {
+    const composition = composeRoster(
+      [
+        dep("core.late", {
+          "core.early": { type: "optional" },
+          "core.absent": { type: "optional" },
+        }),
+        dep("core.early", {}),
+        after("core.wisher", ["core.nobody"]),
+      ],
+      NONE,
+    );
+
+    // Home Assistant's split: `dependencies` says what must BE there, `after` only what must
+    // come first. An ordering wish about a plugin that legitimately does not exist is not an
+    // error, and an optional dependency's absence is not either.
+    expect(composition.order.indexOf("core.early")).toBeLessThan(
+      composition.order.indexOf("core.late"),
+    );
+    expect(composition.unmet("core.late")).toEqual([]);
+    expect(composition.roster).toHaveLength(3);
+  });
+
+  test("incompatibility is symmetric and orders nothing", () => {
+    const composition = composeRoster(
+      [dep("core.rival", { "core.leaf": { type: "incompatible" } }), dep("core.leaf", {})],
+      NONE,
+    );
+
+    expect(composition.conflicts("core.leaf")).toEqual(["core.rival"]);
+    expect(composition.conflicts("core.rival")).toEqual(["core.leaf"]);
+    // Two plugins that never run together have nothing to order, so the incompatibility adds
+    // no edge — and a pair that declared each other incompatible would otherwise be a cycle.
+    expect(composition.order).toEqual(["core.leaf", "core.rival"]);
+    // Composed with one off, the other is unencumbered.
+    expect(
+      composeRoster(
+        [dep("core.rival", { "core.leaf": { type: "incompatible" } }), dep("core.leaf", {})],
+        new Set(["core.leaf"]),
+      ).conflicts("core.rival"),
+    ).toEqual([]);
+  });
+
+  test("a dependency cycle refuses, naming every plugin in it", () => {
+    let thrown: unknown = null;
+    try {
+      composeRoster(
+        [
+          dep("core.one", { "core.two": { type: "required" } }),
+          dep("core.two", { "core.one": { type: "required" } }),
+          dep("core.free", {}),
+        ],
+        NONE,
+      );
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    // A cycle has no total order, and the fan-out order is contract — so this is structural
+    // and names the offenders rather than picking a winner by registration accident.
+    expect(thrown).toBeInstanceOf(CompositionError);
+    expect((thrown as CompositionError).problems).toEqual([
+      "dependency cycle among: core.one, core.two",
+    ]);
+  });
+
+  test("self-dependency refuses in both spellings", () => {
+    let thrown: unknown = null;
+    try {
+      composeRoster(
+        [
+          dep("core.narcissus", { "core.narcissus": { type: "required" } }),
+          after("core.echo", ["core.echo"]),
+        ],
+        NONE,
+      );
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect((thrown as CompositionError).problems).toEqual([
+      'plugin "core.narcissus" declares a dependency on itself',
+      'plugin "core.echo" declares itself in "after"',
+    ]);
+  });
+});
+
+describe("composeRoster reservations, builtins and stored data", () => {
+  const drawing: PluginDef = {
+    manifest: manifest({
+      id: "core.draw",
+      contributes: { elements: [{ type: "draw", title: "Drawing" }] },
+    }),
+    actions: [],
+  };
+
+  test("an element type reserved by another plugin cannot be claimed, and names the owner", () => {
+    const squatter: PluginDef = {
+      manifest: manifest({
+        id: "vendor.sketch",
+        contributes: { elements: [{ type: "draw", title: "Sketching" }] },
+      }),
+      actions: [],
+    };
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([squatter], NONE, { elementOwners: new Map([["draw", "core.draw"]]) });
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    /*
+      The reservation is a tombstone that OUTLIVES its owner's presence in the build, which is
+      the whole point: a canvas full of `draw` elements does not disappear when the plugin
+      that wrote them goes dormant, so the type must not be reinterpreted by whatever ships
+      next under that name. Duplicate-claim refusal only catches the case where both plugins
+      are present.
+     */
+    expect(thrown).toBeInstanceOf(CompositionError);
+    expect((thrown as CompositionError).problems).toEqual([
+      'element type "draw" is reserved by "core.draw"; "vendor.sketch" cannot claim it',
+    ]);
+
+    // The rightful owner composes against its own reservation without complaint.
+    expect(() =>
+      composeRoster([drawing], NONE, { elementOwners: new Map([["draw", "core.draw"]]) }),
+    ).not.toThrow();
+  });
+
+  test("the engine namespace is reserved: only rows the engine registered may claim it", () => {
+    const impostor: PluginDef = { manifest: manifest({ id: "engine.plugins" }), actions: [] };
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([impostor], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    // A plugin under `engine.*` would publish a row indistinguishable from a builtin door —
+    // the one row a client renders WITHOUT a toggle — so the squat is refused by name.
+    expect(thrown).toBeInstanceOf(CompositionError);
+    expect((thrown as CompositionError).problems).toEqual([
+      'plugin "engine.plugins" claims the reserved "engine." namespace, which only the engine\'s own builtin doors may use',
+    ]);
+
+    // Registered BY the engine, the same manifest is legal and publishes as a builtin row
+    // whose refusal class says there is nothing to toggle.
+    const composition = composeRoster([impostor], NONE, {
+      builtins: new Set(["engine.plugins"]),
+    });
+    const row = composition.roster[0];
+    expect(row?.source).toBe("builtin");
+    expect(row?.refusal).toBe("builtin");
+    expect(composition.builtin("engine.plugins")).toBe(true);
+  });
+
+  test("roster rows carry lifecycle state, attribution, and the essential refusal class", () => {
+    // Deliberately WITHOUT the element contribution: `shell` already claims `draw`, and a
+    // duplicate claim is its own refusal (D5) with nothing to say about roster fields.
+    const bare: PluginDef = { manifest: manifest({ id: "core.draw" }), actions: [] };
+    const composition = composeRoster([shell, bare], new Set(["core.draw"]), {
+      lifecycle: new Map([["core.draw", "disable_failed" as const]]),
+      attribution: new Map([["core.draw", { by: "principal-3", at: 42 }]]),
+    });
+
+    const draw = composition.roster.find((entry) => entry.manifest.id === "core.draw");
+    expect(draw?.lifecycle).toBe("disable_failed");
+    expect(draw?.changedBy).toBe("principal-3");
+    expect(draw?.changedAt).toBe(42);
+
+    // `essential` is now one named refusal class among several rather than a special case:
+    // the UI decides whether to draw a lever from the class, not from a flag it re-reads.
+    const shellRow = composition.roster.find((entry) => entry.manifest.id === "core.shell");
+    expect(shellRow?.refusal).toBe("essential");
+    // An ordinary enabled plugin advertises no obstacle at all.
+    expect(composeRoster([bare], NONE).roster[0]?.refusal).toBeUndefined();
+  });
+
+  test("stored data is judged for plugins that will SERVE, and only for those", () => {
+    const versioned = (major: number): PluginDef => ({
+      manifest: { ...manifest({ id: "core.store" }), dataVersion: { major, minor: 0 } },
+      actions: [],
+    });
+    const dataState = new Map([["core.store", { version: { major: 3, minor: 1 }, applied: [] }]]);
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([versioned(2)], NONE, { dataState });
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect((thrown as CompositionError).problems[0]).toContain("major downgrade is refused");
+
+    // Disabled, the same data is RETAINED and untouched, so it endangers nobody and boot
+    // proceeds: the refusal moves to the enablement door, where an actor is present to hear
+    // it. Refusing here instead would mean one dormant plugin's old rows can stop a server.
+    expect(() =>
+      composeRoster([versioned(2)], new Set(["core.store"]), { dataState }),
+    ).not.toThrow();
+
+    // A major bump forward with a declared, unapplied migration is a PLAN, not a refusal.
+    const planned = composeRoster(
+      [
+        {
+          ...versioned(4),
+          migrations: [{ name: "to-4", to: { major: 4, minor: 0 }, migrate: () => undefined }],
+        },
+      ],
+      NONE,
+      { dataState },
+    );
+    expect(planned.pendingMigrations.get("core.store")?.map((step) => step.name)).toEqual(["to-4"]);
+  });
+
+  test("migrations must be named once, and may not claim to reach past their own code", () => {
+    const bad: PluginDef = {
+      manifest: { ...manifest({ id: "core.store" }), dataVersion: { major: 2, minor: 0 } },
+      actions: [],
+      migrations: [
+        { name: "same", to: { major: 1, minor: 0 }, migrate: () => undefined },
+        { name: "same", to: { major: 2, minor: 0 }, migrate: () => undefined },
+        { name: "ahead", to: { major: 3, minor: 0 }, migrate: () => undefined },
+      ],
+    };
+    const unversioned: PluginDef = {
+      manifest: manifest({ id: "core.loose" }),
+      actions: [],
+      migrations: [{ name: "orphan", to: { major: 1, minor: 0 }, migrate: () => undefined }],
+    };
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([bad, unversioned], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    // The ledger records NAMES, so a duplicate name would make "did this already run?"
+    // unanswerable; a migration reaching past the declared version would leave data its own
+    // code cannot read; and a migration with no version to reach is a transformation nobody
+    // can decide to run.
+    expect((thrown as CompositionError).problems).toEqual([
+      'plugin "core.store" migration "ahead" targets 3.0, past the 2.0 its code declares',
+      'duplicate migration in "core.store" "same" claimed by: core.store, core.store',
+      'plugin "core.loose" declares migration "orphan" without a manifest dataVersion to reach',
+    ]);
   });
 });

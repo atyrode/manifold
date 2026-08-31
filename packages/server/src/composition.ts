@@ -1,7 +1,6 @@
 import { drawManifest } from "@manifold-plugin/draw";
 import { machinesManifest } from "@manifold-plugin/machines";
-import { pluginManagerActions, pluginManagerManifest } from "@manifold-plugin/plugin-manager";
-import { pluginManagerHandlers } from "@manifold-plugin/plugin-manager/server";
+import { pluginManagerManifest } from "@manifold-plugin/plugin-manager";
 import { presenceActions, presenceManifest } from "@manifold-plugin/presence";
 import { presenceHandlers } from "@manifold-plugin/presence/server";
 import { layoutActions, layoutManifest, shellManifest } from "@manifold-plugin/shell";
@@ -28,11 +27,10 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   // no actions: chrome is not authority.
   { manifest: shellManifest, actions: [], handlers: {} },
   { manifest: layoutManifest, actions: layoutActions, handlers: layoutHandlers },
-  {
-    manifest: pluginManagerManifest,
-    actions: pluginManagerActions,
-    handlers: pluginManagerHandlers,
-  },
+  // The plugin manager is a UI over the composition and owns no door: enablement and purge
+  // are the ENGINE's builtin row (`engine.plugins`), registered by the host itself rather
+  // than here, because administration of the composition cannot be a member of it.
+  { manifest: pluginManagerManifest, actions: [], handlers: {} },
   { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
   /*

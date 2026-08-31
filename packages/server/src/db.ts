@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -226,6 +226,27 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '8');
    * too, which is why this one is code.
    */
   9: { backup: true, apply: migrateToSoloCompositions },
+  /**
+   * Per-plugin storage and element-type reservations (#69). ONE table, because a plugin's
+   * durable state is a namespaced key-value surface by contract — the engine has no business
+   * knowing a plugin's shape, and a table per plugin would be exactly the bespoke-schema
+   * sprawl the plugin engine exists to end.
+   *
+   * The engine's own reserved keys (`$version`, `$migration:<name>`) live in the same table
+   * under the owning plugin's id, so a plugin's rows, its data version and its migration
+   * ledger are erased by one `DELETE` when a purge names it. Element-type reservations live
+   * under the engine builtin's own id (`$owner:<type>`) and are tombstones: they outlive
+   * their owner leaving the build, because the documents that stored the type do not.
+   */
+  10: `
+CREATE TABLE plugin_kv(
+  plugin_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)
+) WITHOUT ROWID;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10');
+`,
 };
 
 interface TableRow {
