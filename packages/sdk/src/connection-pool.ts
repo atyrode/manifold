@@ -1,4 +1,5 @@
 import {
+  MAX_SESSION_BASE64_CHARS,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   reconnectDelayMs,
@@ -136,7 +137,7 @@ function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
     Number.isInteger(seq) &&
     seq >= 0 &&
     typeof data === "string" &&
-    data.length <= 700_000
+    data.length <= MAX_SESSION_BASE64_CHARS
   );
 }
 

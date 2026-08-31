@@ -7,6 +7,7 @@ import {
   PlaceRequestSchema,
   PlaceResponseSchema,
   censusSolo,
+  elementString,
   type CensusItem,
   type ContainerCensus,
   type Container,
@@ -460,7 +461,9 @@ test("extracting a leaf re-homes its live terminal into a fresh solo composition
     const authored = canvas.elements.get(extracted.elementId);
     if (authored?.type !== "portal") throw new Error("extract authored no portal element");
     expect(authored).toMatchObject({ x: 640, y: 700 });
-    const newHome = authored.containerId;
+    // The envelope carries the reference; `elementString` is how a reader that KNOWS the field
+    // asks for it (ADR 0013 §16), and a null here would be a portal with no target at all.
+    const newHome = elementString(authored, "containerId") ?? "";
     expect(newHome).not.toBe(resident.terminal.containerId);
     expect(newHome).not.toBe(bornHome);
     expect(newHome).not.toBe(container.id);

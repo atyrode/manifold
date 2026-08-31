@@ -1,7 +1,13 @@
 import type { CarryAim, PlacementItem } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { useEffect, useRef, useState } from "react";
-import { carryFrame, carryPlacementId, type CarryPoint, type CarrySource } from "./carry.ts";
+import {
+  carryFrame,
+  carryPlacementId,
+  moveFrame,
+  type CarryPoint,
+  type CarrySource,
+} from "./carry.ts";
 import {
   applyGestureFrame,
   createGestureStream,
@@ -97,6 +103,14 @@ export function useCarry({ client, describe, resolveItem }: UseCarryOptions): Ca
     resolveItemRef.current = resolveItem;
   });
   const sourceRef = useRef<CarrySource | null>(null);
+  /**
+   * The placement id of a grab this renderer could NOT classify. Its geometry still
+   * streams, as `move` — see {@link moveFrame}: the census a carry's item needs arrives
+   * on a poll while the document it describes arrives on the room socket, so refusing to
+   * publish until the two agree makes a collaborator's live drag invisible for up to one
+   * poll interval. Motion is unconditional; the WHAT rides along when it is knowable.
+   */
+  const moveOnlyRef = useRef<string | null>(null);
   const lastPointRef = useRef<CarryPoint | null>(null);
   const streamRef = useRef<GestureStream | null>(null);
   const [controller] = useState<CarryController>(() => {
@@ -124,7 +138,18 @@ export function useCarry({ client, describe, resolveItem }: UseCarryOptions): Ca
     return {
       begin(envelope, options) {
         const item = resolveItemRef.current(envelope);
-        if (item === null) return;
+        if (item === null) {
+          // No item to seal into the process-wide register either: an adopting renderer
+          // judges legality from that item, and there is none to hand it.
+          moveOnlyRef.current = carryPlacementId(envelope);
+          lastPointRef.current = options.at ?? null;
+          const placementId = moveOnlyRef.current;
+          if (placementId !== null && options.at !== undefined) {
+            stream().push(moveFrame(placementId, options.at, "active"));
+          }
+          return;
+        }
+        moveOnlyRef.current = null;
         const source = open(envelope, item, options.label ?? null);
         sourceRef.current = source;
         lastPointRef.current = options.at ?? null;
@@ -135,6 +160,14 @@ export function useCarry({ client, describe, resolveItem }: UseCarryOptions): Ca
       track(at, aim) {
         let source = sourceRef.current;
         if (source === null) {
+          const placementId = moveOnlyRef.current;
+          if (placementId !== null) {
+            // Geometry-only: an `aim` is a claim about a placement, and this grab has no
+            // classified item to make one with, so the frame carries motion and nothing else.
+            lastPointRef.current = at;
+            stream().push(moveFrame(placementId, at, "active"));
+            return;
+          }
           // ADOPTION: the register already holds the grabber's own answer, and that is the
           // one to stream — re-classifying a foreign grab here would ask this renderer's
           // census a question the source already answered.
@@ -149,16 +182,19 @@ export function useCarry({ client, describe, resolveItem }: UseCarryOptions): Ca
       },
       end(at) {
         const source = sourceRef.current;
+        const placementId = moveOnlyRef.current;
         endCarry();
-        if (source === null) return;
         sourceRef.current = null;
+        moveOnlyRef.current = null;
         const point = at ?? lastPointRef.current;
         lastPointRef.current = null;
-        // A carry with no frame yet cannot strand an override, so there is nothing to
+        // A grab with no frame yet cannot strand an override, so there is nothing to
         // retract; otherwise the end frame is what releases the peers' ghosts at once.
-        if (point !== null) stream().end(carryFrame(source, point, "end"));
+        if (point === null) return;
+        if (source !== null) stream().end(carryFrame(source, point, "end"));
+        else if (placementId !== null) stream().end(moveFrame(placementId, point, "end"));
       },
-      id: () => sourceRef.current?.id ?? null,
+      id: () => sourceRef.current?.id ?? moveOnlyRef.current,
     };
   });
 

@@ -1,14 +1,39 @@
 import { describe, expect, test } from "bun:test";
+import type { PluginRoster } from "@manifold/protocol";
 import {
   carryFrame,
   carryGhosts,
   carryPayload,
   carryPlacementId,
+  firstLineLabel,
   remoteTileCarries,
   refDisplayLabel,
 } from "../src/carry.ts";
 import type { CarrySource } from "../src/carry.ts";
 import type { GestureOverride } from "../src/presence/index.ts";
+
+/**
+ * One contributed element type, as the roster publishes it. This is the only place the word
+ * "note" may come from: it is `core.notes`' manifest TITLE, and a label that has to fall back
+ * reads it from here rather than from a noun the engine spelled for one plugin.
+ */
+function contributor(id: string, type: string, title: string): PluginRoster[number] {
+  return {
+    manifest: {
+      id,
+      version: "1.0.0",
+      title: id,
+      description: id,
+      capabilities: [],
+      contributes: { panels: [], sections: [], elements: [{ type, title }], tools: [], events: [] },
+    },
+    enabled: true,
+    source: "builtin",
+    actions: [],
+  };
+}
+
+const ROSTER: PluginRoster = [contributor("core.notes", "text", "Note")];
 
 /** Every fixture names its item, exactly as a real grab site resolves it once. */
 const TEXT_ITEM = { kind: "text", containerId: null } as const;
@@ -222,16 +247,54 @@ describe("carry", () => {
   });
 
   test("every composition species is named by one switch, and an unknown name is null", () => {
+    const borne: Readonly<Record<string, { readonly type: string; readonly text: string }>> = {
+      e1: { type: "text", text: "Groceries\nmilk\neggs" },
+      "e-empty": { type: "text", text: "  \n" },
+      "e-absent": { type: "chart", text: "" },
+    };
     const lookups = {
       terminalName: (terminalId: string) => (terminalId === "s1" ? "build" : null),
       containerName: (containerId: string) => (containerId === "p1" ? "Sketches" : null),
-      noteText: (elementId: string) => (elementId === "e1" ? "Groceries\nmilk\neggs" : null),
+      textElement: (elementId: string) => borne[elementId] ?? null,
+      roster: ROSTER,
     };
     expect(refDisplayLabel({ kind: "terminal", terminalId: "s1" }, lookups)).toBe("build");
     expect(refDisplayLabel({ kind: "container", containerId: "p1" }, lookups)).toBe("Sketches");
-    // A note borrows its FIRST line, which is the only handle a note has.
+    // A text-bearing element borrows its FIRST line: the only handle its own content gives it.
     expect(refDisplayLabel({ kind: "text", elementId: "e1" }, lookups)).toBe("Groceries");
+    // Nothing to borrow is not namelessness: the noun is the DECLARING plugin's manifest
+    // title, which is what stops each renderer from carrying its own copy of "note".
+    expect(refDisplayLabel({ kind: "text", elementId: "e-empty" }, lookups)).toBe("note");
+    // A kind no composed plugin declares gets the truthful generic, never a borrowed species.
+    expect(refDisplayLabel({ kind: "text", elementId: "e-absent" }, lookups)).toBe("item");
+    // No element at that id at all: there is nothing to name yet, which is not a name.
     expect(refDisplayLabel({ kind: "text", elementId: "gone" }, lookups)).toBeNull();
     expect(refDisplayLabel(null, lookups)).toBeNull();
+  });
+});
+
+/**
+ * The rule is "borrow the first line", stated once for every text-bearing kind. These bounds
+ * are what a caption slot is drawn to, so the ellipsis has to REPLACE the last character
+ * rather than extend past it.
+ */
+describe("firstLineLabel", () => {
+  test("content with nothing to borrow has no label, which is the fallback's cue", () => {
+    expect(firstLineLabel("")).toBeNull();
+    expect(firstLineLabel("   ")).toBeNull();
+    expect(firstLineLabel("\n\nsecond line is not a title")).toBeNull();
+  });
+
+  test("the first line IS the label, trimmed, and the rest of the content is not", () => {
+    expect(firstLineLabel("  Groceries  \nmilk\neggs")).toBe("Groceries");
+    expect(firstLineLabel("one line only")).toBe("one line only");
+  });
+
+  test("at the bound the line stands; past it the ellipsis takes the 40th character", () => {
+    const exact = "x".repeat(40);
+    expect(firstLineLabel(exact)).toBe(exact);
+    const over = `${"y".repeat(41)}\ntail`;
+    expect(firstLineLabel(over)).toBe(`${"y".repeat(39)}…`);
+    expect(firstLineLabel(over)).toHaveLength(40);
   });
 });

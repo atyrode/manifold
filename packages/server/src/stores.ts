@@ -140,6 +140,15 @@ interface TerminalDbRow {
   created_at: number;
 }
 
+interface EventDbRow {
+  id: number;
+  container_id: string | null;
+  ts: number;
+  principal_id: string | null;
+  type: string;
+  payload: string;
+}
+
 interface MetaRow {
   value: string;
 }
@@ -212,6 +221,31 @@ export interface NewStoredTerminal {
   createdBy: string;
   agentPrincipalId: string;
   createdAt: number;
+}
+
+/**
+ * One row of the audit trail, camelCased for the wire.
+ *
+ * `containerId` and `principalId` are both nullable because both are genuinely optional facts:
+ * a token revocation is workspace-wide and belongs to no container, and a system-initiated
+ * record belongs to no principal. `payload` is the JSON text exactly as `addEvent` stored it —
+ * parsing it is the reader's decision, and a row whose payload cannot be parsed must still be
+ * readable as a row.
+ */
+export interface StoredEvent {
+  id: number;
+  containerId: string | null;
+  ts: number;
+  principalId: string | null;
+  type: string;
+  payload: string;
+}
+
+/** What a caller may narrow the audit trail by. Omitting a field asks for everything. */
+export interface EventFilter {
+  readonly containerId?: string;
+  readonly type?: string;
+  readonly limit: number;
 }
 
 /** SHA-256 hex encoding used for bearer secrets and document integrity hashes. */
@@ -947,6 +981,63 @@ export class ServerStore {
     if (containerId !== null && retainedCount !== null) {
       this.eventCountByContainer.set(containerId, retainedCount);
     }
+  }
+
+  /**
+   * THE audit trail, read back. Newest first, and index-backed in both shapes.
+   *
+   * `addEvent` is the only writer and it has always been append-only; this is the read that
+   * makes the rows reachable by something other than a SQL prompt (`core.events.list`). Two
+   * queries rather than one, and the split is the index rather than taste: narrowing by
+   * container hits `events_by_container_recency (container_id, ts DESC, id DESC)` — the exact
+   * shape of the filter and the ordering together — while the unfiltered read walks
+   * `events_by_timestamp (ts)` backwards. A single query with `(?1 IS NULL OR container_id = ?1)`
+   * would read better and would defeat both: SQLite cannot plan an index seek through an `OR`
+   * on the indexed column, so the workspace-wide read would become a table scan and sort as
+   * the trail grows.
+   *
+   * `type` gets exactly that sentinel treatment, and there it is free: no index covers `type`,
+   * so it is a predicate the ordering scan applies either way.
+   *
+   * `ts DESC, id DESC` is the recency order the retention pruning already uses, so "newest"
+   * means the same thing to the reader and to the writer that decides what to drop. The `id`
+   * tiebreak matters because `ts` is the caller's clock and two records can share a
+   * millisecond.
+   *
+   * `limit` is required, not optional: an unbounded read of a 10,000-row-per-container trail
+   * is a door that can be asked to allocate the whole table, and the bound belongs to the
+   * caller's contract rather than to a default buried here.
+   */
+  listEvents(filter: EventFilter): readonly StoredEvent[] {
+    const type = filter.type ?? null;
+    const rows =
+      filter.containerId === undefined
+        ? this.db
+            .query<EventDbRow, [string | null, number]>(
+              `SELECT id, container_id, ts, principal_id, type, payload
+                 FROM events
+                WHERE (?1 IS NULL OR type = ?1)
+                ORDER BY ts DESC, id DESC
+                LIMIT ?2`,
+            )
+            .all(type, filter.limit)
+        : this.db
+            .query<EventDbRow, [string, string | null, number]>(
+              `SELECT id, container_id, ts, principal_id, type, payload
+                 FROM events
+                WHERE container_id = ?1 AND (?2 IS NULL OR type = ?2)
+                ORDER BY ts DESC, id DESC
+                LIMIT ?3`,
+            )
+            .all(filter.containerId, type, filter.limit);
+    return rows.map((row) => ({
+      id: row.id,
+      containerId: row.container_id,
+      ts: row.ts,
+      principalId: row.principal_id,
+      type: row.type,
+      payload: row.payload,
+    }));
   }
 
   createMachine(machine: MachineRecord): void {

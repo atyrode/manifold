@@ -10,6 +10,7 @@ import {
   PlaceResponseSchema,
   ServerToAgentMessageSchema,
   censusSolo,
+  elementString,
   placementContainerFor,
   placementItemFor,
   placementRefusalRule,
@@ -23,11 +24,13 @@ import {
   type PlacementItem,
   type PlacementLookup,
   type PlacementRef,
+  type PlacementTraits,
   type SceneElement,
   type ServerToAgentMessage,
   type TileRef,
 } from "@manifold/protocol";
-import { rosterElementTraits } from "@manifold/plugin";
+import { rosterElementTraits, workspaceLayout } from "@manifold/plugin";
+import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
@@ -42,7 +45,12 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { assemblyElementTraits, PlaceExecutor, type PlaceOutcome } from "../src/placement.ts";
+import {
+  assemblyElementTraits,
+  assemblyItemNouns,
+  PlaceExecutor,
+  type PlaceOutcome,
+} from "../src/placement.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
@@ -200,6 +208,7 @@ function placementFixture(): PlacementFixture {
     broker,
     runtime,
     assemblyElementTraits(() => plugins.roster()),
+    assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
@@ -224,6 +233,7 @@ function placementFixture(): PlacementFixture {
     machines,
     plugins,
     silentLogger,
+    workspaceLayout(WORKSPACE_PANELS),
   );
   const partial = {
     runtime,
@@ -380,9 +390,11 @@ function lookupFor(fixture: PlacementFixture): PlacementLookup {
       const found = fixture.rooms.get(containerId)?.element(elementId) ?? null;
       if (found === null) return null;
       if (found.type !== "portal") return { kind: found.type, containerId: null };
-      const discipline = fixture.store.getContainer(found.containerId)?.discipline ?? null;
+      const target = elementString(found, "containerId");
+      if (target === null) return null;
+      const discipline = fixture.store.getContainer(target)?.discipline ?? null;
       if (discipline === null) return null;
-      return { kind: discipline, containerId: found.containerId };
+      return { kind: discipline, containerId: target };
     },
     soloOccupant: (containerId): PlacementItem | null => {
       const room = fixture.rooms.get(containerId);
@@ -1638,5 +1650,88 @@ describe("core.space.place", () => {
     const afterDisable = await dispatch(fixture, OWNER_KEY, legal);
     expect(afterDisable.ok).toBe(false);
     if (!afterDisable.ok) expect(afterDisable.denial.rule).toBe("plugin_disabled");
+  });
+});
+
+/*
+  THE FLOOR NAMES NO PLUGIN'S KIND, AND NO PLUGIN'S WORD.
+
+  `placement.ts` used to spell the element type `"text"` in two rules — which occupant a leaf
+  refuses to move aside, and what a merged composition is called after the thing that went
+  into it. Both are questions about a SPECIES, and both now read the species' own declaration:
+  `homed: "on_claim"` decides which rule applies, and the assembly's noun table supplies the
+  word. `core.notes` is the only kind declaring `on_claim` today, so the cases below dictate
+  the vocabulary the executor is given instead of waiting for a second plugin to exist.
+
+  The displaceability rule is deliberately NOT asserted here, and the reason is worth writing
+  down: a leaf's occupant is addressed by a `TileRef`, whose element form is still the single
+  literal `kind: "text"`, so no second element kind can occupy a leaf yet however it declares
+  itself. Generalizing that address form is a protocol change with its own name. Until then the
+  trait check there is the reason for a refusal the exhaustive `terminal`/`container` narrowing
+  below it would also reach, and a test asserting it would be asserting nothing.
+*/
+describe("placement rules read the DECLARATION, never the kind's name", () => {
+  const ON_CLAIM: PlacementTraits = {
+    groups: ["tileable", "canvas_item"],
+    guards: [],
+    homed: "on_claim",
+  };
+
+  /** One executor over the fixture's own world, speaking a vocabulary the case dictates. */
+  function executorWith(
+    fixture: PlacementFixture,
+    traits: PlacementTraits,
+    noun: string,
+  ): PlaceExecutor {
+    return new PlaceExecutor(
+      fixture.store,
+      fixture.rooms,
+      fixture.broker,
+      fixture.runtime,
+      (kind) => (kind === "text" ? traits : null),
+      (kind) => (kind === "text" ? noun : "item"),
+    );
+  }
+
+  /** Merges the canvas note onto the solo portal and answers the newborn's name. */
+  function composedName(fixture: PlacementFixture, executor: PlaceExecutor): string {
+    const outcome = executor.place({
+      ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+    if (outcome.status !== "placed" || outcome.result.op !== "compose") {
+      throw new Error(`the note did not compose: ${ruleOrStatus(outcome)}`);
+    }
+    return fixture.store.getContainer(outcome.result.containerId)?.name ?? "";
+  }
+
+  test("the shipped assembly names a composed note after core.notes' own title", () => {
+    const fixture = placementFixture();
+    // The behavior the deleted literal produced, preserved exactly — reached now through
+    // `homed: "on_claim"` and `itemNoun`, so this is the regression guard for the rewrite.
+    expect(composedName(fixture, fixture.placement)).toContain(" + note");
+  });
+
+  test("a second on_claim kind is named by ITS declaration, through the same branch", () => {
+    const fixture = placementFixture();
+    // Same element, same drop, same rule: the only thing that differs from the case above is
+    // the vocabulary the assembly published. A kind the executor has never heard of takes its
+    // own word, which is the whole point of the noun table being a table.
+    expect(composedName(fixture, executorWith(fixture, ON_CLAIM, "memo"))).toContain(" + memo");
+  });
+
+  test("declaring that kind `inline` withdraws it from the rule entirely", () => {
+    const fixture = placementFixture();
+    // The proof the literal is gone rather than merely moved: identical element, identical
+    // gesture, and the one field changed is `homed`. An `inline` item is at home wherever it
+    // already is, so the merge has no species to borrow a name from and says so instead of
+    // quietly calling it a note.
+    const inline: PlacementTraits = { ...ON_CLAIM, homed: "inline" };
+    expect(composedName(fixture, executorWith(fixture, inline, "memo"))).toContain(" + ref");
   });
 });

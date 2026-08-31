@@ -382,7 +382,7 @@ try {
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "tile-drop-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
   await browser.goto(`${origin}/p/${containerId}`);
   await until(
@@ -823,7 +823,7 @@ try {
   await viewer.goto(`${origin}/#key=${ownerKey}`);
   if (await viewer.evaluate<boolean>("document.querySelector('input') !== null")) {
     await viewer.typeInto("input", "tile-drop-viewer");
-    await viewer.clickText("Enter manifold");
+    await viewer.clickTestId("identity-enter");
   }
   await viewer.goto(`${origin}/p/${containerId}`);
   await until(

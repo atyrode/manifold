@@ -1,3 +1,4 @@
+import "./styles.css";
 import { CanvasView } from "./canvas-view.tsx";
 
 /**

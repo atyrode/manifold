@@ -7,6 +7,7 @@ import {
   reconnectDelayMs,
   type AdvertisedTerminal,
   type AgentMessage,
+  type LogEvent,
   type RuntimeDeps,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
@@ -33,11 +34,17 @@ export const MAX_SOCKET_BUFFERED_AMOUNT_BYTES = 8 * 1024 * 1024;
 /** Grace allowed for normal PTY termination before shutdown escalates to SIGKILL. */
 export const SHUTDOWN_GRACE_MS = 3_000;
 
-/** Structured log record; `ts` is stamped from the injected runtime clock. */
+/**
+ * Structured log record; `ts` is stamped from the injected runtime clock.
+ *
+ * `evt` is the closed vocabulary the server half shares (`LOG_EVENTS`, `@manifold/protocol`):
+ * one JSONL shape, one list of names, and e2e gates match those names inside raw agent stdout
+ * where no type can reach them (S14).
+ */
 export interface AgentLogRecord {
   readonly ts: number;
   readonly level: "info" | "warn" | "error";
-  readonly evt: string;
+  readonly evt: LogEvent;
   readonly [field: string]: unknown;
 }
 
@@ -210,7 +217,11 @@ export class Agent {
     this.log("info", "shutdown");
   }
 
-  private log(level: AgentLogRecord["level"], evt: string, fields?: Record<string, unknown>): void {
+  private log(
+    level: AgentLogRecord["level"],
+    evt: LogEvent,
+    fields?: Record<string, unknown>,
+  ): void {
     this.sink({ ts: this.runtime.now(), level, evt, ...fields });
   }
 

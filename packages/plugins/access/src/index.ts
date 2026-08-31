@@ -36,6 +36,18 @@ import {
  * makes them possible, and it is reachable identically by a human, a remote client and an
  * agent (A2) the moment it is composed.
  *
+ * IN-PRODUCT DEFERRAL MARKER — the convention this manifest introduces, and it applies
+ * wherever a plugin ships a door without the screen that drives it. A deferral a principal
+ * can OBSERVE belongs in the manifest `description`, which is published data (`GET
+ * /api/plugins`, and the roster row a client paints from it), not only in a source comment:
+ * AXIOMS.md §Change control requires a deferral to be visible in-product, because one
+ * discoverable solely by a reader of the tree is indistinguishable from a bug. The marker is
+ * the description's last clause and reads `<capability>: deferred, <what remains reachable>`
+ * — here `admin UI: deferred, door-only` — so one clause carries both what is missing and
+ * the fact that everything else still works, which a bare "no UI yet" would not. It is
+ * DELETED in the same commit as the UI that discharges it; a marker outliving its deferral
+ * is a lie the roster tells every principal who reads it.
+ *
  * Declares NO read action, because there is no access read to move: nothing today publishes
  * principals or tokens except `GET /api/introspect`, which is the engine's own root-only
  * introspection door over rooms, terminals, machines and principals together. Inventing
@@ -45,7 +57,8 @@ export const accessManifest: PluginManifest = {
   id: "core.access",
   version: "1.0.0",
   title: "Access",
-  description: "Creates principals, mints delegated tokens, and revokes them.",
+  description:
+    "Creates principals, mints delegated tokens, and revokes them — admin UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that

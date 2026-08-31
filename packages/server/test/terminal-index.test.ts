@@ -22,12 +22,14 @@ import {
   LOCAL_ORIGIN,
   writeElement,
 } from "@manifold/scene";
+import { workspaceLayout } from "@manifold/plugin";
+import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import { OUTSIDE_SCOPE_REFUSAL } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
@@ -152,6 +154,7 @@ function indexFixture(): IndexFixture {
     broker,
     runtime,
     assemblyElementTraits(() => plugins.roster()),
+    assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
@@ -176,6 +179,7 @@ function indexFixture(): IndexFixture {
     machines,
     plugins,
     silentLogger,
+    workspaceLayout(WORKSPACE_PANELS),
   );
   const fixture: IndexFixture = {
     runtime,

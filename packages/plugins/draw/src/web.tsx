@@ -1,3 +1,4 @@
+import "./styles.css";
 import type { NodeProps } from "@xyflow/react";
 import { memo } from "react";
 

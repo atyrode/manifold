@@ -1,4 +1,4 @@
-import type { SceneElement } from "@manifold/protocol";
+import { elementPayloadDigest, type SceneElement } from "@manifold/protocol";
 
 /**
  * Agent-facing testability probe (CONTRACTS.md §testability).
@@ -21,7 +21,14 @@ export interface DebugElementSnapshot {
   readonly width: number;
   readonly height: number;
   readonly zIndex: number;
-  readonly extra: string | number;
+  /**
+   * The payload as one comparable string (`elementPayloadDigest`). It used to be a per-type
+   * ternary — a portal's container id, a note's prose, a stroke's point count — which put three
+   * plugin-owned field names inside the engine's own probe. The digest is neutral over kinds and
+   * therefore also works for a record whose plugin this build never heard of, which is exactly
+   * the case a probe is most useful for.
+   */
+  readonly extra: string;
 }
 
 export interface DebugViewport {
@@ -119,11 +126,6 @@ export function toElementSnapshot(element: SceneElement): DebugElementSnapshot {
     width: element.width,
     height: element.height,
     zIndex: element.zIndex,
-    extra:
-      element.type === "portal"
-        ? element.containerId
-        : element.type === "text"
-          ? element.text
-          : element.points.length,
+    extra: elementPayloadDigest(element),
   };
 }

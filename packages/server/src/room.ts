@@ -3,6 +3,7 @@ import {
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   compareElements,
+  elementString,
   type Attendance,
   type CensusItem,
   type ClientMessageBody,
@@ -24,6 +25,7 @@ import {
   SERVER_PLACE_ORIGIN,
   Y,
   changedElementIds,
+  collaborativeTextFields,
   createSceneDoc,
   decodeUpdate,
   elementsMap,
@@ -41,6 +43,7 @@ import {
   writeTileLeaf,
   writeTileLeafRef,
 } from "@manifold/scene";
+import type { ElementPayloadRefusal } from "@manifold/plugin";
 import type { Logger } from "./log.ts";
 import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
@@ -68,12 +71,19 @@ export function censusFor(
   const references: string[] = [];
   if (layout === null) {
     for (const element of elements) {
-      if (element.type !== "portal") {
+      /*
+        The protocol's element schema is a neutral envelope (ADR 0013 §16), so a portal's
+        target is read rather than trusted: a record of that type whose reference is missing or
+        the wrong shape contributes an ordinary item and no reference, which is truthful —
+        there is no container to point the index at.
+      */
+      const target = element.type === "portal" ? elementString(element, "containerId") : null;
+      if (target === null) {
         items.push({ kind: element.type, containerId: null, terminalId: null });
         continue;
       }
-      references.push(element.containerId);
-      items.push({ kind: "composition", containerId: element.containerId, terminalId: null });
+      references.push(target);
+      items.push({ kind: "composition", containerId: target, terminalId: null });
     }
   } else {
     for (const node of Object.values(layout)) {
@@ -167,6 +177,13 @@ export class Room {
     private readonly logger: Logger,
     private readonly terminals: () => readonly TerminalInfo[],
     private readonly onEmpty: (room: Room, reason: RoomEmptyReason) => void,
+    /**
+     * The element-payload boundary (`elementPayloadGuard`, ADR 0013 §16 clause 5). Injected
+     * rather than imported, because the schemas are the ASSEMBLY's and this pillar may not know
+     * a plugin exists: the room asks whether a record is acceptable and is told, exactly as it
+     * asks the store for a document.
+     */
+    private readonly payloadRefusal: (element: SceneElement) => ElementPayloadRefusal | null,
   ) {
     const record = store.latestDoc(containerId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
@@ -397,10 +414,29 @@ export class Room {
       this.collectingIds = null;
     }
 
+    /*
+      THE SCENE BOUNDARY. Two ways a record can be unacceptable, repaired identically: the
+      envelope itself did not parse (`readElement` answers null — bad geometry, an out-of-bounds
+      payload), or the envelope parsed and its owning plugin's payload schema refused it (ADR
+      0013 §16 clause 5). A record whose type NO registration claims passes both, which is the
+      whole point of the envelope: a canvas keeps holding what an absent plugin wrote.
+
+      Accept-then-repair, not validate-then-reject, because a Yjs update is not divisible: the
+      update has already merged by the time anything can be read, so the repair is a second
+      transaction that broadcasts like any other.
+    */
     for (const id of changed) {
-      if (readElement(this.doc, id) === null && removeElement(this.doc, id, REPAIR_ORIGIN)) {
-        this.logger.warn("scene_element_repaired", { containerId: this.containerId, id });
-      }
+      const element = readElement(this.doc, id);
+      const refusal = element === null ? null : this.payloadRefusal(element);
+      if (element !== null && refusal === null) continue;
+      if (!removeElement(this.doc, id, REPAIR_ORIGIN)) continue;
+      this.logger.warn("scene_element_repaired", {
+        containerId: this.containerId,
+        id,
+        ...(refusal === null
+          ? {}
+          : { type: refusal.type, plugin: refusal.plugin, problems: refusal.problems.join("; ") }),
+      });
     }
     return true;
   }
@@ -729,9 +765,26 @@ export class Room {
   repointPortal(elementId: string, containerId: string): boolean {
     const element = readElement(this.doc, elementId);
     if (element === null || element.type !== "portal") return false;
-    if (element.containerId === containerId) return true;
-    writeElement(this.doc, { ...element, containerId }, SERVER_PLACE_ORIGIN);
+    if (elementString(element, "containerId") === containerId) return true;
+    writeElement(
+      this.doc,
+      { ...element, containerId },
+      SERVER_PLACE_ORIGIN,
+      this.collaborativeFields(elementId),
+    );
     return true;
+  }
+
+  /**
+   * Which of an element's payload fields are stored as collaborative text right now.
+   *
+   * Published on the room because a RE-WRITE has to carry them and the floor must not know
+   * which fields those are (ADR 0013 §16 clause 6). Every site below that re-authors an
+   * existing element passes this, which is why moving a note keeps the shared type a person is
+   * typing into instead of flattening it to the string it happened to contain.
+   */
+  collaborativeFields(elementId: string): readonly string[] {
+    return collaborativeTextFields(this.doc, elementId);
   }
 
   /**
@@ -781,7 +834,12 @@ export class Room {
   moveElement(elementId: string, x: number, y: number): boolean {
     const element = readElement(this.doc, elementId);
     if (element === null) return false;
-    writeElement(this.doc, { ...element, x, y }, SERVER_PLACE_ORIGIN);
+    writeElement(
+      this.doc,
+      { ...element, x, y },
+      SERVER_PLACE_ORIGIN,
+      this.collaborativeFields(elementId),
+    );
     return true;
   }
 
@@ -789,9 +847,26 @@ export class Room {
    * Adopts an element that left another canvas: the same item, its own id preserved so
    * collaborators' selections and references still name it, placed at the drop point and
    * lifted to the top of THIS canvas's stack.
+   *
+   * `collaborative` is REQUIRED rather than defaulted, and that is the point: the element
+   * arrives as a plain record read out of a document this room cannot see, so only the caller
+   * holding the SOURCE room can say which of its fields were shared types. A default of "none"
+   * would compile everywhere and silently flatten a note's collaborative text on every
+   * cross-canvas move — a data regression with no error to notice it by. The caller reads it
+   * off the source with {@link collaborativeFields}.
    */
-  adoptElement(element: SceneElement, x: number, y: number): void {
-    writeElement(this.doc, { ...element, x, y, zIndex: nextZIndex(this.doc) }, SERVER_PLACE_ORIGIN);
+  adoptElement(
+    element: SceneElement,
+    x: number,
+    y: number,
+    collaborative: readonly string[],
+  ): void {
+    writeElement(
+      this.doc,
+      { ...element, x, y, zIndex: nextZIndex(this.doc) },
+      SERVER_PLACE_ORIGIN,
+      collaborative,
+    );
   }
 
   /** Removes one element the server placed or is releasing; the update hook broadcasts it. */
@@ -846,6 +921,16 @@ export class RoomManager {
   >();
   private terminalProvider: (containerId: string) => readonly TerminalInfo[] = () => [];
   private pendingOpenProvider: (containerId: string) => boolean = () => false;
+  /**
+   * The element-payload boundary, accept-all until the assembly is wired.
+   *
+   * A permissive default is right rather than lazy: the guard's schemas come from the plugin
+   * host, the host is built after the rooms are (circular startup, the same reason the terminal
+   * view is installed rather than constructed), and a room that refused every payload until
+   * that wiring landed would drop records during boot. Accepting until told is what the
+   * envelope already does for a stranger type.
+   */
+  private payloadGuard: (element: SceneElement) => ElementPayloadRefusal | null = () => null;
 
   constructor(
     private readonly store: ServerStore,
@@ -857,6 +942,11 @@ export class RoomManager {
   /** Installs the broker's per-container terminal view after circular startup wiring done. */
   setTerminalProvider(provider: (containerId: string) => readonly TerminalInfo[]): void {
     this.terminalProvider = provider;
+  }
+
+  /** Installs the assembly's element-payload boundary; see `elementPayloadGuard`. */
+  setElementPayloadGuard(guard: (element: SceneElement) => ElementPayloadRefusal | null): void {
+    this.payloadGuard = guard;
   }
 
   /** Installs the broker's in-flight create view for residency decisions. */
@@ -938,6 +1028,9 @@ export class RoomManager {
         },
         (idleRoom) => {
           this.evict(idleRoom);
+        },
+        (element) => {
+          return this.payloadGuard(element);
         },
       );
       this.rooms.set(containerId, room);

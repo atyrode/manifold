@@ -1,6 +1,8 @@
-import { rosterElementTraits } from "@manifold/plugin";
+import { itemNoun, rosterElementTraits } from "@manifold/plugin";
 import {
   censusSolo,
+  elementString,
+  itemTraitsFor,
   resolvePlacement,
   type ContainerDiscipline,
   type PlaceRequest,
@@ -45,6 +47,20 @@ export function assemblyElementTraits(
     }
     return traits.get(kind) ?? null;
   };
+}
+
+/**
+ * The contributed half of the label vocabulary, on the same terms: element type → the word a
+ * person reads for it, which for a contributed kind is its manifest title (`itemNoun`) and for
+ * a floor kind is the floor's own noun.
+ *
+ * It exists because two of the executor's rules are about a SPECIES rather than about a wire
+ * shape, and the floor may not spell a plugin's element type to reach them. The traits answer
+ * which rule applies; this answers what to call the thing the rule fired on, through the one
+ * kind→noun table `verify:axioms` S12 allows to exist.
+ */
+export function assemblyItemNouns(roster: () => PluginRoster): (kind: string) => string {
+  return (kind) => itemNoun(kind, roster());
 }
 
 /**
@@ -171,6 +187,13 @@ export class PlaceExecutor {
      * the kinds are the roster's.
      */
     private readonly elementTraits: (kind: string) => PlacementTraits | null,
+    /**
+     * The assembly's label vocabulary (`assemblyItemNouns`), for the same reason and on the
+     * same terms: two rules below turn on a declared TRAIT and then have to name the species
+     * they fired on, and the floor may not hold a plugin's word for that any more than it may
+     * hold a plugin's kind.
+     */
+    private readonly elementNoun: (kind: string) => string,
   ) {}
 
   /**
@@ -232,10 +255,15 @@ export class PlaceExecutor {
         if (element === null) return null;
         if (element.type === "portal") {
           // A portal places the container it points at, so that container's discipline
-          // decides the kind — and a portal onto a deleted container places nothing.
-          const discipline = this.store.getContainer(element.containerId)?.discipline ?? null;
+          // decides the kind — and a portal onto a deleted container, or onto no container
+          // at all, places nothing. The reference is read through the payload accessor
+          // because an element is a neutral envelope: the floor knows the envelope, and the
+          // plugin that declared the kind knows the fields (ADR 0013 §16).
+          const target = elementString(element, "containerId");
+          if (target === null) return null;
+          const discipline = this.store.getContainer(target)?.discipline ?? null;
           if (discipline === null) return null;
-          return { kind: discipline, containerId: element.containerId };
+          return { kind: discipline, containerId: target };
         }
         // Every other element places ITS OWN TYPE, whoever contributed it. There is no arm
         // per element kind here any more: that switch was the floor holding a list of
@@ -245,6 +273,19 @@ export class PlaceExecutor {
       soloOccupant: (containerId) => this.soloOccupant(containerId)?.item ?? null,
       itemTraits: (kind) => this.elementTraits(kind),
     };
+  }
+
+  /**
+   * Whether a kind is `homed: "on_claim"`: born inline in the document that created it, with
+   * no home row of its own until a placement mints one. Two of this executor's rules turn on
+   * exactly that trait and on nothing else, and both used to spell `"text"` instead — the
+   * floor naming a kind `core.notes` owns, which is the trait fusion's whole objection
+   * (ADR 0013 §12). Asked through `itemTraitsFor`, so a floor kind answers from `ITEM_KINDS`
+   * and a contributed kind from the manifest that declared it, and a SECOND on_claim kind
+   * gets both rules without either of them learning its name.
+   */
+  private bornUnhomed(kind: string): boolean {
+    return itemTraitsFor(kind, this.lookup()).homed === "on_claim";
   }
 
   /**
@@ -300,14 +341,15 @@ export class PlaceExecutor {
       case "element": {
         const element = this.rooms.get(ref.containerId)?.element(ref.elementId) ?? null;
         if (element === null) return "not_found";
-        const solo = element.type === "portal" ? this.soloOccupant(element.containerId) : null;
+        const target = element.type === "portal" ? elementString(element, "containerId") : null;
+        const solo = target === null ? null : this.soloOccupant(target);
         const terminalId = solo?.terminalId ?? null;
         return {
           containerId: ref.containerId,
           discipline: "canvas",
           addressed: ref.elementId,
           terminalId,
-          homeId: terminalId === null || element.type !== "portal" ? null : element.containerId,
+          homeId: terminalId === null ? null : target,
         };
       }
       case "tile": {
@@ -471,8 +513,9 @@ export class PlaceExecutor {
    * displacement RE-SEATS that leaf and a release REMOVES it, so each caller does both at
    * its own correct moment rather than undoing this one's guess.
    *
-   * A `text` occupant is refused by name. A note's element lives in this composition's own
-   * document and has nowhere else to be, so displacing it could only mean deleting it.
+   * An `on_claim` occupant is refused by its DECLARATION rather than by its name. Such an
+   * item is born inline in the document that created it, so it has nowhere else to be, and
+   * displacing it could only mean deleting it.
    */
   private evictLeaf(
     composition: Room,
@@ -484,10 +527,11 @@ export class PlaceExecutor {
     // An empty leaf holds no item, so there is nothing to move aside and the caller was
     // asking about a spot that is not actually taken.
     if (occupant === null) return { status: "failed", failure: "conflict" };
-    // Neither of these can be moved ASIDE: a note lives in this document and has no home to
-    // be sent to, and a panel is not an object at all. The spot they hold is not up for
-    // grabs, so a center drop onto one is refused rather than silently destructive.
-    if (occupant.kind === "text" || occupant.kind === "panel") {
+    // Neither of these can be moved ASIDE: an `on_claim` item lives in this document and has
+    // no home to be sent to, and a panel is not an object at all. The spot they hold is not
+    // up for grabs, so a center drop onto one is refused rather than silently destructive.
+    // `panel` is named here because it IS a floor kind; the other rule reads the trait.
+    if (this.bornUnhomed(occupant.kind) || occupant.kind === "panel") {
       return {
         status: "denied",
         denial: {
@@ -497,7 +541,22 @@ export class PlaceExecutor {
         },
       };
     }
+    // A container occupant is a REFERENCE: the container it points at already lives in the
+    // index on its own, so nothing has to be built for it and nothing has to move.
     if (occupant.kind === "container") return { ref: occupant, homeId: null, leafId: null };
+    if (occupant.kind !== "terminal") {
+      // The declaration says this species HAS a home of its own, but a terminal's is the only
+      // one this executor knows how to mint. A future homed kind is refused truthfully here
+      // instead of being evicted as a terminal it is not.
+      return {
+        status: "denied",
+        denial: {
+          rule: "not_displaceable",
+          ref,
+          container: { kind: "composition", containerId },
+        },
+      };
+    }
     const homeId = this.runtime.newId();
     this.store.createContainer({
       id: homeId,
@@ -544,16 +603,29 @@ export class PlaceExecutor {
    * its own document stores the element, so the text stays collaborative through the same
    * room everyone in the composition is already joined to, with no second socket and no
    * cross-document reference to keep alive.
+   *
+   * Which payload fields were COLLABORATIVE is read from the source before the source loses
+   * the record, because only the document that held it knows, and it stops knowing the moment
+   * the record leaves (ADR 0013 §16). Reading it after the removal would silently flatten a
+   * note's shared text into a plain string on every cross-document move.
    */
   private adoptNote(source: SourceLocation, note: SceneElement, target: Room): void {
-    if (source.containerId !== null && source.addressed !== null) {
-      this.rooms.get(source.containerId)?.removeElementById(source.addressed);
-    }
-    target.adoptElement(note, note.x, note.y);
+    const from = source.containerId === null ? null : this.rooms.get(source.containerId);
+    const carried = from?.collaborativeFields(note.id) ?? [];
+    if (from !== null && source.addressed !== null) from.removeElementById(source.addressed);
+    target.adoptElement(note, note.x, note.y, carried);
     this.afterLeaving(source.containerId);
   }
 
-  /** The label a merged composition borrows from one of the refs it was built from. */
+  /**
+   * The label a merged composition borrows from one of the refs it was built from.
+   *
+   * The one arm that used to spell `"text"` and answer `"note"` now asks the DECLARATION
+   * twice: `bornUnhomed` for whether this species has a home of its own to be named after,
+   * and the assembly's noun table for what to call it when it does not. So a second
+   * `on_claim` element kind is named by its own manifest title through the same branch,
+   * and this file holds neither a plugin's kind nor a plugin's word.
+   */
   private refLabel(item: PlacementItem, source: SourceLocation): string {
     if (item.kind === "terminal" && source.terminalId !== null) {
       return this.terminals.terminalLabel(source.terminalId, "terminal");
@@ -568,9 +640,11 @@ export class PlaceExecutor {
       if (occupant?.kind === "container") {
         return this.store.getContainer(occupant.containerId)?.name ?? "canvas";
       }
-      if (occupant?.kind === "text") return "note";
+      if (occupant !== null && this.bornUnhomed(occupant.kind)) {
+        return this.elementNoun(occupant.kind);
+      }
     }
-    if (item.kind === "text") return "note";
+    if (this.bornUnhomed(item.kind)) return this.elementNoun(item.kind);
     if (item.containerId !== null) {
       return this.store.getContainer(item.containerId)?.name ?? "canvas";
     }
@@ -640,8 +714,9 @@ export class PlaceExecutor {
     }
     const element = source.element(elementId);
     if (element === null) return "not_found";
+    const carried = source.collaborativeFields(elementId);
     source.removeElementById(elementId);
-    target.adoptElement(element, destination.x, destination.y);
+    target.adoptElement(element, destination.x, destination.y, carried);
     this.rooms.evictIfIdle(containerId);
     this.rooms.evictIfIdle(destination.containerId);
     return "ok";
@@ -1077,8 +1152,9 @@ export class PlaceExecutor {
     if (ref.kind === "text") {
       const note = from.element(ref.elementId);
       if (note === null) return;
+      const carried = from.collaborativeFields(ref.elementId);
       from.removeElementById(ref.elementId);
-      to.adoptElement(note, note.x, note.y);
+      to.adoptElement(note, note.x, note.y, carried);
     }
   }
 
@@ -1157,7 +1233,8 @@ export class PlaceExecutor {
     // Only a REFERENCE can be composed onto. Text and ink hold no item to merge with, and a
     // canvas has no terminal element to birth a composition around any more.
     if (target.type !== "portal") return { status: "failed", failure: "conflict" };
-    const targetHomeId = target.containerId;
+    const targetHomeId = elementString(target, "containerId");
+    if (targetHomeId === null) return { status: "failed", failure: "conflict" };
     const targetSolo = this.soloOccupant(targetHomeId);
     if (targetSolo === null) {
       const added = this.place({
@@ -1343,8 +1420,9 @@ export class PlaceExecutor {
         if (occupant.kind === "text") {
           const note = from.element(occupant.elementId);
           if (note !== null) {
+            const carried = from.collaborativeFields(occupant.elementId);
             from.removeElementById(occupant.elementId);
-            target.adoptElement(note, note.x, note.y);
+            target.adoptElement(note, note.x, note.y, carried);
           }
         }
         from.removeTileLeafById(leafId);
@@ -1417,8 +1495,9 @@ export class PlaceExecutor {
     if (occupant.kind === "text") {
       const note = composition.element(occupant.elementId);
       if (note === null || note.type !== "text") return { status: "failed", failure: "not_found" };
+      const carried = composition.collaborativeFields(occupant.elementId);
       composition.removeElementById(occupant.elementId);
-      canvas.adoptElement(note, destination.x, destination.y);
+      canvas.adoptElement(note, destination.x, destination.y, carried);
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
       this.rooms.evictIfIdle(destination.containerId);

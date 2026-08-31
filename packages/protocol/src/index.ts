@@ -10,13 +10,29 @@ export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } fr
 export {
   HEX_COLOR,
   MAX_DOC_UPDATE_BYTES,
+  MAX_ELEMENT_PAYLOAD_KEYS,
+  MAX_ELEMENT_PAYLOAD_KEY_LENGTH,
   MAX_GESTURE_POINT_VALUES,
+  MAX_SESSION_BASE64_CHARS,
   MAX_SESSION_FRAME_BYTES,
   MAX_STROKE_POINT_VALUES,
   MAX_TEXT_LENGTH,
+  PORTAL_ELEMENT_TYPE,
+  PortalPayloadSchema,
+  SceneElementPayloadSchema,
+  SceneElementPayloadValueSchema,
   SceneElementSchema,
   compareElements,
+  elementNumber,
+  elementNumbers,
+  elementPayload,
+  elementPayloadDigest,
+  elementString,
+  isElementEnvelopeKey,
+  type ElementEnvelopeKey,
   type SceneElement,
+  type SceneElementPayload,
+  type SceneElementPayloadValue,
 } from "./elements.ts";
 export {
   ContainerDisciplineSchema,
@@ -235,6 +251,7 @@ export {
   type TokenGrant,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
+export { LOG_EVENTS, type LogEvent } from "./log.ts";
 export { buildProtocolJsonSchema, type ProtocolExtras } from "./jsonschema.ts";
 export {
   HealthResponseSchema,

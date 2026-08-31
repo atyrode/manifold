@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 
 /**
  * Machine channel (`/ws/machine`): the manifold-agent daemon dials OUT to the server and
@@ -10,7 +11,7 @@ import { z } from "zod";
  * makes the server's gap-free attach handoff possible.
  */
 
-const base64 = z.base64().max(700_000);
+const base64 = z.base64().max(MAX_SESSION_BASE64_CHARS);
 const terminalId = z.string().min(1);
 const geometry = {
   cols: z.number().int().positive().max(1000),

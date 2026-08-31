@@ -1,3 +1,4 @@
+import "./styles.css";
 import type { ElementProps } from "@manifold/plugin";
 import { useElementHost } from "@manifold/plugin/hooks";
 import { LOCAL_ORIGIN } from "@manifold/scene";

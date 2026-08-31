@@ -7,6 +7,7 @@ export {
   REPAIR_ORIGIN,
   SERVER_PLACE_ORIGIN,
   changedElementIds,
+  collaborativeTextFields,
   createSceneDoc,
   decodeUpdate,
   elementText,

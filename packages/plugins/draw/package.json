@@ -9,7 +9,8 @@
   "dependencies": {
     "@manifold/protocol": "workspace:*",
     "@xyflow/react": "12.11.5",
-    "react": "19.2.8"
+    "react": "19.2.8",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.3.2",

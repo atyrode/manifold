@@ -1,3 +1,4 @@
+import { renameSync, rmSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
@@ -279,12 +280,42 @@ interface VersionRow {
  * inside the process holding it, and the only one that cannot capture a torn write. Skipped
  * for a `:memory:` database, which has no file to copy, and for a database that did not
  * exist yet, which has no pre-migration state to preserve.
+ *
+ * RETENTION lives here rather than in any migration's body, because "keep the newest image
+ * per version" is a property of the RUNNER: every `backup: true` migration wants the identical
+ * rule, and a rule written once per migration is invariant-14 debt waiting to drift. The
+ * engine never deletes an elder VERSION's image — writing `pre-v11` leaves `pre-v9` exactly
+ * where it is, because that file is the operator's recovery inventory and a process that
+ * silently deletes a recovery image is a worse outcome than a full disk (docs/CONTRACTS.md
+ * §Persistence). The one file it does replace is the SAME version's own predecessor, and that
+ * is safe for a reason particular to same-version: a `pre-v11.bak` can only still be sitting
+ * there if 11 never committed, so the live database still holds every byte the stale image
+ * copies, and keeping both would buy an operator nothing but one more full copy per attempt.
+ *
+ * `VACUUM INTO` refuses to write a path that exists, so the replacement is staged, and the
+ * ORDERING is the whole point. Vacuum into a sibling `.partial`, then rename it over the
+ * canonical name, then let the caller open the transaction. Rename is atomic and in the same
+ * directory, so no instant ever shows a half-written file under the name an operator recovers
+ * from; a vacuum that dies mid-copy takes its `.partial` with it and leaves the previous image
+ * untouched; a `.partial` orphaned by a killed process is cleared on the next attempt instead
+ * of blocking it forever; and because promotion happens BEFORE the transaction, a migration
+ * that then throws finds its own image already on disk under the published name. Promoting
+ * after the commit instead would leave a failed attempt's only image — the one case an
+ * operator actually needs it — under a temporary name nothing documents.
  */
 function backupBeside(db: Database, path: string, version: number, from: number): void {
   if (from === 0) return;
   if (path === "" || path === ":memory:" || path.startsWith("file::memory:")) return;
   const target = `${path}.pre-v${version}.bak`;
-  db.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
+  const staging = `${target}.partial`;
+  rmSync(staging, { force: true });
+  try {
+    db.exec(`VACUUM INTO '${staging.replaceAll("'", "''")}'`);
+  } catch (error) {
+    rmSync(staging, { force: true });
+    throw error;
+  }
+  renameSync(staging, target);
 }
 
 /** Opens a Bun SQLite database, enables WAL, and applies numbered migrations atomically. */
@@ -313,7 +344,8 @@ export function openDatabase(path: string): Database {
     }
     // The snapshot is taken OUTSIDE the transaction because a VACUUM cannot run inside
     // one — which is also what makes it a true pre-migration image: nothing this migration
-    // does has happened yet.
+    // does has happened yet. It is equally why a throw below cannot cost the image: by the
+    // time the transaction opens the file already carries its final name.
     if (typeof migration !== "string" && migration.backup) {
       backupBeside(db, path, version, current);
     }

@@ -143,6 +143,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
           {error === null ? null : <p className="form-error">{error}</p>}
           <button
             className="primary-button"
+            data-testid="identity-enter"
             type="submit"
             disabled={submitting || name.trim() === ""}
           >

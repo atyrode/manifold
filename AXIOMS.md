@@ -3,9 +3,10 @@
 This file is the constitution. `AGENTS.md` is how to operate the repo, `docs/CONTRACTS.md`
 is what the parts promise each other, `docs/PLAN.md` is where we are going; this file says
 what manifold _is_ and where the line runs between the foundation and everything built on
-it. Four sections here are machine-readable — §Lexicon's `lexicon` registry, §Foundation law's
-`pillars` registry, §Foundation's `floor` registry and §Device-local register's `deviceLocal`
-registry — and `bun run verify:axioms` (part of `bun run gate`) parses them in both directions.
+it. Six blocks here are machine-readable — §Lexicon's `lexicon` and `cssFamilies` registries,
+§Foundation law's `pillars` registry, §Foundation's `floor` registry, §Gate contracts'
+`gateContracts` register and §Device-local register's `deviceLocal` register — and
+`bun run verify:axioms` (part of `bun run gate`) parses them in both directions.
 Crossing a boundary — of the floor, of this device, or of the language — without editing the
 registry fails the gate. That is the whole point: an axiom nobody
 can violate silently is an axiom. When this file and anything else disagree, this file wins
@@ -194,6 +195,65 @@ The ratified wave order. A wave lands as one branch, one PR, one green `bun run 
     roster's `source` field. This wave also carries the explicit **core-plugin override**
     mechanism: replacing a core plugin is disable-then-enable-a-substitute by id, never a silent
     collision (A1 has no shadowing).
+    **It does not land before a dated isolation ADR ratifies a runner, and that is a hard
+    ordering rather than a preference.** Everything in the tree today is first-party code
+    compiled into the build, which is the entire reason ADR 0010 could reject WASM and Worker
+    isolation and reserve the seam instead: contracts are sandbox-shaped (declared capabilities,
+    schema'd JSON arguments, no host internals in a plugin signature) precisely so an isolated
+    runner can arrive later behind the same manifest. A marketplace is the event that consumes
+    that reservation — it is the moment code manifold did not author runs in-process, and ADR
+    0010's own revisit trigger names it. Shipping distribution first would spend the seam
+    without building it and leave per-request cap intersection as the only boundary between a
+    stranger's plugin and the store, the broker and the room map. So the isolation ADR is the
+    PREREQUISITE deliverable: it judges a runner (wasmtime-class, Worker-class, or a separate
+    process) against the serialization cost ADR 0010 measured, and the marketplace wave
+    implements distribution on top of whatever it ratifies.
+  - **Settings** — a `core.settings` plugin over per-principal preferences. The mechanism is
+    already floor and already neutral: `ctx.storage` is a namespaced per-plugin key-value store,
+    so a preference is a plugin's own row and there is nothing for the engine to centralize. What
+    the wave adds is the PANEL — one place a human edits what is currently edited nowhere — and
+    the rule it must obey is that the panel is neutral over what it edits: a settings panel
+    that enumerated known plugins would be the floor naming favorites in the one file that must
+    not, so preferences are DECLARED by their owning plugin and rendered from the declaration.
+  - **Command palette** — one keyboard door onto the whole action vocabulary. It is the cheapest
+    proof that A1 and A2 actually hold, and it is deliberately NOT new mechanism: the assembly
+    already publishes every action with its title, caps and scope, and `GET /api/protocol`
+    already publishes the argument schema, so a palette is a reader over the roster plus the one
+    dispatch door every other caller uses. An action a palette cannot reach is an action that
+    escaped the door — which makes the palette an audit instrument as much as an affordance. Actions
+    needing arguments are the design work: a schema is enough to prompt from, and inventing a
+    second per-action UI declaration beside it would be the second convention invariant 14
+    forbids.
+  - **Notifications** — durable, addressed messages that outlive a tab, on wave 2's event plane.
+    This is NOT the notice stack: `notice` is the one canonical word for the transient and sticky
+    message layer a floor provider owns and every plugin raises into (§Lexicon), it is
+    per-connection, and it is already built. What is missing is a message that survives a reload
+    and finds a principal who was not connected when it was raised — "your terminal exited",
+    "somebody joined your container", "your agent finished". That needs persistence, a per-
+    principal read/unread state and a delivery door, which is why it waits for the event plane
+    rather than growing sideways out of the notice provider. Both keep their own word; a plugin
+    raising a notice must not silently become a plugin sending mail.
+  - **Templates** — a container, or a subtree of containers, saved as something a principal can
+    instantiate again. It is a plugin and a pure projection: a template is scene data plus index
+    structure, both of which are already readable and already writable through declared doors, so
+    nothing about it needs new floor. The design constraint is what a template may name — a saved
+    tree carries element `type`s and panel ids, which are PLUGIN names, so instantiating a
+    template into a workspace missing one of them must land the same placeholder every other
+    absent contribution lands (D4′) rather than refusing the whole tree. That is the same rule
+    the default workspace layout already follows, and it is why the envelope round-trips a
+    stranger type (S8).
+  - **The agent's plugin story** — how an agent AUTHORS a plugin, not merely calls one. A3 is
+    satisfied today for the calling half: the roster, the schemas and the one action door mean a
+    stranger's agent can discover and drive every capability without reading the source. The
+    authoring half is unproven, and it is the harder and more interesting claim: writing a
+    plugin currently means editing a workspace package, adding a row to two `assembly.ts` files
+    and rebuilding, all of which an agent can do to a checkout and none of which it can do to a
+    RUNNING workspace. That makes this wave a consumer of the marketplace's runner rather than a
+    peer of it — the distribution seam is what turns "an agent wrote a plugin" into "an agent
+    installed the plugin it wrote", and the isolation ADR above is what makes running it
+    defensible. What this wave owes on its own is the authoring CONTRACT: a manifest an agent can
+    generate, doors it can verify its own plugin through, and the failure modes stated as data
+    rather than as a build log.
   - **App shells** — packaging manifold's client for hosts that are not a plain browser tab, and
     ADR-gated when it is built rather than sketched now. A **PWA pass is the near milestone**:
     installability, offline shell, and the origin-configurability the portable-lens rule already
@@ -205,6 +265,33 @@ The ratified wave order. A wave lands as one branch, one PR, one green `bun run 
     re-evaluated at a native-mobile milestone**, where a system web view stops being a liability
     and binary size starts being one. Whatever ships obeys the portable-lens rule: a shell adds
     host-composed plugins, never a second client.
+
+### Explicitly not a goal: themes
+
+**A theming system is a NOT-GOAL, and recording it here is the point — an unstated not-goal gets
+built by accident.** Themes are the standard answer to a question manifold has already answered
+differently, so the omission needs to read as a ruling rather than as a gap somebody should
+helpfully close.
+
+The reason is ownership. A theme is a mechanism for one party to restyle everything, and
+§Lexicon `cssFamilies` plus S13 say the opposite: every selector family has exactly ONE owner,
+every rule is written by the owner of the family it scopes into, and a family painted from
+another package's stylesheet is RED. A theme layer is precisely a sanctioned way to violate
+that — it would be a second writer for every family in the tree, which is a second convention
+for who owns ink (invariant 14) and the end of the check that currently makes ownership
+falsifiable. There is no version of "a theme may override any plugin's skin" that S13 survives.
+
+What already exists and is enough: the floor's stylesheet publishes **exactly two cross-owner
+tokens**, which is the whole sanctioned vocabulary for shared appearance, and every other value
+belongs to the package that paints with it. A plugin that wants to look different changes its
+own sheet. If shared appearance ever needs to be genuinely configurable, the honest shape is
+MORE published tokens — named, owned by the floor, and each one a deliberate addition to a
+registry — never a layer that reaches into families it does not own. That path is open and it is
+not a theming system.
+
+Dark mode is not an exception. It is a value question inside the tokens the floor already
+publishes, answerable by the floor sheet on its own terms, and it needs no mechanism by which
+one party restyles another.
 
 ### Full-conversion inventory
 
@@ -264,7 +351,7 @@ licence, and not a state a gate can be taught to tolerate.
 
 One word per concept, one concept per word. A second name for an existing concept is
 invariant-14 debt, and the whole of it is recorded below rather than argued case by case: this
-registry is the fourth machine-readable block in this file, and `verify:axioms` reads it in both
+registry is machine-readable, and `verify:axioms` reads it in both
 directions (S11, S12). It replaces the prose taxonomy that used to sit here — a document cannot
 hold two statements of what a word means without becoming the second door onto its own
 vocabulary.
@@ -838,6 +925,332 @@ applied to vocabulary: one door onto "what do we call this kind".
 }
 ```
 
+### Where a selector family lives
+
+The register above says which word names a concept. This one says whose stylesheet may paint
+it, and it exists because until now the answer was "any of them, in one file".
+`packages/web/src/styles.css` was 3,572 lines and 510 selectors, and the terminal's frame, the
+canvas's portals, the presence stack and the plugin manager's rows were floor by accident of
+where they had been typed. A skin that cannot leave with the plugin it dresses is a plugin that
+was never really extracted (A1), so the stylesheet is split by owner and `verify:axioms` S13
+holds the split. Every plugin package that paints anything now carries `src/styles.css`,
+imported by its web half; vite emits it into the built CSS because all plugin code is
+statically assembled.
+
+**A family is a name, which is why this register sits here.** The family of a class is the
+LONGEST `family` below that is a prefix of it ending on a `-` or `__` boundary, so `terminal`
+answers for `.terminal-frame--panel-highlight` while `canvas-text` beats `canvas` for the note
+element and `portal__slot` beats `portal` for the tile-tree's pane. A class matching no row is
+RED: adding a family is a row, exactly as adding a canon word is.
+
+**Ownership follows the SCOPE, not the subject.** The first class of a compound names a
+family; classes written beside it in that compound qualify it (`.status-dot.open` is the
+`status` family in its `open` state, never an `open` family). A rule belongs to the owner of
+the LEFTMOST such family in each of its selectors — the subtree the rule reaches into — because
+that is the code whose removal makes the rule dead. `.portal--mono .terminal-frame` is the
+canvas plugin's rule about a terminal, and it goes when portals go. Compounds further right are
+context: they are checked for REGISTRATION, so no family hides inside a descendant selector,
+and never for ownership. `@keyframes` names are families too. A rule with no class anywhere —
+the reset, `:root`, `[data-drop-denial]` — is the floor's by construction and may appear
+nowhere else, which is what stops a plugin from restyling `body`.
+
+**One owner is not a package, and that asymmetry is real.** Every plugin's stylesheet lives in
+its package. The shell's cannot: the sidebar, the workspace frame and the routed container view
+are FLOOR files (§Foundation), and a floor file may not import `@manifold-plugin/*`, so there
+is no shell package to put them in. `packages/web/src/shell.css` is therefore a second owner
+inside `packages/web`, registered as its own stylesheet rather than folded back into the floor
+sheet — the check enforces the FILE, so a separate owner in the same directory costs nothing
+and saying "the shell owns this" out loud is worth something. The neutral chrome has no such
+problem: `packages/plugin/src/ui/styles.css` sits with the components that emit those classes,
+because `packages/plugin` is floor that everything already imports.
+
+Rows are live or they are gone. A row whose stylesheet does not exist, or which no rule in that
+stylesheet defines, fails exactly as a stale floor glob fails S6 and a stale exemption fails
+S11. `owner: "shared"` is the single exception and has exactly one member: `is-*` is a state
+prefix, never a scope root, and belongs to no stylesheet.
+
+```json
+{
+  "cssFamilies": [
+    {
+      "family": "*",
+      "owner": "packages/web/src/styles.css",
+      "why": "not a prefix: the rules with no class at all. The reset, `:root`, the element defaults and `[data-drop-denial]` reach every node in the document, which is exactly the reach a plugin must not have — so they live in the floor's sheet and the check refuses them anywhere else"
+    },
+    {
+      "family": "gate",
+      "owner": "packages/web/src/styles.css",
+      "why": "the pre-identity gate screen and its card: the first paint of the product, before any plugin exists to have an opinion"
+    },
+    {
+      "family": "identity",
+      "owner": "packages/web/src/styles.css",
+      "why": "the identity dialog and the colour dot beside a name — device bootstrap, which by definition cannot belong to a plugin"
+    },
+    {
+      "family": "eyebrow",
+      "owner": "packages/web/src/styles.css",
+      "why": "the small line above a gate heading"
+    },
+    {
+      "family": "color",
+      "owner": "packages/web/src/styles.css",
+      "why": "the identity colour picker: its fieldset, its grid and its swatches"
+    },
+    {
+      "family": "field-label",
+      "owner": "packages/web/src/styles.css",
+      "why": "the one form label, shared by the gate and the identity dialog"
+    },
+    {
+      "family": "form-error",
+      "owner": "packages/web/src/styles.css",
+      "why": "the one inline form error"
+    },
+    {
+      "family": "primary-button",
+      "owner": "packages/web/src/styles.css",
+      "why": "the one primary action button the bootstrap dialogs use"
+    },
+    {
+      "family": "sr-only",
+      "owner": "packages/web/src/styles.css",
+      "why": "the screen-reader-only utility"
+    },
+    {
+      "family": "notice",
+      "owner": "packages/web/src/styles.css",
+      "why": "the one notice stack. The PROVIDER is floor (`notice.tsx`) and every plugin raises into it through `@manifold/plugin/ui`, so the layer's skin is the floor's"
+    },
+    {
+      "family": "plugin-placeholder",
+      "owner": "packages/web/src/styles.css",
+      "why": "the engine-owned inert placeholder for a contribution whose plugin is off (ADR 0013 §4). A plugin may not supply the chrome for its own absence, so it may not supply the chrome's skin either"
+    },
+    {
+      "family": "skeleton",
+      "owner": "packages/web/src/styles.css",
+      "why": "`@keyframes skeleton-pulse`, ridden by the shell's container skeleton and the index's rows alike: a token, which is what the floor publishes"
+    },
+    {
+      "family": "sidebar",
+      "owner": "packages/web/src/shell.css",
+      "why": "the sidebar rail, its sections, rows and inline actions — painted by `sidebar-panel.tsx`. Plugins fill these rows; the shell owns the row"
+    },
+    {
+      "family": "workspace",
+      "owner": "packages/web/src/shell.css",
+      "why": "the workspace frame and its empty state, painted by `workspace.tsx` and `container-view-panel.tsx`"
+    },
+    {
+      "family": "status",
+      "owner": "packages/web/src/shell.css",
+      "why": "the connection pip and its meta line in the sidebar identity block, `status-dot-ping` included"
+    },
+    {
+      "family": "collapsed-presence",
+      "owner": "packages/web/src/shell.css",
+      "why": "the popover the collapsed rail shows instead of the presence stack"
+    },
+    {
+      "family": "container-load-error",
+      "owner": "packages/web/src/shell.css",
+      "why": "the banner the routed shell raises when a container will not resolve"
+    },
+    {
+      "family": "container-name-menu-item",
+      "owner": "packages/web/src/shell.css",
+      "why": "the container name row inside a sidebar menu"
+    },
+    {
+      "family": "canvas-skeleton",
+      "owner": "packages/web/src/shell.css",
+      "why": "the cold-route skeleton. The prefix records WHERE it is painted; the owner is who paints it — the shell shows this before any discipline renderer has been asked for, so it cannot live in the canvas plugin"
+    },
+    {
+      "family": "web-changelog",
+      "owner": "packages/web/src/shell.css",
+      "why": "the in-app history dialog the sidebar's version line opens"
+    },
+    {
+      "family": "node-titlebar",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one titlebar a container node wears, `node-titlebar.tsx`"
+    },
+    {
+      "family": "tile",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the tile area, the live drop preview and its glyphs, the content host a pane's content rides in, and the F9 zone probe — `tile-tree.tsx`, `tile-preview-overlay.tsx`, `tile-zone-debug.tsx`"
+    },
+    {
+      "family": "carry-ghost",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the ghost that follows a carry, plus the ease-away the held item rides — `carry.ts`"
+    },
+    {
+      "family": "drop-denial-note",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the prose half of a refused drop; the machine half is the floor's `[data-drop-denial]`"
+    },
+    {
+      "family": "container-overlay-slot",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "where one plugin's renderer paints another plugin's occupant — `projection.ts`"
+    },
+    {
+      "family": "mf-icon",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the glyph vocabulary, `icons.tsx`"
+    },
+    {
+      "family": "composition-split",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`)"
+    },
+    {
+      "family": "composition-pane",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`)"
+    },
+    {
+      "family": "composition-divider",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`); `dividerPx: 5.6` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
+    },
+    {
+      "family": "portal-split",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`PORTAL_TREE_CLASSES`)"
+    },
+    {
+      "family": "portal__slot",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`PORTAL_TREE_CLASSES`) — the portal's pane"
+    },
+    {
+      "family": "portal-divider",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`PORTAL_TREE_CLASSES`); `dividerPx: 11.2` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
+    },
+    {
+      "family": "workspace-split",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`)"
+    },
+    {
+      "family": "workspace-pane",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`)"
+    },
+    {
+      "family": "workspace-divider",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`); `dividerPx: 5.6` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
+    },
+    {
+      "family": "terminal",
+      "owner": "packages/plugins/terminals/src/styles.css",
+      "why": "the terminal frame, its titlebar, the idle veil, the focus-presence chips, the exited and restart states, and the pool's rows"
+    },
+    {
+      "family": "xterm",
+      "owner": "packages/plugins/terminals/src/styles.css",
+      "why": "the xterm host and the two vendor classes it has to reach — the only stylesheet that embeds a terminal"
+    },
+    {
+      "family": "view-only-ribbon",
+      "owner": "packages/plugins/terminals/src/styles.css",
+      "why": "the ribbon a spectator's terminal wears"
+    },
+    {
+      "family": "canvas",
+      "owner": "packages/plugins/canvas/src/styles.css",
+      "why": "the freeform discipline's renderer: the canvas, its toolbar, its presence layer and its skeletonless empty"
+    },
+    {
+      "family": "portal",
+      "owner": "packages/plugins/canvas/src/styles.css",
+      "why": "a container portal on a canvas, in every engagement state, plus its resize chrome"
+    },
+    {
+      "family": "stroke-preview",
+      "owner": "packages/plugins/canvas/src/styles.css",
+      "why": "the ink preview the canvas toolbar shows"
+    },
+    {
+      "family": "react-flow",
+      "owner": "packages/plugins/canvas/src/styles.css",
+      "why": "React Flow's own classes, dressed where the canvas mounts React Flow. A vendor prefix still needs an owner: exactly one stylesheet may reach into a vendor's vocabulary, or two of ours will fight over it"
+    },
+    {
+      "family": "composition",
+      "owner": "packages/plugins/compositions/src/styles.css",
+      "why": "the tiled discipline's renderer: its page chrome, tiles, leaves and grips, its placeholder, its empty state and its presence layer"
+    },
+    {
+      "family": "presence",
+      "owner": "packages/plugins/presence/src/styles.css",
+      "why": "the attendance stack, its popover and rows, and the peer dot"
+    },
+    {
+      "family": "spotlight",
+      "owner": "packages/plugins/presence/src/styles.css",
+      "why": "the chip a peer's 'look at this' arrives as"
+    },
+    {
+      "family": "remote",
+      "owner": "packages/plugins/presence/src/styles.css",
+      "why": "a peer's cursor and selection"
+    },
+    {
+      "family": "you-chip",
+      "owner": "packages/plugins/presence/src/styles.css",
+      "why": "the chip marking your own row in the roster popover"
+    },
+    {
+      "family": "agent-chip",
+      "owner": "packages/plugins/presence/src/styles.css",
+      "why": "the chip marking an agent principal in the roster popover"
+    },
+    {
+      "family": "index",
+      "owner": "packages/plugins/index/src/styles.css",
+      "why": "the sidebar tree's own rows, its drag line, its section bar and its skeleton"
+    },
+    {
+      "family": "plugin-manager",
+      "owner": "packages/plugins/plugin-manager/src/styles.css",
+      "why": "one row per assembled plugin, its toggle, and the lock an essential plugin wears"
+    },
+    {
+      "family": "draw",
+      "owner": "packages/plugins/draw/src/styles.css",
+      "why": "freehand ink and its hit stroke"
+    },
+    {
+      "family": "react-flow__node-draw",
+      "owner": "packages/plugins/draw/src/styles.css",
+      "why": "the React Flow node type the ink is drawn into — a longer prefix than `react-flow`, which is how the draw plugin keeps its own node without taking the canvas's vendor dressing"
+    },
+    {
+      "family": "machine",
+      "owner": "packages/plugins/machines/src/styles.css",
+      "why": "a machine's liveness pip and the menu row shown when no machine can host a terminal"
+    },
+    {
+      "family": "canvas-text",
+      "owner": "packages/plugins/notes/src/styles.css",
+      "why": "the note element and its in-place editor. The prefix says where a note is painted; the owner is the plugin whose element it is, so disabling notes takes this with it"
+    },
+    {
+      "family": "is",
+      "owner": "shared",
+      "why": "the state-modifier prefix. `is-*` is never a family and never a definition: it only ever qualifies the class it is written beside, so it belongs to no stylesheet and is legal in all of them"
+    }
+  ]
+}
+```
+
 ## Foundation law
 
 The foundation is not "the code we did not convert". It is a small set of **pillars**, each
@@ -879,6 +1292,51 @@ as data by a stranger's agent, or A3 has nothing to onboard against:
 
 A pillar that cannot be read as data is a pillar that cannot be audited, and an unauditable
 foundation is indistinguishable from a privileged core — which A1 denies exists.
+
+### Every runtime-joined namespace has a registry (the LAW)
+
+**A namespace whose two halves are joined at RUNTIME, by matching strings, gets a registry and a
+gate check — or it rots invisibly.** This is the generalization the checks below were each
+discovered by, one incident at a time, and it is stated here so the next one is designed rather
+than suffered.
+
+The failure mode is specific and it is always the same. Two parties agree on a name; neither
+holds a reference to the other; the compiler sees a string on each side and has nothing to
+compare. Rename one side and nothing breaks at build time — the join simply stops happening.
+The write goes to a key nobody reads, the click fires an action nobody publishes, the rule
+paints a class nobody has, the gate queries an element nobody renders, the log line names an
+event no consumer greps. **Every one of these is silent**, and silence is what makes it a law
+rather than a preference: a boundary violation is loud, a broken runtime join is not.
+
+So the rule has two obligations and both are mechanical. **A registry**: the namespace's members
+are enumerated as DATA — in this file, or in one exported table — so a stranger's agent can read
+what the names are without reading every producer. **A check in BOTH directions**: every literal
+in the tree resolves to a registry row (soundness — no unrecorded name), and every registry row
+is exercised by something live (liveness — no stale row). One direction alone is half a gate: a
+soundness-only check blesses a registry that has quietly become fiction, and a liveness-only
+check cannot see the name somebody added yesterday.
+
+Each of these is one instance of the law, and none of them was foreseen — each was written after
+the join it guards had already broken once:
+
+| Runtime-joined namespace                             | Registry                    | Check |
+| ---------------------------------------------------- | --------------------------- | ----- |
+| device-local storage keys                            | the `deviceLocal` register  | S3    |
+| `data-action` markers ↔ published actions            | the live assembly           | S4    |
+| `/api/…` route literals ↔ the doors that exist       | the script's allowlist      | S7    |
+| every word for a concept, across every plane         | §Lexicon rows               | S11   |
+| item kind → display noun                             | `ITEM_NOUNS`, the ONE table | S12   |
+| CSS selector families ↔ their owning package         | §Lexicon `cssFamilies`      | S13   |
+| `evt=` log names ↔ the gates that match them         | `LOG_EVENTS`                | S14   |
+| `data-testid` attributes ↔ the gates that click them | §Gate-contracts rows        | S15   |
+
+The corollary is a design instruction, not just an audit rule: **prefer a join the compiler can
+see.** A registry is what you owe when the join genuinely cannot be typed — because it crosses
+the wire, the DOM, a stylesheet, a database or a process boundary — and S14's producer half is
+the worked example of the preference in action, where `LogEvent` makes the emitting side a
+compile error and the check exists only for the CONSUMER half, which lives inside string
+literals in gate scripts where no type reaches. When you find yourself adding the second string
+literal that has to equal a first one somewhere else, the law has already applied.
 
 ### The portable lens
 
@@ -1018,6 +1476,7 @@ being taught exceptions.
         "packages/web/src/workspace.tsx",
         "packages/web/src/notice.tsx",
         "packages/web/src/styles.css",
+        "packages/web/src/shell.css",
         "packages/web/src/container-memory.ts",
         "packages/web/src/web-version.ts",
         "packages/web/src/generated-changelog.ts",
@@ -1213,7 +1672,11 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/styles.css",
-      "why": "the single stylesheet, including the workspace tree skin and the plugin-placeholder chrome"
+      "why": "the floor's own stylesheet: reset, type and colour ground, the two cross-owner tokens, the identity gate, the one notice stack, the engine's inert plugin placeholder, and the drop-denial cue every target shares. Everything that belongs to somebody is in that owner's sheet (§Lexicon cssFamilies, S13)"
+    },
+    {
+      "glob": "packages/web/src/shell.css",
+      "why": "the shell's skin — the sidebar, the workspace frame and the routed container view. A separate OWNER from the floor stylesheet, in the same package because it has nowhere else to go: the components that paint it are floor, and a floor file may not import `@manifold-plugin/*` (§Lexicon cssFamilies)"
     },
     {
       "glob": "packages/web/src/container-memory.ts",
@@ -1255,6 +1718,83 @@ MECHANISM, every piece of it addressed by two parties that may not import each o
 the litmus that puts a thing there rather than in whichever package used it first. A plugin
 reaches the host through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring
 guide.
+
+## Gate contracts
+
+A gate script drives the product through the same DOM a person uses, so every string it hands
+`document.querySelector` is a JOIN: the script names it, a renderer paints it, and nothing
+between them is compiled. Two of those strings were load-bearing and undeclared. One was plain
+button copy — `clickText("Enter manifold")` against `packages/web/src/identity.tsx`, whose
+label changes to "Creating identity…" the moment it is pressed. The other was a `data-testid`
+templated from a plugin MANIFEST id (`${section.id}-section`), so renaming a section id in
+`packages/plugins/machines/src/index.ts` broke three gates with no compiler signal and no
+failing unit test — only a browser assertion that stopped finding its element.
+
+So a gate keys off a `data-testid` and never off copy, and every test-id a gate depends on is
+declared here with the renderer that owns it. `verify:axioms` S15 reads this register in both
+directions: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/`
+must have a row AND a live `data-testid=` attribute in the row's renderer, and every row must
+be queried by some script — an unqueried row is stale and fails, exactly as a stale floor glob
+fails S6.
+
+This register holds the contracts, NOT the inventory. A `data-testid` no gate queries is
+ordinary markup and belongs nowhere near this list: `plugin-manager`, `sidebar-list` and
+`machines-rail` are live attributes with no row, and adding rows for them would be adding rows
+nothing keeps honest. A row appears when a gate starts depending on the string, in the same
+commit as the gate.
+
+Templated attributes resolve by SHAPE, which is what keeps the register small while the
+vocabulary stays open: `data-testid={`toolbar-${item.id}`}` answers for every tool a plugin
+contributes, so `toolbar-draw` and `toolbar-select` are two rows against one attribute rather
+than one row per plugin. The row still names the file, because "which renderer owes me this
+string" is the question a broken gate actually asks.
+
+```json
+{
+  "gateContracts": [
+    {
+      "testid": "identity-enter",
+      "renderer": "packages/web/src/identity.tsx",
+      "why": "every gate crosses the identity gate first; the submit button's COPY changes while submitting, so the contract cannot be its label"
+    },
+    {
+      "testid": "connection-state",
+      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else"
+    },
+    {
+      "testid": "connection-status",
+      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence"
+    },
+    {
+      "testid": "machines-section",
+      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "why": "templated `${section.id}-section`, so this row is the join between a PLUGIN MANIFEST section id (core.machines) and three gates that open that section — the rename this register exists to make loud"
+    },
+    {
+      "testid": "toolbar-draw",
+      "renderer": "packages/plugins/canvas/src/canvas-toolbar.tsx",
+      "why": "templated `toolbar-${item.id}`; the tool a gate picks to prove a contributed tool paints, disappears on disable, and returns on enable (R3)"
+    },
+    {
+      "testid": "toolbar-select",
+      "renderer": "packages/plugins/canvas/src/canvas-toolbar.tsx",
+      "why": "templated `toolbar-${item.id}`; the tool a gate returns to, so a stroke gate can prove the toolbar restores the default rather than staying armed"
+    },
+    {
+      "testid": "plugin-manager",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "R3's enablement rung scopes its toggle selector to the plugin-manager section root, so a row is picked out by plugin id inside the section that owns it"
+    },
+    {
+      "testid": "plugin-manager-toggle",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "R3 presses the REAL enablement affordance instead of dispatching the door twice; row identity comes from the sibling data-plugin attribute, never from button copy"
+    }
+  ]
+}
+```
 
 ## Device-local register
 
@@ -1359,42 +1899,49 @@ register. Anything else is presence, document, or action state — A2 leaves no 
 `bun run verify:axioms` (in `bun run gate`) is the axioms made falsifiable. Its static half runs
 against the source tree, its browser half against a real server and a real browser.
 
-| Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                             |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every `DEFAULT_WORKSPACE_LAYOUT` panel id exists in the assembly. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                          |
-| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `assembly.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                                |
-| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                            |
-| S4    | Every `data-action` literal in the source names an action the assembly actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                               |
-| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every assembled definition maps back to a package — **builtin rows excepted**: an engine door (`source: "builtin"`) has no package by design, and the script assembles it explicitly.                                                                                                                     |
-| S6    | Registry liveness: every `floor` glob matches at least one file, so a stale row fails.                                                                                                                                                                                                                                                                                                      |
-| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                                                                                                                                                                                                                        |
-| S8    | `SceneElementSchema`'s member types are a subset of the engine's floor element kinds plus the assembly's contributed element types.                                                                                                                                                                                                                                                         |
-| S9    | Pillar exhaustiveness: every `floor` row falls inside exactly one pillar's globs (most specific glob owns the file); an unmatched floor file is RED. Wiring lands with the conversion batch.                                                                                                                                                                                                |
-| S10   | The residual carve-out is published: the script lists every `cleanup: true` action in the assembly, so growth of the disable exemption shows up in a gate diff (ADR 0013 §9).                                                                                                                                                                                                               |
-| S11   | **Lexicon**: no word in any §Lexicon row's `banned` list appears in an identifier, a classified wire literal, a CSS selector, a file or directory name, or a Markdown heading, outside a declared `allow` row — and every `allow` row suppresses at least one real occurrence, every `term` occurs at least once, and no `term` sits in another row's `banned` list.                        |
-| S12   | **One label vocabulary**: exactly ONE table in the tree translates an item kind into a display noun, its keys are `ITEM_KINDS` ∪ the assembly's element types, and every value's canonical word is that key's registry term. A second such table fails (invariant 14 applied to vocabulary).                                                                                                |
-| R1    | Vocabulary: `GET /api/protocol` actions ≡ the assembly; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                                  |
-| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `terminal_event`.                                                                                                                                                                                                            |
-| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off renders its section body as a named inert placeholder live (D4′ — contributions placeholder, never vanish); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`. |
-| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.space.setLayout`; another principal's layout is untouched.                                                                                                                                                                                         |
-| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `vantage.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug probe; a container-scoped token invoking it is `forbidden`.                                                                                                                                                              |
-| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a container, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                        |
-| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                        |
-| R8    | The denial ladder end to end, including a container-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "container"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                  |
+| Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree (`workspaceLayout(WORKSPACE_PANELS)` — the floor's arrangement applied to the registration's own pair) exists in the assembly. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `assembly.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| S4    | Every `data-action` literal in the source names an action the assembly actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| S5    | Every `packages/plugins/*` directory is registered per the halves it exports, and every assembled definition maps back to a package — **builtin rows excepted**: an engine door (`source: "builtin"`) has no package by design, and the script assembles it explicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| S6    | Registry liveness: every `floor` glob matches at least one file, so a stale row fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| S7    | Route allowlist: the `/api/…` literals in the server's HTTP dispatcher equal the script's allowlist, so a bespoke feature route that bypasses the action door fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| S8    | **Element vocabulary, read from the OWNERS' end.** `SceneElementSchema` is a neutral ENVELOPE and enumerates nothing (ADR 0013 §16), so there are no schema members to walk: what the check walks is the set of types some party CLAIMS — `FLOOR_ELEMENT_PAYLOADS` ∪ the assembly's contributed element types — and asserts every claim is claimed ONCE, so no type is owned by both the floor and a plugin. The envelope's own promise is asserted beside it: a STRANGER type nothing claims still round-trips, validating on the envelope's bounds alone, because a canvas holding a record whose plugin is absent from this build must keep it rather than have the wire refuse a `type` it was never told about. |
+| S9    | Pillar exhaustiveness: every `floor` row falls inside exactly one pillar's globs (most specific glob owns the file); an unmatched floor file is RED. Wiring lands with the conversion batch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S10   | The residual carve-out is published: the script lists every `cleanup: true` action in the assembly, so growth of the disable exemption shows up in a gate diff (ADR 0013 §9).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| S11   | **Lexicon**: no word in any §Lexicon row's `banned` list appears in an identifier, a classified wire literal, a CSS selector, a file or directory name, or a Markdown heading, outside a declared `allow` row — and every `allow` row suppresses at least one real occurrence, every `term` occurs at least once, and no `term` sits in another row's `banned` list.                                                                                                                                                                                                                                                                                                                                                 |
+| S12   | **One label vocabulary**: exactly ONE table in the tree translates an item kind into a display noun, its keys are `ITEM_KINDS` ∪ the assembly's element types, and every value's canonical word is that key's registry term. A second such table fails (invariant 14 applied to vocabulary).                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector.                                                                                                                                                                                                                                                                                                           |
+| S14   | **Log-event vocabulary**: every `evt` a producer passes to `Logger.info/warn/error` in `packages/server/src` or to the agent's log sink, and every `"evt":"…"` literal a `packages/testkit` e2e or a `scripts/` gate matches inside raw stdout, is a member of `LOG_EVENTS` — and every member has a live producer, so a name nobody emits is a stale row. The producer half is also a compile error (`LogEvent`); the CONSUMER half is why the check exists, because no type reaches inside a string literal.                                                                                                                                                                                                       |
+| S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                         |
+| S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 12,000. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends.                                                                                                           |
+| R1    | Vocabulary: `GET /api/protocol` actions ≡ the assembly; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `terminal_event`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off renders its section body as a named inert placeholder live (D4′ — contributions placeholder, never vanish); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`.                                                                                                                                                                                                                                                                                                                          |
+| R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.space.setLayout`; another principal's layout is untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `vantage.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug probe; a container-scoped token invoking it is `forbidden`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| R6    | Addressing: `GET /api/resolve` round-trips a terminal and a container, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R8    | The denial ladder end to end, including a container-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "container"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 
-| Axiom / rule                              | Checks                                                                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| A1 everything above the floor is a plugin | S1, S2, S5, S8, R1, R3                                                                                                                      |
-| A2 multiplayer by design                  | R2, R4, R5                                                                                                                                  |
-| A3 moddable by design                     | `docs/PLUGINS.md` + R1, S5, S11, S12 (a stranger's agent onboards against the vocabulary; two words for one concept is two things to learn) |
-| A4 sovereign nodes                        | R6 (addressing); wave 3 adds its own                                                                                                        |
-| A5 waterfall authority                    | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                         |
-| Foundation law (litmus, pillars)          | S2, S6, S7, S9                                                                                                                              |
-| D4′ disable semantics (ADR 0013)          | R3, S10                                                                                                                                     |
-| One word per concept (invariant 16)       | S11, S12                                                                                                                                    |
-| Plane rule and state discipline           | S3, S4, R7, R8                                                                                                                              |
+| Axiom / rule                                  | Checks                                                                                                                                      |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1 everything above the floor is a plugin     | S1, S2, S5, S8, S13, R1, R3                                                                                                                 |
+| A2 multiplayer by design                      | R2, R4, R5                                                                                                                                  |
+| A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12 (a stranger's agent onboards against the vocabulary; two words for one concept is two things to learn) |
+| A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                        |
+| A5 waterfall authority                        | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                         |
+| Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                    |
+| Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15                                                                                                         |
+| D4′ disable semantics (ADR 0013)              | R3, S10                                                                                                                                     |
+| One word per concept (invariant 16)           | S11, S12, S14                                                                                                                               |
+| Plane rule and state discipline               | S3, S4, R7, R8                                                                                                                              |
+| Self-description (the structured log)         | S14                                                                                                                                         |
+| Gates assert on declared contracts            | S15                                                                                                                                         |
 
 Also standing, in `bun run gate`: `verify:convergence` (the document plane), `verify:tile-drop`
 (the placement algebra through real gestures), and the terminal e2e suites (the PTY plane).

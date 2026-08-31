@@ -1,3 +1,4 @@
+import "./styles.css";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import type { SectionProps } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";

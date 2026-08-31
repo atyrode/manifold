@@ -8,7 +8,7 @@
  * holds the tree to them — in BOTH directions, so an unrecorded crossing fails here rather
  * than in review.
  *
- * The static half (S1-S8) runs against the source tree with the TypeScript parser, never a
+ * The static half (S1-S16) runs against the source tree with the TypeScript parser, never a
  * regex over source (D14): imports, storage keys, action markers and route literals are AST
  * facts, and a regex that "mostly works" on them is a gate that mostly holds.
  *
@@ -20,6 +20,7 @@
  *   S6 registry liveness: every floor glob still matches a file
  *   S7 route allowlist: no bespoke feature route grew beside the action door
  *   S8 every scene element type is a floor kind or a composed contribution
+ *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *
  * The browser half (R1-R8) runs a real server and a real Chromium against the built bundle,
  * because the axioms are claims about a LIVE workspace: parity between the two doors, hot
@@ -37,8 +38,9 @@ import ts from "typescript";
 import {
   AssemblyError,
   assembleRoster,
+  FLOOR_ELEMENT_PAYLOADS,
   ITEM_NOUNS,
-  DEFAULT_WORKSPACE_LAYOUT,
+  workspaceLayout,
   ENGINE_PLUGINS_ID,
   ENGINE_SET_ENABLED_ACTION,
   enginePluginsActions,
@@ -49,6 +51,7 @@ import {
   ActionOutcomeSchema,
   ActionSummarySchema,
   ITEM_KINDS,
+  LOG_EVENTS,
   LayoutResponseSchema,
   MachinesResponseSchema,
   ContainerResponseSchema,
@@ -58,9 +61,10 @@ import {
   SceneElementSchema,
   TokenGrantSchema,
   formatManifoldUri,
+  type LogEvent,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
-import { SERVER_PLUGIN_DEFS } from "../packages/server/src/assembly.ts";
+import { SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
@@ -102,6 +106,21 @@ interface DeviceLocalRow {
   readonly why: string;
 }
 
+interface GateContractRow {
+  readonly testid: string;
+  /** The renderer file that owes the attribute; the question a broken gate actually asks. */
+  readonly renderer: string;
+  readonly why: string;
+}
+
+interface CssFamilyRow {
+  /** A selector-name prefix — `terminal`, `portal__slot` — or `*` for a rule with no class. */
+  readonly family: string;
+  /** The one stylesheet allowed to define it, or `shared` for the ownerless state prefix. */
+  readonly owner: string;
+  readonly why: string;
+}
+
 /** A registry row is only a row when it carries its reason: an unjustified glob is not law. */
 function justified(row: unknown, field: string): string | null {
   if (row === null || typeof row !== "object") return null;
@@ -121,10 +140,14 @@ function justified(row: unknown, field: string): string | null {
 function axiomRegistries(): {
   readonly floor: readonly FloorRow[];
   readonly deviceLocal: readonly DeviceLocalRow[];
+  readonly gateContracts: readonly GateContractRow[];
+  readonly cssFamilies: readonly CssFamilyRow[];
 } {
   const text = readFileSync(join(repoRoot, "AXIOMS.md"), "utf8");
   const floor: FloorRow[] = [];
   const deviceLocal: DeviceLocalRow[] = [];
+  const gateContracts: GateContractRow[] = [];
+  const cssFamilies: CssFamilyRow[] = [];
   const fence = /```json\n([\s\S]*?)\n```/g;
   for (;;) {
     const block = fence.exec(text);
@@ -135,6 +158,26 @@ function axiomRegistries(): {
       for (const row of parsed.floor) {
         const glob = justified(row, "glob");
         if (glob !== null) floor.push({ glob, why: String(Reflect.get(row as object, "why")) });
+      }
+    }
+    if ("gateContracts" in parsed && Array.isArray(parsed.gateContracts)) {
+      for (const row of parsed.gateContracts) {
+        const testid = justified(row, "testid");
+        const renderer = justified(row, "renderer");
+        if (testid === null || renderer === null) continue;
+        gateContracts.push({
+          testid,
+          renderer,
+          why: String(Reflect.get(row as object, "why")),
+        });
+      }
+    }
+    if ("cssFamilies" in parsed && Array.isArray(parsed.cssFamilies)) {
+      for (const row of parsed.cssFamilies) {
+        const family = justified(row, "family");
+        const owner = justified(row, "owner");
+        if (family === null || owner === null) continue;
+        cssFamilies.push({ family, owner, why: String(Reflect.get(row as object, "why")) });
       }
     }
     if (!("deviceLocal" in parsed) || !Array.isArray(parsed.deviceLocal)) continue;
@@ -152,7 +195,13 @@ function axiomRegistries(): {
   if (deviceLocal.length === 0) {
     throw new Error("AXIOMS.md carries no fenced `deviceLocal` register");
   }
-  return { floor, deviceLocal };
+  if (gateContracts.length === 0) {
+    throw new Error("AXIOMS.md carries no fenced `gateContracts` register");
+  }
+  if (cssFamilies.length === 0) {
+    throw new Error("AXIOMS.md carries no fenced `cssFamilies` registry");
+  }
+  return { floor, deviceLocal, gateContracts, cssFamilies };
 }
 
 // ─────────────────────────────────────────────────────────── source scanning
@@ -451,8 +500,15 @@ const webRegistrations: WebRegistration[] = [];
 }
 
 {
+  /*
+    The default is no longer a constant: `workspaceLayout()` owns the ARRANGEMENT and
+    `assembly.ts` owns the two panel NAMES, which is the point of the split. So the check
+    builds the tree the server actually serves — the floor's function applied to the
+    registration's own pair — and asserts every leaf of THAT resolves. Reading a constant
+    would now prove nothing about what `GET /api/layout` answers.
+  */
   const missing: string[] = [];
-  for (const node of Object.values(DEFAULT_WORKSPACE_LAYOUT)) {
+  for (const node of Object.values(workspaceLayout(WORKSPACE_PANELS))) {
     const ref = node.ref;
     if (ref === null || ref.kind !== "panel") continue;
     if (!composed.panels.has(ref.panelId)) missing.push(ref.panelId);
@@ -793,18 +849,60 @@ const ROUTE_ALLOWLIST: readonly string[] = [
 // ─────────────────────────────────────────────────────────── S8: element vocabulary
 
 {
-  /** What the ENGINE renders itself (`FLOOR_NODE_TYPES`, canvas-view.tsx). */
-  const FLOOR_ELEMENT_KINDS: Readonly<Record<string, true>> = { portal: true, text: true };
-  const wireTypes = SceneElementSchema.options.map((option) => String(option.shape.type.value));
-  const stray = wireTypes.filter(
-    (type) => FLOOR_ELEMENT_KINDS[type] !== true && !elementTypes.has(type),
-  );
+  /*
+    S8 reads the subset from the OTHER END now, because the protocol no longer enumerates
+    element types (ADR 0013 §16): `SceneElementSchema` is a neutral envelope, so there are no
+    `z.literal` members left to walk. What it walks instead is the set of types some party
+    CLAIMS — the floor's own kinds, which are `FLOOR_ELEMENT_PAYLOADS`, plus the assembly's
+    contributed types — and it asserts the same thing it always did: no element type is owned by
+    nobody.
+
+    This also retires a table that had quietly gone wrong. The old check hardcoded
+    `{ portal: true, text: true }` as "the floor's kinds", and `text` stopped being the floor's
+    the moment `core.notes` declared it — so the assertion was passing a type through on the
+    strength of a stale literal in the gate rather than an owner in the tree. The floor's kinds
+    are now read from the one table the boundary itself consults.
+  */
+  const floorKinds = Object.keys(FLOOR_ELEMENT_PAYLOADS);
+  const claimed = [...floorKinds, ...elementTypes];
+  const duplicated = floorKinds.filter((type) => elementTypes.has(type));
+  /*
+    Every claimed type must be claimed ONCE. A plugin re-declaring a floor kind is the case
+    element-type ownership (ADR 0013 §7) refuses at assembly time; asserting it here as well is
+    what keeps the gate honest if that reservation is ever relaxed.
+  */
   check(
     "S8 element vocabulary",
-    stray.length === 0,
-    stray.length === 0
-      ? `${list(wireTypes)} ⊆ floor {${list(Object.keys(FLOOR_ELEMENT_KINDS))}} ∪ composed {${list(elementTypes)}}`
-      : `wire element types nobody owns: ${list(stray)}`,
+    duplicated.length === 0,
+    duplicated.length === 0
+      ? `${String(claimed.length)} claimed element types: floor {${list(floorKinds)}} ∪ composed {${list(elementTypes)}}`
+      : `element types claimed by both the floor and a plugin: ${list(duplicated)}`,
+  );
+
+  /*
+    And the envelope's own promise, asserted rather than assumed: a type NOBODY claims still
+    round-trips. That is the property the opening exists for — a canvas holding a record whose
+    plugin is absent from this build keeps it, instead of the wire schema refusing a `type` it
+    was never told about (ADR 0013 §16 clause 5).
+  */
+  const strangerType = "acme.gantt";
+  const stranger = {
+    id: "s8-stranger",
+    type: strangerType,
+    lanes: ["a", "b"],
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    zIndex: 0,
+  };
+  const parsedStranger = SceneElementSchema.safeParse(stranger);
+  check(
+    "S8 a stranger element type round-trips",
+    parsedStranger.success && !claimed.includes(strangerType),
+    parsedStranger.success
+      ? `an unclaimed "${strangerType}" record validates on the envelope's bounds alone`
+      : `the envelope refused an unclaimed type, which is the closed union it replaced`,
   );
 }
 
@@ -1190,6 +1288,570 @@ function scanTree(dir: string, out: string[]): void {
   );
 }
 
+// ────────────────────────────────────────── S13: one owner per selector family
+
+/**
+ * WHO IS ALLOWED TO PAINT THIS NAME.
+ *
+ * A plugin that ships its behaviour, its actions and its renderers but leaves its SKIN in the
+ * floor's stylesheet is not extracted, it is half-extracted: turning the plugin off leaves its
+ * rules resident, deleting the package leaves them orphaned, and the floor slowly becomes the
+ * place every feature's CSS was typed because that is where the file already was. One file of
+ * 3,572 lines and 510 selectors is how that ends, and it is A1 failing quietly in a language
+ * the import walk (S2) cannot read, because CSS has no imports to walk.
+ *
+ * So the split is registered rather than remembered: §Lexicon's `cssFamilies` names one owning
+ * stylesheet per selector family, and this check reads every `.css` file under `packages/` back
+ * against it, in both directions like every registry here.
+ *
+ * Three decisions make the check mechanical rather than approximate:
+ *
+ * LONGEST PREFIX WINS, on a `-` or `__` boundary. `canvas-text` beats `canvas` for the note
+ * element and `portal__slot` beats `portal` for the tile-tree's pane, which is how a family
+ * whose NAME says one owner and whose CODE says another is recorded instead of argued about.
+ *
+ * THE ANCHOR NAMES THE FAMILY. A compound's first class is the thing being styled; classes
+ * written beside it qualify it. `.status-dot.open` is the `status` family in its open state,
+ * never an `open` family — which is what keeps the state vocabulary out of the registry, and
+ * why exactly one row carries `owner: "shared"`.
+ *
+ * OWNERSHIP FOLLOWS THE SCOPE. A rule belongs to the owner of the LEFTMOST family in each of
+ * its selectors, because that is the subtree it reaches into and therefore the code whose
+ * removal makes the rule dead: `.portal--mono .terminal-frame` is the canvas plugin's rule
+ * about a terminal and it leaves when portals leave. Compounds to the right — including the
+ * ones inside `:is()`, `:not()`, `:where()` and `:has()` — are context: checked for
+ * REGISTRATION, so no new family can hide in a descendant, never for ownership.
+ *
+ * A rule with no class anywhere is the `*` row's: the reset and the element defaults reach
+ * every node in the document, so they are the floor's and a plugin restyling `body` is RED.
+ */
+{
+  const SHARED = "shared";
+  const CSS_COMMENTS = /\/\*[\s\S]*?\*\//g;
+  const FUNCTIONAL_PSEUDO = /:(?:is|not|where|has)\(([^()]*)\)/g;
+  const FIRST_CLASS = /\.(-?[_a-zA-Z][-\w]*)/;
+
+  const owners = new Map<string, string>(
+    registries.cssFamilies.map((row) => [row.family, row.owner]),
+  );
+
+  /** The longest registered prefix of a class name, cut only at a `-`/`__` seam. */
+  const familyOf = (cls: string): string | null => {
+    for (let cut = cls.length; cut > 0; cut--) {
+      const seam = cut === cls.length || cls[cut] === "-" || cls[cut] === "_";
+      if (!seam) continue;
+      const candidate = cls.slice(0, cut);
+      if (owners.has(candidate)) return candidate;
+    }
+    return null;
+  };
+
+  /** Splits on commas / combinators that are not inside `(…)` or `[…]`. */
+  const splitTop = (text: string, breaks: string): readonly string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const ch of text) {
+      if (ch === "(" || ch === "[") depth++;
+      if (ch === ")" || ch === "]") depth--;
+      if (depth === 0 && breaks.includes(ch)) {
+        parts.push(current);
+        current = "";
+        continue;
+      }
+      current += ch;
+    }
+    parts.push(current);
+    return parts.map((part) => part.trim()).filter((part) => part !== "");
+  };
+
+  /** The class a compound is ABOUT, ignoring the ones that merely qualify it. */
+  const anchorOf = (compound: string): string | null =>
+    FIRST_CLASS.exec(compound.replace(FUNCTIONAL_PSEUDO, ""))?.[1] ?? null;
+
+  /** Every compound a selector mentions, the arguments of functional pseudos included. */
+  const everyCompound = (selector: string): readonly string[] => {
+    const found: string[] = [];
+    for (const compound of splitTop(selector, " \t\n>+~")) {
+      found.push(compound);
+      for (;;) {
+        const inner = FUNCTIONAL_PSEUDO.exec(compound);
+        if (inner === null) break;
+        for (const one of splitTop(inner[1] ?? "", ",")) {
+          found.push(...splitTop(one, " \t\n>+~"));
+        }
+      }
+    }
+    return found;
+  };
+
+  interface CssRule {
+    readonly selectors: readonly string[];
+    readonly line: number;
+  }
+
+  /**
+   * Selector lists and `@keyframes` names, one level of at-rule nesting followed. A keyframes
+   * name is reported as its own pseudo-selector so the animation vocabulary is owned too — a
+   * plugin cannot mint `@keyframes terminal-blink` in somebody else's file either.
+   */
+  const cssRules = (text: string): readonly CssRule[] => {
+    const lineStarts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === "\n") lineStarts.push(i + 1);
+    const lineAt = (index: number): number => {
+      let low = 0;
+      let high = lineStarts.length - 1;
+      while (low < high) {
+        const mid = (low + high + 1) >> 1;
+        if ((lineStarts[mid] ?? 0) <= index) low = mid;
+        else high = mid - 1;
+      }
+      return low + 1;
+    };
+    const rules: CssRule[] = [];
+    const scan = (from: number, to: number): void => {
+      let start = from;
+      let depth = 0;
+      let preludeEnd = -1;
+      let quote = "";
+      let inComment = false;
+      for (let i = from; i < to; i++) {
+        const ch = text[i];
+        if (inComment) {
+          if (ch === "*" && text[i + 1] === "/") {
+            inComment = false;
+            i++;
+          }
+          continue;
+        }
+        if (quote !== "") {
+          if (ch === "\\") i++;
+          else if (ch === quote) quote = "";
+          continue;
+        }
+        if (ch === "/" && text[i + 1] === "*") {
+          inComment = true;
+          i++;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === "{") {
+          if (depth === 0) preludeEnd = i;
+          depth++;
+          continue;
+        }
+        if (ch === "}") {
+          depth--;
+          if (depth > 0) continue;
+          const prelude = text.slice(start, preludeEnd).replace(CSS_COMMENTS, "").trim();
+          const line = lineAt(preludeEnd);
+          if (/^@(?:media|supports|container|layer)\b/.test(prelude)) {
+            scan(preludeEnd + 1, i);
+          } else if (prelude.startsWith("@keyframes")) {
+            rules.push({ selectors: [`.${prelude.slice("@keyframes".length).trim()}`], line });
+          } else if (!prelude.startsWith("@")) {
+            rules.push({ selectors: splitTop(prelude, ","), line });
+          }
+          start = i + 1;
+          continue;
+        }
+        if (ch === ";" && depth === 0) start = i + 1;
+      }
+    };
+    scan(0, text.length);
+    return rules;
+  };
+
+  const stylesheets: string[] = [];
+  for (const hit of new Bun.Glob("packages/**/*.css").scanSync({
+    cwd: repoRoot,
+    onlyFiles: true,
+  })) {
+    const path = hit.split("\\").join("/");
+    if (path.includes("node_modules/") || path.includes("dist/")) continue;
+    stylesheets.push(path);
+  }
+  stylesheets.sort();
+
+  const unregistered: string[] = [];
+  const misowned: string[] = [];
+  const defined = new Set<string>();
+  let ruleCount = 0;
+
+  for (const path of stylesheets) {
+    for (const rule of cssRules(readFileSync(join(repoRoot, path), "utf8"))) {
+      ruleCount++;
+      const where = `${path}:${String(rule.line)}`;
+      let classed = false;
+      for (const selector of rule.selectors) {
+        let scope: string | null = null;
+        for (const compound of everyCompound(selector)) {
+          const anchor = anchorOf(compound);
+          if (anchor === null) continue;
+          classed = true;
+          const family = familyOf(anchor);
+          if (family === null) {
+            unregistered.push(`${where} .${anchor} (${selector})`);
+            continue;
+          }
+          /*
+            Liveness is "this row suppresses a real occurrence", not "this row is a scope
+            root": `react-flow` is only ever written to the RIGHT of `.canvas`, and a vendor
+            vocabulary nobody anchors on is still a vocabulary exactly one sheet may dress.
+          */
+          if (owners.get(family) === path) defined.add(family);
+          if (scope === null && owners.get(family) !== SHARED) scope = family;
+        }
+        if (scope === null) continue;
+        const owner = owners.get(scope) ?? "";
+        if (owner !== path) misowned.push(`${where} ${scope} belongs to ${owner} (${selector})`);
+      }
+      if (classed) continue;
+      const floorSheet = owners.get("*") ?? "";
+      if (floorSheet === path) defined.add("*");
+      else {
+        misowned.push(
+          `${where} a rule with no class belongs to ${floorSheet} (${rule.selectors.join(", ")})`,
+        );
+      }
+    }
+  }
+
+  check(
+    "S13 css ownership",
+    unregistered.length === 0 && misowned.length === 0,
+    unregistered.length === 0 && misowned.length === 0
+      ? `${String(ruleCount)} rules across ${String(stylesheets.length)} stylesheets, every family painted by the one owner ${String(owners.size)} registry rows name`
+      : `unregistered families: ${list(unregistered)}; painted outside their owner: ${list(misowned)}`,
+  );
+
+  const sheets = new Set(stylesheets);
+  const stale = registries.cssFamilies
+    .filter((row) => row.owner !== SHARED && !defined.has(row.family))
+    .map((row) =>
+      sheets.has(row.owner)
+        ? `${row.family} (nothing in ${row.owner})`
+        : `${row.family} (no ${row.owner})`,
+    );
+  /*
+    The shared row earns its place the same way, but it cannot be "defined" anywhere: `is-*`
+    is only ever a qualifier, so liveness asks whether any stylesheet writes one at all.
+  */
+  const unusedShared = registries.cssFamilies
+    .filter(
+      (row) =>
+        row.owner === SHARED &&
+        !stylesheets.some((path) =>
+          readFileSync(join(repoRoot, path), "utf8").includes(`.${row.family}-`),
+        ),
+    )
+    .map((row) => `${row.family} (shared, unused)`);
+
+  check(
+    "S13 css family liveness",
+    stale.length === 0 && unusedShared.length === 0,
+    stale.length === 0 && unusedShared.length === 0
+      ? `${String(registries.cssFamilies.length)} rows, every one defining rules in the stylesheet it names`
+      : `stale rows: ${list([...stale, ...unusedShared])}`,
+  );
+}
+
+/**
+ * THE OPERATIONAL LOG VOCABULARY (`evt`), producers and consumers measured against one list.
+ *
+ * `LOG_EVENTS` closes the vocabulary and `LogEvent` makes a producer typo a compile error, so
+ * this check exists for the half a type cannot reach: the e2e gates match these names INSIDE
+ * RAW STDOUT (`line.includes('"evt":"exited"')`), which is a string to the compiler and a
+ * contract to the reader. Before the union, the agent spelled the same concept `shutdown_error`
+ * while the server spelled it `shutdown_failed`, and a rename on either side would have left an
+ * e2e assertion matching a name nothing emits — a gate that passes by never looking.
+ *
+ * Both directions, like every registry here. A literal outside the union fails; a member with
+ * no live producer fails too, because a name nobody emits is a stale row and an e2e that waits
+ * for one would hang until its timeout and blame the feature.
+ */
+{
+  const vocabulary = new Set<string>(LOG_EVENTS);
+  const LEVELS = new Set(["info", "warn", "error"]);
+  const produced: { readonly where: string; readonly evt: string }[] = [];
+
+  const producerFiles: string[] = [];
+  for (const root of ["packages/server/src", "packages/agent/src"]) scanTree(root, producerFiles);
+  for (const path of producerFiles) {
+    if (!SOURCE.test(path) || TEST_SOURCE.test(path)) continue;
+    const file = parsed(path);
+    walk(file, (node) => {
+      /*
+        `evt: "starting"` — the agent's entry point writes records straight to its sink rather
+        than through a logger object, so the property assignment is the producer there.
+       */
+      if (ts.isPropertyAssignment(node)) {
+        const key =
+          ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : "";
+        if (key === "evt" && ts.isStringLiteralLike(node.initializer)) {
+          produced.push({
+            where: `${path}:${String(lineOf(file, node))}`,
+            evt: node.initializer.text,
+          });
+        }
+        return;
+      }
+      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+      const method = node.expression.name.text;
+      const [first, second] = node.arguments;
+      /*
+        `logger.warn("machine_rejected", …)`, matched on the METHOD rather than on the
+        receiver's name. `console` is a different stream and excluded; anything else calling
+        `.info/.warn/.error` with a string literal in these two packages is treated as a
+        producer on purpose. Today there are exactly three receivers — `logger`,
+        `this.logger`, `createLogger(defaultRuntime)` — so this over-catches nothing; and if
+        it ever over-catches, it fails LOUDLY naming a file and line, whereas keying on a
+        variable's name would let a logger held under another name rot silently. Same trade as
+        S4: sound first, and coverage ratchets up.
+       */
+      if (LEVELS.has(method) && node.expression.expression.getText(file) !== "console") {
+        if (first !== undefined && ts.isStringLiteralLike(first)) {
+          produced.push({ where: `${path}:${String(lineOf(file, node))}`, evt: first.text });
+        }
+        return;
+      }
+      // `this.log("info", "welcome", …)`: the agent's own two-argument spelling.
+      if (method !== "log") return;
+      if (first === undefined || !ts.isStringLiteralLike(first) || !LEVELS.has(first.text)) return;
+      if (second !== undefined && ts.isStringLiteralLike(second)) {
+        produced.push({ where: `${path}:${String(lineOf(file, node))}`, evt: second.text });
+      }
+    });
+  }
+
+  /*
+    The consumer half. Read through the PARSER, over string and template tokens only: a gate's
+    matcher is a LITERAL, and prose is not. This file's own rationale above quotes
+    `"evt":"exited"` in a comment, and a text scan would count the explanation as an assertion —
+    inflating the number a reader trusts and, worse, letting a comment "satisfy" the check.
+    Template tokens are included because a matcher built with backticks is just as load-bearing.
+   */
+  const JSONL_EVT = /"evt"\s*:\s*"([A-Za-z0-9_]+)"/g;
+  const consumed: { readonly where: string; readonly evt: string }[] = [];
+  const consumerFiles: string[] = [];
+  for (const root of ["packages/testkit", "scripts"]) scanTree(root, consumerFiles);
+  for (const path of consumerFiles) {
+    if (!SOURCE.test(path)) continue;
+    const file = parsed(path);
+    walk(file, (node) => {
+      if (!ts.isStringLiteralLike(node) && !ts.isTemplateLiteralToken(node)) return;
+      for (const hit of node.getText(file).matchAll(JSONL_EVT)) {
+        consumed.push({ where: `${path}:${String(lineOf(file, node))}`, evt: hit[1] ?? "" });
+      }
+    });
+  }
+
+  const strayProducers = produced.filter((row) => !vocabulary.has(row.evt));
+  const strayConsumers = consumed.filter((row) => !vocabulary.has(row.evt));
+  const emitted = new Set(produced.map((row) => row.evt));
+  const unemitted = [...vocabulary].filter((evt) => !emitted.has(evt));
+
+  check(
+    "S14 log vocabulary",
+    strayProducers.length === 0 && strayConsumers.length === 0,
+    strayProducers.length === 0 && strayConsumers.length === 0
+      ? `${String(produced.length)} producers and ${String(consumed.length)} stdout matchers all name one of the ${String(vocabulary.size)} declared events`
+      : `outside LOG_EVENTS — producers: ${list(strayProducers.map((row) => `${row.where} ${row.evt}`))}; stdout matchers: ${list(strayConsumers.map((row) => `${row.where} ${row.evt}`))}`,
+  );
+  check(
+    "S14 log vocabulary liveness",
+    unemitted.length === 0,
+    unemitted.length === 0
+      ? `every declared event has a live producer`
+      : `declared but emitted nowhere — delete them or emit them: ${list(unemitted)}`,
+  );
+}
+
+/**
+ * GATE CONTRACTS: the DOM strings a gate depends on, declared (§Gate contracts).
+ *
+ * A browser gate reaches the product through `document.querySelector`, so every string it
+ * hands over is a join with no compiler between the two sides. Two of them were rotten. One was
+ * plain button copy — `clickText("Enter manifold")`, against a label that becomes
+ * "Creating identity…" the instant it is pressed. The other was a `data-testid` templated from
+ * a plugin MANIFEST id, so renaming a section id broke three gates with no failing typecheck
+ * and no failing unit test, only a browser assertion that stopped finding its element.
+ *
+ * Three directions. A queried test-id with no row is an undeclared contract; a row whose
+ * renderer does not paint the attribute is a lie about who owes it; a row nobody queries is
+ * stale, and stale rows fail here exactly as they do in S6 and S11. Templated attributes match
+ * by SHAPE, so `toolbar-${item.id}` answers for every tool a plugin contributes and the
+ * register stays small while the vocabulary stays open.
+ */
+{
+  const contracts = registries.gateContracts;
+  /*
+    Read through the parser, over literal tokens only, for the same reason S14's consumer half
+    is: a query is a LITERAL a gate hands to the DOM, and the prose above describing one is not
+    a contract. `clickTestId(…)` is covered as well as the raw selector, so routing a click
+    through the helper is not a way out of the register.
+   */
+  const QUERIED = /\[data-testid\s*=\s*(?:"([^"\]]+)"|'([^'\]]+)'|([A-Za-z0-9_-]+))\]/g;
+  const queried: { readonly where: string; readonly testid: string }[] = [];
+  for (const entry of readdirSync(join(repoRoot, "scripts"), { withFileTypes: true })) {
+    if (!entry.isFile() || !SOURCE.test(entry.name)) continue;
+    const path = `scripts/${entry.name}`;
+    const file = parsed(path);
+    walk(file, (node) => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const [first] = node.arguments;
+        if (
+          node.expression.name.text === "clickTestId" &&
+          first !== undefined &&
+          ts.isStringLiteralLike(first)
+        ) {
+          queried.push({ where: `${path}:${String(lineOf(file, node))}`, testid: first.text });
+        }
+        return;
+      }
+      if (!ts.isStringLiteralLike(node) && !ts.isTemplateLiteralToken(node)) return;
+      for (const hit of node.getText(file).matchAll(QUERIED)) {
+        const testid = hit[1] ?? hit[2] ?? hit[3] ?? "";
+        if (testid !== "") queried.push({ where: `${path}:${String(lineOf(file, node))}`, testid });
+      }
+    });
+  }
+
+  /** A `data-testid` a renderer paints, as a pattern: a literal exactly, a template by shape. */
+  const attributePattern = (value: ts.JsxAttributeValue): RegExp | null => {
+    const quoted = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (ts.isStringLiteral(value)) return new RegExp(`^${quoted(value.text)}$`);
+    if (!ts.isJsxExpression(value) || value.expression === undefined) return null;
+    const inner = value.expression;
+    if (ts.isStringLiteralLike(inner)) return new RegExp(`^${quoted(inner.text)}$`);
+    /*
+      A test-id computed from a bare identifier cannot be verified from the source, and a
+      contract nobody can verify is not one. Answering null makes the ROW fail with a message
+      naming its renderer, and the fix is to inline the template rather than widen the check.
+     */
+    if (!ts.isTemplateExpression(inner)) return null;
+    let source = `^${quoted(inner.head.text)}`;
+    for (const span of inner.templateSpans) source += `[^\\s]+${quoted(span.literal.text)}`;
+    return new RegExp(`${source}$`);
+  };
+
+  const declared: { readonly path: string; readonly pattern: RegExp }[] = [];
+  const markup: string[] = [];
+  scanTree("packages", markup);
+  for (const path of markup) {
+    if (!path.endsWith(".tsx")) continue;
+    const file = parsed(path);
+    walk(file, (node) => {
+      if (!ts.isJsxAttribute(node) || node.name.getText(file) !== "data-testid") return;
+      if (node.initializer === undefined) return;
+      const pattern = attributePattern(node.initializer);
+      if (pattern !== null) declared.push({ path, pattern });
+    });
+  }
+
+  const byTestid = new Map(contracts.map((row) => [row.testid, row]));
+  const undeclared = queried.filter((row) => !byTestid.has(row.testid));
+  const unpainted = contracts.filter(
+    (row) => !declared.some((hit) => hit.path === row.renderer && hit.pattern.test(row.testid)),
+  );
+  const queriedIds = new Set(queried.map((row) => row.testid));
+  const stale = contracts.filter((row) => !queriedIds.has(row.testid));
+  /*
+    Copy-keyed clicks, found through the PARSER rather than the text: this very file documents
+    `clickText` in the comment above, and a text scan would flag its own rationale. A call
+    expression is unambiguous, and `cdp.ts`'s method DECLARATION is not one — so the helper may
+    keep existing while no gate is permitted to reach for it.
+   */
+  const copyKeyed: string[] = [];
+  for (const entry of readdirSync(join(repoRoot, "scripts"), { withFileTypes: true })) {
+    if (!entry.isFile() || !SOURCE.test(entry.name)) continue;
+    const path = `scripts/${entry.name}`;
+    const file = parsed(path);
+    walk(file, (node) => {
+      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+      if (node.expression.name.text !== "clickText") return;
+      copyKeyed.push(`${path}:${String(lineOf(file, node))}`);
+    });
+  }
+
+  check(
+    "S15 gate contracts declared",
+    undeclared.length === 0,
+    undeclared.length === 0
+      ? `${String(queried.length)} test-id queries across scripts/ name one of the ${String(contracts.length)} declared contracts`
+      : `queried but undeclared — add a §Gate-contracts row: ${list(undeclared.map((row) => `${row.where} ${row.testid}`))}`,
+  );
+  check(
+    "S15 gate contracts painted",
+    unpainted.length === 0,
+    unpainted.length === 0
+      ? `every contract resolves to a live data-testid in its declared renderer`
+      : `rows whose renderer paints no matching data-testid: ${list(unpainted.map((row) => `${row.testid} → ${row.renderer}`))}`,
+  );
+  check(
+    "S15 gate contracts liveness",
+    stale.length === 0 && copyKeyed.length === 0,
+    stale.length === 0 && copyKeyed.length === 0
+      ? `no stale rows, and no gate keys an assertion off button copy`
+      : `rows nobody queries: ${list(stale.map((row) => row.testid))}; copy-keyed clicks — use clickTestId against a declared contract: ${list(copyKeyed)}`,
+  );
+}
+
+// ────────────────────────────────────────── S16: the floor's own size, as a number
+
+/**
+ * THE FLOOR HAS A BUDGET, and the budget is the only thing that makes "keep the engine small"
+ * a claim instead of a preference.
+ *
+ * Every other static check here asks whether a boundary is CLEAN. None of them notices the
+ * failure mode that actually threatens A1, which is the engine getting bigger one defensible
+ * commit at a time. `packages/plugin/src` is where that happens first: it is the one package
+ * every plugin imports, so a helper put there is instantly reachable by everything and never
+ * has to justify itself to a second party the way a plugin's own module does. The litmus test
+ * (§Foundation law) governs each ADDITION and cannot see the aggregate; a number can.
+ *
+ * SOURCE ONLY, tests excluded, because `sourcesMatching` already draws that line and a test is
+ * evidence about the floor rather than part of it — a budget that counted tests would price
+ * proving the engine the same as growing it.
+ *
+ * Two thresholds, and the gap between them is the point. The WARN line is a line printed and
+ * nothing else: it is where a reviewer should be asking which of these modules is really
+ * plugin territory, and a gate that failed there would be a gate that blocks the wave doing
+ * the extraction. The RED line is where the number stops being a signal and becomes the
+ * finding — an engine that size is no longer small enough for a stranger's agent to read
+ * before it starts (A3), whatever each individual file's litmus verdict said. Raising either
+ * threshold is a change to this file, which means it is a change somebody has to defend in a
+ * diff; that is the whole enforcement mechanism.
+ */
+const PLUGIN_SRC_WARN_LINES = 9_000;
+const PLUGIN_SRC_MAX_LINES = 12_000;
+
+{
+  const files = sourcesMatching("packages/plugin/src/**");
+  let total = 0;
+  let largest = { path: "", lines: 0 };
+  for (const path of files) {
+    const lines = readFileSync(join(repoRoot, path), "utf8").split("\n").length;
+    total += lines;
+    if (lines > largest.lines) largest = { path, lines };
+  }
+  if (total >= PLUGIN_SRC_WARN_LINES) {
+    console.log(
+      `WARN  S16 floor budget: packages/plugin/src is ${String(total)} lines, past the ${String(PLUGIN_SRC_WARN_LINES)} review line (RED at ${String(PLUGIN_SRC_MAX_LINES)}). Largest: ${largest.path} (${String(largest.lines)}). Ask which of these modules is plugin territory.`,
+    );
+  }
+  check(
+    "S16 floor budget",
+    total <= PLUGIN_SRC_MAX_LINES,
+    total <= PLUGIN_SRC_MAX_LINES
+      ? `packages/plugin/src is ${String(total)} lines across ${String(files.length)} source files (warn ${String(PLUGIN_SRC_WARN_LINES)}, red ${String(PLUGIN_SRC_MAX_LINES)}); largest ${largest.path} (${String(largest.lines)})`
+      : `packages/plugin/src is ${String(total)} lines, over the ${String(PLUGIN_SRC_MAX_LINES)}-line ceiling: the engine has grown past what a stranger's agent can read before starting (A3). Extract plugin territory or defend a new ceiling in scripts/verify-axioms.ts`,
+  );
+}
+
 // ═══════════════════════════════════════════════════════════ the browser half
 
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-axi-");
@@ -1218,6 +1880,13 @@ interface ActionLogLine {
 }
 
 const actionLog: ActionLogLine[] = [];
+/**
+ * The one `evt` this gate reads out of the stream, typed rather than spelled inline: the
+ * literal is a join with the server's logger, so it belongs to `LogEvent` and not to a
+ * string. S14 guards the literals no type can reach; this one it needn't, because the
+ * compiler already does.
+ */
+const ACTION_EVT: LogEvent = "action";
 let origin = "";
 
 /** Reads the server's JSONL forever: the ready URL once, then every action it dispatches. */
@@ -1237,7 +1906,7 @@ async function consumeServerLog(): Promise<void> {
       if (!line.startsWith("{")) continue;
       try {
         const record: unknown = JSON.parse(line);
-        if (Reflect.get(record as object, "evt") !== "action") continue;
+        if (Reflect.get(record as object, "evt") !== ACTION_EVT) continue;
         actionLog.push({
           name: String(Reflect.get(record as object, "name")),
           outcome: String(Reflect.get(record as object, "outcome")),
@@ -1333,6 +2002,50 @@ try {
       else disabledHere.add(id);
     }
     return outcome.ok;
+  };
+
+  /**
+   * The plugin manager's OWN toggle, addressed by the contract that names it.
+   *
+   * A2 says a gesture in the browser and a call from an SDK land on the same door, and a gate
+   * that only ever dispatched proved the SDK half twice. This presses the button a human
+   * presses: the section root and the enablement affordance are both declared gate contracts,
+   * and the row is picked out by the plugin id the manager already paints beside them, so
+   * nothing here is keyed off button copy.
+   */
+  const managerToggle = (id: string): string =>
+    `[data-testid="plugin-manager"] [data-plugin="${id}"] [data-testid="plugin-manager-toggle"]`;
+
+  /**
+   * Flips a plugin by PRESSING that button, and answers whether the workspace agreed.
+   *
+   * The roster is server-owned: the button dispatches and the new roster arrives on the
+   * connection frame, so the proof a press landed is the row reporting the new state rather
+   * than the click returning. `disabledHere` is kept in step either way, or the restore pass
+   * would leave a plugin off after a click-driven disable.
+   */
+  const pressToggle = async (id: string, becomes: boolean): Promise<boolean> => {
+    const selector = JSON.stringify(managerToggle(id));
+    const pressed = await browser!.evaluate<boolean>(
+      `(() => { const hit = document.querySelector(${selector});
+        if (!(hit instanceof HTMLElement) || hit.matches(':disabled')) return false;
+        hit.click(); return true; })()`,
+    );
+    if (!pressed) return false;
+    const landed = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${selector})?.getAttribute('aria-checked') === ${JSON.stringify(
+            String(becomes),
+          )}`,
+        ),
+      10_000,
+    );
+    if (landed) {
+      if (becomes) disabledHere.delete(id);
+      else disabledHere.add(id);
+    }
+    return landed;
   };
 
   // ─────────────────────────────────────────── R1: the published vocabulary
@@ -1438,7 +2151,7 @@ try {
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "axiom-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
   await browser.goto(`${origin}/p/${terminalContainerId}`);
   /** Only the id: the stored grant carries this device's TOKEN and must never leave the page. */
@@ -1715,7 +2428,7 @@ try {
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
     const untouched =
       JSON.stringify(bystander["root"]?.ratios) ===
-      JSON.stringify(DEFAULT_WORKSPACE_LAYOUT["root"]?.ratios);
+      JSON.stringify(workspaceLayout(WORKSPACE_PANELS)["root"]?.ratios);
     check(
       "R4 layouts are per principal",
       untouched,
@@ -1787,7 +2500,23 @@ try {
   );
 
   {
-    const drawGone = await setEnabled("core.draw", false);
+    /*
+      THE BUTTON, NOT THE DOOR BEHIND IT. This leg used to dispatch
+      `engine.plugins.setEnabled` over HTTP and then assert the canvas went inert, which
+      proved the door twice and the UI never — a manager whose toggle had stopped being wired
+      to that door would have passed. So the disable is a real press on the plugin manager's
+      own affordance, and the re-enable below stays a direct dispatch: A2's claim is that both
+      paths land on the SAME door, and a gate can only say that by exercising both.
+     */
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.draw"]') !== null`,
+        ),
+      20_000,
+      "the plugin manager listing core.draw",
+    );
+    const drawGone = await pressToggle("core.draw", false);
     const inert = await settles(async () => {
       const toolbar = await browser!.evaluate<boolean>(
         `document.querySelector('[data-testid="toolbar-draw"]') === null`,
@@ -1798,14 +2527,25 @@ try {
       return toolbar && placeheld;
     }, 10_000);
     check(
-      "R3 core.draw off",
+      "R3 core.draw off, by the manager's own button",
       drawGone && inert,
-      inert
-        ? "tool button gone and the existing stroke reads as a named placeholder, no reload"
-        : "the canvas did not go inert",
+      drawGone && inert
+        ? "one press on the plugin manager: tool button gone and the existing stroke reads as a named placeholder, no reload"
+        : drawGone
+          ? "the press landed but the canvas did not go inert"
+          : "the plugin manager's toggle did not turn core.draw off",
     );
 
+    // The direct-dispatch half, deliberately kept: the same plugin comes back through the
+    // API door, and the manager's own row must agree without anyone reloading it.
     const drawBack = await setEnabled("core.draw", true);
+    const rowAgrees = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(managerToggle("core.draw"))})?.getAttribute('aria-checked') === 'true'`,
+        ),
+      10_000,
+    );
     const restored = await settles(async () => {
       const toolbar = await browser!.evaluate<boolean>(
         `document.querySelector('[data-testid="toolbar-draw"]') !== null`,
@@ -1816,9 +2556,13 @@ try {
       return toolbar && painted;
     }, 10_000);
     check(
-      "R3 core.draw back on",
-      drawBack && restored,
-      restored ? "tool and ink both return live" : "the canvas stayed inert after re-enabling",
+      "R3 core.draw back on, by the API door",
+      drawBack && restored && rowAgrees,
+      restored && rowAgrees
+        ? "tool and ink both return live, and the manager's row reports the API's change"
+        : restored
+          ? "the canvas came back but the manager's row did not follow"
+          : "the canvas stayed inert after re-enabling",
     );
   }
 

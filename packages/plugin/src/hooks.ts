@@ -56,7 +56,7 @@ export {
   carryGhosts,
   carryPayload,
   carryPlacementId,
-  noteTitle,
+  firstLineLabel,
   remoteTileCarries,
   refDisplayLabel,
   type CarryGhost,
@@ -64,6 +64,7 @@ export {
   type CarrySource,
   type RemoteTileCarry,
   type RefLabelLookups,
+  type RefTextElement,
 } from "./carry.ts";
 export {
   useCarry,
@@ -137,6 +138,7 @@ export {
 export {
   ElementOutlet,
   ContainerOverlayOutlet,
+  OVERLAY_SLOTS,
   ContainerRenderer,
   ProjectionProvider,
   TerminalRenderer,
@@ -147,6 +149,8 @@ export {
   type ElementOutletProps,
   type ContainerOverlayOutletProps,
   type ContainerOverlayProps,
+  type OverlayRegistrations,
+  type OverlaySlot,
   type ContainerRendererOutletProps,
   type ContainerRendererProps,
   type ProjectionPlaceholderProps,

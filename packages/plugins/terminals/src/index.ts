@@ -38,7 +38,7 @@ const geometry = {
 };
 
 /**
- * Five doors, three authorities, and two scopes — every one of them chosen to reproduce the
+ * Six doors, three authorities, and two scopes — every one of them chosen to reproduce the
  * authority the replaced ref enforced rather than to look tidy:
  *
  * - `open` carries `terminals:spawn`, the cap the broker itself demanded before this door
@@ -46,8 +46,8 @@ const geometry = {
  *   per-terminal agent token minted for it is container-scoped WITH that cap (`auth.ts`
  *   `mint`). A workspace-graded creation door would have quietly ended
  *   agents spawning their own terminals, which is A2's whole promise.
- * - `rename` and `kill` carry `terminals:write` at `scope: "container"`: the authority the terminal
- *   channel's `terminal_kill` verb has always enforced, and the one the browser's own
+ * - `rename`, `take` and `kill` carry `terminals:write` at `scope: "container"`: the authority the
+ *   terminal channel's `terminal_kill` verb has always enforced, and the one the browser's own
  *   `canKill` rule is computed from. The deleted `PATCH/DELETE /api/terminals/:id` routes
  *   asked for `containers:write` instead — two doors onto one concept answering differently, which
  *   invariant 14 gives exactly one reading. This is that reading.
@@ -95,6 +95,27 @@ export const terminalsActions = [
       terminalId: z.string().min(1),
       name: z.string().min(1).max(120),
     }),
+    result: z.strictObject({}),
+  }),
+  defineAction({
+    /*
+      THE CONTROLLER LEASE, as a door. Who may hold a live PTY is a policy question with an
+      answer a principal can argue with — "no, somebody else is typing in it" — so it belongs
+      here rather than in the transport, and the shape is `open`'s: the action decides, and the
+      channel that asked carries out the transfer and announces it, because a lease is held BY
+      a connection and the `controller_changed` broadcast goes to the room that connection is
+      joined to.
+
+      NOT `cleanup`. Claiming a lease is administration, not tidying up: `kill` is the carve-out
+      that keeps removal reachable while this plugin is off (D12), and widening the carve-out to
+      cover taking control from a live principal would make a disabled plugin more capable than
+      the rule it is meant to suspend.
+     */
+    name: "take",
+    title: "Take a terminal's controller lease",
+    caps: ["terminals:write"],
+    scope: "container",
+    input: z.strictObject({ terminalId: z.string().min(1) }),
     result: z.strictObject({}),
   }),
   defineAction({

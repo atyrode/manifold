@@ -47,16 +47,46 @@ another plugin — fails the gate.
 
 `@manifold/plugin` has three entries, and which one you reach for is a real distinction:
 
-| entry                    | what it holds                                                                                                                                                            |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                          |
-| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`.                                                                          |
-| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`/`CarriedItemIcon`, `NodeTitleBar`, `useNotice`, and the published vantage store (`setVantage`). |
+| entry                    | what it holds                                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                        |
+| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`.                                                        |
+| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`, `NodeTitleBar`, `useNotice`, and the published vantage store (`setVantage`). |
 
-`/ui` is closed on purpose — you extend it by passing nodes into its slots (`icon`, `middle`,
-`extraActions`), never by widening a union in it, so re-drawing the whole icon set stays a
-change to one file and no call site. `@manifold-plugin/terminals/web` is the worked example:
-its terminal viewer owns no drawing and no notice mechanism of its own.
+`/ui` is a standard library rather than a component kit: you extend it by passing nodes into its
+slots (`icon`, `middle`, `extraActions`), never by growing a component's props, so re-drawing the
+whole icon set stays a change to one file and no call site. What is CLOSED there is the engine's
+own verbs — `ControlKind` is a fixed list because a control is one of manifold's own actions —
+while a vocabulary the ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed
+element types included, and draws a neutral element mark for a kind it holds no drawing for
+(#69 wave F). `@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no
+drawing and no notice mechanism of its own.
+
+### Your skin ships with you
+
+A plugin that paints anything carries `src/styles.css` and imports it from its web half:
+
+```tsx
+// packages/plugins/<name>/src/web.tsx
+import "./styles.css";
+```
+
+Vite follows the edge and emits your rules into the built CSS, so the sheet arrives with the
+code that paints against it and leaves with the package. The floor's stylesheet is NOT the
+place to put them, and that is now mechanical rather than a request: `AXIOMS.md` §Lexicon's
+`cssFamilies` registry names one owning stylesheet per selector family, and S13 fails a family
+painted from anybody else's file. Adding a family is one registry row, in the same commit —
+the same cheap direction as adding a lexicon term.
+
+Two consequences worth knowing before you write a selector. Your rules may reach INTO your own
+subtree only: ownership follows the leftmost family in a selector, so `.my-panel .node-titlebar`
+is yours while a bare `.node-titlebar` rule is the neutral chrome's and belongs in
+`packages/plugin/src/ui/styles.css`. And a rule with no class at all — `body`, `:root`, an
+element default — is the floor's alone, because it reaches every node in the document.
+
+The TypeScript side needs one line of setup: your `tsconfig.json` names
+`../../plugin/src/css-modules.d.ts` in its `include`, which is where the `declare module "*.css"`
+contract lives so nine packages do not each declare it.
 
 ---
 
@@ -77,7 +107,10 @@ export const manifest: PluginManifest = {
   // essential: true,              // optional; only core.shell claims it
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
   dependencies: {
-    "core.canvas": { type: "required", reason: "strokes render on a canvas" },
+    "core.canvas": {
+      type: "required",
+      reason: "strokes are canvas elements; without the canvas renderer the tool has no surface",
+    },
   },
   after: ["core.shell"], // soft ordering only; a missing target is ignored
   dormant: { mode: "ghost", label: "Drawing (plugin disabled)" }, // how your stuff looks while you are off
@@ -728,6 +761,11 @@ are the checks that will fail _your_ plugin:
   route added outside the action door fails the gate by construction.
 - Every `SceneElementSchema` member type is either an engine floor kind or an assembled element
   type.
+- **Your stylesheet paints only families you own** (S13): every selector family in every `.css`
+  file under `packages/` resolves to an `AXIOMS.md` §Lexicon `cssFamilies` row, and every rule
+  is defined by the owner of the leftmost family it scopes into. A family painted from another
+  package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless
+  rule outside the floor sheet — each is RED, named by file and selector.
 - In the browser: `/api/protocol` and `/api/plugins` agree with the assembly; hot
   enable/disable takes effect without a reload; an action invoked over the SDK is observed in
   the DOM and vice versa; the denial ladder returns the documented rules.

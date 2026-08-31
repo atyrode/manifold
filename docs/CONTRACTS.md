@@ -127,7 +127,7 @@ real origins without re-keying anything (`AXIOMS.md` §Roadmap).
 | DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
 | POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
 | GET /api/plugins                         | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                |
-| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or `DEFAULT_WORKSPACE_LAYOUT` when unset. Self-scoped by construction                    |
+| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the injected default tree when unset. Self-scoped by construction                     |
 | GET /api/resolve?uri=                    | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
 | GET /api/containers                      | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input    |
 | GET /api/introspect                      | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                            |
@@ -150,7 +150,8 @@ scoping arrives with the permission waterfall (§Authority (planned)).
 `scope: "container"` if and only if the door it replaces was reachable by a container-scoped
 token — reads
 (`core.index.read`, `core.terminals.listByContainer`, `core.machines.list`) and mutations
-(`core.terminals.open`/`rename`/`kill`, `core.index.renameContainer`, `core.access.mint`/`revoke`)
+(`core.terminals.open`/`rename`/`take`/`kill`, `core.index.renameContainer`,
+`core.access.mint`/`revoke`)
 alike. `scope: "container"` skips ladder rung 3 and creates an obligation with an exact division
 of
 labour: the ladder proves the caller's caps hold for the caller's OWN container, and only the
@@ -512,7 +513,10 @@ no migration; a major difference needs an unapplied migration or the plugin is r
 greater than code major is refused as a downgrade.
 
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
-`layout:<principalId>` and read at `GET /api/layout` (`DEFAULT_WORKSPACE_LAYOUT` when unset). Its
+`layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
+is injected rather than imported: `workspaceLayout(panels)` in `@manifold/plugin` owns the
+arrangement (two leaves in a row at `[0.22, 0.78]`) and `packages/server/src/assembly.ts` owns
+the two panel NAMES, because `http.ts` is floor and may not name a plugin. Its
 leaves are `{ kind:"panel", panelId }` refs — the shell IS a composition, rendered by the
 same `TileTree` a composition container uses, so there is one tree vocabulary everywhere. The ONLY
 writer is
@@ -527,7 +531,7 @@ frame, ONE `core.space.setLayout` at the commit point, never one per frame.
 **Terminal administration (`core.terminals`).** `PATCH /api/terminals/:id`,
 `DELETE /api/terminals/:id`, `GET /api/terminals` and `GET /api/container-terminals` are deleted,
 with no
-aliases and no dual paths. `core.terminals.rename { terminalId, name }` and `kill { terminalId }`
+`core.terminals.rename { terminalId, name }`, `take { terminalId }` and `kill { terminalId }`
 carry `terminals:write` at `scope: "container"` — the authority the session channel's own
 `terminal_kill`
 verb has always enforced, and the one the browser's `canKill` rule is computed from. The deleted
@@ -555,10 +559,19 @@ machine round trip whose reply is socket traffic, so the PTY is still born on th
 answers for both the UI and the channel, and the surviving rule is the stricter one: an exited
 terminal is
 dismissable by any `terminals:write` holder, a running one only by its controller or the wildcard.
-The broker's own `terminals:spawn` check is deleted too; authority lives at the door and nowhere
+`terminal_take` has `terminal_open`'s shape rather than `terminal_kill`'s: it dispatches
+`core.terminals.take` and, only if allowed, lets the broker move the lease and broadcast
+`controller_changed`, because a lease is held BY a connection and the broadcast goes to the room
+that connection is joined to. `take` is NOT `cleanup` — claiming control of a live PTY is
+administration, not tidying up — and its rule is the broker's former one minus the authority
+half: a terminal that cannot be named is `terminal not found`, an exited one is
+`terminal has exited`, and the principal currently HOLDING the lease is deliberately no
+obstacle, since claiming first is the documented way out of `kill`'s lease refusal.
+The broker's own `terminals:spawn` and `terminals:write` checks are deleted; authority lives at
+the door and nowhere
 else. And containment behaves differently by shape: it FILTERS a listing (`listByContainer` answers
 a
-scoped reader its own container's rows) and REFUSES on the four doors that name one terminal, all
+scoped reader its own container's rows) and REFUSES on the five doors that name one terminal, all
 through `ctx.outsideScope`.
 
 **Index and container administration (`core.index`).** `GET`/`POST /api/pads`,
@@ -642,6 +655,36 @@ revoke", which the deleted route could not say. `core.access` is NOT `essential`
 authenticates outside the token system, so no disable can lock the owner out. The A5 evaluator
 (ADR 0011) later replaces what happens BENEATH these doors; their published vocabulary does not
 move.
+
+**The audit trail (`core.events`).** The server has recorded events since the first migration —
+`principal_joined`, `principal_left`, `terminal_opened`/`renamed`/`bound`/`exited`,
+`token_minted`, `token_revoked` — into the `events` table (`id`, `container_id`, `ts`,
+`principal_id`, `type`, `payload`), pruned to 30 days and 10,000 rows per container. Nothing
+could read them back, so the trail was a fact about the database rather than about the
+workspace. One door now reads it:
+
+| Action             | Caps | Scope     | Args → Result                                                                                             |
+| ------------------ | ---- | --------- | --------------------------------------------------------------------------------------------------------- |
+| `core.events.list` | `*`  | workspace | `{ limit?: 1..500, kind?: string(1..64), containerId?: string }` → `{ events: EventRow[] }`, newest first |
+
+`EventRow` is `{ id, containerId: string\|null, ts, principalId: string\|null, type, payload }` —
+camelCase, with `payload` carried as the stored JSON TEXT because no schema declares what a given
+event type's payload holds, so a reader decides what to parse and a malformed row still reads as a
+row. The filter's word is `kind` while the row publishes `type`: the filter is the caller's
+question, the row is the column's own name.
+
+`*` is root-only and deliberate. The trail is workspace-wide and carries OTHER principals'
+activity; no cap in the vocabulary means "may read other people's history", and reusing
+`containers:read` would hand every share-link holder a surveillance feed. `scope: "workspace"`
+follows: a container-scoped token is refused at rung 3 before arguments are parsed, so the
+`containerId` filter is a narrowing for a caller who could already see everything rather than a
+way out of a container — which is why the handler owes `ctx.outsideScope` nothing. `limit` is
+bounded at the schema instead of clamped, so the maximum is published in the roster's JSON
+Schema; reading past 500 rows needs paging, and paging needs a cursor this wave does not invent.
+
+`core.events` contributes no panel, section, element or tool — a door-only plugin, like
+`core.access`. It is not `essential`: the rows keep accruing while it is off (a disable retains,
+ADR 0013 §1), so re-enabling restores the whole trail.
 
 **`manifold://` addressing.** One canonical serialization of the addressing algebra, bijective
 with the structured wire forms (`parseManifoldUri` / `formatManifoldUri`,
@@ -917,9 +960,11 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   the channel); components just pair attach/detach per mount. Guarded by SDK contract tests.
 - `terminal_input { terminalId, data }` (data base64) — accepted only from the current
   **controller**; others receive `error { code:"not_controller" }`.
-- Controller lease: opener starts as controller; `terminal_take { terminalId }` transfers
-  it to any principal with `terminals:write` (event `terminal_event { kind:"controller_changed",
-controllerId }`). Controller-only: input, `terminal_resize` (broadcast as
+- Controller lease: opener starts as controller; `terminal_take { terminalId }` dispatches
+  `core.terminals.take` (cap `terminals:write`, `scope: "container"`) and, only when that door
+  allows, transfers the lease to that principal (event
+  `terminal_event { kind:"controller_changed", controllerId }`). Controller-only: input,
+  `terminal_resize` (broadcast as
   `terminal_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
 - Kill authorization: the current **controller**, OR any holder of the wildcard
   capability (`*`), may send `terminal_kill` for a RUNNING terminal; other principals
@@ -1069,6 +1114,21 @@ a one-way data move is not: 9 and 11 each take a consistent `VACUUM INTO` snapsh
 transaction opens (a VACUUM cannot run inside one, which is also what
 makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
 database.
+The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
+at schema 8 leaves `manifold.db.pre-v9.bak` and `manifold.db.pre-v11.bak` once the replay
+finishes, and **the operator prunes them**. The server never deletes an elder VERSION's
+snapshot: that set is the recovery path for moves nothing can run backwards, and a process
+that silently deletes a recovery image is a worse failure than a full disk. The one exception
+the engine takes is bounded to a single version — at most the NEWEST snapshot per version
+survives, so a migration retried at the same version replaces its own predecessor instead of
+accumulating one full copy of the database per attempt. That is safe precisely because it is
+same-version: a `pre-v11.bak` can only still be there if 11 never committed, so the live
+database still holds every byte the stale image copies. Replacement is staged through a
+sibling `<db>.pre-v<version>.bak.partial` renamed over the canonical name BEFORE the
+transaction opens (`VACUUM INTO` refuses to overwrite), which is what leaves the image of a
+migration that then throws under the documented name rather than a temporary one; an operator
+who wants an earlier attempt kept renames it out of that name, where the engine cannot reach
+it.
 
 The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
 10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the

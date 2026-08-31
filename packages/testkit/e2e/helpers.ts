@@ -121,7 +121,16 @@ export async function attachedCapture(
   return capture;
 }
 
-type PortalElement = Extract<SceneElement, { type: "portal" }>;
+/**
+ * The GEOMETRY a fixture may override, spelled out rather than derived.
+ *
+ * It used to be `Partial<Omit<Extract<SceneElement, { type: "portal" }>, …>>`, and that
+ * narrowing is gone: the protocol's element schema is a neutral envelope now (ADR 0013 §16), so
+ * `SceneElement` is one type and `Extract` on the discriminant resolves to `never`. Naming the
+ * four fields is also more honest about what a caller is allowed to move — a portal's reference
+ * is a parameter above, not something a `patch` should be able to reach.
+ */
+type PortalGeometry = Pick<SceneElement, "x" | "y" | "width" | "height" | "zIndex">;
 
 /**
  * The one way a canvas references a container — including the composition a terminal lives
@@ -130,7 +139,7 @@ type PortalElement = Extract<SceneElement, { type: "portal" }>;
 export function portalElement(
   id: string,
   containerId: string,
-  patch: Partial<Omit<PortalElement, "id" | "type" | "containerId">> = {},
+  patch: Partial<PortalGeometry> = {},
 ): SceneElement {
   return {
     id,

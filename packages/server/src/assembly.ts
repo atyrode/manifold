@@ -2,10 +2,12 @@ import { accessActions, accessManifest } from "@manifold-plugin/access";
 import { accessHandlers } from "@manifold-plugin/access/server";
 import { canvasManifest } from "@manifold-plugin/canvas";
 import { compositionsManifest } from "@manifold-plugin/compositions";
-import { drawManifest } from "@manifold-plugin/draw";
+import { drawElements, drawManifest } from "@manifold-plugin/draw";
+import { eventsActions, eventsManifest } from "@manifold-plugin/events";
+import { eventsHandlers } from "@manifold-plugin/events/server";
 import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
 import { machinesHandlers } from "@manifold-plugin/machines/server";
-import { notesManifest } from "@manifold-plugin/notes";
+import { notesElements, notesManifest } from "@manifold-plugin/notes";
 import { pluginManagerManifest } from "@manifold-plugin/plugin-manager";
 import { presenceActions, presenceManifest } from "@manifold-plugin/presence";
 import { presenceHandlers } from "@manifold-plugin/presence/server";
@@ -16,7 +18,27 @@ import { terminalsHandlers } from "@manifold-plugin/terminals/server";
 import { uriManifest } from "@manifold-plugin/uri";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
+import { panelRefId, type WorkspacePanels } from "@manifold/plugin";
 import type { ServerPluginDef } from "./plugin-host.ts";
+
+/**
+ * WHICH panels a default workspace tree is built from — the one datum the floor's
+ * `workspaceLayout()` cannot know and must be handed.
+ *
+ * It lives here because this is the only server file allowed to name a plugin at all, and a
+ * panel id IS a plugin's name: `core.shell.sidebar` is `core.shell`'s, spelled in the same
+ * `<pluginId>.<panelId>` join the assembly claims panels under (`panelRefId`, so the rule has
+ * one implementation). Putting this in `layout.ts`, or in `http.ts` where the fallback is
+ * served, would make a floor file name a favorite plugin — the neutrality criterion of
+ * AXIOMS.md §Foundation law, failing in the one file that must be replaceable wholesale.
+ * `main.ts` reads it from here and injects the built tree into the HTTP app; the browser half
+ * has its own copy in `packages/web/src/assembly.ts` for the same reason, and `verify:axioms`
+ * (S1) asserts both resolve against their own assembly.
+ */
+export const WORKSPACE_PANELS: WorkspacePanels = {
+  sidebar: panelRefId(shellManifest.id, "sidebar"),
+  main: panelRefId(shellManifest.id, "container-view"),
+};
 
 /**
  * THE registration point, and the only server file allowed to import `@manifold-plugin/*`
@@ -46,6 +68,15 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
   { manifest: accessManifest, actions: accessActions, handlers: accessHandlers },
+  /*
+    A DOOR-ONLY row: `core.events` publishes one read over the audit trail and contributes no
+    panel, section, element or tool, exactly like `core.access` above it. That is not an
+    incomplete registration — a row is what makes a capability EXIST for a reader, an
+    administrator and an agent alike, and the interface over this trail is a screen somebody
+    still has to design. Registering the door first is what lets that screen be a plugin
+    instead of another conversion.
+  */
+  { manifest: eventsManifest, actions: eventsActions, handlers: eventsHandlers },
   // The index owns both halves: the sidebar section that lists everything, and the doors
   // that create, rename, delete and move it.
   { manifest: indexManifest, actions: indexActions, handlers: indexHandlers },
@@ -58,8 +89,16 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
     A plugin the server never heard of cannot be named in a placeholder, cannot be disabled,
     and its element type would read as "unknown plugin" on every canvas.
   */
-  { manifest: drawManifest, actions: [], handlers: {} },
-  { manifest: notesManifest, actions: [], handlers: {} },
+  /*
+    `elements` carries these two plugins' PER-TYPE PAYLOAD SCHEMAS (ADR 0013 §16). The protocol's
+    element schema is a neutral envelope — it holds the geometry and bounds the payload, and names
+    no element type — so what a `draw` or a `text` record must actually contain is declared by
+    whoever declared the type, and this row is where that declaration reaches the assembly. It
+    sits on the DEFINITION rather than in the manifest for the same reason handlers do: a schema
+    is code, and manifests stay inert data (ADR 0010 rule 2).
+  */
+  { manifest: drawManifest, actions: [], handlers: {}, elements: drawElements },
+  { manifest: notesManifest, actions: [], handlers: {}, elements: notesElements },
   { manifest: uriManifest, actions: [], handlers: {} },
   // The two container renderers are browser-only for the same reason: what they draw is a
   // projection, and every write they make is somebody else's declared door.

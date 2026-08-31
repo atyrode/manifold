@@ -5,18 +5,25 @@ import {
   ClientMessageBodySchema,
   CreateContainerRequestSchema,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  MAX_DOC_UPDATE_BYTES,
+  MAX_ELEMENT_PAYLOAD_KEYS,
   MAX_GESTURE_POINT_VALUES,
+  MAX_SESSION_BASE64_CHARS,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
   ContainerSchema,
   ROOT_TILE_ID,
   ServerMessageSchema,
+  ServerToAgentMessageSchema,
   SceneElementSchema,
   TerminalsResponseSchema,
+  MAX_STROKE_POINT_VALUES,
+  MAX_TEXT_LENGTH,
   TileLayoutSchema,
   TileSchema,
   TileRefSchema,
   buildProtocolJsonSchema,
+  elementPayload,
   hasCap,
   validateTileLayout,
   type Tile,
@@ -283,7 +290,7 @@ describe("session channel schemas", () => {
     ).toBe(false);
   });
 
-  test("scene records validate portal, collaborative text, and freedraw variants", () => {
+  test("the envelope validates geometry and carries a payload it does not interpret", () => {
     expect(SceneElementSchema.parse(element("portal-1"))).toEqual(element("portal-1"));
     expect(
       SceneElementSchema.safeParse({
@@ -313,36 +320,89 @@ describe("session channel schemas", () => {
         color: "#12abEF",
       }).success,
     ).toBe(true);
-    expect(SceneElementSchema.safeParse({ ...element("bad"), strokeColor: "#fff" }).success).toBe(
-      false,
-    );
-    expect(SceneElementSchema.safeParse({ ...element("drawing"), type: "rectangle" }).success).toBe(
-      false,
-    );
+    // GEOMETRY is still the envelope's, and still strict: it is what every renderer, every
+    // placement rule and every fingerprint reads without knowing what the record means.
+    expect(SceneElementSchema.safeParse({ ...element("bad"), width: 0 }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...element("bad"), zIndex: 1.5 }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...element("bad"), id: "" }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...element("bad"), type: "" }).success).toBe(false);
   });
 
-  test("scene records validate the portal container variant", () => {
-    const portal = {
-      id: "portal-1",
-      type: "portal" as const,
-      containerId: "c-1",
-      x: 8,
-      y: 16,
-      width: 720,
-      height: 480,
-      zIndex: 3,
+  test("a stranger element type round-trips, payload and all", () => {
+    /*
+      THE property the envelope exists for (ADR 0013 §16). The old schema was a closed
+      discriminated union, so a `type` it did not list was refused outright — which meant a
+      canvas could not hold a record whose owning plugin was merely absent from this build. That
+      is the outcome §4 forbids for panels and sections, arriving through the document plane.
+      Now the record survives, keeps its payload byte for byte, and paints a placeholder.
+    */
+    const stranger = {
+      id: "acme-1",
+      type: "acme.gantt",
+      lanes: ["design", "build"],
+      collapsed: false,
+      rowHeight: 24,
+      note: null,
+      x: 12,
+      y: 34,
+      width: 400,
+      height: 200,
+      zIndex: 5,
     };
-    expect(SceneElementSchema.parse(portal)).toEqual(portal);
-    // The discriminant owns the payload shape: a portal carries a container, never a terminal.
-    expect(SceneElementSchema.safeParse({ ...portal, containerId: "" }).success).toBe(false);
-    expect(SceneElementSchema.safeParse({ ...portal, terminalId: "s1" }).success).toBe(false);
+    expect(SceneElementSchema.parse(stranger)).toEqual(stranger);
+    expect(elementPayload(SceneElementSchema.parse(stranger))).toEqual({
+      lanes: ["design", "build"],
+      collapsed: false,
+      rowHeight: 24,
+      note: null,
+    });
   });
 
-  test("the retired terminal element kind is refused on the wire", () => {
-    // A canvas never holds a terminal. The element that used to carry one now carries the
-    // id of the composition the terminal lives in, so the old kind has to fail to PARSE —
-    // a doc still emitting it is a bug in the writer, not a variant to tolerate.
-    const terminalElement = {
+  test("the payload is BOUNDED, so loosening the schema opened a vocabulary and not a blob channel", () => {
+    const base = element("bounded");
+    // Depth one only: an object graph inside a record would be a second document plane.
+    expect(SceneElementSchema.safeParse({ ...base, nested: { a: 1 } }).success).toBe(false);
+    expect(SceneElementSchema.safeParse({ ...base, deep: [[1]] }).success).toBe(false);
+    // The ceilings are the UNION of the ceilings the retired union members carried, so nothing
+    // that validated before the envelope stops validating now.
+    expect(
+      SceneElementSchema.safeParse({ ...base, prose: "x".repeat(MAX_TEXT_LENGTH) }).success,
+    ).toBe(true);
+    expect(
+      SceneElementSchema.safeParse({ ...base, prose: "x".repeat(MAX_TEXT_LENGTH + 1) }).success,
+    ).toBe(false);
+    expect(
+      SceneElementSchema.safeParse({
+        ...base,
+        run: Array.from({ length: MAX_STROKE_POINT_VALUES }, () => 0),
+      }).success,
+    ).toBe(true);
+    expect(
+      SceneElementSchema.safeParse({
+        ...base,
+        run: Array.from({ length: MAX_STROKE_POINT_VALUES + 1 }, () => 0),
+      }).success,
+    ).toBe(false);
+    const tooManyKeys = Object.fromEntries(
+      Array.from({ length: MAX_ELEMENT_PAYLOAD_KEYS + 1 }, (_unused, index) => [
+        `k${String(index)}`,
+        index,
+      ]),
+    );
+    expect(SceneElementSchema.safeParse({ ...base, ...tooManyKeys }).success).toBe(false);
+  });
+
+  test("the retired terminal kind is now CARRIED rather than refused, and migration 9 is what removes it", () => {
+    /*
+      A deliberate reversal, recorded because it reverses a shipped assertion. The old union
+      refused `type: "terminal"` on the wire; the envelope carries it as any other kind its
+      owner is absent for. That is the better failure: schema 9 already rewrote every such
+      record into a `portal` onto the terminal's home composition, so a document still holding
+      one is a document the migration did not reach — and a record the reader silently DELETES
+      because this build does not know its type is exactly the invisible absence A1 forbids. It
+      survives, and it paints the engine's named placeholder where somebody can see it.
+    */
+    const retired = {
       id: "terminal-1",
       type: "terminal",
       terminalId: "terminal-1",
@@ -352,11 +412,12 @@ describe("session channel schemas", () => {
       height: 480,
       zIndex: 0,
     };
-    expect(SceneElementSchema.safeParse(terminalElement).success).toBe(false);
-    // Nor does dropping the terminal id rescue it: `terminal` is not a discriminant value.
-    expect(
-      SceneElementSchema.safeParse({ ...terminalElement, terminalId: undefined }).success,
-    ).toBe(false);
+    expect(SceneElementSchema.parse(retired)).toEqual(retired);
+    // What still refuses it is OWNERSHIP: no plugin contributes `terminal`, so no renderer
+    // claims it, and the canvas mounts the engine's placeholder rather than a terminal.
+    expect(elementPayload(SceneElementSchema.parse(retired))).toEqual({
+      terminalId: "terminal-1",
+    });
   });
 });
 
@@ -377,6 +438,75 @@ describe("machine channel schemas", () => {
   test("output seq must be positive", () => {
     const bad = { type: "output", terminalId: "s", seq: 0, data: btoa("x") };
     expect(AgentMessageSchema.safeParse(bad).success).toBe(false);
+  });
+});
+
+describe("the base64 wire cap", () => {
+  /*
+    The cap used to be the literal 700_000 written out at five sites — four schemas and one
+    pool guard — and nothing anywhere related it to the payload it exists to admit. These two
+    tests are that missing relation: the first says the bound is big enough, the second says
+    there is only one of it.
+  */
+  test("admits the largest legal doc update, base64-encoded", () => {
+    // base64 spends four characters per three bytes, padding the final group.
+    const encoded = Math.ceil(MAX_DOC_UPDATE_BYTES / 3) * 4;
+    expect(MAX_SESSION_BASE64_CHARS).toBeGreaterThanOrEqual(encoded);
+  });
+
+  test("bounds every base64 field on both wires at exactly that number", () => {
+    // "A" is a legal base64 alphabet character and the length is a multiple of four, so the
+    // string is a well-formed encoding: only the length bound can reject it.
+    const atCap = "A".repeat(MAX_SESSION_BASE64_CHARS);
+    const overCap = "A".repeat(MAX_SESSION_BASE64_CHARS + 4);
+    const frames: readonly (readonly [string, (payload: string) => boolean])[] = [
+      [
+        "client doc_update",
+        (data) => ClientMessageBodySchema.safeParse({ type: "doc_update", update: data }).success,
+      ],
+      [
+        "client terminal_input",
+        (data) =>
+          ClientMessageBodySchema.safeParse({ type: "terminal_input", terminalId: "t", data })
+            .success,
+      ],
+      [
+        "server doc_update",
+        (data) =>
+          ServerMessageSchema.safeParse({ ch: "c1", type: "doc_update", update: data, by: "p" })
+            .success,
+      ],
+      [
+        "server terminal_output",
+        (data) =>
+          ServerMessageSchema.safeParse({
+            ch: "c1",
+            type: "terminal_output",
+            terminalId: "t",
+            seq: 1,
+            data,
+          }).success,
+      ],
+      [
+        "agent output",
+        (data) =>
+          AgentMessageSchema.safeParse({ type: "output", terminalId: "t", seq: 1, data }).success,
+      ],
+      [
+        "agent snapshot",
+        (data) =>
+          AgentMessageSchema.safeParse({ type: "snapshot", terminalId: "t", seq: 0, data }).success,
+      ],
+      [
+        "server-to-agent input",
+        (data) =>
+          ServerToAgentMessageSchema.safeParse({ type: "input", terminalId: "t", data }).success,
+      ],
+    ];
+    for (const [name, accepts] of frames) {
+      expect(accepts(atCap), name).toBe(true);
+      expect(accepts(overCap), name).toBe(false);
+    }
   });
 });
 

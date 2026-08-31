@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ROOT_TILE_ID } from "@manifold/protocol";
@@ -992,6 +992,109 @@ describe("migration 11: the lexicon cut", () => {
       // snapshot is skipped rather than written as an empty file beside a new install.
       expect(existsSync(`${path}.pre-v11.bak`)).toBeFalse();
       db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Every pre-migration image sitting beside the database, sorted. The filter is `.pre-v`
+ * rather than `.bak` on purpose: a leaked `.bak.partial` staging file is exactly the leak
+ * these tests exist to catch, so it has to show up in the list instead of hiding from it.
+ */
+function backupsIn(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((name) => name.includes(".pre-v"))
+    .sort();
+}
+
+/** A snapshot is a whole database; these read it back to prove WHICH state it captured. */
+function snapshotVersion(file: string): string | undefined {
+  const db = new Database(file, { strict: true });
+  try {
+    return db
+      .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'")
+      .get()?.value;
+  } finally {
+    db.close();
+  }
+}
+
+function snapshotTables(file: string): string[] {
+  const db = new Database(file, { strict: true });
+  try {
+    return db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => row.name);
+  } finally {
+    db.close();
+  }
+}
+
+describe("pre-migration snapshot retention", () => {
+  test("one image per backed-up version, each capturing the state before its own migration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-retention-"));
+    const path = join(dir, "manifold.db");
+    try {
+      seedPreV9(path);
+      openDatabase(path).close();
+
+      // Two backed-up migrations replayed, two images, no third file: `VACUUM INTO` cannot
+      // overwrite, so the staging name has to be gone by the time the runner returns.
+      expect(backupsIn(dir)).toEqual(["manifold.db.pre-v11.bak", "manifold.db.pre-v9.bak"]);
+
+      // Each image is PRE its own migration, not a copy of the finished database — which is
+      // the only property that makes it worth keeping.
+      expect(snapshotVersion(`${path}.pre-v9.bak`)).toBe("8");
+      expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed migration keeps its image, and the retry replaces its own version only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-retry-"));
+    const path = join(dir, "manifold.db");
+    try {
+      seedPreV9(path);
+      // A hand repair left a table under the name migration 11 renames into, so
+      // `ALTER TABLE pads RENAME TO containers` fails. 9 and 10 commit first — which is
+      // precisely the state a retry starts from: schema 10 on disk, `pre-v11.bak` written.
+      const botched = new Database(path, { strict: true });
+      botched.exec("CREATE TABLE containers(id TEXT PRIMARY KEY)");
+      botched.close();
+
+      expect(() => openDatabase(path)).toThrow();
+
+      // The image the failed attempt took survives the failure, under the published name and
+      // at the version it was taken for. An attempt that destroyed its own snapshot on the
+      // way out would leave an operator with nothing to recover to.
+      expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
+      expect(snapshotTables(`${path}.pre-v11.bak`)).toContain("containers");
+      const elder = readFileSync(`${path}.pre-v9.bak`);
+
+      const repaired = new Database(path, { strict: true });
+      repaired.exec("DROP TABLE containers");
+      repaired.close();
+      const db = openDatabase(path);
+      expect(
+        db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
+          ?.value,
+      ).toBe("11");
+      db.close();
+
+      // Still one image for version 11, not two: a retried version replaces its predecessor
+      // rather than leaving a full copy of the database per attempt.
+      expect(backupsIn(dir)).toEqual(["manifold.db.pre-v11.bak", "manifold.db.pre-v9.bak"]);
+      // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
+      // first attempt tripped over is absent from it.
+      expect(snapshotTables(`${path}.pre-v11.bak`)).not.toContain("containers");
+      expect(snapshotTables(`${path}.pre-v11.bak`)).toContain("pads");
+      // An elder version's image is the operator's recovery inventory: byte for byte untouched
+      // by a later migration, a failure, or a retry.
+      expect(readFileSync(`${path}.pre-v9.bak`)).toEqual(elder);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -821,6 +821,104 @@ genuinely about the workspace refuses scoped callers, and R8 keeps proving it on
 `engine.plugins.setEnabled`. What it no longer claims is that every action is workspace-grade by
 nature.
 
+### 16. The scene element envelope: the protocol stops naming element types (addendum 2026-08-31, #69 wave F)
+
+This clause is dated because it is a later ruling on a shipped shape, not a rewrite of the record
+above. Everything §7 says about element-type OWNERSHIP stands unchanged; what changes is who owns
+an element's PAYLOAD.
+
+**The defect.** `SceneElementSchema` was a `z.discriminatedUnion("type", …)` over three members —
+`portal`, `text`, `draw` — sitting in `packages/protocol/src/**`, a pillar whose admission verdict
+reads "the vocabulary every plane speaks … it names no plugin" (`AXIOMS.md` §Foundation law). Those
+three names are `core.canvas`'s, `core.notes`' and `core.draw`'s respectively, and the neutrality
+criterion is not a style preference: it is the second of three litmus criteria, and failing any one
+means the thing is a plugin. The union also had a harder consequence than an unclean registry. A
+`type` the union did not list was REFUSED by the wire schema, so a scene document could not hold a
+record whose owning plugin was merely absent from this build — which is exactly the outcome §4
+forbids for panels and sections ("data untouched; renders the engine placeholder"), arriving through
+the document plane instead of the layout plane and therefore never noticed.
+
+Everything needed to fix it already existed. `contributes.elements` publishes a kind's `type`, its
+`title` and its `placement` traits (§12); `assembleRoster` reserves the type name against its
+declaring plugin and keeps the reservation across a disable (§7); `itemTraitsFor` already resolves a
+kind the assembly never heard of to `DEFAULT_ELEMENT_PLACEMENT_TRAITS` rather than refusing it. The
+payload was the one part still hardcoded, and it was hardcoded in the one package that may not know
+a plugin's name.
+
+**1. The protocol publishes an ENVELOPE, not a union.** The envelope is the geometry every renderer,
+every placement rule and every fingerprint already reads without caring what the record means:
+`id`, `type`, `x`, `y`, `width`, `height`, `zIndex`. `type` is a bounded string, not an enum. Every
+other key in the record is PAYLOAD: carried, bounded, persisted, synced — and unread by the floor.
+
+**2. The payload stays FLAT.** It is not nested under a `payload` key, and the reason is the
+strongest argument in this clause. Nesting is a document rewrite, not a protocol edit: every element
+that exists today lives in a `Y.Map` whose keys are exactly these fields, `ScenePatch` patches them
+by name, and migration 9 is this repository's own evidence that rewriting stored Yjs documents is
+the expensive and dangerous class of change — one that must convert every revision of every
+document, because a room's fallback loading walks back through older revisions. Nesting buys nothing
+that a reading discipline does not already buy. So the schema LOOSENS (`z.looseObject`) and the
+envelope/payload split becomes a rule about who may read a key rather than a change to where it is
+stored. The property that makes this an opening rather than a migration: **every document on disk
+validates unchanged the day this lands.**
+
+**3. Bounded, because a loosened schema without bounds is a blob channel.** The ceilings are the
+union of the ceilings the three retired members carried, so nothing that validated yesterday stops
+validating: at most `MAX_ELEMENT_PAYLOAD_KEYS` payload keys; every value a JSON scalar or an array
+of them at depth one — no object graphs, no nesting, nothing that can carry a second document
+inside a record; a string at most `MAX_TEXT_LENGTH`; an array at most `MAX_STROKE_POINT_VALUES`
+values. A record that breaks a bound is not a record with a large field, it is a refusal.
+
+**4. Per-type payload schemas move to the owning plugin's element REGISTRATION** — `PluginDef`,
+never the manifest, because manifests stay inert data (ADR 0010 rule 2) and a Zod schema is code.
+The registration carries `payload`, the assembly collects it onto `AssemblyElement.payload` exactly
+as it already collects `placement`, and a contribution that declares no payload schema declares that
+its records carry no payload the engine should police — the same "absence is a real declaration"
+shape as `dormant` in §4.
+
+**5. Validation happens at ONE boundary, in the shape actions already use.** An action's arguments
+are validated where the assembly is in hand, at the door, and answer a named denial rather than a
+throw; an element's payload is validated the same way at the element-host/scene boundary. The
+assembly holds the schema, the boundary parses, and a malformed payload for a KNOWN type is refused
+there. Two properties follow, and both are the point of putting it at a boundary instead of in the
+wire schema. A stranger type — one no registration claims — passes, because there is no schema to
+fail and the envelope's bounds already held. A known type with a malformed payload is refused at the
+door that could name the offender, which is strictly more useful than a discriminated union's
+"matched no member".
+
+**6. Collaborative text becomes structural instead of nominal.** The scene pillar's last domain noun
+was in `writeElement`: `if (element.type === "text") map.set("text", new Y.Text(element.text))` —
+the floor asserting both a plugin's type name and a plugin's field name. It splits by who actually
+knows. A CREATOR declares which payload fields are collaborative when it writes a new element, and
+the creator is the owning plugin, the only party that knows. A RE-WRITE of an existing element
+derives them from the document: the payload fields whose stored value is already a `Y.Text`. So the
+floor's re-write sites — repoint, move, adopt across documents — preserve collaborative text without
+naming a field, and they preserve it for a stranger plugin's collaborative field exactly as well as
+for `core.notes`'.
+
+**7. What the floor still knows, stated rather than smuggled.** `packages/server/src/placement.ts`
+resolves "a portal places the container it points at" by reading a payload field by name. That
+predates this clause — the file's own comment already flags it as the last per-kind arm — and the
+neutral form is a DECLARED REFERENCE TRAIT on the element contribution, saying which payload field
+carries a container reference, so the algebra follows the declaration the way it already follows
+`placement`. That is named here as the follow-on and is deliberately NOT bundled in: it adds
+manifest vocabulary, and manifest vocabulary is a protocol version's business, not an envelope's.
+The envelope neither worsens nor blesses it.
+
+**8. S8 keeps checking the type-name subset, from the other end.** With no `z.literal` members left
+in the protocol there is nothing in the wire schema to enumerate, so the check reads the element
+REGISTRATIONS' type names and asserts they are the floor's own kinds ∪ the assembly's contributed
+types. The assertion is unchanged in meaning — no element type is owned by nobody — and it now reads
+it where ownership actually lives.
+
+Three shapes were considered and refused. **Nesting the payload** under its own key: a full document
+migration for a tidier record, against a flat form that already works and already validates.
+**Keeping the union and adding a catch-all member**: the protocol still names three plugins' types,
+and the catch-all's payload is the one member nobody bounded. **TypeScript module augmentation**, so
+each plugin declares its payload type into an interface the protocol leaves empty: it compiles, and
+that is the problem — augmentation is program-global, so floor narrowing would keep working in any
+build whose file graph happens to reach the plugin, type safety would vary by build, and the
+neutrality question would be answered by a compiler trick instead of by moving the schema.
+
 ## Alternatives rejected
 
 - **Erase- or reset-on-disable (the draft's `retention`).** Rejected per §1: no surveyed platform

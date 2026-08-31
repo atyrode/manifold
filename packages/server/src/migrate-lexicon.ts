@@ -156,8 +156,12 @@ function rewriteLayoutJson(raw: string): string | null {
 
 /**
  * `path` is unused: the pre-migration snapshot is the runner's job (`openDatabase` takes it
- * outside the transaction, because a VACUUM cannot run inside one). It stays in the
- * signature because every code migration is called the same way.
+ * outside the transaction, because a VACUUM cannot run inside one), and so is its RETENTION —
+ * one `<db>.pre-v<version>.bak` per version, replaced when that same version is retried and
+ * never pruned across versions by the engine, which is the operator's job (docs/CONTRACTS.md
+ * §Persistence). Both live in `backupBeside` rather than here because every backed-up
+ * migration wants the identical rule and invariant 14 allows it exactly one implementation.
+ * `path` stays in the signature because every code migration is called the same way.
  */
 export function migrateToCanonLexicon(db: Database, path: string): void {
   void path;

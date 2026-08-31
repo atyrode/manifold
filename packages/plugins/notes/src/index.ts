@@ -1,4 +1,5 @@
-import { type PluginManifest } from "@manifold/protocol";
+import { HEX_COLOR, MAX_TEXT_LENGTH, type PluginManifest } from "@manifold/protocol";
+import { z } from "zod";
 
 /**
  * Notes, as a plugin: one element kind — `text` — and the inline editor that authors it.
@@ -26,6 +27,14 @@ import { type PluginManifest } from "@manifold/protocol";
  * What is NOT here yet: the canvas's `text` TOOL (double-click-to-author, the default width,
  * height, font and colour of a fresh note) is still engine chrome inside
  * `core.shell.container-view`, and it moves with `core.canvas` — AXIOMS.md §Roadmap keeps that row.
+ *
+ * It declares an `optional` dependency on `core.canvas`, which is the honest reading of the
+ * `optional` type rather than a decoration: a note is `tileable` as well as `canvas_item`, so
+ * with the canvas renderer gone the notes in composition leaves keep working and only the
+ * ones on canvases lose their surroundings. `optional` therefore means exactly what it says
+ * — this plugin is better off with `core.canvas` and still whole without it — and it buys the
+ * ordering guarantee too, because `dependencies` is one of the two axes the assembly's
+ * topological order is taken over (ADR 0013 §5).
  */
 export const notesManifest: PluginManifest = {
   id: "core.notes",
@@ -33,6 +42,12 @@ export const notesManifest: PluginManifest = {
   title: "Notes",
   description: "Notes: the text element renderer and its collaborative inline editor.",
   capabilities: ["scenes:write"],
+  dependencies: {
+    "core.canvas": {
+      type: "optional",
+      reason: "notes render on canvases too, but a note in a composition leaf needs no canvas",
+    },
+  },
   contributes: {
     panels: [],
     sections: [],
@@ -46,4 +61,20 @@ export const notesManifest: PluginManifest = {
     tools: [],
     events: [],
   },
+};
+
+/**
+ * The `text` payload, declared where the type is declared (ADR 0013 §16 clause 4). The
+ * protocol's element schema is a neutral envelope now — it holds the geometry and bounds the
+ * payload, and what a NOTE's record must contain is this plugin's own statement. It is
+ * registration data rather than manifest data because a schema is code and manifests stay inert
+ * (ADR 0010 rule 2), and it is parsed against the payload alone, so it never restates the
+ * envelope.
+ */
+export const notesElements = {
+  text: z.strictObject({
+    text: z.string().max(MAX_TEXT_LENGTH),
+    fontSize: z.number().finite().positive(),
+    color: z.string().regex(HEX_COLOR),
+  }),
 };

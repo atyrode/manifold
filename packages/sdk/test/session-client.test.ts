@@ -662,18 +662,28 @@ describe("scene flow", () => {
   test("collaborative text is edited through the transaction text handle", () => {
     const { client } = connected();
     client.transact((tx) => {
-      tx.create({
-        id: "note",
-        type: "text",
-        text: "hello",
-        x: 0,
-        y: 0,
-        width: 240,
-        height: 48,
-        zIndex: 1,
-        fontSize: 20,
-        color: "#f8f9fa",
-      });
+      /*
+        The AUTHOR declares which payload field the document holds as shared text (ADR 0013
+        §16 clause 6). The floor used to infer it from the `text` TYPE NAME, which meant the
+        scene pillar knew one plugin's kind and one plugin's field; now the party that knows
+        says so, and a record created without the declaration carries a plain string — which is
+        the correct outcome for every other kind.
+      */
+      tx.create(
+        {
+          id: "note",
+          type: "text",
+          text: "hello",
+          x: 0,
+          y: 0,
+          width: 240,
+          height: 48,
+          zIndex: 1,
+          fontSize: 20,
+          color: "#f8f9fa",
+        },
+        ["text"],
+      );
     });
     client.transact((tx) => tx.text("note")?.insert(5, " world"));
 

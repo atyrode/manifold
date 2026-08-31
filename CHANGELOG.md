@@ -14,15 +14,21 @@
 - Sidebar sections (Machines, Index, Plugins), freehand drawing, and vantage — the tool in hand, what someone is editing, whether their sidebar is open — are core plugins; a stranger's agent can author its own against `docs/PLUGINS.md`. (#69, #70)
 - `manifold://` addresses for everything — terminals, containers, elements, tiles, principals, plugins, actions — with a `GET /api/resolve` door and `/uri/…` deep links that navigate the app. (#69, #70)
 - Observable vantage: collaborators' active tool shows beside their name, and a consent-guarded spotlight action can center a peer's canvas on any address — with a dismissible chip and an ignore switch. (#69, #70)
+- Purging a disabled plugin's data is now a two-press affordance in the Plugins section, showing what the plugin declared it stores and reporting exactly what was removed. (#69, #70)
+- An audit door: `core.events.list` exposes the server's lifecycle event log to owners through the same action vocabulary as everything else. (#69, #70)
 
 ### Changed
 
 - Terminal rename and kill moved from bespoke HTTP routes to `core.terminals.rename` / `core.terminals.kill` actions; killing a terminal keeps working even while the terminals plugin is disabled. (#69, #70)
 - Sidebar width, collapse, and section order left this device: width lives in your server-saved workspace layout, collapse is shared presence state, and section order comes from plugin manifests. (#69, #70)
 
+### Fixed
+
+- A drag that began before the workspace index had catalogued a just-born terminal's home now still streams live motion to every collaborator — movement is unconditional, classification catches up. (#69, #70)
+
 ### Removed
 
-- Sidebar section drag-reordering and sidebar item drag-and-drop (rows still navigate, rename, and kill; both return on the plugin foundation in a later wave). (#69, #70)
+- Sidebar section drag-reordering (rows still navigate, rename, and kill; item drag-and-drop survived on the plugin foundation, and section order now comes from manifests). (#69, #70)
 
 ## [0.5.0] - 2026-08-30
 

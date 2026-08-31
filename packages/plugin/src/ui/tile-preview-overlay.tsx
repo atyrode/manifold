@@ -1,7 +1,7 @@
 import { ROOT_TILE_ID, type TileRef } from "@manifold/protocol";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { ControlIcon, CarriedItemIcon } from "./icons.tsx";
+import { ControlIcon, ItemIcon } from "./icons.tsx";
 import type { TileDropSignal, TileDropStore } from "../tile-drop-store.ts";
 import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
 
@@ -234,7 +234,7 @@ export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlay
           </span>
         ) : shown.chip === null || denied ? null : (
           <span className="tile-preview__glyph">
-            <CarriedItemIcon kind={shown.chip.kind} size={14} />
+            <ItemIcon kind={shown.chip.kind} size={14} />
             <span className="tile-preview__caption">{shown.chip.label}</span>
           </span>
         )}

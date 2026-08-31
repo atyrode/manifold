@@ -107,7 +107,14 @@ export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" |
 type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 export interface SceneTx {
-  create(element: SceneElement): void;
+  /**
+   * Authors one element. `collaborative` names the PAYLOAD fields the document should hold as
+   * shared text rather than as plain values, and the author is the only party that knows: the
+   * protocol's element schema is a neutral envelope (ADR 0013 §16), so the SDK carries a record
+   * it does not interpret. Omitting it means "this record has no collaborative field", which is
+   * the truth for every kind but one.
+   */
+  create(element: SceneElement, collaborative?: readonly string[]): void;
   patch(id: string, patch: ScenePatch): boolean;
   remove(id: string): boolean;
   text(id: string): Y.Text | null;
@@ -616,7 +623,8 @@ export class SessionClient {
   transact(fn: (tx: SceneTx) => void): void {
     this.currentDoc.transact(() => {
       fn({
-        create: (element) => writeElement(this.currentDoc, element, LOCAL_ORIGIN),
+        create: (element, collaborative) =>
+          writeElement(this.currentDoc, element, LOCAL_ORIGIN, collaborative),
         patch: (id, patch) => patchElement(this.currentDoc, id, patch, LOCAL_ORIGIN),
         remove: (id) => removeElement(this.currentDoc, id, LOCAL_ORIGIN),
         text: (id) => sceneElementText(this.currentDoc, id),

@@ -1,3 +1,5 @@
+import "./styles.css";
+import type { OverlayRegistrations } from "@manifold/plugin/hooks";
 import { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
 
 /**
@@ -44,5 +46,14 @@ export { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
  */
 export const presenceWebPlugin = {
   id: "core.presence",
-  overlays: { "container-roster": AttendanceOverlay, "container-spotlight": SpotlightOverlay },
+  /*
+    `satisfies` rather than a plain literal: the slot names are the closed OverlaySlot
+    vocabulary, and a registration that misspells one must fail HERE, in the plugin that
+    wrote it, rather than paint nothing over a canvas nobody is watching. The literal type
+    survives the check, so the engine still sees exactly which slots this plugin fills.
+   */
+  overlays: {
+    "container-roster": AttendanceOverlay,
+    "container-spotlight": SpotlightOverlay,
+  } satisfies OverlayRegistrations,
 };

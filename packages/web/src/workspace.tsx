@@ -1,4 +1,5 @@
-import { DEFAULT_WORKSPACE_LAYOUT, sameIndexEntries } from "@manifold/plugin";
+import "./shell.css";
+import { sameIndexEntries, workspaceLayout } from "@manifold/plugin";
 import {
   ContainerRouteProvider,
   projectLocalPresence,
@@ -30,6 +31,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { WORKSPACE_PANELS } from "./assembly.ts";
 import { getContainer, getAttendance, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
 import {
   browserContainerStorage,
@@ -207,11 +209,16 @@ export function WorkspaceHost({
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        // A workspace with no readable tree is a workspace with no shell, so the engine's
-        // default stands in rather than leaving the viewer with nothing to look at.
+        /*
+          A workspace with no readable tree is a workspace with no shell, so the engine's
+          default arrangement stands in rather than leaving the viewer with nothing to look at.
+          The ARRANGEMENT is the floor's; the two panel NAMES come from `assembly.ts`, the one
+          file here allowed to know which plugin draws a workspace (AXIOMS.md §Foundation).
+        */
         console.error("evt=workspace_layout_fetch_failed", reason);
-        layoutRef.current = DEFAULT_WORKSPACE_LAYOUT;
-        setLayout(DEFAULT_WORKSPACE_LAYOUT);
+        const fallback = workspaceLayout(WORKSPACE_PANELS);
+        layoutRef.current = fallback;
+        setLayout(fallback);
       });
     return () => {
       cancelled = true;

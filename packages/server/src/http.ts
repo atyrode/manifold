@@ -1,6 +1,5 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { DEFAULT_WORKSPACE_LAYOUT } from "@manifold/plugin";
 import {
   ActionOutcomeSchema,
   AttendanceResponseSchema,
@@ -18,6 +17,7 @@ import {
   type Cap,
   type HttpError,
   type ManifoldRef,
+  type TileLayout,
 } from "@manifold/protocol";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
@@ -121,6 +121,19 @@ export class HttpApp {
     private readonly machines: MachineGateway,
     private readonly plugins: PluginHost,
     private readonly logger: Logger,
+    /**
+     * The workspace tree `GET /api/layout` serves a principal who has never arranged one.
+     *
+     * INJECTED, not imported, and that is the whole point of the parameter. The default is a
+     * neutral arrangement (`workspaceLayout()` in `@manifold/plugin`) filled with two PANEL
+     * ids, and a panel id names a plugin. This file is floor and may not import
+     * `@manifold-plugin/*` (AXIOMS.md §Foundation, gate S2), so it cannot learn those names
+     * itself and must not try: `main.ts` reads them from `assembly.ts` — the one server file
+     * sanctioned to name a plugin — builds the tree there, and hands the result down. The HTTP
+     * door therefore serves a `TileLayout` it can neither author nor recognise, which is
+     * exactly the neutrality the floor owes.
+     */
+    private readonly defaultLayout: TileLayout,
   ) {}
 
   /** Handles a request without allowing auth secrets to enter logs or errors. */
@@ -248,7 +261,7 @@ export class HttpApp {
       // takes no id and answers the caller's own — the default until they write one.
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
-      const layout = this.store.workspaceLayout(context.principal.id) ?? DEFAULT_WORKSPACE_LAYOUT;
+      const layout = this.store.workspaceLayout(context.principal.id) ?? this.defaultLayout;
       return jsonResponse(LayoutResponseSchema.parse({ layout }));
     }
 

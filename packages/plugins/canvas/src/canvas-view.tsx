@@ -56,8 +56,8 @@ import {
   type RegisteredElement,
 } from "@manifold/plugin/hooks";
 import {
+  ItemIcon,
   RemoteCursorIcon,
-  CarriedItemIcon,
   currentVantage,
   setVantage,
   subscribeVantage,
@@ -76,6 +76,7 @@ import {
   createPortalElement,
   createTextElement,
   projectElements,
+  TEXT_COLLABORATIVE_FIELDS,
   type ProjectedNode,
 } from "./canvas-scene.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
@@ -1249,7 +1250,10 @@ export function CanvasView({
       const id = crypto.randomUUID();
       const position = flow.screenToFlowPosition({ x: clientX, y: clientY });
       client.transact((tx) => {
-        tx.create(createTextElement(id, position, tx.nextZIndex(), host.principal.color));
+        tx.create(
+          createTextElement(id, position, tx.nextZIndex(), host.principal.color),
+          TEXT_COLLABORATIVE_FIELDS,
+        );
       });
       setEditingId(id);
       setTool("select");
@@ -1738,7 +1742,7 @@ export function CanvasView({
                     }}
                   >
                     <span className="carry-ghost__glyph" aria-hidden="true">
-                      <CarriedItemIcon kind={ghost.kind} size={12} />
+                      <ItemIcon kind={ghost.kind} size={12} />
                     </span>
                     <span className="carry-ghost__label">{ghost.label}</span>
                   </div>

@@ -1,15 +1,16 @@
 import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
+import { elementPayloadGuard, workspaceLayout } from "@manifold/plugin";
 import { defaultRuntime, type RuntimeDeps } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
-import { SERVER_PLUGIN_DEFS } from "./assembly.ts";
+import { SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
-import { assemblyElementTraits, PlaceExecutor } from "./placement.ts";
+import { assemblyElementTraits, assemblyItemNouns, PlaceExecutor } from "./placement.ts";
 import { PluginHost } from "./plugin-host.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-channel.ts";
@@ -75,7 +76,8 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   /*
-    The executor resolves legality against the ASSEMBLY's element traits (ADR 0013 §12), and
+    The executor resolves legality against the ASSEMBLY's element traits and names species by
+    the assembly's noun table (ADR 0013 §12), and
     the assembly's space plugin drives the executor — mutually dependent, so the roster
     arrives as a thunk read at placement time rather than a table captured here.
    */
@@ -85,6 +87,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     broker,
     runtime,
     assemblyElementTraits(() => plugins.roster()),
+    assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
   /*
@@ -117,6 +120,15 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime,
     logger,
   );
+  /*
+    THE element-payload boundary, installed rather than constructed for the same reason the
+    terminal view above it is: the schemas belong to the assembly, the assembly belongs to the
+    host, and the host needs the rooms. So the room asks a function whether a record is
+    acceptable and is told — it never learns that a plugin exists (ADR 0013 §16 clause 5).
+    Until this line runs a room accepts every payload, which is the correct behaviour during
+    boot and exactly what the envelope already does for a type nobody claims.
+  */
+  rooms.setElementPayloadGuard(elementPayloadGuard(() => plugins.assembly()));
   const sessions = new SessionGateway(auth, rooms, broker, plugins, timers, logger, runtime);
   const http = new HttpApp(
     config,
@@ -128,6 +140,13 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     machines,
     plugins,
     logger,
+    /*
+      The default workspace tree, built HERE because this is the only place that has both
+      halves: the neutral arrangement from the floor, and the panel names from `assembly.ts`.
+      `http.ts` may not import a plugin at all, so serving `GET /api/layout` its fallback is
+      an injection rather than an import — the door answers with a tree it never spelled.
+    */
+    workspaceLayout(WORKSPACE_PANELS),
   );
 
   const server = Bun.serve<WebSocketData>({

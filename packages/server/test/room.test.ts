@@ -8,6 +8,7 @@ import {
   type Principal,
   type SceneElement,
 } from "@manifold/protocol";
+import type { ElementPayloadRefusal } from "@manifold/plugin";
 import {
   LOCAL_ORIGIN,
   Y,
@@ -88,7 +89,16 @@ function encodedElements(...elements: SceneElement[]): string {
   return encodeUpdate(Y.encodeStateAsUpdate(doc));
 }
 
-function roomFixture(store: ServerStore = testStore(), discipline: ContainerDiscipline = "canvas") {
+function roomFixture(
+  store: ServerStore = testStore(),
+  discipline: ContainerDiscipline = "canvas",
+  /**
+   * The element-payload boundary (ADR 0013 §16). Accept-all by default, because these fixtures
+   * compose no plugins and nothing declares a payload schema — the same state a production room
+   * is in before the assembly is wired. A case that is ABOUT the boundary supplies a real one.
+   */
+  payloadRefusal: (element: SceneElement) => ElementPayloadRefusal | null = () => null,
+) {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const container: Container = {
@@ -114,6 +124,9 @@ function roomFixture(store: ServerStore = testStore(), discipline: ContainerDisc
   };
   const socket = new FakeSocket();
   const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
+  // The eighth argument is the element-payload boundary (ADR 0013 §16). These fixtures compose
+  // no plugins, so nothing declares a payload schema and the honest stand-in accepts every
+  // record — which is also what an unwired production room does until the assembly arrives.
   const room = new Room(
     container.id,
     store,
@@ -122,6 +135,7 @@ function roomFixture(store: ServerStore = testStore(), discipline: ContainerDisc
     silentLogger,
     () => [],
     () => {},
+    payloadRefusal,
   );
   room.join(peer);
   socket.clear();
@@ -166,6 +180,7 @@ describe("Room Yjs document consistency", () => {
       silentLogger,
       () => [],
       () => {},
+      () => null,
     );
     room.join(peer);
 
@@ -226,6 +241,84 @@ describe("Room Yjs document consistency", () => {
       warned.mockRestore();
       fixture.store.close();
     }
+  });
+
+  test("a malformed payload for a KNOWN element type is repaired at the scene boundary", () => {
+    /*
+      THE other half of the envelope (ADR 0013 §16 clause 5). The record below passes the
+      protocol's schema completely — the geometry is valid and the payload is inside every bound
+      — so nothing in the wire vocabulary can object to it. What refuses it is its OWNING
+      PLUGIN's payload schema, consulted here through the guard the assembly supplies, and the
+      repair is the same accept-then-repair pass a schema-invalid record already took: a Yjs
+      update is not divisible, so the update has merged by the time anything can read it.
+
+      The log line carries the owner, which is the point of refusing at a door rather than in a
+      schema: a reader learns which plugin to go and ask.
+    */
+    const fixture = roomFixture(testStore(), "canvas", (element) =>
+      element.type === "acme.chart"
+        ? {
+            elementId: element.id,
+            type: element.type,
+            plugin: "acme.charts",
+            problems: ["series Expected array"],
+          }
+        : null,
+    );
+    const warned = spyOn(silentLogger, "warn");
+    try {
+      fixture.room.applyDocUpdate(
+        fixture.peer,
+        encodedElements({
+          id: "chart-1",
+          type: "acme.chart",
+          series: "not-an-array",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          zIndex: 0,
+        }),
+      );
+
+      expect(elementsMap(fixture.room.doc).has("chart-1")).toBeFalse();
+      expect(warned).toHaveBeenCalledWith("scene_element_repaired", {
+        containerId: fixture.container.id,
+        id: "chart-1",
+        type: "acme.chart",
+        plugin: "acme.charts",
+        problems: "series Expected array",
+      });
+    } finally {
+      warned.mockRestore();
+      fixture.store.close();
+    }
+  });
+
+  test("a STRANGER element type survives the boundary, payload and all", () => {
+    // The property the opening exists for: with no schema to fail, a record whose plugin is
+    // absent from this build keeps its place in the document instead of being deleted by a
+    // reader that never heard of it.
+    const fixture = roomFixture();
+    fixture.room.applyDocUpdate(
+      fixture.peer,
+      encodedElements({
+        id: "gantt-1",
+        type: "vendor.gantt",
+        lanes: ["design", "build"],
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        zIndex: 0,
+      }),
+    );
+
+    expect(readElement(fixture.room.doc, "gantt-1")).toMatchObject({
+      type: "vendor.gantt",
+      lanes: ["design", "build"],
+    });
+    fixture.store.close();
   });
 
   test("oversized and malformed updates are rejected without broadcast", () => {

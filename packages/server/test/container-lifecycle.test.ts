@@ -10,6 +10,7 @@ import {
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
   censusSolo,
+  elementString,
   type Container,
   type SceneElement,
   type ServerMessageBody,
@@ -26,12 +27,14 @@ import {
   tileLeafIds,
   writeElement,
 } from "@manifold/scene";
+import { workspaceLayout } from "@manifold/plugin";
+import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -91,8 +94,16 @@ class FakeMachine implements MachineChannel {
   }
 }
 
-/** The portal variant, named so a repoint assertion can spread one and override its target. */
-type PortalElement = Extract<SceneElement, { type: "portal" }>;
+/**
+ * The portal shape these tests author, named so a repoint assertion can spread one and
+ * override its target. An element is a neutral ENVELOPE now (ADR 0013 §16), so this is a
+ * local fixture type rather than a variant extracted from the union: `containerId` is a
+ * payload field the canvas's own kind declares, and the floor's type no longer knows it.
+ */
+interface PortalElement extends SceneElement {
+  readonly type: "portal";
+  readonly containerId: string;
+}
 
 /**
  * How a canvas shows a terminal: a portal onto the composition the terminal lives in. There
@@ -179,6 +190,7 @@ function lifecycleFixture(): LifecycleFixture {
     broker,
     runtime,
     assemblyElementTraits(() => plugins.roster()),
+    assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
   const machines = new MachineGateway(
@@ -204,6 +216,7 @@ function lifecycleFixture(): LifecycleFixture {
     machines,
     plugins,
     silentLogger,
+    workspaceLayout(WORKSPACE_PANELS),
   );
   const fixture: LifecycleFixture = {
     runtime,
@@ -1006,17 +1019,18 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     // that carried a terminal id does not exist any more.
     const element = readElement(canvasDoc(fixture), extracted.elementId);
     if (element === null || element.type !== "portal") throw new Error("portal element expected");
+    const rehomed = elementString(element, "containerId");
+    if (rehomed === null) throw new Error("portal element carries no container reference");
     expect(element).toEqual({
       id: extracted.elementId,
       type: "portal",
-      containerId: element.containerId,
+      containerId: rehomed,
       x: 320,
       y: 240,
       width: DEFAULT_TERMINAL_WIDTH,
       height: DEFAULT_TERMINAL_HEIGHT,
       zIndex: 0,
     });
-    const rehomed = element.containerId;
     expect(rehomed).not.toBe(composition.id);
     expect(fixture.store.getContainer(rehomed)).toMatchObject({ discipline: "composition" });
     expect(soleRef(fixture, rehomed)).toEqual({

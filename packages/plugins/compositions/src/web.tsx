@@ -8,6 +8,8 @@
  * canvas inside a composition and a composition inside a canvas are the same call with a
  * different key, and neither plugin learns the other's name.
  */
+import "./styles.css";
+
 export { CompositionView } from "./composition-view.tsx";
 
 import { CompositionView } from "./composition-view.tsx";

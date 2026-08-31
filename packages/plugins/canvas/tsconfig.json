@@ -5,5 +5,5 @@
     "jsx": "react-jsx",
     "types": ["bun"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "../../plugin/src/css-modules.d.ts"]
 }

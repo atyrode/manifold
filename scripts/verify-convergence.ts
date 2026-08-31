@@ -38,6 +38,9 @@ import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
   MachinesResponseSchema,
+  elementNumbers,
+  elementPayloadDigest,
+  elementString,
   type SceneElement,
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
@@ -128,7 +131,12 @@ interface Snapshot {
   readonly width: number;
   readonly height: number;
   readonly zIndex: number;
-  readonly extra: string | number;
+  /**
+   * The payload as one comparable string. The SAME digest the browser probe reports
+   * (`elementPayloadDigest`), because the two sides of this comparison must not each
+   * invent a fingerprint (ADR 0013 §16).
+   */
+  readonly extra: string;
 }
 
 interface Viewport {
@@ -215,7 +223,7 @@ try {
         );
         if (!selected) throw new Error(`${name}: identity color ${color} not found`);
       }
-      await browser.clickText("Enter manifold");
+      await browser.clickTestId("identity-enter");
     }
     await browser.goto(`${origin}/p/${containerId}`);
     await until(
@@ -374,15 +382,12 @@ try {
   function canonicalView(): ViewMap {
     const map: ViewMap = new Map();
     for (const element of sdk.elements.values()) {
-      const extra =
-        element.type === "portal"
-          ? element.containerId
-          : element.type === "text"
-            ? element.text
-            : element.points.length;
+      // Neutral over element kinds, and identical to what the browser probe reports, so
+      // the five views are compared by one fingerprint rather than three per-kind guesses
+      // that the engine has no business knowing (ADR 0013 §16).
       map.set(
         element.id,
-        `${element.type}:${element.x.toFixed(1)}:${element.y.toFixed(1)}:${element.width.toFixed(1)}:${element.height.toFixed(1)}:${String(element.zIndex)}:${String(extra)}`,
+        `${element.type}:${element.x.toFixed(1)}:${element.y.toFixed(1)}:${element.width.toFixed(1)}:${element.height.toFixed(1)}:${String(element.zIndex)}:${elementPayloadDigest(element)}`,
       );
     }
     return map;
@@ -417,6 +422,67 @@ try {
     readonly adds: number;
     /** Ids whose canonical stamp (version or geometry) must have advanced. */
     readonly changes?: readonly string[];
+  }
+
+  /**
+   * What a browser was DOING when a round failed. A five-view diff says the views
+   * disagree; it never says why, and the two answers a stuck gesture needs — did the
+   * page throw, and does React Flow still think a pointer is down — are invisible to
+   * every DOM read the assertions make. Draining the console buffer here is also what
+   * keeps the dump scoped to the failing round.
+   */
+  interface BrowserForensics {
+    readonly outbox: number;
+    readonly rev: number;
+    readonly epoch: number;
+    readonly connection: string;
+    /** Node ids React Flow is mid-drag on: non-empty means a pointer is still held. */
+    readonly dragging: readonly string[];
+    readonly gestures: readonly { readonly elementId: string; readonly connId: string }[];
+  }
+
+  const FORENSICS = `(() => {
+      const probe = window.__manifold;
+      const status = document.querySelector('[data-testid="connection-status"]');
+      return {
+        outbox: probe.outbox(),
+        rev: probe.rev(),
+        epoch: probe.epoch(),
+        connection: status === null ? "no status ref" : (status.getAttribute("title") ?? ""),
+        dragging: [...document.querySelectorAll(".react-flow__node.dragging")].map(
+          (node) => node.getAttribute("data-id") ?? "?",
+        ),
+        gestures: probe.gestures(),
+      };
+    })()`;
+
+  async function dumpForensics(name: string): Promise<void> {
+    for (const [browser, label] of [
+      [browserA, "A"],
+      [browserB, "B"],
+    ] as const) {
+      try {
+        const state = await browser.evaluate<BrowserForensics>(FORENSICS);
+        console.log(
+          `        ${label}: outbox=${String(state.outbox)} rev=${String(state.rev)} epoch=${String(
+            state.epoch,
+          )} ${state.connection}`,
+        );
+        console.log(
+          `        ${label}: dragging=[${state.dragging.join(",")}] gestures=${JSON.stringify(
+            state.gestures,
+          )}`,
+        );
+      } catch (error) {
+        console.log(
+          `        ${label}: forensics probe failed — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      for (const message of browser.drainMessages()) {
+        console.log(`        ${label}.${message.kind}/${message.level}: ${message.text}`);
+      }
+    }
+    console.log(`        (forensics for ${name})`);
   }
 
   /**
@@ -470,6 +536,7 @@ try {
       failures.push(name);
       console.log(`FAIL  ${name} — ${error instanceof Error ? error.message : String(error)}`);
       for (const line of lastDiff) console.log(`        ${line}`);
+      await dumpForensics(name);
     }
   }
 
@@ -608,39 +675,50 @@ try {
       buttons: 1,
       clickCount: 1,
     });
-    for (let index = 1; index <= steps; index += 1) {
-      await browser.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: start.pointerX + (dx * index) / steps,
-        y: start.pointerY + (dy * index) / steps,
-        button: "left",
-        buttons: 1,
-      });
-      await sleep(15);
-    }
-    if (liveRemote !== undefined) {
-      if (remoteBefore === null) throw new Error(`remote terminal ${elementId} was not rendered`);
-      await until(
-        async () => {
-          const remote = await liveRemote.evaluate<Snapshot | null>(
-            `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`,
-          );
-          const gestures = await liveRemote.evaluate<readonly { readonly elementId: string }[]>(
-            "window.__manifold.gestures()",
-          );
-          return (
-            remote !== null &&
-            Math.abs(remote.x - remoteBefore.x) >= Math.abs(dx) * 0.5 &&
-            Math.abs(remote.y - remoteBefore.y) >= Math.abs(dy) * 0.5 &&
-            gestures.some((gesture) => gesture.elementId === elementId)
-          );
-        },
-        15_000,
-        `remote terminal ${elementId} to move before pointer release`,
-      );
-    }
-    const duringDrag = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
-      `(() => {
+    /*
+      Everything between the press and the release runs under a `finally` that always
+      releases the button. Not a softened assertion — every throw below still throws, and
+      the ordering probe still measures the node BEFORE the release. It is a containment
+      rule: a round that fails mid-gesture used to leave chromium holding a real mouse
+      button down, so React Flow stayed in a live drag and every LATER round's pointer
+      events kept dragging THAT node. One failure reported four, and the three false ones
+      named the wrong element.
+    */
+    let duringDrag: { readonly x: number; readonly y: number } | null = null;
+    try {
+      for (let index = 1; index <= steps; index += 1) {
+        await browser.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: start.pointerX + (dx * index) / steps,
+          y: start.pointerY + (dy * index) / steps,
+          button: "left",
+          buttons: 1,
+        });
+        await sleep(15);
+      }
+      if (liveRemote !== undefined) {
+        if (remoteBefore === null) throw new Error(`remote terminal ${elementId} was not rendered`);
+        await until(
+          async () => {
+            const remote = await liveRemote.evaluate<Snapshot | null>(
+              `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`,
+            );
+            const gestures = await liveRemote.evaluate<readonly { readonly elementId: string }[]>(
+              "window.__manifold.gestures()",
+            );
+            return (
+              remote !== null &&
+              Math.abs(remote.x - remoteBefore.x) >= Math.abs(dx) * 0.5 &&
+              Math.abs(remote.y - remoteBefore.y) >= Math.abs(dy) * 0.5 &&
+              gestures.some((gesture) => gesture.elementId === elementId)
+            );
+          },
+          15_000,
+          `remote terminal ${elementId} to move before pointer release`,
+        );
+      }
+      duringDrag = await browser.evaluate<{ readonly x: number; readonly y: number } | null>(
+        `(() => {
           const node = document.querySelector(
             ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
           );
@@ -648,14 +726,16 @@ try {
           const rect = node.getBoundingClientRect();
           return { x: rect.left, y: rect.top };
         })()`,
-    );
-    await browser.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: start.pointerX + dx,
-      y: start.pointerY + dy,
-      button: "left",
-      clickCount: 1,
-    });
+      );
+    } finally {
+      await browser.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: start.pointerX + dx,
+        y: start.pointerY + dy,
+        button: "left",
+        clickCount: 1,
+      });
+    }
     if (
       duringDrag === null ||
       Math.abs(duringDrag.x - start.nodeX) < Math.abs(dx) * 0.5 ||
@@ -978,7 +1058,8 @@ try {
       "persisted draw element",
     );
     const draw = [...sdk.elements.values()].find((element) => element.type === "draw");
-    if (draw?.type !== "draw" || draw.points.length < 4) {
+    const drawPoints = draw === undefined ? null : elementNumbers(draw, "points");
+    if (drawPoints === null || drawPoints.length < 4) {
       throw new Error("persisted draw element has fewer than four point values");
     }
     const selectActive = await browserA.evaluate<boolean>(
@@ -1091,11 +1172,8 @@ try {
         await until(
           () => {
             const current = sdk.elements.get(textElement.id);
-            return (
-              current?.type === "text" &&
-              current.text.includes("hello") &&
-              current.text.includes(" world")
-            );
+            const text = current === undefined ? null : elementString(current, "text");
+            return text !== null && text.includes("hello") && text.includes(" world");
           },
           5_000,
           "merged Y.Text content",

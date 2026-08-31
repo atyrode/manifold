@@ -1,5 +1,11 @@
-import type { HostServices } from "@manifold/plugin";
-import type { Principal, TileLayout, Tile, TileRef } from "@manifold/protocol";
+import { itemNoun, type HostServices } from "@manifold/plugin";
+import {
+  elementString,
+  type Principal,
+  type TileLayout,
+  type Tile,
+  type TileRef,
+} from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -450,7 +456,7 @@ function PortalContainerTile({
       <span className="portal__card-glyph" aria-hidden="true">
         <ItemIcon kind="canvas" size={22} />
       </span>
-      <strong>{name ?? "canvas"}</strong>
+      <strong>{name ?? itemNoun("canvas", container.host.assembly.roster())}</strong>
       <button
         type="button"
         className="portal__enter"
@@ -649,6 +655,8 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const name = useContainerName(container.host, containerId);
   const roomOccupants = useRoomOccupants(client);
   const selfId = client?.self?.id ?? null;
+  /** Stable per roster change: what to CALL a kind whose word is not the floor's. */
+  const roster = container.host.assembly.roster();
 
   useEffect(() => {
     if (!engaged) return;
@@ -740,22 +748,31 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     );
 
   /**
-   * What a tile ref is CALLED here, through the one shared switch. The portal can
-   * answer all three questions: terminals and note text from its own room socket, and
-   * container names from the index the canvas holds — so the same drag reads the same
-   * words here and on the fullscreen route instead of captioning terminals only.
+   * What a tile ref is CALLED here, through the one shared switch. The portal can answer all
+   * three document questions — terminals and element text from its own room socket, container
+   * names from the index the canvas holds — and carries the roster for the fourth, so the same
+   * drag reads the same words here and on the fullscreen route instead of captioning terminals
+   * only.
    */
   const occupantLabel = useCallback(
     (ref: TileRef | null): string | null =>
       refDisplayLabel(ref, {
         terminalName: (terminalId) => client?.terminals.get(terminalId)?.name ?? null,
         containerName: container.containerName,
-        noteText: (elementId) => {
+        textElement: (elementId) => {
           const element = client?.elements.get(elementId);
-          return element?.type === "text" ? element.text : null;
+          /*
+            No `type === "text"` guard: the payload answers null for an element bearing no text
+            (ADR 0013 §16), which asks the same question without this renderer holding another
+            plugin's wire type — and the type it DOES report is what words a nameless label.
+          */
+          return element === undefined
+            ? null
+            : { type: element.type, text: elementString(element, "text") ?? "" };
         },
+        roster,
       }),
-    [client, container.containerName],
+    [client, container.containerName, roster],
   );
   const carryLabel = useCallback(
     (envelope: ItemEnvelope): string | null => {
@@ -863,7 +880,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
             className="portal__strip"
             icon={<ItemIcon kind="composition" size={13} />}
             title={name}
-            defaultTitle="composition"
+            defaultTitle={itemNoun("composition", roster)}
             middle={
               client === null ? (
                 <PolledOccupantAvatars containerId={containerId} />

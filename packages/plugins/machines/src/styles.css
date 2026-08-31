@@ -1,0 +1,26 @@
+/*
+ * THE MACHINES PLUGIN'S SKIN — a machine's liveness pip and the menu row shown when no machine can host a terminal.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+/* Non-actionable menu row: no machine can host a terminal right now. */
+.machine-none-menu-item {
+  color: #868e96;
+  font-size: 0.82rem;
+  cursor: default;
+}
+
+.machine-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex: none;
+}
+
+.machine-dot.is-offline {
+  opacity: 0.35;
+}

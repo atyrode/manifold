@@ -1,0 +1,206 @@
+/*
+ * THE PRESENCE PLUGIN'S SKIN — the attendance stack and its popover, the peer chips, remote cursors and selections, and the spotlight a peer can throw.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+/* Shared presence styles are used by the container browser's participant summaries. */
+.presence-wrapper {
+  position: relative;
+}
+
+.presence-stack {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  cursor: pointer;
+}
+
+.presence-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--island-bg-color);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.presence-avatar + .presence-avatar {
+  margin-left: -0.25rem;
+}
+
+.presence-avatar.is-agent {
+  border-radius: var(--border-radius-md);
+}
+
+.presence-avatar.is-self {
+  outline: 1px solid var(--color-primary);
+}
+
+.presence-overflow {
+  background: var(--island-bg-color);
+  border-color: var(--default-border-color);
+  color: var(--text-primary-color);
+}
+
+.presence-popover {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  display: grid;
+  gap: 0.25rem;
+  width: max-content;
+  min-width: 14rem;
+  max-width: min(20rem, calc(100vw - 1.5rem));
+  padding: 0.4rem;
+  border: 1px solid var(--default-border-color);
+  border-radius: var(--border-radius-lg);
+  background: var(--island-bg-color);
+  box-shadow: var(--shadow-island);
+  color: var(--text-primary-color);
+  font-size: 0.72rem;
+}
+
+.presence-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.55rem;
+  padding: 0.2rem 0.3rem;
+}
+
+.presence-dot {
+  flex: 0 0 auto;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+}
+
+.presence-name {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.you-chip,
+.agent-chip {
+  margin-left: 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
+.you-chip {
+  color: var(--color-primary);
+}
+
+.agent-chip {
+  color: #ffd43b;
+}
+
+.presence-status {
+  color: var(--text-primary-color);
+  opacity: 0.7;
+}
+
+.presence-connections {
+  min-width: 1.4rem;
+  opacity: 0.55;
+  text-align: right;
+}
+
+.remote-cursor {
+  position: absolute;
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  pointer-events: none;
+  transform-origin: 0 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.remote-cursor svg {
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 55%));
+}
+
+.remote-cursor span {
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  color: #fff;
+  background: color-mix(in srgb, currentColor 80%, #111);
+}
+
+.remote-selection {
+  position: absolute;
+  border: 2px solid;
+  border-radius: 0.3rem;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+/* Published view state: what a peer is holding, in the roster popover. */
+.presence-tool-chip {
+  margin-left: 0.35rem;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0 0.3rem;
+  color: #adb5bd;
+  font-size: 0.62rem;
+  text-transform: lowercase;
+}
+
+/*
+  "Look at this", received. It sits above the canvas rather than inside it: a spotlight is an
+  interruption somebody else caused, so naming the sender and offering the way out (and the
+  way to refuse every future one) is the whole ref.
+*/
+.spotlight-chip {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transform: translateX(-50%);
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  background: #14161a;
+  padding: 0.35rem 0.6rem;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 45%);
+}
+
+.spotlight-chip__label {
+  color: #dee2e6;
+  font-size: 0.72rem;
+}
+
+.spotlight-chip__control {
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  background: transparent;
+  padding: 0.15rem 0.45rem;
+  color: #adb5bd;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.spotlight-chip__control:hover {
+  border-color: #495057;
+  color: #dee2e6;
+}

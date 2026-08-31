@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
-import type { AdvertisedTerminal } from "@manifold/protocol";
+import { MAX_SESSION_BASE64_CHARS, type AdvertisedTerminal } from "@manifold/protocol";
 
 /**
  * One live PTY plus everything the machine channel needs to describe it: a strictly
@@ -26,11 +26,15 @@ export const DEFAULT_RING_CAP_BYTES = 2 * 1024 * 1024;
 const MIRROR_SCROLLBACK_LINES = 5000;
 
 /**
- * Snapshot data is UTF-8 → base64 on the machine channel. Keeping the encoded field at most
- * 600k leaves 100k below the protocol's 700k field limit and ample JSON framing margin below
- * the 1 MiB machine-frame limit.
+ * Snapshot data is UTF-8 → base64 on the machine channel, so its ceiling is the wire's
+ * ceiling less a margin — and both halves of that sentence are now constants rather than
+ * two numbers that agreed by hand. `MAX_SESSION_BASE64_CHARS` is the protocol's own bound
+ * on any base64 field; the margin below it is headroom for the JSON framing a snapshot
+ * frame wraps its payload in, which keeps the whole frame comfortably under the 1 MiB
+ * machine-frame limit rather than exactly at the field limit.
  */
-export const MAX_SNAPSHOT_BASE64_CHARS = 600_000;
+const SNAPSHOT_FRAMING_MARGIN_CHARS = 100_000;
+export const MAX_SNAPSHOT_BASE64_CHARS = MAX_SESSION_BASE64_CHARS - SNAPSHOT_FRAMING_MARGIN_CHARS;
 const MAX_SNAPSHOT_UTF8_BYTES = (MAX_SNAPSHOT_BASE64_CHARS / 4) * 3;
 const TRUNCATED_SNAPSHOT_PREFIX = "\u001bc[older terminal rows omitted]\r\n";
 

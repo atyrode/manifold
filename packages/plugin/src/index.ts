@@ -17,6 +17,7 @@ export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";
 export {
   AssemblyError,
   assembleRoster,
+  panelRefId,
   rosterElementTraits,
   type Assembly,
   type AssemblyAction,
@@ -29,6 +30,12 @@ export {
   type PluginDef,
   type PluginStoredData,
 } from "./assemble.ts";
+export {
+  FLOOR_ELEMENT_PAYLOADS,
+  elementPayloadGuard,
+  elementPayloadRefusal,
+  type ElementPayloadRefusal,
+} from "./element-payload.ts";
 export {
   LIFECYCLE_TIMEOUT_MS,
   runHook,
@@ -57,7 +64,7 @@ export {
   type PluginStorage,
   type PluginStorageAdmin,
 } from "./storage.ts";
-export { DEFAULT_WORKSPACE_LAYOUT } from "./layout.ts";
+export { workspaceLayout, type WorkspacePanels } from "./layout.ts";
 export {
   buildIndexTree,
   projectIndexMove,

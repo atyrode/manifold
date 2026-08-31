@@ -1,5 +1,7 @@
 import {
   CURSOR_MIN_INTERVAL_MS,
+  elementString,
+  elementPayload,
   placementItemFor,
   type MachineSummary,
   type Container,
@@ -22,12 +24,12 @@ import {
   type ReactNode,
 } from "react";
 
+import { itemNoun } from "@manifold/plugin";
 import {
   ControlIcon,
   ItemIcon,
   NodeTitleBar,
   RemoteCursorIcon,
-  CarriedItemIcon,
   COMPOSITION_TREE_CLASSES,
   TilePreviewOverlay,
   TileTree,
@@ -49,7 +51,7 @@ import {
   cursorFraction,
   denialMessage,
   envelopeRef,
-  noteTitle,
+  firstLineLabel,
   remoteCursorSocketId,
   remoteTileCarries,
   sessionUrl,
@@ -636,22 +638,30 @@ export function CompositionView({
   );
 
   /**
-   * What a tile ref is CALLED here, through the one shared switch: this route
-   * supplies the three lookups (its terminals, the container index, its own note
-   * elements) and supplies no species logic of its own, so a canvas portal showing the
-   * same composition captions the same drag with the same words.
+   * What a tile ref is CALLED here, through the one shared switch: this route supplies the
+   * documents (its terminals, the container index, its own text elements) plus the roster that
+   * words a nameless one, and supplies no species logic of its own, so a canvas portal showing
+   * the same composition captions the same drag with the same words.
    */
   const refLabel = useCallback(
     (ref: TileRef | null): string | null =>
       refDisplayLabel(ref, {
         terminalName: (terminalId) => client.terminals.get(terminalId)?.name ?? null,
         containerName: containerNameFor,
-        noteText: (elementId) => {
+        textElement: (elementId) => {
           const element = client.elements.get(elementId);
-          return element?.type === "text" ? element.text : null;
+          /*
+            No `type === "text"` guard: the payload answers null for an element that bears no
+            text (ADR 0013 §16), which is the same question asked without this renderer holding
+            another plugin's wire type — and the type it DOES report is what words the label.
+          */
+          return element === undefined
+            ? null
+            : { type: element.type, text: elementString(element, "text") ?? "" };
         },
+        roster,
       }),
-    [client, containerNameFor],
+    [client, containerNameFor, roster],
   );
 
   /** The slot chip names what is in flight, the way a carry ghost does. */
@@ -882,7 +892,7 @@ export function CompositionView({
               className="composition-tile__bar"
               icon={<ItemIcon kind="canvas" size={13} />}
               title={containerNameFor(ref.containerId)}
-              defaultTitle="canvas"
+              defaultTitle={itemNoun("canvas", roster)}
               onMinimize={() => detachContainerTile(node.id)}
               minimizeLabel={`Remove canvas ${containerLabelFor(ref.containerId)} from this composition`}
               minimizeTooltip="Remove this canvas from the composition (the canvas keeps existing)"
@@ -921,8 +931,15 @@ export function CompositionView({
         // always in THIS room's document. It is missing only for the frame between a
         // placement landing in the layout and the element arriving with it.
         const element = client.elements.get(ref.elementId);
-        const note = element?.type === "text" ? element : null;
-        const text = note?.text ?? "";
+        const text = element === undefined ? "" : (elementString(element, "text") ?? "");
+        /*
+          The occupant names ITSELF: its declared element type is what the mark and the
+          fallback noun are looked up with, so a leaf holding some other plugin's text-bearing
+          element wears that plugin's word instead of this renderer's guess. The ref form
+          (`text`) is only an address, and it is the best guess available for the one frame
+          where the element has not arrived yet.
+        */
+        const kind = element?.type ?? "text";
         return (
           /*
             A note tile borrows the canvas tile's frame — `.composition-tile` is the bar/body
@@ -932,21 +949,23 @@ export function CompositionView({
           <div className="composition-tile">
             <NodeTitleBar
               className="composition-tile__bar"
-              icon={<ItemIcon kind="note" size={13} />}
-              title={noteTitle(text)}
-              defaultTitle="note"
+              icon={<ItemIcon kind={kind} size={13} />}
+              title={firstLineLabel(text)}
+              defaultTitle={itemNoun(kind, roster)}
               // Close, not minimize: a note's leaf is its ONLY placement, so the server
               // deletes the note element together with the leaf. There is no "remove the
               // representation" for an object that exists nowhere else.
               onClose={() => removeNoteTile(node.id)}
-              closeLabel="Delete note"
-              closeTooltip="Delete this note"
+              closeLabel={`Delete ${itemNoun(kind, roster)}`}
+              closeTooltip={`Delete this ${itemNoun(kind, roster)}`}
             />
             <div className="composition-tile__body">
               <ElementOutlet
-                type="text"
+                // The occupant's OWN type, not the ref form: a leaf addressed as `text` is
+                // rendered by whichever plugin declared the element actually sitting in it.
+                type={kind}
                 elementId={ref.elementId}
-                data={note ?? {}}
+                data={element === undefined ? {} : elementPayload(element)}
                 doc={client}
                 editingElementId={editingNoteId}
                 onBeginEditing={setEditingNoteId}
@@ -1029,7 +1048,7 @@ export function CompositionView({
         className="composition-header"
         icon={<ItemIcon kind="composition" size={15} />}
         title={containerName}
-        defaultTitle="view"
+        defaultTitle={itemNoun("composition", roster)}
         onRenameTitle={rename}
         extraActions={<span className={`composition-status is-${status}`}>{status}</span>}
         onMaximize={shrink}
@@ -1110,7 +1129,7 @@ export function CompositionView({
               }}
             >
               <span className="carry-ghost__glyph" aria-hidden="true">
-                <CarriedItemIcon kind={ghost.kind} size={12} />
+                <ItemIcon kind={ghost.kind} size={12} />
               </span>
               <span className="carry-ghost__label">{ghost.label}</span>
             </div>

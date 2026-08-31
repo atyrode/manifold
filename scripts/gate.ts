@@ -65,6 +65,7 @@ const packages = [
   "plugins/notes",
   "plugins/uri",
   "plugins/access",
+  "plugins/events",
   "plugins/canvas",
   "plugins/compositions",
 ];

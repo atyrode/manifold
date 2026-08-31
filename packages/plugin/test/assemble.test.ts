@@ -8,9 +8,10 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
   AssemblyError,
-  DEFAULT_WORKSPACE_LAYOUT,
   assembleRoster,
   defineAction,
+  panelRefId,
+  workspaceLayout,
   type PluginDef,
 } from "../src/index.ts";
 
@@ -118,11 +119,14 @@ describe("assembleRoster", () => {
       { id: "machines", plugin: "core.shell", title: "Machines", order: 20 },
     ]);
     // The manifest declared no placement traits, so the registry resolves the default (G1):
-    // a reader sees traits, never an absence it would have to know the default for.
+    // a reader sees traits, never an absence it would have to know the default for. The
+    // registration declared no payload schema either, which is the other real declaration
+    // (ADR 0013 §16): this kind's records carry nothing the engine should police.
     expect(assembly.elements.get("draw")).toEqual({
       plugin: "core.shell",
       title: "Drawing",
       placement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+      payload: null,
     });
     expect(assembly.tools).toEqual([
       { id: "terminal", plugin: "core.terminals", title: "Terminal" },
@@ -494,9 +498,22 @@ describe("assembleRoster", () => {
   });
 });
 
-describe("DEFAULT_WORKSPACE_LAYOUT", () => {
+describe("workspaceLayout", () => {
+  /*
+    THE default workspace tree, now a function of the panel ids rather than a constant that
+    named two of them. So there are two claims to keep apart, and the third case below is why
+    the split exists: the ARRANGEMENT is the floor's and is asserted against the real shell,
+    while the NAMES are the caller's and the floor must carry any pair of them through
+    untouched. A regression that reintroduced a hardcoded id would pass the first two cases
+    and fail the third.
+  */
+  const panels = {
+    sidebar: panelRefId("core.shell", "sidebar"),
+    main: panelRefId("core.shell", "container-view"),
+  };
+
   test("is a valid tile layout whose leaves are the shell's two panels", () => {
-    const parsed = TileLayoutSchema.parse(DEFAULT_WORKSPACE_LAYOUT);
+    const parsed = TileLayoutSchema.parse(workspaceLayout(panels));
     expect(validateTileLayout(parsed)).toBe(true);
 
     // Every leaf ref, so a non-panel leaf sneaking into the default would show up here.
@@ -508,10 +525,24 @@ describe("DEFAULT_WORKSPACE_LAYOUT", () => {
 
   test("every panel it names is one the shell composes", () => {
     const assembly = assembleRoster([shell], NONE);
-    for (const node of Object.values(DEFAULT_WORKSPACE_LAYOUT)) {
+    for (const node of Object.values(workspaceLayout(panels))) {
       if (node.ref === null || node.ref.kind !== "panel") continue;
       expect(assembly.panels.has(node.ref.panelId)).toBe(true);
     }
+  });
+
+  test("carries STRANGER panel ids through, knowing nothing about core.shell", () => {
+    const layout = workspaceLayout({ sidebar: "vendor.dock.rail", main: "vendor.atlas.map" });
+    expect(validateTileLayout(TileLayoutSchema.parse(layout))).toBe(true);
+
+    const leaves = Object.values(layout).flatMap((node) =>
+      node.ref === null || node.ref.kind !== "panel" ? [] : [node.ref.panelId],
+    );
+    expect(leaves).toEqual(["vendor.dock.rail", "vendor.atlas.map"]);
+    // The arrangement is unchanged by the swap, which is the neutrality claim stated as data:
+    // a floor default is the same tree whichever plugins fill it.
+    expect(layout["root"]?.ratios).toEqual([0.22, 0.78]);
+    expect(layout["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
   });
 });
 

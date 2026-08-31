@@ -1,4 +1,9 @@
-import { compareElements, type SceneElement } from "@manifold/protocol";
+import {
+  compareElements,
+  elementPayload,
+  type SceneElement,
+  type SceneElementPayload,
+} from "@manifold/protocol";
 import { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH } from "@manifold/scene";
 import type { GestureOverride } from "@manifold/plugin/hooks";
 import { strokeBounds, toRelativePoints } from "./stroke.ts";
@@ -90,46 +95,31 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
   return reusedAll ? current : out;
 }
 
-export interface PortalNodeData extends Record<string, unknown> {
-  readonly containerId: string;
-}
-
-export interface TextNodeData extends Record<string, unknown> {
-  readonly text: string;
-  readonly fontSize: number;
-  readonly color: string;
-}
-
-export interface DrawNodeData extends Record<string, unknown> {
-  readonly points: readonly number[];
-  readonly strokeWidth: number;
-  readonly color: string;
-}
-
-interface ProjectedNodeBase {
+/**
+ * ONE projected node shape, neutral over element kinds.
+ *
+ * It used to be a three-member union — `portal` | `text` | `draw` — with a typed `data`
+ * interface each, mirroring the protocol's retired discriminated union. Both are gone for the
+ * same reason (ADR 0013 §16): the protocol carries a neutral envelope now, the payload's
+ * meaning belongs to the plugin that declared the type, and a canvas that could only project
+ * three kinds could not project a fourth — so a record whose plugin this build never heard of
+ * had nowhere to go, on the one renderer whose whole job is to paint contributed elements.
+ *
+ * `type` is the wire type verbatim, which is also React Flow's node-type key, and `data` is the
+ * payload verbatim. A node component reads its own fields defensively, exactly as the published
+ * element contract already requires (`ElementProps.data`, `@manifold/plugin` host.ts) — the
+ * same document may hold records written by an older version of the plugin, so no schema is
+ * imposed at the paint boundary and none is claimed here.
+ */
+export interface ProjectedNode {
   readonly id: string;
   readonly position: { readonly x: number; readonly y: number };
   readonly width: number;
   readonly height: number;
   readonly zIndex: number;
+  readonly type: string;
+  readonly data: SceneElementPayload;
 }
-
-export interface ProjectedTextNode extends ProjectedNodeBase {
-  readonly type: "text";
-  readonly data: TextNodeData;
-}
-
-export interface ProjectedDrawNode extends ProjectedNodeBase {
-  readonly type: "draw";
-  readonly data: DrawNodeData;
-}
-
-export interface ProjectedPortalNode extends ProjectedNodeBase {
-  readonly type: "portal";
-  readonly data: PortalNodeData;
-}
-
-export type ProjectedNode = ProjectedPortalNode | ProjectedTextNode | ProjectedDrawNode;
 
 export function projectElements(
   elements: ReadonlyMap<string, SceneElement>,
@@ -137,44 +127,18 @@ export function projectElements(
 ): readonly ProjectedNode[] {
   return [...elements.values()].sort(compareElements).map((element) => {
     const override = overrides.get(element.id)?.current;
-    const geometry = {
+    return {
+      id: element.id,
+      type: element.type,
       position: {
         x: override?.x ?? element.x,
         y: override?.y ?? element.y,
       },
       width: override?.width ?? element.width,
       height: override?.height ?? element.height,
+      zIndex: element.zIndex,
+      data: elementPayload(element),
     };
-    switch (element.type) {
-      case "portal":
-        return {
-          id: element.id,
-          type: "portal",
-          ...geometry,
-          zIndex: element.zIndex,
-          data: { containerId: element.containerId },
-        };
-      case "text":
-        return {
-          id: element.id,
-          type: "text",
-          ...geometry,
-          zIndex: element.zIndex,
-          data: { text: element.text, fontSize: element.fontSize, color: element.color },
-        };
-      case "draw":
-        return {
-          id: element.id,
-          type: "draw",
-          ...geometry,
-          zIndex: element.zIndex,
-          data: {
-            points: element.points,
-            strokeWidth: element.strokeWidth,
-            color: element.color,
-          },
-        };
-    }
   });
 }
 
@@ -189,7 +153,7 @@ export function createPortalElement(
   containerId: string,
   position: { readonly x: number; readonly y: number },
   zIndex: number,
-): Extract<SceneElement, { type: "portal" }> {
+): SceneElement {
   return {
     id,
     type: "portal",
@@ -202,12 +166,23 @@ export function createPortalElement(
   };
 }
 
+/**
+ * The payload field a fresh note holds as COLLABORATIVE text, declared beside the factory that
+ * authors one (ADR 0013 §16 clause 6).
+ *
+ * The canvas names it because the canvas owns the text TOOL — that ruling is AXIOMS.md
+ * §Roadmap's full-conversion inventory, "the text TOOL is canvas chrome" — while `core.notes`
+ * owns the element's renderer, its editor and its payload SCHEMA. One statement, so the author
+ * and the schema cannot drift into disagreeing about which field a person types into.
+ */
+export const TEXT_COLLABORATIVE_FIELDS: readonly string[] = ["text"];
+
 export function createTextElement(
   id: string,
   position: { readonly x: number; readonly y: number },
   zIndex: number,
   color: string = DEFAULT_TEXT_COLOR,
-): Extract<SceneElement, { type: "text" }> {
+): SceneElement {
   return {
     id,
     type: "text",
@@ -228,7 +203,7 @@ export function createDrawElement(
   color: string,
   strokeWidth: number,
   zIndex: number,
-): Extract<SceneElement, { type: "draw" }> {
+): SceneElement {
   const bounds = strokeBounds(points, strokeWidth);
   return {
     id,

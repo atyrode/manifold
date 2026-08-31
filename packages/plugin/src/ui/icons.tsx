@@ -1,3 +1,4 @@
+import type { ItemKind } from "@manifold/protocol";
 import {
   ArrowDownToLine,
   ArrowLeftRight,
@@ -20,9 +21,9 @@ import {
   Power,
   RotateCw,
   Server,
+  Shapes,
   SquareDashed,
   SquareTerminal,
-  StickyNote,
   Trash2,
   X,
   type LucideIcon,
@@ -37,17 +38,24 @@ import {
  * depending on which renderer painted it.
  *
  * The drawings come from lucide (see docs/decisions/0009-lucide-icons.md). That dependency is
- * an implementation detail of this module: the type ref below is closed, so re-drawing the
- * whole set is a change to one file and no call site.
+ * an implementation detail of this module: a call site names a kind or a verb and never a
+ * drawing, so re-drawing the whole set is a change to one file and no call site.
  *
- * TAXONOMY, deliberately two vocabularies rather than one flat bag of pictures:
+ * TAXONOMY, deliberately two vocabularies rather than one flat bag of pictures — and they are
+ * shaped differently on purpose, because they answer to different owners:
  *
- *   ITEMS ({@link ItemIconKind})   what a thing IS. Its identity mark, worn identically by the
- *                                sidebar row, the canvas titlebar, the tile header and the
- *                                carry ghost of the same object — that repetition IS the
- *                                affordance, so it can only come from one table.
- *   CONTROLS ({@link ControlKind}) what a thing DOES. Named for the verb (`park`, `shrink`),
- *                                never for the picture, so the drawing can change without
+ *   ITEMS ({@link ItemIcon})       what a thing IS. OPEN, because the item kinds are the
+ *                                floor's five plus every element type a manifest contributes:
+ *                                glyphs are keyed by plain string and an unknown kind falls
+ *                                back, rather than this module pretending to know the set.
+ *                                The mark is worn identically by the sidebar row, the canvas
+ *                                titlebar, the tile header and the carry ghost of the same
+ *                                object — that repetition IS the affordance, so it can only
+ *                                come from one table.
+ *   CONTROLS ({@link ControlKind}) what a thing DOES. CLOSED, and the contrast is the point:
+ *                                a control is one of the ENGINE'S OWN verbs (`park`,
+ *                                `shrink`), a vocabulary no plugin adds to, named for the verb
+ *                                and never for the picture — so the drawing can change without
  *                                a call site lying about its own semantics.
  *
  * Status is deliberately NOT here. A running/exited dot and a machine's colour dot are
@@ -94,33 +102,37 @@ function glyph(Glyph: LucideIcon, { size = ICON_SIZE, className }: IconProps): R
  * `terminal`/`canvas`/`composition` are the three species of the one container object, and
  * their marks share a square-frame motif on purpose: a composition of one terminal wears
  * the terminal's mark, and the operator has to be able to read that substitution at 16px.
- * `note` is the fourth item that can hold a tile; `machine` and `folder` are the two things
- * that hold items rather than being one.
+ * `machine` and `folder` are the two things that hold items rather than being one.
  *
- * NAMED FOR `ITEM_KINDS`, deliberately — every floor item kind (`@manifold/protocol`
- * placement.ts) has a glyph under its OWN name here, so a mark is looked up with the kind a
- * carry already carries and nothing translates between two vocabularies on the way. The
- * table that used to do that translation said `pad: "canvas"` and `tile: "composition"`
- * while two other tables said something else, which is the disagreement `verify:axioms`
- * S12 exists to make impossible.
+ * KEYED BY THE KIND ITSELF, deliberately — every floor item kind (`ITEM_KINDS`,
+ * `@manifold/protocol` placement.ts) has a glyph under its OWN name here, so a mark is looked
+ * up with the kind a carry already carries and nothing translates between two vocabularies on
+ * the way. The table that used to do that translation said `pad: "canvas"` and
+ * `tile: "composition"` while two other tables said something else, which is the disagreement
+ * `verify:axioms` S12 exists to make impossible. The `satisfies` clause is what keeps the
+ * FLOOR half total: a kind added to the algebra cannot ship without its own mark.
  *
- * It stays CLOSED at the plugin edge: a glyph set any plugin could extend is a glyph set
- * nobody can re-draw in one edit, so a contributed element kind passes a node (every chrome
- * component here takes `icon: ReactNode`) or falls back to the note mark it shares with
- * every other document-borne item.
+ * The LOOKUP is open because the kind vocabulary is. A contributed element type is a kind
+ * this build may never have heard of (ADR 0013 §12), and the closed union that used to sit
+ * here was the floor claiming to know that set — two vocabularies for one question, since a
+ * plugin's own chrome already arrives as `icon: ReactNode`. Opened in #69 wave F.
+ *
+ * WHAT THE FALLBACK CAN HONESTLY BE. An element contribution publishes `type`, `title` and
+ * optional `placement` traits (`ContributesSchema.elements`, protocol plugin.ts) and NO
+ * glyph, so there is no drawing to source from a manifest and this module may not invent a
+ * protocol field to get one. What a manifest DOES say about a contributed element is its
+ * placement, and absent traits mean `DEFAULT_ELEMENT_PLACEMENT_TRAITS`: free-floating
+ * furniture on a canvas. So the fallback draws exactly that claim and nothing more — generic
+ * shapes on a plane, one mark for "an element whose owner published no drawing" — instead of
+ * borrowing `core.notes`' sticky note, which told every kind this build had not heard of that
+ * it was a note. The `note` KEY went with that borrowing: it was neither a floor kind nor a
+ * wire type — `core.notes` publishes `text` — so a carry could never look it up, and a note's
+ * titlebar and a note's carry ghost agreed only by the accident of the fallback being the same
+ * drawing. A renderer that knows better passes its own node into a chrome slot; a plugin that
+ * wants its mark everywhere needs a manifest field, and that is a protocol decision rather
+ * than this module's to invent.
  */
-export type ItemIconKind =
-  | "terminal"
-  | "canvas"
-  | "composition"
-  | "tile"
-  | "panel"
-  | "note"
-  | "machine"
-  | "folder"
-  | "folderOpen";
-
-const ITEM_GLYPHS: Record<ItemIconKind, LucideIcon> = {
+const ITEM_GLYPHS: Readonly<Record<string, LucideIcon>> = {
   /** A framed prompt — the bare `Terminal` chevron loses its frame beside the other species. */
   terminal: SquareTerminal,
   /** A dashed, unbounded plane: freeform space, deliberately soft against the composition's structure. */
@@ -131,19 +143,27 @@ const ITEM_GLYPHS: Record<ItemIconKind, LucideIcon> = {
   tile: LayoutDashboard,
   /** A plugin panel is a plane the shell mounts, so it wears the freeform plane's mark. */
   panel: SquareDashed,
-  note: StickyNote,
   machine: Server,
   folder: Folder,
   folderOpen: FolderOpen,
-};
+} satisfies Readonly<Record<ItemKind, LucideIcon>> & Readonly<Record<string, LucideIcon>>;
 
-const OPEN_ITEM_GLYPHS: Readonly<Record<string, LucideIcon>> = ITEM_GLYPHS;
+/** An element whose owner published no drawing: furniture on a plane, and nothing narrower. */
+const CONTRIBUTED_ITEM_GLYPH: LucideIcon = Shapes;
 
+/**
+ * THE item mark, at rest and in flight. A second component (`CarriedItemIcon`) used to draw
+ * the carried half, which is one function too many: a carry ghost is a picture of the thing
+ * being carried, so it must resolve to the SAME mark the object wears at rest, and two
+ * components could only ever agree by coincidence. One component over one table is what makes
+ * that agreement structural — which is also why the gesture channel carries a KIND and every
+ * renderer looks the drawing up here, instead of a glyph travelling over the wire.
+ */
 export function ItemIcon({
   kind,
   ...rest
-}: IconProps & { readonly kind: ItemIconKind }): React.ReactElement {
-  return glyph(ITEM_GLYPHS[kind], rest);
+}: IconProps & { readonly kind: string }): React.ReactElement {
+  return glyph(ITEM_GLYPHS[kind] ?? CONTRIBUTED_ITEM_GLYPH, rest);
 }
 
 /**
@@ -207,24 +227,6 @@ export function ControlIcon({
   ...rest
 }: IconProps & { readonly kind: ControlKind }): React.ReactElement {
   return glyph(CONTROL_GLYPHS[kind], rest);
-}
-
-/**
- * The mark for an ITEM KIND as a carry names it — the open set: a floor species, or a
- * contributed element type this build may never have heard of. A carry ghost is a picture
- * of the thing being carried, so it must resolve to the SAME mark the object wears at rest,
- * which is why the gesture channel carries a kind and the renderer looks the drawing up
- * here instead of a glyph travelling over the wire.
- *
- * There is no translation table: floor item kinds ARE glyph names (that agreement is what
- * the lexicon bought), and an unknown kind is a document-borne element, which wears the
- * note mark.
- */
-export function CarriedItemIcon({
-  kind,
-  ...rest
-}: IconProps & { readonly kind: string }): React.ReactElement {
-  return glyph(OPEN_ITEM_GLYPHS[kind] ?? StickyNote, rest);
 }
 
 /**

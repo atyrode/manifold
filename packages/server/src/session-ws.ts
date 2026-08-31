@@ -598,7 +598,16 @@ export class SessionGateway {
         this.broker.resize(peer, message);
         return;
       case "terminal_take":
-        this.broker.take(peer, message);
+        // The LEASE is policy and the TRANSFER is transport, so this frame has `open`'s shape
+        // rather than `kill`'s: `core.terminals.take` answers whether this principal may hold
+        // the terminal, and the broker moves the lease and announces it afterwards, because a
+        // lease belongs to a connection and the `controller_changed` broadcast goes to the room
+        // that connection is joined to. The broker no longer decides anything about authority.
+        void this.dispatchPolicy(peer, "core.terminals.take", message.terminalId, {
+          terminalId: message.terminalId,
+        }).then((allowed) => {
+          if (allowed) this.broker.take(peer, message);
+        });
         return;
       case "terminal_kill":
         // The kill is the ACTION's, whole: authority, the lease rule and the destruction all

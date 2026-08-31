@@ -7,7 +7,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
@@ -69,6 +69,7 @@ function openingFixture() {
       broker,
       runtime,
       assemblyElementTraits(() => []),
+      assemblyItemNouns(() => []),
     ),
   );
   const enrollment = auth.enrollMachine("fake", root);

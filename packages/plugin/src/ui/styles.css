@@ -1,0 +1,537 @@
+/*
+ * THE NEUTRAL CHROME'S SKIN — the mechanism half of `@manifold/plugin/ui` and
+ * `@manifold/plugin/hooks`, which is to say: the boxes two parties that may not import each
+ * other both see.
+ *
+ * The one node titlebar, the one tile tree in all three of its skins, the drop preview and
+ * its denial note, the carry ghost and the ease-away it rides, the glyph vocabulary, the
+ * overlay slot one plugin's renderer paints another's occupant into, and the F9 zone probe.
+ *
+ * Why the tile tree's THREE skins are here and not in the three renderers that ask for them:
+ * `tile-tree.tsx` declares all nine class names itself (`COMPOSITION_TREE_CLASSES`,
+ * `PORTAL_TREE_CLASSES`, `WORKSPACE_TREE_CLASSES`) and hard-codes each divider's thickness in
+ * px to match the `flex-basis` below, so drop geometry can subtract exactly what the tree
+ * draws. The component asserts these pixels; the component owns them.
+ */
+
+.composition-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.composition-split.is-row {
+  flex-direction: row;
+}
+
+.composition-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.composition-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.composition-divider {
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.composition-divider:hover,
+.composition-divider:active {
+  background: #4c6ef5;
+}
+
+.composition-split.is-row > .composition-divider {
+  cursor: col-resize;
+}
+
+.composition-split.is-column > .composition-divider {
+  cursor: row-resize;
+}
+
+.portal-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The direction comes from a class, not an inline style: a portal's tree and the route's
+   tree are ONE component (`tile-tree.tsx`), and it speaks in is-row / is-column. */
+.portal-split.is-row {
+  flex-direction: row;
+}
+
+.portal-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.portal__slot {
+  display: flex;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.portal__slot > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A portal wears the route's dividers, because it IS the route's tree: an engaged portal
+   resizes its composition through the same drag and the same doc write. Exactly DOUBLE
+   the route's 0.35rem, because a preview is drawn at PORTAL_PREVIEW_SCALE — the transform
+   shrinks paint and hit area together, so twice the layout thickness is what makes the
+   seam the same size ON SCREEN as the one the route offers. */
+.portal-divider {
+  flex: 0 0 0.7rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.portal-divider:hover,
+.portal-divider:active {
+  background: #4c6ef5;
+}
+
+.portal-split.is-row > .portal-divider {
+  cursor: col-resize;
+}
+
+.portal-split.is-column > .portal-divider {
+  cursor: row-resize;
+}
+
+/* A WATCHING portal's dividers are structure, not controls: the composition's shape is
+   information, but the socket painting it is a spectator whose writes the server
+   refuses, so there is no grab affordance to offer. This is the shared tree's
+   `interactive: false` state, hence both skins. */
+.composition-split > .composition-divider.is-inert,
+.portal-split > .portal-divider.is-inert {
+  cursor: default;
+}
+
+.composition-divider.is-inert:hover,
+.composition-divider.is-inert:active,
+.portal-divider.is-inert:hover,
+.portal-divider.is-inert:active {
+  background: #23272e;
+}
+
+/* ── The overlay slot ─────────────────────────────────────────────────────────
+   Where one plugin's chrome is painted over another's ref (the presence island,
+   the spotlight chip), addressed by slot through the projection registry. The wrapper
+   exists to carry `data-overlay-slot` for the gates, never to be a box: `contents`
+   means the registered component lands in the ref's own layout exactly as it did
+   when the renderer imported it directly, so mounting a slot in a flex host adds no
+   child and an empty slot costs nothing. */
+.container-overlay-slot {
+  display: contents;
+}
+
+/* ── The one node titlebar ────────────────────────────────────────────────────
+   Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
+   editable title, a modular middle slot, and a right-justified control cluster.
+   Adopters keep their own class on the same element for drag handles and proof
+   hooks, and override only what is genuinely theirs (the terminal bar floats, the
+   composed renderer's header is page chrome). */
+.node-titlebar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 0.5rem 0.2rem;
+}
+
+.node-titlebar__icon {
+  display: inline-grid;
+  place-items: center;
+  color: #5c6370;
+}
+
+/* Sized to its text, never to its column. The title is the rename zone and the rest of the bar
+   is the bar's own double-click zone, so a title stretched across `minmax(0, 1fr)` would eat
+   the bar: every double-click past the last character would open a rename. It still truncates,
+   because `max-width` keeps the column as its ceiling. */
+.node-titlebar__title {
+  overflow: hidden;
+  max-width: 100%;
+  justify-self: start;
+  color: #adb5bd;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Renaming happens in place, at the title's own size, so the bar never reflows. */
+.node-titlebar__title-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.25rem;
+  color: #f1f3f5;
+  background: #0b0d10;
+  font-size: 0.7rem;
+  font-family: inherit;
+  pointer-events: auto;
+}
+
+.node-titlebar__middle {
+  display: inline-flex;
+  overflow: hidden;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.node-titlebar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  justify-self: end;
+}
+
+/* Reachable without first activating the node — clicking minimize/maximize/close is
+   not a reason to focus a terminal — so the controls opt back into pointer events
+   even where the bar itself lets them through. */
+.node-titlebar__ctl {
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.node-titlebar__ctl:hover:not(:disabled) {
+  color: #e6e9ef;
+  background: #2a2f37;
+}
+
+.node-titlebar__ctl:disabled {
+  color: #5c6370;
+  cursor: default;
+}
+
+.node-titlebar__ctl--close:hover {
+  color: #fff;
+  background: #e03131;
+}
+
+/* Absolute inside its preview box: `.tile-preview` (the tile area's percentage
+   space) establishes a containing block. */
+.drop-denial-note {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  overflow: hidden;
+  padding: 0.12rem 0.35rem;
+  color: #ffc9c9;
+  background: rgb(20 20 22 / 82%);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- carry (motion) */
+
+/* A collaborator's carry, under their pointer. Deliberately a CHIP and not a copy of
+   the object: the item is not here yet, and drawing a convincing terminal in flight
+   would claim otherwise. Positioned by the renderer — flow pixels on a canvas,
+   percentages inside a composition — so this rule owns paint only. */
+.carry-ghost {
+  display: flex;
+  position: absolute;
+  z-index: 12;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid currentcolor;
+  border-radius: 0.3rem;
+  background: rgb(22 24 28 / 92%);
+  padding: 0.2rem 0.45rem;
+  max-width: 14rem;
+  color: #dee2e6;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  pointer-events: none;
+  /* Held slightly below-right of the pointer, the way a drag image sits. */
+  translate: 0.75rem 0.75rem;
+}
+
+.carry-ghost__glyph {
+  display: inline-grid;
+  place-items: center;
+  color: #868e96;
+}
+
+.carry-ghost__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The icon vocabulary ──────────────────────────────────────────────────────
+   Every glyph in the application is one lucide drawing rendered by `@manifold/plugin/ui`
+   (see docs/decisions/0009-lucide-icons.md), which owns size and stroke weight per
+   call site. This block owns only PLACEMENT — the boxes icons sit in — and the rule
+   that they inherit `currentColor`, which is what keeps every hover, focus, active
+   and disabled state working through the colour their button already sets. */
+.mf-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: inherit;
+}
+
+/* ── Live split preview (tile-preview-overlay) ────────────────────────────────
+   One drop pipeline for both hosts: the tile AREA is the geometry's reference box,
+   the overlay draws the landing slot in its percentage space, and the REAL panes
+   glide into their prospective places with transform only — no reflow, no PTY
+   resize, no doc write. Appended as one block; nothing above is restyled. */
+.tile-area {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+/* The landing slot: percent-positioned in the area, gliding between zones. */
+.tile-preview {
+  position: absolute;
+  z-index: 45;
+  border: 1px solid #748ffc;
+  background: rgb(92 124 250 / 22%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease,
+    opacity 80ms ease;
+}
+
+/* Armed with nothing to say (a divider, the carry's own leaf): the slot stays
+   mounted at its last rect, so re-entering a zone animates instead of popping. */
+.tile-preview.is-idle {
+  opacity: 0;
+}
+
+/* Centred in the slot; `pointer-events: none` rides on the slot itself. */
+.tile-preview__glyph {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  inset: 0;
+  gap: 0.2rem;
+  color: #bac8ff;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+}
+
+.tile-preview__caption {
+  overflow: hidden;
+  max-width: 90%;
+  font-size: 0.68rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* CENTER MEANS THIS EXACT SPOT: a legal exchange wears the established swap
+   orange on the slot AND its partner, so "the two trade seats" never looks like
+   "this half becomes yours". */
+.tile-preview.is-swap {
+  border-color: rgb(255 146 43 / 85%);
+  background: rgb(255 146 43 / 18%);
+}
+
+.tile-preview.is-swap .tile-preview__glyph {
+  color: #ffd8a8;
+}
+
+/* A seatless carry taking an occupied leaf: the occupant is re-homed, not lost.
+   Violet — distinct from legal-blue, swap-orange and denied-red — with the park
+   glyph, because park already means "the representation leaves; the object keeps
+   running elsewhere". */
+.tile-preview.is-replace {
+  border-color: rgb(174 62 201 / 85%);
+  background: rgb(174 62 201 / 18%);
+}
+
+.tile-preview.is-replace .tile-preview__glyph {
+  color: #eebefa;
+}
+
+.tile-preview.is-denied {
+  border-color: rgb(255 107 107 / 60%);
+  background: rgb(255 107 107 / 10%);
+}
+
+/* The FLIP: panes glide as transforms the overlay writes imperatively. 120ms for
+   the larger pane travel; the slot's own rect moves at 90ms above. */
+.tile-area.is-previewing [data-tile-id] {
+  transition: transform 120ms ease;
+}
+
+/* The stable seat a pane's content rides in between structural edits (see
+   tile-tree.tsx): MOVED with appendChild, never re-created, so a committed split
+   cannot tear an xterm down. */
+.tile-content-host {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* While a carry has an armed drop target, the item IN HAND fades almost away so the
+   live preview underneath stays readable. THE EASE-AWAY IS A PROPERTY OF THE CARRY,
+   NOT OF BEING THE DRAGGER: your own canvas drag (React Flow marks the node
+   `.dragging`, the canvas root wears `is-composing` while a target is armed, both
+   written imperatively — arming never touches React state on the drag hot path), a
+   peer's carried node, and a carried tile pane all resolve to the SAME declarations
+   below, so a viewer sees exactly what the dragger sees.
+   The transition sits on the classes that persist across arming, so the fade runs BOTH
+   ways — easing in when a target arms and back out when it disarms — reading as a
+   deliberate "stepping aside", never as the held item vanishing.
+   The canvas half of this pair lives in packages/plugins/canvas/src/styles.css, because
+   `.canvas` is that plugin's family; ONE VALUE FOR EVERYONE survives the split because
+   both halves read the floor's `--carry-fade-*` tokens rather than repeating a number. */
+.tile-area .is-carried-away {
+  transition: var(--carry-fade-transition);
+}
+
+.tile-area .is-carried-away {
+  opacity: var(--carry-fade-opacity);
+}
+
+/* The armed fade SUPERSEDES the in-flight dim rather than multiplying with it: only the
+   person holding a tile sees `is-carried` on its leaf, so without this the holder's fade
+   would land on a different value than every viewer's. One value for everyone. */
+.tile-area .is-carried-away .composition-leaf.is-carried {
+  opacity: 1;
+}
+
+/* A seam's PAINT stays slim; its GRAB does not. Pseudo-elements extend the pointer
+   target without moving any layout, and pseudo hit-testing belongs to the divider
+   element, so drags, seam drop aims and the resize cursor gain the widened band
+   together. Two things make that band actually reach:
+
+   THE REACH IS A VARIABLE, because it is declared in the tree's OWN layout px while a
+   portal draws its tree under `transform: scale()`. A fixed length shrinks with the very
+   transform it exists to compensate for; `.portal__preview` doubles it instead.
+
+   A LIVE SEAM IS LIFTED ABOVE THE PANES. The divider and its neighbours are all
+   positioned with `z-index: auto`, and the TRAILING neighbour comes later in DOM
+   order — so a pane's own content (a terminal frame, xterm's layers, a portal's
+   engagement shield at z-index 8) painted over the trailing half of the band, right
+   through the divider's own box. The seam you saw was not the seam you could grab: the
+   live band sat entirely on the leading side, so a press on the visible seam's centre
+   landed in the terminal and the resize never started. Only an INTERACTIVE seam claims
+   any of this — a watching portal's dividers are structure, so they keep their tooltip
+   and never take a pixel from the tile shields they sit between. */
+.composition-divider,
+.portal-divider {
+  position: relative;
+}
+
+.composition-divider:not(.is-inert),
+.portal-divider:not(.is-inert) {
+  z-index: 10;
+}
+
+.composition-divider:not(.is-inert)::after,
+.portal-divider:not(.is-inert)::after {
+  position: absolute;
+  content: "";
+  inset: calc(-1 * var(--tile-seam-reach, 0.375rem));
+}
+
+/* The F9 drop-zone field (tile-zone-debug): a sampled painting of what the real
+   resolver answers at every point, purely visual. */
+.tile-zone-debug {
+  position: absolute;
+  z-index: 58;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/*
+ * THE WORKSPACE SKIN — the tile tree's third dress (see `WORKSPACE_TREE_CLASSES`). Same shape
+ * as `.composition-*` and `.portal__*`: the split is a flex box, a pane's stored ratio IS its
+ * `flex-grow`, and the divider is the seam. The workspace is a composition, so the sidebar
+ * seam is the same gesture as any tile seam and needed no code of its own.
+ */
+.workspace-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.workspace-split.is-row {
+  flex-direction: row;
+}
+
+.workspace-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.workspace-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.workspace-divider {
+  z-index: 30;
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.workspace-divider:hover,
+.workspace-divider:active {
+  background: #4c6ef5;
+}
+
+.workspace-split.is-row > .workspace-divider {
+  cursor: col-resize;
+}
+
+.workspace-split.is-column > .workspace-divider {
+  cursor: row-resize;
+}
+
+/* A workspace tree is always the caller's own, so its seams are never inert. */
+.workspace-divider.is-inert {
+  cursor: default;
+}

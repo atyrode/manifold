@@ -142,7 +142,7 @@ try {
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
     if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
       await browser.typeInto("input", "verify");
-      await browser.clickText("Enter manifold");
+      await browser.clickTestId("identity-enter");
     }
     await browser.goto(`${origin}/p/${containerId}`);
     await until(

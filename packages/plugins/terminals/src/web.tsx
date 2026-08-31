@@ -1,3 +1,4 @@
+import "./styles.css";
 import type { MachineSummary } from "@manifold/protocol";
 import type { TerminalFacet } from "@manifold/plugin/hooks";
 

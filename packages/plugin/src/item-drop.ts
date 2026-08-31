@@ -1,4 +1,5 @@
 import {
+  elementString,
   placementItemFor,
   resolveCarriedPlacement,
   resolvePlacement,
@@ -118,11 +119,17 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup
         // A portal places the container it points at, so THAT container's discipline
         // decides the kind — and a portal onto an unknown container places nothing.
         // A terminal on a canvas IS this case: its portal points at its home.
-        const discipline = disciplineOf(element.containerId);
+        //
+        // The target is read through `elementString` because the protocol's element schema is
+        // a neutral envelope now (ADR 0013 §16): the payload is bounded, not interpreted, so a
+        // portal missing its own reference is a `null` to refuse on rather than a field to
+        // trust. That is the same refusal as a portal onto a container nobody indexed.
+        const target = elementString(element, "containerId");
+        const discipline = target === null ? null : disciplineOf(target);
         if (discipline === null) return null;
         return {
           kind: discipline,
-          containerId: element.containerId,
+          containerId: target,
         };
       }
       // Every other element PLACES ITS OWN TYPE, and the traits that decide its legality

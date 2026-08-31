@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_GESTURE_POINT_VALUES } from "./elements.ts";
+import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
 import {
   CarrySchema,
@@ -46,7 +46,8 @@ import { PrincipalSchema } from "./principal.ts";
  * pointed at a deleted container is precisely the blast radius multiplexing exists to remove.
  */
 
-const base64 = z.base64().max(700_000); // ~512KiB decoded per terminal frame
+/** Every base64 field on this wire, bounded once: doc updates and terminal bytes alike. */
+const base64 = z.base64().max(MAX_SESSION_BASE64_CHARS);
 
 /**
  * Channel ids are tokens, never arbitrary strings: both halves splice one into a frame
@@ -172,7 +173,7 @@ const CLIENT_BODIES = {
   leave: z.strictObject({ type: z.literal("leave") }),
   doc_update: z.strictObject({
     type: z.literal("doc_update"),
-    update: z.base64().max(700_000),
+    update: base64,
   }),
   gesture: z.strictObject({ type: z.literal("gesture"), ...GestureFields }),
   presence: z.strictObject({ type: z.literal("presence"), payload: PresencePayloadSchema }),
@@ -303,7 +304,7 @@ const SERVER_BODIES = {
   resync: z.strictObject({ type: z.literal("resync"), ...stateFields }),
   doc_update: z.strictObject({
     type: z.literal("doc_update"),
-    update: z.base64().max(700_000),
+    update: base64,
     by: z.string().min(1),
   }),
   gesture: z.strictObject({

@@ -90,6 +90,33 @@ export const terminalsHandlers = {
   },
 
   /**
+   * THE LEASE RULE, moved off the transport unchanged. The broker's `take` path judged three
+   * things before it transferred anything: that the terminal exists, that it is still RUNNING,
+   * and that the caller holds `terminals:write` in the channel's container. The third is what
+   * the ladder proves — rung by rung, in the published vocabulary, for a socket and an SDK
+   * alike — so the broker's own copy of it is gone and this door is where authority is decided
+   * (invariant 14). The first two survive here verbatim, in the same order, with the same
+   * words: an exited terminal has no lease to take, and a terminal nobody can name has nothing
+   * to hand over.
+   *
+   * There is deliberately no rule about who currently HOLDS the lease. That is the whole point
+   * of taking: `kill` refuses a running terminal held by somebody else precisely because this
+   * door exists to claim it first, and a take that respected the incumbent lease would close
+   * the only way out of that refusal.
+   */
+  async take(
+    ctx: TerminalsCtx,
+    args: { terminalId: string },
+  ): Promise<Outcome<Record<string, never>>> {
+    const live = ctx.broker.liveTerminal(args.terminalId);
+    if (live === null) return { refused: "terminal not found" };
+    const outside = ctx.outsideScope(live.containerId);
+    if (outside !== null) return outside;
+    if (live.status !== "running") return { refused: "terminal has exited" };
+    return {};
+  },
+
+  /**
    * Killing, unified. Two doors used to answer this and they disagreed: the terminal
    * channel's `terminal_kill` demanded the controller lease (or the wildcard) for a LIVE
    * terminal, while `DELETE /api/terminals/:id` demanded neither. One concept, one answer

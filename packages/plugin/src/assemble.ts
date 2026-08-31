@@ -43,6 +43,23 @@ export interface PluginDef {
    * transformation nobody can decide to run.
    */
   readonly migrations?: readonly PluginMigration[];
+  /**
+   * PER-TYPE PAYLOAD SCHEMAS for the element kinds this plugin's manifest contributes, keyed
+   * by wire element type (ADR 0013 §16 clause 4).
+   *
+   * They live on the DEFINITION rather than the manifest because a Zod schema is code and
+   * manifests stay inert data (ADR 0010 rule 2) — the manifest names the type and declares its
+   * placement traits, the registration declares what a record of that type must contain. The
+   * protocol's own element schema is a NEUTRAL envelope and validates none of this: it holds
+   * the geometry and bounds the payload, and the payload's meaning is its owner's.
+   *
+   * A contribution with no entry here declares that its records carry no payload the engine
+   * should police, which is a real declaration rather than an oversight — the same shape
+   * `dormant`'s absence has (ADR 0013 §4). A schema is parsed against the payload alone, so it
+   * is written as the plugin sees its own fields (`z.strictObject({ containerId: … })`) and
+   * never has to restate the envelope.
+   */
+  readonly elements?: Readonly<Record<string, z.ZodType>>;
 }
 
 export interface AssemblyAction {
@@ -76,6 +93,12 @@ export interface AssemblyElement {
    * than a change of contract.
    */
   readonly placement: PlacementTraits;
+  /**
+   * The owner's payload schema, or null when it declared none. Collected here for the same
+   * reason `placement` is: one resolution, at assembly time, so the boundary that validates a
+   * record does a map lookup instead of walking definitions (ADR 0013 §16 clause 5).
+   */
+  readonly payload: z.ZodType | null;
 }
 
 export interface AssemblyTool {
@@ -293,6 +316,20 @@ function topologicalOrder(
 }
 
 /**
+ * THE panel naming rule, in one place.
+ *
+ * A panel id on the wire is the contributing plugin's id and the panel's local id joined by a
+ * dot, which is why a panel — unlike a section, an element type or a tool — cannot collide
+ * across plugins by accident. The claim loop below computes it, and so does anything that has
+ * to NAME a panel it did not read out of an assembly: the two `assembly.ts` files build the
+ * default workspace tree's leaves this way. Exported so that stays one rule rather than a
+ * string template copied into the files that happen to need it (invariant 14).
+ */
+export function panelRefId(pluginId: string, panelId: string): string {
+  return `${pluginId}.${panelId}`;
+}
+
+/**
  * Build the assembly, or refuse.
  *
  * `disabled` is the workspace-global set of plugin ids an administrator turned off; it
@@ -398,7 +435,7 @@ export function assembleRoster(
     summaries.set(manifest.id, published);
 
     for (const panel of manifest.contributes.panels) {
-      const id = `${manifest.id}.${panel.id}`;
+      const id = panelRefId(manifest.id, panel.id);
       claim(panelIds, id, manifest.id);
       panels.set(id, { plugin: manifest.id, title: panel.title });
     }
@@ -421,6 +458,7 @@ export function assembleRoster(
         plugin: manifest.id,
         title: element.title,
         placement: element.placement ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+        payload: def.elements?.[element.type] ?? null,
       });
       // ELEMENT-TYPE OWNERSHIP. The reservation is a tombstone: it survives the owner being
       // disabled, going dormant, or leaving the build entirely, because the documents that

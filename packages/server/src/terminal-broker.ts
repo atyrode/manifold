@@ -837,7 +837,17 @@ export class TerminalBroker implements TerminalPlacementPort {
     });
   }
 
-  /** Transfers controller authority to an authorized principal and announces the lease. */
+  /**
+   * Transfers controller authority to an authorized principal and announces the lease.
+   *
+   * AUTHORITY IS NOT DECIDED HERE. `terminal_take` dispatches `core.terminals.take` before
+   * this runs, so the caps rung, the scope rung and the plugin-enabled rung have all been
+   * answered in the published denial vocabulary by the time the transfer happens — and the
+   * `terminals:write` check this method used to carry was the second door onto that question
+   * (invariant 14). What is left is the transport's own work: resolve the terminal in THIS
+   * channel's container, refuse the race where it exited between the dispatch and the write,
+   * move the lease, and tell the room.
+   */
   take(channel: SessionChannel, message: TerminalTake): void {
     const terminal = this.terminalFor(channel, message.terminalId);
     if (terminal === null) return;
@@ -846,15 +856,6 @@ export class TerminalBroker implements TerminalPlacementPort {
         type: "error",
         code: "conflict",
         message: "terminal has exited",
-        ref: message.terminalId,
-      });
-      return;
-    }
-    if (!this.auth.allows(channel.auth, "terminals:write", channel.containerId)) {
-      channel.send({
-        type: "error",
-        code: "forbidden",
-        message: "terminals:write capability required",
         ref: message.terminalId,
       });
       return;

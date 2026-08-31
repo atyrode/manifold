@@ -3,6 +3,17 @@
 **Date:** 2026-08-29
 **Status:** Accepted
 
+Addendum 2026-08-31 (#69 wave F): this record is history and is not rewritten, but one clause of
+the decision below has been narrowed. The ITEM half of the vocabulary is no longer a closed type:
+`ItemIconKind` is deleted and `ItemIcon` takes a plain kind string, because item kinds are the
+floor's five plus every element type a manifest contributes — a closed union at the plugin edge
+had the engine claiming to know a set only the assembly knows, and it bound no plugin anyway,
+since chrome here has always taken `icon: ReactNode`. An element contribution publishes no glyph,
+so a kind this build holds no drawing for now wears one neutral element mark instead of borrowing
+`core.notes`' sticky note. `ControlKind` stays closed, and that contrast is the rule: controls are
+the engine's own verbs, items are a contributed vocabulary. Unchanged: one module, one pinned
+dependency, and no call site naming a lucide drawing.
+
 ## Context
 
 The web application answered "what does this object look like?" with three unreconciled

@@ -1,0 +1,35 @@
+/*
+ * THE NOTES PLUGIN'S SKIN — the text element a note paints on a canvas, and its in-place editor.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+.canvas-text {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 0.5rem;
+  color: #f8f9fa;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.canvas-text__editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 1px solid #748ffc;
+  border-radius: 0.35rem;
+  outline: none;
+  padding: 0.5rem;
+  color: #f8f9fa;
+  background: rgb(20 22 27 / 92%);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  box-shadow: 0 0 0 3px rgb(116 143 252 / 18%);
+}

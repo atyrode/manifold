@@ -1,8 +1,11 @@
 import {
+  OVERLAY_SLOTS,
   ProjectionProvider,
   ViewportRegistrationProvider,
   sessionUrl,
   type ContainerOverlayProps,
+  type OverlayRegistrations,
+  type OverlaySlot,
   type ContainerRendererProps,
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
@@ -96,11 +99,14 @@ export interface WebPluginDef {
    */
   readonly renderers?: Readonly<Record<string, ComponentType<ContainerRendererProps>>>;
   /**
-   * Decoration painted over a mounted container ref, keyed by slot (`container-roster`,
-   * `container-spotlight`). An unregistered or disabled overlay paints NOTHING: an inert box
-   * floating over someone's canvas is worse than the missing decoration.
+   * Decoration painted over a mounted container ref, keyed by slot. The key type is the closed
+   * `OverlaySlot` vocabulary, not `string`: the registrant and the `ContainerOverlayOutlet`
+   * that mounts it never import each other, and an unregistered overlay paints NOTHING, so a
+   * typo on either side of a `string` key would compile clean and simply never appear. An
+   * unregistered or disabled overlay still paints nothing — an inert box floating over
+   * someone's canvas is worse than the missing decoration — but now only for declared slots.
    */
-  readonly overlays?: Readonly<Record<string, ComponentType<ContainerOverlayProps>>>;
+  readonly overlays?: OverlayRegistrations;
   /**
    * Terminals, as every ref that paints one sees them: the viewer plus the machine
    * choice a new terminal is born on. One registration, because both belong to whichever
@@ -175,8 +181,8 @@ export interface BrowserAssembly {
   readonly tools: readonly RegisteredTool[];
   /** Keyed by container discipline (`canvas`, `composition`). */
   readonly renderers: ReadonlyMap<string, RegisteredRenderer<ContainerRendererProps>>;
-  /** Keyed by overlay slot. */
-  readonly overlays: ReadonlyMap<string, RegisteredRenderer<ContainerOverlayProps>>;
+  /** Keyed by overlay slot; only declared slots can appear. */
+  readonly overlays: ReadonlyMap<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>;
   /** Null until some enabled-or-disabled plugin registers the terminal facet. */
   readonly terminals: WebTerminals | null;
 }
@@ -199,7 +205,7 @@ export function buildBrowserAssembly(
   const tools: RegisteredTool[] = [];
   const routes = new Map<string, WebRoute>();
   const renderers = new Map<string, RegisteredRenderer<ContainerRendererProps>>();
-  const overlays = new Map<string, RegisteredRenderer<ContainerOverlayProps>>();
+  const overlays = new Map<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>();
   let terminals: WebTerminals | null = null;
 
   for (const entry of roster) {
@@ -258,7 +264,14 @@ export function buildBrowserAssembly(
         enabled,
       });
     }
-    for (const [slot, Component] of Object.entries(def?.overlays ?? {})) {
+    /*
+      Walked over the declared slot vocabulary rather than over the registration's own keys:
+      `Object.entries` widens the key back to `string`, which is the exact typing this join was
+      losing. Iterating OVERLAY_SLOTS keeps the key type and needs no cast.
+     */
+    for (const slot of OVERLAY_SLOTS) {
+      const Component = def?.overlays?.[slot];
+      if (Component === undefined) continue;
       overlays.set(slot, { plugin: manifest.id, title: manifest.title, Component, enabled });
     }
     if (def?.terminals !== undefined) {

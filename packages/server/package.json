@@ -10,6 +10,7 @@
     "@manifold-plugin/canvas": "workspace:*",
     "@manifold-plugin/compositions": "workspace:*",
     "@manifold-plugin/draw": "workspace:*",
+    "@manifold-plugin/events": "workspace:*",
     "@manifold-plugin/machines": "workspace:*",
     "@manifold-plugin/notes": "workspace:*",
     "@manifold-plugin/plugin-manager": "workspace:*",

@@ -172,6 +172,34 @@ export interface ContainerOverlayProps {
 }
 
 /**
+ * The overlay slots a container renderer offers, and the whole of them.
+ *
+ * This is a CLOSED vocabulary because the join is otherwise invisible: a plugin registers a
+ * component under a slot name, a renderer mounts `ContainerOverlayOutlet slot="…"`, and the
+ * two sides never import each other — so with a `string` key a typo on either side compiles
+ * clean and paints nothing at all (overlays paint NOTHING when absent, by design, which is
+ * exactly what makes the failure silent). Naming the slots turns the runtime join into a
+ * compile error, which is why this needs no gate check of its own.
+ *
+ * Slots live here rather than beside either party for the reason every vocabulary in this
+ * package does: the registrant is a plugin, the outlet is a renderer in another plugin, and
+ * `@manifold/plugin` is the only thing both are allowed to import. Adding a slot is a one-line
+ * append plus the outlet that mounts it.
+ */
+export const OVERLAY_SLOTS = ["container-roster", "container-spotlight"] as const;
+
+/** One named overlay position on a mounted container ref. */
+export type OverlaySlot = (typeof OVERLAY_SLOTS)[number];
+
+/**
+ * What a plugin's browser half puts in the overlay channel: the slots it fills, by name.
+ * `Partial` because filling one slot is normal — `core.presence` happens to fill both.
+ */
+export type OverlayRegistrations = Readonly<
+  Partial<Record<OverlaySlot, ComponentType<ContainerOverlayProps>>>
+>;
+
+/**
  * The resolved registry. Built by the engine's browser half from the composition; `revision`
  * moves with the roster, so a consumer that memoizes on the vocabulary has a cheap key.
  */
@@ -187,7 +215,7 @@ export interface ProjectionRegistry {
   } | null;
   /** Keyed by container discipline — `Container["discipline"]`. */
   renderer(layout: string): RegisteredRenderer<ContainerRendererProps> | null;
-  overlay(slot: string): RegisteredRenderer<ContainerOverlayProps> | null;
+  overlay(slot: OverlaySlot): RegisteredRenderer<ContainerOverlayProps> | null;
   element(type: string): RegisteredElement | null;
   /** The whole element vocabulary, for a paint boundary that needs a map (React Flow's). */
   readonly elements: ReadonlyMap<string, RegisteredElement>;
@@ -304,7 +332,7 @@ export function ContainerRenderer({ layout, ...ref }: ContainerRendererOutletPro
 }
 
 export interface ContainerOverlayOutletProps extends ContainerOverlayProps {
-  readonly slot: string;
+  readonly slot: OverlaySlot;
 }
 
 /**

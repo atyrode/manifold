@@ -18,19 +18,22 @@
  *   `@manifold/plugin/ui`     mechanism a plugin uses to LOOK like manifold. Nothing here
  *                             touches the wire, a plane, or the composition.
  *
- * Being a standard library, not a component kit, has one consequence worth stating: these are
- * closed vocabularies deliberately. A plugin extends them by passing nodes into their slots
- * (`icon`, `middle`, `extraActions`), never by widening a union here — so re-drawing the whole
- * icon set or re-shaping the titlebar stays a change to one file and no call site.
+ * Being a standard library, not a component kit, has one consequence worth stating: a plugin
+ * extends this chrome by passing nodes into its slots (`icon`, `middle`, `extraActions`), never
+ * by growing a component's prop union — so re-shaping the titlebar or re-drawing the whole icon
+ * set stays a change to one file and no call site. Where the VOCABULARY a slot names is itself
+ * open the type is open with it: item kinds are the floor's five plus every element type a
+ * manifest contributes, so `ItemIcon` takes a plain kind string, because a closed union at this
+ * edge was the floor claiming to know a set only the assembly knows. The engine's own verbs
+ * (`ControlKind`) stay closed, and that contrast is the rule rather than an exception to it.
  */
+import "./styles.css";
 export {
   ControlIcon,
   ItemIcon,
   RemoteCursorIcon,
-  CarriedItemIcon,
   type ControlKind,
   type IconProps,
-  type ItemIconKind,
 } from "./icons.tsx";
 export {
   NodeTitleBar,

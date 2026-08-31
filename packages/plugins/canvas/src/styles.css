@@ -1,0 +1,431 @@
+/*
+ * THE CANVAS PLUGIN'S SKIN — the freeform discipline's renderer: the canvas itself, its toolbar and text elements, container portals in every engagement state, and the React Flow resize chrome the canvas dresses.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in AXIOMS.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+.canvas-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-presence {
+  position: absolute;
+  z-index: 10;
+  top: 0.75rem;
+  right: 0.75rem;
+}
+
+/* Zero-sized origin box: it only carries the band that keeps presence above nodes. */
+.canvas-presence-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/*
+ * A canvas terminal is a MONO PORTAL: the solo composition it lives in renders
+ * element-chrome-first, so the terminal's own titlebar is this node's bar. These
+ * rules used to be scoped to `.canvas-terminal`, the retired terminal node type; that
+ * selector matches nothing now, and `.terminal-titlebar` is `pointer-events: none`
+ * by default (it floats over the xterm ref), so leaving them there made the bar
+ * pointer-transparent: the node could not be dragged and its controls could not be
+ * clicked by a real pointer.
+ */
+.portal--mono .portal__tile > .terminal-frame {
+  width: 100%;
+  height: 100%;
+}
+
+/* The titlebar IS the drag handle (TERMINAL_DRAG_HANDLE), so advertise it. */
+.portal--mono .terminal-titlebar {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.portal--mono .terminal-titlebar:active {
+  cursor: grabbing;
+}
+
+/* Buttons inside the titlebar must not look draggable.
+   `:not(:disabled)` is load-order insurance, not a behaviour change: the neutral chrome's
+   `.node-titlebar__ctl:disabled` sets `cursor: default` at the same specificity, and while
+   both lived in one stylesheet the later rule settled it. Two stylesheets have no "later",
+   so the exclusion is written down instead of being inherited from a line number. */
+.portal--mono .node-titlebar__actions,
+.portal--mono .node-titlebar__ctl:not(:disabled) {
+  cursor: pointer;
+}
+
+/*
+ * Terminals resize like desktop windows: the frame border is the grab zone, so the
+ * controls carry no paint of their own and the OS resize cursor (supplied by React
+ * Flow's own `.left`/`.top`/corner rules) is the affordance. The zones are widened
+ * from the library's 1px line because a 1px border is not a pointer target.
+ */
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge,
+.canvas .react-flow__resize-control.handle.canvas-terminal-resize-corner {
+  /*
+   * Above everything inside the terminal frame — including the titlebar (z 3) and its
+   * pill/overlay (z 5) — exactly like an OS window, where the thin border strip wins
+   * over the titlebar it borders and the rest of the titlebar stays the drag ref.
+   */
+  z-index: 6;
+  border-color: transparent;
+  background: transparent;
+}
+
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.left,
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.right {
+  width: 8px;
+}
+
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.top,
+.canvas .react-flow__resize-control.line.canvas-terminal-resize-edge.bottom {
+  height: 8px;
+}
+
+.canvas .react-flow__resize-control.handle.canvas-terminal-resize-corner {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.canvas:focus {
+  outline: none;
+}
+
+.canvas-toolbar {
+  position: absolute;
+  z-index: 20;
+  bottom: 1rem;
+  left: 50%;
+  display: flex;
+  gap: 0.25rem;
+  border: 1px solid #343a40;
+  border-radius: 0.65rem;
+  padding: 0.3rem;
+  background: rgb(24 27 32 / 94%);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 30%);
+  transform: translateX(-50%);
+}
+
+.canvas-toolbar__button {
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  color: #adb5bd;
+  background: transparent;
+  cursor: pointer;
+}
+
+.canvas-toolbar__button:hover {
+  color: #f8f9fa;
+  background: #343a40;
+}
+
+.canvas-toolbar__button--active {
+  color: #fff;
+  background: #4263eb;
+}
+
+.canvas-toolbar__button--active:hover {
+  background: #3b5bdb;
+}
+
+.stroke-preview {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* ── Portal portals and canvas composition (Phase 3 / 3b) ─────────────────────
+   The canvas face of a composition — a live portal onto its tiles — plus the
+   chrome the compose gesture paints. Appended as one block; nothing above is
+   restyled. */
+
+.portal {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #3b4252;
+  border-radius: 0.5rem;
+  background: #0b0d10;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+/* The strip IS the React Flow drag handle (PORTAL_DRAG_HANDLE): the preview body
+   below it belongs to the tile drags that decompose a view. */
+.portal__strip {
+  border-bottom: 1px solid #23272e;
+  background: #15181d;
+  cursor: grab;
+}
+
+.portal__strip:active {
+  cursor: grabbing;
+}
+
+.portal__presence {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.15rem;
+}
+
+.portal__avatar {
+  display: grid;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  color: #0b0d10;
+  font-size: 0.6rem;
+  font-weight: 700;
+  place-items: center;
+}
+
+.portal__avatar--more {
+  color: #ced4da;
+  background: #343a40;
+}
+
+.portal__enter {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  color: #ced4da;
+  background: #1b1f24;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.portal__enter:hover {
+  border-color: #4c6ef5;
+  color: #f8f9fa;
+}
+
+.portal__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The preview is laid out at 1/PORTAL_PREVIEW_SCALE and transformed down: xterm
+   fits against the computed box, which a transform leaves alone, so previewing a
+   terminal never reflows the PTY for whoever is working in it. */
+.portal__preview {
+  /* Everything below this box is drawn at PORTAL_PREVIEW_SCALE, so a length that has to
+     be CONSTANT ON SCREEN is written double here — otherwise the transform shrinks it
+     along with the paint, which is exactly how the seam's grab band ended up a third of
+     the route's. The seam reach is the only such length. */
+  --tile-seam-reach: 0.75rem;
+
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.portal__tile {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* WATCHING: the shield keeps input out of a terminal nobody engaged, and it is the
+   grab zone that extracts the tile back onto the canvas as a plain element. */
+.portal__shield {
+  position: absolute;
+  /* Above the previewed terminal's own bands (titlebar 3, overlays 5): the frame
+     creates no stacking context, so those children would otherwise paint over it. */
+  z-index: 8;
+  inset: 0;
+  cursor: grab;
+}
+
+/* ENGAGED: the shield collapses onto its grip so the terminal underneath is reachable
+   — plain clicks, xterm selection and mouse-mode TUIs all need the real ref — while
+   extraction stays exactly the same drag, now on a visible handle. */
+.portal__shield--grip {
+  inset: auto 0 0 auto;
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.portal__grip {
+  display: grid;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  color: #868e96;
+  font-size: 0.9rem;
+  line-height: 1;
+  place-items: center;
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+
+.portal__shield:hover .portal__grip {
+  color: #dee2e6;
+  opacity: 1;
+}
+
+.portal__shield:active {
+  cursor: grabbing;
+}
+
+/* A portal being worked in is a first-class terminal host, not a preview: the frame
+   says so, and the engaging state says the occupant socket is still coming up. */
+.portal--engaged {
+  outline: 1px solid #4c6ef5;
+  outline-offset: 1px;
+}
+
+.portal--engaging {
+  cursor: progress;
+}
+
+.portal--engaging .portal__shield {
+  cursor: progress;
+}
+
+.portal__empty,
+.portal__container-card,
+.portal__card {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  align-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.4rem;
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.portal__container-card strong {
+  color: #dee2e6;
+  font-size: 0.76rem;
+}
+
+.portal__card {
+  border-style: solid;
+  border-color: #23272e;
+}
+
+.portal__card-glyph {
+  display: inline-grid;
+  place-items: center;
+  color: #748ffc;
+}
+
+.portal__card-hint {
+  padding-inline: 0.6rem;
+  text-align: center;
+}
+
+/* Adopter tuning: a view reads as an object with a name, a terminal as a strip. */
+.portal__strip .node-titlebar__icon {
+  color: #748ffc;
+}
+
+.portal__strip .node-titlebar__title {
+  color: #f1f3f5;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+/* ── Portal portal resize chrome (PortalResize) ────────────────────────────────
+   Resize is canvas-item chrome, so a view portal's frame border is the same grab
+   zone a terminal's is: same 8px edge bands, same 14px corners, same transparent
+   controls (the OS resize cursor React Flow supplies is the whole affordance).
+   Kept as its own selectors rather than folded into the terminal block above so
+   this section stays append-only; the metrics mirror
+   `.canvas-terminal-resize-edge` / `.canvas-terminal-resize-corner` exactly. */
+.canvas .react-flow__resize-control.line.portal-resize-edge,
+.canvas .react-flow__resize-control.handle.portal-resize-corner {
+  /*
+   * One band above the portal's shield (z 8), which is itself above the previewed
+   * terminal's titlebar and overlays: the border strip wins over everything inside
+   * the frame, exactly like an OS window, while the shield keeps the rest of the
+   * body as the extraction grab zone and the strip stays the drag ref.
+   */
+  z-index: 9;
+  border-color: transparent;
+  background: transparent;
+}
+
+.canvas .react-flow__resize-control.line.portal-resize-edge.left,
+.canvas .react-flow__resize-control.line.portal-resize-edge.right {
+  width: 8px;
+}
+
+.canvas .react-flow__resize-control.line.portal-resize-edge.top,
+.canvas .react-flow__resize-control.line.portal-resize-edge.bottom {
+  height: 8px;
+}
+
+.canvas .react-flow__resize-control.handle.portal-resize-corner {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* A mono portal IS its terminal: no portal frame padding, no name strip, and the
+   preview scaling a composition needs would only shrink the shell. */
+.portal--mono .portal__viewport {
+  padding: 0;
+}
+
+.portal--mono .portal__tile {
+  width: 100%;
+  height: 100%;
+}
+
+/* Watching a mono portal still shields the terminal body from stray input, but its
+   OWN titlebar is this element's chrome — rename and the window controls have to stay
+   reachable, so the shield starts below the bar. */
+.portal--mono .portal__shield {
+  top: 1.75rem;
+}
+
+/* The canvas half of the carry ease-away. The tile half, and the reasoning behind both,
+   live in packages/plugin/src/ui/styles.css beside the carry mechanism itself; the shared
+   values are the floor's `--carry-fade-*` tokens so a viewer sees what the dragger sees. */
+.canvas .react-flow__node.dragging,
+.canvas .react-flow__node.is-carried-away {
+  transition: var(--carry-fade-transition);
+}
+
+.canvas.is-composing .react-flow__node.dragging,
+.canvas .react-flow__node.is-carried-away {
+  opacity: var(--carry-fade-opacity);
+}

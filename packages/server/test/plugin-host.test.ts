@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_WORKSPACE_LAYOUT,
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   defineAction,
+  workspaceLayout,
 } from "@manifold/plugin";
 import type {
   ActionOutcome,
@@ -16,8 +16,9 @@ import type {
 } from "@manifold/protocol";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
+import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
@@ -45,6 +46,14 @@ const OWNER_KEY = "a".repeat(64);
 const OFFLINE_MACHINES: MachineLiveness = { isOnline: () => false };
 
 /**
+ * The real default workspace tree: the floor's arrangement filled with the real
+ * registration's panel ids. A layout fixture is worth building from the production pair
+ * rather than a hand-written pair, because these cases assert what happens to a tree a
+ * principal could actually have been served.
+ */
+const DEFAULT_LAYOUT = workspaceLayout(WORKSPACE_PANELS);
+
+/**
  * A real executor over the fixture's real services. These cases compose plugin lists of
  * their own, so the roster thunk resolves to an EMPTY vocabulary: nothing here places a
  * contributed element kind, and a thunk that reached back into a half-built host would be
@@ -57,6 +66,7 @@ function testPlacement(fixture: HostFixture): PlaceExecutor {
     fixture.broker,
     fixture.runtime,
     assemblyElementTraits(() => []),
+    assemblyItemNouns(() => []),
   );
 }
 
@@ -459,13 +469,11 @@ describe("core.space.setLayout", () => {
     const other = context(fixture, ["containers:read", "containers:write"]);
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
-      layout: DEFAULT_WORKSPACE_LAYOUT,
+      layout: DEFAULT_LAYOUT,
     });
 
     expect(outcome).toEqual({ ok: true, result: {} });
-    expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(
-      DEFAULT_WORKSPACE_LAYOUT,
-    );
+    expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(DEFAULT_LAYOUT);
     // Layout writes are self-targeted by construction: the action takes no principal id.
     expect(fixture.store.workspaceLayout(other.principal.id)).toBeNull();
     fixture.store.close();
@@ -531,7 +539,7 @@ describe("core.space.setLayout", () => {
     const scoped = context(fixture, ["containers:read", "containers:write"], container);
 
     const outcome = await fixture.host.dispatch(scoped, "core.space.setLayout", {
-      layout: DEFAULT_WORKSPACE_LAYOUT,
+      layout: DEFAULT_LAYOUT,
     });
 
     // `core.space.setLayout` declares NO caps, which is exactly why the scope rung matters: the

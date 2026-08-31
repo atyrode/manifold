@@ -9,7 +9,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits } from "../src/placement.ts";
+import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
@@ -99,6 +99,7 @@ function fixture(): TerminalsFixture {
       broker,
       runtime,
       assemblyElementTraits(() => []),
+      assemblyItemNouns(() => []),
     ),
   );
   const enrollment = auth.enrollMachine("fake", owner);
@@ -231,6 +232,57 @@ describe("core.terminals doors", () => {
     ).toEqual({ rule: "refused", message: "terminal not found" });
   });
 
+  test("taking the lease is a door: caps, scope, and an exited terminal has nothing to take", async () => {
+    const base = fixture();
+    const terminalId = liveTerminal(base);
+    const opener = base.owner.principal.id;
+
+    // Rung 1. The broker used to demand this cap for itself and phrase its own refusal; the
+    // wording is unchanged and the authority is now published in the roster.
+    const reader = context(base, ["containers:read"], base.container.id);
+    expect(denial(await base.host.dispatch(reader, "core.terminals.take", { terminalId }))).toEqual(
+      { rule: "forbidden", message: "terminals:write capability required" },
+    );
+
+    // Rung 3's handler obligation: `scope: "container"` proves the cap at the caller's OWN
+    // container, and the terminal named in the arguments lives somewhere else.
+    const elsewhere = base.runtime.newId();
+    base.store.createContainer({
+      id: elsewhere,
+      name: "another",
+      createdAt: base.runtime.now(),
+      discipline: "composition",
+    });
+    const stranger = context(base, ["containers:read", "terminals:write"], elsewhere);
+    expect(
+      denial(await base.host.dispatch(stranger, "core.terminals.take", { terminalId })),
+    ).toEqual({ rule: "refused", message: OUTSIDE_SCOPE_REFUSAL });
+
+    expect(
+      denial(await base.host.dispatch(base.owner, "core.terminals.take", { terminalId: "ghost" })),
+    ).toEqual({ rule: "refused", message: "terminal not found" });
+
+    // THE INCUMBENT LEASE IS NOT A RULE HERE, and that is the point of the verb: `kill`
+    // refuses a running terminal held by somebody else precisely because this door exists to
+    // claim it first, so a take that respected the holder would close the only way out.
+    const other = context(base, ["containers:read", "terminals:write"], base.container.id);
+    expect(await base.host.dispatch(other, "core.terminals.take", { terminalId })).toEqual({
+      ok: true,
+      result: {},
+    });
+    // The door answered POLICY; the transfer is the channel's, exactly as `open` births no
+    // PTY. An HTTP dispatch holds no channel, so the lease has not moved.
+    expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(opener);
+
+    // An exited terminal has no lease to take, and the refusal says so rather than saying
+    // "not found": the row is still there, and a client that cannot tell those apart cannot
+    // tell the operator what happened.
+    base.broker.onExited(base.machine.machineId, terminalId, 0);
+    expect(
+      denial(await base.host.dispatch(base.owner, "core.terminals.take", { terminalId })),
+    ).toEqual({ rule: "refused", message: "terminal has exited" });
+  });
+
   test("a container-scoped token cannot reach a terminal in another container", async () => {
     const base = fixture();
     const terminalId = liveTerminal(base);
@@ -348,7 +400,7 @@ describe("core.terminals doors", () => {
     });
   });
 
-  test("a disabled plugin refuses creation and naming, and still allows a kill", async () => {
+  test("a disabled plugin refuses creation, naming and taking, and still allows a kill", async () => {
     const base = fixture();
     const terminalId = liveTerminal(base);
     expect(await base.host.setEnabled("core.terminals", false, base.owner.principal.id)).toEqual({
@@ -361,6 +413,10 @@ describe("core.terminals doors", () => {
         { containerId: base.container.id, elementId: "el-1", cols: 80, rows: 24 },
       ],
       ["core.terminals.rename", { terminalId, name: "build" }],
+      // `take` is NOT `cleanup`: claiming control of a live PTY from whoever is typing in it
+      // is administration, and widening the carve-out to cover it would make a disabled
+      // plugin more capable than the rule the disable suspends.
+      ["core.terminals.take", { terminalId }],
       ["core.terminals.listAll", {}],
       ["core.terminals.listByContainer", {}],
     ] as const) {
@@ -543,5 +599,54 @@ describe("session channel terminal verbs speak the ladder", () => {
       },
     ]);
     expect(base.broker.liveTerminal(terminalId)).not.toBeNull();
+  });
+
+  test("a take asks the door first, and the lease moves only once it allows", async () => {
+    const base = fixture();
+    const terminalId = liveTerminal(base);
+    const opener = base.owner.principal.id;
+    expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(opener);
+
+    // A reader on the same channel. The broker used to answer this itself; now the refusal
+    // travels the same road every other denial does, and the lease is untouched.
+    const reader = base.auth.mintToken(
+      {
+        principal: { name: "watcher", kind: "human" },
+        caps: ["containers:read"],
+        containerId: base.container.id,
+      },
+      base.owner,
+    );
+    const refused = joinedSocket(base, reader.token);
+    base.gateway.message(
+      refused.id,
+      JSON.stringify({ ch: "c1", type: "terminal_take", terminalId }),
+    );
+    await settled();
+
+    expect(errors(refused.socket)).toEqual([
+      { code: "forbidden", message: "terminals:write capability required", ref: terminalId },
+    ]);
+    expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(opener);
+
+    // And a writer's take still lands, because the TRANSFER stayed on the channel: this is
+    // `open`'s shape, so the socket that asked is the one that ends up holding the lease.
+    const writer = base.auth.mintToken(
+      {
+        principal: { name: "second writer", kind: "human" },
+        caps: ["containers:read", "terminals:write"],
+        containerId: base.container.id,
+      },
+      base.owner,
+    );
+    const allowed = joinedSocket(base, writer.token);
+    base.gateway.message(
+      allowed.id,
+      JSON.stringify({ ch: "c1", type: "terminal_take", terminalId }),
+    );
+    await settled();
+
+    expect(errors(allowed.socket)).toEqual([]);
+    expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(writer.principal.id);
   });
 });

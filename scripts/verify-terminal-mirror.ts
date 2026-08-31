@@ -44,6 +44,7 @@ import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
   ContainersResponseSchema,
+  elementString,
   TerminalsResponseSchema,
   type SceneElement,
   type TerminalSummary,
@@ -315,7 +316,7 @@ try {
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "mirror-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
   await browser.goto(`${origin}/p/${containerId}`);
   await until(
@@ -573,8 +574,11 @@ try {
   //    it: top level is homes and the homeless, and a terminal nothing references is
   //    homeless. A placed terminal's row is deliberately elided from the top level, so
   //    this row appearing is the whole observable difference.
-  const soloTerminalId = await terminalHomedIn(source.containerId);
-  if (soloTerminalId === "") throw new Error(`no terminal is homed in ${source.containerId}`);
+  // The protocol's element schema is a neutral envelope (ADR 0013 §16), so a portal's target is
+  // read rather than trusted: a missing reference fails the gate by name instead of by cast.
+  const sourceHome = elementString(source, "containerId") ?? "";
+  const soloTerminalId = await terminalHomedIn(sourceHome);
+  if (soloTerminalId === "") throw new Error(`no terminal is homed in ${sourceHome}`);
   await nameTerminal(soloTerminalId, "mirror-solo");
   const soloRow = JSON.stringify(`.sidebar-row [aria-label="Open terminal mirror-solo"]`);
   const rowWhilePlaced = await settles(
@@ -637,7 +641,7 @@ try {
     await target.goto(`${origin}/#key=${ownerKey}`);
     if (await target.evaluate<boolean>("document.querySelector('input') !== null")) {
       await target.typeInto("input", displayName);
-      await target.clickText("Enter manifold");
+      await target.clickTestId("identity-enter");
     }
   };
   const openCanvas = async (target: Browser, id: string, what: string): Promise<void> => {
@@ -796,8 +800,9 @@ try {
     [anchor, "alpha"],
     [mover, "beta"],
   ] as const) {
-    const terminalId = await terminalHomedIn(element.containerId);
-    if (terminalId === "") throw new Error(`no terminal is homed in ${element.containerId}`);
+    const home = elementString(element, "containerId") ?? "";
+    const terminalId = await terminalHomedIn(home);
+    if (terminalId === "") throw new Error(`no terminal is homed in ${home}`);
     await nameTerminal(terminalId, name);
   }
   // Both terminals are authored at the canvas centre at 720x480, which puts the pair
@@ -1141,14 +1146,16 @@ try {
   const reAuthored = await settles(async () => {
     const extracted = extractedElement();
     if (extracted?.type !== "portal") return false;
+    const extractedHome = elementString(extracted, "containerId");
+    if (extractedHome === null) return false;
     if (
-      extracted.containerId === composedViewId ||
-      extracted.containerId === anchor.containerId ||
-      extracted.containerId === mover.containerId
+      extractedHome === composedViewId ||
+      extractedHome === elementString(anchor, "containerId") ||
+      extractedHome === elementString(mover, "containerId")
     ) {
       return false;
     }
-    if ((await terminalHomedIn(extracted.containerId)) === "") return false;
+    if ((await terminalHomedIn(extractedHome)) === "") return false;
     // Rendered, and element-first: both survivors wear the terminal's own chrome now.
     const rendered = await browser!.evaluate<boolean>(
       `document.querySelector('.react-flow__node[data-id="${extracted.id}"] .portal--mono') !== null`,

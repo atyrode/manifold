@@ -5,10 +5,11 @@ import type {
   Gesture,
   PlacementItem,
   PlacementRef,
+  PluginRoster,
   TileRef,
 } from "@manifold/protocol";
 import { envelopeRef, type ItemEnvelope } from "./item-envelope.ts";
-import { ITEM_NOUNS } from "./item-noun.ts";
+import { ITEM_NOUNS, itemNoun } from "./item-noun.ts";
 import type { GestureOverride } from "./presence/index.ts";
 
 /**
@@ -115,6 +116,31 @@ export function carryFrame(
 }
 
 /**
+ * The same frame with NO item named: `move`, which the gesture vocabulary defines as how
+ * one placed object's own geometry is changing. It exists because the grabber is NOT in
+ * fact guaranteed to hold the census `CarrySchema.item` assumes: a document arrives over
+ * the room socket while the container index arrives over a poll, so a collaborator
+ * renders a portal onto a newborn container for up to one poll interval before anything
+ * can tell it what that container IS.
+ *
+ * A grab in that window still owes every viewer the MOTION — the object is in the room
+ * they already render, so WHERE is the whole of what they need — and owes them no claim
+ * about a placement nobody here can judge, which is exactly what omitting the carry
+ * says. Publishing nothing instead is how a peer's drag became a teleport on release.
+ */
+export function moveFrame(placementId: string, at: CarryPoint, phase: Gesture["phase"]): Gesture {
+  return {
+    kind: "move",
+    phase,
+    elementId: placementId,
+    x: at.x,
+    y: at.y,
+    ...(at.width === undefined ? {} : { width: at.width }),
+    ...(at.height === undefined ? {} : { height: at.height }),
+  };
+}
+
+/**
  * The fallback name for a carry whose sender sent none is the ONE label vocabulary,
  * keyed by the ITEM the carry names rather than by the shape of its address — which is
  * why there is no table here. A ref kind is an address form (`container`), an item kind
@@ -123,34 +149,66 @@ export function carryFrame(
  * the icons said "canvas" and the refusals said "A canvas". The carry already carries its
  * item, so nothing needs translating; a kind with no floor noun is a contributed element,
  * whose producer always sends the plugin's own title as `label`.
+ *
+ * It stays a NAME for the one table rather than a call to {@link itemNoun} because a ghost is
+ * derived from wire frames alone, with no roster in hand — and by the sentence above, the only
+ * kinds that ever reach this fallback are floor kinds, whose word `itemNoun` would read out of
+ * this very object. The trailing `?? "item"` is that function's generic, spelled once here.
  */
 const FALLBACK_NOUNS: Readonly<Record<string, string>> = ITEM_NOUNS;
 
-/** Past this a note's first line stops being a name and starts being the note. */
-const NOTE_TITLE_LENGTH = 40;
+/**
+ * Past this a borrowed first line stops being a name and starts being the content it was
+ * borrowed from. One bound for every text-bearing kind, because the caption slot they share
+ * is one width.
+ */
+const FIRST_LINE_LABEL_LENGTH = 40;
 
 /**
- * A note has no name, so it borrows its first line — the only handle a note has.
- * Null while the note is empty, which is what makes a caller fall back to "note".
+ * The display label a TEXT-BEARING element borrows from its OWN content: an element that
+ * holds prose carries no name field, so its first line is the only handle it has. Null while
+ * the content is empty, which is what hands the naming question on to the one noun door
+ * ({@link itemNoun}).
+ *
+ * The floor states the RULE and never the word. This function used to be `noteTitle`, and a
+ * note is `core.notes`' object: the engine cannot spell one plugin's element without owing
+ * every other plugin the same favour, and the neutrality criterion (§Foundation law) is
+ * exactly that it "would be unchanged if every plugin in the tree were replaced".
  */
-export function noteTitle(text: string): string | null {
+export function firstLineLabel(text: string): string | null {
   const firstLine = text.split("\n", 1)[0]?.trim() ?? "";
   if (firstLine === "") return null;
-  return firstLine.length <= NOTE_TITLE_LENGTH
+  return firstLine.length <= FIRST_LINE_LABEL_LENGTH
     ? firstLine
-    : `${firstLine.slice(0, NOTE_TITLE_LENGTH - 1)}…`;
+    : `${firstLine.slice(0, FIRST_LINE_LABEL_LENGTH - 1)}…`;
 }
 
 /**
- * The three questions naming a tile ref asks of a host's own documents. Every
- * host can answer all three — a route from its room, a canvas portal from its portal
- * socket plus the container index the canvas holds — so no host owns a private switch.
+ * What a text-bearing element BEARS, as its host reads it out of the document: the declared
+ * wire type and the raw content, together. One lookup rather than two because both answers
+ * come off the same record, and the type has to travel with the text — the fallback noun is
+ * the DECLARING plugin's word, and the ref form (`text`) is an address, not a species.
+ */
+export interface RefTextElement {
+  readonly type: string;
+  readonly text: string;
+}
+
+/**
+ * The three questions naming a tile ref asks of a host's own documents, plus the vocabulary
+ * that answers the fourth. Every host can answer all three — a route from its room, a canvas
+ * portal from its portal socket plus the container index the canvas holds — so no host owns a
+ * private switch. The `roster` rides with them because a label that has to fall back must
+ * fall back to the declaring plugin's own word, and a caller passing that word in as a
+ * default was every renderer holding a copy of one plugin's noun.
  */
 export interface RefLabelLookups {
   readonly terminalName: (terminalId: string) => string | null;
   readonly containerName: (containerId: string) => string | null;
-  /** The note's raw text; the first-line rule is applied here, once, for everyone. */
-  readonly noteText: (elementId: string) => string | null;
+  /** The element as borne; the first-line rule is applied here, once, for everyone. */
+  readonly textElement: (elementId: string) => RefTextElement | null;
+  /** The composed vocabulary, for the noun a nameless kind falls back to. */
+  readonly roster: PluginRoster;
 }
 
 /**
@@ -166,8 +224,16 @@ export function refDisplayLabel(ref: TileRef | null, lookups: RefLabelLookups): 
     case "container":
       return lookups.containerName(ref.containerId);
     case "text": {
-      const text = lookups.noteText(ref.elementId);
-      return text === null ? null : noteTitle(text);
+      const element = lookups.textElement(ref.elementId);
+      if (element === null) return null;
+      /*
+        An element holding nothing is not nameless: it is called whatever its own plugin calls
+        that element type, which is the manifest title `itemNoun` reads. Answering null here
+        pushed the question to a caller, and every caller answered it with the literal "note"
+        — one plugin's word, copied into three renderers, for a ref form that any plugin's
+        text-bearing element may address.
+      */
+      return firstLineLabel(element.text) ?? itemNoun(element.type, lookups.roster);
     }
     case "panel":
       // A panel's human title lives in the composition, which this module deliberately

@@ -13,7 +13,12 @@ import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits, type PlaceOutcome } from "../src/placement.ts";
+import {
+  PlaceExecutor,
+  assemblyElementTraits,
+  assemblyItemNouns,
+  type PlaceOutcome,
+} from "../src/placement.ts";
 import { PluginHost, type MachineLiveness } from "../src/plugin-host.ts";
 import type { RoomManager, RoomTimers } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
@@ -297,6 +302,7 @@ export function testPluginHost(
     broker,
     runtime,
     assemblyElementTraits(() => host?.roster() ?? []),
+    assemblyItemNouns(() => host?.roster() ?? []),
   );
   host = new PluginHost(
     SERVER_PLUGIN_DEFS,
