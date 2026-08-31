@@ -1,7 +1,9 @@
 /**
  * The engine's platform-free half: composition, contracts, the default workspace. Anything
- * React lives behind `@manifold/plugin/hooks` instead, because the SERVER composes through
- * this same entry and must never pull a browser hook (or a DOM lib) into its type graph.
+ * that names React or a DOM type lives behind a subpath instead — `@manifold/plugin/hooks`
+ * for browser plane mechanism, `@manifold/plugin/ui` for the plugin-facing standard library —
+ * because the SERVER composes through this same entry and must never pull a browser hook (or
+ * a DOM lib) into its type graph.
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
@@ -14,6 +16,7 @@ export {
 export {
   CompositionError,
   composeRoster,
+  rosterElementTraits,
   type Composition,
   type CompositionAction,
   type CompositionElement,
@@ -63,7 +66,13 @@ export {
   type PadTreeNode,
 } from "./pad-tree.ts";
 export {
+  lastSpotlight,
+  recordSpotlight,
   type CompositionFacet,
+  type ElementDocument,
+  type ElementHost,
+  type ElementProps,
+  type ElementTx,
   type HostServices,
   type PadAuthoringHandle,
   type PadViewportHandle,

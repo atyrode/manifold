@@ -4,7 +4,7 @@ import {
   setViewState,
   subscribeViewState,
   type ViewState,
-} from "./view-presence.ts";
+} from "../src/ui/view-state.ts";
 
 /**
  * VIEW STATE IS PUBLISHED STATE (A2).

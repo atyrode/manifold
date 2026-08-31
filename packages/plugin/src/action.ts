@@ -1,4 +1,4 @@
-import type { Cap } from "@manifold/protocol";
+import type { ActionScope, Cap } from "@manifold/protocol";
 import type { z } from "zod";
 
 /**
@@ -29,6 +29,22 @@ export interface ActionDef<In = unknown, Out = unknown> {
    * dispatcher skips only the `plugin_disabled` rung for it; caps and schemas still apply.
    */
   readonly cleanup?: boolean;
+  /**
+   * The authority grade this door is written for; absent ≡ `"workspace"`.
+   *
+   * `"pad"` declares that the action's whole effect is confined to ONE container, which is
+   * what lets a pad-scoped token through the scope rung. The pad is the TOKEN's
+   * (`ctx.padScope`), never an argument — authority that read arguments would force the
+   * ladder to validate shape before authority, and a caller would learn a door's schema by
+   * knocking on one it may not open. The declared caps are then evaluated AT that pad, so
+   * the scope narrows authority and can never widen it.
+   *
+   * It is a CONTRACT on the handler, not a label: with a non-null `ctx.padScope` the handler
+   * MUST refuse anything outside that pad. The rung can only prove the caller's caps hold
+   * for its own pad; whether the thing named in the arguments lives there is a question only
+   * the handler can ask.
+   */
+  readonly scope?: ActionScope;
 }
 
 /**

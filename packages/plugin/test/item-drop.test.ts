@@ -7,6 +7,8 @@ import {
   type PlacementDestination,
   type PlacementItem,
   type PlacementSurface,
+  type PluginManifest,
+  type PluginRoster,
   type SceneElement,
 } from "@manifold/protocol";
 import { createPlacementLookup, denialMessage } from "../src/item-drop.ts";
@@ -36,6 +38,49 @@ const SOLO_OCCUPANTS: ReadonlyMap<string, PlacementItem> = new Map([
   ["solo-1", { kind: "terminal", containerId: "solo-1" } satisfies PlacementItem],
 ]);
 
+/**
+ * The composition the renderer holds, as the roster publishes it: `text` declares its own
+ * traits, `draw` declares none and takes the engine default. The lookup reads element
+ * legality — and the noun a refusal calls the kind — from HERE rather than from a table in
+ * the engine (ADR 0013 §12), so a preview judges a contributed kind by exactly what its
+ * plugin said about it.
+ */
+function element(
+  id: string,
+  type: string,
+  title: string,
+  placement?: PluginManifest["contributes"]["elements"][number]["placement"],
+): PluginRoster[number] {
+  return {
+    manifest: {
+      id,
+      version: "1.0.0",
+      title: id,
+      description: id,
+      capabilities: [],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [{ type, title, ...(placement === undefined ? {} : { placement }) }],
+        tools: [],
+        events: [],
+      },
+    },
+    enabled: true,
+    source: "builtin",
+    actions: [],
+  };
+}
+
+const ROSTER: PluginRoster = [
+  element("core.notes", "text", "Note", {
+    groups: ["tileable", "canvas-item"],
+    guards: [],
+    homed: "on-claim",
+  }),
+  element("core.draw", "draw", "Stroke"),
+];
+
 const lookup = createPlacementLookup({
   pads: [
     pad("canvas-1", "canvas"),
@@ -48,6 +93,7 @@ const lookup = createPlacementLookup({
   elements: new Map(ELEMENTS.map((element) => [element.id, element] as const)),
   terminalHomes: new Map([["s1", "solo-1"]]),
   soloOccupants: SOLO_OCCUPANTS,
+  roster: ROSTER,
 });
 
 describe("props-backed lookup", () => {
@@ -64,6 +110,7 @@ describe("props-backed lookup", () => {
       elements: new Map(),
       terminalHomes: new Map(),
       soloOccupants: new Map(),
+      roster: ROSTER,
     });
     expect(newborn.padLayout("comp-new")).toBe("tiled");
   });

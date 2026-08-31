@@ -13,6 +13,7 @@ import type {
   PluginRoster,
   TerminalSummary,
 } from "@manifold/protocol";
+import type { ScenePatch, Y } from "@manifold/scene";
 
 /**
  * What `place()` answers: the placement it executed, or the declared RULE that refused it.
@@ -74,6 +75,26 @@ export interface PadViewportHandle {
 }
 
 /**
+ * The last spotlight this client APPLIED, as a `manifold://` URI. One mutable slot, because
+ * "what did the viewport actually do" has exactly one answer per device.
+ *
+ * It lives in the engine because its writer and its reader are on opposite sides of the
+ * plugin boundary and must not import each other: `core.presence` applies a spotlight and
+ * records it here, and the web floor's debug seam (`ManifoldDebugSeam.lastSpotlight`, read by
+ * the axioms gate) reads it here. Recording where the camera MOVES rather than where the
+ * frame ARRIVES is the point — a spotlight the viewer has switched off never lands.
+ */
+let appliedSpotlight: string | null = null;
+
+export function recordSpotlight(uri: string): void {
+  appliedSpotlight = uri;
+}
+
+export function lastSpotlight(): string | null {
+  return appliedSpotlight;
+}
+
+/**
  * The mounted pad view's authoring door. A terminal is born INSIDE a container, and only
  * the renderer on screen knows how its discipline authors one (a canvas writes an element,
  * a composition lets the server place a tile) — so a plugin asks for the birth instead of
@@ -126,4 +147,63 @@ export interface PanelProps {
 /** A contributed sidebar section, ordered by its manifest's declared `order`. */
 export interface SectionProps {
   readonly host: HostServices;
+}
+
+/**
+ * THE DOCUMENT PLANE, as a contributed element sees it (D6).
+ *
+ * An element whose edits are document traffic — a note's prose, a stroke's points — needs the
+ * room's Yjs handles and nothing else: no socket, no room membership, no knowledge of how the
+ * document is synchronised. Like {@link SessionHandle} this is the SDK's own surface restated
+ * structurally, so `SessionClient` satisfies it without knowing this file exists, and what is
+ * absent from it is unreachable from plugin code.
+ *
+ * It is deliberately NOT part of {@link HostServices}: a panel or a section is chrome that
+ * talks to the server, while an element renderer edits the one document it is painted in, and
+ * conflating the two would hand every sidebar section a write door onto the scene.
+ */
+export interface ElementTx {
+  patch(elementId: string, patch: ScenePatch): boolean;
+  remove(elementId: string): boolean;
+  text(elementId: string): Y.Text | null;
+}
+
+export interface ElementDocument {
+  elementText(elementId: string): Y.Text | null;
+  transact(fn: (tx: ElementTx) => void): void;
+}
+
+/**
+ * The mount site, as the element renderer sees it. A contributed element is painted in two
+ * disciplines — a canvas node and a tile leaf — and everything they disagree about is here, so
+ * one renderer serves both instead of each surface growing its own copy of the editor.
+ *
+ * `editingElementId` is the SURFACE's editing focus, not the element's own state: exactly one
+ * occupant of a canvas or a composition is in its editor at a time, the engine owns that fact
+ * (it publishes it as presence `view.editingElementId`, A2), and a renderer asks to enter and
+ * to leave rather than deciding. `removeWhenEmpty` is the one genuine disagreement between the
+ * two disciplines: an emptied note is invisible litter on a canvas and must go, while in a tile
+ * leaf it IS the leaf's occupant and deleting it would strand the leaf.
+ */
+export interface ElementHost {
+  readonly doc: ElementDocument;
+  readonly editingElementId: string | null;
+  beginEditing(elementId: string): void;
+  endEditing(elementId: string): void;
+  readonly removeWhenEmpty: boolean;
+}
+
+/**
+ * What a contributed element renderer is handed. The engine's element frame owns geometry — one
+ * resizer, one selection rule, one commit path for every species — so these are the element's
+ * identity and its stored `data`, never a box, a transform or a drag handle.
+ *
+ * `data` is the element's wire record as its surface projected it, so a renderer reads its own
+ * fields defensively (`typeof data["fontSize"] === "number"`): the same document may hold
+ * records written by an older version of the plugin, and no schema is imposed here.
+ */
+export interface ElementProps {
+  readonly id: string;
+  readonly data: Readonly<Record<string, unknown>>;
+  readonly selected?: boolean | undefined;
 }

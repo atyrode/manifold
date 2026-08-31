@@ -207,6 +207,33 @@ function reportDuplicates(claims: Claims, noun: string, problems: string[]): voi
 }
 
 /**
+ * THE CONTRIBUTED HALF OF THE PLACEMENT VOCABULARY (G1): element type → the traits its
+ * manifest declared, derived from a published ROSTER rather than from a live composition.
+ *
+ * The roster is what both halves of the system actually hold — the server pushes it, the
+ * browser receives it, and the placement executor is constructed from it — so deriving the
+ * table here means the algebra reads the same declaration a stranger's agent reads at
+ * `GET /api/plugins`, with no second source to disagree.
+ *
+ * DISABLED plugins are included, deliberately, for the same reason the composition's
+ * registries are: their elements are still in the documents. A canvas full of a disabled
+ * plugin's elements must stay legal to move and remove (D12 — creation dies on a disable,
+ * cleanup survives), and an element whose traits vanished would become unplaceable and
+ * un-unplaceable at once, which is a canvas nobody can tidy.
+ */
+export function rosterElementTraits(roster: PluginRoster): ReadonlyMap<string, PlacementTraits> {
+  const traits = new Map<string, PlacementTraits>();
+  for (const entry of roster) {
+    for (const element of entry.manifest.contributes.elements) {
+      // Absence resolves to the default HERE too, so a reader of this table never has to
+      // know the rule — the same reason `composeRoster` resolves it into its own registry.
+      traits.set(element.type, element.placement ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS);
+    }
+  }
+  return traits;
+}
+
+/**
  * Published schemas are generated from the enforcing schemas, never written twice. `input` is
  * described as the caller SENDS it (defaults optional) and `result` as the caller RECEIVES it
  * — the two are different documents whenever a schema has a default or a transform.
@@ -359,6 +386,10 @@ export function composeRoster(
         title: action.title,
         caps: [...action.caps],
         ...(action.cleanup === true ? { cleanup: true } : {}),
+        // Always published, never inferred by the reader: the default is applied HERE so a
+        // client answering "may my pad-scoped token call this?" reads a value rather than an
+        // absence it would have to know the rule for.
+        scope: action.scope ?? "workspace",
         input: publishSchema(action.input, "input", `action "${name}" input`, problems),
         result: publishSchema(action.result, "output", `action "${name}" result`, problems),
       });

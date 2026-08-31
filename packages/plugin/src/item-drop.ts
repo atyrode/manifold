@@ -14,8 +14,10 @@ import {
   type PlacementItem,
   type PlacementLookup,
   type PlacementSurface,
+  type PluginRoster,
   type SceneElement,
 } from "@manifold/protocol";
+import { rosterElementTraits } from "./compose.ts";
 import type { PlaceOutcome } from "./host.ts";
 import { useCallback, useMemo } from "react";
 import {
@@ -46,13 +48,17 @@ import {
  * answer to a question the protocol already answers once (AGENTS.md invariant 14).
  */
 
-/** Prose per item kind. The rule is machine-readable; this is what a person reads. */
-const ITEM_NOUN: Record<ItemKind, string> = {
+/**
+ * Prose per FLOOR item kind. The rule is machine-readable; this is what a person reads.
+ *
+ * Contributed element kinds are absent on purpose: their names belong to their plugins, so
+ * a refusal about one reads the TITLE its manifest declared (see `ItemLookup.noun`). A
+ * floor table naming them would be the closed table §12 just opened, rebuilt in prose.
+ */
+const ITEM_NOUN: Readonly<Record<ItemKind, string>> = {
   terminal: "A terminal",
   "canvas-pad": "A canvas",
   view: "A composition",
-  text: "A note",
-  draw: "A stroke",
   tile: "A tile",
   panel: "A panel",
 };
@@ -94,13 +100,42 @@ export interface PlacementLookupInputs {
    * merging something it cannot see — conservative, never wrong.
    */
   readonly soloOccupants: ReadonlyMap<string, PlacementItem>;
+  /**
+   * The composition as the server published it. It is where every CONTRIBUTED element
+   * kind's placement traits come from (ADR 0013 §12), and it is REQUIRED rather than
+   * optional because a lookup without it would preview-refuse gestures the server accepts
+   * — a drag that lies about legality is worse than no preview at all.
+   */
+  readonly roster: PluginRoster;
 }
 
-export function createPlacementLookup(inputs: PlacementLookupInputs): PlacementLookup {
+/**
+ * The lookup a renderer builds: every question the algebra asks, plus the one question only
+ * a roster can answer — what to CALL a kind in a refusal. Legality and prose come from the
+ * same object because they come from the same composition, and a caller holding one of them
+ * without the other is how a preview and its sentence come to disagree.
+ */
+export interface ItemLookup extends PlacementLookup {
+  noun(kind: string): string;
+}
+
+export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup {
   const layoutOf = (padId: string): ContainerLayout | null => {
     if (inputs.self?.padId === padId) return inputs.self.layout;
     return inputs.pads.find((pad) => pad.id === padId)?.layout ?? null;
   };
+  const traits = rosterElementTraits(inputs.roster);
+  // A refusal about a contributed kind says what its PLUGIN calls it: the plugin owns the
+  // noun, the floor owns the grammar. That division is why the engine can render a sentence
+  // about a kind it has never heard of.
+  const nouns = new Map<string, string>();
+  for (const entry of inputs.roster) {
+    for (const element of entry.manifest.contributes.elements) {
+      const noun = element.title.toLowerCase();
+      nouns.set(element.type, `${/^[aeiou]/.test(noun) ? "An" : "A"} ${noun}`);
+    }
+  }
+  const floorNouns: Readonly<Record<string, string>> = ITEM_NOUN;
   return {
     padLayout: layoutOf,
     elementItem: (padId, elementId) => {
@@ -109,30 +144,26 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): PlacementL
       if (inputs.self?.padId !== padId) return null;
       const element = inputs.elements.get(elementId);
       if (element === undefined) return null;
-      switch (element.type) {
-        case "portal": {
-          // A portal places the container it points at, so THAT container's discipline
-          // decides the kind — and a portal onto an unknown container places nothing.
-          // A terminal on a canvas IS this case: its portal points at its home.
-          const layout = layoutOf(element.containerId);
-          if (layout === null) return null;
-          return {
-            kind: layout === "canvas" ? "canvas-pad" : "view",
-            containerId: element.containerId,
-          };
-        }
-        case "text":
-          return { kind: "text", containerId: null };
-        case "draw":
-          return { kind: "draw", containerId: null };
-        default: {
-          const exhaustive: never = element;
-          return exhaustive;
-        }
+      if (element.type === "portal") {
+        // A portal places the container it points at, so THAT container's discipline
+        // decides the kind — and a portal onto an unknown container places nothing.
+        // A terminal on a canvas IS this case: its portal points at its home.
+        const layout = layoutOf(element.containerId);
+        if (layout === null) return null;
+        return {
+          kind: layout === "canvas" ? "canvas-pad" : "view",
+          containerId: element.containerId,
+        };
       }
+      // Every other element PLACES ITS OWN TYPE, and the traits that decide its legality
+      // arrive with the type from the roster. No arm per element kind: that switch was the
+      // engine learning a plugin's name (§12).
+      return { kind: element.type, containerId: null };
     },
     terminalHome: (sessionId) => inputs.terminalHomes.get(sessionId) ?? null,
     soloOccupant: (padId) => inputs.soloOccupants.get(padId) ?? null,
+    itemTraits: (kind) => traits.get(kind) ?? null,
+    noun: (kind) => floorNouns[kind] ?? nouns.get(kind) ?? "That item",
   };
 }
 
@@ -157,10 +188,16 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
 
 /**
  * The refusal for an item that is ALREADY classified — a live carry, local or a peer's.
- * The item travels with the carry, so the sentence never depends on the reader's census.
+ * The item travels with the carry, so the sentence never depends on the reader's census;
+ * the lookup is here only to name the kind, which is the composition's answer, not the
+ * carry's.
  */
-export function itemDenialMessage(denial: PlacementDenial, item: PlacementItem): string {
-  return DENIAL_PROSE[denial.rule](ITEM_NOUN[item.kind], CONTAINER_NOUN[denial.container.kind]);
+export function itemDenialMessage(
+  denial: PlacementDenial,
+  item: PlacementItem,
+  lookup: ItemLookup,
+): string {
+  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), CONTAINER_NOUN[denial.container.kind]);
 }
 
 /**
@@ -169,9 +206,9 @@ export function itemDenialMessage(denial: PlacementDenial, item: PlacementItem):
  * it against that caller's own lookup is the right resolution. An unclassifiable surface
  * says "That item" rather than inventing a species.
  */
-export function denialMessage(denial: PlacementDenial, lookup: PlacementLookup): string {
+export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
   const item = placementItemFor(denial.surface, lookup);
-  const subject = item === null ? "That item" : ITEM_NOUN[item.kind];
+  const subject = item === null ? "That item" : lookup.noun(item.kind);
   return DENIAL_PROSE[denial.rule](subject, CONTAINER_NOUN[denial.container.kind]);
 }
 
@@ -196,7 +233,7 @@ export interface RefusalProps {
 }
 
 export interface UseItemDropOptions {
-  readonly lookup: PlacementLookup;
+  readonly lookup: ItemLookup;
   /** The placement transport: a room client's `place`, or the token-bound HTTP helper. */
   readonly place: (
     surface: PlacementSurface,
@@ -243,7 +280,7 @@ export function useItemDrop({ lookup, place, notify, onPlaced }: UseItemDropOpti
       return {
         surface: held.surface,
         denial: resolution.denial,
-        message: itemDenialMessage(resolution.denial, held.item),
+        message: itemDenialMessage(resolution.denial, held.item, lookup),
       };
     },
     [lookup],

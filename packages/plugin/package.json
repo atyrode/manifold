@@ -4,10 +4,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./hooks": "./src/hooks.ts"
+    "./hooks": "./src/hooks.ts",
+    "./ui": "./src/ui/index.ts"
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
+    "@manifold/scene": "workspace:*",
+    "lucide-react": "1.37.0",
     "zod": "4.4.3"
   },
   "peerDependencies": {

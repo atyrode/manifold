@@ -97,6 +97,9 @@ describe("composeRoster", () => {
     const summary = composition.roster[0]?.actions[0];
     expect(summary?.name).toBe("core.terminals.rename");
     expect(summary?.caps).toEqual(["pads:write"]);
+    // An action that declares no scope is published as workspace-grade — the conservative
+    // answer, stated rather than left for a reader to infer from an absent field.
+    expect(summary?.scope).toBe("workspace");
     // The published schema is generated from the schema the door enforces.
     expect(summary?.input["type"]).toBe("object");
     expect(Object.keys((summary?.input["properties"] as Record<string, unknown>) ?? {})).toEqual([
@@ -849,5 +852,51 @@ describe("composeRoster reservations, builtins and stored data", () => {
       'duplicate migration in "core.store" "same" claimed by: core.store, core.store',
       'plugin "core.loose" declares migration "orphan" without a manifest dataVersion to reach',
     ]);
+  });
+});
+
+describe("composeRoster action scope", () => {
+  test("a declared pad scope is published, and an undeclared one defaults to workspace", () => {
+    const padGraded = defineAction({
+      name: "tree",
+      title: "Read this container's tree",
+      caps: ["pads:read"],
+      scope: "pad",
+      input: z.strictObject({}),
+      result: z.strictObject({}),
+    });
+    const composition = composeRoster(
+      [
+        {
+          manifest: manifest({ id: "core.views", capabilities: ["pads:read", "pads:write"] }),
+          actions: [
+            padGraded,
+            defineAction({
+              name: "createPad",
+              title: "Create a container",
+              caps: ["pads:write"],
+              input: z.strictObject({}),
+              result: z.strictObject({}),
+            }),
+          ],
+        },
+      ],
+      NONE,
+    );
+
+    /*
+      `scope` is vocabulary, not an implementation detail: a client holding a pad-scoped token
+      decides which affordances to render from the published roster, so "may my token call
+      this?" has to be answerable without asking the server and being refused. Both rows carry
+      a value — the default is resolved by the engine, never by the reader.
+     */
+    const published = new Map(
+      (composition.roster[0]?.actions ?? []).map((action) => [action.name, action.scope]),
+    );
+    expect(published.get("core.views.tree")).toBe("pad");
+    expect(published.get("core.views.createPad")).toBe("workspace");
+    // The registry keeps the DEFINITION, so the dispatcher reads the declared scope directly.
+    expect(composition.actions.get("core.views.tree")?.def.scope).toBe("pad");
+    expect(composition.actions.get("core.views.createPad")?.def.scope).toBeUndefined();
   });
 });

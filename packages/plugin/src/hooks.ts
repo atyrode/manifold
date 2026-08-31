@@ -1,8 +1,12 @@
 /**
- * The engine's BROWSER half. `@manifold/plugin` itself is platform-free because the server
- * composes through it; anything that names React or a DOM type is reachable only from here,
- * which is what lets the shell and a plugin share one drag vocabulary without dragging
- * `DataTransfer` into the server's type graph.
+ * The engine's browser PLANE mechanism: what a plugin needs in order to participate in a
+ * plane the engine already owns — the carry/drop vocabulary, the element host, polling. Its
+ * sibling `@manifold/plugin/ui` is the other browser entry and answers a different question:
+ * how a plugin LOOKS like manifold (glyphs, the one titlebar, the notice hook, view state).
+ *
+ * Both are subpaths rather than part of `@manifold/plugin` itself because that entry is what
+ * the server composes through, which is what lets the shell and a plugin share one drag
+ * vocabulary without dragging `DataTransfer` into the server's type graph.
  */
 export {
   ITEM_MIME,
@@ -34,13 +38,50 @@ export {
 } from "./item-drop.ts";
 
 import {
+  createContext,
+  createElement,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
   type Dispatch,
+  type ReactElement,
+  type ReactNode,
   type SetStateAction,
 } from "react";
+
+import type { ElementHost } from "./host.ts";
+
+/**
+ * How a contributed element renderer reaches its mount site.
+ *
+ * A CONTEXT rather than props because the engine paints contributed elements through two
+ * different frames — a React Flow node type on a canvas, a tile leaf in a composition — and
+ * each of them already owns a wrapper. Threading the host through those wrappers' prop types
+ * would make React Flow's node-props shape part of the element contract, which is exactly the
+ * host internal a plugin must not learn (ADR 0010). The surface provides; the renderer asks.
+ */
+const ElementHostContext = createContext<ElementHost | null>(null);
+
+export function ElementHostProvider({
+  value,
+  children,
+}: {
+  readonly value: ElementHost;
+  readonly children: ReactNode;
+}): ReactElement {
+  return createElement(ElementHostContext.Provider, { value }, children);
+}
+
+/** Throws rather than degrading: an element with no mount site has nowhere to commit an edit. */
+export function useElementHost(): ElementHost {
+  const host = useContext(ElementHostContext);
+  if (host === null) {
+    throw new Error("useElementHost requires an <ElementHostProvider> ancestor");
+  }
+  return host;
+}
 
 /**
  * The workspace index is HTTP, not a live channel: this tab learns that another tab created a
