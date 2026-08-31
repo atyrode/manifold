@@ -10,6 +10,7 @@ import type {
   PlacementDenial,
   PlacementDestination,
   PlacementSurface,
+  Principal,
   PluginRoster,
   TerminalSummary,
 } from "@manifold/protocol";
@@ -62,6 +63,14 @@ export interface SessionHandle {
     parentId: string | null,
     index: number,
   ): Promise<readonly PadTreeItem[]>;
+  /** One container's record, for a reference the index has not answered yet. */
+  getPad(padId: string): Promise<Pad>;
+  /**
+   * Removes one leaf from a composition. Removal is the one tile gesture that is NOT a
+   * placement — nothing accepts "nowhere" for a LEAF — so it is its own verb here, while
+   * every MOVE of a leaf's occupant goes through `place`.
+   */
+  removePadTile(padId: string, tileId: string): Promise<void>;
 }
 
 /**
@@ -126,6 +135,20 @@ export interface CompositionFacet {
  */
 export interface HostServices {
   readonly client: SessionHandle;
+  /**
+   * Who this device is. A renderer paints its own ink, its own notes and its own cursor in
+   * this principal's colour, and a section marks its own rows — so identity is a declared
+   * member of the host surface rather than something every contribution re-fetches.
+   */
+  readonly principal: Principal;
+  /**
+   * This device's bearer. A container renderer opens its OWN room pipe — resolve the
+   * reference, open a pipe with a grant, project it (A4) — and the token is the grant it
+   * opens with. Plugins are trusted in-process code (ADR 0010 D1), so handing them the same
+   * bearer the engine dials with is a contract rather than a leak; what it may do with it is
+   * decided at the doors, per request, exactly as for any other principal.
+   */
+  readonly token: string;
   /**
    * The container the viewer is looking at, or null at the workspace root. Read-only and
    * declared rather than inferred: an index that cannot mark its own active row would have

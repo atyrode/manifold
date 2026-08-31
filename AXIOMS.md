@@ -204,18 +204,31 @@ A1 is not satisfied by a representative sample; it is satisfied when nothing abo
 still wired by hand. That is the wave-1 completion scope, not a later wave, so this table is a
 work list rather than a ledger of debt: every row lands in this change.
 
-| Was floor                                                                  | Converts to                 | Ruling                                                           |
-| -------------------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------------- |
-| notes/text element renderer + its inline editor                            | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                 |
-| canvas renderer, portal internals, canvas toolbar, viewport                | `core.canvas`               | decomposes `core.shell.pad-view`; absorbs stroke geometry        |
-| tiled-route internals, tile drop gestures, carry previews                  | `core.compositions`         | decomposes `core.shell.pad-view`                                 |
-| machine enrollment + machine presentation helpers                          | `core.machines`             | enrollment and inventory become actions; color moves to the wire |
-| pad/folder CRUD, pad-tree moves, and the index reads (bespoke HTTP routes) | `core.views` actions        | routes deleted, callers migrated (D13); reads keep pad scope     |
-| terminal pool/park rows, the terminal index, session rows                  | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)          |
-| token and principal administration routes                                  | `core.access`               | identity mechanism stays floor; administration converts now      |
-| cursor overlay + roster island rendering                                   | `core.presence` completion  | the presence relay stays floor                                   |
-| `POST /api/place`                                                          | `core.layout.place`         | mechanism/verb split; the route is deleted, not aliased          |
-| element placement traits (closed `ITEM_KINDS` tables)                      | manifest contribution data  | the algebra becomes a trait-driven rules engine (ADR 0013 §12)   |
+| Was floor                                                                  | Converts to                 | Ruling                                                            |
+| -------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------- |
+| notes/text element renderer + its inline editor                            | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                  |
+| canvas renderer, portal internals, canvas toolbar, viewport                | `core.canvas`               | moved; decomposed `core.shell.pad-view`; absorbed stroke geometry |
+| tiled-route internals, tile drop gestures, carry previews                  | `core.compositions`         | decomposes `core.shell.pad-view`                                  |
+| machine enrollment + machine presentation helpers                          | `core.machines`             | enrollment and inventory become actions; color moves to the wire  |
+| pad/folder CRUD, pad-tree moves, and the index reads (bespoke HTTP routes) | `core.views` actions        | routes deleted, callers migrated (D13); reads keep pad scope      |
+| terminal pool/park rows, the terminal index, session rows                  | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)           |
+| token and principal administration routes                                  | `core.access`               | identity mechanism stays floor; administration converts now       |
+| roster island + spotlight chip rendering                                   | `core.presence` overlays    | moved; the relay stays floor, and so does the plane MECHANISM     |
+| `POST /api/place`                                                          | `core.layout.place`         | mechanism/verb split; the route is deleted, not aliased           |
+| element placement traits (closed `ITEM_KINDS` tables)                      | manifest contribution data  | the algebra becomes a trait-driven rules engine (ADR 0013 §12)    |
+
+**Where presence divides, and why it is not a hollow plugin.** The presence PLANE MECHANISM is
+engine (`@manifold/plugin/hooks`): send cadence, interpolation, per-connection cursor identity,
+gesture stepping, and the local-principal normalization every consumer reads. It is arithmetic
+over wire payloads — neutral over producers, naming no plugin — and its parties may not import
+each other. What a surface PAINTS in its own coordinate space (a peer's cursor, a carry ghost, a
+selection outline) the surface paints itself, because a peer's pointer means nothing until
+something projects it through a viewport transform and only the renderer holds that transform;
+a view rendering remote intent as part of its own surface is AGENTS.md invariant 11, exactly as
+it renders its own normalized input. `core.presence` keeps what is genuinely its own: the wire
+publisher, the `focus` door, and its chrome — which reaches surfaces as REGISTERED OVERLAYS
+(`pad-roster`, `pad-spotlight`) rather than as imports, so presence still owns its own
+presentation and no renderer names the package.
 
 `core.canvas`, `core.notes` and `core.compositions` together decompose today's
 `core.shell.pad-view` panel. Two rows reverse earlier scope notes, ruled in
@@ -431,10 +444,7 @@ being taught exceptions.
         "packages/web/src/composition.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
-        "packages/web/src/debug-seam.ts",
         "packages/web/src/pad-browser.tsx",
-        "packages/web/src/tile-tree.tsx",
-        "packages/web/src/tile-geometry.ts",
         "packages/web/src/toast.tsx",
         "packages/web/src/styles.css",
         "packages/web/src/pad-memory.ts",
@@ -443,7 +453,7 @@ being taught exceptions.
         "packages/web/src/changelog-references.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry's browser half: CompositionProvider, PanelOutlet and the engine-owned placeholder, HostServices, the one tile-tree renderer, the typed HTTP client, fault containment, and the read-only debug seam. It mounts panels without knowing which panels exist.",
+      "verdict": "the registry's browser half: CompositionProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug seam. It mounts panels without knowing which panels exist.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -504,7 +514,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, composition, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, the notice consumer half, the published view-state store)"
+      "why": "the registry itself: manifests, composition, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, the session URL, the debug seam) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published view-state store)"
     },
     {
       "glob": "packages/agent/src/**",
@@ -611,10 +621,6 @@ enforcement machinery itself, not a test of somebody else's subject.
       "why": "fault containment: a panel or renderer that throws must not take the workspace with it"
     },
     {
-      "glob": "packages/web/src/debug-seam.ts",
-      "why": "the read-only automation seam the browser gates read; no mutation surface, no secrets"
-    },
-    {
       "glob": "packages/web/src/pad-browser.tsx",
       "why": "the workspace host: fetches the per-principal layout and renders its panel leaves through TileTree"
     },
@@ -624,15 +630,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/pad-view-panel.tsx",
-      "why": "the core.shell.pad-view panel: the routed renderer switch, still holding the canvas and tiled routes — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/tile-tree.tsx",
-      "why": "the one tile-tree renderer — the workspace layout and every composition share it (one tree vocabulary everywhere)"
-    },
-    {
-      "glob": "packages/web/src/tile-geometry.ts",
-      "why": "tile geometry and hit-testing shared by the workspace tree and compositions"
+      "why": "the core.shell.pad-view panel: resolves the route to a container discipline and asks the projection registry for that discipline's surface — it holds no renderer"
     },
     {
       "glob": "packages/web/src/toast.tsx",
@@ -657,74 +655,6 @@ enforcement machinery itself, not a test of somebody else's subject.
     {
       "glob": "packages/web/src/changelog-references.ts",
       "why": "issue/PR reference parsing for the in-app history — floor-neutral"
-    },
-    {
-      "glob": "packages/web/src/flow-pad-view.tsx",
-      "why": "canvas renderer: the React Flow projection boundary, node type map, viewport and gesture wiring — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/flow-scene.ts",
-      "why": "canvas projection: SDK elements to renderer-owned nodes at the paint boundary — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/flow-portal-node.tsx",
-      "why": "canvas renderer: portal widgets — the projection of one container inside another — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/flow-terminal-node.tsx",
-      "why": "canvas renderer: the pad context a node reads plus terminal node chrome — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/canvas-toolbar.tsx",
-      "why": "canvas chrome: the tool strip that renders composition-contributed tools — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/canvas-tool.ts",
-      "why": "canvas tool state machine (select/text are still engine tools this wave) — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/widget-engagement.ts",
-      "why": "canvas policy: when a watching widget swaps to an engaged channel — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/viewport-memory.ts",
-      "why": "per-pad camera memory policy (register: manifold:viewport:<padId>) — awaiting core.canvas"
-    },
-    {
-      "glob": "packages/web/src/tiled-pad-view.tsx",
-      "why": "the tiled route's internals — a composition rendered as the routed surface — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/tile-snap.ts",
-      "why": "tile drop targeting: which leaf and which edge a gesture means — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/tile-drop-store.ts",
-      "why": "tile drop gesture state shared by canvas widgets and the tiled route — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/use-tile-drop.ts",
-      "why": "tile drop gesture hook: assessment through the pure placement algebra — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/tile-preview-overlay.tsx",
-      "why": "tile drop preview rendering — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/tile-zone-debug.tsx",
-      "why": "tile drop zone debug overlay behind the debug seam — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/carry.ts",
-      "why": "carry previews: the dynamic half of the placement algebra — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/use-carry.ts",
-      "why": "carry/gesture subscription hooks for renderers — awaiting core.compositions"
-    },
-    {
-      "glob": "packages/web/src/machine-visibility.ts",
-      "why": "machine presentation policy (color and online derivation) for the canvas chrome that still calls it; the derivation is superseded by MachineSummary.color on the wire, so wave C deletes this file with its consumers — awaiting core.canvas"
     }
   ]
 }

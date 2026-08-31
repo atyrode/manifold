@@ -21,7 +21,7 @@
  * a container that does not exist would render a dead card and prove nothing about the
  * chrome every gesture below actually grabs.
  *
- * Requires the debug seam (localStorage "manifold:debug" = "1"; packages/web/src/debug-seam.ts).
+ * Requires the debug seam (localStorage "manifold:debug" = "1"; packages/plugin/src/debug-seam.ts).
  * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up
  * even on failure.
  *

@@ -11,7 +11,8 @@ import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
 import { ControlIcon, ItemIcon } from "@manifold/plugin/ui";
 import { PluginPlaceholder, useComposition, type WebSection } from "./plugin-host.tsx";
-import { useWorkspaceShell, type WorkspaceSidebarState } from "./pad-browser.tsx";
+import { useWorkspaceShell } from "./pad-browser.tsx";
+import type { WorkspaceSidebarState } from "@manifold/plugin/hooks";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
 /**

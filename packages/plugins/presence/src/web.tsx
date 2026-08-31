@@ -1,49 +1,48 @@
+import { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
+
 /**
  * `core.presence`, browser half — the presence PLANE made visible.
  *
- * Presence is one concept with several faces: where a peer's pointer is, what it is dragging,
- * who is in the room and what each is holding, and "look at this" arriving from somebody who
- * shares the room. All of it dies with the connection and nobody merges it (D6), which is why
- * one plugin owns the lot rather than each renderer growing its own copy.
+ * Presence is one concept with several faces: who is in the room and what each is holding,
+ * where a peer's pointer is, what it is dragging, and "look at this" arriving from somebody
+ * who shares the room. All of it dies with the connection and nobody merges it (D6).
  *
- * This barrel is the package's only browser door. Everything behind it is either a pure
- * projection of wire frames (cursor identity, gesture overrides, roster rows) or a React
- * surface over one (`useRemoteCursors`, `PresenceIsland`, `useSpotlight`). Nothing here reads
- * the DOM of a particular renderer, so a canvas, a composition and any future host chrome all
- * paint the same presence from the same source.
+ * The split between this package and the engine is a split of ROLE, not of topic, and it is
+ * the reason no renderer imports this file any more:
  *
- * The engine floor still CALLS most of this, because the canvas and tiled renderers are
- * themselves floor until `core.canvas` / `core.compositions` (AXIOMS.md §Roadmap). Those
- * imports are the visible remainder of the conversion, not a design: each one is a line wave C
- * deletes when the renderer that owns it becomes a plugin too.
+ *   PLANE MECHANISM is engine (`@manifold/plugin/hooks`): send cadence, interpolation,
+ *     per-connection cursor identity, gesture stepping, local-presence normalization. It is
+ *     arithmetic over wire payloads — correct for any producer, any renderer — and its parties
+ *     may not import each other.
+ *   PAINTING REMOTE INTENT belongs to whichever surface is on screen. A cursor, a carry ghost
+ *     and a selection outline mean nothing until something projects them through a viewport
+ *     transform, and only the renderer holds that transform. A view consuming a peer's frame
+ *     as part of its own surface is invariant 11, exactly as it consumes its own input.
+ *   PRESENCE'S OWN CHROME is this plugin's, and it reaches surfaces as REGISTERED OVERLAYS
+ *     (below) rather than as imports: who is here, and the consent surface for a spotlight.
+ *
+ * Plus the door itself — `core.presence.focus` (`src/index.ts`, server half `src/server.ts`).
+ *
+ * `projectLocalPresence` is NOT here and no longer belongs to this package: normalizing this
+ * device's own principal into the wire shape the poll will report a moment later is invariant
+ * 11's plainest statement, so it is engine mechanism that the shell and every renderer reach
+ * through one producer-agnostic function.
  */
-export { projectLocalPresence } from "./presence-projection.ts";
 export { deriveRosterRows, type RosterRow } from "./roster-model.ts";
 export { PresenceIsland } from "./presence-island.tsx";
-export {
-  clampCursorFraction,
-  cursorFraction,
-  remoteCursorSocketId,
-  type CursorBox,
-  type CursorPoint,
-} from "./cursor-identity.ts";
-export {
-  REMOTE_CURSOR_FALLBACK_COLOR,
-  carrierColor,
-  useRemoteCursors,
-  type CursorSpace,
-  type RemoteCursorsView,
-} from "./use-remote-cursors.ts";
-export {
-  createGestureStream,
-  gestureSendIntervalOverride,
-  type GestureStream,
-} from "./gesture-stream.ts";
-export {
-  applyGestureFrame,
-  expireGestures,
-  stepGestures,
-  type GestureGeometry,
-  type GestureOverride,
-} from "./remote-gestures.ts";
 export { SpotlightChip, useSpotlight, type SpotlightState } from "./spotlight.tsx";
+export { PadRosterOverlay, PadSpotlightOverlay } from "./pad-overlays.tsx";
+
+/**
+ * What this plugin registers in the browser. Two overlay slots, both painted over whichever
+ * container surface is routed — the canvas today, a composition just as well tomorrow, with no
+ * second copy of either component and no renderer naming this package.
+ *
+ * Overlays carry no manifest row, exactly as `routes` do not: a slot is not a surface the
+ * workspace composes, it is decoration a surface invites. The roster still decides whether
+ * this plugin is ENABLED, and a disabled plugin's overlay simply does not paint.
+ */
+export const presenceWebPlugin = {
+  id: "core.presence",
+  overlays: { "pad-roster": PadRosterOverlay, "pad-spotlight": PadSpotlightOverlay },
+};

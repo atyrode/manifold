@@ -1009,7 +1009,8 @@ gesture, and carry frames NEVER touch SQLite.
 
 ## Testability (agent-facing)
 
-- **Debug seam** (`packages/web/src/debug-seam.ts`): when `localStorage["manifold:debug"]
+- **Debug seam** (`packages/plugin/src/debug-seam.ts`, reached by plugin code through
+  `@manifold/plugin/hooks`): when `localStorage["manifold:debug"]
 === "1"`, the active container renderer installs `window.__manifold` — READ-ONLY snapshot
   functions (`scene()`, `canvas()`, `outbox()`, `gestures()`, `rev()`, `epoch()`,
   `viewport()`, `renders()`) exposing the browser-canvas↔SDK projection boundary to

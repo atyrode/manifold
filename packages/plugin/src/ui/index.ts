@@ -38,6 +38,22 @@ export {
   type MaximizeControl,
   type NodeTitleBarProps,
 } from "./node-titlebar.tsx";
+/**
+ * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
+ * workspace shell's own panes, a composition's leaves, a portal widget's preview — because
+ * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer
+ * would be a second answer to what a divider drag means.
+ */
+export {
+  PORTAL_TREE_CLASSES,
+  TILED_TREE_CLASSES,
+  TileTree,
+  WORKSPACE_TREE_CLASSES,
+  type TileTreeClasses,
+  type TileTreeProps,
+} from "./tile-tree.tsx";
+export { TilePreviewOverlay, type TilePreviewOverlayProps } from "./tile-preview-overlay.tsx";
+export { TileZoneDebug } from "./tile-zone-debug.tsx";
 export {
   ToastContext,
   useToast,

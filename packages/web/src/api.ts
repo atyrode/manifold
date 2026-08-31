@@ -3,11 +3,9 @@ import {
   BootstrapPrincipalRequestSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
-  MachinesResponseSchema,
   PadPresenceResponseSchema,
   PadSchema,
   TokenGrantSchema,
-  type MachineSummary,
   type Pad,
   type PadPresence,
   type Principal,
@@ -89,15 +87,13 @@ export async function getPad(token: string, padId: string): Promise<Pad> {
   return PadSchema.parse(fieldFromObject(result, "pad"));
 }
 
-/**
- * Renames a container (`core.views.renamePad`). The action is declared `scope: "pad"`, so a
- * pad-scoped token may rename the container it is scoped to and is refused for any other —
- * exactly what `PATCH /api/pads/:id` authorized before the index owned its own doors.
+/*
+ * Renaming, deleting, machine listing and leaf removal were wrapped here too, and are not
+ * any more: every one of them now belongs to a plugin that holds a `SessionClient`
+ * (`renamePad`, `deletePad`, `machines`, `removePadTile` on the SDK's own surface). What is
+ * left in this layer is exactly what the BOOT path needs — a token, no session, one
+ * container to name and one workspace tree to fetch — which is the whole reason it exists.
  */
-export async function renamePad(token: string, padId: string, name: string): Promise<Pad> {
-  const result = await dispatchAction(token, "core.views.renamePad", { padId, name });
-  return PadSchema.parse(fieldFromObject(result, "pad"));
-}
 
 /**
  * The CALLER's workspace tree (`GET /api/layout`) — the tile layout whose leaves name
@@ -142,35 +138,4 @@ async function dispatchAction(token: string, name: string, args: unknown): Promi
   const outcome = ActionOutcomeSchema.parse(body);
   if (!outcome.ok) throw new Error(outcome.denial.message);
   return outcome.result;
-}
-
-/** The enrolled machines with live online state (`core.machines.list`). */
-export async function getMachines(token: string): Promise<readonly MachineSummary[]> {
-  const outcome = await dispatchAction(token, "core.machines.list", {});
-  return MachinesResponseSchema.parse(outcome).machines;
-}
-
-/** Retires a container (`core.views.deletePad`); the door enforces root authority. */
-export async function deletePad(token: string, padId: string): Promise<void> {
-  await dispatchAction(token, "core.views.deletePad", { padId });
-}
-
-/*
- * Two calls retired with the solo-composition cutover and left no successor here.
- * `expandTerminal` had nothing to create — every terminal already lives in a composition,
- * so entering one is `navigate("/p/" + homeId)`. `pinPad` had nothing to claim once no
- * container dissolved under anybody. Reordering an unplaced terminal is `movePadTreeItem`
- * on its home, because the pool's separate ordering folded into the one index.
- */
-
-/**
- * Removes one leaf from a composition (`DELETE /api/pads/:id/tiles/:tileId`). Removal is
- * the one tile gesture that is NOT a placement — nothing accepts "nowhere" — so it keeps
- * its own route while every MOVE of a leaf's occupant goes through `placeItem`.
- */
-export async function removePadTile(token: string, padId: string, tileId: string): Promise<void> {
-  await requestJson(`/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}`, {
-    method: "DELETE",
-    headers: authHeaders(token, false),
-  });
 }

@@ -13,7 +13,7 @@ stacking, and React integration without owning manifold's protocol or terminal s
 ## Decision
 
 Use exact-pinned `@xyflow/react` 12.11.5 as the web canvas renderer. manifold owns strict
-native terminal records in `@manifold/protocol`; `packages/web/src/flow-scene.ts` is the pure
+native terminal records in `@manifold/protocol`; `core.canvas`'s `flow-scene.ts` is the pure
 projection and mutation boundary. React Flow owns viewport and node interaction only. xterm
 instances and all server/socket state remain manifold-owned.
 

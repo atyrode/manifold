@@ -39,19 +39,23 @@ function spotlightIgnored(): boolean {
  * subscribed: flipping the switch takes effect on the next ask, and nothing is remembered
  * about asks that were never applied.
  *
- * `active` is whether this view SPEAKS for the viewer — the routed one does. An embedded board
- * inside a composition tile is a second mount of the same renderer, and two of them would
- * center twice and stack two chips for one ask.
+ * `viewport` is the HOST's, not a renderer's: the mounted pad view publishes its camera into
+ * `HostServices` and this plugin asks that camera to move. Null means no pad view is mounted
+ * — a spotlight has nowhere to land, so it is not applied and no chip appears, which is the
+ * honest answer rather than a chip pointing at nothing.
+ *
+ * There is no `active` flag any more, and that is structural rather than a simplification:
+ * only the ROUTED surface mounts this plugin's overlay slots, so an embedded board can no
+ * longer be a second receiver that centres twice and stacks two chips for one ask.
  */
 export function useSpotlight(
   client: SessionClient,
-  viewport: PadViewportHandle,
-  active: boolean,
+  viewport: PadViewportHandle | null,
 ): SpotlightState | null {
   const [state, setState] = useState<{ readonly uri: string; readonly from: string } | null>(null);
 
   useEffect(() => {
-    if (!active) return;
+    if (viewport === null) return;
     return client.on("presence", (message) => {
       // Presence is principal-level state, so the server attributes its own write to the
       // target's first connection: the id that matters is WHOSE presence changed.
@@ -65,7 +69,7 @@ export function useSpotlight(
         from: client.roster.get(incoming.from)?.principal.name ?? incoming.from,
       });
     });
-  }, [active, client, viewport]);
+  }, [client, viewport]);
 
   const dismiss = useCallback((): void => setState(null), []);
   const ignore = useCallback((): void => {

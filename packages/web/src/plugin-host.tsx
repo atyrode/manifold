@@ -1,7 +1,18 @@
-import { ElementHostProvider } from "@manifold/plugin/hooks";
+import {
+  ProjectionProvider,
+  ViewportRegistrationProvider,
+  sessionUrl,
+  type PadOverlayProps,
+  type PadSurfaceProps,
+  type ProjectionPlaceholderProps,
+  type ProjectionRegistry,
+  type ProjectionState,
+  type RegisteredElement,
+  type RegisteredSurface,
+  type RegisteredTool,
+  type TerminalFacet,
+} from "@manifold/plugin/hooks";
 import type {
-  ElementDocument,
-  ElementProps,
   HostServices,
   PadAuthoringHandle,
   PadViewportHandle,
@@ -28,7 +39,6 @@ import {
 } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WEB_PLUGIN_DEFS } from "./composition.ts";
-import { sessionUrl } from "./flow-pad-view.tsx";
 
 /**
  * The browser half of the plugin engine — FLOOR (AXIOMS.md §Foundation), which is why this
@@ -50,16 +60,6 @@ import { sessionUrl } from "./flow-pad-view.tsx";
  */
 
 /**
- * What a plugin's web half attaches for a contributed tool. Deliberately thin this wave —
- * the toolbar still owns selection — and expected to GROW (icon, cursor, activation
- * handler) when the toolbar itself becomes composed; extend this interface rather than
- * inventing a second tool channel.
- */
-export interface ToolContribution {
-  readonly title?: string;
-}
-
-/**
  * One plugin's browser registrations, keyed by the LOCAL contribution name its manifest
  * declared (`sidebar`, not `core.shell.sidebar`) — except `elements`, which are keyed by the
  * wire element type, because that string is what a scene document actually stores.
@@ -68,23 +68,45 @@ export interface ToolContribution {
  * (`@manifold/plugin`'s `ElementProps`): a renderer declares only its identity and its stored
  * `data`, while each MOUNT SITE hands it whatever its own frame demands — React Flow node
  * props on a canvas, a plain render in a tile leaf. Keeping the registry opaque is what stops
- * one frame's props from becoming the contract. Exactly two places cast: `nodeTypesFor` in
- * `flow-pad-view.tsx` and {@link ElementOutlet} below.
+ * one frame's props from becoming the contract.
+ *
+ * FOUR of these channels have no manifest counterpart — `routes`, `padSurfaces`, `overlays`
+ * and `terminals` — and they share one rationale: none of them is a surface the WORKSPACE
+ * composes, so there is nothing for a principal's layout or the sidebar order to name. A path
+ * is an entry point the browser hands over; a pad surface, an overlay and the terminal viewer
+ * are projections one renderer asks another plugin for (`@manifold/plugin/hooks`'
+ * {@link ProjectionRegistry}). The roster still decides whether the registering plugin is
+ * ENABLED, which is what keeps every one of them painting the engine's named placeholder
+ * instead of disappearing.
  */
 export interface WebPluginDef {
   readonly id: string;
   readonly panels?: Readonly<Record<string, ComponentType<PanelProps>>>;
   readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
-  readonly tools?: Readonly<Record<string, ToolContribution>>;
   /**
    * URL space a plugin owns, keyed by FIRST PATH SEGMENT (`uri` serves `/uri/<rest>`).
-   * Routes are the one contribution with no manifest counterpart: a path is not a surface
-   * the workspace composes, it is an entry point the browser hands over — so the roster
-   * still decides whether the owning plugin is ENABLED, and a disabled plugin's route
-   * renders the same named placeholder every other contribution does.
    */
   readonly routes?: Readonly<Record<string, ComponentType<{ rest: string; host: HostServices }>>>;
+  /**
+   * Container renderers, keyed by the container DISCIPLINE they draw (`Pad["layout"]`:
+   * `canvas`, `tiled`). The routed shell and every nesting renderer project a pad through
+   * this one registry, which is how a canvas holds a composition and a composition holds a
+   * canvas without either plugin importing the other.
+   */
+  readonly padSurfaces?: Readonly<Record<string, ComponentType<PadSurfaceProps>>>;
+  /**
+   * Decoration painted over a mounted pad surface, keyed by slot (`pad-roster`,
+   * `pad-spotlight`). An unregistered or disabled overlay paints NOTHING: an inert box
+   * floating over someone's canvas is worse than the missing decoration.
+   */
+  readonly overlays?: Readonly<Record<string, ComponentType<PadOverlayProps>>>;
+  /**
+   * Terminals, as every surface that paints one sees them: the viewer plus the machine
+   * choice a new terminal is born on. One registration, because both belong to whichever
+   * plugin owns terminals, and a surface needs both to offer the affordance honestly.
+   */
+  readonly terminals?: TerminalFacet;
 }
 
 /** A declared panel, keyed in the composition by its FULL id (`core.shell.sidebar`). */
@@ -106,23 +128,6 @@ export interface WebSection {
   readonly enabled: boolean;
 }
 
-/** A declared element type, keyed in the composition by the wire type (`draw`). */
-export interface WebElement {
-  readonly plugin: string;
-  readonly title: string;
-  readonly Component: ComponentType<never> | null;
-  readonly enabled: boolean;
-}
-
-/** A declared tool; `contribution` is whatever the web half attached, if anything. */
-export interface WebTool {
-  readonly id: string;
-  readonly plugin: string;
-  readonly title: string;
-  readonly contribution: ToolContribution | null;
-  readonly enabled: boolean;
-}
-
 /**
  * A registered URL space, keyed in the composition by its first path segment. It has no
  * manifest row (see `WebPluginDef.routes`), so `plugin` is the registering plugin and
@@ -134,11 +139,24 @@ export interface WebRoute {
   readonly enabled: boolean;
 }
 
+/** What a plugin registered for the terminal projection, plus its roster state. */
+export interface WebTerminals {
+  readonly plugin: string;
+  readonly title: string;
+  readonly enabled: boolean;
+  readonly facet: TerminalFacet;
+}
+
 /**
  * The browser's view of the composition: the roster plus one registry per contribution kind,
  * with components attached. `revision` increments on every roster change, so anything that
  * must be rebuilt when the vocabulary moves (React Flow's node-type map, for one) has a
  * cheap memo key instead of a deep comparison.
+ *
+ * Four of the registries below are typed by `@manifold/plugin` rather than by this file
+ * ({@link RegisteredElement}, {@link RegisteredTool}, {@link RegisteredSurface}): they are
+ * exactly what the projection registry publishes to plugin code, and a second shape for the
+ * same row would be a second answer to "what did the composition register" (invariant 14).
  */
 export interface WebComposition {
   readonly roster: PluginRoster;
@@ -151,10 +169,16 @@ export interface WebComposition {
   readonly panels: ReadonlyMap<string, WebPanel>;
   /** Sorted by declared `order`; ties keep roster order. */
   readonly sections: readonly WebSection[];
-  readonly elements: ReadonlyMap<string, WebElement>;
+  readonly elements: ReadonlyMap<string, RegisteredElement>;
   /** Keyed by first path segment; a route the roster does not know is simply absent. */
   readonly routes: ReadonlyMap<string, WebRoute>;
-  readonly tools: readonly WebTool[];
+  readonly tools: readonly RegisteredTool[];
+  /** Keyed by container discipline (`canvas`, `tiled`). */
+  readonly padSurfaces: ReadonlyMap<string, RegisteredSurface<PadSurfaceProps>>;
+  /** Keyed by overlay slot. */
+  readonly overlays: ReadonlyMap<string, RegisteredSurface<PadOverlayProps>>;
+  /** Null until some enabled-or-disabled plugin registers the terminal facet. */
+  readonly terminals: WebTerminals | null;
 }
 
 /**
@@ -171,9 +195,12 @@ export function buildWebComposition(
   const enabledIds = new Set<string>();
   const panels = new Map<string, WebPanel>();
   const sections: WebSection[] = [];
-  const elements = new Map<string, WebElement>();
-  const tools: WebTool[] = [];
+  const elements = new Map<string, RegisteredElement>();
+  const tools: RegisteredTool[] = [];
   const routes = new Map<string, WebRoute>();
+  const padSurfaces = new Map<string, RegisteredSurface<PadSurfaceProps>>();
+  const overlays = new Map<string, RegisteredSurface<PadOverlayProps>>();
+  let terminals: WebTerminals | null = null;
 
   for (const entry of roster) {
     const { manifest, enabled } = entry;
@@ -208,19 +235,39 @@ export function buildWebComposition(
       });
     }
     for (const tool of manifest.contributes.tools) {
-      tools.push({
-        id: tool.id,
-        plugin: manifest.id,
-        title: tool.title,
-        contribution: def?.tools?.[tool.id] ?? null,
-        enabled,
-      });
+      tools.push({ id: tool.id, plugin: manifest.id, title: tool.title, enabled });
     }
     // Routes have no manifest row to iterate, so they come from the REGISTRATION and take
     // the registering plugin's roster state — which is what keeps a disabled plugin's deep
     // link rendering a named placeholder instead of a dead end.
     for (const [segment, Component] of Object.entries(def?.routes ?? {})) {
       routes.set(segment, { plugin: manifest.id, Component, enabled });
+    }
+    /*
+      The three PROJECTION channels, and the reason they read the same way as `routes`: a
+      registration with no manifest row still belongs to a plugin, so it inherits that
+      plugin's roster state and paints the engine's placeholder (or, for an overlay, nothing)
+      the moment the plugin is disabled. `title` is the plugin's own, because that is what a
+      placeholder must name — the missing renderer has no title of its own to borrow.
+     */
+    for (const [layout, Component] of Object.entries(def?.padSurfaces ?? {})) {
+      padSurfaces.set(layout, {
+        plugin: manifest.id,
+        title: manifest.title,
+        Component,
+        enabled,
+      });
+    }
+    for (const [slot, Component] of Object.entries(def?.overlays ?? {})) {
+      overlays.set(slot, { plugin: manifest.id, title: manifest.title, Component, enabled });
+    }
+    if (def?.terminals !== undefined) {
+      terminals = {
+        plugin: manifest.id,
+        title: manifest.title,
+        enabled,
+        facet: def.terminals,
+      };
     }
   }
 
@@ -238,6 +285,9 @@ export function buildWebComposition(
     elements,
     routes,
     tools,
+    padSurfaces,
+    overlays,
+    terminals,
   };
 }
 
@@ -364,31 +414,18 @@ export function useHostServices(): HostServices {
 }
 
 /**
- * Registration channels for the two facets only the MOUNTED pad view can answer. Each is
- * its own context for the same reason the plugins attach is: the register function is stable
- * for the gate's lifetime, while the host value changes whenever a facet arrives, and a
- * renderer must not re-register because a plugin was toggled.
+ * The registration channel for the one facet only the MOUNTED pad view can answer, and the
+ * only one whose consumer is FLOOR. Its own context for the same reason the plugins attach
+ * is: the register function is stable for the gate's lifetime, while the host value changes
+ * whenever a facet arrives, and a renderer must not re-register because a plugin was toggled.
+ *
+ * The viewport's twin lives in `@manifold/plugin/hooks`
+ * ({@link ViewportRegistrationProvider}) rather than here, because the renderer that
+ * publishes a viewport is a plugin and a plugin may not import this file.
  */
-const ViewportRegisterContext = createContext<((handle: PadViewportHandle | null) => void) | null>(
-  null,
-);
 const AuthoringRegisterContext = createContext<
   ((handle: PadAuthoringHandle | null) => void) | null
 >(null);
-
-/**
- * Publishes the mounted pad view's viewport into the host. The pad renderer calls this with
- * its handle on mount and `null` on unmount; a spotlight arriving while no view is mounted
- * therefore finds `host.viewport === null` and says so, rather than moving a view that is
- * not there.
- */
-export function useViewportRegistration(): (handle: PadViewportHandle | null) => void {
-  const register = useContext(ViewportRegisterContext);
-  if (register === null) {
-    throw new Error("useViewportRegistration requires a <HostServicesGate> ancestor");
-  }
-  return register;
-}
 
 /** The same channel for the authoring door — see {@link PadAuthoringHandle}. */
 export function useAuthoringRegistration(): (handle: PadAuthoringHandle | null) => void {
@@ -486,6 +523,8 @@ export function HostServicesGate({
   const host = useMemo<HostServices>(
     () => ({
       client,
+      principal: identity.principal,
+      token: identity.token,
       padId,
       navigate: navigateUri,
       viewport,
@@ -495,20 +534,48 @@ export function HostServicesGate({
         enabled: (id) => composition.enabled(id),
       },
     }),
-    [authoring, client, composition, navigateUri, padId, viewport],
+    [authoring, client, composition, identity, navigateUri, padId, viewport],
+  );
+
+  /**
+   * THE PROJECTION REGISTRY, as plugin code sees it: the composition's registries plus this
+   * file's own placeholder, so every mount site in the product resolves an occupant the same
+   * way and paints the same named absence. Memoized on the composition alone — the registry
+   * carries no per-render state, so a roster change is the only reason it may move (a fresh
+   * object here would rebuild React Flow's node-type map and remount every live PTY).
+   */
+  const projection = useMemo<ProjectionRegistry>(
+    () => ({
+      revision: composition.revision,
+      Placeholder: PluginPlaceholder,
+      terminals: composition.terminals,
+      padSurface: (layout) => composition.padSurfaces.get(layout) ?? null,
+      overlay: (slot) => composition.overlays.get(slot) ?? null,
+      element: (type) => composition.elements.get(type) ?? null,
+      elements: composition.elements,
+      tools: composition.tools,
+    }),
+    [composition],
   );
 
   return (
-    <ViewportRegisterContext.Provider value={setViewport}>
+    <ViewportRegistrationProvider value={setViewport}>
       <AuthoringRegisterContext.Provider value={setAuthoring}>
-        <HostServicesProvider value={host}>{children}</HostServicesProvider>
+        <ProjectionProvider value={projection}>
+          <HostServicesProvider value={host}>{children}</HostServicesProvider>
+        </ProjectionProvider>
       </AuthoringRegisterContext.Provider>
-    </ViewportRegisterContext.Provider>
+    </ViewportRegistrationProvider>
   );
 }
 
-/** Why a contribution is inert. Mirrored into `data-plugin-state` for gate assertions. */
-export type PlaceholderState = "disabled" | "unknown" | "unavailable";
+/**
+ * Why a contribution is inert. Mirrored into `data-plugin-state` for gate assertions, and an
+ * alias rather than a copy of `@manifold/plugin`'s union: the projection registry publishes
+ * these three states to plugin code, and two spellings of the same closed set is exactly the
+ * drift invariant 14 forbids.
+ */
+export type PlaceholderState = ProjectionState;
 
 const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
   disabled: "disabled",
@@ -516,13 +583,7 @@ const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
   unavailable: "no renderer",
 };
 
-export interface PluginPlaceholderProps {
-  /** What to name: a plugin title when one is known, the raw contribution id otherwise. */
-  readonly name: string;
-  readonly state: PlaceholderState;
-  /** When given, the placeholder offers to remove itself from the surface that hosts it. */
-  readonly onRemove?: (() => void) | undefined;
-}
+export type PluginPlaceholderProps = ProjectionPlaceholderProps;
 
 /**
  * The one inert-contribution surface, shared by workspace panes and canvas nodes: it NAMES
@@ -578,72 +639,4 @@ export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactEleme
   }
   const Panel = panel.Component;
   return <Panel host={host} />;
-}
-
-export interface ElementOutletProps {
-  /** The WIRE element type, exactly as the scene document stores it (`text`). */
-  readonly type: string;
-  readonly elementId: string;
-  /** The element's record, as this surface projected it; `{}` while the record is in flight. */
-  readonly data: Readonly<Record<string, unknown>>;
-  readonly doc: ElementDocument;
-  /** This surface's editing focus — one occupant of it is in its editor at a time. */
-  readonly editingElementId: string | null;
-  readonly onBeginEditing: (elementId: string) => void;
-  readonly onEndEditing: (elementId: string) => void;
-  /** True where an emptied element is litter (a canvas), false where it IS a leaf's occupant. */
-  readonly removeWhenEmpty: boolean;
-}
-
-/**
- * Renders a contributed element OUTSIDE React Flow — a note occupying a tile leaf, today's one
- * case. The canvas reaches the same registry through its own paint boundary
- * (`nodeTypesFor`), because React Flow demands a `nodeTypes` map keyed by wire type and
- * memoized on the element vocabulary; a composition simply renders. Two mount disciplines, one
- * registry, one placeholder policy — the resolution rules below are the same three questions
- * {@link PanelOutlet} asks, in the same order.
- */
-export function ElementOutlet({
-  type,
-  elementId,
-  data,
-  doc,
-  editingElementId,
-  onBeginEditing,
-  onEndEditing,
-  removeWhenEmpty,
-}: ElementOutletProps): ReactElement {
-  const composition = useComposition();
-  const element = composition.elements.get(type);
-
-  if (element === undefined) {
-    return <PluginPlaceholder name={type} state="unknown" />;
-  }
-  const name = composition.pluginTitle(element.plugin) ?? element.plugin;
-  if (!element.enabled) {
-    return <PluginPlaceholder name={name} state="disabled" />;
-  }
-  if (element.Component === null) {
-    return <PluginPlaceholder name={name} state="unavailable" />;
-  }
-  /*
-    The cast at this boundary, and the reason `WebPluginDef.elements` is opaque: a renderer's
-    props are the ELEMENT contract (`@manifold/plugin`'s `ElementProps`), and only a mount site
-    may name them. The canvas's paint boundary performs the same cast into React Flow's node
-    props — these two are the whole list.
-   */
-  const Element = element.Component as unknown as ComponentType<ElementProps>;
-  return (
-    <ElementHostProvider
-      value={{
-        doc,
-        editingElementId,
-        beginEditing: onBeginEditing,
-        endEditing: onEndEditing,
-        removeWhenEmpty,
-      }}
-    >
-      <Element id={elementId} data={data} />
-    </ElementHostProvider>
-  );
 }

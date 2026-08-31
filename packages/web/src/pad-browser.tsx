@@ -1,6 +1,12 @@
 import { DEFAULT_WORKSPACE_LAYOUT, samePadTreeItems } from "@manifold/plugin";
-import { usePolledResource } from "@manifold/plugin/hooks";
-import { setViewState, useToast } from "@manifold/plugin/ui";
+import {
+  PadRouteProvider,
+  projectLocalPresence,
+  usePolledResource,
+  type PadRoute,
+  type WorkspaceSidebarState,
+} from "@manifold/plugin/hooks";
+import { TileTree, WORKSPACE_TREE_CLASSES, setViewState, useToast } from "@manifold/plugin/ui";
 import { PadResponseSchema } from "@manifold/protocol";
 import type {
   MachineSummary,
@@ -13,8 +19,6 @@ import type {
   TileNode,
 } from "@manifold/protocol";
 import { withTileRatios, withoutTileLeaf } from "@manifold/scene";
-import type { ConnectionStatus } from "@manifold/sdk";
-import { projectLocalPresence } from "@manifold-plugin/presence/web";
 import {
   createContext,
   useCallback,
@@ -28,14 +32,12 @@ import {
 } from "react";
 import { getPad, getPadPresence, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
 import { browserPadStorage, chooseInitialPad, rememberPad } from "./pad-memory.ts";
-import { PadRouteProvider, type PadRoute } from "./pad-view-panel.tsx";
 import {
   PanelOutlet,
   PluginPlaceholder,
   useAuthoringRegistration,
   useHostServices,
 } from "./plugin-host.tsx";
-import { TileTree, WORKSPACE_TREE_CLASSES } from "./tile-tree.tsx";
 
 /**
  * THE workspace shell — and it is a composition, not a frame with plugin holes cut in it
@@ -94,23 +96,6 @@ interface PadBrowserProps {
   readonly identity: StoredIdentity;
   readonly requestedPadId: string | null;
   readonly navigate: (path: string, options?: NavigateOptions) => void;
-}
-
-/**
- * What the MOUNTED pad renderer reports upward about itself. It lives with the shell because
- * the shell is the only consumer: the sidebar renders the connection dot and the workspace
- * index needs to know how many sessions the open container is holding.
- *
- * `sessionCount` rather than the rows themselves: a session row is `core.terminals`' shape,
- * and floor may not name a plugin's type (AXIOMS §Foundation). Nothing here ever wanted the
- * rows — only how many there are.
- */
-export interface WorkspaceSidebarState {
-  readonly status: ConnectionStatus;
-  readonly savedAt: number | null;
-  readonly rev: number;
-  readonly sessionCount: number;
-  readonly onCreateTerminal: (machine?: MachineSummary) => void;
 }
 
 /**
@@ -562,6 +547,14 @@ export function PadBrowser({ identity, requestedPadId, navigate }: PadBrowserPro
     return () => registerAuthoring(null);
   }, [createTerminal, registerAuthoring]);
 
+  /**
+   * THIS device's own principal, normalized into the wire shape the cross-pad presence poll
+   * will report a tick later, so every renderer downstream consumes one producer-agnostic row
+   * set and never learns which principal is local (AGENTS.md invariant 11). It is engine plane
+   * mechanism rather than `core.presence`'s, and deliberately: the projection is neutral
+   * arithmetic over wire payloads, and routing it through a plugin registration would put a
+   * second producer of "where is this principal" beside the server's.
+   */
   const displayedPresence = projectLocalPresence(presence, identity.principal, requestedPadId);
 
   /**

@@ -10,13 +10,16 @@
   "dependencies": {
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
+    "@manifold/sdk": "workspace:*",
     "lucide-react": "1.37.0",
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "react": "19.2.8"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@types/react": "^19.2.0"
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
   }
 }

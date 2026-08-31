@@ -1,7 +1,11 @@
+import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
+import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
 import { drawWebPlugin } from "@manifold-plugin/draw/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
 import { notesWebPlugin } from "@manifold-plugin/notes/web";
 import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
+import { presenceWebPlugin } from "@manifold-plugin/presence/web";
+import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
 import { ViewsSection } from "@manifold-plugin/views/web";
 import { PadViewPanel } from "./pad-view-panel.tsx";
@@ -19,34 +23,37 @@ import type { WebPluginDef } from "./plugin-host.tsx";
  * and this list is the browser's answer to "who draws it". Attaching a panel nobody declared
  * contributes nothing; a declared panel with no attachment renders a named placeholder.
  *
- * The shell's own two panels are FLOOR components (`sidebar-panel.tsx`, `pad-view-panel.tsx`)
- * attached to `core.shell`'s declared ids. That is deliberate and not a loophole: the sidebar
- * chrome reads the composition to know which sections exist, and the pad view still holds the
- * canvas/tiled renderers until `core.canvas` and `core.compositions` decompose them. The
- * manifest still owns the vocabulary, so disabling the shell (refused — it is `essential`)
- * would blank those panes exactly like any other plugin's.
+ * THE LIST IS NOW THE WHOLE STORY, and that is the conversion finishing rather than a tidy-up.
+ * Until this wave two plugins registered nothing here while owning piles of browser code,
+ * because the canvas and tiled renderers were floor and simply IMPORTED them. Both renderers
+ * are plugins now, plugins may not import each other, and so every one of those reaches
+ * matches a row below:
  *
- * Three composed plugins register NOTHING here, and that is the registry working rather than
- * failing: a registration attaches COMPONENTS, and these three contribute none. `core.layout`
- * is one action door over the workspace tree. `core.presence` owns a package full of browser
- * code — the cursor overlay, remote gesture overrides, the roster island, the spotlight
- * receipt — but every piece of it is a module the canvas and tiled renderers IMPORT, not a
- * panel, section, element or tool the composition mounts; those renderers are themselves floor
- * until `core.canvas` and `core.compositions`, and their imports of
- * `@manifold-plugin/presence/web` are the visible remainder of that migration rather than a
- * design. `core.terminals` is now exactly the same shape: its browser half
- * (`@manifold-plugin/terminals/web` — the terminal viewer, the janitor projection, machine
- * choice) is imported by those same two renderers, and its doors are dispatched by name from
- * the chrome around them. Neither plugin contributes a mountable slot, so neither has a row
- * below; when `core.canvas` and `core.compositions` land, both sets of imports become
- * plugin-to-plugin questions instead of floor-to-plugin ones.
+ *   `core.canvas` / `core.compositions` register PAD SURFACES, keyed by container discipline.
+ *     Neither declares a panel: a renderer is reached by layout, and the routed shell and a
+ *     tile leaf embedding a board ask for it identically.
+ *   `core.terminals` registers the TERMINAL FACET — the viewer plus the machine-choice policy
+ *     a surface needs in order to offer "new terminal" — instead of exporting a component two
+ *     renderers imported.
+ *   `core.presence` registers OVERLAYS: who is here, and the spotlight consent chip. What a
+ *     surface paints in its own coordinate space (cursors, carry ghosts, selection outlines)
+ *     it paints from engine plane mechanism, which is invariant 11 rather than a registration.
+ *
+ * The shell's own two panels stay FLOOR components (`sidebar-panel.tsx`, `pad-view-panel.tsx`)
+ * attached to `core.shell`'s declared ids, and that is not a loophole: the sidebar chrome reads
+ * the composition to know which sections exist, and the pad view resolves a route to a
+ * discipline and asks the registry for it. Neither knows how anything is drawn.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   { id: "core.shell", panels: { sidebar: SidebarPanel, "pad-view": PadViewPanel } },
   { id: "core.views", sections: { views: ViewsSection } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },
+  canvasWebPlugin,
+  compositionsWebPlugin,
   drawWebPlugin,
   notesWebPlugin,
+  presenceWebPlugin,
+  terminalsWebPlugin,
   uriWebPlugin,
 ];

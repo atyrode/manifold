@@ -37,51 +37,165 @@ export {
   type UseItemDropOptions,
 } from "./item-drop.ts";
 
+export { ElementHostProvider, useElementHost } from "./element-host.ts";
+/**
+ * The PRESENCE plane's browser mechanism: cursor spaces and their snap epsilons, gesture
+ * frames and their decay, the local projection of this device's own presence. Neutral math
+ * over wire payloads — every renderer that paints remote intent measures with it, and the
+ * presence plugin publishes through it.
+ */
+export * from "./presence/index.ts";
+/**
+ * The TILE vocabulary: one drop pipeline, one carry lifecycle, one snap geometry, shared by
+ * every renderer that draws a tile layout. It lives in the engine for the same reason the
+ * placement algebra does — two plugins and the workspace shell all measure against it, and
+ * none of them may import each other.
+ */
+export {
+  SURFACE_NAMES,
+  carryFrame,
+  carryGhosts,
+  carryPayload,
+  carryPlacementId,
+  noteTitle,
+  remoteTileCarries,
+  surfaceDisplayLabel,
+  type CarryGhost,
+  type CarryPoint,
+  type CarrySource,
+  type RemoteTileCarry,
+  type SurfaceLabelLookups,
+} from "./carry.ts";
+export {
+  useCarry,
+  useRemoteGestures,
+  type CarryController,
+  type UseCarryOptions,
+} from "./use-carry.ts";
+export {
+  createTileDropStore,
+  tileDropSignalsEqual,
+  type TileDropAim,
+  type TileDropIntent,
+  type TileDropSignal,
+  type TileDropStore,
+} from "./tile-drop-store.ts";
+export {
+  MIN_TILE_FRACTION,
+  SNAP_EDGE_BAND,
+  asTileTree,
+  composeTargetAt,
+  dividerRatios,
+  resizeRatios,
+  resolveSnapTarget,
+  snapZone,
+  type DividerDrag,
+  type SnapAction,
+  type SnapCarry,
+  type SnapNode,
+  type SnapPoint,
+  type SnapRect,
+  type SnapTarget,
+} from "./tile-snap.ts";
+export {
+  RING_AXIS_CAP,
+  RING_LEAF_CAP,
+  ROOT_RING_PX,
+  ZONE_HYSTERESIS,
+  paneShifts,
+  resolveTileAim,
+  ringFraction,
+  surfaceKey,
+  tileChainAt,
+  tileDestinationFor,
+  tileProspect,
+  tileRects,
+  type PaneShift,
+  type TileAction,
+  type TileAim,
+  type TileAimCarry,
+  type TileProspect,
+  type UnitPoint,
+  type UnitRect,
+} from "./tile-geometry.ts";
+export {
+  areaUnits,
+  previewFor,
+  sameAim,
+  useTileDrop,
+  wireCarryAim,
+  type AreaFractions,
+  type TileDropChip,
+  type TileDropContext,
+  type TileDropHost,
+  type TileDropPipeline,
+  type TileDropState,
+} from "./use-tile-drop.ts";
+/**
+ * PROJECTION: how a container renderer paints an occupant belonging to another plugin, and
+ * how a mounted surface publishes its viewport back to the host.
+ */
+export {
+  ElementOutlet,
+  PadOverlayOutlet,
+  PadSurface,
+  ProjectionProvider,
+  TerminalSurface,
+  ViewportRegistrationProvider,
+  useProjection,
+  useTerminalFacet,
+  useViewportRegistration,
+  type ElementOutletProps,
+  type PadOverlayOutletProps,
+  type PadOverlayProps,
+  type PadSurfaceOutletProps,
+  type PadSurfaceProps,
+  type ProjectionPlaceholderProps,
+  type ProjectionRegistry,
+  type ProjectionState,
+  type RegisteredElement,
+  type RegisteredSurface,
+  type RegisteredTool,
+  type TerminalFacet,
+  type TerminalSurfaceProps,
+} from "./projection.ts";
+export { sessionUrl } from "./session-url.ts";
+/**
+ * The read-only automation seam the browser gates read. It touches `window`, so it rides this
+ * browser-only subpath and never `@manifold/plugin`'s platform-free root.
+ */
+export {
+  countRender,
+  debugSeamEnabled,
+  renderCounts,
+  toElementSnapshot,
+  type DebugCamera,
+  type DebugElementSnapshot,
+  type DebugGestureSnapshot,
+  type DebugViewport,
+  type ManifoldDebugSeam,
+} from "./debug-seam.ts";
+/**
+ * THE ROUTED CONTAINER, as the shell publishes it: which pad the viewer asked for, what the
+ * index knows about it, and the verbs a renderer inside it needs. Its own module because
+ * three parties read it — the floor shell that publishes it and the two container renderers
+ * that consume it — and a context cannot ride `@manifold/plugin`'s platform-free root.
+ */
+export {
+  PadRouteProvider,
+  usePadRoute,
+  type PadRoute,
+  type WorkspaceSidebarState,
+} from "./pad-route.ts";
+
 import {
-  createContext,
-  createElement,
   useCallback,
-  useContext,
   useEffect,
   useRef,
   useState,
   type Dispatch,
-  type ReactElement,
-  type ReactNode,
   type SetStateAction,
 } from "react";
-
-import type { ElementHost } from "./host.ts";
-
-/**
- * How a contributed element renderer reaches its mount site.
- *
- * A CONTEXT rather than props because the engine paints contributed elements through two
- * different frames — a React Flow node type on a canvas, a tile leaf in a composition — and
- * each of them already owns a wrapper. Threading the host through those wrappers' prop types
- * would make React Flow's node-props shape part of the element contract, which is exactly the
- * host internal a plugin must not learn (ADR 0010). The surface provides; the renderer asks.
- */
-const ElementHostContext = createContext<ElementHost | null>(null);
-
-export function ElementHostProvider({
-  value,
-  children,
-}: {
-  readonly value: ElementHost;
-  readonly children: ReactNode;
-}): ReactElement {
-  return createElement(ElementHostContext.Provider, { value }, children);
-}
-
-/** Throws rather than degrading: an element with no mount site has nowhere to commit an edit. */
-export function useElementHost(): ElementHost {
-  const host = useContext(ElementHostContext);
-  if (host === null) {
-    throw new Error("useElementHost requires an <ElementHostProvider> ancestor");
-  }
-  return host;
-}
 
 /**
  * The workspace index is HTTP, not a live channel: this tab learns that another tab created a

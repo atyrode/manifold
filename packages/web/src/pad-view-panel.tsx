@@ -1,70 +1,27 @@
 import type { PanelProps } from "@manifold/plugin";
-import type { MachineSummary, Pad, PadPresence, PlacementItem } from "@manifold/protocol";
-import { createContext, useContext, type ReactElement, type ReactNode } from "react";
-import type { StoredIdentity } from "./api.ts";
+import { PadSurface, usePadRoute } from "@manifold/plugin/hooks";
+import type { ReactElement } from "react";
 import { PadErrorBoundary } from "./error-boundary.tsx";
-import { FlowPadView } from "./flow-pad-view.tsx";
-import { TiledPadView } from "./tiled-pad-view.tsx";
-import type { WorkspaceSidebarState } from "./pad-browser.tsx";
 
 /**
- * The `core.shell.pad-view` panel — FLOOR, tagged `"until": "core.canvas"` /
- * `"until": "core.compositions"` in AXIOMS.md §Foundation.
+ * The `core.shell.pad-view` panel — FLOOR, and now genuinely neutral.
  *
- * The routed renderer switch moved here VERBATIM from the shell. That is the whole of this
- * file's ambition: the workspace is now a tile tree of panels, so the thing that used to be
- * "the area beside the sidebar" has to be a panel like any other. What it renders — the
- * canvas, the tiled route, their internals — is still engine code, and stays so until
- * `core.canvas` and `core.compositions` decompose it. The registry's `"until"` tag is what
- * keeps that debt visible instead of quietly permanent.
+ * It holds no renderer. `core.canvas` and `core.compositions` own the two disciplines, and a
+ * container renderer is reached by LAYOUT through the projection's pad-surface registry: this
+ * panel resolves the route to a discipline and asks for that discipline's surface. The routed
+ * shell and a composition's tile leaf make the same call with a different `layout`, which is
+ * the whole of why one door is enough (invariant 14) and why a canvas can hold a composition
+ * and a composition a canvas without either plugin importing the other.
+ *
+ * So what is left here is exactly the shell's own three answers, and nothing that knows how a
+ * container is drawn: nothing routed yet, an index that has not answered yet, and a record in
+ * flight. Everything else is somebody's registration — including the placeholder a disabled
+ * `core.canvas` paints, which `PadSurface` supplies.
  *
  * A panel is reached through `PanelOutlet`, which knows nothing about pads, so the route
- * cannot arrive as props: it arrives as context the shell publishes above the tree. That is
- * not a shortcut around the plugin boundary — this file IS the shell's other half — and it
- * is exactly the seam `core.canvas` will cut when the renderer becomes a plugin and the
- * route becomes an addressed reference instead of a prop bundle.
+ * cannot arrive as props: it arrives as `PadRoute` context published above the tree by the
+ * shell and read here and by both renderers through `@manifold/plugin`.
  */
-export interface PadRoute {
-  readonly identity: StoredIdentity;
-  readonly requestedPadId: string | null;
-  /** The routed container's record, from the index, a direct fetch, or this tab's memory. */
-  readonly activePad: Pad | null;
-  /** Every indexed container; null while the first index response is in flight. */
-  readonly pads: readonly Pad[] | null;
-  /** Which renderer the route asks for; `unknown` is a cold deep-link only. */
-  readonly routedLayout: Pad["layout"] | "unknown";
-  /** Shrink's return address: the last canvas visited, else the workspace root. */
-  readonly originPadId: string | null;
-  readonly presence: readonly PadPresence[];
-  readonly soloOccupants: ReadonlyMap<string, PlacementItem>;
-  readonly creating: boolean;
-  navigate(path: string, options?: { readonly replace?: boolean }): void;
-  createContainer(layout: Pad["layout"]): void;
-  refreshActivePad(): void;
-  onWorkspaceChange(state: WorkspaceSidebarState | null): void;
-  onCreateTerminalChange(create: ((machine?: MachineSummary) => void) | null): void;
-  isOverSidebar(clientX: number, clientY: number): boolean;
-}
-
-const PadRouteContext = createContext<PadRoute | null>(null);
-
-interface PadRouteProviderProps {
-  readonly value: PadRoute;
-  readonly children: ReactNode;
-}
-
-export function PadRouteProvider({ value, children }: PadRouteProviderProps): ReactElement {
-  return <PadRouteContext.Provider value={value}>{children}</PadRouteContext.Provider>;
-}
-
-/** Throws: the pad-view panel is the shell's own half and never renders outside it. */
-export function usePadRoute(): PadRoute {
-  const route = useContext(PadRouteContext);
-  if (route === null) {
-    throw new Error("usePadRoute requires a <PadRouteProvider> ancestor");
-  }
-  return route;
-}
 
 /**
  * What a cold deep-link shows while the container record is in flight. A sentence would be a
@@ -80,9 +37,9 @@ function CanvasSkeleton(): ReactElement {
   );
 }
 
-export function PadViewPanel(_props: PanelProps): ReactElement {
+export function PadViewPanel({ host }: PanelProps): ReactElement {
   const route = usePadRoute();
-  const { activePad, identity, pads, requestedPadId, routedLayout } = route;
+  const { pads, requestedPadId, routedLayout } = route;
 
   return (
     <section className="pad-browser-canvas" aria-label="Active view">
@@ -113,31 +70,16 @@ export function PadViewPanel(_props: PanelProps): ReactElement {
         // renderer follows the container's discipline, so an unseen id waits for the record
         // rather than guessing — guessing would mean tearing a live room back down.
         <CanvasSkeleton />
-      ) : routedLayout === "tiled" && activePad !== null ? (
-        <PadErrorBoundary key={requestedPadId}>
-          <TiledPadView
-            pad={activePad}
-            identity={identity}
-            pads={pads ?? []}
-            originPadId={route.originPadId}
-            navigate={route.navigate}
-            presence={route.presence}
-            onPadChanged={route.refreshActivePad}
-            soloOccupants={route.soloOccupants}
-            onCreateTerminalChange={route.onCreateTerminalChange}
-          />
-        </PadErrorBoundary>
       ) : (
         <PadErrorBoundary key={requestedPadId}>
-          <FlowPadView
+          <PadSurface
+            layout={routedLayout}
+            host={host}
             padId={requestedPadId}
             pads={pads ?? []}
-            identity={identity}
-            navigate={route.navigate}
             presence={route.presence}
-            onWorkspaceChange={route.onWorkspaceChange}
             soloOccupants={route.soloOccupants}
-            isOverSidebar={route.isOverSidebar}
+            navigate={route.navigate}
           />
         </PadErrorBoundary>
       )}

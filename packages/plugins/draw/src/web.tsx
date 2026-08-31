@@ -111,9 +111,12 @@ export const DrawStrokeNode = memo(DrawStrokeNodeImpl);
  * What this plugin registers in the browser, keyed by the names its manifest declared. It is
  * inert data: `packages/web/src/composition.ts` is the one file that reads it, and the host
  * joins it against the server's roster before anything renders.
+ *
+ * The tool needs no registration: a tool is a NAME the surface owning the toolbar switches
+ * on, and the strip reads that name — with its title and its enabled state — off the
+ * composition's tool registry, which the manifest already fills.
  */
 export const drawWebPlugin = {
   id: "core.draw",
   elements: { draw: DrawStrokeNode },
-  tools: { draw: { title: "Draw" } },
 };

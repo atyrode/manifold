@@ -2588,6 +2588,17 @@ button.pad-sidebar-session.is-summary > small {
   pointer-events: none;
 }
 
+/* ── The overlay slot ─────────────────────────────────────────────────────────
+   Where one plugin's chrome is painted over another's surface (the presence island,
+   the spotlight chip), addressed by slot through the projection registry. The wrapper
+   exists to carry `data-overlay-slot` for the gates, never to be a box: `contents`
+   means the registered component lands in the surface's own layout exactly as it did
+   when the renderer imported it directly, so mounting a slot in a flex host adds no
+   child and an empty slot costs nothing. */
+.pad-overlay-slot {
+  display: contents;
+}
+
 /* ── The one node titlebar ────────────────────────────────────────────────────
    Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
    editable title, a modular middle slot, and a right-justified control cluster.

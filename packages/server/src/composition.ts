@@ -1,5 +1,7 @@
 import { accessActions, accessManifest } from "@manifold-plugin/access";
 import { accessHandlers } from "@manifold-plugin/access/server";
+import { canvasManifest } from "@manifold-plugin/canvas";
+import { compositionsManifest } from "@manifold-plugin/compositions";
 import { drawManifest } from "@manifold-plugin/draw";
 import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
 import { machinesHandlers } from "@manifold-plugin/machines/server";
@@ -54,4 +56,8 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: drawManifest, actions: [], handlers: {} },
   { manifest: notesManifest, actions: [], handlers: {} },
   { manifest: uriManifest, actions: [], handlers: {} },
+  // The two container renderers are browser-only for the same reason: what they draw is a
+  // projection, and every write they make is somebody else's declared door.
+  { manifest: canvasManifest, actions: [], handlers: {} },
+  { manifest: compositionsManifest, actions: [], handlers: {} },
 ];

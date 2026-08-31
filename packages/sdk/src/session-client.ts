@@ -753,6 +753,24 @@ export class SessionClient {
     );
   }
 
+  /**
+   * One authed write to a route that is NOT an action. Exactly one door needs it — leaf
+   * removal — and the comment there says why that door is a route.
+   */
+  private async sendJson(method: string, path: string): Promise<void> {
+    const response = await fetch(`${this.apiOrigin()}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    });
+    if (response.ok) return;
+    const failure = HttpErrorSchema.safeParse(await response.json().catch(() => null));
+    throw new Error(
+      failure.success
+        ? failure.data.error.message
+        : `${method} ${path} failed (${String(response.status)})`,
+    );
+  }
+
   /** The enrolled machines with live online state (`core.machines.list`). */
   async machines(): Promise<readonly MachineSummary[]> {
     return MachinesResponseSchema.parse(await this.invoke("core.machines.list", {})).machines;
@@ -811,6 +829,24 @@ export class SessionClient {
   /** Retires one container (`core.views.deletePad`); the door enforces root authority. */
   async deletePad(padId: string): Promise<void> {
     await this.invoke("core.views.deletePad", { padId });
+  }
+
+  /** One container's record (`core.views.pad`), for a reference the index has not answered. */
+  async getPad(padId: string): Promise<Pad> {
+    const result = await this.invoke("core.views.pad", { padId });
+    return PadResponseSchema.parse(result).pad;
+  }
+
+  /**
+   * Removes one leaf from a composition (`DELETE /api/pads/:id/tiles/:tileId`). Removal is
+   * the one tile gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so
+   * it keeps its own route while every MOVE of a leaf's occupant goes through `place`.
+   */
+  async removePadTile(padId: string, tileId: string): Promise<void> {
+    await this.sendJson(
+      "DELETE",
+      `/api/pads/${encodeURIComponent(padId)}/tiles/${encodeURIComponent(tileId)}`,
+    );
   }
 
   /** Creates an index folder (`core.views.createFolder`); answers the whole new index. */
