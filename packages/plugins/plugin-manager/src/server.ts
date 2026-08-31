@@ -5,10 +5,7 @@
  */
 interface PluginManagerCtx {
   readonly host: {
-    setEnabled(
-      id: string,
-      enabled: boolean,
-    ): { readonly refused: string } | { readonly ok: true };
+    setEnabled(id: string, enabled: boolean): { readonly refused: string } | { readonly ok: true };
   };
 }
 

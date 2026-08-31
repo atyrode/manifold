@@ -255,6 +255,226 @@ describe("composeRoster", () => {
       /action "core\.void\.ping" result cannot be published as JSON Schema/,
     );
   });
+
+  test("collisions between DIFFERENT plugins name every offender, of every kind, at once", () => {
+    /*
+      D5: a composition either exists or refuses, and the refusal is a review document. The
+      same-id case above proves the mechanism; this one is the shape an operator actually
+      hits — three strangers' plugins, each claiming one name another already holds. If the
+      composer reported only the first, fixing a plugin list would be a guessing loop.
+     */
+    const alpha: PluginDef = {
+      manifest: manifest({
+        id: "vendor.alpha",
+        capabilities: ["pads:write"],
+        contributes: {
+          sections: [{ id: "machines", title: "Machines", order: 5 }],
+          tools: [{ id: "terminal", title: "Terminal" }],
+          elements: [{ type: "draw", title: "Ink" }],
+        },
+      }),
+      actions: [RENAME],
+    };
+    const beta: PluginDef = {
+      manifest: manifest({
+        id: "vendor.beta",
+        contributes: {
+          sections: [{ id: "machines", title: "Machines, again", order: 6 }],
+          tools: [{ id: "terminal", title: "Terminal, again" }],
+        },
+      }),
+      actions: [],
+    };
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([shell, alpha, beta, terminals], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    const error = thrown as CompositionError;
+    expect(error).toBeInstanceOf(CompositionError);
+    expect(error.problems).toEqual([
+      'duplicate section "machines" claimed by: core.shell, vendor.alpha, vendor.beta',
+      'duplicate element type "draw" claimed by: core.shell, vendor.alpha',
+      'duplicate tool "terminal" claimed by: vendor.alpha, vendor.beta, core.terminals',
+    ]);
+    // THREE claimants on one name, all named: reporting a pair would hide the third.
+    for (const id of ["core.shell", "vendor.alpha", "vendor.beta", "core.terminals"]) {
+      expect(error.message).toContain(id);
+    }
+  });
+
+  test("two plugins reserving the same EVENT topic refuse, before anything can consume it", () => {
+    const alpha: PluginDef = {
+      manifest: manifest({
+        id: "vendor.alpha",
+        contributes: { events: [{ id: "opened", title: "Opened" }] },
+      }),
+      actions: [],
+    };
+    const beta: PluginDef = {
+      manifest: manifest({
+        id: "vendor.beta",
+        contributes: { events: [{ id: "opened", title: "Opened, differently" }] },
+      }),
+      actions: [],
+    };
+
+    /*
+      `contributes.events` has no consumer this wave — ADR 0012 lands the plane in wave 2 —
+      and that is exactly why uniqueness covers it NOW. An event id is a TOPIC a subscriber
+      will address, so two plugins reserving one topic is D5's collision with its damage
+      deferred rather than avoided: refusing while the namespace is still empty costs an
+      author one rename, while refusing after the plane ships would break every subscriber
+      already listening to whichever claimant happened to register first.
+     */
+    let thrown: unknown = null;
+    try {
+      composeRoster([alpha, beta], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    const error = thrown as CompositionError;
+    expect(error).toBeInstanceOf(CompositionError);
+    expect(error.problems).toEqual([
+      'duplicate event "opened" claimed by: vendor.alpha, vendor.beta',
+    ]);
+    // BOTH offenders named: an author shown one side of a collision cannot fix it.
+    expect(error.message).toContain("vendor.alpha");
+    expect(error.message).toContain("vendor.beta");
+  });
+
+  test("every invalid manifest is reported in ONE refusal, alongside the collisions", () => {
+    // A boot that threw on the first bad manifest would make a broken plugin list a
+    // one-fix-per-restart crawl; the composer is a validator, so it reports the whole batch.
+    const brokenId: PluginDef = { manifest: manifest({ id: "Core_Shell" }), actions: [] };
+    const brokenCaps: PluginDef = {
+      manifest: manifest({ id: "core.rogue", capabilities: ["pads:invent"] as never }),
+      actions: [],
+    };
+    const twin: PluginDef = {
+      manifest: manifest({
+        id: "core.other",
+        contributes: { elements: [{ type: "draw", title: "Other ink" }] },
+      }),
+      actions: [],
+    };
+
+    let thrown: unknown = null;
+    try {
+      composeRoster([brokenId, shell, brokenCaps, twin], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    const error = thrown as CompositionError;
+    expect(error).toBeInstanceOf(CompositionError);
+    expect(error.problems).toHaveLength(3);
+    expect(error.problems[0]).toContain('invalid manifest "Core_Shell"');
+    expect(error.problems[1]).toContain('invalid manifest "core.rogue"');
+    // An unparseable manifest drops out of the uniqueness pass rather than poisoning it, so
+    // the collision between the two VALID plugins is still found in the same run.
+    expect(error.problems[2]).toBe(
+      'duplicate element type "draw" claimed by: core.shell, core.other',
+    );
+  });
+
+  test("a manifest with no id at all is named by its position, not swallowed", () => {
+    const anonymous: PluginDef = {
+      manifest: { ...manifest({ id: "core.ok" }), id: "" } as PluginManifest,
+      actions: [],
+    };
+    let thrown: unknown = null;
+    try {
+      composeRoster([shell, anonymous], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    // "Something in your plugin list is broken" is not actionable; "index 1" is.
+    expect((thrown as CompositionError).problems[0]).toContain("invalid manifest at index 1");
+  });
+
+  test("the cleanup flag reaches the ROSTER, so a client knows which affordances outlive a toggle", () => {
+    const kill = defineAction({
+      name: "kill",
+      title: "Kill terminal",
+      caps: ["pads:write"],
+      input: z.strictObject({ sessionId: z.string() }),
+      result: z.strictObject({ killed: z.boolean() }),
+      cleanup: true,
+    });
+    const composition = composeRoster(
+      [{ manifest: terminals.manifest, actions: [RENAME, kill] }],
+      new Set(["core.terminals"]),
+    );
+
+    const summaries = composition.roster[0]?.actions ?? [];
+    // D12: the browser has to render a kill control on a disabled plugin's terminals and
+    // hide its rename control, and the roster is the only place it can learn which is which.
+    expect(summaries.find((summary) => summary.name === "core.terminals.kill")?.cleanup).toBe(true);
+    const rename = summaries.find((summary) => summary.name === "core.terminals.rename");
+    expect("cleanup" in (rename ?? {})).toBe(false);
+    // The flag is a dispatch property, not an enablement one: the registry still holds both.
+    expect(composition.actions.get("core.terminals.kill")?.def.cleanup).toBe(true);
+    expect(composition.enabled("core.terminals")).toBe(false);
+  });
+
+  test("sections with equal order keep roster order, so the sidebar never shuffles", () => {
+    // Ties are inevitable once strangers pick numbers. An unstable sort would reorder a
+    // user's sidebar on an unrelated toggle, since a recompose happens on every roster
+    // change — so the tiebreak is the registration order, deterministically.
+    const tied = (id: string): PluginDef => ({
+      manifest: manifest({
+        id,
+        contributes: { sections: [{ id: id.split(".")[1] ?? id, title: id, order: 20 }] },
+      }),
+      actions: [],
+    });
+    const defs = [tied("core.aaa"), tied("core.bbb"), tied("core.ccc")];
+
+    const forward = composeRoster(defs, NONE).sections.map((section) => section.plugin);
+    expect(forward).toEqual(["core.aaa", "core.bbb", "core.ccc"]);
+    // Reversing the REGISTRATION reverses the result: nothing else (id, title) breaks ties.
+    const backward = composeRoster([...defs].reverse(), NONE).sections.map(
+      (section) => section.plugin,
+    );
+    expect(backward).toEqual(["core.ccc", "core.bbb", "core.aaa"]);
+  });
+
+  test("two plugins claiming one EVENT id refuse, even though nothing consumes events yet", () => {
+    const publisher = (id: string): PluginDef => ({
+      manifest: manifest({
+        id,
+        contributes: { events: [{ id: "spotlighted", title: "Spotlight moved" }] },
+      }),
+      actions: [],
+    });
+
+    /*
+      `contributes.events` is reserved for the wave-2 event plane (ADR 0012), so this refusal
+      protects nothing that runs today — deliberately. An event id is a GLOBAL topic name the
+      moment it is declared, and topics are nodes; letting two plugins register one now would
+      mean the wave that starts delivering events has to break somebody to fix it. D5 refuses
+      at declaration time, which is the only time it is free.
+     */
+    let thrown: unknown = null;
+    try {
+      composeRoster([publisher("core.presence"), publisher("vendor.watcher")], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect(thrown).toBeInstanceOf(CompositionError);
+    expect((thrown as CompositionError).problems).toEqual([
+      'duplicate event "spotlighted" claimed by: core.presence, vendor.watcher',
+    ]);
+
+    // One plugin declaring the id is fine, and it stays purely declarative: an event
+    // contributes no registry entry this wave, only the reservation.
+    const solo = composeRoster([publisher("core.presence")], NONE);
+    expect(solo.roster[0]?.manifest.contributes.events).toEqual([
+      { id: "spotlighted", title: "Spotlight moved" },
+    ]);
+  });
 });
 
 describe("DEFAULT_WORKSPACE_LAYOUT", () => {

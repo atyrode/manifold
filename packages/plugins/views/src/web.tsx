@@ -273,7 +273,10 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
   useEffect(() => {
     if (actionPadId === null) return;
     const closeMenu = (event: PointerEvent): void => {
-      if (event.target instanceof Element && event.target.closest(".pad-sidebar-actions") !== null) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".pad-sidebar-actions") !== null
+      ) {
         return;
       }
       setActionPadId(null);
@@ -764,7 +767,11 @@ export function ViewsSection({ host }: SectionProps): ReactElement {
         disabled={creatingFolder}
       />
       <div>
-        <button type="button" onClick={() => setFolderCreateParentId(null)} disabled={creatingFolder}>
+        <button
+          type="button"
+          onClick={() => setFolderCreateParentId(null)}
+          disabled={creatingFolder}
+        >
           Cancel
         </button>
         <button type="submit" disabled={creatingFolder || folderName.trim() === ""}>

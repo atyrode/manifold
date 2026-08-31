@@ -28,10 +28,7 @@ type Outcome = { refused: string } | Record<string, never>;
  *   not found`) because by then there is nothing left to name.
  */
 export const terminalsHandlers = {
-  async rename(
-    ctx: TerminalsCtx,
-    args: { sessionId: string; name: string },
-  ): Promise<Outcome> {
+  async rename(ctx: TerminalsCtx, args: { sessionId: string; name: string }): Promise<Outcome> {
     const name = args.name.trim();
     if (name.length === 0) return { refused: "name is empty" };
     if (ctx.broker.rename(args.sessionId, name) === "not_found") {
@@ -40,10 +37,7 @@ export const terminalsHandlers = {
     return {};
   },
 
-  async kill(
-    ctx: TerminalsCtx,
-    args: { sessionId: string },
-  ): Promise<Outcome> {
+  async kill(ctx: TerminalsCtx, args: { sessionId: string }): Promise<Outcome> {
     if (ctx.broker.killById(args.sessionId) === "not_found") {
       return { refused: "terminal not found" };
     }

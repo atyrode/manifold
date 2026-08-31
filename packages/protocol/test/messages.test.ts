@@ -446,7 +446,6 @@ describe("http schemas", () => {
     ).toBe(false);
   });
 
-
   test("pads carry a container discipline and nothing about bubbles", () => {
     const pad = {
       id: "p1",

@@ -4,5 +4,5 @@
     "lib": ["ES2024", "DOM"],
     "types": ["bun"]
   },
-  "include": ["src"]
+  "include": ["src", "test"]
 }

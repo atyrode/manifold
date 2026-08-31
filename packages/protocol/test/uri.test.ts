@@ -75,6 +75,24 @@ describe("manifold:// addressing", () => {
     expect(parseManifoldUri(nested)).toEqual({ kind: "element", padId: "a/b", elementId: "c/d" });
   });
 
+  test("an id that LOOKS like an escape survives, because encoding is applied once", () => {
+    /*
+      The nastiest confusion this algebra can suffer: an id whose own text is `%2F`. If
+      formatting emitted it raw, parsing would decode it back to `/` and silently address a
+      DIFFERENT node — the one place where a bijection failure is invisible rather than an
+      error. Double-encoding on the way out and single-decoding on the way in is what keeps
+      the two id spaces separate.
+     */
+    const literal = formatManifoldUri({ kind: "pad", padId: "a%2Fb" });
+    expect(literal).toBe("manifold://pad/a%252Fb");
+    expect(parseManifoldUri(literal)).toEqual({ kind: "pad", padId: "a%2Fb" });
+
+    // And the two are genuinely distinguishable, which is the whole claim.
+    const slash = formatManifoldUri({ kind: "pad", padId: "a/b" });
+    expect(slash).not.toBe(literal);
+    expect(parseManifoldUri(slash)).toEqual({ kind: "pad", padId: "a/b" });
+  });
+
   test("anything this workspace cannot address is refused, never guessed", () => {
     const refused = [
       // Foreign schemes, including the ones a browser would happily hand over.
@@ -98,5 +116,47 @@ describe("manifold:// addressing", () => {
       "manifold://pad/%zz",
     ];
     for (const text of refused) expect(parseManifoldUri(text)).toBeNull();
+  });
+
+  test("a segment longer than an id can be is refused, never truncated", () => {
+    const limit = 128;
+    const ok = "p".repeat(limit);
+    const over = "p".repeat(limit + 1);
+
+    expect(parseManifoldUri(`${MANIFOLD_URI_SCHEME}pad/${ok}`)).toEqual({ kind: "pad", padId: ok });
+    /*
+      One character further is not "a long pad id", it is a DIFFERENT address. A parser that
+      truncated to fit would hand back `manifold://pad/<first 128>` — an id that may well
+      exist and belong to somebody else — so the bound is a refusal at the parse door, the
+      same answer `RefIdSchema` gives at the schema door.
+     */
+    expect(parseManifoldUri(`${MANIFOLD_URI_SCHEME}pad/${over}`)).toBeNull();
+    // The bound is on the DECODED segment, so escapes buy no extra room: 129 encoded slashes
+    // are 387 characters on the wire and one over the limit as an id.
+    expect(parseManifoldUri(`${MANIFOLD_URI_SCHEME}pad/${"%2F".repeat(limit + 1)}`)).toBeNull();
+    // Both segments of a two-level form are bounded, not just the head.
+    expect(parseManifoldUri(`${MANIFOLD_URI_SCHEME}pad/${ok}/element/${over}`)).toBeNull();
+
+    // And the same limit holds on the struct side, or the bijection breaks in one direction:
+    // a ref that validates but formats into text the parser refuses is a node the workspace
+    // can write down and never read back.
+    expect(ManifoldRefSchema.safeParse({ kind: "pad", padId: ok }).success).toBe(true);
+    expect(ManifoldRefSchema.safeParse({ kind: "pad", padId: over }).success).toBe(false);
+    expect(
+      ManifoldRefSchema.safeParse({ kind: "element", padId: ok, elementId: over }).success,
+    ).toBe(false);
+  });
+
+  test("a heavily-escaped id well inside the bound is ACCEPTED, wire length notwithstanding", () => {
+    // The complement of the case above, and the reason it matters: bounding the raw TEXT
+    // instead of the decoded id would also refuse this address, which is legal in the struct
+    // form — a workspace that can hold a node it cannot write down. 100 slashes are 300
+    // characters of wire text and a 100-character id.
+    const escapeHeavy = "/".repeat(100);
+    const uri = formatManifoldUri({ kind: "pad", padId: escapeHeavy });
+
+    expect(uri.length).toBeGreaterThan(300);
+    expect(parseManifoldUri(uri)).toEqual({ kind: "pad", padId: escapeHeavy });
+    expect(ManifoldRefSchema.safeParse({ kind: "pad", padId: escapeHeavy }).success).toBe(true);
   });
 });

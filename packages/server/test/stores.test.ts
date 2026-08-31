@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Pad } from "@manifold/protocol";
+import type { Pad, TileLayout } from "@manifold/protocol";
 import { Y, createSceneDoc } from "@manifold/scene";
 import { sha256Hex } from "../src/stores.ts";
 import { testStore } from "./helpers.ts";
@@ -260,6 +260,124 @@ describe("ServerStore scene documents", () => {
     invalid.length = 0;
     expect(store.latestDoc("pad", (_error, record) => invalid.push(record.rev))?.rev).toBe(1);
     expect(invalid).toEqual([2]);
+    store.close();
+  });
+});
+
+describe("ServerStore plugin enablement", () => {
+  test("stores the DISABLED set, so a plugin that ships later is on without a write", () => {
+    const store = testStore();
+
+    // D4: enablement is workspace-global shared state, not a per-client preference.
+    expect([...store.disabledPlugins()]).toEqual([]);
+    store.setPluginEnabled("core.draw", false);
+    store.setPluginEnabled("core.machines", false);
+    expect([...store.disabledPlugins()].sort()).toEqual(["core.draw", "core.machines"]);
+
+    // Re-enabling REMOVES the row rather than recording an "enabled" fact: the absence of a
+    // plugin from this set is what makes a newly-composed plugin default to on.
+    store.setPluginEnabled("core.draw", true);
+    expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
+    // Idempotent in both directions — a double toggle is not a second disable.
+    store.setPluginEnabled("core.machines", false);
+    expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
+    store.setPluginEnabled("core.draw", true);
+    expect([...store.disabledPlugins()]).toEqual(["core.machines"]);
+    store.close();
+  });
+
+  test("a corrupt enablement row reads as NOTHING disabled, never as everything dark", () => {
+    const store = testStore();
+    store.setPluginEnabled("core.draw", false);
+
+    for (const corrupt of ["not json", '"core.draw"', "[42]", "{}", '["", "core.draw"]']) {
+      store.setMeta("plugins:disabled", corrupt);
+      // The failure mode this refuses: one bad meta value booting a workspace with every
+      // plugin off, including the shell — a blank screen with no way back in.
+      expect([...store.disabledPlugins()]).toEqual([]);
+    }
+
+    // And the store recovers the moment a real write lands.
+    store.setPluginEnabled("core.draw", false);
+    expect([...store.disabledPlugins()]).toEqual(["core.draw"]);
+    store.close();
+  });
+});
+
+describe("ServerStore workspace layouts", () => {
+  const shell: TileLayout = {
+    root: {
+      id: "root",
+      dir: "row",
+      ratios: [0.3, 0.7],
+      children: ["side", "main"],
+      surface: null,
+    },
+    side: {
+      id: "side",
+      dir: null,
+      ratios: [],
+      children: [],
+      surface: { kind: "panel", panelId: "core.shell.sidebar" },
+    },
+    main: {
+      id: "main",
+      dir: null,
+      ratios: [],
+      children: [],
+      surface: { kind: "panel", panelId: "core.shell.pad-view" },
+    },
+  };
+
+  test("a shell is stored per principal, and one principal's tree is nobody else's", () => {
+    const store = testStore();
+
+    // A2: the workspace layout is per-principal view state that the SERVER holds, so a
+    // second device and a driving agent see the same shell — but never each other's.
+    expect(store.workspaceLayout("pr-1")).toBeNull();
+    store.setWorkspaceLayout("pr-1", shell);
+    expect(store.workspaceLayout("pr-1")).toEqual(shell);
+    expect(store.workspaceLayout("pr-2")).toBeNull();
+    store.close();
+  });
+
+  test("a stored shell that went bad reads as null, so the door can hand back the default", () => {
+    const store = testStore();
+    store.setWorkspaceLayout("pr-1", shell);
+
+    for (const corrupt of [
+      "{oops",
+      "null",
+      "[]",
+      // Parses as JSON, fails the schema: a leaf whose surface is not a surface.
+      JSON.stringify({ root: { id: "root", dir: null, ratios: [], children: [], surface: 7 } }),
+      // Parses AND validates per-node, but is not a tree: a child nothing declares.
+      JSON.stringify({
+        root: { id: "root", dir: "row", ratios: [1], children: ["ghost"], surface: null },
+      }),
+    ]) {
+      store.setMeta("layout:pr-1", corrupt);
+      // Null means "never written" and "unreadable" alike, deliberately: both answers are
+      // "give this principal a working workspace", never a blank screen.
+      expect(store.workspaceLayout("pr-1")).toBeNull();
+    }
+    store.close();
+  });
+
+  test("a tree the reader would reject is refused on the way IN", () => {
+    const store = testStore();
+
+    // Otherwise `core.layout.set` could persist a shell that reads back as null, and a
+    // principal's next load would silently discard the arrangement they just made.
+    expect(() =>
+      store.setWorkspaceLayout("pr-1", {
+        root: { id: "root", dir: "row", ratios: [1], children: ["ghost"], surface: null },
+      }),
+    ).toThrow(/not a valid tile tree/);
+    expect(() =>
+      store.setWorkspaceLayout("pr-1", { root: { id: "mismatched-id" } } as never as TileLayout),
+    ).toThrow();
+    expect(store.workspaceLayout("pr-1")).toBeNull();
     store.close();
   });
 });
