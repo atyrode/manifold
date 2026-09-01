@@ -1,0 +1,471 @@
+{
+  "baselineOurs": {
+    "tA": {
+      "generation": 1,
+      "state": "scrollback-ours:tA",
+      "ticking": true
+    },
+    "tB": {
+      "generation": 1,
+      "state": "scrollback-ours:tB",
+      "ticking": true
+    },
+    "tC": {
+      "generation": 1,
+      "state": "scrollback-ours:tC",
+      "ticking": true
+    },
+    "tD": {
+      "generation": 1,
+      "state": "scrollback-ours:tD",
+      "ticking": true
+    }
+  },
+  "baselineDockview": {
+    "tA": {
+      "generation": 1,
+      "state": "scrollback-dockview:tA",
+      "ticking": true
+    },
+    "tB": {
+      "generation": 1,
+      "state": "scrollback-dockview:tB",
+      "ticking": true
+    },
+    "tC": {
+      "generation": 1,
+      "state": "scrollback-dockview:tC",
+      "ticking": true
+    },
+    "tD": {
+      "generation": 1,
+      "state": "scrollback-dockview:tD",
+      "ticking": true
+    }
+  },
+  "addressability": {
+    "ours": {
+      "total": 7,
+      "found": 7,
+      "missing": [],
+      "splitsAddressable": 3,
+      "splitsTotal": 3
+    },
+    "dockview": {
+      "total": 7,
+      "found": 4,
+      "missing": ["root", "tCol", "tRow"],
+      "splitsAddressable": 0,
+      "splitsTotal": 3
+    },
+    "dockviewClasses": [
+      "dv-grid-view",
+      "dv-branch-node",
+      "dv-split-view-container dv-horizontal dv-separator-border",
+      "dv-sash-container",
+      "dv-sash dv-enabled",
+      "dv-view-container",
+      "dv-view visible",
+      "dv-leaf",
+      "live-leaf",
+      "live-leaf__title",
+      "live-leaf__state",
+      "dv-split-view-container dv-vertical dv-separator-border"
+    ]
+  },
+  "remotePreview": {
+    "aim": {
+      "tileId": "root",
+      "edge": "left",
+      "action": "place",
+      "depth": 0
+    },
+    "shiftCount": 4,
+    "shiftIds": ["tA", "tB", "tC", "tD"],
+    "flipBoxes": {
+      "ours": {
+        "found": 4,
+        "missing": []
+      },
+      "dockview": {
+        "found": 4,
+        "missing": []
+      }
+    },
+    "wireframeBoxes": {
+      "ours": {
+        "found": 7,
+        "missing": []
+      },
+      "dockview": {
+        "found": 4,
+        "missing": ["root", "tCol", "tRow"]
+      }
+    },
+    "vacantMarkers": []
+  },
+  "zones": {
+    "ourDistinctOutcomes": 25,
+    "ourSample": [
+      "root|left|place|0|false",
+      "root|top|place|0|false",
+      "root|bottom|place|0|false",
+      "tCol|left|place|1|false",
+      "tB|left|place|2|false",
+      "tC|left|place|3|false",
+      "tC|top|place|3|false",
+      "tC|bottom|place|3|false",
+      "tB|bottom|place|2|false",
+      "tB|top|place|2|false"
+    ],
+    "ourActions": ["place", "swap"],
+    "ourAncestorAims": 8,
+    "ourBetweenAims": 2,
+    "dockviewDistinctOutcomes": 20,
+    "dockviewPositions": ["top", "bottom", "left", "right", "center"]
+  },
+  "rail": {
+    "tileIds": ["n0", "n1", "n2", "n3", "root"],
+    "pathOf": {
+      "index": "n0",
+      "machines": "n1",
+      "plugins": "n2",
+      "keys": "n3"
+    },
+    "asked": {
+      "n0": 359.9998,
+      "n1": 239.9998,
+      "n2": 0.0002,
+      "n3": 0.0002
+    },
+    "got": {
+      "n0": 360,
+      "n1": 240,
+      "n2": 0,
+      "n3": 0
+    },
+    "minimums": {
+      "n0": 0,
+      "n1": 0,
+      "n2": 0,
+      "n3": 0
+    },
+    "error": null
+  },
+  "dockOverlay": {
+    "groupCount": 4,
+    "panelsPerGroup": [["tA"], ["tB"], ["tC"], ["tD"]],
+    "headersHidden": true,
+    "overlayReachableFromPublicApi": true,
+    "overlayPainted": [
+      {
+        "className": "dv-drop-target-dropzone",
+        "width": 224,
+        "height": 259
+      }
+    ],
+    "expressibleDestinations": 20,
+    "leaves": {
+      "tA": {
+        "generation": 1,
+        "state": "scrollback-dock:tA",
+        "ticking": true
+      },
+      "tB": {
+        "generation": 1,
+        "state": "scrollback-dock:tB",
+        "ticking": true
+      },
+      "tC": {
+        "generation": 1,
+        "state": "scrollback-dock:tC",
+        "ticking": true
+      },
+      "tD": {
+        "generation": 1,
+        "state": "scrollback-dock:tD",
+        "ticking": true
+      }
+    }
+  },
+  "resize900": {
+    "width": 900,
+    "ours": {
+      "tA": 0.2181,
+      "tB": 0.7734,
+      "tC": 0.3836,
+      "tD": 0.3836
+    },
+    "dockview": {
+      "tA": 0.22,
+      "tB": 0.78,
+      "tC": 0.39,
+      "tD": 0.39
+    }
+  },
+  "resize560": {
+    "width": 560,
+    "ours": {
+      "tA": 0.217,
+      "tB": 0.7694,
+      "tC": 0.3797,
+      "tD": 0.3797
+    },
+    "dockview": {
+      "tA": 0.2196,
+      "tB": 0.7804,
+      "tC": 0.3911,
+      "tD": 0.3893
+    }
+  },
+  "resizeBack": {
+    "width": 900,
+    "ours": {
+      "tA": 0.2181,
+      "tB": 0.7734,
+      "tC": 0.3836,
+      "tD": 0.3836
+    },
+    "dockview": {
+      "tA": 0.22,
+      "tB": 0.78,
+      "tC": 0.39,
+      "tD": 0.39
+    }
+  },
+  "paintFlip": {
+    "shiftCount": 4,
+    "painted": {
+      "ours": {
+        "moved": ["tA", "tB", "tC", "tD"],
+        "clipped": [],
+        "slotPainted": true
+      },
+      "dockview": {
+        "moved": ["tA", "tB", "tC", "tD"],
+        "clipped": [
+          "tA: drew x=1381 w=98, wanted x=1377 w=97",
+          "tB: drew x=1477 w=346, wanted x=1480 w=344",
+          "tD: drew x=1652 w=171, wanted x=1655 w=169"
+        ],
+        "slotPainted": true
+      }
+    }
+  },
+  "clearFlip": {
+    "cleared": 8
+  },
+  "splitOurs": {
+    "aim": {
+      "tileId": "tD",
+      "edge": "right",
+      "action": "place",
+      "depth": 3,
+      "between": false
+    },
+    "tilesBefore": 7,
+    "tilesAfter": 10
+  },
+  "afterSplitOurs": {
+    "tA": {
+      "generation": 1,
+      "state": "scrollback-ours:tA",
+      "ticking": true
+    },
+    "tB": {
+      "generation": 1,
+      "state": "scrollback-ours:tB",
+      "ticking": true
+    },
+    "tC": {
+      "generation": 1,
+      "state": "scrollback-ours:tC",
+      "ticking": true
+    },
+    "tD": {
+      "generation": 1,
+      "state": "scrollback-ours:tD",
+      "ticking": true
+    }
+  },
+  "splitDockview": {
+    "before": ["tA", "tB", "tC", "tD"],
+    "after": ["tA", "tB", "tC", "tD", "tE"]
+  },
+  "afterSplitDockview": {
+    "tA": {
+      "generation": 1,
+      "state": "scrollback-dockview:tA",
+      "ticking": true
+    },
+    "tB": {
+      "generation": 1,
+      "state": "scrollback-dockview:tB",
+      "ticking": true
+    },
+    "tC": {
+      "generation": 1,
+      "state": "scrollback-dockview:tC",
+      "ticking": true
+    },
+    "tD": {
+      "generation": 1,
+      "state": "scrollback-dockview:tD",
+      "ticking": true
+    },
+    "tE": {
+      "generation": 1,
+      "state": "scrollback-dockview:tE",
+      "ticking": true
+    }
+  },
+  "disposed": ["n0", "n1", "n2", "n3"],
+  "flip": {
+    "ourBoxes": [
+      {
+        "className": "composition-split is-row",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "898px",
+        "flexGrow": "1"
+      },
+      {
+        "className": "composition-pane",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "196.328px",
+        "flexGrow": "0.44"
+      },
+      {
+        "className": "composition-pane",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "696.078px",
+        "flexGrow": "1.56"
+      },
+      {
+        "className": "composition-split is-column",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "696.078px",
+        "flexGrow": "1"
+      },
+      {
+        "className": "composition-pane",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "696.078px",
+        "flexGrow": "0.8"
+      },
+      {
+        "className": "composition-pane",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "696.078px",
+        "flexGrow": "1.2"
+      },
+      {
+        "className": "composition-split is-row",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "696.078px",
+        "flexGrow": "1"
+      },
+      {
+        "className": "composition-pane",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "460.328px",
+        "flexGrow": "1.5"
+      }
+    ],
+    "dockviewBoxes": [
+      {
+        "className": "dv-branch-node",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "898px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-view visible",
+        "position": "absolute",
+        "transform": "none",
+        "left": "0px",
+        "width": "198px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-view visible",
+        "position": "absolute",
+        "transform": "none",
+        "left": "198px",
+        "width": "700px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-branch-node",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "700px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-view visible",
+        "position": "absolute",
+        "transform": "none",
+        "left": "0px",
+        "width": "700px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-view visible",
+        "position": "absolute",
+        "transform": "none",
+        "left": "0px",
+        "width": "700px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-branch-node",
+        "position": "static",
+        "transform": "none",
+        "left": "auto",
+        "width": "700px",
+        "flexGrow": "0"
+      },
+      {
+        "className": "dv-view visible",
+        "position": "absolute",
+        "transform": "none",
+        "left": "0px",
+        "width": "233px",
+        "flexGrow": "0"
+      }
+    ],
+    "flipOnLeafView": {
+      "dockviewAlreadyOwnsTransform": false,
+      "beforeTransform": "none",
+      "afterRelayoutInline": "translate(50%, 0%) scale(0.5, 1)",
+      "moved": true,
+      "widthBefore": 233,
+      "widthAfterWrite": 117
+    },
+    "branchNodeIdentity": {
+      "exists": true,
+      "tileId": null,
+      "attributes": ["class"]
+    }
+  },
+  "pageErrors": []
+}
