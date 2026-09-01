@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AssemblyError } from "@manifold/plugin";
 import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
 import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 import { buildBrowserAssembly, type WebPluginDef } from "./plugin-host.tsx";
@@ -83,6 +84,12 @@ const DRAW = {
   },
 } as const satisfies ManifestFields;
 
+const URI = {
+  id: "core.uri",
+  title: "Links",
+  contributes: { routes: [{ segment: "uri", title: "Deep links" }] },
+} as const satisfies ManifestFields;
+
 const DEFS: readonly WebPluginDef[] = [
   { id: "core.shell", panels: { sidebar: Sidebar, "container-view": ContainerView } },
   { id: "core.machines", sections: { machines: MachinesSection } },
@@ -140,7 +147,7 @@ describe("buildBrowserAssembly", () => {
 
   test("a disabled plugin keeps every contribution, tagged enabled:false", () => {
     const assembly = buildBrowserAssembly(
-      [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry({ id: "core.uri" }, false)],
+      [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry(URI, false)],
       1,
       DEFS,
     );
@@ -163,8 +170,8 @@ describe("buildBrowserAssembly", () => {
     });
     expect(assembly.elements.get("draw")?.enabled).toBe(false);
     expect(assembly.tools[0]?.enabled).toBe(false);
-    // Routes have no manifest row, so their enablement can only come from the roster entry
-    // of the plugin that registered them — a disabled deep link renders the same placeholder.
+    // A route's enablement is its CLAIMANT's, which is what keeps a disabled deep link
+    // rendering a named placeholder instead of a dead end.
     expect(assembly.routes.get("uri")).toEqual({
       plugin: "core.uri",
       Component: UriRoute,
@@ -174,11 +181,12 @@ describe("buildBrowserAssembly", () => {
     expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
   });
 
-  test("the three projection channels take their plugin's roster state", () => {
-    // Container refs, overlays and the terminal facet have no manifest row — like routes, they
-    // are not refs the WORKSPACE composes — so the only thing that can gate them is the
-    // registering plugin's enablement. That is what makes disabling a renderer paint the
-    // engine's named placeholder instead of leaving a blank pane (ADR 0013 §4).
+  test("the projection channels take their plugin's roster state", () => {
+    // Container refs, overlays and the terminal facet are the channels with no manifest row —
+    // their keys are the engine's own closed vocabularies, not names an author invents — so the
+    // only thing that can gate them is the registering plugin's enablement. That is what makes
+    // disabling a renderer paint the engine's named placeholder instead of a blank pane
+    // (ADR 0013 §4).
     const defs: readonly WebPluginDef[] = [
       { id: "core.canvas", renderers: { canvas: ContainerView } },
       { id: "core.presence", overlays: { "container-roster": UriRoute } },
@@ -224,9 +232,13 @@ describe("buildBrowserAssembly", () => {
     // The roster is the vocabulary, so a browser build cannot invent a plugin by shipping a
     // component for it — otherwise a stale bundle would show panels the server refuses to
     // dispatch for, and A2 parity (every principal sees the same workspace) would break.
-    const assembly = buildBrowserAssembly([entry(SHELL)], 1, [
-      ...DEFS,
+    const assembly = buildBrowserAssembly([entry(SHELL), entry(URI)], 1, [
+      { id: "core.shell", panels: { sidebar: Sidebar, "container-view": ContainerView } },
       { id: "core.smuggled", panels: { ghost: Sidebar }, routes: { ghost: UriRoute } },
+      // A plugin the roster DOES carry, registering a path its own manifest never claimed:
+      // the same smuggle one level in, and the same answer, because the declaration is the
+      // vocabulary for routes exactly as it is for panels.
+      { id: "core.uri", routes: { uri: UriRoute, smuggled: UriRoute } },
     ]);
 
     expect([...assembly.panels.keys()]).toEqual([
@@ -234,7 +246,8 @@ describe("buildBrowserAssembly", () => {
       "core.shell.container-view",
     ]);
     expect(assembly.routes.has("ghost")).toBe(false);
-    expect(assembly.routes.has("uri")).toBe(false);
+    expect(assembly.routes.has("smuggled")).toBe(false);
+    expect(assembly.routes.get("uri")?.Component).toBe(UriRoute);
     expect(assembly.enabled("core.smuggled")).toBe(false);
   });
 
@@ -280,6 +293,174 @@ describe("buildBrowserAssembly", () => {
     // Whereas the toggle that DOES concern elements moves the tuple, so the cache rebuilds.
     const drawOff = buildBrowserAssembly([entry(MACHINES, false), entry(DRAW, false)], 3, DEFS);
     expect(tuples(drawOff.elements)).not.toEqual(tuples(before.elements));
+  });
+});
+
+/**
+ * THE ROUTE VOCABULARY. Routes were a registration-time convention: the browser's table was
+ * keyed off whatever a web half happened to export, so the roster could not publish the paths
+ * a build answers on and nothing checked the claim (issue #112). With a manifest row a route
+ * reads exactly as a panel does — the manifest CLAIMS the segment, the web half only says who
+ * draws it, and neither half alone puts a path in the table.
+ */
+describe("buildBrowserAssembly routes", () => {
+  test("a claimed segment with no registration is PRESENT with a null component", () => {
+    // The third answer `PluginRoute` already gave and could not previously reach: an
+    // `unavailable` placeholder naming the plugin, rather than an unclaimed-prefix 404 that
+    // reads as though the workspace had never heard of the path.
+    const assembly = buildBrowserAssembly([entry(URI)], 1, []);
+
+    expect(assembly.routes.get("uri")).toEqual({
+      plugin: "core.uri",
+      Component: null,
+      enabled: true,
+    });
+  });
+
+  test("the claim is the vocabulary: a registration alone contributes no path", () => {
+    const assembly = buildBrowserAssembly([entry({ id: "core.uri", title: "Links" })], 1, DEFS);
+
+    expect(assembly.routes.size).toBe(0);
+  });
+});
+
+/**
+ * COLLISIONS ON THE REGISTRATION-TIME CHANNELS (issue #112). Each of these used to be settled
+ * by roster order — the second claimant of a discipline, a slot, a path or the terminal facet
+ * silently replaced the first, and the loser was whoever happened to be composed earlier. Two
+ * plugins claiming one thing is an authoring bug (D5), so the answer is the engine's own
+ * refusal naming both offenders, in the engine's own words (`reportDuplicates`).
+ *
+ * The wording is asserted verbatim, deliberately: "duplicate <noun> \"<name>\" claimed by: …"
+ * is one sentence for one concept wherever it is raised, and a browser-local paraphrase would
+ * be a second answer to "what happened" (invariant 14).
+ */
+describe("buildBrowserAssembly collisions", () => {
+  /** The refusal's own reasons, or a failure — an assembly that composed is the bug here. */
+  function refusal(build: () => unknown): readonly string[] {
+    try {
+      build();
+    } catch (error) {
+      if (error instanceof AssemblyError) return error.problems;
+      throw error;
+    }
+    throw new Error("expected a refusal, got an assembly");
+  }
+
+  test("two manifests claiming one route segment are refused, both named", () => {
+    const squatter = {
+      id: "acme.links",
+      contributes: { routes: [{ segment: "uri", title: "Links" }] },
+    } as const satisfies ManifestFields;
+
+    expect(refusal(() => buildBrowserAssembly([entry(URI), entry(squatter)], 1, DEFS))).toEqual([
+      'duplicate route "uri" claimed by: core.uri, acme.links',
+    ]);
+  });
+
+  test("two plugins drawing one container discipline are refused, both named", () => {
+    const roster: PluginRoster = [
+      entry({ id: "core.canvas", title: "Canvas" }),
+      entry({ id: "acme.canvas", title: "Acme canvas" }),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.canvas", renderers: { canvas: ContainerView } },
+      { id: "acme.canvas", renderers: { canvas: ContainerView } },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate renderer "canvas" claimed by: core.canvas, acme.canvas',
+    ]);
+  });
+
+  test("two plugins painting one container overlay slot are refused, both named", () => {
+    const roster: PluginRoster = [
+      entry({ id: "core.presence", title: "Presence" }),
+      entry({ id: "acme.presence", title: "Acme presence" }),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.presence", overlays: { "container-roster": UriRoute } },
+      { id: "acme.presence", overlays: { "container-roster": UriRoute } },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate overlay "container-roster" claimed by: core.presence, acme.presence',
+    ]);
+  });
+
+  test("two plugins painting one workspace overlay slot are refused, both named", () => {
+    const roster: PluginRoster = [
+      entry({ id: "core.debug", title: "Diagnostics" }),
+      entry({ id: "acme.debug", title: "Acme diagnostics" }),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.debug", workspaceOverlays: { inspector: UriRoute } },
+      { id: "acme.debug", workspaceOverlays: { inspector: UriRoute } },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate workspace overlay "inspector" claimed by: core.debug, acme.debug',
+    ]);
+  });
+
+  test("two plugins publishing the terminal facet are refused, both named", () => {
+    // The facet is ONE registration for the whole workspace, so a second publisher is the
+    // same event as a second overlay — not a handover the last-composed plugin wins.
+    const roster: PluginRoster = [
+      entry({ id: "core.terminals", title: "Terminals" }),
+      entry({ id: "acme.terminals", title: "Acme terminals" }),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.terminals", terminals: TERMINALS },
+      { id: "acme.terminals", terminals: TERMINALS },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate facet "terminals" claimed by: core.terminals, acme.terminals',
+    ]);
+  });
+
+  test("a DISABLED plugin's claim still collides", () => {
+    // The same rule `assembleRoster` applies to sections and element types: turning a plugin
+    // off may never mask a collision that turning it back on would resurrect, or a workspace
+    // would compose only until somebody re-enabled the plugin that shadowed the renderer.
+    const roster: PluginRoster = [
+      entry({ id: "core.canvas", title: "Canvas" }),
+      entry({ id: "acme.canvas", title: "Acme canvas" }, false),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.canvas", renderers: { canvas: ContainerView } },
+      { id: "acme.canvas", renderers: { canvas: ContainerView } },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate renderer "canvas" claimed by: core.canvas, acme.canvas',
+    ]);
+  });
+
+  test("every collision is named at once, not one per rebuild", () => {
+    // A refusal that reported the first problem would make fixing a composition an
+    // n-round guessing game, which is why `AssemblyError` carries every reason.
+    const roster: PluginRoster = [
+      entry(URI),
+      entry({
+        id: "acme.everything",
+        contributes: { routes: [{ segment: "uri", title: "Links" }] },
+      }),
+    ];
+    const defs: readonly WebPluginDef[] = [
+      { id: "core.uri", routes: { uri: UriRoute }, overlays: { "container-spotlight": UriRoute } },
+      {
+        id: "acme.everything",
+        routes: { uri: UriRoute },
+        overlays: { "container-spotlight": UriRoute },
+      },
+    ];
+
+    expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
+      'duplicate route "uri" claimed by: core.uri, acme.everything',
+      'duplicate overlay "container-spotlight" claimed by: core.uri, acme.everything',
+    ]);
   });
 });
 
