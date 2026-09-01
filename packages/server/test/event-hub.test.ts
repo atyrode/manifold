@@ -16,7 +16,7 @@ import {
 import { FLOOR_EVENT_OWNERS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger, type Logger, type LogLevel } from "../src/log.ts";
-import { assemblyElementTraits, assemblyItemNouns, PlaceExecutor } from "../src/placement.ts";
+import { assemblyPlacementVocabulary, assemblyItemNouns, PlaceExecutor } from "../src/placement.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
@@ -110,7 +110,7 @@ function planeFixture(): PlaneFixture {
       rooms,
       broker,
       runtime,
-      assemblyElementTraits(() => host?.roster() ?? []),
+      assemblyPlacementVocabulary(() => host?.roster() ?? []),
       assemblyItemNouns(() => host?.roster() ?? []),
     ),
   );

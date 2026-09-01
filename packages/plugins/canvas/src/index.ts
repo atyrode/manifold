@@ -62,6 +62,43 @@ export const canvasManifest: PluginManifest = {
      */
     sections: [{ id: "new-canvas", title: "New canvas", order: 2, presentation: "plain" }],
     elements: [],
+    /**
+     * THE `canvas` DISCIPLINE, declared (#110, building the ruling ratified on #86). Until
+     * this wave the placement algebra held these rows as literals in
+     * `packages/protocol/src/placement.ts`, which is what made the renderer roster closed
+     * at the wire; they are transcribed here verbatim, and `packages/protocol/test` pins
+     * that the composed result is the same table the floor used to hold.
+     *
+     * `item` is what a CANVAS IS when it is the thing being dragged — the old
+     * `ITEM_KINDS.canvas`. It tiles, it embeds live inside another container, it can always
+     * be un-referenced without ceasing to exist, and it appears on another canvas as a
+     * portal rather than as a copy. `no_self_embed` is the one rule containment cannot
+     * state: a canvas never embeds itself, however the drop addresses it.
+     *
+     * `accepts` is what a canvas TAKES — the old `CONTAINER_KINDS.canvas`: free-floating
+     * furniture, anything that can appear as a portal onto itself, and a tile pulled out of
+     * some composition.
+     *
+     * `destinations` is the old `DESTINATION_KINDS[...].requires` column read from this
+     * side: the `canvas` form points AT a canvas, and `compose` HOSTS the merge it authors
+     * on one. A `tile` drop is refused here by the `discipline_match` guard rather than by
+     * group containment, which is why the refusal says "cannot be placed that way" instead
+     * of "does not go in".
+     */
+    disciplines: [
+      {
+        id: "canvas",
+        title: "Canvas",
+        item: {
+          groups: ["tileable", "embeddable", "unplaceable", "canvas_item_as_portal"],
+          guards: ["no_self_embed"],
+          homed: "inline",
+        },
+        accepts: ["canvas_item", "canvas_item_as_portal", "extractable"],
+        guards: ["discipline_match"],
+        destinations: ["canvas", "compose"],
+      },
+    ],
     tools: [
       { id: "select", title: "Select" },
       { id: "text", title: "Text" },

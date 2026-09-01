@@ -63,7 +63,7 @@ import {
 import { Cover, Stack } from "@manifold/plugin/ui";
 import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
-import { FEED_TOPICS, WEB_PLUGIN_DEFS } from "./assembly.ts";
+import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
  * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
@@ -1114,8 +1114,11 @@ export type PluginPlaceholderProps = ProjectionPlaceholderProps;
 /**
  * The one inert-contribution ref, shared by workspace panes and canvas nodes: it NAMES
  * what is missing, so a disabled plugin reads as "core.draw is off", never as a blank box.
- * The remove control commits a pruned workspace tree through `core.space.setLayout`, which is why
- * a disable can never brick a layout (D4, `[R: layout-lock blocker]`).
+ * The remove control commits a pruned workspace tree through `core.space.setLayout` — named
+ * through `assembly.ts` (`SPACE_SET_LAYOUT_ACTION`), like every door this floor knocks on —
+ * which is why a disable can never brick a layout (D4, `[R: layout-lock blocker]`). That
+ * guarantee is also why the seat behind it is `essential` (issue #113): an engine promise may
+ * not sit behind a toggle the roster hands to an administrator.
  */
 export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
   return (
@@ -1127,7 +1130,7 @@ export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderPr
           <button
             type="button"
             className="plugin-placeholder__remove"
-            data-action="core.space.setLayout"
+            data-action={SPACE_SET_LAYOUT_ACTION}
             onClick={onRemove}
           >
             Remove

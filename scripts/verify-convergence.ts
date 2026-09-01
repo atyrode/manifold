@@ -30,7 +30,7 @@
  *
  * Exit 0 only if every round converges with its expected effect.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
@@ -44,7 +44,8 @@ import {
   type SceneElement,
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 function debugPortIsAvailable(port: number): boolean {
   try {
@@ -106,16 +107,6 @@ async function serverOriginFromReadyLine(): Promise<string> {
     }
   }
   throw new Error("server exited before emitting its ready URL");
-}
-
-async function stopServer(): Promise<void> {
-  if (server.exitCode === null) server.kill("SIGTERM");
-  const stopped = await Promise.race([
-    server.exited.then(() => true),
-    Bun.sleep(5_000).then(() => false),
-  ]);
-  if (!stopped && server.exitCode === null) server.kill("SIGKILL");
-  await server.exited;
 }
 
 const browserA = new Browser();
@@ -188,7 +179,7 @@ try {
     20_000,
     "local server healthz",
   );
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
   // `core.index.createContainer` replaced `POST /api/containers`: the index owns its own doors, and a
@@ -1862,9 +1853,8 @@ try {
   await browserA.close().catch(() => undefined);
   await browserB.close().catch(() => undefined);
   observer?.close();
-  await stopServer();
+  await teardownServer(server, dataDir);
   cleanupDist();
-  rmSync(dataDir, { recursive: true, force: true });
 }
 
 if (failures.length > 0) {

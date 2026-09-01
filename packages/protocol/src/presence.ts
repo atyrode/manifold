@@ -117,6 +117,20 @@ export const CarryAimSchema = z.strictObject({
   action: z.enum(["place", "swap", "replace"]),
   /** Same-axis seam-band drop: wedge between the target and its neighbor (thirds). */
   between: z.boolean().optional(),
+  /**
+   * The producer's LAYOUT REVISION: a content hash of the tile tree the aim was resolved
+   * against, which every peer derives from its own copy of that tree rather than from a
+   * counter anybody has to keep. An aim names a `tileId` and nothing else, so a viewer one
+   * Yjs update behind (or ahead) re-derives a DIFFERENT prospect from the same bytes and
+   * has no way to notice: a vanished tile degrades gracefully to no preview, but a RESHAPED
+   * tree yields a confidently wrong one. Stamped, the skew is detectable and the viewer
+   * simply withholds the preview until the trees agree — one update later.
+   *
+   * Optional because it is derived from a tree: a portal whose socket has not delivered its
+   * layout has none to hash, and absence means "unverifiable", which is exactly the
+   * pre-stamp behavior of trusting the tile id alone.
+   */
+  revision: z.number().int().nonnegative().optional(),
 });
 export type CarryAim = z.infer<typeof CarryAimSchema>;
 

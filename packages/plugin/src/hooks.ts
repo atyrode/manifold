@@ -102,6 +102,7 @@ export {
   RING_LEAF_CAP,
   ROOT_RING_PX,
   ZONE_HYSTERESIS,
+  layoutRevision,
   paneShifts,
   resolveTileAim,
   ringFraction,
@@ -118,6 +119,19 @@ export {
   type UnitPoint,
   type UnitRect,
 } from "./tile-geometry.ts";
+/**
+ * The ELEMENT plane's geometry, as the tile plane has its own above: what a flat coordinate
+ * payload extends to and the SVG strings that paint it. Neutral over producers — a polyline
+ * is a coordinate sequence, never a stroke — which is what let two plugins stop carrying
+ * private copies of it (issue #117); the doc comment on the module applies the litmus.
+ */
+export {
+  polylineBounds,
+  polylinePath,
+  polylineRelativeTo,
+  polylineViewBox,
+  type PolylineBounds,
+} from "./polyline.ts";
 /**
  * WHAT A RELEASE MEANS over a tile tree: the one answer, shared by every surface that
  * resolves an aim — a composition's own tree, the workspace shell's, and the projection of

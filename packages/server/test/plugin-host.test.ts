@@ -20,7 +20,7 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
+import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
@@ -69,7 +69,7 @@ function testPlacement(fixture: HostFixture): PlaceExecutor {
     fixture.rooms,
     fixture.broker,
     fixture.runtime,
-    assemblyElementTraits(() => []),
+    assemblyPlacementVocabulary(() => []),
     assemblyItemNouns(() => []),
   );
 }

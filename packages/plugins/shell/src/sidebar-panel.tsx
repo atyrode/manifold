@@ -10,13 +10,7 @@ import {
   type SectionProps,
   type SectionRelease,
 } from "@manifold/plugin";
-import {
-  ROOT_TILE_ID,
-  type SectionNode,
-  type Structure,
-  type TileDir,
-  type TileLayout,
-} from "@manifold/protocol";
+import { type SectionNode, type Structure, type TileDir } from "@manifold/protocol";
 import {
   useCallback,
   useEffect,
@@ -33,11 +27,9 @@ import {
   carriesItem,
   readEnvelope,
   resolveTileAim,
-  tileChainAt,
   tileRects,
   useWorkspaceShell,
   type TileAim,
-  type UnitPoint,
   type UnitRect,
 } from "@manifold/plugin/hooks";
 import {
@@ -50,6 +42,7 @@ import {
   useVantage,
 } from "@manifold/plugin/ui";
 import { railTree, type RailNode } from "./rail-rows.ts";
+import { railExtents, railPoint, stackPoint, type RailBox } from "./rail-aim.ts";
 import { shellManifest } from "./index.ts";
 
 /**
@@ -156,13 +149,12 @@ interface RailGround {
   /** FROZEN with the boxes below: the arrangement every frame of this gesture resolves against. */
   readonly nodes: readonly SectionNode[];
   readonly projection: SectionProjection;
+  /** Every painted node's box, keyed by its path: the geometry a pointer is resolved against. */
+  readonly boxes: ReadonlyMap<string, RailBox>;
+  /** The unit rects of the projected tree, held with the boxes they are read alongside. */
+  readonly rects: ReadonlyMap<string, UnitRect>;
   /** The stack's own box, in client px. */
-  readonly area: {
-    readonly left: number;
-    readonly top: number;
-    readonly width: number;
-    readonly height: number;
-  };
+  readonly area: RailBox;
   /** The divider gap as a fraction of each axis: what the kernel measures its seams against. */
   readonly dividers: { readonly x: number; readonly y: number };
 }
@@ -192,8 +184,9 @@ function structureKey(structure: Structure): string {
 }
 
 /**
- * How big every node of one arrangement is PAINTED along its parent's axis, keyed by the path
- * the projection names it by (`n0`, `n0.1`, …).
+ * WHERE EVERY NODE OF ONE ARRANGEMENT IS PAINTED, keyed by the path the projection names it
+ * by (`n0`, `n0.1`, …) — the geometry both the tree's ratios ({@link railExtents}) and its hit
+ * areas ({@link railPoint}) are read out of, so they can never describe two different rails.
  *
  * By RECT rather than by hit-testing, and that is forced rather than preferred: arrange mode
  * puts `pointer-events: none` on the pane content it disarms, and `elementFromPoint` skips
@@ -202,45 +195,68 @@ function structureKey(structure: Structure): string {
  * carries `data-section-path`, so the stack names itself and there is no ref plumbing to keep
  * in step with the tree it is describing.
  *
- * A path with no box measures 0, which the projection floors at `UNPAINTED_EXTENT`: a disabled
- * plugin's row, or a body the collapsed rail left out, keeps its place in the tree (D4′) while
- * being too small for any pointer to land on.
- *
  * A CLUSTER'S MEMBERS SHARE ONE BOX. The arrangement calls them plain siblings, so each of
- * them reports the whole cluster's extent, and the synthetic stack would be one line taller
- * than the rail per cluster — every band below it describing rows it does not cover. So a
- * clustered row takes an even share of its WRAPPER's extent, which sums to exactly the wrapper
- * whichever way the wrapper happens to flow (the collapsed rail turns a cluster on its side)
- * and leaves each member a band inside the space it does occupy.
+ * them would report the whole cluster's extent, and the synthetic stack would be one line
+ * taller than the rail per cluster — every band below it describing rows it does not cover. So
+ * a clustered row takes an even SLICE of its wrapper's box along the stack's own axis: the
+ * slices sum to exactly the wrapper whichever way the wrapper happens to flow (the collapsed
+ * rail turns a cluster on its side), and each member is reachable inside the space the cluster
+ * does occupy.
  */
-function paintedExtents(
+function paintedBoxes(
   stack: HTMLElement,
   nodes: readonly SectionNode[],
-): ReadonlyMap<string, number> {
+): ReadonlyMap<string, RailBox> {
   const painted = new Map<string, HTMLElement>();
   for (const element of stack.querySelectorAll<HTMLElement>("[data-section-path]")) {
     const path = element.dataset["sectionPath"];
     if (path !== undefined) painted.set(path, element);
   }
-  const extents = new Map<string, number>();
+  const boxes = new Map<string, RailBox>();
   const walk = (list: readonly SectionNode[], prefix: string, dir: TileDir): void => {
     list.forEach((node, index) => {
       const path = `${prefix}${String(index)}`;
       const element = painted.get(path);
       if (element !== undefined) {
         const cluster = element.parentElement;
-        const shared =
+        const slices =
           cluster !== null && cluster.dataset["sectionCluster"] !== undefined
             ? Math.max(cluster.childElementCount, 1)
             : 1;
-        const box = (shared > 1 && cluster !== null ? cluster : element).getBoundingClientRect();
-        extents.set(path, (dir === "row" ? box.width : box.height) / shared);
+        const shared = slices > 1 && cluster !== null;
+        const box = (shared ? cluster : element).getBoundingClientRect();
+        const at = shared ? [...cluster.children].indexOf(element) : 0;
+        const slice = Math.max(at, 0) / slices;
+        boxes.set(
+          path,
+          dir === "row"
+            ? {
+                left: box.left + box.width * slice,
+                top: box.top,
+                width: box.width / slices,
+                height: box.height,
+              }
+            : {
+                left: box.left,
+                top: box.top + box.height * slice,
+                width: box.width,
+                height: box.height / slices,
+              },
+        );
       }
       if (typeof node !== "string") walk(node.sections, `${path}.`, node.dir);
     });
   };
   walk(nodes, "n", "column");
-  return extents;
+  // The VACANT SEAT is painted by the split rather than by the arrangement — the walk above
+  // cannot reach a node the tree does not name — and it is the one box a first row is aimed
+  // into, so it is read straight off the element the projection mints its path for.
+  for (const [path, element] of painted) {
+    if (boxes.has(path)) continue;
+    const box = element.getBoundingClientRect();
+    boxes.set(path, { left: box.left, top: box.top, width: box.width, height: box.height });
+  }
+  return boxes;
 }
 
 /**
@@ -253,7 +269,8 @@ function paintedExtents(
 function measuredGround(stack: HTMLElement, nodes: readonly SectionNode[]): RailGround | null {
   const box = stack.getBoundingClientRect();
   if (box.width <= 0 || box.height <= 0) return null;
-  const extents = paintedExtents(stack, nodes);
+  const boxes = paintedBoxes(stack, nodes);
+  const extents = railExtents(nodes, boxes);
   /*
     The divider is the stack's OWN gap, read off the resolved style rather than repeated as a
     number here: the gap is declared once, in the JSX below, and `0.4rem` is not a count of
@@ -261,11 +278,15 @@ function measuredGround(stack: HTMLElement, nodes: readonly SectionNode[]): Rail
   */
   const gap = Number.parseFloat(getComputedStyle(stack).rowGap);
   const dividerPx = Number.isFinite(gap) ? gap : 0;
+  const dividers = { x: dividerPx / box.width, y: dividerPx / box.height };
+  const projection = projectSectionArrangement(nodes, (path) => extents.get(path) ?? 0);
   return {
     nodes,
-    projection: projectSectionArrangement(nodes, (path) => extents.get(path) ?? 0),
+    projection,
+    boxes,
+    rects: tileRects(projection.layout, dividers),
     area: { left: box.left, top: box.top, width: box.width, height: box.height },
-    dividers: { x: dividerPx / box.width, y: dividerPx / box.height },
+    dividers,
   };
 }
 
@@ -276,46 +297,6 @@ function openHold(
 ): RailHold | null {
   const ground = measuredGround(stack, nodes);
   return ground === null ? null : { release, ground, aim: null, arrangement: nodes };
-}
-
-/**
- * A RAIL IS READ ALONG THE AXIS OF THE STACK THE POINTER IS STANDING IN, and its cross axis
- * carries no meaning at all: the pointer's cross coordinate is replaced by the centre of the
- * node it is inside before the kernel ever sees it.
- *
- * This is the one place the rail's own SHAPE has to be spoken for, and it is not a tweak. The
- * kernel's zones are a quarter of each axis independently, which is right for a pane that is
- * roughly as wide as it is tall and wrong for a row that is 280 px wide and 26 px high: the
- * left and right bands of such a row cover HALF THE RAIL while its top and bottom bands are
- * three pixels each, so a hand dragging straight down the stack would spend the whole gesture
- * asking to nest rows side by side and would never once be able to say "put it here". The same
- * anisotropy hands a pointer near the rail's left edge a SEAM END — "split the whole stack
- * across" — which would fold the entire rail into one member of a new split.
- *
- * Neither of those is a gesture the rail wants to offer at all. NESTING IS THE PALETTE'S: a
- * reader who wants two rows abreast drags a stack out of the palette and drops rows into it,
- * which is a deliberate act with a visible seat, and drifting 20 px sideways in a 26 px row is
- * not. So the cross axis is projected away, and what is left is exactly the vocabulary a stack
- * has: the boundaries between its members. Inside a `row` split the axis is the other one, and
- * the same rule then reads x and flattens y — which is how a row dropped on a member's outer
- * EDGE joins it abreast while the pointer's height inside the split means nothing.
- */
-function alongAxis(
-  layout: TileLayout,
-  rects: ReadonlyMap<string, UnitRect>,
-  point: UnitPoint,
-): UnitPoint {
-  const chain = tileChainAt(layout, rects, point);
-  const nodeId = chain[chain.length - 1] ?? ROOT_TILE_ID;
-  const rect = rects.get(nodeId);
-  if (rect === undefined) return point;
-  // A LEAF takes its parent's axis; a SPLIT the pointer stands in the gap of takes its own.
-  const parentId = chain[chain.length - 2];
-  const parent = parentId === undefined ? undefined : layout[parentId];
-  const dir = layout[nodeId]?.dir ?? parent?.dir ?? "column";
-  return dir === "column"
-    ? { x: rect.x + rect.width / 2, y: point.y }
-    : { x: point.x, y: rect.y + rect.height / 2 };
 }
 
 /**
@@ -342,15 +323,12 @@ function alongAxis(
  * the "no news" answer, so a frame that moved nothing costs no render.
  */
 function aimedHold(hold: RailHold, clientX: number, clientY: number): RailHold {
-  const { nodes, projection, area, dividers } = hold.ground;
+  const { nodes, projection, boxes, rects, area, dividers } = hold.ground;
   const layout = projection.layout;
   const held = hold.aim;
   const aim = resolveTileAim(
     layout,
-    alongAxis(layout, tileRects(layout, dividers), {
-      x: (clientX - area.left) / area.width,
-      y: (clientY - area.top) / area.height,
-    }),
+    stackPoint(layout, rects, railPoint(layout, rects, boxes, area, clientX, clientY)),
     RAIL_CARRY,
     dividers,
     RAIL_RING,
@@ -377,12 +355,11 @@ function aimedHold(hold: RailHold, clientX: number, clientY: number): RailHold {
     hold.release.kind === "section" ? (projection.pathOf.get(hold.release.id) ?? null) : null;
   const home = carried !== null && aim.tileId === carried;
   /*
-    THERE IS NO TRADE IN A STACK. A centre aim on an OCCUPIED leaf means "these two exchange
-    seats", which is a pane gesture: panes have geometry worth preserving, so a swap keeps the
-    layout and moves the content. Rows have none — exchanging two rows is a reorder said a
-    second way — and the centre is HALF of every row, so offering it would crowd out the
-    boundary aims that are the whole of a stack's vocabulary. A VACANT seat's centre is the
-    opposite: it is what a dropped split exists for, and the one drop that fills one.
+    THERE IS NO TRADE IN A STACK, and no centre either: `stackPoint` folds an occupied row's
+    middle onto its nearer boundary before the kernel is asked, so the only centre that can
+    come back is a VACANT seat's — the one drop a dropped split exists for. A centre that
+    reaches here over anything else is a tree the pointer could not have been standing in, and
+    the last hold is the honest answer to it.
   */
   const landing = layout[aim.tileId];
   if (!home && aim.edge === "center" && (landing === undefined || landing.ref !== null)) {
@@ -1058,8 +1035,19 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             take no space at all when it is off. The wireframe is one element and the stylesheet
             decides the rest (`.sidebar-split-seat`) — the rail's row vocabulary is floor CSS,
             because rows belonging to plugins that have never heard of each other wear it.
+
+            It names its PATH like every other painted node, and it is the one node whose path
+            the arrangement does not contain: an empty split has no members, so the projection
+            mints this seat itself (`projectSectionArrangement`) and only the element can say
+            where it was drawn. Without it the first row into a fresh split is aimed at the
+            split's whole box, padding and all, rather than at the dashed rectangle a reader
+            is actually looking at.
           */}
-          {vacant ? <div className="sidebar-split-seat" /> : paintLevel(node.nodes)}
+          {vacant ? (
+            <div className="sidebar-split-seat" data-section-path={`${node.path}.0`} />
+          ) : (
+            paintLevel(node.nodes)
+          )}
         </div>
       );
     }

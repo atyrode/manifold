@@ -14,8 +14,11 @@ bun test packages      # unit tests (zero external services)
 bun run e2e            # spawns real server+agent processes, tests via the SDK
 bun run lint           # eslint
 bun run format         # prettier
-bun run gate           # all of the above + verify:convergence + verify:axioms; green
-                       # before any push
+bun run gate           # all of the above + changelog:check + format:check + every
+                       # verification gate: verify:trace, verify:convergence,
+                       # verify:terminal-selection, verify:terminal-mirror,
+                       # verify:tile-drop, verify:budgets, verify:pwa, verify:axioms.
+                       # Parallelized over one shared web bundle; green before any push
 bun run changelog:check # generated in-app release history matches CHANGELOG.md
 bun run release -- minor # bump, finalize, verify, tag, push, publish GitHub release
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)

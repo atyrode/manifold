@@ -9,7 +9,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
+import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
@@ -105,7 +105,7 @@ function fixture(): TerminalsFixture {
       rooms,
       broker,
       runtime,
-      assemblyElementTraits(() => []),
+      assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
     ),
   );

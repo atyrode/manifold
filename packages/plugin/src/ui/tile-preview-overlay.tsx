@@ -1,5 +1,12 @@
 import { ROOT_TILE_ID, type TileRef } from "@manifold/protocol";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 
 import { ControlIcon, ItemIcon } from "./icons.tsx";
 import type { TileDropSignal, TileDropStore } from "../tile-drop-store.ts";
@@ -80,9 +87,21 @@ export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlay
   const motionRef = useRef<PreviewMotion>({ shifted: [], faded: [] });
   /** The last real state, so a gap (divider, own leaf) fades instead of popping. */
   const [held, setHeld] = useState<TileDropState | null>(null);
+  /** Re-renders this overlay alone when the pointer's freshness window elapses. */
+  const [, wake] = useReducer((tick: number) => tick + 1, 0);
 
+  /*
+    ARMED, WITH A BACKSTOP. A non-null pointer is the transport saying "a gesture is over
+    this area"; `pointerFreshness` is the store saying it heard that recently enough to
+    still be true. The bound is the one peers already apply to an aim, so a stationary
+    drag stops previewing here at the same moment it stops previewing for everybody else
+    instead of the dragger alone keeping a preview their collaborators lost.
+  */
+  const remaining = store.pointerFreshness();
   const armed =
     signal.pointer !== null &&
+    remaining !== null &&
+    remaining > 0 &&
     (host.portal === null || signal.armedElementId === host.portal.elementId);
   const local =
     armed && signal.pointer !== null
@@ -136,6 +155,21 @@ export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlay
   useEffect(() => {
     if (!armed) drop.clear();
   }, [armed, drop]);
+
+  /*
+    THE BACKSTOP'S CLOCK. Everything else here is driven by the store, and a leaked
+    pointer is by definition the case where the store goes quiet — so the disarm needs a
+    wake-up of its own or it never happens. One timer, re-armed by every frame that
+    refreshes the stamp (so it never fires under a live drag) and disarmed with the
+    overlay (so a cleared pointer schedules nothing).
+  */
+  useEffect(() => {
+    if (!armed || remaining === null) return;
+    const timer = setTimeout(wake, Math.max(remaining, 1));
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [armed, remaining]);
 
   // The FLIP itself: written imperatively so the tree never re-renders. Nothing moves
   // when the drop is denied, because nothing will move on release — and that guard now

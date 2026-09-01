@@ -37,7 +37,9 @@ import {
   debugProbeEnabled,
   denialMessage,
   envelopeRef,
+  gestureKey,
   gestureSendIntervalOverride,
+  polylinePath,
   remoteCursorSocketId,
   remoteTileCarries,
   renderCounts,
@@ -81,7 +83,7 @@ import {
   type ProjectedNode,
 } from "./canvas-scene.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
-import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
+import { appendPoint, DEFAULT_STROKE_WIDTH } from "./stroke.ts";
 import type { ChannelRole } from "./portal-engagement.ts";
 
 /**
@@ -637,9 +639,10 @@ export function CanvasView({
   const projected = useMemo<readonly (ProjectedNode & { readonly className?: string })[]>(() => {
     void sceneRevision;
     return projectElements(client.elements, remoteGestures).map((node) => {
-      const override = remoteGestures.get(node.id);
-      if (override === undefined || override.kind !== "carry" || override.carry?.aim === undefined)
-        return node;
+      // Addressed as the CARRY over this element, which is what the override map is now
+      // keyed by: a peer resizing the same element is a different gesture, not this one.
+      const override = remoteGestures.get(gestureKey("carry", node.id));
+      if (override === undefined || override.carry?.aim === undefined) return node;
       return { ...node, className: "is-carried-away" };
     });
   }, [client, remoteGestures, sceneRevision]);
@@ -977,10 +980,18 @@ export function CanvasView({
       }
       const point = dragPoint(event);
       const release = { x: node.position.x, y: node.position.y };
-      // Aimed at a portal: the armed overlay resolved and published the destination —
-      // the very state it previewed — so the geometry this drag produced is dropped. A
-      // REFUSED aim still commits and reports its rule; the pipeline decides, not this
-      // handler.
+      /*
+        Aimed at a portal: the armed overlay resolved and published the destination — the
+        very state it previewed — so the geometry this drag produced is dropped. A REFUSED
+        aim still commits and reports its rule; the pipeline decides, not this handler.
+
+        THE PAINTED AIM IS AUTHORITATIVE AT RELEASE, on both renderers (audit 1.3). The
+        composition route used to re-resolve from its own release pointer instead; the
+        argument that settled it is written out where that code was, in
+        `composition-view.tsx`'s `onDrop`. The short version is that a preview is a promise
+        and this is the only policy a canvas transport can even state, since the portal's
+        pipeline is the portal's.
+      */
       if (aim !== null) {
         drop.commit(null, aim.destination);
         clearCompose();
@@ -1808,7 +1819,7 @@ export function CanvasView({
                 {activeStrokePoints === null ? null : (
                   <svg className="stroke-preview" overflow="visible">
                     <path
-                      d={pointsToPath(activeStrokePoints)}
+                      d={polylinePath(activeStrokePoints)}
                       stroke={host.principal.color}
                       strokeWidth={DEFAULT_STROKE_WIDTH}
                       fill="none"
@@ -1827,7 +1838,7 @@ export function CanvasView({
                       overflow="visible"
                     >
                       <path
-                        d={pointsToPath(gesture.points)}
+                        d={polylinePath(gesture.points)}
                         stroke={carrierColor(client, gesture.principalId)}
                         strokeWidth={DEFAULT_STROKE_WIDTH}
                         fill="none"

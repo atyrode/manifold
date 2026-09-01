@@ -26,6 +26,20 @@ import { z } from "zod";
  * `capabilities` is the ceiling those doors need, and `"*"` is in it because retiring a
  * container is root-only: deleting a canvas destroys every principal's work inside it, so
  * the authority to do it is the workspace owner's and no cap short of root stands in for it.
+ *
+ * ESSENTIAL (issue #113), and the criterion is bootstrap rather than chrome: this is the only
+ * door that mints a container and the only door that reads one. Off, a fresh workspace can
+ * never make the first thing a principal would inhabit, an existing `/p/:id` cannot resolve
+ * the name or the discipline of the container it routes to, and the shell has no inventory to
+ * route from — so what is left is a rail with nowhere to go, which is a broken workspace and
+ * not a degraded one. That is the same tier `core.shell` holds and for the same reason: the
+ * floor's boot path names this plugin (`packages/web/src/assembly.ts`), and the floor may only
+ * lean on a seat the engine guarantees is there.
+ *
+ * The `cleanup` carve-out on `deleteFolder` / `deleteContainer` stays, unchanged and still
+ * necessary: `essential` refuses the DOOR, so an assembly can still arrive with this seat off
+ * out of band, and an administrator in that state must never be left holding a container or a
+ * folder nobody can remove (D12).
  */
 export const indexManifest: PluginManifest = {
   id: "core.index",
@@ -34,6 +48,7 @@ export const indexManifest: PluginManifest = {
   description:
     "The one workspace index: canvases, compositions, the terminals inside them, and folders over all three.",
   capabilities: ["*", "containers:read", "containers:write"],
+  essential: true,
   contributes: {
     panels: [],
     /*

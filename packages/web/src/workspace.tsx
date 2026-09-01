@@ -48,7 +48,12 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { SIDEBAR_PANEL } from "./assembly.ts";
+import {
+  INDEX_CREATE_CONTAINER_ACTION,
+  INDEX_CREATE_FOLDER_ACTION,
+  SIDEBAR_PANEL,
+  SPACE_SET_LAYOUT_ACTION,
+} from "./assembly.ts";
 import { getContainer, getAttendance, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
 import {
   browserContainerStorage,
@@ -178,7 +183,7 @@ export function WorkspaceHost({
         pendingCommitRef.current = null;
         if (committed === null) return;
         void host.client
-          .action("core.space.setLayout", { layout: committed })
+          .action(SPACE_SET_LAYOUT_ACTION, { layout: committed })
           .then((outcome) => {
             if (outcome.ok) return;
             notify(outcome.denial.message, { key: "layout-set" });
@@ -655,7 +660,7 @@ export function WorkspaceHost({
       if (creating) return;
       setCreating(true);
       void host.client
-        .action("core.index.createContainer", {
+        .action(INDEX_CREATE_CONTAINER_ACTION, {
           name: DEFAULT_CONTAINER_NAME,
           discipline,
         })
@@ -695,7 +700,7 @@ export function WorkspaceHost({
   const createFolder = useCallback(
     async (name: string): Promise<void> => {
       try {
-        const outcome = await host.client.action("core.index.createFolder", {
+        const outcome = await host.client.action(INDEX_CREATE_FOLDER_ACTION, {
           name,
           parentId: null,
         });

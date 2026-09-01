@@ -72,6 +72,64 @@ function element(
   };
 }
 
+/**
+ * The DISCIPLINE half of the same published roster (#110). `canvas` and `composition` are
+ * contributions now, not floor rows, so a renderer that wants to judge a drop has to be
+ * handed a roster that declares them — which is exactly what the browser holds in
+ * production, and what makes an UNINSTALLED discipline distinguishable from a typo.
+ */
+function disciplineEntry(id: string, declaration: DisciplineDef): PluginRoster[number] {
+  return {
+    manifest: {
+      id,
+      version: "1.0.0",
+      title: id,
+      description: id,
+      capabilities: [],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        disciplines: [declaration],
+        tools: [],
+        events: [],
+      },
+    },
+    enabled: true,
+    source: "builtin",
+    actions: [],
+  };
+}
+
+/** The declaration shape as a MANIFEST carries it: mutable arrays, exactly as zod infers. */
+type DisciplineDef = NonNullable<PluginManifest["contributes"]["disciplines"]>[number];
+
+const CANVAS_DISCIPLINE: DisciplineDef = {
+  id: "canvas",
+  title: "Canvas",
+  item: {
+    groups: ["tileable", "embeddable", "unplaceable", "canvas_item_as_portal"],
+    guards: ["no_self_embed"],
+    homed: "inline",
+  },
+  accepts: ["canvas_item", "canvas_item_as_portal", "extractable"],
+  guards: ["discipline_match"],
+  destinations: ["canvas", "compose"],
+};
+
+const COMPOSITION_DISCIPLINE: DisciplineDef = {
+  id: "composition",
+  title: "Composition",
+  item: {
+    groups: ["mergeable", "unplaceable", "canvas_item_as_portal"],
+    guards: ["no_self_embed", "solo_only"],
+    homed: "inline",
+  },
+  accepts: ["tileable", "mergeable"],
+  guards: ["discipline_match"],
+  destinations: ["tile"],
+};
+
 const ROSTER: PluginRoster = [
   element("core.notes", "text", "Note", {
     groups: ["tileable", "canvas_item"],
@@ -79,6 +137,8 @@ const ROSTER: PluginRoster = [
     homed: "on_claim",
   }),
   element("core.draw", "draw", "Stroke"),
+  disciplineEntry("core.canvas", CANVAS_DISCIPLINE),
+  disciplineEntry("core.compositions", COMPOSITION_DISCIPLINE),
 ];
 
 const lookup = createPlacementLookup({
@@ -205,10 +265,17 @@ const CASES: readonly {
   // `tile → unplaced` is deliberately absent: the cell flipped to LEGAL when `tile`
   // became `unplaceable` (the fullscreen tile-minimize now re-homes instead of notifying).
   {
+    /*
+      The sentence names the container the drop AIMED AT, not the family the destination
+      form belongs to (#110): `canvas-1` is a canvas, and a `tile` drop on it is refused
+      because a canvas's declaration does not admit that form. Before the discipline roster
+      opened this read "in a composition" — the form's family — which named a container
+      nobody was pointing at.
+    */
     name: "a terminal placed into a canvas",
     envelope: { kind: "terminal", terminalId: "s1" },
     destination: { kind: "tile", containerId: "canvas-1", targetTileId: null, edge: null },
-    expected: "A terminal cannot be placed that way in a composition.",
+    expected: "A terminal cannot be placed that way in a canvas.",
   },
   {
     name: "a terminal dropped into a container that is gone",

@@ -22,7 +22,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const cadences = process.argv
@@ -93,7 +94,7 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       20_000,
       "bench server healthz",
     );
-    const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+    const ownerKey = await ownerKeyOf(dataDir);
     // `core.index.createContainer` replaced `POST /api/containers`: the door answers an ActionOutcome,
     // so the created record arrives inside a validated envelope.
     const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
@@ -290,9 +291,8 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     await browserA.close().catch(() => undefined);
     await browserB.close().catch(() => undefined);
     observer?.close();
-    server?.kill();
+    if (server !== null) await teardownServer(server, dataDir);
     rmSync(distDir, { recursive: true, force: true });
-    rmSync(dataDir, { recursive: true, force: true });
   }
 }
 

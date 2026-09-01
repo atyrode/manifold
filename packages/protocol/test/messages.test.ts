@@ -26,6 +26,7 @@ import {
   buildProtocolJsonSchema,
   elementPayload,
   hasCap,
+  soloLeaf,
   validateTileLayout,
   type Tile,
   type TileRef,
@@ -636,7 +637,16 @@ describe("http schemas", () => {
     expect(ContainerSchema.safeParse({ id: "p1", name: "Notes", createdAt: 5 }).success).toBe(
       false,
     );
-    expect(ContainerSchema.safeParse({ ...container, discipline: "grid" }).success).toBe(false);
+    /*
+      The roster is OPEN (#110), so `grid` PARSES: it is a legal discipline id, and a stored
+      row whose plugin left this build must stay readable or the index cannot draw the
+      container at all. What refuses `grid` is the composed roster — `core.index.createContainer`
+      at the door, `unknown_discipline` at a placement — not this schema.
+    */
+    expect(ContainerSchema.parse({ ...container, discipline: "grid" }).discipline).toBe("grid");
+    // Bounded all the same: a value that is not a legal id is not a container.
+    expect(ContainerSchema.safeParse({ ...container, discipline: "Grid" }).success).toBe(false);
+    expect(ContainerSchema.safeParse({ ...container, discipline: "" }).success).toBe(false);
     // Transience is gone with the bubbles: every composition is durable, so a row still
     // carrying the flag is stale state and must fail to parse rather than be ignored.
     expect(ContainerSchema.safeParse({ ...container, transient: false }).success).toBe(false);
@@ -651,8 +661,12 @@ describe("http schemas", () => {
         discipline: "composition",
       },
     );
+    // Open roster: the SHAPE is the schema's question and existence is the door's (#110).
     expect(
-      CreateContainerRequestSchema.safeParse({ name: "Notes", discipline: "grid" }).success,
+      CreateContainerRequestSchema.parse({ name: "Notes", discipline: "grid" }).discipline,
+    ).toBe("grid");
+    expect(
+      CreateContainerRequestSchema.safeParse({ name: "Notes", discipline: "Grid" }).success,
     ).toBe(false);
     expect(CreateContainerRequestSchema.safeParse({ name: "Notes", transient: true }).success).toBe(
       false,
@@ -803,6 +817,45 @@ describe("tile layout schemas", () => {
     expect(validateTileLayout(layout, "c-2")).toBe(true);
     expect(validateTileLayout(layout)).toBe(true);
   });
+
+  /*
+    The arity fact two renderers used to walk for themselves (issue #117). The edge that made
+    the duplication dangerous is the empty second leaf: splitting a container is how a
+    principal declares it a composition, so arity counts LEAVES rather than occupants — which
+    is also what separates this from `censusSolo`, where the same tree IS solo.
+  */
+  test("solo arity is one leaf, occupied — an empty second leaf ends it", () => {
+    expect(soloLeaf({ root: leaf(ROOT_TILE_ID, terminal("s1")) })).toEqual({
+      tileId: ROOT_TILE_ID,
+      ref: terminal("s1"),
+    });
+    // Any occupant, not just a terminal: the ARITY fact names no kind.
+    expect(
+      soloLeaf({ root: leaf(ROOT_TILE_ID, { kind: "container", containerId: "c-1" }) })?.ref,
+    ).toEqual({ kind: "container", containerId: "c-1" });
+
+    // A vacant container holds nothing to render as.
+    expect(soloLeaf({ root: leaf(ROOT_TILE_ID) })).toBeNull();
+    // Two leaves, one of them EMPTY: still a composition, and the empty half is the invitation.
+    expect(
+      soloLeaf({
+        root: split(ROOT_TILE_ID, ["t1", "t2"]),
+        t1: leaf("t1", terminal("s1")),
+        t2: leaf("t2"),
+      }),
+    ).toBeNull();
+    expect(
+      soloLeaf({
+        root: split(ROOT_TILE_ID, ["t1", "t2"]),
+        t1: leaf("t1", terminal("s1")),
+        t2: leaf("t2", terminal("s2")),
+      }),
+    ).toBeNull();
+    // Splits are structure, never occupants: depth alone never makes a tree non-solo.
+    expect(soloLeaf({ root: split(ROOT_TILE_ID, ["t1"]), t1: leaf("t1", terminal("s1")) })).toEqual(
+      { tileId: "t1", ref: terminal("s1") },
+    );
+  });
 });
 
 describe("json schema export", () => {
@@ -840,7 +893,7 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v20 ADDS to the acceptance set, because the agent wire still did not move", () => {
+  test("v21 ADDS to the acceptance set, because the agent wire still did not move", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
@@ -849,14 +902,17 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
 
       v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing), v18 -> v19 (the
       session channel's liveness pair, reoriented so the SERVER pings and the browser
-      answers) and v19 -> v20 (credential expiry and the credential list, whose one exemption
-      is precisely the machine token) are all the other case. Every one of them leaves
-      `AgentMessage` and `ServerToAgentMessage` gaining, losing and renaming nothing; an agent
-      never sees a principal, a session frame or a browser's throttled timers, and no
-      credential an enrolled spoke holds changed meaning at v20. So the invariant's first
-      clause applies verbatim — a bump that leaves the agent wire identical ADDS — and a v16
-      agent keeps its terminals across this deploy instead of being locked out by a version
-      check for a change it cannot see.
+      answers), v19 -> v20 (credential expiry and the credential list, whose one exemption
+      is precisely the machine token) and v20 -> v21 (the container-discipline roster
+      opening into a manifest contribution, plus the carry aim's layout revision and the
+      server's aim-only gesture fan — session frames an agent never sees) are all the other
+      case. Every one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining,
+      losing and renaming nothing; an agent never sees a principal, a session frame, a
+      container row, a manifest or a browser's throttled timers, and no credential an
+      enrolled spoke holds changed meaning at v20. So the invariant's first clause applies
+      verbatim — a bump that leaves the agent wire identical ADDS — and a v16 agent keeps
+      its terminals across this deploy instead of being locked out by a version check for a
+      change it cannot see.
 
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a
@@ -865,6 +921,7 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
     expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 5,
       PROTOCOL_VERSION - 4,
       PROTOCOL_VERSION - 3,
       PROTOCOL_VERSION - 2,

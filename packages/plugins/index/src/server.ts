@@ -1,5 +1,6 @@
 import type { EmitEvent } from "@manifold/plugin";
-import type { Container, EventKind, IndexEntry } from "@manifold/protocol";
+import { rosterDisciplines } from "@manifold/protocol";
+import type { Container, EventKind, IndexEntry, PluginRoster } from "@manifold/protocol";
 import { indexManifest } from "./index.ts";
 
 /** One index item as a move addresses it: the kind, and the id inside that kind. */
@@ -43,6 +44,16 @@ interface IndexCtx {
   };
   readonly placement: {
     deleteContainer(containerId: string): void;
+  };
+  /**
+   * The composed roster, for one question only: does anything here DECLARE the discipline
+   * this call asked for (#110)? The creation door is where an unknown discipline has to be
+   * refused, because it is the only moment where refusing costs nothing — a container that
+   * already exists with an uninstalled discipline is legible by design (a placeholder, a
+   * named placement refusal), while one CREATED that way would be unrenderable on purpose.
+   */
+  readonly host: {
+    roster(): PluginRoster;
   };
   newId(): string;
   now(): number;
@@ -159,11 +170,22 @@ export const indexHandlers = {
     ctx: IndexCtx,
     args: { name: string; discipline?: Container["discipline"] },
   ): Promise<ContainerOutcome> {
+    /*
+      The discipline roster is OPEN (#110), so this argument is a bounded string the schema
+      cannot check against a list — the list is the composed assembly, and it is checked
+      here. Omitted still means `canvas`, which is the same default it has always had and is
+      itself subject to the check: a build with `core.canvas` disabled or absent refuses to
+      mint a container nothing can render, rather than minting one and hoping.
+    */
+    const discipline = args.discipline ?? "canvas";
+    if (!rosterDisciplines(ctx.host.roster()).has(discipline)) {
+      return { refused: `no plugin renders the "${discipline}" discipline` };
+    }
     const container: Container = {
       id: ctx.newId(),
       name: args.name,
       createdAt: ctx.now(),
-      discipline: args.discipline ?? "canvas",
+      discipline,
     };
     ctx.store.createContainer(container);
     announce(ctx, "container_created", { containerId: container.id, name: container.name });

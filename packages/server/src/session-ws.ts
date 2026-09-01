@@ -117,6 +117,13 @@ interface ChannelState {
   lastGestureAt: number | null;
   pendingGesture: GestureUpdate | null;
   cancelGestureFlush: (() => void) | null;
+  /**
+   * The container this channel's carry was last PROJECTED into — a room other than its
+   * own, named by the aim (issue #66). Remembered because the frames that must retire a
+   * projection are precisely the ones that cannot name it: an `end` frame carries no aim,
+   * and an aim that moves to another container says nothing about the one it left.
+   */
+  aimedContainerId: string | null;
 }
 
 interface SessionConnection {
@@ -455,6 +462,7 @@ export class SessionGateway {
       lastGestureAt: null,
       pendingGesture: null,
       cancelGestureFlush: null,
+      aimedContainerId: null,
     };
     connection.channels.set(message.ch, channel);
     // A refused join already closed the peer, and `retireChannel` cleaned its record —
@@ -535,7 +543,7 @@ export class SessionGateway {
       channel.cancelGestureFlush = null;
       channel.pendingGesture = null;
       channel.lastGestureAt = now;
-      channel.room.relayGesture(channel.peer, gesture);
+      this.deliverGesture(channel, gesture);
       return;
     }
 
@@ -546,7 +554,7 @@ export class SessionGateway {
       channel.cancelGestureFlush = null;
       channel.pendingGesture = null;
       channel.lastGestureAt = now;
-      channel.room.relayGesture(channel.peer, gesture);
+      this.deliverGesture(channel, gesture);
       return;
     }
 
@@ -559,8 +567,48 @@ export class SessionGateway {
       if (connection.closed || pending === null) return;
       if (connection.channels.get(channel.peer.channel) !== channel) return;
       channel.lastGestureAt = this.runtime.now();
-      channel.room.relayGesture(channel.peer, pending);
+      this.deliverGesture(channel, pending);
     }, GESTURE_MIN_INTERVAL_MS - elapsed);
+  }
+
+  /**
+   * EVERY ROOM ONE GESTURE FRAME ADDRESSES.
+   *
+   * A gesture belongs to the room it happens in, and for `move`, `resize` and `draw` that
+   * is the whole story. A CARRY also names the container its aim would land in, and that
+   * container is frequently a different room: a tile dragged over a portal streams through
+   * the CANVAS's room while the split it previews lands in the portal's container, so a
+   * collaborator sitting in that container's own fullscreen view — staring at the very
+   * tree about to change — received nothing at all. The client half of this ships as the
+   * portal's own socket feed, which fixes the direction where the viewer happens to hold a
+   * socket per container; this is the direction that cannot be fixed from a client, and
+   * without it `CarryAim.containerId` addressed a container the transport could not reach.
+   *
+   * READ AUTHORITY ON THE AIMED CONTAINER IS THE BAR, and it is exactly the right one: it
+   * is what opening that container's view costs, so a peer may only project an aim into a
+   * room it could have joined outright, and a forged `containerId` reaches nobody. Only
+   * RESIDENT rooms are addressed — a preview is never a reason to load a document.
+   *
+   * The PREVIOUS projection is fanned too whenever it differs, because the frame that must
+   * retire a projection is the one that stopped naming it: an `end` frame carries no aim
+   * at all, and an aim that moved to another container says nothing about the one it left.
+   * Both would otherwise sit until the receiving side's aim TTL swept them.
+   */
+  private deliverGesture(channel: ChannelState, gesture: GestureUpdate): void {
+    channel.room.relayGesture(channel.peer, gesture);
+    const aimed = gesture.carry?.aim?.containerId ?? null;
+    const projected =
+      gesture.phase === "end" || aimed === null || aimed === channel.peer.containerId
+        ? null
+        : aimed;
+    const previous = channel.aimedContainerId;
+    channel.aimedContainerId = projected;
+    if (projected === null && previous === null) return;
+    for (const containerId of new Set([projected, previous])) {
+      if (containerId === null) continue;
+      if (!this.auth.allows(channel.peer.auth, "containers:read", containerId)) continue;
+      this.rooms.live(containerId)?.relayGesture(channel.peer, gesture, true);
+    }
   }
 
   /** Applies one cadence gate to explicit requests and automatic epoch-mismatch recovery. */

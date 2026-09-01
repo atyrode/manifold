@@ -15,6 +15,7 @@ import {
   placementItemFor,
   placementRefusalRule,
   resolvePlacement,
+  rosterDisciplines,
   type ActionOutcome,
   type Container,
   type ContainerDiscipline,
@@ -45,7 +46,7 @@ import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
 import {
-  assemblyElementTraits,
+  assemblyPlacementVocabulary,
   assemblyItemNouns,
   PlaceExecutor,
   type PlaceOutcome,
@@ -59,6 +60,7 @@ import {
   FakeClock,
   FakeRuntime,
   FakeSocket,
+  hostWithSeatOff,
   placeTile,
   testPluginHost,
   testStore,
@@ -206,7 +208,7 @@ function placementFixture(): PlacementFixture {
     rooms,
     broker,
     runtime,
-    assemblyElementTraits(() => plugins.roster()),
+    assemblyPlacementVocabulary(() => plugins.roster()),
     assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
@@ -398,6 +400,7 @@ function lookupFor(fixture: PlacementFixture): PlacementLookup {
         containerId: solo.kind === "terminal" ? containerId : solo.containerId,
       };
     },
+    discipline: (id) => rosterDisciplines(fixture.plugins.roster()).get(id) ?? null,
     itemTraits: (kind) => rosterElementTraits(fixture.plugins.roster()).get(kind) ?? null,
   };
 }
@@ -491,8 +494,17 @@ describe("the placement algebra, executed", () => {
       than listing them is what keeps this matrix exhaustive as plugins take ownership of
       kinds — a contributed kind with no ref above fails here.
      */
-    const contributed = [...rosterElementTraits(placementFixture().plugins.roster()).keys()];
-    const itemKinds = [...Object.keys(ITEM_KINDS), ...contributed];
+    const composed = placementFixture().plugins.roster();
+    const contributed = [...rosterElementTraits(composed).keys()];
+    /*
+      The DISCIPLINES the assembly composed, on the same footing as the element kinds it
+      composed (#110): `canvas` and `composition` left `ITEM_KINDS` when the roster opened,
+      so the matrix reads them off the roster exactly as it reads `text` and `draw`. That is
+      the assertion, not an accommodation — if `core.canvas` stopped declaring `canvas`, the
+      eight golden rows below would go missing and this test would say so.
+    */
+    const disciplines = [...rosterDisciplines(composed).keys()];
+    const itemKinds = [...Object.keys(ITEM_KINDS), ...disciplines, ...contributed];
     const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
     const answers: string[] = [];
     for (const itemKind of itemKinds) {
@@ -1859,16 +1871,33 @@ describe("core.space.place", () => {
     // Nothing above the handler's rung wrote anything.
     expect(readElements(roomFor(fixture, fixture.canvas.id).doc).size).toBe(5);
 
-    // And with the plugin off, the door is gone rather than silent: a disabled plugin's
-    // action reports `plugin_disabled`, which is a different truth from a wrong name.
-    const disabled = await dispatch(
+    /*
+      And with the seat off, the door is gone rather than silent: a disabled plugin's action
+      reports `plugin_disabled`, which is a different truth from a wrong name.
+
+      `core.space` is `essential` (issue #113) — it writes every principal's workspace tree,
+      including the pruned commit the engine's own placeholder makes — so the toggle refuses,
+      and the rung is exercised on an assembly composed with the row already in the store's
+      disabled set, which is the only way this state is reachable. Dispatched on that assembly
+      directly rather than over HTTP, because this fixture's app holds the host it was built
+      with.
+    */
+    const refusedToggle = await dispatch(
       fixture,
       OWNER_KEY,
       { id: "core.space", enabled: false },
       "engine.plugins.setEnabled",
     );
-    expect(disabled.ok).toBe(true);
-    const afterDisable = await dispatch(fixture, OWNER_KEY, legal);
+    expect(refusedToggle.ok).toBe(false);
+    if (!refusedToggle.ok) {
+      expect(refusedToggle.denial.rule).toBe("refused");
+      expect(refusedToggle.denial.message).toBe("essential");
+    }
+    const afterDisable = await hostWithSeatOff(fixture, "core.space").dispatch(
+      fixture.root,
+      "core.space.place",
+      legal,
+    );
     expect(afterDisable.ok).toBe(false);
     if (!afterDisable.ok) expect(afterDisable.denial.rule).toBe("plugin_disabled");
   });
@@ -1909,7 +1938,15 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
       fixture.rooms,
       fixture.broker,
       fixture.runtime,
-      (kind) => (kind === "text" ? traits : null),
+      {
+        itemTraits: (kind) => (kind === "text" ? traits : null),
+        /*
+          The disciplines still come from the real assembly: this fixture overrides the
+          ELEMENT half of the vocabulary to drive one rule, and a container that could not
+          be resolved would refuse before that rule was ever reached (#110).
+        */
+        discipline: (id) => rosterDisciplines(fixture.plugins.roster()).get(id) ?? null,
+      },
       (kind) => (kind === "text" ? noun : "item"),
     );
   }

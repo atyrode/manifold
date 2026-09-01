@@ -601,8 +601,10 @@ it unreachable for every principal (A2). It flips a server-persisted flag (`meta
 and pushes the new roster to every open socket; clients rebuild live, with no reload. `engine.` is a
 reserved namespace (`ENGINE_NAMESPACE_PREFIX`): a plugin claiming it fails assembly, and a
 `setEnabled` aimed at a builtin row is refused with class `builtin`. `core.plugins` is the manager
-**UI only** — an ordinary, disableable plugin with no actions and no `essential`. `core.shell`
-remains the one `essential` plugin; attempting to disable it is `refused`/`essential`.
+**UI only** — a plugin with no actions, whose `essential` flag defends the LEDGER and never the
+mechanism. Seven shipped seats are `essential` and answer `refused`/`essential`: the rail's
+non-negotiables `core.shell`, `core.brand`, `core.keys` and `core.plugins` (issue #91), and the
+three the floor itself dispatches — `core.space`, `core.index` and `core.access` (issue #113).
 
 **`core.` is reserved too, and it is the OTHER kind of reservation.** `CORE_NAMESPACE_PREFIX`
 (published at `GET /api/protocol` as `coreNamespace`) marks AUTHORSHIP and confers no privilege:
@@ -854,10 +856,14 @@ is `forbidden` at the door, one rung earlier.
 `revoke` is `cleanup: true`: revocation is what somebody reaches for when a secret has
 leaked, so disabling `core.access` must not keep a compromised token alive (ADR 0013 §9). Its
 result is an exhaustive count rather than `{ ok }` — `0` means "there was nothing left to
-revoke", which the deleted route could not say. `core.access` is NOT `essential`: the owner key
-authenticates outside the token system, so no disable can lock the owner out. The A5 evaluator
-(ADR 0011) later replaces what happens BENEATH these doors; their published vocabulary does not
-move.
+revoke", which the deleted route could not say. `core.access` IS `essential` (issue #113): it was
+ruled ordinary on the grounds that the owner key authenticates outside the token system, so no
+disable can lock the owner out — which answers lockout, not drawability. `createPrincipal` is the
+only path from a credential to an identity, so with the seat off no browser that is not already
+holding a token can enter at all. The owner key remains the way back from an assembly that
+arrives with the seat off out of band, which is what makes the refusal safe rather than what made
+it unnecessary. The A5 evaluator (ADR 0011) later replaces what happens BENEATH these doors;
+their published vocabulary does not move.
 
 **Sharing across instances (`core.access`, ADR 0014).** A **share** is a token bound to a node
 and minted for a named guest **origin**; a **dial** is the guest's side of one accepted share.

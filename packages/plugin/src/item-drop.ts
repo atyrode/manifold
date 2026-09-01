@@ -3,10 +3,11 @@ import {
   placementItemFor,
   resolveCarriedPlacement,
   resolvePlacement,
+  rosterDisciplines,
   type CarriedItem,
   type ContainerDiscipline,
-  type ContainerKind,
   type Container,
+  type PlacementContainer,
   type PlaceResponse,
   type PlacementDenial,
   type PlacementDenialRule,
@@ -18,7 +19,7 @@ import {
   type SceneElement,
 } from "@manifold/protocol";
 import { rosterElementTraits } from "./assemble.ts";
-import { ITEM_NOUNS, itemNounPhrase } from "./item-noun.ts";
+import { itemNounPhrase } from "./item-noun.ts";
 import type { PlaceOutcome } from "./host.ts";
 import { useCallback, useMemo } from "react";
 import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "./item-envelope.ts";
@@ -45,15 +46,26 @@ import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "
  */
 
 /**
- * Prose per container kind, in the object position of every refusal sentence. It is
- * DERIVED from the one label vocabulary rather than written again: a container kind is an
- * item kind seen from the other side, so `canvas` and `composition` take their word from
- * `ITEM_NOUNS` and only `unplaced` needs a sentence of its own — it is not a place, so it
- * reads as the one thing it actually is: the index's top level, where an item that nothing
+ * Prose for the container a refusal names, in the object position of every refusal
+ * sentence. It is DERIVED from the one label vocabulary rather than written again: a
+ * container is an item seen from the other side, so it takes the word its DISCIPLINE
+ * declared and `unplaced` gets a sentence of its own — it is not a place, so it reads as
+ * the one thing it actually is, the index's top level, where an item that nothing
  * references sits.
+ *
+ * The discipline, not the destination FORM's container family: the family is closed wire
+ * vocabulary (`canvas`, `composition`, `unplaced`) and the roster is open, so a
+ * `spreadsheet` container refuses as "a spreadsheet" instead of as whichever family its
+ * destination form reports. A container whose discipline nothing declares reads as "an
+ * item", which is `itemNoun`'s truthful generic and exactly what the sentence for
+ * `unknown_discipline` is about.
  */
-function containerNoun(kind: ContainerKind): string {
-  return kind === "unplaced" ? "the index" : `a ${ITEM_NOUNS[kind]}`;
+function containerNoun(container: PlacementContainer, lookup: ItemLookup): string {
+  if (container.kind === "unplaced") return "the index";
+  // `noun` answers in the SUBJECT position ("A canvas"); an object position wants the
+  // same phrase uncapitalised, and the article is already the right one.
+  const phrase = lookup.noun(lookup.disciplineOf(container.containerId) ?? container.kind);
+  return phrase.charAt(0).toLowerCase() + phrase.slice(1);
 }
 
 /**
@@ -107,8 +119,10 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup
     return inputs.containers.find((container) => container.id === containerId)?.discipline ?? null;
   };
   const traits = rosterElementTraits(inputs.roster);
+  const disciplines = rosterDisciplines(inputs.roster);
   return {
     disciplineOf: disciplineOf,
+    discipline: (id) => disciplines.get(id) ?? null,
     elementItem: (containerId, elementId) => {
       // Only this renderer's own document is visible from here. Another container's
       // elements are not knowable without a socket, and no gesture addresses them.
@@ -161,6 +175,15 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
   unknown_container: () => "That container no longer exists.",
+  /*
+    The container is there and its renderer is not (#110). The sentence names the RENDERER
+    rather than the container, because the container is fine — this build simply has no
+    plugin that reads its discipline, and "no longer exists" (the `unknown_container`
+    sentence) would be a lie a principal would act on by recreating something they already
+    have.
+  */
+  unknown_discipline: (subject, container) =>
+    `${subject} cannot go in ${container}: nothing here knows how to render it.`,
   no_tree: (subject) => `${subject} only goes into an arrangement that already exists.`,
 };
 
@@ -175,7 +198,7 @@ export function itemDenialMessage(
   item: PlacementItem,
   lookup: ItemLookup,
 ): string {
-  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), containerNoun(denial.container.kind));
+  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), containerNoun(denial.container, lookup));
 }
 
 /**
@@ -187,7 +210,7 @@ export function itemDenialMessage(
 export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
   const item = placementItemFor(denial.ref, lookup);
   const subject = item === null ? "That item" : lookup.noun(item.kind);
-  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container.kind));
+  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container, lookup));
 }
 
 /** What a carry would do at one destination: nothing to say, allowed, or refused. */

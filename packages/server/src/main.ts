@@ -18,7 +18,7 @@ import { InstanceDialer } from "./instance-dialer.ts";
 import { InstanceGateway } from "./instance-ws.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
-import { assemblyElementTraits, assemblyItemNouns, PlaceExecutor } from "./placement.ts";
+import { assemblyItemNouns, assemblyPlacementVocabulary, PlaceExecutor } from "./placement.ts";
 import { PluginHost } from "./plugin-host.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-channel.ts";
@@ -84,8 +84,9 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   /*
-    The executor resolves legality against the ASSEMBLY's element traits and names species by
-    the assembly's noun table (ADR 0013 §12), and
+    The executor resolves legality against the ASSEMBLY's placement vocabulary — element
+    traits AND the discipline roster (ADR 0013 §12, #110) — names species by the assembly's
+    noun table, and
     the assembly's space plugin drives the executor — mutually dependent, so the roster
     arrives as a thunk read at placement time rather than a table captured here.
    */
@@ -94,7 +95,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     rooms,
     broker,
     runtime,
-    assemblyElementTraits(() => plugins.roster()),
+    assemblyPlacementVocabulary(() => plugins.roster()),
     assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);

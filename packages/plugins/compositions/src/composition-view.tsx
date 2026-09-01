@@ -3,8 +3,8 @@ import {
   elementString,
   elementPayload,
   placementItemFor,
+  soloLeaf,
   type MachineSummary,
-  type Container,
   type PlacementItem,
   type TileLayout,
   type Tile,
@@ -114,25 +114,23 @@ const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
 };
 
 /**
- * What this composition holds when it holds exactly ONE thing — the arity fact the
- * placement algebra looks through. An empty second leaf still counts as a second leaf:
- * splitting is how someone declares a container to be a composition.
+ * What this composition holds when it holds exactly ONE thing, as the placement algebra reads
+ * it — an occupancy map of one entry, or none.
+ *
+ * The ARITY half is `soloLeaf` in `@manifold/protocol`: "exactly one leaf, occupied", including
+ * the edge that an EMPTY second leaf still ends it, because splitting is how someone declares a
+ * container to be a composition. That walk used to be written out here and again in
+ * `core.canvas`'s portal, two sibling plugins that may not import each other, each re-deriving
+ * the same rule about the same wire record (issue #117). What is left here is the TRANSLATION —
+ * from a ref form to the noun the algebra places by — which is this renderer's own business.
  */
 function soloOccupancy(
   containerId: string,
   layout: TileLayout | null,
 ): ReadonlyMap<string, PlacementItem> {
-  if (layout === null) return NO_SOLO_OCCUPANTS;
-  let only: TileRef | null = null;
-  let leaves = 0;
-  for (const node of Object.values(layout)) {
-    if (node.dir !== null) continue;
-    leaves += 1;
-    if (leaves > 1 || node.ref === null) return NO_SOLO_OCCUPANTS;
-    only = node.ref;
-  }
-  if (only === null) return NO_SOLO_OCCUPANTS;
-  const kind = SOLO_ITEM_KINDS[only.kind];
+  const solo = layout === null ? null : soloLeaf(layout);
+  if (solo === null) return NO_SOLO_OCCUPANTS;
+  const kind = SOLO_ITEM_KINDS[solo.ref.kind];
   return new Map<string, PlacementItem>([[containerId, { kind, containerId: containerId }]]);
 }
 
@@ -354,14 +352,21 @@ export function CompositionView({
     [containerNameFor],
   );
   /**
-   * WHOSE renderer draws an embedded container: its discipline decides, and the index is the
-   * only party that knows it. `canvas` for an id the index has not answered yet, because that
-   * is what a leaf's container ref always is — the algebra merges compositions rather than
-   * nesting them, so a composition never becomes a leaf of another one.
+   * WHOSE renderer draws an embedded container: its discipline decides, and the index is
+   * the only party that knows it.
+   *
+   * An id the index has not answered yet resolves to NOTHING rather than to `canvas`
+   * (#110). The discipline roster is open, so guessing is no longer a harmless shortcut
+   * between the only two possibilities — it is the silent downgrade #86's ratification
+   * forbade, and it would paint a stranger's container with a canvas renderer that cannot
+   * read it. The empty string is a layout key nothing can register (a discipline id must
+   * match {@link DISCIPLINE_ID_PATTERN}), so `ContainerRenderer` answers with the
+   * engine-owned placeholder in its `unknown` state, which is the honest reading of "the
+   * index has not told me yet".
    */
   const disciplineFor = useCallback(
-    (embeddedContainerId: string): Container["discipline"] =>
-      containers.find((candidate) => candidate.id === embeddedContainerId)?.discipline ?? "canvas",
+    (embeddedContainerId: string): string =>
+      containers.find((candidate) => candidate.id === embeddedContainerId)?.discipline ?? "",
     [containers],
   );
 
@@ -852,9 +857,30 @@ export function CompositionView({
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
-      // The drop's own pointer decides the destination, re-resolved against the live
-      // layout. Reading the painted state instead would race the render that drew it.
-      const state = tileDrop.aimAt(event.clientX, event.clientY);
+      /*
+        ONE RELEASE POLICY, AND IT IS THE PAINTED AIM (audit 1.3).
+
+        This used to re-resolve from the drop's own pointer on the argument that reading the
+        painted state races the render that drew it. Two answers to "is the paint
+        authoritative at release?" is one too many, and this is the one that goes:
+
+        - A preview is a PROMISE. Re-resolving commits an answer computed at a moment the
+          eye was never shown, which is the one outcome a live preview exists to rule out.
+        - The painted aim is the WIRE aim (`store.aim` is the single producer of both), so
+          committing it is committing what every collaborator watched. A second resolution
+          lands a placement nobody — including the dragger — ever saw.
+        - It is the only policy BOTH renderers can state. A canvas transport does not own
+          the portal's pipeline: one instance per host is the rule, because the memo is the
+          hysteresis state. "Re-resolve on both" would mean reaching into a child's
+          resolver, i.e. exactly the second machine that rule exists to forbid.
+
+        The race is not real: `dragover` writes the pointer synchronously and React flushes
+        the overlay's publish before the next discrete event, so the aim read here is the
+        one the last frame painted. The verdict is taken BEFORE `carry.end`, which empties
+        the register `assess` judges from — the same ordering the canvas pane documents.
+      */
+      const aim = dropStore.get().aim;
+      const verdict = aim === null ? null : drop.assess(aim.destination);
       const at = bodyFraction(event.clientX, event.clientY);
       // The ghost is retired before the write: the payload is in the transfer, so
       // ending the carry here cannot cost the drop its envelope.
@@ -867,10 +893,10 @@ export function CompositionView({
         release keeps bubbling to whatever weaker claimant is behind it. Nothing behind it
         either, and it is the documented escape — abort with no mutation and no notice.
       */
-      if (state === null || state.assessment?.denial != null) return;
+      if (aim === null || verdict?.denial != null) return;
       event.preventDefault();
       event.stopPropagation();
-      drop.commit(event.dataTransfer, state.destination);
+      drop.commit(event.dataTransfer, aim.destination);
     },
   };
 
@@ -949,8 +975,9 @@ export function CompositionView({
                 PROJECTED, not imported: the leaf holds a container belonging to whichever
                 plugin renders that container's discipline, and this renderer may not name it
                 (A4 — resolve the reference, open a pipe, project it). The index answers which
-                discipline; an id the index has not answered yet reads as a canvas, which is
-                what the algebra refuses to put here anyway if it is wrong.
+                discipline; an id it has not answered yet, or one whose discipline nothing in
+                this build declares, reads as the engine's named placeholder rather than as a
+                guess (#110).
               */}
               <ContainerRenderer
                 key={ref.containerId}

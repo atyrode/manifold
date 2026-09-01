@@ -5,13 +5,19 @@ import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from
 import { eventVocabulary } from "./events.ts";
 import { grantVocabulary } from "./grants.ts";
 import {
+  DisciplineDefSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
   PlacementDenialSchema,
   PlacementTraitsSchema,
   placementVocabulary,
 } from "./placement.ts";
-import { pluginVocabulary, type ActionSummary, type PluginRoster } from "./plugin.ts";
+import {
+  pluginVocabulary,
+  rosterDisciplines,
+  type ActionSummary,
+  type PluginRoster,
+} from "./plugin.ts";
 import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
 
@@ -31,8 +37,13 @@ export interface ProtocolExtras {
  * the wire format without reading source — the schemas ARE the documentation.
  *
  * `placement` publishes the placement algebra itself: which item kinds exist, the
- * groups they carry, the groups each container accepts, the guards, and the denial rules.
- * A mod discovers what composes with what — and what never can — from these tables.
+ * groups they carry, the container families a resolution answers in, the guards, and the
+ * denial rules. A mod discovers what composes with what — and what never can — from these
+ * tables. `placement.disciplines` is the live half: the DISCIPLINE ROSTER this build
+ * composed, published here because a discipline is a manifest contribution rather than a
+ * protocol enum (#110) and a reader needs the vocabulary, not only its shape. There is no
+ * second door onto it — the list is derived from the same `plugins` roster this document
+ * already carries, by the one function that derives it anywhere.
  *
  * `pluginContract` publishes the plugin vocabulary the same way: what a manifest may
  * declare (including an element kind's placement traits), what a roster row can say, and
@@ -90,6 +101,20 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
        * what the shipped kinds are and how to state a new one.
        */
       traits: z.toJSONSchema(PlacementTraitsSchema),
+      /**
+       * The shape a contributed container DISCIPLINE declares itself with (#110) — the
+       * rows `items`, `containers` and `destinations` used to state as literals for the
+       * two disciplines that shipped in the box. Beside it, `disciplines` below: the
+       * declarations this build actually composed, so a reader learns both how to write
+       * one and which ones are here.
+       */
+      discipline: z.toJSONSchema(DisciplineDefSchema),
+      /**
+       * The composed roster, empty for a caller with no assembly in hand — which is
+       * exactly the description of a server with nothing assembled, the same answer
+       * `actions` and `plugins` give.
+       */
+      disciplines: extras === undefined ? [] : [...rosterDisciplines(extras.plugins).values()],
     },
     pluginContract: pluginVocabulary(),
     eventContract: eventVocabulary(),

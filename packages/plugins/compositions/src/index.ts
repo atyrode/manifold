@@ -48,6 +48,41 @@ export const compositionsManifest: PluginManifest = {
       { id: "new-composition", title: "New composition", order: 3, presentation: "plain" },
     ],
     elements: [],
+    /**
+     * THE `composition` DISCIPLINE, declared (#110, building the ruling ratified on #86),
+     * and the exact counterpart of `core.canvas`'s. These rows were literals in
+     * `packages/protocol/src/placement.ts` until this wave — which is what made the
+     * renderer roster closed at the wire — and are transcribed verbatim;
+     * `packages/protocol/test` pins that the composed result matches what the floor held.
+     *
+     * Note the id is `composition` while this plugin is `core.compositions`. That mismatch
+     * is the counterexample that retired the "value IS the plugin's last id segment"
+     * invariant, and `packages/protocol/src/layout.ts` records the ruling: who renders a
+     * discipline is answered by the assembly's registry, not by a spelling.
+     *
+     * `item` — the old `ITEM_KINDS.composition` — is the whole of "compositions MERGE,
+     * never nest": no `tileable`, so no composition enters another's tree; `mergeable` plus
+     * `solo_only`, so a composition holding exactly ONE item is absorbed AS that item and
+     * one holding several or none is refused by name.
+     *
+     * `accepts` — the old `CONTAINER_KINDS.composition` — is what a tile tree takes, and
+     * `destinations: ["tile"]` is the old `requires` column from this side: the only form
+     * that points into a composition is the one that names a leaf.
+     */
+    disciplines: [
+      {
+        id: "composition",
+        title: "Composition",
+        item: {
+          groups: ["mergeable", "unplaceable", "canvas_item_as_portal"],
+          guards: ["no_self_embed", "solo_only"],
+          homed: "inline",
+        },
+        accepts: ["tileable", "mergeable"],
+        guards: ["discipline_match"],
+        destinations: ["tile"],
+      },
+    ],
     tools: [],
     events: [],
   },

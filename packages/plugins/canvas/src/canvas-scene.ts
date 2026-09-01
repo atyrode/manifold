@@ -5,8 +5,7 @@ import {
   type SceneElementPayload,
 } from "@manifold/protocol";
 import { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH } from "@manifold/scene";
-import type { GestureOverride } from "@manifold/plugin/hooks";
-import { strokeBounds, toRelativePoints } from "./stroke.ts";
+import { polylineBounds, polylineRelativeTo, type GestureOverride } from "@manifold/plugin/hooks";
 import type { Node } from "@xyflow/react";
 
 // Terminal element defaults live in @manifold/scene: the server authors portals onto
@@ -121,12 +120,29 @@ export interface ProjectedNode {
   readonly data: SceneElementPayload;
 }
 
+/**
+ * `overrides` is keyed by GESTURE — `(kind, elementId)` — because one element can be
+ * under two at once, so the live geometry for an element is chosen here rather than
+ * looked up. One pass builds the element-addressed index (the map is peers-currently-
+ * gesturing, never the scene, so it is tiny); the freshest frame wins when two kinds
+ * genuinely name one element, which is the same rule every other override contest uses.
+ *
+ * An AIM-ONLY frame is skipped outright: it is in this room for its aim and its
+ * coordinates belong to another one, so projecting geometry from it would teleport a node.
+ */
 export function projectElements(
   elements: ReadonlyMap<string, SceneElement>,
   overrides: ReadonlyMap<string, GestureOverride>,
 ): readonly ProjectedNode[] {
+  const live = new Map<string, GestureOverride>();
+  for (const override of overrides.values()) {
+    if (override.aimOnly === true) continue;
+    const held = live.get(override.elementId);
+    if (held !== undefined && override.updatedAt <= held.updatedAt) continue;
+    live.set(override.elementId, override);
+  }
   return [...elements.values()].sort(compareElements).map((element) => {
-    const override = overrides.get(element.id)?.current;
+    const override = live.get(element.id)?.current;
     return {
       id: element.id,
       type: element.type,
@@ -204,7 +220,7 @@ export function createDrawElement(
   strokeWidth: number,
   zIndex: number,
 ): SceneElement {
-  const bounds = strokeBounds(points, strokeWidth);
+  const bounds = polylineBounds(points, strokeWidth);
   return {
     id,
     type: "draw",
@@ -213,7 +229,7 @@ export function createDrawElement(
     width: bounds.width,
     height: bounds.height,
     zIndex,
-    points: toRelativePoints(points, bounds),
+    points: polylineRelativeTo(points, bounds),
     strokeWidth,
     color,
   };

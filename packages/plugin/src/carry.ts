@@ -272,6 +272,10 @@ export interface CarryGhost {
  * the element moves under the peer's pointer — and a second chip on top of it would be
  * the same object drawn twice. When it does not (a pooled terminal, a tile lifted off a
  * portal, a container dragged in from the sidebar), the ghost is the only thing there is.
+ *
+ * An AIM-ONLY frame has no ghost at all: it reached this room because its aim addresses
+ * this container, while the pointer that produced it is somewhere else entirely, so its
+ * coordinates are another room's. The preview it feeds is the whole of what it says here.
  */
 export function carryGhosts(
   overrides: Iterable<GestureOverride>,
@@ -280,7 +284,7 @@ export function carryGhosts(
   const ghosts: CarryGhost[] = [];
   for (const override of overrides) {
     const carry = override.carry;
-    if (override.kind !== "carry" || carry === undefined) continue;
+    if (override.kind !== "carry" || carry === undefined || override.aimOnly === true) continue;
     if (rendersRef(carry.ref, override)) continue;
     ghosts.push({
       key: `${override.connId}:${override.elementId}`,

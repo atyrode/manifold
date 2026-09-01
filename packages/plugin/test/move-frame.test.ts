@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { GestureSchema, type Gesture, type ServerGesture } from "@manifold/protocol";
 import { carryGhosts, moveFrame, remoteTileCarries } from "../src/carry.ts";
-import { applyGestureFrame, type GestureOverride } from "../src/presence/remote-gestures.ts";
+import {
+  applyGestureFrame,
+  gestureKey,
+  type GestureOverride,
+} from "../src/presence/remote-gestures.ts";
 
 /**
  * The publisher fallback for a grab whose ITEM this renderer cannot classify.
@@ -54,12 +58,12 @@ describe("move frame", () => {
     expect(
       applyGestureFrame(state, relayed(moveFrame("element-1", AT, "active")), "self", 100),
     ).toBe(true);
-    expect(state.get("element-1")).toMatchObject({
+    expect(state.get(gestureKey("move", "element-1"))).toMatchObject({
       kind: "move",
       target: { x: 42, y: 84, width: 480, height: 320 },
       current: { x: 42, y: 84, width: 480, height: 320 },
     });
-    expect(state.get("element-1")?.carry).toBeUndefined();
+    expect(state.get(gestureKey("move", "element-1"))?.carry).toBeUndefined();
   });
 
   test("release retracts the override at once instead of stranding it until the TTL", () => {

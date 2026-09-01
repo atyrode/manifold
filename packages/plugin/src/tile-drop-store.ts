@@ -1,6 +1,7 @@
 import type { CarryAim, PlacementDestination } from "@manifold/protocol";
 
 import type { RemoteTileCarry } from "./carry.ts";
+import { AIM_TTL_MS } from "./presence/index.ts";
 import { sameAim } from "./use-tile-drop.ts";
 
 /**
@@ -55,6 +56,34 @@ export type TileDropIntent = Pick<TileDropSignal, "pointer" | "armedElementId" |
 export interface TileDropStore {
   get(): TileDropSignal;
   set(next: TileDropIntent): void;
+  /**
+   * How long the pointer a transport last wrote stays believable, in ms — negative once
+   * it is stale, null when there is no pointer at all. The STORE answers this rather than
+   * its reader because the store is what stamped the pointer: one owner of the clock, and
+   * a render-phase consumer that reads a value instead of taking a reading.
+   *
+   * `AIM_TTL_MS` is the bound, and it is the same one for local and remote input alike —
+   * it is already how long a PEER's aim survives with no frame behind it
+   * (`expireGestures`), and a producer that believed its own pointer longer than its
+   * viewers believe the aim built from it would be exactly the divergence invariant 11
+   * forbids: the dragger keeps a preview, and the FLIP transforms that ride it, while
+   * every collaborator's has already cleared.
+   *
+   * It is also the backstop the route never had. Three paths clear the pointer (the
+   * window `dragend`, `dragleave`, `drop`) and they are adequate; none is a guarantee,
+   * and a pointer left behind by a missed clear used to keep an overlay armed
+   * INDEFINITELY — holding transforms on real panes for a gesture that had ended.
+   *
+   * The stamp behind it is deliberately NOT a field of the signal: it moves on every
+   * frame while the coordinates frequently do not, so putting it in the snapshot would
+   * either churn value equality (a re-render per frame in the drag hot path, the loop
+   * hazard that equality exists to close) or freeze whenever a frame repeated a
+   * coordinate — and a stationary pointer under a live drag is exactly that frame.
+   *
+   * Answers the remainder rather than a boolean because the overlay needs both halves: it
+   * gates arming on the sign and schedules its own wake-up from the magnitude.
+   */
+  pointerFreshness(): number | null;
   /**
    * Publishes one FEED's per-container peer aims. Feeds are additive and independent:
    * a canvas publishes what its own room hears, and each live portal publishes what its
@@ -143,8 +172,15 @@ export function tileDropSignalsEqual(a: TileDropSignal, b: TileDropSignal): bool
   return remoteCarriesEqual(a.remote, b.remote);
 }
 
-export function createTileDropStore(): TileDropStore {
+/**
+ * `now` is a seam, not a parameter anybody passes in production: `useState(createTileDropStore)`
+ * calls this with no arguments, and a unit test drives the staleness backstop with a clock
+ * it controls instead of sleeping.
+ */
+export function createTileDropStore(now: () => number = () => performance.now()): TileDropStore {
   let signal = IDLE_SIGNAL;
+  /** See {@link TileDropStore.pointerAt}: refreshed on every write, snapshot-free. */
+  let pointerAt: number | null = null;
   /** One entry per feed; the published `remote` is their freshest-per-container merge. */
   const feeds = new Map<string, ReadonlyMap<string, RemoteTileCarry>>();
   const listeners = new Set<() => void>();
@@ -155,13 +191,18 @@ export function createTileDropStore(): TileDropStore {
   };
   return {
     get: () => signal,
-    set: (next) =>
+    pointerFreshness: () => (pointerAt === null ? null : AIM_TTL_MS - (now() - pointerAt)),
+    set: (next) => {
+      // Stamped before the equality gate, so a frame that merely repeats a coordinate —
+      // a stationary pointer under a live drag — still says the gesture is alive.
+      pointerAt = next.pointer === null ? null : now();
       publish({
         pointer: next.pointer,
         armedElementId: next.armedElementId,
         aim: next.aim,
         remote: signal.remote,
-      }),
+      });
+    },
     setRemote: (feedId, carries) => {
       // Every feed republishes on each animation frame while any gesture eases, and
       // almost nobody is ever aiming: an empty publish against an already-absent feed

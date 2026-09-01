@@ -30,7 +30,7 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -45,8 +45,10 @@ import {
   type TileLayout,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
+import { ROOT_RING_PX } from "../packages/plugin/src/tile-geometry.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-tile-");
@@ -75,26 +77,13 @@ let viewer: Browser | null = null;
 let canvasClient: SessionClient | null = null;
 let viewClient: SessionClient | null = null;
 
-function check(name: string, ok: boolean, detail: string): void {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-  if (!ok) failures.push(`${name}: ${detail}`);
-}
+const check = checkInto(failures);
 
 interface Rect {
   readonly left: number;
   readonly top: number;
   readonly width: number;
   readonly height: number;
-}
-
-/** Polls a rendered condition and ANSWERS instead of throwing, so a miss reads as FAIL. */
-async function settles(probe: () => Promise<boolean> | boolean, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await probe()) return true;
-    if (Date.now() > deadline) return false;
-    await sleep(200);
-  }
 }
 
 const elementRect = (target: Browser, selector: string): Promise<Rect | null> =>
@@ -256,7 +245,7 @@ try {
     20_000,
     "local server healthz",
   );
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
   const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
@@ -990,11 +979,21 @@ try {
     return 0.44;
   })();
   /*
-    The along-the-seam end sample must stay clear of the root's OWN border ring, or it
-    answers as an area edge instead of the seam's end quarter and the round would be
-    measuring the wrong object.
+    The along-the-seam END sample is a constant ON-SCREEN inset from the seam's far edge,
+    because that is what the kernel now measures (issue #66, audit 2.6): the end stretch
+    used to be a flat quarter of the seam — which is why 0.88 of the width landed in it —
+    and is now four ring-widths deep, so on a wide composition 0.88 sits in the MIDDLE
+    stretch and this round would be comparing the between-slot against itself.
+
+    One and a half ring-widths in is the strip that is live at every size AND in every
+    hysteresis state, which matters because this round arrives here HOLDING the middle:
+    the root's own border ring owns the outermost ring-width (sampling there answers
+    "split the whole area" rather than the seam's end), and a held middle pulls the end's
+    boundary in from four ring-widths to two. Clamped so a narrow area still lands outside
+    the middle rather than walking off the box.
   */
-  const xEnd = seamBox.width * 0.88 < seamBox.width - 25 ? 0.88 : 0.85;
+  const seamEndInsetPx = Math.min(1.5 * ROOT_RING_PX, seamBox.width * 0.4);
+  const xEnd = (seamBox.width - seamEndInsetPx) / seamBox.width;
 
   const termK = await bornTerminal("gate-K");
   await until(
@@ -1356,8 +1355,7 @@ try {
   canvasClient?.close();
   await browser?.close();
   await viewer?.close();
-  server.kill();
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
   cleanupDist();
 }
 

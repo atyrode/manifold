@@ -2,8 +2,9 @@ import { z } from "zod";
 
 /**
  * The tile LAYOUT tree, and the container DISCIPLINE that decides who reads it. A
- * container is one object with one of two disciplines: a `canvas` stores free-floating
- * scene elements, a `composition` stores this tile table under the scene doc's layout key.
+ * container is one object wearing one discipline: a `canvas` stores free-floating scene
+ * elements, a `composition` stores this tile table under the scene doc's layout key, and
+ * a third-party discipline stores whatever its own plugin stores.
  *
  * `layout` means exactly one thing in this codebase — this tree — and `discipline` means
  * exactly one thing: which renderer a container asks for.
@@ -23,12 +24,51 @@ export const MAX_TILE_CHILDREN = 16;
 export const MAX_PANEL_SECTIONS = 64;
 
 /**
- * Container discipline: the one field that separates the two renderers of the same
- * object. Every placement rule that mentions a canvas or a composition resolves through
- * this, and each value IS the last segment of the plugin that renders it (`core.canvas`,
- * `core.compositions`) — a checkable invariant rather than a coincidence.
+ * A CONTAINER DISCIPLINE ID: which renderer a container asks for, as a bounded string.
+ *
+ * The roster is OPEN (#86, ratified 2026-09-01; built as #110). A discipline is a
+ * manifest contribution — `contributes.disciplines`, carrying the placement rows the
+ * algebra used to hold as literals — rather than a value this package enumerates, so a
+ * third-party "spreadsheet discipline" plugin is a plugin instead of a wire change.
+ * `canvas` and `composition` mean exactly what they meant as the enum's two members;
+ * they are declared by `core.canvas` and `core.compositions` now, and every stored row
+ * parses unchanged.
+ *
+ * THE LAST-SEGMENT INVARIANT IS RETIRED, and this is the reason on the record (#86's
+ * fourth question, which asked for a check or a retirement and forbade a quiet lapse).
+ * The closed enum's comment claimed that "each value IS the last segment of the plugin
+ * that renders it (`core.canvas`, `core.compositions`) — a checkable invariant rather
+ * than a coincidence". Nothing ever checked it, and writing the check is what exposed it
+ * as FALSE in the shipped tree: `core.compositions` renders `composition`, singular
+ * against plural. Making it true would have meant renaming a plugin every enablement row
+ * already names, or renaming a discipline every stored container row already carries — a
+ * data migration bought for a naming pun. And the pun does not generalise anyway: a
+ * third-party id is not ours to constrain, and `com.example.sheets` renders `spreadsheet`
+ * as legitimately as it renders `sheets`.
+ *
+ * What the claim was really after — "which plugin renders this?" — is answered by DATA
+ * instead, and answered better: a discipline id is claimed GLOBALLY at assembly (two
+ * declarants refuse, naming both), and the declaring plugin rides the assembly's
+ * discipline registry and the published roster row. So the question has one answer that
+ * cannot drift from a spelling, for shipped and third-party disciplines alike.
+ *
+ * The grammar is still a PLUGIN ID SEGMENT, and now for its own sake rather than for the
+ * pun's: a discipline id appears in an index row, a placeholder, a refusal and a
+ * `manifold://` path, so the same lowercase-dash spelling every other published name uses
+ * is what keeps it addressable.
+ *
+ * What the schema does NOT decide is whether a discipline EXISTS. That is the live
+ * roster's answer, and a row naming a discipline nothing declares is legal on the wire on
+ * purpose: the container is still there, and every reader owes it a NAMED condition — the
+ * `unknown_discipline` placement refusal, the engine-owned placeholder — never a crash
+ * and never a silent downgrade to `canvas`.
  */
-export const ContainerDisciplineSchema = z.enum(["canvas", "composition"]);
+export const DISCIPLINE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+export const MAX_DISCIPLINE_ID_LENGTH = 32;
+export const ContainerDisciplineSchema = z
+  .string()
+  .regex(DISCIPLINE_ID_PATTERN)
+  .max(MAX_DISCIPLINE_ID_LENGTH);
 export type ContainerDiscipline = z.infer<typeof ContainerDisciplineSchema>;
 
 /**
@@ -276,4 +316,48 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
     }
   }
   return true;
+}
+
+/** The one leaf a solo layout holds: which tile it is, and what occupies it. */
+export interface SoloLeaf {
+  readonly tileId: string;
+  readonly ref: TileRef;
+}
+
+/**
+ * THE ARITY FACT: the single OCCUPIED leaf of a layout that has exactly one leaf, or null.
+ *
+ * This is the rule that decides whether a container is still "one thing in a box" or has
+ * become a composition, and every renderer that draws a container needs the same answer:
+ * the canvas portal renders AS its occupant when this is non-null, and the placement algebra
+ * looks THROUGH a container to the item inside it on the same condition. It was written twice,
+ * independently, in two sibling plugins that may not import each other (issue #117) — and two
+ * hand-rolled walks over the same record is precisely the divergence a wire type's own
+ * vocabulary exists to prevent.
+ *
+ * WHY PROTOCOL rather than `@manifold/plugin` (AXIOMS.md §Foundation law, criterion by
+ * criterion). Bootstrap: it is a derivation of `TileLayout`, a type nothing in the tree can
+ * read a container without, so it presupposes no plugin and every plugin presupposes it.
+ * Neutrality: it names no plugin and no element kind — it reads `dir` and `ref`, both fields
+ * this file defines, and would be unchanged if every plugin in the tree were replaced.
+ * Arbitration: the `protocol` pillar "arbitrates by being the single definition every party is
+ * measured against" (REGISTRY.md §Pillar inventory), which is the whole of what was missing
+ * here. It joins that pillar, in the file that declares the type it walks, next to
+ * {@link validateTileLayout}.
+ *
+ * AN EMPTY SECOND LEAF STILL ENDS IT. Splitting a container is how a principal says "this is a
+ * composition now", and the vacant half is the invitation — so arity counts LEAVES, not
+ * occupants. That is the one edge both copies got right and neither could enforce on the
+ * other, and it is what separates this from {@link censusSolo}, which counts a container's
+ * OCCUPANTS: a terminal beside an empty leaf is solo to the census and not solo here, because
+ * the two answer different questions ("what does it hold" versus "is it still one thing").
+ */
+export function soloLeaf(layout: TileLayout): SoloLeaf | null {
+  let found: SoloLeaf | null = null;
+  for (const node of Object.values(layout)) {
+    if (node.dir !== null) continue;
+    if (found !== null || node.ref === null) return null;
+    found = { tileId: node.id, ref: node.ref };
+  }
+  return found;
 }
