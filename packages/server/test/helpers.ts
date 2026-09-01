@@ -10,7 +10,7 @@ import {
   type TileEdge,
   type TileRef,
 } from "@manifold/protocol";
-import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
+import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { EventHub } from "../src/event-hub.ts";
@@ -371,7 +371,12 @@ export function testPluginHost(
     runtime,
     options.logger ?? silentLogger,
     events,
-    options,
+    /*
+      The `core.` reservation, wired exactly as `main.ts` wires it: a fixture that dropped it
+      would compose a roster production refuses, which is the divergence this whole file
+      exists to prevent.
+    */
+    { ...options, distribution: SHIPPED_PLUGIN_IDS },
   );
   if (options.events === undefined) {
     broker.setEvents(events);
