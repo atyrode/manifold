@@ -1,4 +1,4 @@
-import type { Container } from "@manifold/protocol";
+import type { Container, SectionNode } from "@manifold/protocol";
 import { createContext, createElement, useContext, type ReactElement, type ReactNode } from "react";
 import type { WorkspaceSidebarState } from "./container-route.ts";
 
@@ -65,15 +65,17 @@ export interface WorkspaceShell {
   registerSidebarElement(element: HTMLElement | null): void;
   /**
    * This principal's stored section arrangement, or undefined for "the manifests decide" —
-   * which is the default and the overwhelmingly common case.
+   * which is the default and the overwhelmingly common case. A TREE since issue #104: a
+   * list of bare ids is the flat order it always was, and a split is two or more rows the
+   * reader put side by side by dropping structure into the rail.
    */
-  readonly sectionOrder: readonly string[] | undefined;
+  readonly sectionArrangement: readonly SectionNode[] | undefined;
   /**
    * COMMIT: the arrangement the sidebar let go of, written through the workspace layout
    * door. One call per gesture at the release, never per frame (the plane rule's commit
    * point) — the sidebar previews locally and calls this once.
    */
-  commitSectionOrder(order: readonly string[]): void;
+  commitSectionArrangement(arrangement: readonly SectionNode[]): void;
   /** The running build's label, already joined: version and build in one string. */
   readonly webVersionLabel: string;
   readonly webChangelog: readonly WebChangelogRelease[];

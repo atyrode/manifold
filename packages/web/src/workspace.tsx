@@ -9,6 +9,7 @@ import {
 import {
   ContainerRouteProvider,
   WorkspaceShellProvider,
+  carriesItem,
   projectLocalPresence,
   usePolledResource,
   ATTENDANCE_RESOURCE,
@@ -32,6 +33,7 @@ import type {
   Attendance,
   IndexEntry,
   PlacementItem,
+  SectionNode,
   TerminalSummary,
   TileLayout,
   Tile,
@@ -277,15 +279,16 @@ export function WorkspaceHost({
    * `layoutRef`/`applyLayout` — not arrange-mode UI. `core.shell`'s sidebar panel is its one
    * caller today, reached through `WorkspaceShell` exactly as `sidebarOpen` is.
    */
-  const sectionOrder = panelSections(layout, SIDEBAR_PANEL);
+  const sectionArrangement = panelSections(layout, SIDEBAR_PANEL);
 
-  const commitSectionOrder = useCallback(
-    (order: readonly string[]): void => {
+  const commitSectionArrangement = useCallback(
+    (arrangement: readonly SectionNode[]): void => {
       const current = layoutRef.current;
       if (current === null) return;
-      const next = withPanelSections(current, SIDEBAR_PANEL, order);
-      // Null means the arrangement was not writable (no sidebar leaf in this tree, or an
-      // order naming a section twice). The layout the reader is looking at is left alone.
+      const next = withPanelSections(current, SIDEBAR_PANEL, arrangement);
+      // Null means the arrangement was not writable (no sidebar leaf in this tree, or one
+      // naming a section twice, or nested past the bound). The layout the reader is looking
+      // at is left alone.
       if (next === null) return;
       applyLayout(next, true);
     },
@@ -301,6 +304,53 @@ export function WorkspaceHost({
    * reached through the tile-geometry read surface registered below (issue #89).
    */
   const { arranging } = useVantage();
+
+  /**
+   * IS SOMETHING IN THE AIR? One boolean, on the frame, because two rules depend on it and
+   * neither can be written any lower down:
+   *
+   *   ARRANGE MODE'S CONTENT SUPPRESSION LIFTS FOR A DRAG. Blanking the panes is how the
+   *   overlay gets the pointer to itself while armed — but a palette drag is precisely the
+   *   case where the content underneath MUST answer, because a composition takes new
+   *   structure through its own door and a scoped panel takes it into its own rows. A
+   *   `pointer-events: none` pane never sees a `dragover`, so without this the palette could
+   *   only ever drop into the workspace's own tree.
+   *
+   *   A VACANT SUBTREE BECOMES TARGETABLE. A stack with nothing in it holds no room at rest
+   *   (that is the point of it), which also makes it impossible to aim at — so it takes room
+   *   again exactly while somebody is arranging or carrying, and gives it back after.
+   *
+   * Read off the DOM's own drag lifecycle rather than a store: an HTML5 drag is a browser
+   * mode, `dragend` fires on the source however it finished, and there is no plane this
+   * belongs on — it dies with the gesture and nobody else can act on it (invariant 13's
+   * device-local clause is about persistence; this persists nowhere at all).
+   */
+  const [carrying, setCarrying] = useState(false);
+  useEffect(() => {
+    const begin = (event: DragEvent): void => {
+      if (event.dataTransfer !== null && carriesItem(event.dataTransfer)) setCarrying(true);
+    };
+    const finish = (): void => setCarrying(false);
+    /*
+      `dragstart` on the BUBBLE phase, and that one word is load-bearing: every source in the
+      application seals the mime inside a React `onDragStart`, which React dispatches at its
+      root container — so a window CAPTURE listener runs strictly before `setData` and reads
+      an empty `DataTransfer` every single time. Measured against a real Chromium drag, not
+      reasoned: capture saw `types=[]` where the window's own bubble listener saw the mime.
+
+      `dragend` and `drop` stay on CAPTURE. Neither reads a transfer, and both mean "it is
+      over" whatever a handler downstream decides to do about it — a `stopPropagation` in a
+      drop target must not be able to strand the mode with the workspace still unblanked.
+    */
+    window.addEventListener("dragstart", begin);
+    window.addEventListener("dragend", finish, true);
+    window.addEventListener("drop", finish, true);
+    return () => {
+      window.removeEventListener("dragstart", begin);
+      window.removeEventListener("dragend", finish, true);
+      window.removeEventListener("drop", finish, true);
+    };
+  }, []);
 
   /**
    * THE WORKSPACE TREE'S OWN DOM ROOT, and the read surface built over it — see
@@ -733,19 +783,19 @@ export function WorkspaceHost({
       createContainer,
       createFolder,
       registerSidebarElement,
-      sectionOrder,
-      commitSectionOrder,
+      sectionArrangement,
+      commitSectionArrangement,
       // Module constants: the web build's own frozen identity, never state, never deps.
       webVersionLabel: WEB_VERSION_LABEL,
       webChangelog: WEB_CHANGELOG,
     }),
     [
-      commitSectionOrder,
+      commitSectionArrangement,
       createContainer,
       createFolder,
       creating,
       registerSidebarElement,
-      sectionOrder,
+      sectionArrangement,
       sidebarOpen,
       workspace,
     ],
@@ -790,7 +840,7 @@ export function WorkspaceHost({
   return (
     <main
       ref={workspaceRef}
-      className={`workspace${sidebarOpen ? "" : " is-collapsed"}${arranging ? " is-arranging" : ""}`}
+      className={`workspace${sidebarOpen ? "" : " is-collapsed"}${arranging ? " is-arranging" : ""}${carrying ? " is-carrying" : ""}`}
     >
       <WorkspaceShellProvider value={shell}>
         <ContainerRouteProvider value={route}>

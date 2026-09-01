@@ -2,6 +2,7 @@ import {
   ROOT_TILE_ID,
   TileLayoutSchema,
   validateTileLayout,
+  type Structure,
   type Tile,
   type TileEdge,
   type TileLayout,
@@ -151,6 +152,49 @@ export function withVacantLeaf(
 ): { readonly layout: TileLayout; readonly vacantLeafId: string } | null {
   const inserted = insertLeaf(layout, null, targetTileId, edge, between);
   return inserted === null ? null : { layout: inserted.layout, vacantLeafId: inserted.tileId };
+}
+
+/**
+ * Insert NEW STRUCTURE at the same aim a ref would land on: the palette's drop (issue
+ * #104).
+ *
+ * A spacer is an ordinary leaf insert with the spacer ref, so it goes through the very
+ * same surgery every other drop does. A SPLIT takes the seat the insert opened and becomes
+ * that split, holding TWO VACANT LEAVES — which is what makes a dropped split immediately
+ * useful rather than a shape with nowhere to put anything: the gesture that asked for a row
+ * gets a row with two seats in it. A split of ONE would also be a shape every subsequent
+ * collapse is entitled to dissolve (`withoutTileLeaf`), so two is the smallest honest answer
+ * as well as the useful one.
+ */
+export function withTileStructure(
+  layout: TileLayout,
+  structure: Structure,
+  targetTileId: string,
+  edge: TileEdge,
+  between = false,
+): TileInsert | null {
+  if (structure.kind === "spacer") {
+    return insertLeaf(layout, { kind: "spacer" }, targetTileId, edge, between);
+  }
+  const seat = insertLeaf(layout, null, targetTileId, edge, between);
+  if (seat === null) return null;
+  const firstId = nextTileId(seat.layout);
+  const secondId = nextTileId(seat.layout, new Set([firstId]));
+  return {
+    layout: {
+      ...seat.layout,
+      [firstId]: tileLeaf(firstId, null),
+      [secondId]: tileLeaf(secondId, null),
+      [seat.tileId]: {
+        id: seat.tileId,
+        dir: structure.dir,
+        ratios: [0.5, 0.5],
+        children: [firstId, secondId],
+        ref: null,
+      },
+    },
+    tileId: seat.tileId,
+  };
 }
 
 /** The one tree surgery behind both entry points above. */
@@ -428,6 +472,22 @@ export function writeTileLeaf(
 ): string | null {
   const layout = readTileLayout(doc) ?? emptyTileLayout();
   const inserted = withTileLeaf(layout, ref, targetTileId, edge, between);
+  if (inserted === null) return null;
+  if (!applyTileLayout(doc, inserted.layout, origin)) return null;
+  return inserted.tileId;
+}
+
+/** Writes NEW STRUCTURE per `edge`; returns the new tile's id, or null when rejected. */
+export function writeTileStructure(
+  doc: Y.Doc,
+  structure: Structure,
+  targetTileId: string,
+  edge: TileEdge,
+  origin: unknown,
+  between = false,
+): string | null {
+  const layout = readTileLayout(doc) ?? emptyTileLayout();
+  const inserted = withTileStructure(layout, structure, targetTileId, edge, between);
   if (inserted === null) return null;
   if (!applyTileLayout(doc, inserted.layout, origin)) return null;
   return inserted.tileId;

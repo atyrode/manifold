@@ -1,6 +1,10 @@
 import {
+  ITEM_MIME,
   areaUnits,
+  carriesItem,
+  readEnvelope,
   resolveTileAim,
+  sealEnvelope,
   tileProspect,
   useProjection,
   type AreaFractions,
@@ -10,12 +14,13 @@ import {
 } from "@manifold/plugin/hooks";
 import {
   ControlIcon,
+  ItemIcon,
   WORKSPACE_TREE_CLASSES,
   setVantage,
   useNotice,
   useVantage,
 } from "@manifold/plugin/ui";
-import { ROOT_TILE_ID, type TileEdge, type TileLayout } from "@manifold/protocol";
+import { ROOT_TILE_ID, type Structure, type TileEdge, type TileLayout } from "@manifold/protocol";
 import {
   useCallback,
   useEffect,
@@ -23,12 +28,13 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
 import {
-  addedSpacer,
+  droppedStructure,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
@@ -36,21 +42,40 @@ import {
   reseated,
   resolveArrangeScope,
   rootEqualized,
-  rootStacked,
   shelved,
   shelvedPanels,
-  swappedSeats,
   type PanelArrangeOutcome,
 } from "./arrange-logic.ts";
 import { composeDefaultLayout } from "@manifold/plugin";
 
 /**
- * `core.arrange`'s ONE workspace overlay — the floating toolbar, the panel-move grips and
- * their live drag preview, the mode's own status, and the wireframe delimitation, all mounted
- * behind the single `toolbar` workspace-overlay slot (issue #89). Everything below is gated
- * on `vantage.arranging`: absent that, this component paints nothing — no DOM, no geometry
- * work, the same discipline the grips always kept.
+ * `core.arrange`'s ONE workspace overlay — the PALETTE and its two-button operation row, the
+ * panel-move grips and their live drag preview, the mode's own status, and the wireframe
+ * delimitation, all mounted behind the single `toolbar` workspace-overlay slot. Everything
+ * below is gated on `vantage.arranging`: absent that, this component paints nothing — no
+ * DOM, no geometry work, the same discipline the grips always kept.
+ *
+ * THE PALETTE IS THREE CARRY SOURCES (issue #104, superseding #89's button reading). Dragging
+ * one out of the bar seals an ordinary item envelope whose payload is NEW STRUCTURE, and from
+ * that moment on it is a carry like any other: the same mime, the same process-wide register,
+ * the same wire ref, adopted by whatever renderer it wanders into. This overlay is only one of
+ * the targets — a composition takes the very same drag through its own `core.space.place`
+ * door, and a scoped panel takes it into its own arrangement — which is exactly why the drop
+ * handler below claims a point only when nothing INSIDE the tree already did (`defaultPrevented`).
  */
+
+/**
+ * WHICH TOOL CARRIES WHICH SHAPE. `core.arrange` reads its OWN tool ids here and nowhere
+ * else: the manifest declares three ordinary `arrange`-toolbar tools, and this table is this
+ * plugin's private reading of them as drag sources. A stranger plugin's tool on the same
+ * toolbar is not in the table and paints as an ordinary button, exactly as it did before —
+ * the palette is a reading, not a new contribution kind.
+ */
+const PALETTE_STRUCTURES: Readonly<Record<string, Structure>> = {
+  "stack-row": { kind: "split", dir: "row" },
+  "stack-column": { kind: "split", dir: "column" },
+  spacer: { kind: "spacer" },
+};
 
 /** Which sibling an arrow key reaches for; the tile vocabulary's own edges, not a new one. */
 const ARROW_EDGES: Readonly<Record<string, Exclude<TileEdge, "center">>> = {
@@ -158,11 +183,15 @@ interface WireframeProps {
 }
 
 /**
- * THE STRUCTURAL DELIMITATION (issue #89's second comment): an outline plus an axis marker on
- * every stack/split container, and a lighter outline on every spacer leaf — both otherwise
- * invisible. Overlay-only: absolutely positioned in client px off the SAME rects the grips
- * read, never a wrapper box in the renderer's own flow, so it costs the frame nothing when
- * arrange mode is not armed and reflows nothing while it is.
+ * THE STRUCTURAL DELIMITATION: an outline plus an axis marker on every split container, and a
+ * lighter outline on every leaf that holds nothing — a spacer, or one of the two VACANT SEATS
+ * a dropped split arrives with (issue #104). All of them are otherwise invisible, and the
+ * vacant ones take no room at all while the mode is off, so the wireframe is the only thing
+ * that says a freshly dropped stack is there and where to aim the next drag.
+ *
+ * Overlay-only: absolutely positioned in client px off the SAME rects the grips read, never a
+ * wrapper box in the renderer's own flow, so it costs the frame nothing when arrange mode is
+ * not armed and reflows nothing while it is.
  */
 function Wireframe({ layout, rects, inScope }: WireframeProps): ReactNode {
   const depths = useMemo(() => tileDepths(layout), [layout]);
@@ -190,7 +219,7 @@ function Wireframe({ layout, rects, inScope }: WireframeProps): ReactNode {
           <span className="arrange-wireframe-axis" data-dir={tile.dir} aria-hidden="true" />
         </div>,
       );
-    } else if (tile.ref?.kind === "spacer") {
+    } else if (tile.ref === null || tile.ref.kind === "spacer") {
       boxes.push(
         <div
           key={tile.id}
@@ -214,7 +243,8 @@ interface GripState {
 }
 
 interface DragFrame {
-  readonly tileId: string;
+  /** The seat being vacated, or null for a palette carry — which vacates nothing. */
+  readonly tileId: string | null;
   readonly aim: TileAim;
   readonly units: AreaFractions;
 }
@@ -289,22 +319,23 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
 
   const rects = useTileRects(arranging, layout, getTreeElement);
 
-  // -------------------------------------------------------------- selection (Swap's own)
-  const [selected, setSelected] = useState<readonly string[]>([]);
-  // Leaving arrange mode drops the selection: a pending swap made sense only while armed.
+  // ------------------------------------------------------------------ selection (Shelf's own)
+  /**
+   * ONE SEAT AT A TIME. It was two while Swap existed, because trading needed a pair; a center
+   * release already trades, so Swap went and the pair went with it. Shelf is the one verb left
+   * that names a seat rather than the root, and it names exactly one.
+   */
+  const [selected, setSelected] = useState<string | null>(null);
+  // Leaving arrange mode drops the selection: a pending Shelf made sense only while armed.
   // Compared during render rather than reset from an effect (react.dev's own remedy for
   // "reset state when a prop changes") — one extra render on the transition, no cascade.
   const [wasArranging, setWasArranging] = useState(arranging);
   if (wasArranging !== arranging) {
     setWasArranging(arranging);
-    if (!arranging && selected.length > 0) setSelected([]);
+    if (!arranging && selected !== null) setSelected(null);
   }
   const toggleSelected = useCallback((tileId: string): void => {
-    setSelected((current) => {
-      if (current.includes(tileId)) return current.filter((id) => id !== tileId);
-      if (current.length < 2) return [...current, tileId];
-      return [current[1] ?? tileId, tileId];
-    });
+    setSelected((current) => (current === tileId ? null : tileId));
   }, []);
 
   // ------------------------------------------------------------------- the panel-move gesture
@@ -419,6 +450,117 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     };
   }, [arranging, getTreeElement, land, layout, toggleSelected]);
 
+  // --------------------------------------------------------------------------- the palette
+  /**
+   * THE SHAPE IN HAND, or null. It is state rather than a ref because the whole workspace
+   * reads it: the grips stop taking the pointer so the drag can reach the tree beneath them,
+   * and the floor lifts the mode's content suppression so a composition can claim a point of
+   * its own. `dragend` fires on the source however the drag finished, including an abort with
+   * no drop, so it is the one signal that always clears this.
+   */
+  const [carried, setCarried] = useState<Structure | null>(null);
+  useEffect(() => {
+    if (carried === null) return;
+    const done = (): void => setCarried(null);
+    window.addEventListener("dragend", done);
+    return () => window.removeEventListener("dragend", done);
+  }, [carried]);
+
+  const beginPaletteDrag = useCallback(
+    (event: ReactDragEvent<HTMLElement>, structure: Structure): void => {
+      /*
+        The ordinary source-side seal every other drag in the application uses: one mime, one
+        typed payload, and the process-wide register set at the same moment so a renderer with
+        no DataTransfer to read (a React Flow node drag crossing the same room) still knows
+        what is in the air. `copy` rather than `move` because nothing leaves anywhere: a
+        palette item is a source that never empties.
+      */
+      event.dataTransfer.setData(
+        ITEM_MIME,
+        sealEnvelope({ kind: "structure", structure }, { kind: "structure", containerId: null }),
+      );
+      event.dataTransfer.effectAllowed = "copy";
+      setCarried(structure);
+    },
+    [],
+  );
+
+  /**
+   * THE WORKSPACE'S OWN CLAIM on a palette drag, and deliberately the WEAKEST one.
+   *
+   * The listeners sit on the tree element and read `defaultPrevented` first, so anything
+   * INSIDE the tree that wanted this point has already taken it: a composition claims its own
+   * interior through `core.space.place`, a scoped panel claims its own rows, and what is left
+   * over — the seams between panes, the area's border ring, a spacer, a vacant seat — is what
+   * the workspace tree itself is. That is the whole arbitration, and it is the DOM's own
+   * bubbling rather than a second registry of who owns which pixel.
+   *
+   * Native listeners rather than React props because the tree is the FLOOR's element: this
+   * plugin reaches it through the published `host.tileGeometry` handle and may not render into
+   * it. Off entirely while scoped into a panel — in there the panel is the arrangement.
+   */
+  useEffect(() => {
+    const tree = getTreeElement();
+    if (!arranging || carried === null || scopedPanelId !== null || tree === null) return;
+    const aimFor = (event: DragEvent): TileAim | null => {
+      const units = areaUnits(tree, WORKSPACE_TREE_CLASSES.dividerPx);
+      if (units === null || layout === null) return null;
+      return resolveTileAim(
+        layout,
+        {
+          x: (event.clientX - units.rect.left) / units.rect.width,
+          y: (event.clientY - units.rect.top) / units.rect.height,
+        },
+        // New structure occupies no seat here, so it can neither be its own target nor trade.
+        { carriedTileId: null, holdsTileSeat: false },
+        units.dividers,
+        units.ring,
+        aimRef.current,
+      );
+    };
+    const over = (event: DragEvent): void => {
+      if (event.defaultPrevented || event.dataTransfer === null) return;
+      if (!carriesItem(event.dataTransfer)) return;
+      const units = areaUnits(tree, WORKSPACE_TREE_CLASSES.dividerPx);
+      const next = aimFor(event);
+      if (units === null || next === null) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      const held = aimRef.current;
+      aimRef.current = next;
+      if (
+        held !== null &&
+        held.tileId === next.tileId &&
+        held.edge === next.edge &&
+        (held.between === true) === (next.between === true)
+      ) {
+        return;
+      }
+      setFrame({ tileId: null, aim: next, units });
+    };
+    const drop = (event: DragEvent): void => {
+      if (event.defaultPrevented) return;
+      const envelope = readEnvelope(event.dataTransfer);
+      if (envelope === null || envelope.kind !== "structure") return;
+      event.preventDefault();
+      // Re-resolved from the release's own pointer rather than replayed off the painted
+      // frame, which is what every other drop target in the tree does: the tree may have
+      // moved under the last `dragover`, and what the reader let go of is where they are.
+      const aim = aimFor(event);
+      aimRef.current = null;
+      setFrame(null);
+      setCarried(null);
+      if (aim !== null) land(droppedStructure(layout, envelope.structure, aim));
+    };
+    tree.addEventListener("dragover", over);
+    tree.addEventListener("drop", drop);
+    return () => {
+      tree.removeEventListener("dragover", over);
+      tree.removeEventListener("drop", drop);
+      aimRef.current = null;
+    };
+  }, [arranging, carried, getTreeElement, land, layout, scopedPanelId]);
+
   // ---------------------------------------------------------------------------- toolbar drag
   const toolbarRef = useRef<HTMLElement | null>(null);
   const toolbarDragRef = useRef<{
@@ -478,7 +620,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     };
   }, [arranging]);
 
-  // --------------------------------------------------------------------------------- tools
+  // --------------------------------------------------------- the surviving click operations
   const shelvedList = useMemo(
     () => shelvedPanels(layout, host.assembly.panels),
     [host.assembly.panels, layout],
@@ -487,21 +629,13 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
   const runTool = useCallback(
     (id: string): void => {
       switch (id) {
-        case "stack-row":
-          land(rootStacked(layout, "row"));
-          return;
-        case "stack-column":
-          land(rootStacked(layout, "column"));
-          return;
-        case "spacer":
-          land(addedSpacer(layout));
-          return;
         case "equalize":
           land(rootEqualized(layout));
           return;
-        case "swap":
-          land(swappedSeats(layout, selected));
-          setSelected([]);
+        case "shelf":
+          if (selected === null) land({ ok: false, rule: "nothing_selected" });
+          else land(shelved(layout, selected));
+          setSelected(null);
           return;
         case "reset":
           // The manifest default, reached through the same door Reset always used — the
@@ -518,10 +652,6 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     [applyLayout, host.assembly, land, layout, selected],
   );
 
-  const runShelve = useCallback(
-    (tileId: string): void => land(shelved(layout, tileId)),
-    [land, layout],
-  );
   const runReseat = useCallback(
     (panelId: string): void => land(reseated(layout, panelId)),
     [land, layout],
@@ -532,8 +662,19 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
   const tools = projection.tools.filter(
     (candidate) => candidate.enabled && candidate.toolbar === "arrange",
   );
-  const grabbable = scopedPanelId === null && panelsCanMove(layout);
-  const toolsDisabled = scopedPanelId !== null;
+  /*
+    THE BAR HAS TWO HALVES, and which half a tool lands in is decided by whether this plugin
+    knows a SHAPE for it: the three it does are drag sources, everything else is a button.
+  */
+  const palette = tools.filter((tool) => PALETTE_STRUCTURES[tool.id] !== undefined);
+  const operations = tools.filter((tool) => PALETTE_STRUCTURES[tool.id] === undefined);
+  const grabbable = scopedPanelId === null && panelsCanMove(layout) && carried === null;
+  /*
+    Scoped INTO a panel, the workspace's own operations have nothing to act on — but the
+    PALETTE does, because the panel in scope takes the drag itself. That asymmetry is the
+    scope working as designed rather than an exception to it.
+  */
+  const operationsDisabled = scopedPanelId !== null;
 
   return (
     <>
@@ -563,9 +704,8 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
               return (
                 <span key={tile.id} className="arrange-grip-host" style={style}>
                   <button
-                    type="button"
                     className={`arrange-grip${liveGrab === tile.id ? " is-grabbed" : ""}${
-                      selected.includes(tile.id) ? " is-selected" : ""
+                      selected === tile.id ? " is-selected" : ""
                     }`}
                     data-action="core.space.setLayout"
                     data-panel-id={panelId ?? undefined}
@@ -676,7 +816,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                 className="arrange-shelf-item"
                 data-action="core.space.setLayout"
                 data-testid="arrange-shelf-item"
-                disabled={toolsDisabled}
+                disabled={operationsDisabled}
                 onClick={() => runReseat(entry.panelId)}
               >
                 {entry.title}
@@ -685,26 +825,50 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
           </div>
         )}
         {/*
-          Shelf is the one tool whose verb needs a SEAT rather than the root, so it reads the
-          selection: the first selected tile, and inert while there is none. With two selected
-          (a Swap being set up) it unseats the FIRST of them rather than refusing — the shelf
-          below lists what it took and one press puts it back, so the recovery is cheaper than
-          a refusal would be to explain.
+          THE PALETTE. Each item is a DRAG SOURCE, not a button — pressing one does nothing,
+          because "insert a stack somewhere" was never a question a click could answer without
+          the toolbar inventing a second addressing scheme for WHERE. The drag answers it with
+          the pointer, through the same seam and zone vocabulary every other carry uses.
+
+          Live even while scoped into a panel: in there the panel takes the drop into its own
+          arrangement, which is the whole reason the sidebar can be given side-by-side rows.
+        */}
+        <div className="arrange-palette" role="group" aria-label="Structure palette">
+          {palette.map((tool) => {
+            const structure = PALETTE_STRUCTURES[tool.id];
+            if (structure === undefined) return null;
+            return (
+              <button
+                key={tool.id}
+                type="button"
+                className="arrange-palette-item"
+                draggable
+                data-action="core.space.setLayout"
+                data-testid={`palette-${tool.id}`}
+                aria-label={`Drag in a ${tool.title.toLowerCase()}`}
+                onDragStart={(event) => beginPaletteDrag(event, structure)}
+              >
+                <ItemIcon kind="structure" size={13} />
+                {tool.title}
+              </button>
+            );
+          })}
+        </div>
+        {/*
+          Shelf is the one operation whose verb needs a SEAT rather than the root, so it reads
+          the selection — tap a grip first — and refuses by name when there is none, which the
+          shelf list below then makes recoverable in one press.
         */}
         <div className="arrange-toolbar-tools">
-          {tools.map((tool) => (
+          {operations.map((tool) => (
             <button
               key={tool.id}
               type="button"
               className="arrange-toolbar-button"
               data-action="core.space.setLayout"
               data-testid={`toolbar-${tool.id}`}
-              disabled={toolsDisabled}
-              onClick={() =>
-                tool.id === "shelf"
-                  ? selected[0] !== undefined && runShelve(selected[0])
-                  : runTool(tool.id)
-              }
+              disabled={operationsDisabled}
+              onClick={() => runTool(tool.id)}
             >
               {tool.title}
             </button>

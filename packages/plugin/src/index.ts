@@ -91,16 +91,19 @@ export {
   type DefaultLayoutCondition,
 } from "./default-layout.ts";
 export {
-  SECTION_CROSS_MARGIN,
-  arrangedSectionIds,
+  UNPAINTED_EXTENT,
+  arrangedSections,
   clusteredSections,
-  crossedSectionId,
-  movedSectionIds,
   panelSections,
+  projectSectionArrangement,
+  releasedSectionArrangement,
+  sectionArrangementOf,
   withPanelSections,
-  type SectionBox,
   type SectionCluster,
+  type SectionProjection,
+  type SectionRelease,
 } from "./layout.ts";
+export { releasedTileLayout, tradedSeats, type TileRelease } from "./tile-release.ts";
 export {
   buildIndexTree,
   projectIndexMove,

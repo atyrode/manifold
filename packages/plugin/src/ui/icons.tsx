@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Columns2,
   CornerDownRight,
   Ellipsis,
   Eye,
@@ -167,6 +168,11 @@ const ITEM_GLYPHS: Readonly<Record<string, LucideIcon>> = {
   tile: LayoutDashboard,
   /** A plugin panel is a plane the shell mounts, so it wears the freeform plane's mark. */
   panel: SquareDashed,
+  /**
+   * NEW STRUCTURE in hand: a divided frame with nothing in either half, which is exactly
+   * what a palette carry holds — a shape with an axis and no occupant yet.
+   */
+  structure: Columns2,
   machine: Server,
   folder: Folder,
   folderOpen: FolderOpen,

@@ -685,6 +685,14 @@ export function CompositionView({
           return containerNameFor(envelope.containerId);
         case "element":
           return null;
+        /*
+          The palette says what it is holding better than this composition could: its own
+          tool title is the word the reader just dragged out of the bar, and re-deriving a
+          noun from the shape here would be a second name for one thing. The chip falls back
+          to the label vocabulary's own "structure" (`ITEM_NOUNS`), like any unnamed carry.
+        */
+        case "structure":
+          return null;
         default: {
           const exhaustive: never = envelope;
           return exhaustive;
@@ -790,16 +798,13 @@ export function CompositionView({
    * The area's drag transport: one handler set on `.tile-area`, replacing N per-leaf
    * sets. Geometry is all this renderer contributes — the pointer goes into the store
    * for the overlay to preview, and every question about what may land where belongs
-   * to the pipeline — which is why there is no rule in any handler below.
+   * to the pipeline, so no handler below authors a rule of its own. The one thing they
+   * DO decide is whether this view claims the gesture at all, which is not a placement
+   * rule but an answer to somebody else's: see the note inside `onDragOver`.
    */
   const areaDropProps = {
     onDragOver: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
-      // Claimed even when refused: keeping the gesture is what lets the overlay paint
-      // the declared RULE, instead of the browser showing a bare no-drop cursor that
-      // explains nothing. The `dropEffect` still says "none", so the cursor stays honest.
-      event.preventDefault();
-      event.stopPropagation();
       // Pointer FIRST, then read the answer — the same order the canvas transports use,
       // so aim staleness is one frame everywhere instead of one here and two there.
       // Arm delay 0: the route previews on the first dragover frame.
@@ -815,11 +820,31 @@ export function CompositionView({
       // here, never a second resolution running beside it.
       const at = bodyFraction(event.clientX, event.clientY);
       if (at !== null) carry.track(at, dropStore.get().aim?.tile);
-      // This browser's own cue comes from the one pipeline instance the overlay paints
+      // This browser's own verdict comes from the one pipeline instance the overlay paints
       // from, so the cursor and the preview can never disagree about legality.
       const state = tileDrop.aimAt(event.clientX, event.clientY);
-      event.dataTransfer.dropEffect =
-        state !== null && state.assessment?.denial == null ? "move" : "none";
+      /*
+        A DROP TARGET CLAIMS A POINT ONLY IF IT CAN TAKE WHAT IS OVER IT.
+
+        This used to claim every point it was handed and explain the refusal afterwards, on
+        the argument that keeping the gesture is what lets the overlay paint the declared
+        RULE instead of a bare no-drop cursor. The paint costs nothing here — the cue is
+        drawn from the store above, which every frame updates whatever the answer — while
+        the CLAIM costs everything behind it: `preventDefault` IS the claim token in this
+        tree (the workspace's own listeners read `defaultPrevented` to mean "something
+        inside took this point"), and `stopPropagation` does not even let them look. So a
+        composition that swallowed a carry it was going to refuse denied every weaker
+        claimant the chance to accept it — which is exactly how a palette structure aimed
+        past a composition into the workspace tree behind it landed nowhere at all.
+
+        Not a check on what KIND of thing is carried, deliberately: the rule is about
+        denials in general. A terminal this composition refuses must fall through for the
+        same reason a structure does, and a species test here would be the second door.
+      */
+      if (state === null || state.assessment?.denial != null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
     },
     onDragLeave: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) return;
@@ -827,8 +852,6 @@ export function CompositionView({
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
-      event.preventDefault();
-      event.stopPropagation();
       // The drop's own pointer decides the destination, re-resolved against the live
       // layout. Reading the painted state instead would race the render that drew it.
       const state = tileDrop.aimAt(event.clientX, event.clientY);
@@ -838,9 +861,15 @@ export function CompositionView({
       carry.end(at ?? undefined);
       setCarriedTileId(null);
       clearDrop();
-      // Released between zones (a divider, the carry's own leaf): aborting with no
-      // mutation and no notice is the documented escape.
-      if (state === null) return;
+      /*
+        The same rule the `dragover` above answers to: released between zones (a divider,
+        the carry's own leaf) or refused, this view takes no mutation AND no claim, so the
+        release keeps bubbling to whatever weaker claimant is behind it. Nothing behind it
+        either, and it is the documented escape — abort with no mutation and no notice.
+      */
+      if (state === null || state.assessment?.denial != null) return;
+      event.preventDefault();
+      event.stopPropagation();
       drop.commit(event.dataTransfer, state.destination);
     },
   };

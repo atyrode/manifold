@@ -5,7 +5,7 @@ import { validateTileLayout, type Tile, type TileLayout } from "@manifold/protoc
 import {
   PANEL_ARRANGE_RULES,
   ROOT_ARRANGE_SCOPE,
-  addedSpacer,
+  droppedStructure,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
@@ -13,10 +13,8 @@ import {
   reseated,
   resolveArrangeScope,
   rootEqualized,
-  rootStacked,
   shelved,
   shelvedPanels,
-  swappedSeats,
   type PanelArrangeOutcome,
 } from "../src/arrange-logic.ts";
 
@@ -318,38 +316,58 @@ describe("the arrange scope a published ref means", () => {
 });
 
 /**
- * THE TOOLBAR'S OWN VERBS, root-scoped and click-driven rather than pointer-driven — the
- * same kernel, a different producer.
+ * THE PALETTE'S DROP, and the three operations that outlived the buttons (issue #104).
+ *
+ * What a palette drag means is an AIM plus a shape, resolved by the same kernel a panel's own
+ * release goes through — so these cases are about the shape arriving where the pointer put it,
+ * not about a second set of tree rules.
  */
-describe("the toolbar's tools", () => {
-  test("Spacer appends a flat, inert leaf to the root's own row", () => {
-    const next = assertOk(addedSpacer(base()));
-    expect(next["root"]?.children).toHaveLength(3);
-    const spacerId = next["root"]?.children.at(-1);
-    expect(spacerId).toBeDefined();
+describe("the palette's drop", () => {
+  test("a dropped split arrives with two seats, so the drop is immediately two places", () => {
+    const next = assertOk(
+      droppedStructure(base(), { kind: "split", dir: "column" }, aimAt("ws-main", "right")),
+    );
+    // The container view keeps its own seat; the split is a NEW sibling beside it.
+    const split = Object.values(next).find((tile) => tile.dir === "column" && tile.id !== "root");
+    expect(split).toBeDefined();
+    expect(split?.children).toHaveLength(2);
+    for (const childId of split?.children ?? []) expect(next[childId]?.ref).toBeNull();
+    // Nothing that was seated moved out of the tree; the two nulls are the new empty seats.
+    expect(panelsInOrder(next).filter((id) => id !== null)).toEqual([SIDEBAR, MAIN]);
+  });
+
+  test("a dropped spacer is an inert leaf exactly where the pointer put it", () => {
+    const next = assertOk(
+      droppedStructure(base(), { kind: "spacer" }, aimAt("ws-sidebar", "left")),
+    );
+    const spacerId = next["root"]?.children[0];
     expect(next[spacerId ?? ""]?.ref).toEqual({ kind: "spacer" });
-    expect(panelsInOrder(next).slice(0, 2)).toEqual([SIDEBAR, MAIN]);
+    expect(panelsInOrder(next).filter((id) => id !== null)).toEqual([SIDEBAR, MAIN]);
   });
 
-  test("Spacer wraps a single-leaf root into a fresh row instead of refusing", () => {
-    const alone: TileLayout = { root: leaf("root", SIDEBAR) };
-    const next = assertOk(addedSpacer(alone));
-    expect(next["root"]?.dir).toBe("row");
-    expect(next["root"]?.children).toHaveLength(2);
+  test("a seam middle wedges the new structure between two panes rather than splitting one", () => {
+    const next = assertOk(
+      droppedStructure(base(), { kind: "spacer" }, aimAt("ws-sidebar", "right", { between: true })),
+    );
+    // Three flat children of one row: sidebar, the spacer, the container view.
+    expect(next["root"]?.children).toHaveLength(3);
+    expect(next[next["root"]?.children[1] ?? ""]?.ref).toEqual({ kind: "spacer" });
   });
 
-  test("Stack column re-orients the root split; Stack row is then a no-op refusal", () => {
-    const stacked = assertOk(rootStacked(base(), "column"));
-    expect(stacked["root"]?.dir).toBe("column");
-    expect(stacked["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
-    expect(rootStacked(stacked, "column")).toEqual({ ok: false, rule: "aim_unchanged" });
+  test("a drop the tree cannot take is refused by name, never silently", () => {
+    expect(droppedStructure(null, { kind: "spacer" }, aimAt("ws-main", "right"))).toEqual({
+      ok: false,
+      rule: "tree_refused",
+    });
+    // A center release onto an OCCUPIED leaf has no meaning for a shape with no occupant to
+    // trade: the tree refuses the insert and the refusal is what the reader is told.
+    expect(
+      droppedStructure(base(), { kind: "spacer" }, aimAt("ws-main", "center", { action: "swap" })),
+    ).toEqual({ ok: false, rule: "tree_refused" });
   });
+});
 
-  test("a lone panel has no root split to re-orient", () => {
-    const alone: TileLayout = { root: leaf("root", SIDEBAR) };
-    expect(rootStacked(alone, "column")).toEqual({ ok: false, rule: "panel_alone" });
-  });
-
+describe("the operations that outlived the buttons", () => {
   test("Equalize normalizes the root's ratios to one even share each", () => {
     const layout: TileLayout = {
       root: {
@@ -365,29 +383,6 @@ describe("the toolbar's tools", () => {
     };
     const next = assertOk(rootEqualized(layout));
     expect(next["root"]?.ratios).toEqual([1 / 3, 1 / 3, 1 / 3]);
-  });
-
-  test("Swap trades exactly two selected seats", () => {
-    const layout = { ...base(), "ws-sidebar": leaf("ws-sidebar", SIDEBAR, ["index"]) };
-    const next = assertOk(swappedSeats(layout, ["ws-sidebar", "ws-main"]));
-    expect(panelsInOrder(next)).toEqual([MAIN, SIDEBAR]);
-    expect(next["ws-main"]?.sections).toEqual(["index"]);
-  });
-
-  test("Swap refuses without exactly two selected tiles", () => {
-    expect(swappedSeats(base(), [])).toEqual({ ok: false, rule: "nothing_selected" });
-    expect(swappedSeats(base(), ["ws-sidebar"])).toEqual({ ok: false, rule: "nothing_selected" });
-    expect(swappedSeats(base(), ["ws-sidebar", "ws-main", "root"])).toEqual({
-      ok: false,
-      rule: "nothing_selected",
-    });
-  });
-
-  test("Swap refuses a split among the two selected", () => {
-    expect(swappedSeats(base(), ["ws-sidebar", "root"])).toEqual({
-      ok: false,
-      rule: "tree_refused",
-    });
   });
 
   test("Shelf unseats a panel, and it is then listed among the shelved", () => {

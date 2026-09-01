@@ -419,6 +419,9 @@ function refs(fixture: PlacementFixture): Readonly<Record<string, PlacementRef>>
       containerId: fixture.composition.id,
       tileId: terminalLeafId(fixture, fixture.composition.id, fixture.occupant),
     },
+    // The palette's item (issue #104): NEW TILE MATERIAL rather than a representation of
+    // something that already exists, which is why it is the one ref with no id in it.
+    structure: { kind: "structure", structure: { kind: "split", dir: "column" } },
     // Deliberately an address that resolves to nothing: no element is ever a panel, and no
     // other ref form names one either (see the golden rows below).
     panel: { kind: "element", containerId: fixture.canvas.id, elementId: "el-panel" },
@@ -566,6 +569,16 @@ describe("the placement algebra, executed", () => {
         // And releasing a leaf re-homes its occupant instead of destroying it, which is what
         // makes the fullscreen tile-minimize button do something at last.
         "tile -> unplaced=unplace",
+        /*
+          Structure means nothing outside a TREE, which is the whole content of the
+          `tree_only` guard: a tile destination takes it, the compose door refuses it by
+          name, and a canvas or a release never accepted it in the first place because
+          structure is only `tileable`.
+         */
+        "structure -> canvas=denied:not_accepted",
+        "structure -> tile=add_tile",
+        "structure -> compose=denied:no_tree",
+        "structure -> unplaced=denied:not_accepted",
         /*
         A panel has no wire REF form at all: a principal's workspace layout is written
         whole by `core.space.setLayout`, so the placement door can never be handed one. The
@@ -1276,6 +1289,191 @@ describe("a center drop with nothing to trade displaces instead", () => {
   });
 });
 
+/**
+ * THE PALETTE'S DROP (issue #104). Every other ref names something that exists and asks for
+ * it to be somewhere else; a `structure` ref names tile MATERIAL and asks for a shape that
+ * did not exist before. It rides the identical seam — the same `core.space.place` door, the
+ * same aim, the same `add_tile` op — so what these tests defend is the difference: what lands
+ * is tree, nothing is consumed to make it, and nothing seated is disturbed by it.
+ */
+describe("a dropped structure is new tree, and costs the occupants nothing", () => {
+  test("a split lands as a split of two VACANT leaves, occupants untouched", () => {
+    const fixture = placementFixture();
+    const before = occupants(fixture, fixture.composition.id);
+    const containersBefore = fixture.store.listContainers().length;
+
+    const outcome = fixture.placement.place({
+      ref: { kind: "structure", structure: { kind: "split", dir: "column" } },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: null,
+        edge: null,
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result.op).toBe("add_tile");
+    if (outcome.result.op !== "add_tile") return;
+    const layout = roomFor(fixture, fixture.composition.id).tileLayout() ?? {};
+    const landed = layout[outcome.result.tileId];
+    // The tile the response names IS the split, and it arrives with two seats in it: that
+    // is what makes the gesture useful rather than a shape with nowhere to put anything.
+    expect(landed?.dir).toBe("column");
+    expect(landed?.ref).toBeNull();
+    expect(landed?.children).toHaveLength(2);
+    const seats = (landed?.children ?? []).map((child) => layout[child]);
+    // Which is exactly the shape scenario 2 needs: two LEAVES, both empty, each an aim a
+    // subsequent carry can be seated in.
+    expect(seats.map((seat) => seat?.dir)).toEqual([null, null]);
+    expect(seats.map((seat) => seat?.ref)).toEqual([null, null]);
+
+    // Nothing was consumed to build it. A palette drop has no source to prune, no note to
+    // adopt and no home to absorb, so every leaf that held something still holds it and no
+    // composition was minted to catch anything.
+    const stillHeld = Object.fromEntries(
+      Object.entries(occupants(fixture, fixture.composition.id)).filter(
+        ([, held]) => held !== null,
+      ),
+    );
+    expect(stillHeld).toEqual(before);
+    expect(fixture.store.listContainers()).toHaveLength(containersBefore);
+  });
+
+  test("the seats it opens are aims: two existing leaves seat into them (scenario 2)", () => {
+    const fixture = placementFixture();
+    const composition = fixture.composition.id;
+
+    const dropped = fixture.placement.place({
+      ref: { kind: "structure", structure: { kind: "split", dir: "column" } },
+      destination: { kind: "tile", containerId: composition, targetTileId: null, edge: null },
+    });
+    expect(dropped.status).toBe("placed");
+    if (dropped.status !== "placed" || dropped.result.op !== "add_tile") return;
+    const splitId = dropped.result.tileId;
+    const seats = roomFor(fixture, composition).tileLayout()?.[splitId]?.children ?? [];
+    expect(seats).toHaveLength(2);
+
+    // The point of the whole gesture: an empty seat is an ordinary CENTER aim, so seating
+    // something in one is the placement that already existed — no second door, no special
+    // case for "the split I just made".
+    const seatIn = (tileId: string, seatId: string): PlaceOutcome =>
+      fixture.placement.place({
+        ref: { kind: "tile", containerId: composition, tileId },
+        destination: {
+          kind: "tile",
+          containerId: composition,
+          targetTileId: seatId,
+          edge: "center",
+        },
+      });
+
+    const first = seatIn(terminalLeafId(fixture, composition, fixture.occupant), seats[0] ?? "");
+    expect(ruleOrStatus(first)).toBe("placed");
+    const second = seatIn(containerLeafId(fixture, composition, fixture.spare.id), seats[1] ?? "");
+    expect(ruleOrStatus(second)).toBe("placed");
+
+    /*
+      The composition IS the dropped column now, holding both occupants in the order they
+      were seated, with nothing empty left over. The split's own id is not asserted on
+      purpose: each leaf that moved out emptied the split it came from, those collapsed, and
+      a collapse promotes the survivor — which for the last one is the immovable root. The
+      contract is the SHAPE the operator asked for, not which tile id carries it.
+     */
+    const layout = roomFor(fixture, composition).tileLayout() ?? {};
+    const column = Object.values(layout).find((tile) => tile.dir === "column");
+    expect((column?.children ?? []).map((child) => layout[child]?.ref)).toEqual([
+      { kind: "terminal", terminalId: fixture.occupant },
+      { kind: "container", containerId: fixture.spare.id },
+    ]);
+    expect(tileLeafIds(layout)).toHaveLength(2);
+    // And the terminal was seated, never re-homed: it is still running where it lived.
+    expect(homeOf(fixture, fixture.occupant)).toBe(composition);
+  });
+
+  test("a spacer lands as a spacer leaf, through the very same door", () => {
+    const fixture = placementFixture();
+
+    const outcome = fixture.placement.place({
+      ref: { kind: "structure", structure: { kind: "spacer" } },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: null,
+        edge: null,
+      },
+    });
+
+    expect(outcome.status).toBe("placed");
+    if (outcome.status !== "placed") return;
+    expect(outcome.result.op).toBe("add_tile");
+    if (outcome.result.op !== "add_tile") return;
+    const layout = roomFor(fixture, fixture.composition.id).tileLayout() ?? {};
+    // A spacer is inert furniture (issue #89) rather than a shape, so it is an ordinary
+    // LEAF — the one arm of the structure vocabulary that holds a ref at all.
+    expect(layout[outcome.result.tileId]).toMatchObject({ dir: null, ref: { kind: "spacer" } });
+  });
+
+  test("a CENTER release onto an occupied leaf is refused, and displaces nobody", () => {
+    const fixture = placementFixture();
+    const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
+    const before = occupants(fixture, fixture.composition.id);
+    const containersBefore = fixture.store.listContainers().length;
+
+    const outcome = fixture.placement.place({
+      ref: { kind: "structure", structure: { kind: "split", dir: "row" } },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: occupied,
+        edge: "center",
+      },
+    });
+
+    /*
+      Center means THIS EXACT SPOT, and the two answers the executor has for an occupied one
+      both require the gesture to hold something: an exchange needs a seat to trade, and a
+      displacement re-homes the occupant to make room for an ITEM. New structure is neither,
+      so evicting a running terminal to seat an empty split would destroy more than it
+      creates — the tree itself refuses the write, and the refusal arrives as the same
+      `conflict` every other rejected write does.
+     */
+    expect(outcome.status).toBe("failed");
+    if (outcome.status !== "failed") return;
+    expect(outcome.failure).toBe("conflict");
+    expect(occupants(fixture, fixture.composition.id)).toEqual(before);
+    expect(fixture.store.listContainers()).toHaveLength(containersBefore);
+    expect(homeOf(fixture, fixture.occupant)).toBe(fixture.composition.id);
+  });
+
+  test("the compose door refuses structure by name: there is no tree in a merge", () => {
+    const fixture = placementFixture();
+    const ref: PlacementRef = { kind: "structure", structure: { kind: "split", dir: "column" } };
+    const containersBefore = fixture.store.listContainers().length;
+
+    const outcome = fixture.placement.place({
+      ref,
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+
+    // Composing MINTS a composition out of two items, and structure is not an item to put
+    // in one. Refused by the guard's own rule rather than by a failure, so the interface can
+    // say why while the drag is still in the air — and nothing was minted.
+    expect(outcome.status).toBe("denied");
+    if (outcome.status !== "denied") return;
+    expect(outcome.denial.rule).toBe("no_tree");
+    expect(outcome.denial.ref).toEqual(ref);
+    expect(fixture.store.listContainers()).toHaveLength(containersBefore);
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).not.toBeNull();
+  });
+});
+
 describe("releasing a leaf re-homes its occupant", () => {
   test("a terminal leaf of a MULTI composition survives being unplaced", () => {
     const fixture = placementFixture();
@@ -1425,6 +1623,41 @@ describe("core.space.place", () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(PlaceResponseSchema.parse(outcome.result)).toEqual({ op: "unplace", removed: 0 });
+  });
+
+  test("the palette's structure passes the door's args and is announced on the destination", async () => {
+    const fixture = placementFixture();
+
+    const outcome = await dispatch(fixture, OWNER_KEY, {
+      ref: { kind: "structure", structure: { kind: "split", dir: "row" } },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: null,
+        edge: null,
+      },
+    });
+
+    // The palette drags through THIS door, on the published `PlaceRequest` schema and the
+    // published caps — the whole point of making new structure a ref rather than a second
+    // verb (issue #104).
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error("add_tile expected");
+    const result = PlaceResponseSchema.parse(outcome.result);
+    expect(result.op).toBe("add_tile");
+    if (result.op !== "add_tile") throw new Error("add_tile response expected");
+    expect(roomFor(fixture, fixture.composition.id).tileLayout()?.[result.tileId]?.dir).toBe("row");
+    // And it is announced exactly once, on the container the structure landed in. A
+    // structure ref addresses nothing itself, so the destination is the only honest topic
+    // there is for it.
+    const trail = fixture.store.listEvents({ type: "item_placed", limit: 10 });
+    expect(trail).toHaveLength(1);
+    expect(trail[0]?.containerId).toBe(fixture.composition.id);
+    expect(JSON.parse(trail[0]?.payload ?? "null")).toMatchObject({
+      op: "add_tile",
+      item: "structure",
+      destination: "tile",
+    });
   });
 
   /**

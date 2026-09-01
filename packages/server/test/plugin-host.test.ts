@@ -507,6 +507,36 @@ describe("core.space.setLayout", () => {
     fixture.store.close();
   });
 
+  test("a split of two VACANT leaves is stored as written: that is the palette's drop", async () => {
+    const fixture = hostFixture();
+    /*
+      What dropping "Stack column" from `core.arrange`'s palette onto the workspace tree
+      commits (issue #104): a split whose two seats are still EMPTY. Structural validation
+      has to let it through, because the empty seats are the point of the gesture — they are
+      the aims the operator drags panels into next, and a door that demanded an occupant per
+      leaf would make the palette impossible to use in one gesture at a time.
+     */
+    const layout: TileLayout = {
+      root: { id: "root", dir: "row", ratios: [0.5, 0.5], children: ["t1", "t2"], ref: null },
+      t1: {
+        id: "t1",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "core.shell.sidebar" },
+      },
+      t2: { id: "t2", dir: "column", ratios: [0.5, 0.5], children: ["t3", "t4"], ref: null },
+      t3: { id: "t3", dir: null, ratios: [], children: [], ref: null },
+      t4: { id: "t4", dir: null, ratios: [], children: [], ref: null },
+    };
+
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", { layout });
+
+    expect(outcome).toEqual({ ok: true, result: {} });
+    expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(layout);
+    fixture.store.close();
+  });
+
   test("a leaf that is not a panel is refused", async () => {
     const fixture = hostFixture();
 

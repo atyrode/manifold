@@ -106,6 +106,19 @@
 }
 
 /*
+ * ...AND THE MODE'S SUPPRESSION LIFTS FOR A DRAG (issue #104). The blanket above exists so
+ * the overlay owns the POINTER while armed; a palette drag is the one case where the content
+ * underneath must answer instead, because a composition takes new structure through its own
+ * door and a scoped panel takes it into its own rows. An element with `pointer-events: none`
+ * never receives a `dragover`, so without this carve-out the palette could reach nothing but
+ * the workspace's own tree. `.is-carrying` is on for exactly the length of one HTML5 drag
+ * (`workspace.tsx`), so the mode is inert again the instant the reader lets go.
+ */
+.workspace.is-arranging.is-carrying .tile-content-host {
+  pointer-events: auto;
+}
+
+/*
  * A SPACER LEAF: inert first-class arrangeable emptiness (issue #89's Spacer tool). Painted
  * by the floor host directly — a spacer ref carries no plugin to project — so its one rule
  * lives beside the frame that draws it rather than in the arrange plugin's sheet, which owns
@@ -370,6 +383,11 @@
  * arrangement: the brand line by default, anything at all once they have rearranged it.
  */
 .sidebar-sections > .sidebar-plain:first-child {
+  padding-right: 2.1rem;
+}
+
+/* A split arranged into first place reserves the collapse control's width like any row. */
+.sidebar-sections > .sidebar-split:first-child {
   padding-right: 2.1rem;
 }
 
@@ -970,6 +988,75 @@ button.sidebar-terminal.is-summary > small {
 
 .workspace.is-collapsed .sidebar-cluster {
   flex-direction: column;
+}
+
+/*
+ * A NESTED RAIL SPLIT (issue #104): the wrapper the rail draws around rows a reader arranged
+ * together by dropping a stack into the stack. It lives here for exactly the reason
+ * `.sidebar-cluster` does — it wraps rows belonging to plugins that have never heard of each
+ * other, so it cannot live in any one tenant's package — and it is a DIFFERENT concept from a
+ * cluster: a cluster's membership is a manifest word, a split's is this principal's own
+ * arrangement, stored on their workspace tree.
+ *
+ * ITS GAP IS THE STACK'S GAP, and that is load-bearing rather than cosmetic. The rail resolves
+ * a drop by projecting itself into a tile tree and asking the shared seam/zone kernel, and it
+ * feeds that kernel ONE divider thickness read off `.sidebar-sections`. A split spaced
+ * differently would put its seam bands somewhere other than where a reader sees the gap.
+ */
+.sidebar-split {
+  display: flex;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sidebar-split[data-dir="row"] {
+  flex-direction: row;
+}
+
+.sidebar-split[data-dir="column"] {
+  flex-direction: column;
+}
+
+.sidebar-split > * {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* An icon rail has no width to sit rows side by side in; the arrangement survives, folded. */
+.workspace.is-collapsed .sidebar-split[data-dir="row"] {
+  flex-direction: column;
+}
+
+/*
+ * AN EMPTY SPLIT: what the palette's drop leaves behind until something is dragged into it.
+ * Spaceless at rest for the same reason a vacant pane is — a shape you have not filled must
+ * not push the rail around — and a visible band while the mode is armed or something is in
+ * the air, because otherwise there would be nothing to aim the next drag at.
+ */
+.sidebar-split[data-vacant="true"] {
+  flex: 0 0 0;
+  overflow: hidden;
+}
+
+.workspace.is-arranging .sidebar-split[data-vacant="true"],
+.workspace.is-carrying .sidebar-split[data-vacant="true"] {
+  flex: 0 0 2.2rem;
+  overflow: visible;
+}
+
+.sidebar-split-seat {
+  display: none;
+}
+
+.workspace.is-arranging .sidebar-split-seat,
+.workspace.is-carrying .sidebar-split-seat {
+  display: block;
+  flex: 1;
+  border: 1px dashed var(--accent-soft, currentColor);
+  border-radius: var(--radius-sm, 0.25rem);
+  opacity: 0.5;
 }
 
 .web-changelog-dialog {

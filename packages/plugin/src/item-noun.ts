@@ -22,6 +22,7 @@ export const ITEM_NOUNS: Readonly<Record<ItemKind, string>> = {
   composition: "composition",
   tile: "tile",
   panel: "panel",
+  structure: "structure",
 };
 
 const FLOOR_NOUNS: Readonly<Record<string, string>> = ITEM_NOUNS;

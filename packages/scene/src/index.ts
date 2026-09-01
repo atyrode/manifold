@@ -39,11 +39,13 @@ export {
   tileParentId,
   withTileLeaf,
   withTileLeafRef,
+  withTileStructure,
   withTileRatios,
   withVacantLeaf,
   withTilesSwapped,
   withoutTileLeaf,
   writeTileLeaf,
+  writeTileStructure,
   writeTileLeafRef,
   type TileInsert,
 } from "./tile-layout.ts";

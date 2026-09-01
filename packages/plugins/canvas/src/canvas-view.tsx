@@ -361,8 +361,11 @@ export function CanvasView({
           return (
             containers.find((candidate) => candidate.id === envelope.containerId)?.name ?? null
           );
+        // A palette carry names itself out of the label vocabulary (`ITEM_NOUNS.structure`):
+        // a canvas has no better word for a shape that does not exist yet.
         case "tile":
         case "element":
+        case "structure":
           return null;
         default: {
           const exhaustive: never = envelope;
@@ -1581,9 +1584,6 @@ export function CanvasView({
         }}
         onDragOver={(event) => {
           if (!carriesItem(event.dataTransfer)) return;
-          // Claimed even when refused: keeping the gesture lets the target paint the RULE
-          // instead of the browser silently showing a no-drop cursor with no explanation.
-          event.preventDefault();
           carryingRef.current = true;
           const flow = flowRef.current;
           const at =
@@ -1602,7 +1602,26 @@ export function CanvasView({
           // it enters this canvas — the same motion a node drag broadcasts.
           if (at !== null) carry.track(at, aim?.tile);
           const verdict = aim !== null ? drop.assess(aim.destination) : pane;
-          event.dataTransfer.dropEffect = verdict?.denial == null ? "move" : "none";
+          /*
+            A DROP TARGET CLAIMS A POINT ONLY IF IT CAN TAKE WHAT IS OVER IT.
+
+            This used to claim every point and explain the refusal afterwards, so that the
+            target could paint the declared RULE rather than leave the browser showing a
+            bare no-drop cursor. The paint survives that change — the cue is drawn from the
+            store this handler has already written — but the CLAIM does not survive being
+            wrong: `preventDefault` IS the claim token in this tree, since the workspace's
+            own drag listeners read `defaultPrevented` to mean "something inside took this
+            point". A canvas that swallowed a carry it was going to refuse denied every
+            weaker claimant behind it the chance to accept, which is how a palette structure
+            dropped over a canvas pane reached neither the canvas nor the tree holding it.
+
+            Not a check on what KIND of thing is carried, deliberately: the rule is about
+            denials in general, so a terminal this canvas refuses falls through for exactly
+            the same reason a structure does.
+          */
+          if (verdict?.denial != null) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
         }}
         onDragLeave={(event) => {
           const next = event.relatedTarget;
@@ -1611,26 +1630,37 @@ export function CanvasView({
         }}
         onDrop={(event) => {
           if (!carriesItem(event.dataTransfer)) return;
-          event.preventDefault();
           const flow = flowRef.current;
           if (flow === null) return;
           const aim = dropStore.get().aim;
           const transfer = event.dataTransfer;
-          clearCompose();
           const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          // Released: the ghost is retired before the write, so nobody watches a carried
-          // item hover over a canvas it has already landed on. The payload lives in the
-          // transfer, so ending the carry cannot cost the drop its envelope.
-          carry.end(at);
-          if (aim !== null) {
-            drop.commit(transfer, aim.destination);
-            return;
-          }
           // Bare canvas is the one POLYMORPHIC door: a terminal portals, a container
           // becomes a portal, a tile is extracted, a note or a stroke moves. Which of
           // those it is comes from the declarations, not from a branch here — which is
           // exactly the gap that used to swallow a container dropped on empty canvas.
-          drop.commit(transfer, { kind: "canvas", containerId, x: at.x, y: at.y });
+          const destination =
+            aim !== null
+              ? aim.destination
+              : { kind: "canvas" as const, containerId, x: at.x, y: at.y };
+          /*
+            The verdict is read BEFORE the carry is retired, and the order is load-bearing:
+            `carry.end` empties the register `assess` judges from (`endCarry`), so a verdict
+            taken after it always reads "nothing to judge" — which is a claim on every point
+            this canvas is handed, including the ones it is about to refuse.
+          */
+          const verdict = drop.assess(destination);
+          clearCompose();
+          // Released: the ghost is retired before the write, so nobody watches a carried
+          // item hover over a canvas it has already landed on. The payload lives in the
+          // transfer, so ending the carry cannot cost the drop its envelope.
+          carry.end(at);
+          // The same rule the `dragover` above answers to: a release this canvas cannot take
+          // is neither committed nor claimed, so it keeps bubbling to whatever weaker
+          // claimant is behind it — the workspace tree, for a carry aimed past this pane.
+          if (verdict?.denial != null) return;
+          event.preventDefault();
+          drop.commit(transfer, destination);
         }}
         /*
           The STROKE gesture: what holding the contributed `draw` tool does. The tool's name

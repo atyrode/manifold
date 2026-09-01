@@ -799,3 +799,58 @@
 .scroll-region__thumb:hover {
   background: #495057;
 }
+
+/*
+ * A VACANT SUBTREE HOLDS NO ROOM (issue #104). A stack the palette dropped arrives with two
+ * empty seats, and an empty seat that pushed the real content around would make the drop a
+ * cost rather than a preparation — so a pane with no occupant anywhere under it collapses to
+ * nothing, along with the seam that would otherwise separate it from its neighbour.
+ *
+ * It takes room back exactly while it is TARGETABLE: while the reader is ARRANGING (the
+ * wireframe is drawing it, and a grip has to be able to reach it) and while anything is in the
+ * air (so the next drag can land in it). Both are transient, so nothing about the resting
+ * layout changes, and both are classes the workspace frame publishes on itself.
+ *
+ * Here rather than in the shell's own sheet because these three families are `TileTree`'s
+ * (`COMPOSITION_TREE_CLASSES`, `PORTAL_TREE_CLASSES`, `WORKSPACE_TREE_CLASSES`, declared in
+ * `tile-tree.tsx` alongside the divider pixels this file's own note explains) — the component
+ * asserts these boxes, so the component's package dresses them, and §Lexicon's `cssFamilies`
+ * register is what says so.
+ */
+.workspace-pane.is-vacant,
+.composition-pane.is-vacant,
+.portal__slot.is-vacant,
+.workspace-divider.is-vacant,
+.composition-divider.is-vacant,
+.portal-divider.is-vacant {
+  /*
+    `display: none`, not `flex: 0`. A zero flex basis zeroes the split's MAIN axis only, so a
+    vacant pane in a row split is nought wide and still the full height of the workspace —
+    which is not "holds no room", it is a full-height invisible column between two panes.
+    There is no flex value that answers both axes for both split directions, and the honest
+    claim is the strong one: at rest an empty seat is not in the layout at all.
+  */
+  display: none;
+}
+
+.is-arranging .workspace-pane.is-vacant,
+.is-arranging .composition-pane.is-vacant,
+.is-arranging .portal__slot.is-vacant,
+.is-carrying .workspace-pane.is-vacant,
+.is-carrying .composition-pane.is-vacant,
+.is-carrying .portal__slot.is-vacant {
+  display: block;
+  flex: 1 1 0;
+  min-width: 3rem;
+  min-height: 3rem;
+}
+
+.is-arranging .workspace-divider.is-vacant,
+.is-arranging .composition-divider.is-vacant,
+.is-arranging .portal-divider.is-vacant,
+.is-carrying .workspace-divider.is-vacant,
+.is-carrying .composition-divider.is-vacant,
+.is-carrying .portal-divider.is-vacant {
+  display: block;
+  flex: none;
+}

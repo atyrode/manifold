@@ -14,6 +14,7 @@ import {
   type Principal,
   type RuntimeDeps,
   type SceneElement,
+  type Structure,
   type TerminalInfo,
   type TileEdge,
   type TileLayout,
@@ -43,6 +44,7 @@ import {
   writeElement,
   writeTileLeaf,
   writeTileLeafRef,
+  writeTileStructure,
 } from "@manifold/scene";
 import type { ElementPayloadRefusal } from "@manifold/plugin";
 import type { EventHub } from "./event-hub.ts";
@@ -675,18 +677,20 @@ export class Room {
   }
 
   /**
-   * Places a ref in this container's layout tree under `SERVER_PLACE_ORIGIN`, so
-   * the doc-update hook fans it out and client undo managers never capture it.
-   * A null target fills the first vacant leaf, else splits the root to the right;
-   * a null edge fills a vacant target leaf, else splits that leaf to the right.
-   * Returns the placement's tile id, or null when the tree rejects the write.
+   * Where a null-aimed placement actually lands: a null target fills the first vacant leaf,
+   * else splits the root to the right; a null edge fills a vacant target leaf, else splits
+   * that leaf to the right. Null when this container holds no tree, or when the target names
+   * no tile in it.
+   *
+   * Shared by both writers below rather than spelled twice. A carried ref and new structure
+   * land at the SAME aim by construction (issue #104), so two copies of this defaulting is
+   * precisely how the palette's drop and a carry's drop would start disagreeing about where
+   * "no target" is.
    */
-  placeTile(
-    ref: TileRef,
+  private tileAim(
     targetTileId: string | null,
     edge: TileEdge | null,
-    between = false,
-  ): string | null {
+  ): { readonly target: string; readonly edge: TileEdge } | null {
     const layout = this.tileLayout();
     if (layout === null) return null;
     const target =
@@ -695,8 +699,49 @@ export class Room {
       ROOT_TILE_ID;
     const node = layout[target];
     if (node === undefined) return null;
-    const resolved = edge ?? (node.dir === null && node.ref === null ? "center" : "right");
-    return writeTileLeaf(this.doc, ref, target, resolved, SERVER_PLACE_ORIGIN, between);
+    return { target, edge: edge ?? (node.dir === null && node.ref === null ? "center" : "right") };
+  }
+
+  /**
+   * Places a ref in this container's layout tree under `SERVER_PLACE_ORIGIN`, so
+   * the doc-update hook fans it out and client undo managers never capture it.
+   * Returns the placement's tile id, or null when the tree rejects the write.
+   */
+  placeTile(
+    ref: TileRef,
+    targetTileId: string | null,
+    edge: TileEdge | null,
+    between = false,
+  ): string | null {
+    const aim = this.tileAim(targetTileId, edge);
+    if (aim === null) return null;
+    return writeTileLeaf(this.doc, ref, aim.target, aim.edge, SERVER_PLACE_ORIGIN, between);
+  }
+
+  /**
+   * Places NEW STRUCTURE — a split holding two vacant leaves, or a spacer — at the same aim
+   * a ref would have landed on, under the same origin and so through the same fan-out. This
+   * is the palette's drop (issue #104): what arrives is tree rather than an occupant, which
+   * is the whole of the difference from `placeTile`. Returns the new tile's id, or null when
+   * the tree rejects the write — which is also the honest answer for a `center` release onto
+   * an occupied leaf, since structure has no seat to trade the occupant.
+   */
+  placeStructure(
+    structure: Structure,
+    targetTileId: string | null,
+    edge: TileEdge | null,
+    between = false,
+  ): string | null {
+    const aim = this.tileAim(targetTileId, edge);
+    if (aim === null) return null;
+    return writeTileStructure(
+      this.doc,
+      structure,
+      aim.target,
+      aim.edge,
+      SERVER_PLACE_ORIGIN,
+      between,
+    );
   }
 
   /** Places a terminal ref; the returned tile id IS the terminal's placement id. */

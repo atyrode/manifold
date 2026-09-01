@@ -795,7 +795,9 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         case "canvas":
         case "composition":
           return container.containerName(envelope.containerId);
+        // See `canvas-view.tsx`: new structure is named by the vocabulary, not by a renderer.
         case "element":
+        case "structure":
           return null;
         default: {
           const exhaustive: never = envelope;

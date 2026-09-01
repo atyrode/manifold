@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TileEdgeSchema, type ContainerDiscipline } from "./layout.ts";
+import { StructureSchema, TileEdgeSchema, type ContainerDiscipline } from "./layout.ts";
 
 /**
  * The placement algebra: what composes with what, stated as DATA.
@@ -85,6 +85,15 @@ export const PLACEMENT_GUARDS = {
    * that holds several items or none, and nothing absorbs it.
    */
   solo_only: { rule: "not_solo", site: "item" },
+  /**
+   * NEW STRUCTURE ONLY ENTERS A TREE THAT ALREADY EXISTS. A `tile` destination points
+   * into a composition's own layout, which is the one place a split or a spacer means
+   * anything; `compose` AUTHORS a composition out of two canvas elements, and an empty
+   * split is not one of the two, so the destination form that builds a container rather
+   * than entering one refuses it by name instead of asking the executor to invent a
+   * meaning for it.
+   */
+  tree_only: { rule: "no_tree", site: "item" },
 } as const;
 export type PlacementGuard = keyof typeof PLACEMENT_GUARDS;
 
@@ -124,10 +133,11 @@ export interface PlacementTraits {
  * completeness check below is what keeps this list from drifting from `PLACEMENT_GUARDS`:
  * a new item guard that is not listed here fails to compile.
  */
-export const ITEM_GUARD_NAMES = ["no_self_embed", "solo_only"] as const satisfies readonly [
-  ItemGuard,
-  ...ItemGuard[],
-];
+export const ITEM_GUARD_NAMES = [
+  "no_self_embed",
+  "solo_only",
+  "tree_only",
+] as const satisfies readonly [ItemGuard, ...ItemGuard[]];
 type MissingItemGuard = Exclude<ItemGuard, (typeof ITEM_GUARD_NAMES)[number]>;
 const itemGuardsComplete: MissingItemGuard extends never ? true : never = true;
 void itemGuardsComplete;
@@ -221,6 +231,18 @@ export const ITEM_KINDS = {
    * than as a door.
    */
   panel: { groups: ["tileable"], guards: [], homed: null },
+  /**
+   * NEW TILE MATERIAL a palette carry holds: an empty split, or a spacer leaf (issue
+   * #104). It is the one kind that names nothing existing — the ref carries the SHAPE and
+   * the drop brings it into being — which is why it is `homed: null` like a panel: there
+   * is no document it lives in and no home for it to acquire.
+   *
+   * `tileable` says the only container that takes it is a composition's tile tree, and
+   * `tree_only` says only the destination form that points INTO one does: a canvas
+   * refuses it on groups alone, `unplaced` has nothing to remove it from, and `compose`
+   * would have to invent what composing with an empty split means.
+   */
+  structure: { groups: ["tileable"], guards: ["tree_only"], homed: null },
 } as const satisfies Record<string, PlacementTraits>;
 export type ItemKind = keyof typeof ITEM_KINDS;
 
@@ -362,12 +384,13 @@ export const CANVAS_OPS = {
   composition: "portal",
   tile: "extract",
   /**
-   * Unreachable by construction, and declared anyway so the table stays total: a canvas
-   * accepts `canvas_item`, `canvas_item_as_portal` and `extractable`, and a panel carries
-   * none of them, so group containment refuses panel -> canvas with `not_accepted` before
-   * `resolvePlacement` ever consults an op.
+   * Unreachable by construction, and both declared anyway so the table stays total: a
+   * canvas accepts `canvas_item`, `canvas_item_as_portal` and `extractable`, and neither a
+   * panel nor new structure carries any of them, so group containment refuses both ->
+   * canvas with `not_accepted` before `resolvePlacement` ever consults an op.
    */
   panel: "portal",
+  structure: "portal",
 } as const satisfies Record<ItemKind, PlacementOp>;
 
 /**
@@ -420,6 +443,7 @@ export const PLACEMENT_DENIAL_RULES = [
   PLACEMENT_GUARDS.no_self_embed.rule,
   PLACEMENT_GUARDS.discipline_match.rule,
   PLACEMENT_GUARDS.solo_only.rule,
+  PLACEMENT_GUARDS.tree_only.rule,
 ] as const;
 export type PlacementDenialRule = (typeof PLACEMENT_DENIAL_RULES)[number];
 
@@ -435,12 +459,18 @@ void guardRulesComplete;
 /**
  * What is being placed. `terminal` and `container` name an ITEM by identity; `tile` and
  * `element` name an existing PLACEMENT of one, which is how a single mirror of a
- * multi-placed terminal becomes addressable.
+ * multi-placed terminal becomes addressable; `structure` names NOTHING THAT EXISTS YET —
+ * it carries the shape a palette drag is holding, and the drop authors it (issue #104).
  *
  * These are ADDRESSING forms, deliberately not `TileRef`'s STORAGE forms. A note has
  * no identity outside the document that holds it, so it is addressed as an `element` of
  * that container and stored as a tile's `text` ref — the executor translates between
  * the two, and no caller can name a note it cannot say the location of.
+ *
+ * `structure` is the one form with no identity on either side of that translation, and it
+ * is a REF rather than a second request shape because a palette drag is an ordinary carry:
+ * one gesture kind, one wire payload, one release. Giving it its own envelope would be the
+ * second drag flavor the carry kernel exists to prevent (AGENTS.md invariants 11 and 14).
  */
 export const PlacementRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), terminalId: z.string().min(1) }),
@@ -455,6 +485,7 @@ export const PlacementRefSchema = z.discriminatedUnion("kind", [
     containerId: z.string().min(1),
     elementId: z.string().min(1),
   }),
+  z.strictObject({ kind: z.literal("structure"), structure: StructureSchema }),
 ]);
 export type PlacementRef = z.infer<typeof PlacementRefSchema>;
 
@@ -787,6 +818,13 @@ export function placementItemFor(ref: PlacementRef, lookup: PlacementLookup): Pl
     }
     case "tile":
       return { kind: "tile", containerId: null };
+    /*
+      New structure needs no census to classify: the ref IS the classification, because
+      nothing it names exists anywhere to be looked up. The shape rides on to the executor
+      inside the ref, which is where a `spacer` becomes a leaf and a `split` becomes two.
+    */
+    case "structure":
+      return { kind: "structure", containerId: null };
     case "element": {
       const placed = lookup.elementItem(ref.containerId, ref.elementId);
       return placed === null ? null : throughSolo(placed, lookup);
@@ -894,6 +932,15 @@ function resolveClassified(
   // single occupant to absorb: it holds several items, or none. Either way nothing takes it.
   if (itemGuards.includes("solo_only") && container.kind === "composition") {
     return deny(PLACEMENT_GUARDS.solo_only.rule);
+  }
+  /*
+    The only destination that points INTO an existing tree is `tile`. Everything else
+    either has no tree (`canvas`, `unplaced` — both already refused on groups) or would
+    have to BUILD one around the carry (`compose`), and there is nothing to build a
+    composition out of when what landed is an empty split.
+  */
+  if (itemGuards.includes("tree_only") && destination.kind !== "tile") {
+    return deny(PLACEMENT_GUARDS.tree_only.rule);
   }
 
   const op =

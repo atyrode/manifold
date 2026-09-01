@@ -692,7 +692,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "arrange mode",
-      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and the parts of ONE arrangement become reachable within their parent composition: at the root the workspace's panels move inside its tree, and inside a scoped panel that panel's own parts reorder — by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Arming it moves nothing: every affordance the mode adds is out of flow. Manifest order remains the default; an untouched workspace stores no arrangement",
+      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and the parts of ONE arrangement become reachable within their parent composition: at the root the workspace's panels move inside its tree, and inside a scoped panel that panel's own parts reorder — by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Its toolbar is a PALETTE first: dragging Stack row, Stack column or Spacer out of it carries new structure into the workspace tree, into a composition, or into a scoped panel's own arrangement, over that same vocabulary and committing at that same release — the mode's primary verb is a carry, not a button. Three operations survive as buttons because each acts on the whole arrangement rather than on a place in it: Equalize, Shelf and Reset. Arming it moves nothing: every affordance the mode adds is out of flow, and a seat that arrives empty takes no room until somebody is arranging or carrying. Manifest order remains the default; an untouched workspace stores no arrangement",
       "banned": [],
       "allow": []
     },
@@ -746,6 +746,18 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "leaf",
       "means": "a childless tile",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "split",
+      "means": "a tile with children and a direction: the only shape in the grammar that divides an axis, and the only one that holds ratios. Its two directions are `row` and `column`. The palette calls them \"Stack row\" and \"Stack column\" because stacking is what a reader is DOING when they drop one, and the two `data-testid` values a gate drags from spell that same phrasing — but \"stack\" is never a NAME for this tile. It is the reader-facing verb; as an identifier it already belongs to the neutral chrome's `Stack` primitive, a flex run of children with no tree under it and no ratios. A split whose subtree holds no occupant is vacant, and takes no room off a reader who is not arranging",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "structure",
+      "means": "new tile material a palette carry holds and a drop authors: a SPLIT with a direction, arriving with two vacant seats, or an inert SPACER leaf. The one `PlacementRef` shape that addresses something which does not exist yet, which is why it is the one item kind with no identity, no container and no home — every structure is interchangeable with every other of its shape, and a drop makes one rather than moving one",
       "banned": [],
       "allow": []
     },
@@ -937,7 +949,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "section",
-      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode), and painted beside its cluster's other members when it declares one",
+      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode), and painted beside its cluster's other members when it declares one. A reader's arrangement of them is a TREE, not a flat order: a row sits somewhere in the rail's stack, and a stack dropped between two rows holds its own rows along the other axis",
       "banned": [],
       "allow": []
     },
@@ -949,13 +961,19 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "tool",
-      "means": "contribution kind: a toolbar mode, on whichever toolbar its contributes.tools row names",
+      "means": "contribution kind: one row of a toolbar, on whichever toolbar its contributes.tools row names. What the row IS to a reader belongs to the bar's owner and never to the manifest — the canvas bar draws modes, the arrange bar draws a palette of carry sources beside the buttons of its whole-arrangement operations",
       "banned": [],
       "allow": []
     },
     {
       "term": "toolbar",
       "means": "the closed vocabulary a tool's toolbar field names: canvas (core.canvas's tool strip) or arrange (core.arrange's floating F8 editor toolbar). Absent \u2261 canvas",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "palette",
+      "means": "core.arrange's row of carry SOURCES in the arrange toolbar: dragging one out carries new structure into a tree. Not a second drag flavour and not a new contribution kind — a palette drag is an ordinary carry whose ref names structure instead of an item, so it crosses the same seams, resolves through the same zones, is refused by the same named rules and commits at the same release as every other carry. Which rows the palette holds is core.arrange's own reading of its own `contributes.tools`, never a manifest field",
       "banned": [],
       "allow": []
     },
@@ -1367,7 +1385,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrapper a declared CLUSTER paints in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's two remaining rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
+      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrappers a declared CLUSTER and a reader's own nested arrangement paint in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's two remaining rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other, joined by `.sidebar-split` (issue #104) around the members of a stack the reader dropped between two rows, which is the same case again: two plugins' rows wear that wrapper, so it can live in neither plugin's package. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
     },
     {
       "family": "keys",
@@ -1607,7 +1625,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "arrange",
       "owner": "packages/plugins/arrange/src/styles.css",
-      "why": "core.arrange's own chrome: the floating F8 toolbar, its drag handle and tool buttons, the panel grip overlay and its scope-in pill, the live move preview slot, the mode bar and its scope crumbs, and the wireframe delimitation painted over stack/split containers while armed. Extracted from the `workspace` family (issue #89) when the grips and the mode bar left `workspace.tsx` for the plugin that now owns arrange mode's affordances"
+      "why": "core.arrange's own chrome: the floating F8 toolbar, its drag handle, the PALETTE of carry sources it leads with and the buttons of the operations that survive beside it (issue #104), the panel grip overlay and its scope-in pill, the live move preview slot, the mode bar and its scope crumbs, and the wireframe delimitation painted over stack/split containers while armed. `arrange-palette*` needs no row of its own: the longest-prefix rule already resolves it to this family, and this stylesheet is its owner. Extracted from the `workspace` family (issue #89) when the grips and the mode bar left `workspace.tsx` for the plugin that now owns arrange mode's affordances"
     },
     {
       "family": "is",
@@ -1769,34 +1787,29 @@ string" is the question a broken gate actually asks.
       "why": "the modal's card, and the handle the gate reads OPENNESS through: a closed <dialog> keeps its subtree in the DOM, so 'the listing exists' is not 'a reader can see it'. R9 also closes the modal through it, by the backdrop press a reader would use"
     },
     {
-      "testid": "toolbar-stack-row",
+      "testid": "palette-stack-row",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`, on the OTHER toolbar: `core.arrange`'s floating bar renders the same shape the canvas bar does, so the same attribute answers for a second contributor's tools. R4 presses this one to prove re-orienting the root split commits exactly one core.space.setLayout"
+      "why": "a palette DRAG SOURCE, not a button, and the one R4 drags TWICE because it is the only id that reaches two of the three destinations a palette carry has: dropped on a workspace pane's edge it seats a split holding two vacant seats, which is the only way to reach the claim that an empty seat takes no room until the mode is armed; dropped between two rail rows while scoped into the sidebar it authors that panel's own nested arrangement, which is the operator's headline for the rework. It replaced `toolbar-stack-row` in issue #104, and it is a different contract for the same reason it is a different id — a gate that CLICKS this element proves nothing about it"
     },
     {
-      "testid": "toolbar-stack-column",
+      "testid": "palette-stack-column",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`; the reorientation R4 runs FIRST, because a default tree is already a row and a tool that refuses (`aim_unchanged`) commits nothing — the pair proves both directions carry"
+      "why": "the other direction's drag source, and the row that keeps the pair honest: two palette items must differ only in the `dir` their carry seals, so a register naming one and not the other would let the second rot. Templated `palette-${tool.id}`, and dragged rather than pressed"
     },
     {
-      "testid": "toolbar-spacer",
+      "testid": "palette-spacer",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`; the tool that adds a `{kind:'spacer'}` leaf, so R4 can prove the new tile grammar survives the round trip through core.space.setLayout and comes back as a painted gap"
+      "why": "the drag source R4 uses to make the commit-once claim at RELEASE: one gesture out of the palette, one `{kind:'spacer'}` leaf in the reader's tree, one core.space.setLayout. The claim moved off the retired `toolbar-spacer` button with the tool itself (issue #104) and did not get weaker in the move"
     },
     {
       "testid": "toolbar-equalize",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`; R4 presses it after a divider drag has skewed the root ratios, which is what makes 'normalizes to one even share' an observable change rather than a no-op"
-    },
-    {
-      "testid": "toolbar-swap",
-      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`; the one tool with a SELECTION precondition, so R4 taps two grips first — which is also how the tap-versus-drag threshold gets exercised by a real pointer instead of asserted in prose"
+      "why": "templated `toolbar-${tool.id}`, on the OTHER toolbar: `core.arrange`'s floating bar renders the same shape the canvas bar does, so the same attribute answers for a second contributor's tools. R4 presses it after a divider drag has skewed the root ratios, which is what makes 'normalizes to one even share' an observable change rather than a no-op"
     },
     {
       "testid": "toolbar-shelf",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
-      "why": "templated `toolbar-${tool.id}`; unseats the one selected panel, which is the only way a row appears on the shelf below — R4 presses it and then re-seats through the row it produced"
+      "why": "templated `toolbar-${tool.id}`; unseats the one selected panel, which is the only way a row appears on the shelf below — R4 presses it and then re-seats through the row it produced. It is also the last tool with a SELECTION precondition, so R4 taps grips before pressing it, which is how the tap-versus-drag threshold gets exercised by a real pointer instead of asserted in prose (the claim outlived the retired `toolbar-swap`, issue #104)"
     },
     {
       "testid": "toolbar-reset",

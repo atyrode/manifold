@@ -70,6 +70,7 @@ import {
   type LogEvent,
   type ManifoldRef,
   type ServerEvent,
+  type TileLayout,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
@@ -2844,9 +2845,10 @@ try {
     );
 
     /*
-      THE F8 EDITOR, DRIVEN (issue #89). The check above proves arming COSTS nothing; these
-      prove the mode then does something, through the only surface a reader has — the floating
-      toolbar `core.arrange` paints into the workspace overlay slot.
+      THE F8 EDITOR, DRIVEN (issue #89, reworked for the palette in #104). The check above
+      proves arming COSTS nothing; these prove the mode then does something, through the only
+      surface a reader has — the floating toolbar `core.arrange` paints into the workspace
+      overlay slot.
 
       Four claims, none of them reachable without a browser. The chrome is OVERLAY-ONLY: the
       wireframe exists while the mode is armed and at no other time, so its count reads zero,
@@ -2854,9 +2856,10 @@ try {
       dragged elsewhere it is still there after a reload, which is the only way to tell a
       remembered position from a re-centred one. A grip TAP selects rather than nudging, which
       is what the 6px threshold is for and what a synthetic press-and-release would break
-      first. And every tool commits ONCE — the same trailing-debounce claim the divider drag
-      makes above, made again for each button, because seven verbs wired into one
-      optimistic-local write path is seven chances to write twice, or not at all.
+      first. And one gesture commits ONCE — the same trailing-debounce claim the divider drag
+      makes above, made again for every button that survived and for every drag out of the
+      palette that replaced one, because a handful of verbs wired into one optimistic-local
+      write path is a handful of chances to write twice, or not at all.
     */
     interface ArrangeChrome {
       readonly toolbar: { readonly centreX: number; readonly bottomGap: number } | null;
@@ -2865,15 +2868,23 @@ try {
       readonly dimmed: number;
       readonly toolsEnabled: number;
       readonly toolsDisabled: number;
+      /** Palette sources a reader could still drag out — the mode's other half. */
+      readonly palette: number;
       readonly selected: number;
     }
-    /** Everything the mode paints, in one read: the bar's box, the wireframe, the selection. */
+    /**
+     * Everything the mode paints, in one read: the bar's box, its two kinds of row, the
+     * wireframe and the selection. Buttons and palette sources are counted APART because
+     * they answer differently to scope — an operation on the whole arrangement goes quiet
+     * inside a panel's own rows while a carry source does not (issue #104).
+     */
     const arrangeChrome = (): Promise<ArrangeChrome> =>
       browser!.evaluate<ArrangeChrome>(
         `(() => {
           const bar = document.querySelector('.arrange-toolbar');
           const box = bar === null ? null : bar.getBoundingClientRect();
           const tools = Array.from(document.querySelectorAll('.arrange-toolbar-button'));
+          const palette = Array.from(document.querySelectorAll('.arrange-palette-item'));
           return {
             toolbar:
               box === null
@@ -2888,6 +2899,7 @@ try {
             ).length,
             toolsEnabled: tools.filter((tool) => !tool.disabled).length,
             toolsDisabled: tools.filter((tool) => tool.disabled).length,
+            palette: palette.filter((item) => !item.disabled).length,
             selected: document.querySelectorAll('.arrange-grip.is-selected').length,
           };
         })()`,
@@ -2994,12 +3006,16 @@ try {
     );
 
     /*
-      EVERY TOOL, ONCE. `changed` is read off the SERVER's tree rather than off the DOM, so a
-      tool that repainted optimistically and never committed fails here; `commits` counts the
-      dispatches the server logged, so a tool that committed twice fails too. The order is not
-      arbitrary: a default tree is already a row, and `rootStacked` refuses `aim_unchanged`
-      rather than committing a no-op, so Stack column goes first and Stack row undoes it.
-      Equalize follows while the divider drag above still has the root's ratios skewed.
+      EVERY SURVIVING TOOL, ONCE. `changed` is read off the SERVER's tree rather than off the
+      DOM, so a tool that repainted optimistically and never committed fails here; `commits`
+      counts the dispatches the server logged, so a tool that committed twice fails too.
+      Equalize goes first, while the divider drag above still has the root's ratios skewed —
+      a tool that refuses (`aim_unchanged`) rather than committing a no-op would otherwise
+      read as a tool that never wrote.
+
+      The three verbs that used to sit beside it are GONE as buttons (issue #104): Stack row,
+      Stack column and Spacer are palette DRAG SOURCES now and are exercised as drags below,
+      and Swap went with the pair selection it was the only consumer of.
     */
     interface ToolPress {
       readonly pressed: boolean;
@@ -3024,13 +3040,83 @@ try {
       return { pressed, changed, commits: commitCount() - before };
     };
 
-    const stackColumn = await pressTool('[data-testid="toolbar-stack-column"]');
-    const stackRow = await pressTool('[data-testid="toolbar-stack-row"]');
     const equalize = await pressTool('[data-testid="toolbar-equalize"]');
-    const spacer = await pressTool('[data-testid="toolbar-spacer"]');
+
+    /*
+      THE PALETTE, DRAGGED (issue #104). A palette item is not a button that runs a verb on
+      the root — it is a carry SOURCE whose payload is NEW STRUCTURE, and the tree it authors
+      is decided by where the reader let go. So the commit-once claim the buttons used to make
+      does not go away with them; it MOVES from the press to the release, and this is where it
+      is made: one gesture, one `core.space.setLayout`.
+
+      Nothing but a real browser reaches this. The payload is sealed by the source's own
+      `dragstart` onto a DataTransfer, the destination is resolved from the pointer by the same
+      zone kernel every other carry uses, and the write is the same trailing debounce — three
+      places for one gesture to become two writes, or none.
+    */
+    /* Selector in, not a bare id: S15 reads gate contracts off the `[data-testid="…"]` LITERAL
+       a script hands the DOM, so a helper that assembled one from a fragment would drag these
+       three ids out of the register without anybody noticing. */
+    const paletteAt = (selector: string): Promise<{ x: number; y: number } | null> =>
+      browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => {
+           const item = document.querySelector(${JSON.stringify(selector)});
+           if (item === null) return null;
+           const box = item.getBoundingClientRect();
+           return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+         })()`,
+      );
+    /* The right-hand EDGE band of the last workspace pane: a centre aim on a leaf means
+       "trade places with what is there", which is not a thing a structure can do. */
+    const treeEdge = (): Promise<{ x: number; y: number } | null> =>
+      browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => {
+           const pane = document.querySelector('.workspace-pane:last-child');
+           if (pane === null) return null;
+           const box = pane.getBoundingClientRect();
+           return { x: box.left + box.width * 0.9, y: box.top + box.height * 0.5 };
+         })()`,
+      );
+    const spacersIn = (layout: TileLayout): number =>
+      Object.values(layout).filter((tile) => tile.ref?.kind === "spacer").length;
+
+    const beforeSpacer = LayoutResponseSchema.parse(
+      await getJson("/api/layout", viewer.token),
+    ).layout;
+    const spacerSource = await paletteAt('[data-testid="palette-spacer"]');
+    const spacerTarget = await treeEdge();
+    const beforeSpacerCommits = commitCount();
+    const sealed =
+      spacerSource === null || spacerTarget === null
+        ? []
+        : await browser.dragAndDrop(spacerSource, spacerTarget);
+    const seatedSpacer = await settles(async () => {
+      const now = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
+      return spacersIn(now) === spacersIn(beforeSpacer) + 1;
+    }, 8_000);
+    // The trailing debounce again: a second dispatch for one release lands inside this window.
+    await sleep(1_500);
+    const spacerCommits = commitCount() - beforeSpacerCommits;
+    const carriedStructure = sealed.some(
+      (payload) =>
+        payload.mimeType === "application/x-manifold-item" && payload.data.includes("structure"),
+    );
+    check(
+      "R4 a palette drag commits once at release",
+      carriedStructure && seatedSpacer && spacerCommits === 1,
+      spacerSource === null
+        ? "the armed toolbar painted no palette to drag out of"
+        : spacerTarget === null
+          ? "no workspace pane to drop a structure into"
+          : !carriedStructure
+            ? `the palette item started a drag carrying ${sealed.map((payload) => payload.mimeType).join(", ") || "nothing"} — the source sealed no structure`
+            : carriedStructure && seatedSpacer && spacerCommits === 1
+              ? `one drag out of the palette seated a spacer leaf on one core.space.setLayout`
+              : `the spacer ${seatedSpacer ? "landed" : "never landed"} after ${String(spacerCommits)} core.space.setLayout dispatch(es) for one release`,
+    );
 
     /* A spacer is a TILE, not a margin: the frame paints a leaf for it and the wireframe
-       outlines that leaf, which is the whole of what the new `{kind:'spacer'}` ref buys. */
+       outlines that leaf, which is the whole of what the `{kind:'spacer'}` ref buys. */
     const spacerPaint = await browser.evaluate<{ tile: number; frame: number }>(
       `({
          tile: document.querySelectorAll('.workspace-tile-spacer').length,
@@ -3039,17 +3125,89 @@ try {
     );
     check(
       "R4 a spacer is a tile of the reader's own",
-      spacer.changed && spacerPaint.tile === 1 && spacerPaint.frame === 1,
-      spacer.changed
-        ? `the spacer tool seated ${String(spacerPaint.tile)} spacer leaf/leaves, wireframed ${String(spacerPaint.frame)}`
-        : "the spacer tool committed nothing, so nothing was painted to look at",
+      seatedSpacer && spacerPaint.tile === 1 && spacerPaint.frame === 1,
+      seatedSpacer
+        ? `the dropped spacer seated ${String(spacerPaint.tile)} spacer leaf/leaves, wireframed ${String(spacerPaint.frame)}`
+        : "the spacer never landed, so nothing was painted to look at",
     );
 
     /*
-      TAP VERSUS DRAG, under a real pointer. Selection is Swap's precondition and a tap is how
+      BOTH STACKS, AND WHAT AN EMPTY ONE COSTS. Dropping a Stack out of the palette authors a
+      split holding two VACANT seats — a shape that never existed before this issue, and one
+      that would be a permanent hole in the frame if it took its share of the axis like any
+      other pane. So the tree publishes vacancy (`is-vacant`) and the stylesheet gives it ZERO
+      extent unless the reader is arranging or mid-carry: an empty seat is a target while you
+      are aiming at it and an invisible nothing the rest of the time. Only a browser can say
+      which, because the claim is about a painted box.
+    */
+    const rowSource = await paletteAt('[data-testid="palette-stack-row"]');
+    const columnSource = await paletteAt('[data-testid="palette-stack-column"]');
+    const stackTarget = await treeEdge();
+    const sealedRow =
+      rowSource === null || stackTarget === null
+        ? []
+        : await browser.dragAndDrop(rowSource, stackTarget);
+    const columnTarget = await treeEdge();
+    const sealedColumn =
+      columnSource === null || columnTarget === null
+        ? []
+        : await browser.dragAndDrop(columnSource, columnTarget);
+    /* TWO SOURCES, TWO DIRECTIONS. A palette whose items differ only in their label would
+       pass every check that reads the tree afterwards, because a split is a split — so the
+       thing asserted is the payload each SOURCE sealed, which is the only place the two rows
+       are distinguishable before either has landed. */
+    const payloadOf = (sealed: readonly { data: string }[]): string =>
+      sealed.map((item) => item.data).join(" ");
+    const twoDirections =
+      payloadOf(sealedRow).includes(`"dir":"row"`) &&
+      payloadOf(sealedColumn).includes(`"dir":"column"`);
+    check(
+      "R4 the palette's two stacks carry two directions",
+      twoDirections,
+      twoDirections
+        ? "Stack row and Stack column sealed a row split and a column split out of the same palette"
+        : `the two stack sources sealed ${payloadOf(sealedRow) || "nothing"} and ${payloadOf(sealedColumn) || "nothing"} — two labels over one carry`,
+    );
+    const vacantBox = (): Promise<{ count: number; extent: number }> =>
+      browser!.evaluate<{ count: number; extent: number }>(
+        `(() => {
+           const panes = Array.from(document.querySelectorAll('.workspace-pane.is-vacant'));
+           return {
+             count: panes.length,
+             extent: panes.reduce((most, pane) => {
+               const box = pane.getBoundingClientRect();
+               return Math.max(most, box.width, box.height);
+             }, 0),
+           };
+         })()`,
+      );
+    const seatedSplit = await settles(async () => (await vacantBox()).count > 0, 8_000);
+    await sleep(1_500);
+    const vacantArmed = await vacantBox();
+    await pressF8();
+    const vacantDisarmed = await vacantBox();
+    await pressF8();
+    const stayedFlat = seatedSplit && vacantArmed.extent > 1 && vacantDisarmed.extent < 1;
+    check(
+      "R4 an empty split holds no room until the mode is armed",
+      stayedFlat,
+      !seatedSplit
+        ? "dropping a Stack row seated no vacant pane, so the claim was never tested"
+        : stayedFlat
+          ? `${String(vacantArmed.count)} vacant seat(s) ${String(Math.round(vacantArmed.extent))}px across while armed, ${String(Math.round(vacantDisarmed.extent))}px disarmed`
+          : `a vacant seat measured ${String(Math.round(vacantArmed.extent))}px armed and ${String(Math.round(vacantDisarmed.extent))}px disarmed — an empty split is taking room off a reader who is not arranging`,
+    );
+
+    /*
+      TAP VERSUS DRAG, under a real pointer. Selection is Shelf's precondition and a tap is how
       it is expressed, so a press-and-release that travelled zero pixels must select and must
       NOT be read as a one-pixel move — a threshold that failed open would rearrange the
       workspace every time somebody aimed at a panel.
+
+      ONE seat at a time since issue #104: Swap was the only verb that ever wanted a pair, so a
+      tap on a second grip MOVES the selection rather than joining it, and a second tap on the
+      same grip clears it. Three states, read off the live DOM — and across all of them not one
+      layout write, because selecting is not arranging.
     */
     const sidebarPanel = panelRefId("core.shell", "sidebar");
     const containerViewPanel = panelRefId("core.shell", "container-view");
@@ -3065,34 +3223,39 @@ try {
       await sleep(250);
       return true;
     };
+    const selectedSeats = async (): Promise<number> => {
+      await sleep(400);
+      return (await arrangeChrome()).selected;
+    };
+    const sidebarGrip = `.arrange-grip[data-panel-id="${sidebarPanel}"]`;
+    const viewGrip = `.arrange-grip[data-panel-id="${containerViewPanel}"]`;
     const beforeTaps = commitCount();
-    const tapped =
-      (await tapGrip(`.arrange-grip[data-panel-id="${sidebarPanel}"]`)) &&
-      (await tapGrip(`.arrange-grip[data-panel-id="${containerViewPanel}"]`));
-    await sleep(600);
-    const afterTaps = await arrangeChrome();
+    const reached = await tapGrip(sidebarGrip);
+    const afterFirst = await selectedSeats();
+    const toggled = await tapGrip(sidebarGrip);
+    const afterToggle = await selectedSeats();
+    const movedSeat = (await tapGrip(sidebarGrip)) && (await tapGrip(viewGrip));
+    const afterMove = await selectedSeats();
     const tapCommits = commitCount() - beforeTaps;
+    const tapped = reached && toggled && movedSeat;
+    const selects = tapped && afterFirst === 1 && afterToggle === 0 && afterMove === 1;
     check(
       "R4 a grip tap selects and rearranges nothing",
-      tapped && afterTaps.selected === 2 && tapCommits === 0,
+      selects && tapCommits === 0,
       !tapped
         ? "no panel grip to tap: the mode painted no grabbable seats"
-        : afterTaps.selected === 2 && tapCommits === 0
-          ? "two taps, two selected seats, and not one layout write between them"
-          : `${String(afterTaps.selected)} seats selected after two taps, and ${String(tapCommits)} layout write(s) a tap should never have made`,
+        : selects && tapCommits === 0
+          ? "a tap takes one seat, a second tap on it gives it back, a tap elsewhere moves it — and not one layout write between them"
+          : `taps left ${String(afterFirst)}/${String(afterToggle)}/${String(afterMove)} seats selected where 1/0/1 was owed, and made ${String(tapCommits)} layout write(s) a tap should never have made`,
     );
 
-    const swap = await pressTool('[data-testid="toolbar-swap"]');
-    const reselected = await tapGrip(`.arrange-grip[data-panel-id="${containerViewPanel}"]`);
+    /* The seat the taps above left selected IS Shelf's argument, so nothing is re-tapped here:
+       a check that set up its own precondition would be proving its own setup. */
     const shelf = await pressTool('[data-testid="toolbar-shelf"]');
     const reseat = await pressTool('[data-testid="arrange-shelf-item"]');
     const reset = await pressTool('[data-testid="toolbar-reset"]');
     const presses = [
-      { what: "Stack column", press: stackColumn },
-      { what: "Stack row", press: stackRow },
       { what: "Equalize", press: equalize },
-      { what: "Spacer", press: spacer },
-      { what: "Swap", press: swap },
       { what: "Shelf", press: shelf },
       { what: "Re-seat", press: reseat },
       { what: "Reset", press: reset },
@@ -3102,8 +3265,8 @@ try {
     );
     check(
       "R4 every arrange tool commits exactly once",
-      reselected && misbehaved.length === 0,
-      !reselected
+      afterMove === 1 && misbehaved.length === 0,
+      afterMove !== 1
         ? "the shelf tool's one-seat selection could not be made, so Shelf was never pressed honestly"
         : misbehaved.length === 0
           ? `${String(presses.length)} presses — ${presses.map((row) => row.what).join(", ")} — one core.space.setLayout each`
@@ -3141,6 +3304,13 @@ try {
       order the stack has already left must never come back. A destination-only check passes
       on a gesture that flickered its way there, which is exactly the bug.
     */
+    /* DIRECT children, deliberately, and it stayed that way through issue #104: the rail's
+       arrangement is a tree now, so the descendant form would also collect the rows inside a
+       `.sidebar-cluster` wrapper and inside any `.sidebar-split` a reader dropped — which are
+       not the boundaries this gesture crosses. These checks arrange the rail's TOP level, and
+       `>` is how the subject stays that. The transport is unchanged: the grip is a pointer
+       source with its own capture, never an HTML5 drag source, so the raw mouse events below
+       are still the gesture a hand makes. */
     const railOrder = (): Promise<readonly string[]> =>
       browser!.evaluate<readonly string[]>(
         `Array.from(document.querySelectorAll('.sidebar-sections > [data-section-id]'), (row) => row.dataset.sectionId)`,
@@ -3198,25 +3368,36 @@ try {
     await sleep(400);
 
     /*
-      ZOOMED IN, the workspace's own tools go quiet. Every one of them acts on the ROOT split,
-      and none of them means anything while the reader is standing inside a panel's private
-      arrangement — so they are disabled rather than left to refuse one by one, and the
+      ZOOMED IN, the workspace's own OPERATIONS go quiet. Every one of them acts on the ROOT
+      split, and none of them means anything while the reader is standing inside a panel's
+      private arrangement — so they are disabled rather than left to refuse one by one, and the
       workspace containers they would have acted on dim behind the arrangement in hand.
+
+      The PALETTE does not go quiet, and that asymmetry is the point of the rework (issue
+      #104): an operation on the whole workspace tree is meaningless here, while a structure
+      you drag lands wherever you drop it — including in the rows you are standing in. A
+      palette greyed out with the buttons would be the easy mistake, and it would silently
+      remove one of the three destinations a palette carry has.
     */
     const scoped = await arrangeChrome();
+    const scopedRight =
+      scoped.toolsDisabled > 0 &&
+      scoped.toolsEnabled === 0 &&
+      scoped.palette > 0 &&
+      scoped.wireframes > 0 &&
+      scoped.dimmed === scoped.wireframes;
     check(
       "R4 zooming into a panel's arrangement disarms the workspace's own tools",
-      scoped.toolsDisabled > 0 &&
-        scoped.toolsEnabled === 0 &&
-        scoped.wireframes > 0 &&
-        scoped.dimmed === scoped.wireframes,
+      scopedRight,
       scoped.toolsEnabled > 0
         ? `${String(scoped.toolsEnabled)} root tool(s) still pressable from inside a panel's arrangement`
-        : scoped.wireframes === 0
-          ? "no wireframe at all while scoped in, so nothing was dimmed or left lit to read"
-          : scoped.dimmed === scoped.wireframes
-            ? `${String(scoped.toolsDisabled)} root tools disabled and all ${String(scoped.wireframes)} workspace containers dimmed out of scope`
-            : `${String(scoped.dimmed)} of ${String(scoped.wireframes)} wireframe boxes dimmed: the scope crumb says one thing and the paint another`,
+        : scoped.palette === 0
+          ? "the palette went quiet with the buttons: a scoped reader can no longer drag structure into the rows they are standing in"
+          : scoped.wireframes === 0
+            ? "no wireframe at all while scoped in, so nothing was dimmed or left lit to read"
+            : scopedRight
+              ? `${String(scoped.toolsDisabled)} root tools disabled with all ${String(scoped.palette)} palette sources still live, and all ${String(scoped.wireframes)} workspace containers dimmed out of scope`
+              : `${String(scoped.dimmed)} of ${String(scoped.wireframes)} wireframe boxes dimmed: the scope crumb says one thing and the paint another`,
     );
     await sleep(400);
 
@@ -3348,6 +3529,166 @@ try {
         : nudged
           ? `"${focused}" took the arrow key and the stack moved one seat`
           : `"${focused}" was focused and ArrowDown moved nothing`,
+    );
+
+    /*
+      A PALETTE DROP LANDS IN THE RAIL TOO, and the rows it holds sit side by side (issue
+      #104). This is the operator's headline for the whole rework — "drop a stack between two
+      rows and drag rows into it" — and it is unreachable from a unit test twice over: the
+      drop is an HTML5 carry the RAIL claims (`.sidebar-sections` owns the dragover/drop, not
+      a row), and "side by side" is a fact about painted boxes inside a wrapper that only
+      exists once a reader has authored it.
+
+      The two halves are checked APART on purpose. A split that lands in the wrong place and
+      a split that will not take a row are different bugs with different owners, and one
+      conjunction that goes red says neither.
+    */
+    interface RailSeat {
+      readonly id: string;
+      readonly top: number;
+      readonly bottom: number;
+      readonly left: number;
+      readonly right: number;
+    }
+    const railSeats = (): Promise<readonly RailSeat[]> =>
+      browser!.evaluate<readonly RailSeat[]>(
+        `Array.from(document.querySelectorAll('.sidebar-sections > [data-section-id]'), (row) => {
+           const box = row.getBoundingClientRect();
+           return {
+             id: row.dataset.sectionId,
+             top: box.top,
+             bottom: box.bottom,
+             left: box.left,
+             right: box.right,
+           };
+         })`,
+      );
+    interface RailSplit {
+      readonly dir: string;
+      readonly vacant: boolean;
+      readonly seats: number;
+      readonly members: number;
+      /** The rows this split sits BETWEEN, which is the whole of "where it landed". */
+      readonly before: string;
+      readonly after: string;
+      readonly memberBox: { readonly x: number; readonly y: number; readonly right: number } | null;
+      readonly seatBox: { readonly x: number; readonly y: number } | null;
+    }
+    const railSplits = (): Promise<readonly RailSplit[]> =>
+      browser!.evaluate<readonly RailSplit[]>(
+        `Array.from(document.querySelectorAll('.sidebar-sections .sidebar-split'), (split) => {
+           const member = split.querySelector('[data-section-id]');
+           const seat = split.querySelector('.sidebar-split-seat');
+           const boxOf = (node) => {
+             if (node === null) return null;
+             const box = node.getBoundingClientRect();
+             return { x: box.left + box.width / 2, y: box.top + box.height / 2, right: box.right };
+           };
+           return {
+             dir: split.dataset.dir ?? '',
+             vacant: split.dataset.vacant === 'true',
+             seats: split.querySelectorAll('.sidebar-split-seat').length,
+             members: split.querySelectorAll('[data-section-id]').length,
+             before: split.previousElementSibling?.dataset?.sectionId ?? '',
+             after: split.nextElementSibling?.dataset?.sectionId ?? '',
+             memberBox: boxOf(member),
+             seatBox: boxOf(seat),
+           };
+         })`,
+      );
+    /* Interpolated because the rail resolves its aim PER FRAME: a press and a jump gives the
+       kernel one sample of a gesture that had no path, which is not the gesture a hand makes. */
+    const grabTo = async (
+      from: { x: number; y: number },
+      to: { x: number; y: number },
+    ): Promise<void> => {
+      await browser!.drag(
+        Array.from({ length: 13 }, (_unused, step) => ({
+          x: from.x + ((to.x - from.x) * step) / 12,
+          y: from.y + ((to.y - from.y) * step) / 12,
+        })),
+        25,
+      );
+      await sleep(600);
+    };
+
+    const flatRail = await railSeats();
+    const above = flatRail[1];
+    const below = flatRail[2];
+    /* A ROW split, because the rail's own stack is a column: the direction a reader drops is
+       the direction its members will run in, and only the cross-axis one reads as "beside". */
+    const railPalette = await paletteAt('[data-testid="palette-stack-row"]');
+    const railGap =
+      above === undefined || below === undefined
+        ? null
+        : { x: (above.left + above.right) / 2, y: (above.bottom + below.top) / 2 };
+    if (railPalette !== null && railGap !== null) {
+      await browser.dragAndDrop(railPalette, railGap);
+    }
+    const nested = await settles(async () => (await railSplits()).length > 0, 8_000);
+    await sleep(1_500);
+    const landed = (await railSplits())[0] ?? null;
+    const wedged =
+      nested &&
+      landed !== null &&
+      landed.dir === "row" &&
+      landed.vacant &&
+      landed.seats === 1 &&
+      landed.members === 0 &&
+      landed.before === above?.id &&
+      landed.after === below?.id;
+    check(
+      "R4 a palette drop nests the rail's own rows",
+      wedged,
+      railPalette === null || railGap === null
+        ? "no palette source or fewer than three rail rows: the rail drop was never attempted"
+        : !nested
+          ? "the rail took the palette drag and authored no split: `.sidebar-sections` claimed the drop and nothing came of it"
+          : wedged
+            ? `a vacant ${landed?.dir ?? "?"} split with one seat sits between "${landed?.before ?? "?"}" and "${landed?.after ?? "?"}", exactly where the pointer let go`
+            : `the split landed as dir="${landed?.dir ?? "?"}" vacant=${String(landed?.vacant)} with ${String(landed?.seats)} seat(s) and ${String(landed?.members)} member(s), between "${landed?.before ?? "?"}" and "${landed?.after ?? "?"}" rather than between "${above?.id ?? "?"}" and "${below?.id ?? "?"}"`,
+    );
+
+    /*
+      AND IT TAKES ROWS. Two of them, because "side by side" is a claim about a PAIR — one
+      member in a split proves the seat accepts a drop and nothing about the axis. The first
+      row aims at the empty seat; the second aims at the first member's outer EDGE along the
+      split's own axis, which is the join every other tile row already answers to.
+    */
+    const firstIn = await railSeats();
+    const firstRow = firstIn[0];
+    if (firstRow !== undefined && landed !== null && landed.seatBox !== null) {
+      await grabTo(
+        { x: (firstRow.left + firstRow.right) / 2, y: (firstRow.top + firstRow.bottom) / 2 },
+        landed.seatBox,
+      );
+    }
+    const tookOne = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 1, 8_000);
+    await sleep(1_200);
+    const withOne = (await railSplits())[0] ?? null;
+    const secondIn = await railSeats();
+    const secondRow = secondIn[0];
+    if (secondRow !== undefined && withOne !== null && withOne.memberBox !== null) {
+      await grabTo(
+        { x: (secondRow.left + secondRow.right) / 2, y: (secondRow.top + secondRow.bottom) / 2 },
+        { x: withOne.memberBox.right - 6, y: withOne.memberBox.y },
+      );
+    }
+    const tookTwo = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 2, 8_000);
+    await sleep(1_200);
+    const paired = (await railSplits())[0] ?? null;
+    const sideBySide =
+      tookOne && tookTwo && paired !== null && paired.members === 2 && paired.dir === "row";
+    check(
+      "R4 two rows dragged into a rail split sit side by side",
+      sideBySide,
+      !tookOne
+        ? `the empty seat refused the first row: the split still holds ${String(withOne?.members ?? 0)} member(s)`
+        : !tookTwo
+          ? `the second row would not join the first: one member in, ${String(paired?.members ?? 0)} after aiming at its edge`
+          : sideBySide
+            ? `two rows inside one dir="${paired?.dir ?? "?"}" split, which is the rail's own stack running the other way`
+            : `${String(paired?.members ?? 0)} member(s) inside a dir="${paired?.dir ?? "?"}" split — the pair landed in the wrong axis`,
     );
 
     /*

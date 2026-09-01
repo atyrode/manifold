@@ -33,7 +33,7 @@ import { z } from "zod";
  * `machines` 20) sit in the middle where they always have; and the rail's foot is `status` 40,
  * then the `utility` cluster `core.keys` and `core.plugins` declare (50, 51 — painted side by
  * side), then `identity` 60. A principal's stored arrangement overrides all of it
- * (`arrangedSectionIds`).
+ * (`arrangedSections`).
  *
  * ESSENTIAL: nothing else can draw the workspace, so disabling it is refused rather than
  * obeyed. It declares no actions and no capabilities — chrome is not authority, and every one

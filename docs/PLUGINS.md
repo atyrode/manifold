@@ -152,6 +152,8 @@ export const manifest: PluginManifest = {
     // `tools` are toolbar tools. `toolbar` NAMES THE BAR the tool paints into, from the
     // engine's closed vocabulary — `canvas` (the freeform discipline's tool strip) or
     // `arrange` (`core.arrange`'s floating F8 workspace editor). Absent ≡ `canvas`.
+    // A row on the `arrange` bar may be painted as a DRAG SOURCE rather than a button:
+    // that is core.arrange's own reading of its own tool rows, not a field you declare.
     tools: [{ id: "draw", title: "Draw", toolbar: "canvas" }],
     events: [], // event kinds THIS plugin originates (§6b); core.draw emits none — a stroke is a document edit
   },
@@ -705,6 +707,12 @@ their work invisible without deleting it, which is the one outcome worse than a 
   `select` into DIFFERENT bars without colliding (D5 still refuses two plugins claiming one id
   within one bar), and a tool naming a bar this screen does not draw is simply not painted
   rather than leaking into somebody else's strip.
+  A tool is not always a BUTTON. Some of `core.arrange`'s own rows are painted as a
+  **palette** — carry sources you drag structure out of and drop into a tree — and that is
+  core.arrange's own reading of its own `contributes.tools`, decided inside the plugin that
+  draws the bar. There is no manifest field for it and there is not going to be one: a bar's
+  owner already decides how the rows that named it are painted, exactly as the canvas bar
+  decides its rows are mode buttons.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
 - **`routes`** are the URL spaces you claim, one bare path segment each: `{ segment: "uri",
