@@ -40,7 +40,7 @@
 
 ### Changed
 
-- The plugin manager says dependencies only when there are any — an absent line now means independence — and every named plugin is a link that jumps to its row, clearing whatever search or filter was hiding it. (#105, #PR)
+- The plugin manager says dependencies only when there are any — an absent line now means independence — and every named plugin is a link that jumps to its row, clearing whatever search or filter was hiding it. (#105, #106)
 
 - Terminal rename and kill moved from bespoke HTTP routes to `core.terminals.rename` / `core.terminals.kill` actions; killing a terminal keeps working even while the terminals plugin is disabled. (#69, #70)
 - Sidebar width, collapse, and section order left this device: width lives in your server-saved workspace layout, collapse is shared presence state, and section order comes from plugin manifests. (#69, #70)
