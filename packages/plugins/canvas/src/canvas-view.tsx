@@ -38,6 +38,7 @@ import {
   denialMessage,
   envelopeRef,
   gestureSendIntervalOverride,
+  polylinePath,
   remoteCursorSocketId,
   remoteTileCarries,
   renderCounts,
@@ -81,7 +82,7 @@ import {
   type ProjectedNode,
 } from "./canvas-scene.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
-import { appendPoint, DEFAULT_STROKE_WIDTH, pointsToPath } from "./stroke.ts";
+import { appendPoint, DEFAULT_STROKE_WIDTH } from "./stroke.ts";
 import type { ChannelRole } from "./portal-engagement.ts";
 
 /**
@@ -1808,7 +1809,7 @@ export function CanvasView({
                 {activeStrokePoints === null ? null : (
                   <svg className="stroke-preview" overflow="visible">
                     <path
-                      d={pointsToPath(activeStrokePoints)}
+                      d={polylinePath(activeStrokePoints)}
                       stroke={host.principal.color}
                       strokeWidth={DEFAULT_STROKE_WIDTH}
                       fill="none"
@@ -1827,7 +1828,7 @@ export function CanvasView({
                       overflow="visible"
                     >
                       <path
-                        d={pointsToPath(gesture.points)}
+                        d={polylinePath(gesture.points)}
                         stroke={carrierColor(client, gesture.principalId)}
                         strokeWidth={DEFAULT_STROKE_WIDTH}
                         fill="none"

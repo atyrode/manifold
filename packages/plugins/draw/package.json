@@ -7,6 +7,7 @@
     "./web": "./src/web.tsx"
   },
   "dependencies": {
+    "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@xyflow/react": "12.11.5",
     "react": "19.2.8",

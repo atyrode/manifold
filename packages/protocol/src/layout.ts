@@ -277,3 +277,47 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
   }
   return true;
 }
+
+/** The one leaf a solo layout holds: which tile it is, and what occupies it. */
+export interface SoloLeaf {
+  readonly tileId: string;
+  readonly ref: TileRef;
+}
+
+/**
+ * THE ARITY FACT: the single OCCUPIED leaf of a layout that has exactly one leaf, or null.
+ *
+ * This is the rule that decides whether a container is still "one thing in a box" or has
+ * become a composition, and every renderer that draws a container needs the same answer:
+ * the canvas portal renders AS its occupant when this is non-null, and the placement algebra
+ * looks THROUGH a container to the item inside it on the same condition. It was written twice,
+ * independently, in two sibling plugins that may not import each other (issue #117) — and two
+ * hand-rolled walks over the same record is precisely the divergence a wire type's own
+ * vocabulary exists to prevent.
+ *
+ * WHY PROTOCOL rather than `@manifold/plugin` (AXIOMS.md §Foundation law, criterion by
+ * criterion). Bootstrap: it is a derivation of `TileLayout`, a type nothing in the tree can
+ * read a container without, so it presupposes no plugin and every plugin presupposes it.
+ * Neutrality: it names no plugin and no element kind — it reads `dir` and `ref`, both fields
+ * this file defines, and would be unchanged if every plugin in the tree were replaced.
+ * Arbitration: the `protocol` pillar "arbitrates by being the single definition every party is
+ * measured against" (REGISTRY.md §Pillar inventory), which is the whole of what was missing
+ * here. It joins that pillar, in the file that declares the type it walks, next to
+ * {@link validateTileLayout}.
+ *
+ * AN EMPTY SECOND LEAF STILL ENDS IT. Splitting a container is how a principal says "this is a
+ * composition now", and the vacant half is the invitation — so arity counts LEAVES, not
+ * occupants. That is the one edge both copies got right and neither could enforce on the
+ * other, and it is what separates this from {@link censusSolo}, which counts a container's
+ * OCCUPANTS: a terminal beside an empty leaf is solo to the census and not solo here, because
+ * the two answer different questions ("what does it hold" versus "is it still one thing").
+ */
+export function soloLeaf(layout: TileLayout): SoloLeaf | null {
+  let found: SoloLeaf | null = null;
+  for (const node of Object.values(layout)) {
+    if (node.dir !== null) continue;
+    if (found !== null || node.ref === null) return null;
+    found = { tileId: node.id, ref: node.ref };
+  }
+  return found;
+}

@@ -5,8 +5,7 @@ import {
   type SceneElementPayload,
 } from "@manifold/protocol";
 import { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH } from "@manifold/scene";
-import type { GestureOverride } from "@manifold/plugin/hooks";
-import { strokeBounds, toRelativePoints } from "./stroke.ts";
+import { polylineBounds, polylineRelativeTo, type GestureOverride } from "@manifold/plugin/hooks";
 import type { Node } from "@xyflow/react";
 
 // Terminal element defaults live in @manifold/scene: the server authors portals onto
@@ -204,7 +203,7 @@ export function createDrawElement(
   strokeWidth: number,
   zIndex: number,
 ): SceneElement {
-  const bounds = strokeBounds(points, strokeWidth);
+  const bounds = polylineBounds(points, strokeWidth);
   return {
     id,
     type: "draw",
@@ -213,7 +212,7 @@ export function createDrawElement(
     width: bounds.width,
     height: bounds.height,
     zIndex,
-    points: toRelativePoints(points, bounds),
+    points: polylineRelativeTo(points, bounds),
     strokeWidth,
     color,
   };
