@@ -12,6 +12,7 @@ import {
   type TileLayout,
 } from "@manifold/protocol";
 import { instanceUrl } from "@manifold/plugin/hooks";
+import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./assembly.ts";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
 export interface StoredIdentity {
@@ -63,12 +64,16 @@ function authHeaders(token: string, includeJson: boolean): HeadersInit {
 
 /**
  * Exchanges the fragment-delivered owner key for a durable human token
- * (`core.access.createPrincipal`).
+ * (`core.access.createPrincipal`, named through `assembly.ts` like every door this floor
+ * knocks on).
  *
  * The owner key is the ONE credential that lives outside the token system, which is why
  * this boot path holds a raw secret and no terminal: it authenticates as root, asks the
- * access door for an identity, and keeps only the grant. It is also why `core.access` is not
- * `essential` — disabling it costs delegation, never the owner's own way in.
+ * access door for an identity, and keeps only the grant. That fact used to be the argument
+ * for `core.access` being ordinary; it is now the argument for why refusing to disable it is
+ * SAFE (issue #113). The seat is `essential`, because this is the only door that turns a
+ * credential into an identity and no browser without one can draw anything at all — and the
+ * owner key remains the way back if an assembly arrives with the seat off out of band.
  */
 export async function createPrincipal(
   ownerKey: string,
@@ -80,7 +85,7 @@ export async function createPrincipal(
     kind: "human",
   });
   const grant = TokenGrantSchema.parse(
-    await dispatchAction(ownerKey, "core.access.createPrincipal", request),
+    await dispatchAction(ownerKey, ACCESS_CREATE_PRINCIPAL_ACTION, request),
   );
   return { token: grant.token, principal: grant.principal };
 }
@@ -91,7 +96,7 @@ export async function createPrincipal(
  * container exactly as `GET /api/containers/:id` let it.
  */
 export async function getContainer(token: string, containerId: string): Promise<Container> {
-  const result = await dispatchAction(token, "core.index.readContainer", { containerId });
+  const result = await dispatchAction(token, INDEX_READ_CONTAINER_ACTION, { containerId });
   return ContainerSchema.parse(fieldFromObject(result, "container"));
 }
 

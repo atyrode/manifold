@@ -933,7 +933,7 @@ export class SessionClient {
   /*
     The workspace index's writes, beside its reads for the same reason: the section that
     LISTS containers is the section that renames and deletes them, and it holds only this
-    client. Every one of them is now a `core.views` ACTION — the bespoke routes are gone
+    client. Every one of them is now a `core.index` ACTION — the bespoke routes are gone
     (D13) — and each wrapper keeps its name, its arguments and its answer, because a method
     name is a contract with plugin authors while the door behind it is ours to move.
    */
@@ -944,6 +944,16 @@ export class SessionClient {
    * caller that renders the rule; these wrappers replaced routes whose refusal was an HTTP
    * error, and every caller of theirs is written around a throw. One shape per call site,
    * chosen by the call site.
+   *
+   * THE WRAPPERS BELOW NAME PLUGINS FROM INSIDE A FLOOR PILLAR, and that is ratified rather
+   * than tolerated (ADR 0013, addendum 2026-09-01, issue #113): a wrapper is a TYPED
+   * PROJECTION of a published door, never a second door. Each dispatches through `action`
+   * above rather than a transport of its own; each adds typing and result parsing only, so a
+   * `plugin_disabled` refusal reaches the caller verbatim instead of being papered over; and
+   * `action` stays public and complete, so a stranger's door is reachable with no wrapper at
+   * all and deleting every one of these would cost reach to nobody. The `core.` in a method
+   * name is AUTHORSHIP, exactly as it is on the wire — this client decides nothing
+   * differently for a door it happens to have typed.
    */
   private async invoke(name: string, args: unknown): Promise<unknown> {
     const outcome = await this.action(name, args);

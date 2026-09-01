@@ -13,6 +13,7 @@ import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
 import { IndexSection, NewFolderRow } from "@manifold-plugin/index/web";
+import { accessManifest } from "@manifold-plugin/access";
 import { indexManifest } from "@manifold-plugin/index";
 import { machinesManifest } from "@manifold-plugin/machines";
 import { presenceManifest } from "@manifold-plugin/presence";
@@ -45,6 +46,34 @@ import type { WebPluginDef } from "./plugin-host.tsx";
  * manifests — and no `assembly.ts` keeps a favourite pair for the boot fallback.
  */
 export const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
+
+/**
+ * WHICH DOORS THE FLOOR ITSELF KNOCKS ON — the five action names `packages/web/src` dispatches
+ * for its own account, spelled here for the reason `SIDEBAR_PANEL` is: an action name is the
+ * pair `${manifest.id}.${local}`, so writing one is naming a plugin, and this is the only file
+ * in `packages/web/src` allowed to do that. Each is built from the manifest rather than typed
+ * out, the convention `core.keys` set and `core.access` follows for its own chrome, so the
+ * shell's boot path cannot drift from the declaration it calls.
+ *
+ * The three seats behind them are `essential` (issue #113), and that is what makes the floor's
+ * reliance sound rather than merely tidy. `core.space` writes the workspace tree — including
+ * the placeholder's pruned commit, which is how a disabled panel plugin can never brick a
+ * layout. `core.index` mints and reads the containers a route resolves. `core.access` turns
+ * the owner key into an identity, which is the first thing that happens in this app and the
+ * only path to it. A floor that dispatches a door may not have that door taken away
+ * underneath it: an ordinary seat named here would be a shell that stops working when an
+ * administrator flips a switch the roster says is theirs to flip.
+ *
+ * Every OTHER plugin the floor names is named as DATA it may find absent — `FEED_TOPICS`
+ * below subscribes to `core.terminals`, `core.presence` and `core.machines`, all ordinary and
+ * all disableable, because a subscription to a node whose plugin is off simply reports
+ * nothing. Naming a door is the coupling that needs the guarantee; naming a topic is not.
+ */
+export const SPACE_SET_LAYOUT_ACTION = `${spaceManifest.id}.setLayout`;
+export const INDEX_CREATE_CONTAINER_ACTION = `${indexManifest.id}.createContainer`;
+export const INDEX_CREATE_FOLDER_ACTION = `${indexManifest.id}.createFolder`;
+export const INDEX_READ_CONTAINER_ACTION = `${indexManifest.id}.readContainer`;
+export const ACCESS_CREATE_PRINCIPAL_ACTION = `${accessManifest.id}.createPrincipal`;
 
 /**
  * WHICH NODES each shared feed subscribes to (ADR 0012). Every entry is a COLLECTION — a
