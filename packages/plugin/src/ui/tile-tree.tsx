@@ -119,6 +119,33 @@ function leafNodesInOrder(layout: TileLayout): readonly Tile[] {
   return out;
 }
 
+/**
+ * WHICH SUBTREES HOLD NOTHING, by tile id. A leaf is vacant when its `ref` is null, and a
+ * split is vacant when every one of its children is — so a stack the palette just dropped
+ * (issue #104: two vacant seats, deliberately) is one vacant box rather than three.
+ *
+ * It is a DOM fact the tree publishes (`is-vacant`, `data-vacant`) rather than a layout
+ * decision taken here, because who may take up room is not the tree's call: the same
+ * vacant split must be an invisible nothing to a reader working, a targetable seat to a
+ * reader arranging, and a targetable seat to anyone mid-drag. The stylesheet that owns the
+ * skin owns that answer; this only says which boxes it is about.
+ */
+function vacantTiles(layout: TileLayout): ReadonlySet<string> {
+  const vacant = new Set<string>();
+  const walk = (tileId: string): boolean => {
+    const node = layout[tileId];
+    if (node === undefined) return false;
+    const empty =
+      node.dir === null
+        ? node.ref === null
+        : node.children.map(walk).every((childEmpty) => childEmpty);
+    if (empty) vacant.add(tileId);
+    return empty;
+  };
+  walk(ROOT_TILE_ID);
+  return vacant;
+}
+
 export function TileTree({
   layout,
   classes,
@@ -178,6 +205,8 @@ export function TileTree({
     rootRef.current = element;
   };
 
+  const vacant = vacantTiles(layout);
+
   const renderChild = (childId: string): ReactNode => {
     const child = layout[childId];
     // A leaf child renders nothing HERE: its pane box is the seat its stable
@@ -190,6 +219,7 @@ export function TileTree({
         interactive={interactive}
         onRatios={onRatios}
         renderChild={renderChild}
+        vacant={vacant}
       />
     );
   };
@@ -214,6 +244,7 @@ export function TileTree({
           onRatios={onRatios}
           renderChild={renderChild}
           attachRoot={attachRoot}
+          vacant={vacant}
         />
       )}
       {keyed.map(({ node, key }) => createPortal(renderLeaf(node), hostFor(key), key))}
@@ -229,6 +260,8 @@ interface TileSplitProps {
   readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
   /** Set only on the tree's outermost split, for the content-seating scope. */
   readonly attachRoot?: (element: HTMLElement | null) => void;
+  /** Which tile ids hold no occupant anywhere under them; see {@link vacantTiles}. */
+  readonly vacant: ReadonlySet<string>;
 }
 
 /**
@@ -242,6 +275,7 @@ function TileSplit({
   renderChild,
   onRatios,
   attachRoot,
+  vacant,
 }: TileSplitProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   /** Live divider state; kept in a ref so a drag never re-renders the terminals it moves. */
@@ -315,37 +349,59 @@ function TileSplit({
         attachRoot?.(element);
       }}
     >
-      {node.children.map((childId, index) => (
-        // Keyed by tile id, never by position: removing a leaf must not shift its
-        // siblings onto each other's keys — and the CONTENT is immune either way,
-        // seated by ref identity from the portal list above.
-        <Fragment key={childId}>
-          {index === 0 ? null : (
+      {node.children.map((childId, index) => {
+        /*
+          A VACANT SUBTREE AND THE SEAM BEFORE IT TRAVEL TOGETHER. Collapsing the box while
+          leaving its divider behind would leave a grab band floating in the middle of the
+          content it no longer separates — so whatever the skin decides "vacant" looks like,
+          it decides it for both at once.
+        */
+        const empty = vacant.has(childId);
+        const mark = empty ? " is-vacant" : "";
+        return (
+          // Keyed by tile id, never by position: removing a leaf must not shift its
+          // siblings onto each other's keys — and the CONTENT is immune either way,
+          // seated by ref identity from the portal list above.
+          <Fragment key={childId}>
+            {index === 0 ? null : (
+              <div
+                className={`${classes.divider}${interactive ? "" : " is-inert"}${mark}`}
+                role="separator"
+                aria-orientation={row ? "vertical" : "horizontal"}
+                aria-label="Resize tiles"
+                {...(interactive
+                  ? {
+                      onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) =>
+                        beginDrag(index - 1, event),
+                      onPointerMove: moveDrag,
+                      onPointerUp: endDrag,
+                      onPointerCancel: endDrag,
+                    }
+                  : {
+                      // An inert seam looks identical to a live one minus the cursor —
+                      // which reads as "resize broke", not "you are watching". Say so.
+                      title: "Click a tile to work in this composition; dividers drag then",
+                    })}
+              />
+            )}
+            {/*
+              A VACANT PANE CARRIES NO INLINE SHARE. Its ratio is real and is still stored,
+              but WHETHER an empty subtree takes room is the skin's call and changes with the
+              reader's mode — and an inline `flex-grow` outranks every stylesheet rule there
+              is, so writing one here would nail the box open no matter what the sheet said.
+            */}
             <div
-              className={interactive ? classes.divider : `${classes.divider} is-inert`}
-              role="separator"
-              aria-orientation={row ? "vertical" : "horizontal"}
-              aria-label="Resize tiles"
-              {...(interactive
-                ? {
-                    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) =>
-                      beginDrag(index - 1, event),
-                    onPointerMove: moveDrag,
-                    onPointerUp: endDrag,
-                    onPointerCancel: endDrag,
-                  }
-                : {
-                    // An inert seam looks identical to a live one minus the cursor —
-                    // which reads as "resize broke", not "you are watching". Say so.
-                    title: "Click a tile to work in this composition; dividers drag then",
-                  })}
-            />
-          )}
-          <div className={classes.pane} data-tile-id={childId} style={{ flexGrow: growFor(index) }}>
-            {renderChild(childId)}
-          </div>
-        </Fragment>
-      ))}
+              className={`${classes.pane}${mark}`}
+              data-tile-id={childId}
+              {...(empty
+                ? { "data-vacant": "true" }
+                : { style: { flexGrow: growFor(index) } })}
+            >
+              {renderChild(childId)}
+            </div>
+          </Fragment>
+        );
+      })}
     </div>
   );
 }

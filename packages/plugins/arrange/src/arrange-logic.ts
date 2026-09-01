@@ -1,8 +1,8 @@
-import type { TileAim } from "@manifold/plugin/hooks";
+import { releasedTileLayout, tradedSeats, type TileAim } from "@manifold/plugin/hooks";
 import {
   ROOT_TILE_ID,
   validateTileLayout,
-  type TileDir,
+  type Structure,
   type TileEdge,
   type TileLayout,
   type TileRef,
@@ -12,7 +12,6 @@ import {
   tileParentId,
   withTileLeaf,
   withTileRatios,
-  withTilesSwapped,
   withoutTileLeaf,
 } from "@manifold/scene";
 
@@ -22,9 +21,14 @@ import {
  * Ported whole from the floor host it used to live inside (`packages/web/src/workspace.tsx`,
  * `workspace-arrange.ts`) when the F8 editor became `core.arrange` (issue #89). Nothing here
  * changed shape in the move: the same tree in, the same tree or the same named refusal out,
- * still unit-testable without a DOM. What is NEW below the pointer-gesture section is the
- * toolbar's own verbs — Stack, Spacer, Equalize, Swap, Shelf — each a small pure transform
- * over the same kernel, so a click commits through exactly the door a drag always has.
+ * still unit-testable without a DOM.
+ *
+ * What it is NOT any more is the arithmetic. Issue #104 turned the toolbox into a PALETTE you
+ * drag structure out of, and the sidebar's rail resolves ITS own drops through the same
+ * seam/zone kernel — so "the tree an aim means" moved into the engine
+ * (`releasedTileLayout`, `@manifold/plugin`), where both callers reach the one copy of it.
+ * What is left here is this editor's own GUARDS, its refusal prose, and the three operations
+ * a drag cannot express.
  */
 
 /**
@@ -128,90 +132,45 @@ function settled(next: TileLayout | null): PanelArrangeOutcome {
 }
 
 /**
- * A LEAF'S SECTION ARRANGEMENT TRAVELS WITH THE PANEL, never with the seat. Exported: the
- * toolbar's Swap tool needs the exact same carry-along a pointer trade always got.
- */
-function withLeafSections(
-  layout: TileLayout,
-  tileId: string,
-  sections: readonly string[] | undefined,
-): TileLayout | null {
-  const tile = layout[tileId];
-  if (tile === undefined) return null;
-  const seat = { ...tile };
-  delete seat.sections;
-  return {
-    ...layout,
-    [tileId]: sections === undefined ? seat : { ...seat, sections: [...sections] },
-  };
-}
-
-/**
- * TWO SEATS TRADE OCCUPANTS — the ONE exchange, whether a pointer released on a leaf's exact
- * spot, an arrow key named the sibling, or the toolbar's Swap tool named two selected tiles.
- * Ids, splits and ratios are untouched by `withTilesSwapped`, so each occupant adopts the
- * other's share, and the arrangements travel with the refs rather than staying behind on the
- * seats.
- */
-export function tradedSeats(
-  layout: TileLayout,
-  aTileId: string,
-  bTileId: string,
-): TileLayout | null {
-  const aSections = layout[aTileId]?.sections;
-  const bSections = layout[bTileId]?.sections;
-  const swapped = withTilesSwapped(layout, aTileId, bTileId);
-  const seated = swapped === null ? null : withLeafSections(swapped, bTileId, aSections);
-  return seated === null ? null : withLeafSections(seated, aTileId, bSections);
-}
-
-/**
  * THE RELEASE: the tree a grabbed panel's aim means.
  *
  * `aim` is whatever `resolveTileAim` answered — leaf zones, seam ends, seam middles
- * (`between`) and the area's border ring, one vocabulary shared with every composition's own
- * drag. Two shapes come out of it:
- *
- *   CENTER means THIS EXACT SPOT: the two panels trade seats (see {@link tradedSeats}), so
- *   ids, splits and ratios are untouched and each panel adopts the other's share — the
- *   established meaning of a center release everywhere else. On a
- *   vacant leaf the panel simply moves in and its origin leaf departs.
- *
- *   EVERY OTHER EDGE means a SPLIT: the panel joins the tree at that edge (flat along the
- *   parent's own axis, nesting across it, wedged between two siblings for a seam middle),
- *   and then leaves the seat it came from.
+ * (`between`) and the area's border ring, one vocabulary shared with every composition's
+ * own drag. WHAT the aim then does to the tree is `releasedTileLayout`, the engine's one
+ * answer to that question: this function is the workspace editor's GUARDS and its REFUSAL
+ * PROSE around it, and nothing else. The arithmetic used to live here, and it had to move
+ * the moment the sidebar's rail started resolving its own drops through the same kernel —
+ * two copies of "insert at the aim, then prune the seat" is the second door invariant 14
+ * forbids.
  */
 export function movedPanelLayout(
   layout: TileLayout,
   movedTileId: string,
   aim: TileAim,
 ): PanelArrangeOutcome {
-  const ref = panelRefAt(layout, movedTileId);
-  if (ref === null) return refuse("not_a_panel");
+  if (panelRefAt(layout, movedTileId) === null) return refuse("not_a_panel");
   if (!panelsCanMove(layout)) return refuse("panel_alone");
   if (aim.tileId === movedTileId) return refuse("aim_unchanged");
+  return settled(releasedTileLayout(layout, { kind: "seat", tileId: movedTileId }, aim));
+}
 
-  const movedSections = layout[movedTileId]?.sections;
-  const landing = layout[aim.tileId];
-
-  if (aim.edge === "center") {
-    if (landing === undefined || landing.dir !== null) return refuse("tree_refused");
-    const traded = tradedSeats(layout, movedTileId, aim.tileId);
-    // A VACANT landing leaf is a move rather than a trade: the empty origin then departs.
-    if (traded === null || landing.ref !== null) return settled(traded);
-    return settled(withoutTileLeaf(traded, movedTileId));
-  }
-
-  /*
-    Insert first, prune second — the server's own order for a leaf moving inside its own
-    tree. An insert never retires an existing leaf id (splitting the ROOT renames the root
-    SPLIT, never its children), so the origin is still there to remove afterwards and the
-    aim needs no remapping through a collapse.
-  */
-  const inserted = withTileLeaf(layout, ref, aim.tileId, aim.edge, aim.between === true);
-  if (inserted === null) return refuse("tree_refused");
-  const seated = withLeafSections(inserted.layout, inserted.tileId, movedSections);
-  return settled(seated === null ? null : withoutTileLeaf(seated, movedTileId));
+/**
+ * THE PALETTE'S RELEASE: the tree a dropped STRUCTURE means (issue #104).
+ *
+ * The very same call as a panel's release with a different thing in hand, which is the
+ * whole point of the rework: dragging a Stack row out of the toolbar is a carry like any
+ * other, resolved by the same kernel over the same aim vocabulary and committed through the
+ * same door. The only guard it needs is the tree's own — there is no seat to leave behind,
+ * no panel to be alone, and nowhere the aim could point that means "unchanged", because
+ * what lands was not there a moment ago.
+ */
+export function droppedStructure(
+  layout: TileLayout | null,
+  structure: Structure,
+  aim: TileAim,
+): PanelArrangeOutcome {
+  if (layout === null) return refuse("tree_refused");
+  return settled(releasedTileLayout(layout, { kind: "structure", structure }, aim));
 }
 
 /**
@@ -252,19 +211,21 @@ export function nudgedPanelLayout(
 }
 
 /**
- * ── THE TOOLBAR'S OWN VERBS ───────────────────────────────────────────────────────────
+ * ── THE SECONDARY OPERATIONS ──────────────────────────────────────────────────────────
  *
- * Six of the seven tools act on the ROOT split specifically — the workspace's own top-level
- * arrangement, the one every reader sees without zooming into anything — rather than on an
- * arbitrarily nested one, and Swap acts on exactly two tiles the toolbar's own selection
- * names. That is a deliberate, documented scope: the pointer-driven grip above already
- * reaches ANY depth for a reader who wants to restructure a nested stack by hand, and a
- * click-button editor that tried to match it would need a second addressing scheme for
- * "which stack" beside the one the grip already has. Root-scoped commands cover exactly what
- * the issue asks for — "rearrange the sidebar rows and workspace panels to arbitrary stacks
- * with spacers using only the toolbar" is a claim about the WORKSPACE's own arrangement, and
- * every default and every grip-built tree the toolbar might inherit has its structure at the
- * root the reader is looking at.
+ * What is left of the toolbar's click half after the palette took the rest (issue #104).
+ * Stack row, Stack column and Spacer were ROOT operations — "re-orient the whole tree",
+ * "append a spacer to the end" — which is a reading of the first issue the operator
+ * superseded: those three are structure you DRAG somewhere specific now, so the root-only
+ * versions of them are gone rather than kept beside their own replacements. Swap went with
+ * them: a center release already trades two seats, so a button that needed two tiles
+ * selected first was a second way to say the same thing.
+ *
+ * The three that remain are the ones a drag genuinely cannot express, because none of them
+ * is a placement: Equalize is arithmetic over one split's ratios, Shelf takes a panel OUT of
+ * the tree without putting it anywhere, and Reset discards the arrangement for the manifest
+ * default. They act on the ROOT — the arrangement the reader is looking at without zooming
+ * into anything — and Shelf on the one seat the selection names.
  */
 
 /** Appends `ref` as a new, flat child of the root split — Spacer and Shelf's re-seat share it. */
@@ -284,21 +245,6 @@ function appendedToRoot(layout: TileLayout, ref: TileRef): TileLayout | null {
   return inserted === null ? null : inserted.layout;
 }
 
-/** Spacer: a first-class inert leaf, appended to the workspace's own top-level arrangement. */
-export function addedSpacer(layout: TileLayout | null): PanelArrangeOutcome {
-  if (layout === null) return refuse("tree_refused");
-  return settled(appendedToRoot(layout, { kind: "spacer" }));
-}
-
-/** Stack row / Stack column: re-orients the root split without touching its children. */
-export function rootStacked(layout: TileLayout | null, dir: TileDir): PanelArrangeOutcome {
-  if (layout === null) return refuse("tree_refused");
-  const root = layout[ROOT_TILE_ID];
-  if (root === undefined || root.dir === null) return refuse("panel_alone");
-  if (root.dir === dir) return refuse("aim_unchanged");
-  return settled({ ...layout, [ROOT_TILE_ID]: { ...root, dir } });
-}
-
 /** Equalize: normalizes the root split's ratios to one even share each. */
 export function rootEqualized(layout: TileLayout | null): PanelArrangeOutcome {
   if (layout === null) return refuse("tree_refused");
@@ -312,21 +258,6 @@ export function rootEqualized(layout: TileLayout | null): PanelArrangeOutcome {
       root.children.map(() => share),
     ),
   );
-}
-
-/** Swap: trades exactly two selected seats, occupied or not — the toolbar's own Swap tool. */
-export function swappedSeats(
-  layout: TileLayout | null,
-  selected: readonly string[],
-): PanelArrangeOutcome {
-  if (layout === null) return refuse("tree_refused");
-  if (selected.length !== 2) return refuse("nothing_selected");
-  const [a, b] = selected;
-  if (a === undefined || b === undefined || layout[a] === undefined || layout[b] === undefined) {
-    return refuse("tree_refused");
-  }
-  if (layout[a]?.dir !== null || layout[b]?.dir !== null) return refuse("tree_refused");
-  return settled(tradedSeats(layout, a, b));
 }
 
 /** Every declared panel with no leaf in the tree right now — Shelf's own listing. */

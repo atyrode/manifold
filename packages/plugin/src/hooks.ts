@@ -118,6 +118,12 @@ export {
   type UnitPoint,
   type UnitRect,
 } from "./tile-geometry.ts";
+/**
+ * WHAT A RELEASE MEANS over a tile tree: the one answer, shared by every surface that
+ * resolves an aim — a composition's own tree, the workspace shell's, and the projection of
+ * a panel's row arrangement (issue #104).
+ */
+export { releasedTileLayout, tradedSeats, type TileRelease } from "./tile-release.ts";
 export {
   areaUnits,
   previewFor,

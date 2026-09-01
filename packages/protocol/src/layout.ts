@@ -83,6 +83,103 @@ export const TileEdgeSchema = z.enum(["left", "right", "top", "bottom", "center"
 export type TileEdge = z.infer<typeof TileEdgeSchema>;
 
 /**
+ * NEW TILE MATERIAL: what a palette carry holds and a drop authors, as opposed to the
+ * existing item every other ref names.
+ *
+ * A SPLIT is an empty directed group — two vacant leaves, so the drop that made it is
+ * immediately two seats to fill; a SPACER is one inert leaf. Neither has an identity
+ * before it lands, which is exactly why it is a shape of its own: every other
+ * `PlacementRef` form addresses something that already exists, and this one addresses
+ * something the drop brings into being.
+ *
+ * It lives beside the tile grammar rather than in the placement algebra because it IS
+ * tile grammar — the same `dir` a split stores and the same `spacer` a leaf holds — and
+ * a panel's own section arrangement (below) grows the same two shapes for the same
+ * reason.
+ */
+export const StructureSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("split"), dir: TileDirSchema }),
+  z.strictObject({ kind: z.literal("spacer") }),
+]);
+export type Structure = z.infer<typeof StructureSchema>;
+
+/**
+ * How deep a panel's section arrangement may nest. A rail is a stack of rows and a
+ * split of it is a handful of rows side by side; past a few levels the rows have no
+ * width left to draw in, so the bound is what the chrome can honestly paint rather
+ * than a guess. Refused rather than clamped: an arrangement that cannot be rendered is
+ * not one a writer should believe was stored.
+ */
+export const MAX_SECTION_DEPTH = 4;
+
+/**
+ * ONE NODE of a panel's section arrangement: a section ID, or a SPLIT of more nodes.
+ *
+ * A bare string is a row, and an arrangement of nothing but strings is byte-identical to
+ * the flat order this field held before splits existed — which is the whole of the
+ * compatibility story: absent reproduces manifest order, a flat array reproduces the
+ * stored order, and a split is new information a reader authored by dropping structure
+ * into the rail (issue #104).
+ *
+ * The same two shapes as {@link StructureSchema}, and deliberately so: the palette drags
+ * ONE vocabulary, and where it lands decides whether the split it makes is a tile split
+ * or a row split. A spacer has no form here — the rail's rows are not a tile tree and
+ * have no ratios for a spacer to hold open — so the palette's spacer is refused by the
+ * sidebar the same way any other unplaceable carry is.
+ */
+export interface SectionSplit {
+  readonly dir: TileDir;
+  readonly sections: readonly SectionNode[];
+}
+export type SectionNode = string | SectionSplit;
+
+export const SectionNodeSchema: z.ZodType<SectionNode> = z.lazy(() =>
+  z.union([
+    z.string().min(1).max(128),
+    z.strictObject({
+      dir: TileDirSchema,
+      sections: z.array(SectionNodeSchema).max(MAX_PANEL_SECTIONS),
+    }),
+  ]),
+);
+
+/** Every section id one arrangement names, in paint order; splits contribute their members. */
+export function sectionArrangementIds(nodes: readonly SectionNode[]): readonly string[] {
+  const ids: string[] = [];
+  const walk = (list: readonly SectionNode[]): void => {
+    for (const node of list) {
+      if (typeof node === "string") ids.push(node);
+      else walk(node.sections);
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+/**
+ * Everything an arrangement must be that the schema cannot say: no id twice (an order
+ * that names a row in two places is not an order), no more ids than a roster can
+ * contribute, and no deeper than {@link MAX_SECTION_DEPTH}. Exported because both ends
+ * enforce it — the layout validator below, and the policy that writes one.
+ */
+export function validSectionArrangement(nodes: readonly SectionNode[]): boolean {
+  let depth = 0;
+  const walk = (list: readonly SectionNode[], level: number): boolean => {
+    if (level > MAX_SECTION_DEPTH) return false;
+    if (level > depth) depth = level;
+    for (const node of list) {
+      if (typeof node === "string") continue;
+      if (!walk(node.sections, level + 1)) return false;
+    }
+    return true;
+  };
+  if (!walk(nodes, 1)) return false;
+  const ids = sectionArrangementIds(nodes);
+  if (ids.length > MAX_PANEL_SECTIONS) return false;
+  return new Set(ids).size === ids.length;
+}
+
+/**
  * One tile. Exactly two shapes are legal: a SPLIT (`dir` set, `children` and
  * `ratios` parallel, `ref` null) or a LEAF (`dir` null, `children` empty,
  * `ref` either a reference or null for a vacant drop target).
@@ -95,18 +192,24 @@ export const TileSchema = z.strictObject({
   ref: TileRefSchema.nullable(),
   /**
    * How the principal ARRANGED the sections this panel leaf hosts: their ids, in the
-   * order this reader wants them. Absent means the manifests decide — manifest order is
-   * the default and stays the default, so an untouched workspace has no row here at all.
+   * order this reader wants them, and — since issue #104 — grouped into SPLITS where they
+   * arranged some side by side. Absent means the manifests decide; manifest order is the
+   * default and stays the default, so an untouched workspace has no row here at all, and
+   * an arrangement of bare ids is byte-identical to the flat order this field held before
+   * splits existed.
    *
    * It sits on the TILE rather than beside the tree because a workspace tree is already
    * the one per-principal arrangement document (`core.space.setLayout` is its only door),
    * and "which panel" is the leaf itself. A second per-principal store for the same
-   * question would be a second door onto one concept (AGENTS.md invariant 14).
+   * question would be a second door onto one concept (AGENTS.md invariant 14) — which is
+   * also why the palette drops structure into THIS field rather than minting one of its
+   * own for the rail.
    *
-   * Legal on a leaf holding a PANEL ref and nowhere else, and free of duplicates —
-   * neither is expressible here, so {@link validateTileLayout} enforces both.
+   * Legal on a leaf holding a PANEL ref and nowhere else, and free of duplicates at any
+   * depth — neither is expressible here, so {@link validateTileLayout} enforces both
+   * through {@link validSectionArrangement}.
    */
-  sections: z.array(z.string().min(1).max(128)).max(MAX_PANEL_SECTIONS).optional(),
+  sections: z.array(SectionNodeSchema).max(MAX_PANEL_SECTIONS).optional(),
 });
 export type Tile = z.infer<typeof TileSchema>;
 
@@ -146,7 +249,7 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
     */
     if (tile.sections !== undefined) {
       if (tile.ref === null || tile.ref.kind !== "panel") return false;
-      if (new Set(tile.sections).size !== tile.sections.length) return false;
+      if (!validSectionArrangement(tile.sections)) return false;
     }
     if (
       containerId !== undefined &&

@@ -1,8 +1,10 @@
+import { StructureSchema } from "@manifold/protocol";
 import type {
   CarriedItem,
   ContainerDiscipline,
   PlacementItem,
   PlacementRef,
+  Structure,
 } from "@manifold/protocol";
 
 /**
@@ -38,14 +40,21 @@ export const ITEM_MIME = "application/x-manifold-item";
  * What is being carried. `terminal`, `canvas` and `composition` name an ITEM by identity;
  * `tile` and `element` name an existing PLACEMENT of one, which is how a single mirror of
  * a multi-placed terminal — or a note, which has no identity outside its document — becomes
- * addressable.
+ * addressable. `structure` names NOTHING YET: it is what a palette drag holds, and the
+ * shape it carries is authored by the drop (issue #104).
+ *
+ * A palette item is a carry SOURCE like any other precisely because it seals one of these:
+ * the same mime, the same register, the same wire ref, the same three verbs on
+ * `useCarry`. What differs is only where a release can legally put it, and that is the
+ * placement algebra's answer (`ITEM_KINDS.structure`), never a second transport.
  */
 export type ItemEnvelope =
   | { readonly kind: "terminal"; readonly terminalId: string }
   | { readonly kind: "canvas"; readonly containerId: string }
   | { readonly kind: "composition"; readonly containerId: string }
   | { readonly kind: "tile"; readonly containerId: string; readonly tileId: string }
-  | { readonly kind: "element"; readonly containerId: string; readonly elementId: string };
+  | { readonly kind: "element"; readonly containerId: string; readonly elementId: string }
+  | { readonly kind: "structure"; readonly structure: Structure };
 
 export type ItemEnvelopeKind = ItemEnvelope["kind"];
 
@@ -95,6 +104,15 @@ export function validateEnvelope(value: unknown): ItemEnvelope | null {
       return containerId === null || elementId === null
         ? null
         : { kind: "element", containerId, elementId };
+    }
+    /*
+      The one payload with no id in it, so the SHAPE is all there is to validate — and
+      `StructureSchema` is the definition of that shape, so it does the validating rather
+      than a second hand-rolled copy of the same two cases drifting beside it.
+    */
+    case "structure": {
+      const structure = StructureSchema.safeParse(record["structure"]);
+      return structure.success ? { kind: "structure", structure: structure.data } : null;
     }
     default:
       return null;
@@ -231,6 +249,8 @@ export function envelopeRef(envelope: ItemEnvelope): PlacementRef {
       return { kind: "tile", containerId: envelope.containerId, tileId: envelope.tileId };
     case "element":
       return { kind: "element", containerId: envelope.containerId, elementId: envelope.elementId };
+    case "structure":
+      return { kind: "structure", structure: envelope.structure };
     default: {
       const exhaustive: never = envelope;
       return exhaustive;

@@ -42,6 +42,16 @@ export interface PageMessage {
   readonly text: string;
 }
 
+/**
+ * One MIME payload a drag SOURCE sealed onto a gesture, as the browser itself recorded it.
+ * Returned by {@link Browser.dragAndDrop} so a gate can assert on what the source put there
+ * rather than on something the gate constructed and handed back to itself.
+ */
+export interface DragPayload {
+  readonly mimeType: string;
+  readonly data: string;
+}
+
 /** Bounded so a chatty page cannot grow the driver without limit across a long gate. */
 const MAX_PAGE_MESSAGES = 500;
 const MAX_PAGE_MESSAGE_CHARS = 2_000;
@@ -360,6 +370,107 @@ export class Browser {
       button: "left",
       clickCount: 1,
     });
+  }
+
+  /**
+   * Waiting for the payload of the drag currently being intercepted, or null between drags.
+   * One field rather than one listener per gesture: {@link on} has no unsubscribe, so
+   * registering per call would leave every finished gesture still listening.
+   */
+  private dragIntercept: ((data: Record<string, unknown>) => void) | null = null;
+  private dragInterceptListening = false;
+
+  /**
+   * Drives one HTML5 DRAG-AND-DROP gesture: press on `from`, carry towards `to`, drop there.
+   *
+   * {@link drag} cannot do this, and not for want of frames. `Input.dispatchMouseEvent`
+   * drives the POINTER; native drag-and-drop is a second, browser-level gesture, and Chromium
+   * hands it to the platform's own drag loop rather than turning it into `dragover` and `drop`
+   * on the page — so a pointer drag out of a `draggable` element fires `dragstart` and then
+   * nothing ever reaches any target, and a gate written with `drag` reads "the layout did not
+   * change" and calls the product broken. `Input.setInterceptDrags` is the door: with it
+   * enabled Chromium performs no native drag and reports the sealed payload back to the driver
+   * as `Input.dragIntercepted`, and `Input.dispatchDragEvent` plays that payload into the page
+   * as the real event sequence.
+   *
+   * The press and the carry stay a REAL pointer gesture, so the element's own `draggable` and
+   * its own `dragstart` handler are what produce the payload this returns — the driver never
+   * builds a DataTransfer of its own, which is what makes the returned items evidence about
+   * the source rather than an echo of the gate's own input.
+   */
+  async dragAndDrop(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    stepMs = 30,
+  ): Promise<readonly DragPayload[]> {
+    if (!this.dragInterceptListening) {
+      this.on("Input.dragIntercepted", (params) => {
+        const data = params["data"];
+        if (data === null || typeof data !== "object") return;
+        this.dragIntercept?.(data as Record<string, unknown>);
+      });
+      this.dragInterceptListening = true;
+    }
+    const sealed = Promise.withResolvers<Record<string, unknown>>();
+    this.dragIntercept = sealed.resolve;
+    await this.send("Input.setInterceptDrags", { enabled: true });
+    try {
+      await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y });
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: from.x,
+        y: from.y,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      /* A drag begins only once the pointer has actually TRAVELLED, so the first half of the
+         carry is walked frame by frame — the same threshold a hand crosses — instead of
+         teleported to the target, which Chromium reads as a press and a jump and no drag. */
+      for (let step = 1; step <= 6; step += 1) {
+        await this.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: from.x + ((to.x - from.x) * step) / 12,
+          y: from.y + ((to.y - from.y) * step) / 12,
+          button: "left",
+          buttons: 1,
+        });
+        await sleep(stepMs);
+      }
+      const data = await Promise.race([sealed.promise, sleep(5_000).then(() => null)]);
+      if (data === null) {
+        throw new Error(
+          `no drag started at (${String(from.x)}, ${String(from.y)}): nothing under the pointer is a drag source`,
+        );
+      }
+      // dragEnter arms the target, dragOver is the frame it resolves its aim on, drop commits.
+      for (const type of ["dragEnter", "dragOver", "drop"]) {
+        await this.send("Input.dispatchDragEvent", { type, x: to.x, y: to.y, data });
+        await sleep(stepMs);
+      }
+      const items: DragPayload[] = [];
+      const raw: unknown = data["items"];
+      for (const item of Array.isArray(raw) ? (raw as readonly unknown[]) : []) {
+        if (item === null || typeof item !== "object") continue;
+        items.push({
+          mimeType: String(Reflect.get(item, "mimeType") ?? ""),
+          data: String(Reflect.get(item, "data") ?? ""),
+        });
+      }
+      return items;
+    } finally {
+      /* The release is what ends the gesture for the page (`dragend`), and interception goes
+         off again so every pointer drag after this one behaves as it always did. */
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: to.x,
+        y: to.y,
+        button: "left",
+        clickCount: 1,
+      });
+      this.dragIntercept = null;
+      await this.send("Input.setInterceptDrags", { enabled: false });
+    }
   }
 
   /** Emulates tab lifecycle (e.g. "frozen" ≈ hidden/suspended tab, "active" to resume). */

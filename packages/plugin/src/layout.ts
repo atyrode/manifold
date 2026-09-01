@@ -1,69 +1,81 @@
-import { MAX_PANEL_SECTIONS, type Tile, type TileLayout } from "@manifold/protocol";
+import {
+  MAX_PANEL_SECTIONS,
+  ROOT_TILE_ID,
+  sectionArrangementIds,
+  validSectionArrangement,
+  type SectionNode,
+  type Structure,
+  type Tile,
+  type TileLayout,
+} from "@manifold/protocol";
+import type { TileAim } from "./tile-geometry.ts";
+import { releasedTileLayout } from "./tile-release.ts";
 
 /**
  * ── The section arrangement policy ───────────────────────────────────────────────────
  *
- * WHAT ORDER A PANEL'S SECTIONS ARE IN, as pure functions of two inputs: what the
+ * HOW A PANEL'S SECTIONS ARE ARRANGED, as pure functions of two inputs: what the
  * manifests declared, and what this principal arranged. Manifest order is the DEFAULT and
  * stays it — an untouched workspace stores nothing, and a section's declared place is what
  * survives a plugin being disabled and re-enabled (D4′).
  *
+ * An arrangement is a TREE since issue #104: a list of nodes, each a section id or a
+ * SPLIT of more nodes, so a reader who drags a row out of the palette into the rail can
+ * put two rows side by side. A list of bare ids is the flat order this field always held,
+ * which is why absence and flatness both reproduce the rail exactly as it was.
+ *
+ * THE RAIL IS A TILE TREE IN DISGUISE, and that is the whole trick below
+ * ({@link projectSectionArrangement}). A stack of rows, some of them grouped across the
+ * other axis, is precisely what a `TileLayout` describes — so the rail resolves a drop
+ * through the SAME seam/zone kernel a composition does (`resolveTileAim`), applies it
+ * through the SAME release (`releasedTileLayout`), and reads the answer back out. The
+ * hysteresis, the seam bands, the between-wedge and the center trade are not
+ * reimplemented here for a second surface; there is one kernel and this is a second
+ * caller of it (AGENTS.md invariants 11 and 14).
+ *
  * Pure and here, rather than inline in the sidebar's callbacks, because it is exactly the
- * "nontrivial sync policy" the conventions send to a unit-tested module: a merge over two
- * lists that disagree, plus the transition one grab makes. The sidebar renders the RESULT
- * and never re-derives it, so a live drag and a stored arrangement paint through one path —
- * the local pointer normalizes into the same `readonly string[]` the wire carries before
- * anything looks at it (AGENTS.md invariant 11).
+ * "nontrivial sync policy" the conventions send to a unit-tested module. The sidebar
+ * renders the RESULT and never re-derives it, so a live drag and a stored arrangement
+ * paint through one path — the local pointer normalizes into the same node list the wire
+ * carries before anything looks at it (invariant 11).
  */
 
 /**
- * The order a panel's sections render in. `arranged` is this principal's stored order,
- * `declared` is manifest order; the answer is a permutation of `declared` alone.
+ * The arrangement a panel's sections render in. `arranged` is this principal's stored
+ * tree, `declared` is manifest order; the answer names ids out of `declared` alone.
  *
- * Two rules, and both are consequences of manifest order being the default rather than
- * choices made here:
+ * Three rules, and all three are consequences of manifest order being the default rather
+ * than choices made here:
  *
- *   A stored id the manifests no longer declare is DROPPED — a plugin left the roster, and
- *   its slot must not hold a gap open. The stored row keeps naming it (nobody rewrites your
- *   arrangement behind your back), so re-enabling that plugin restores your place for free.
+ *   A stored id the manifests no longer declare is DROPPED, wherever in the tree it sits —
+ *   a plugin left the roster, and its slot must not hold a gap open. The stored row keeps
+ *   naming it (nobody rewrites your arrangement behind your back), so re-enabling that
+ *   plugin restores your place for free.
  *
- *   A declared id the arrangement does not name lands AFTER everything it does, in manifest
- *   order. A section contributed since you last arranged the sidebar is new information, and
- *   the honest place for it is somewhere you can see it — never displacing a slot you chose.
+ *   A SPLIT emptied that way SURVIVES, for the same reason. It is also what a freshly
+ *   dropped split IS — two seats and nothing in them — so "empty" can never mean "delete
+ *   me" without the palette's own drop deleting itself.
+ *
+ *   A declared id the arrangement does not name lands AFTER everything it does, at the top
+ *   level, in manifest order. A section contributed since you last arranged the sidebar is
+ *   new information, and the honest place for it is somewhere you can see it — never
+ *   displacing a slot you chose, and never buried inside a split you did not put it in.
  */
-export function arrangedSectionIds(
+export function arrangedSections(
   declared: readonly string[],
-  arranged: readonly string[] | undefined,
-): readonly string[] {
+  arranged: readonly SectionNode[] | undefined,
+): readonly SectionNode[] {
   if (arranged === undefined || arranged.length === 0) return declared;
   const declaredSet = new Set(declared);
-  const placed = arranged.filter((id) => declaredSet.has(id));
-  if (placed.length === 0) return declared;
-  const placedSet = new Set(placed);
-  return [...placed, ...declared.filter((id) => !placedSet.has(id))];
-}
-
-/**
- * The order one grab produces: `moved` taken out and dropped where `over` sits. This is the
- * whole of the drag's arithmetic — the preview renders it per frame and the release commits
- * the same value, so what you let go of is what is written.
- *
- * The input order is returned UNCHANGED when the move is a no-op or names an id the order
- * does not hold, so a pointer wandering over chrome that is not a section cannot invent a
- * write, and referential equality is a usable "nothing happened" signal.
- */
-export function movedSectionIds(
-  order: readonly string[],
-  moved: string,
-  over: string,
-): readonly string[] {
-  const from = order.indexOf(moved);
-  const to = order.indexOf(over);
-  if (from === -1 || to === -1 || from === to) return order;
-  const next = [...order];
-  next.splice(from, 1);
-  next.splice(to, 0, moved);
-  return next;
+  const keep = (nodes: readonly SectionNode[]): SectionNode[] =>
+    nodes.flatMap((node): SectionNode[] => {
+      if (typeof node !== "string") return [{ dir: node.dir, sections: keep(node.sections) }];
+      return declaredSet.has(node) ? [node] : [];
+    });
+  const placed = keep(arranged);
+  const named = new Set(sectionArrangementIds(placed));
+  if (named.size === 0) return declared;
+  return [...placed, ...declared.filter((id) => !named.has(id))];
 }
 
 /** One painted unit of a section stack: a lone row, or the members of one declared cluster. */
@@ -122,69 +134,129 @@ export function clusteredSections<T>(
   return units;
 }
 
-/** One row's vertical extent, in whatever coordinate space the pointer is reported in. */
-export interface SectionBox {
-  readonly id: string;
-  readonly top: number;
-  readonly bottom: number;
+/**
+ * ── THE RAIL AS A TILE TREE ──────────────────────────────────────────────────────────
+ *
+ * A synthetic {@link TileLayout} over one panel's arrangement, so a drop into the rail
+ * resolves through the very kernel every other drop in the application already uses. The
+ * top level is a COLUMN split — a rail is a stack — each section is a LEAF holding its own
+ * `panel` ref, and a stored split is a split. Tile ids are the node's PATH, so the answer
+ * reads straight back out without a side table.
+ *
+ * `extentOf` is how big each node is PAINTED, along its parent's axis, keyed by path. It
+ * matters because the kernel resolves zones out of ratios: feeding it the measured
+ * extents is what makes the synthetic rects the boxes on screen, so the band a pointer
+ * is in is the band the reader sees. A node the rail did not paint — a disabled plugin's
+ * row, or one the collapsed rail left out — reports {@link UNPAINTED_EXTENT}: it keeps
+ * its place in the tree (D4′) while being too small for any pointer to land on.
+ */
+export interface SectionProjection {
+  readonly layout: TileLayout;
+  /** Path of the leaf showing one section; the drag's own "what am I holding". */
+  readonly pathOf: ReadonlyMap<string, string>;
 }
 
 /**
- * How far PAST a neighbour's midpoint the pointer must be before the stack answers, in the
- * pointer's own units.
- *
- * The midpoint rule is already self-stabilising for a row with height: swapping past a
- * neighbour puts that neighbour's new midpoint a whole held-row-height back up the way the
- * pointer came, so undoing the swap costs real travel. A ZERO-HEIGHT row — `core.shell.status`
- * with nothing to report is exactly one — has no height to spend, so its band would be the
- * width of a jitter. This margin is the floor under that band and nothing else; it is not a
- * feel constant, and a row with height never notices it.
+ * The share an unpainted row takes of its parent. Positive because a ratio must be, and
+ * small enough that its band is under a pixel in any rail a person can see.
  */
-export const SECTION_CROSS_MARGIN = 4;
+export const UNPAINTED_EXTENT = 1e-4;
+
+export function projectSectionArrangement(
+  nodes: readonly SectionNode[],
+  extentOf: (path: string) => number,
+): SectionProjection {
+  const layout: Record<string, Tile> = {};
+  const pathOf = new Map<string, string>();
+  const build = (list: readonly SectionNode[], id: string, dir: "row" | "column"): void => {
+    const children: string[] = [];
+    const ratios: number[] = [];
+    list.forEach((node, index) => {
+      const childId = `${id === ROOT_TILE_ID ? "n" : `${id}.`}${String(index)}`;
+      children.push(childId);
+      ratios.push(Math.max(extentOf(childId), UNPAINTED_EXTENT));
+      if (typeof node === "string") {
+        layout[childId] = {
+          id: childId,
+          dir: null,
+          ratios: [],
+          children: [],
+          ref: { kind: "panel", panelId: node },
+        };
+        pathOf.set(node, childId);
+        return;
+      }
+      build(node.sections, childId, node.dir);
+    });
+    if (children.length === 0) {
+      // A split with no members is what a freshly dropped one IS, and the kernel needs a
+      // leaf to aim at — so an empty split paints one vacant seat to receive the first row.
+      const seatId = `${id === ROOT_TILE_ID ? "n" : `${id}.`}0`;
+      layout[seatId] = { id: seatId, dir: null, ratios: [], children: [], ref: null };
+      children.push(seatId);
+      ratios.push(1);
+    }
+    layout[id] = { id, dir, ratios, children, ref: null };
+  };
+  build(nodes, ROOT_TILE_ID, "column");
+  return { layout, pathOf };
+}
+
+/** The arrangement a projected tree describes: the inverse of the projection above. */
+export function sectionArrangementOf(layout: TileLayout): readonly SectionNode[] {
+  const read = (id: string): readonly SectionNode[] => {
+    const tile = layout[id];
+    if (tile === undefined) return [];
+    return tile.children.flatMap((childId): SectionNode[] => {
+      const child = layout[childId];
+      if (child === undefined) return [];
+      if (child.dir !== null) return [{ dir: child.dir, sections: read(childId) }];
+      // A vacant leaf is a seat nobody has filled: it is the split's emptiness, not a row.
+      return child.ref !== null && child.ref.kind === "panel" ? [child.ref.panelId] : [];
+    });
+  };
+  const root = layout[ROOT_TILE_ID];
+  if (root === undefined) return [];
+  if (root.dir === null) {
+    return root.ref !== null && root.ref.kind === "panel" ? [root.ref.panelId] : [];
+  }
+  return read(ROOT_TILE_ID);
+}
+
+/** What a rail release is holding: one of its own rows, or new structure from the palette. */
+export type SectionRelease =
+  | { readonly kind: "section"; readonly id: string }
+  | { readonly kind: "structure"; readonly structure: Structure };
 
 /**
- * WHICH ROW A HELD ROW HAS CROSSED, or null for "the stack has not been asked to move".
+ * THE ARRANGEMENT ONE RELEASE MEANS, or null when nothing legal came of it.
  *
- * The drag's whole hit test, and the reason it is a pure function of measured boxes rather
- * than an `elementFromPoint` at the pointer: what a pointer is OVER is not what a reorder
- * should answer to. Two rules, and both are the fix for a real oscillation (issue #94):
+ * Project, apply the shared release, read back. Every rule a reader can see here — a row
+ * lands where the pointer did, two rows trade on a center drop, a seam wedges between
+ * neighbours, a dropped split arrives with seats in it — is the kernel's, not a second
+ * copy of it written for the rail.
  *
- *   The held row is never a candidate. It is the REFERENCE — the scan starts at its
- *   neighbours — so a frame that lands back inside the row in hand asks for nothing.
- *
- *   A neighbour is crossed only once the pointer is past its MIDPOINT (by
- *   {@link SECTION_CROSS_MARGIN}), never merely inside its box. Entering a box was the old
- *   rule, and it has no hysteresis at all: the swap it triggers slides the displaced
- *   neighbour under the very pointer that displaced it, and the next frame swaps it back.
- *   Past the midpoint, the swap moves the neighbour a full held-row-height clear of the
- *   threshold that would undo it, so a slow drag back and forth over a boundary crosses it
- *   once each way instead of ringing.
- *
- * The scan continues while successive neighbours are crossed and returns the FARTHEST one, so
- * a fast drag that outruns the frames lands where the pointer is rather than one row behind
- * it. `boxes` are the rows as they are PAINTED right now, in painted order.
+ * A SPACER is refused: the rail has no ratios for an inert leaf to hold open, so a spacer
+ * dropped here would be a row that renders nothing and can never be filled.
  */
-export function crossedSectionId(
-  boxes: readonly SectionBox[],
-  moved: string,
-  pointerY: number,
-  margin: number = SECTION_CROSS_MARGIN,
-): string | null {
-  const from = boxes.findIndex((box) => box.id === moved);
-  if (from === -1) return null;
-  let crossed: string | null = null;
-  for (let index = from + 1; index < boxes.length; index++) {
-    const box = boxes[index];
-    if (box === undefined || pointerY <= (box.top + box.bottom) / 2 + margin) break;
-    crossed = box.id;
-  }
-  if (crossed !== null) return crossed;
-  for (let index = from - 1; index >= 0; index--) {
-    const box = boxes[index];
-    if (box === undefined || pointerY >= (box.top + box.bottom) / 2 - margin) break;
-    crossed = box.id;
-  }
-  return crossed;
+export function releasedSectionArrangement(
+  projection: SectionProjection,
+  release: SectionRelease,
+  aim: TileAim,
+): readonly SectionNode[] | null {
+  if (release.kind === "structure" && release.structure.kind === "spacer") return null;
+  const tileRelease =
+    release.kind === "structure"
+      ? ({ kind: "structure", structure: release.structure } as const)
+      : (() => {
+          const tileId = projection.pathOf.get(release.id);
+          return tileId === undefined ? null : ({ kind: "seat", tileId } as const);
+        })();
+  if (tileRelease === null) return null;
+  const next = releasedTileLayout(projection.layout, tileRelease, aim);
+  if (next === null) return null;
+  const arrangement = sectionArrangementOf(next);
+  return validSectionArrangement(arrangement) ? arrangement : null;
 }
 
 /** The leaf a panel occupies, in key order; null when the tree does not show that panel. */
@@ -201,32 +273,38 @@ function panelLeaf(layout: TileLayout, panelId: string): Tile | null {
 export function panelSections(
   layout: TileLayout | null,
   panelId: string,
-): readonly string[] | undefined {
+): readonly SectionNode[] | undefined {
   if (layout === null) return undefined;
   return panelLeaf(layout, panelId)?.sections;
 }
 
 /**
- * THE COMMIT SHAPE: the tree that stores `order` as one panel's arrangement, ready for
+ * THE COMMIT SHAPE: the tree that stores `arrangement` as one panel's own, ready for
  * `core.space.setLayout`. Null when the write must not happen — the tree does not show that
- * panel, or the order names a section twice, which is the one thing an order may not do
- * (the same rule `validateTileLayout` would refuse it by, refused before it reaches the wire).
+ * panel, or the arrangement names a section twice or nests past the bound, which are the
+ * rules `validateTileLayout` would refuse it by, refused before it reaches the wire.
  *
- * An EMPTY order removes the field rather than storing `[]`. "I have no arrangement" and
- * "my arrangement is nothing" are the same state, and only one of them has a representation:
- * resetting to manifest order leaves a tree indistinguishable from one nobody ever arranged.
+ * An EMPTY arrangement removes the field rather than storing `[]`. "I have no arrangement"
+ * and "my arrangement is nothing" are the same state, and only one of them has a
+ * representation: resetting to manifest order leaves a tree indistinguishable from one
+ * nobody ever arranged.
  */
 export function withPanelSections(
   layout: TileLayout,
   panelId: string,
-  order: readonly string[],
+  arrangement: readonly SectionNode[],
 ): TileLayout | null {
-  if (order.length > MAX_PANEL_SECTIONS) return null;
-  if (new Set(order).size !== order.length) return null;
+  if (arrangement.length > MAX_PANEL_SECTIONS) return null;
+  if (!validSectionArrangement(arrangement)) return null;
   const leaf = panelLeaf(layout, panelId);
   if (leaf === null) return null;
   const rest = { ...leaf };
   delete rest.sections;
-  const next: Tile = order.length === 0 ? rest : { ...rest, sections: [...order] };
+  // Copied rather than shared: the stored tree is handed to a debounced writer, and an
+  // arrangement the caller can still mutate is a write nobody can reason about.
+  const copied = arrangement.map(function copy(node: SectionNode): SectionNode {
+    return typeof node === "string" ? node : { dir: node.dir, sections: node.sections.map(copy) };
+  });
+  const next: Tile = arrangement.length === 0 ? rest : { ...rest, sections: copied };
   return { ...layout, [leaf.id]: next };
 }

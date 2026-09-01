@@ -1,24 +1,30 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_PANEL_SECTIONS, validateTileLayout, type TileLayout } from "@manifold/protocol";
 import {
-  SECTION_CROSS_MARGIN,
-  arrangedSectionIds,
+  MAX_PANEL_SECTIONS,
+  ROOT_TILE_ID,
+  validateTileLayout,
+  type SectionNode,
+  type TileLayout,
+} from "@manifold/protocol";
+import { resolveTileAim, type TileAim } from "../src/tile-geometry.ts";
+import {
+  arrangedSections,
   clusteredSections,
-  crossedSectionId,
-  movedSectionIds,
   panelSections,
+  projectSectionArrangement,
+  releasedSectionArrangement,
+  sectionArrangementOf,
   withPanelSections,
-  type SectionBox,
 } from "../src/layout.ts";
 
 /**
  * THE SECTION ARRANGEMENT POLICY.
  *
- * The contract under test is a precedence rule with an escape hatch: manifest order is the
- * DEFAULT, a principal's stored order overrides it, and neither side may quietly lose a
- * section the other one knows about. Those are the cases a roster change walks into — a
- * plugin disabled, a plugin added after you last arranged — and they are why this is a
- * tested module rather than a `sort` inside a sidebar callback.
+ * The contract under test is a precedence rule with an escape hatch — manifest order is the
+ * DEFAULT, a principal's stored arrangement overrides it, and neither side may quietly lose a
+ * section the other one knows about — plus, since issue #104, the fact that the arrangement is
+ * a TREE and that the rail resolves its own drops through the shared seam/zone kernel rather
+ * than a hit test of its own.
  */
 
 const SIDEBAR = "core.shell.sidebar";
@@ -54,183 +60,201 @@ const shell = (): TileLayout => ({
   },
 });
 
-describe("arrangedSectionIds", () => {
+describe("arrangedSections", () => {
   test("no arrangement is manifest order, and the declared list is returned as-is", () => {
     const declared = ["index", "machines", "plugins"];
     // Referential identity, deliberately: the sidebar renders this every frame, and "nobody
     // has arranged anything" must not allocate a new array for React to see as new props.
-    expect(arrangedSectionIds(declared, undefined)).toBe(declared);
-    expect(arrangedSectionIds(declared, [])).toBe(declared);
+    expect(arrangedSections(declared, undefined)).toBe(declared);
+    expect(arrangedSections(declared, [])).toBe(declared);
   });
 
   test("a stored arrangement overrides manifest order", () => {
-    expect(arrangedSectionIds(["index", "machines", "plugins"], ["plugins", "index"])).toEqual([
+    expect(arrangedSections(["index", "machines", "plugins"], ["plugins", "index"])).toEqual([
       "plugins",
       "index",
       "machines",
     ]);
   });
 
-  test("a section the manifests stopped declaring leaves no gap", () => {
+  test("a section the manifests stopped declaring leaves no gap, at any depth", () => {
     // `core.machines` was disabled or left the roster: its slot closes rather than holding a
-    // hole open, and the row the principal stored is not the thing that changed.
-    expect(arrangedSectionIds(["index", "plugins"], ["plugins", "machines", "index"])).toEqual([
-      "plugins",
+    // hole open, and the row the principal stored is not the thing that changed. Inside a
+    // split it is the same rule — the split keeps its other member and its direction.
+    expect(
+      arrangedSections(["index", "plugins"], [{ dir: "row", sections: ["plugins", "machines"] }]),
+    ).toEqual([{ dir: "row", sections: ["plugins"] }, "index"]);
+  });
+
+  test("a split emptied by a roster change survives, because an empty split is a real state", () => {
+    // It is also exactly what the palette's own drop produces, so "empty" can never be read
+    // as "delete me" without the drop deleting itself before the reader can fill it.
+    expect(arrangedSections(["index"], [{ dir: "row", sections: ["gone"] }, "index"])).toEqual([
+      { dir: "row", sections: [] },
       "index",
     ]);
   });
 
-  test("a newly declared section lands after the arrangement, in manifest order", () => {
-    // Two sections arrived since this principal last arranged the sidebar. New information
-    // goes somewhere visible and never displaces a slot that was chosen on purpose.
+  test("a newly declared section lands after the arrangement, at the TOP level", () => {
+    // New information goes somewhere visible, never displacing a slot chosen on purpose —
+    // and never buried inside a split the reader did not put it in.
     expect(
-      arrangedSectionIds(["index", "notes", "machines", "uri", "plugins"], ["plugins", "index"]),
-    ).toEqual(["plugins", "index", "notes", "machines", "uri"]);
+      arrangedSections(
+        ["index", "notes", "machines"],
+        [{ dir: "row", sections: ["index"] }, "notes"],
+      ),
+    ).toEqual([{ dir: "row", sections: ["index"] }, "notes", "machines"]);
   });
 
   test("an arrangement naming nothing declared falls all the way back to manifest order", () => {
     const declared = ["index", "plugins"];
-    expect(arrangedSectionIds(declared, ["gone", "also-gone"])).toBe(declared);
-  });
-
-  test("the answer is always a permutation of the declared list", () => {
-    const declared = ["a", "b", "c", "d"];
-    const result = arrangedSectionIds(declared, ["d", "ghost", "b"]);
-    expect([...result].sort()).toEqual([...declared].sort());
-  });
-});
-
-describe("movedSectionIds", () => {
-  test("dragging down lands the section where its target sat", () => {
-    expect(movedSectionIds(["a", "b", "c", "d"], "a", "c")).toEqual(["b", "c", "a", "d"]);
-  });
-
-  test("dragging up lands the section where its target sat", () => {
-    expect(movedSectionIds(["a", "b", "c", "d"], "d", "b")).toEqual(["a", "d", "b", "c"]);
-  });
-
-  test("a no-op move returns the same array, so nothing downstream sees a write", () => {
-    const order = ["a", "b", "c"];
-    // Same identity is the "nothing happened" signal the drag preview and the commit both read.
-    expect(movedSectionIds(order, "b", "b")).toBe(order);
-    expect(movedSectionIds(order, "b", "ghost")).toBe(order);
-    expect(movedSectionIds(order, "ghost", "b")).toBe(order);
-  });
-
-  test("a move never loses or duplicates a section", () => {
-    const order = ["a", "b", "c", "d", "e"];
-    for (const moved of order) {
-      for (const over of order) {
-        const next = movedSectionIds(order, moved, over);
-        expect([...next].sort()).toEqual([...order].sort());
-        expect(new Set(next).size).toBe(next.length);
-      }
-    }
+    expect(arrangedSections(declared, ["gone", "also-gone"])).toBe(declared);
   });
 });
 
 /**
- * THE DRAG'S HIT TEST, which is a decision and not a lookup.
+ * THE RAIL AS A TILE TREE.
  *
- * Issue #94: the rule used to be "whichever row's box the pointer is in", and that rule has no
- * hysteresis — the swap it asks for slides the displaced neighbour straight back under the
- * pointer, and the next frame asks for the swap back. So what is tested here is the property
- * a lookup cannot have: that applying the answer moves the stack AWAY from the threshold that
- * would undo it, for every pointer position on a slow sweep in both directions.
+ * The property worth defending is not the projection's shape but its ROUND TRIP: whatever the
+ * shared kernel does to the projected tree has to come back out as an arrangement, or the rail
+ * would be resolving drops in a space it cannot read its own answer out of.
  */
 
-/** A stack laid out top to bottom from a row order and a height per row. */
-function stack(order: readonly string[], heights: Readonly<Record<string, number>>): SectionBox[] {
-  let top = 0;
-  return order.map((id) => {
-    const box = { id, top, bottom: top + (heights[id] ?? 0) };
-    top = box.bottom;
-    return box;
-  });
+/** Every painted row is one unit tall in a rail of `count` rows; nothing is hidden. */
+const evenExtents =
+  (count: number) =>
+  (path: string): number =>
+    path.includes(".") ? 1 : 1 / count;
+
+/** The aim a pointer at `(x, y)` in the rail's unit box resolves to, with no ring. */
+function railAim(
+  nodes: readonly SectionNode[],
+  point: { readonly x: number; readonly y: number },
+  carried: string | null,
+): TileAim | null {
+  const projection = projectSectionArrangement(nodes, evenExtents(nodes.length));
+  return resolveTileAim(
+    projection.layout,
+    point,
+    {
+      carriedTileId: carried === null ? null : (projection.pathOf.get(carried) ?? null),
+      holdsTileSeat: carried !== null,
+    },
+    { x: 0.01, y: 0.01 },
+    { x: 0, y: 0 },
+  );
 }
 
-/** Four 40px rows: a at 0–40, b at 40–80, c at 80–120, d at 120–160. */
-const EVEN: Readonly<Record<string, number>> = { a: 40, b: 40, c: 40, d: 40 };
-
-describe("crossedSectionId", () => {
-  test("entering a neighbour's box is not crossing it — the midpoint is", () => {
-    const boxes = stack(["a", "b", "c", "d"], EVEN);
-    // Inside `b` (40–80) but above its midpoint: the old rule's swap point, and now nothing.
-    expect(crossedSectionId(boxes, "a", 45)).toBeNull();
-    expect(crossedSectionId(boxes, "a", 60)).toBeNull();
-    expect(crossedSectionId(boxes, "a", 60 + SECTION_CROSS_MARGIN)).toBeNull();
-    expect(crossedSectionId(boxes, "a", 61 + SECTION_CROSS_MARGIN)).toBe("b");
+describe("the rail's projection", () => {
+  test("a flat arrangement projects to a column of leaves and reads back unchanged", () => {
+    const nodes: readonly SectionNode[] = ["brand", "index", "identity"];
+    const projection = projectSectionArrangement(nodes, evenExtents(3));
+    expect(projection.layout[ROOT_TILE_ID]?.dir).toBe("column");
+    expect(projection.layout[ROOT_TILE_ID]?.children).toEqual(["n0", "n1", "n2"]);
+    expect(projection.pathOf.get("index")).toBe("n1");
+    expect(sectionArrangementOf(projection.layout)).toEqual(nodes);
   });
 
-  test("crossing upward is the same rule mirrored", () => {
-    const boxes = stack(["a", "b", "c", "d"], EVEN);
-    expect(crossedSectionId(boxes, "d", 115)).toBeNull();
-    expect(crossedSectionId(boxes, "d", 100 - SECTION_CROSS_MARGIN)).toBeNull();
-    expect(crossedSectionId(boxes, "d", 99 - SECTION_CROSS_MARGIN)).toBe("c");
-  });
-
-  test("the row in hand is never the answer, wherever the pointer sits inside it", () => {
-    const boxes = stack(["a", "b", "c", "d"], EVEN);
-    for (let y = 40; y <= 80; y++) expect(crossedSectionId(boxes, "b", y)).not.toBe("b");
-    expect(crossedSectionId(boxes, "b", 60)).toBeNull();
-  });
-
-  test("a pointer that outran the frames lands where it IS, not one row behind it", () => {
-    const boxes = stack(["a", "b", "c", "d"], EVEN);
-    // Past b's midpoint and c's, short of d's: two rows crossed, and the far one is the seat.
-    expect(crossedSectionId(boxes, "a", 110)).toBe("c");
-    expect(crossedSectionId(boxes, "a", 155)).toBe("d");
-    expect(crossedSectionId(boxes, "d", 5)).toBe("a");
-  });
-
-  test("a row the stack does not hold moves nothing", () => {
-    expect(crossedSectionId(stack(["a", "b"], EVEN), "ghost", 60)).toBeNull();
-    expect(crossedSectionId([], "a", 60)).toBeNull();
-  });
-
-  test("a slow sweep down and back crosses each boundary exactly once", () => {
-    /*
-      The oscillation, reproduced as arithmetic: sweep the pointer one pixel at a time, apply
-      every answer the way the drag does, and re-measure. Each boundary may be crossed once
-      going down and once coming back — 6 for three boundaries — and a stack that rings would
-      count dozens.
-    */
-    const heights: Readonly<Record<string, number>> = { a: 40, b: 24, c: 64, d: 40 };
-    let order: readonly string[] = ["a", "b", "c", "d"];
-    const seen: string[] = [order.join(" ")];
-    const sweep = [
-      ...Array.from({ length: 169 }, (_, step) => 1 + step),
-      ...Array.from({ length: 169 }, (_, step) => 169 - step),
+  test("a nested split projects to a split and reads back with its direction", () => {
+    const nodes: readonly SectionNode[] = [
+      "brand",
+      { dir: "row", sections: ["new-canvas", "new-composition"] },
     ];
-    for (const y of sweep) {
-      const over = crossedSectionId(stack(order, heights), "a", y);
-      if (over === null) continue;
-      const next = movedSectionIds(order, "a", over);
-      if (next === order) continue;
-      order = next;
-      seen.push(order.join(" "));
-    }
-    expect(seen.length - 1).toBe(6);
-    // And it came home: a sweep that ends where it started ends in the order it started in.
-    expect(order).toEqual(["a", "b", "c", "d"]);
+    const projection = projectSectionArrangement(nodes, evenExtents(2));
+    expect(projection.layout["n1"]?.dir).toBe("row");
+    expect(projection.pathOf.get("new-composition")).toBe("n1.1");
+    expect(sectionArrangementOf(projection.layout)).toEqual(nodes);
   });
 
-  test("a zero-height row in hand still has a band to cross back over", () => {
-    /*
-      `core.shell.status` reports nothing and draws no box, so the held row's own height —
-      which is what separates a swap from its own undo everywhere else — is zero. The margin
-      is the floor under that, and this is the case that needs it: crossing `c` must not be
-      undone by the very next pixel back.
-    */
-    const heights: Readonly<Record<string, number>> = { a: 40, status: 0, c: 40 };
-    const order = ["a", "status", "c"];
-    const crossing = crossedSectionId(stack(order, heights), "status", 61 + SECTION_CROSS_MARGIN);
-    expect(crossing).toBe("c");
-    const next = movedSectionIds(order, "status", crossing ?? "");
-    expect(next).toEqual(["a", "c", "status"]);
-    // Same pointer, new layout: `c` now sits at 40–80 with its midpoint at 60, and the pointer
-    // is a whole margin past it in the direction it came from. Nothing is asked for.
-    expect(crossedSectionId(stack(next, heights), "status", 61 + SECTION_CROSS_MARGIN)).toBeNull();
+  test("an empty split projects a seat to aim at and reads back still empty", () => {
+    // Without the seat there would be no leaf under the pointer at all, and the kernel would
+    // answer null — a dropped stack nobody could ever put anything into.
+    const nodes: readonly SectionNode[] = ["brand", { dir: "row", sections: [] }];
+    const projection = projectSectionArrangement(nodes, evenExtents(2));
+    expect(projection.layout["n1.0"]?.ref).toBeNull();
+    expect(sectionArrangementOf(projection.layout)).toEqual(nodes);
+  });
+});
+
+describe("what a rail release means", () => {
+  const flat: readonly SectionNode[] = ["a", "b", "c"];
+
+  const released = (
+    nodes: readonly SectionNode[],
+    release: Parameters<typeof releasedSectionArrangement>[1],
+    aim: TileAim | null,
+  ): readonly SectionNode[] | null => {
+    if (aim === null) return null;
+    return releasedSectionArrangement(
+      projectSectionArrangement(nodes, evenExtents(nodes.length)),
+      release,
+      aim,
+    );
+  };
+
+  test("a row dropped low in the stack lands where the pointer did", () => {
+    // Bottom third, deep inside `c`'s own lower band: `a` comes to rest after it.
+    const aim = railAim(flat, { x: 0.5, y: 0.95 }, "a");
+    expect(released(flat, { kind: "section", id: "a" }, aim)).toEqual(["b", "c", "a"]);
+  });
+
+  test("a row dropped on another row's exact spot trades the two", () => {
+    // Center means THIS EXACT SPOT everywhere in the application, and the rail is not an
+    // exception to it — the kernel answers `swap` and the two seats exchange occupants.
+    const aim = railAim(flat, { x: 0.5, y: 0.5 }, "a");
+    expect(aim?.action).toBe("swap");
+    expect(released(flat, { kind: "section", id: "a" }, aim)).toEqual(["b", "a", "c"]);
+  });
+
+  test("a dropped split arrives with two seats and holds the rows it is given", () => {
+    const wedged = released(
+      flat,
+      { kind: "structure", structure: { kind: "split", dir: "row" } },
+      railAim(flat, { x: 0.5, y: 0.95 }, null),
+    );
+    expect(wedged).not.toBeNull();
+    const split = (wedged ?? []).find((node) => typeof node !== "string");
+    expect(split).toEqual({ dir: "row", sections: [] });
+
+    // ...and the first row dragged in seats itself, which is what makes two rows sit side by
+    // Aimed at the middle of the empty split's own seat, which is what "into it" means: a
+    // center release on a vacant leaf FILLS it, exactly as it does in any composition.
+    const seated = released(
+      wedged ?? [],
+      { kind: "section", id: "a" },
+      railAim(wedged ?? [], { x: 0.5, y: 0.875 }, "a"),
+    );
+    expect(seated).not.toBeNull();
+    expect(seated?.some((node) => typeof node !== "string" && node.sections.includes("a"))).toBe(
+      true,
+    );
+  });
+
+  test("a spacer is refused: the rail has no room for it to hold open", () => {
+    // Every other target takes all three palette shapes; the rail takes two, and says so by
+    // refusing rather than by storing a row that renders nothing and can never be filled.
+    expect(
+      released(
+        flat,
+        { kind: "structure", structure: { kind: "spacer" } },
+        railAim(flat, { x: 0.5, y: 0.95 }, null),
+      ),
+    ).toBeNull();
+  });
+
+  test("a release never loses or duplicates a row", () => {
+    for (const y of [0.05, 0.2, 0.4, 0.6, 0.8, 0.95]) {
+      const aim = railAim(flat, { x: 0.5, y }, "a");
+      const next = released(flat, { kind: "section", id: "a" }, aim);
+      if (next === null) continue;
+      const ids = [...next].filter((node): node is string => typeof node === "string").sort();
+      expect(ids).toEqual(["a", "b", "c"]);
+    }
+  });
+
+  test("a row the arrangement does not hold moves nothing", () => {
+    const aim = railAim(flat, { x: 0.5, y: 0.95 }, null);
+    expect(released(flat, { kind: "section", id: "ghost" }, aim)).toBeNull();
   });
 });
 
@@ -248,6 +272,17 @@ describe("the commit shape", () => {
     expect(next?.root).toEqual(shell().root);
   });
 
+  test("a nested arrangement commits and validates like a flat one", () => {
+    const nested: SectionNode[] = [
+      "brand",
+      { dir: "row", sections: ["new-canvas", "new-composition"] },
+    ];
+    const next = withPanelSections(shell(), SIDEBAR, nested);
+    expect(next?.["ws-sidebar"]?.sections).toEqual(nested);
+    expect(validateTileLayout(next ?? {})).toBe(true);
+    expect(panelSections(next, SIDEBAR)).toEqual(nested);
+  });
+
   test("it reads back through panelSections, and only for the panel that holds it", () => {
     const next = withPanelSections(shell(), SIDEBAR, ["plugins", "index"]);
     expect(panelSections(next, SIDEBAR)).toEqual(["plugins", "index"]);
@@ -256,7 +291,7 @@ describe("the commit shape", () => {
     expect(panelSections(null, SIDEBAR)).toBeUndefined();
   });
 
-  test("an empty order clears the field rather than storing an empty arrangement", () => {
+  test("an empty arrangement clears the field rather than storing an empty one", () => {
     const arranged = withPanelSections(shell(), SIDEBAR, ["plugins", "index"]) ?? {};
     const reset = withPanelSections(arranged, SIDEBAR, []);
     expect(reset).not.toBeNull();
@@ -268,31 +303,38 @@ describe("the commit shape", () => {
   });
 
   test("a write the door would refuse is refused before it reaches the wire", () => {
-    // A duplicate makes "the order" ambiguous — the same rule `validateTileLayout` applies.
+    // A duplicate makes "the order" ambiguous — the same rule `validateTileLayout` applies,
+    // and it applies ACROSS the tree, not just among siblings.
     expect(withPanelSections(shell(), SIDEBAR, ["index", "index"])).toBeNull();
+    expect(
+      withPanelSections(shell(), SIDEBAR, ["index", { dir: "row", sections: ["index"] }]),
+    ).toBeNull();
     // Past the wire bound.
     const wide = Array.from({ length: MAX_PANEL_SECTIONS + 1 }, (_unused, i) => `s${String(i)}`);
     expect(withPanelSections(shell(), SIDEBAR, wide)).toBeNull();
     expect(withPanelSections(shell(), SIDEBAR, wide.slice(1))).not.toBeNull();
+    // Nested past the depth a rail can honestly paint.
+    let deep: SectionNode = "index";
+    for (let level = 0; level < 8; level += 1) deep = { dir: "row", sections: [deep] };
+    expect(withPanelSections(shell(), SIDEBAR, [deep])).toBeNull();
     // A panel this tree does not show has no leaf to arrange, so there is nothing to write.
     expect(withPanelSections(shell(), "core.notes.panel", ["index"])).toBeNull();
   });
 
-  test("re-arranging replaces the stored order instead of accumulating one", () => {
-    const first = withPanelSections(shell(), SIDEBAR, ["plugins", "index"]) ?? {};
-    const second = withPanelSections(first, SIDEBAR, ["index", "plugins"]);
-    expect(second?.["ws-sidebar"]?.sections).toEqual(["index", "plugins"]);
-  });
-
-  test("the stored order survives the round trip the sidebar actually makes", () => {
-    // The full loop: declared order in, one grab, commit, read back, render order out.
+  test("the stored arrangement survives the round trip the sidebar actually makes", () => {
+    // The full loop: declared order in, one release, commit, read back, render order out.
     const declared = ["index", "machines", "plugins"];
-    const grabbed = movedSectionIds(arrangedSectionIds(declared, undefined), "plugins", "index");
-    const committed = withPanelSections(shell(), SIDEBAR, grabbed);
-    expect(arrangedSectionIds(declared, panelSections(committed, SIDEBAR))).toEqual([
+    const start = arrangedSections(declared, undefined);
+    const projection = projectSectionArrangement(start, evenExtents(start.length));
+    const aim = railAim(start, { x: 0.5, y: 0.95 }, "index");
+    expect(aim).not.toBeNull();
+    const moved = releasedSectionArrangement(projection, { kind: "section", id: "index" }, aim!);
+    expect(moved).not.toBeNull();
+    const committed = withPanelSections(shell(), SIDEBAR, moved ?? []);
+    expect(arrangedSections(declared, panelSections(committed, SIDEBAR))).toEqual([
+      "machines",
       "plugins",
       "index",
-      "machines",
     ]);
   });
 });
@@ -302,9 +344,9 @@ describe("the commit shape", () => {
  *
  * The contract is two sentences of the manifest field's meaning, and both are about a cluster
  * being DECLARED rather than positional: members paint as one unit wherever the earliest of
- * them sits, and a stack cannot half-honour membership. The cases worth pinning are the ones an
- * arrangement or a roster change walks into — a member dragged away from its neighbour, a
- * member whose plugin is off and never reaches the stack, a word with one live member.
+ * them sits, and a stack cannot half-honour membership. It stays orthogonal to the
+ * arrangement tree above — a cluster is a manifest word, a split is this principal's own
+ * arrangement — and the cases worth pinning are the ones a roster change walks into.
  */
 describe("section clusters", () => {
   interface Row {

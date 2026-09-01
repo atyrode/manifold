@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ComposedSection } from "@manifold/plugin";
-import { railRows } from "../src/rail-rows.ts";
+import type { SectionNode } from "@manifold/protocol";
+import { railRows, railTree, type RailNode } from "../src/rail-rows.ts";
 
 /**
  * THE RAIL'S TWO ASSERTIONS ABOUT THE PRODUCT, without a browser.
@@ -18,9 +19,15 @@ import { railRows } from "../src/rail-rows.ts";
  * and exactly one body, the absorber. That is what makes the icon rail the same stack rather
  * than a second layout.
  *
- * The ORDER is not tested here — it is `arrangedSectionIds`' own contract, tested in
- * `packages/plugin/test/layout.test.ts`. This module is handed a live order and answers which
- * of those rows paint.
+ * THE PAINTED TREE is the third, and it is new with issue #104: an arrangement may NEST, and
+ * every node the rail paints has to carry the path the drop gesture measures it by. The paths
+ * are the ARRANGEMENT's own indices — never the painted list's — because the projection the
+ * gesture aims at walks the same arrangement, and a numbering that closed up around an
+ * invisible row would name a different seat than the DOM does.
+ *
+ * The ARRANGEMENT ITSELF is not tested here — it is `arrangedSections`' own contract, tested
+ * in `packages/plugin/test/layout.test.ts`. This module is handed a live arrangement and
+ * answers which of those rows paint, where, and which one absorbs the height.
  */
 
 function section(
@@ -207,5 +214,118 @@ describe("railRows", () => {
   test("an empty roster paints nothing rather than throwing", () => {
     expect(painted([], [])).toEqual([]);
     expect(painted([], DEFAULT_ORDER)).toEqual([]);
+  });
+});
+
+/**
+ * One painted tree as a line of text: a row is `path:id` (`*` marks the absorber), a split is
+ * `path[dir …]`. Reading the expectation as prose is the point — the assertions below are
+ * about WHERE each node ended up, and a nested object literal buries exactly that.
+ */
+function shape(nodes: readonly RailNode[]): string {
+  return nodes
+    .map((node) =>
+      node.kind === "row"
+        ? `${node.path}:${node.row.section.id}${node.row.grow ? "*" : ""}`
+        : `${node.path}[${node.dir}${node.nodes.length === 0 ? "" : ` ${shape(node.nodes)}`}]`,
+    )
+    .join(" ");
+}
+
+function tree(
+  declared: readonly ComposedSection[],
+  arrangement: readonly SectionNode[],
+  sidebarOpen = true,
+): string {
+  return shape(railTree(declared, arrangement, sidebarOpen));
+}
+
+describe("railTree", () => {
+  test("a FLAT arrangement is the flat rail, each row named by its own index", () => {
+    // The whole compatibility claim of issue #104 in one line: an arrangement of bare ids is
+    // the stack that existed before splits did, and the paths are `n0`, `n1`, …
+    expect(tree([BRAND, NEW_CANVAS, INDEX], ["brand", "new-canvas", "index"])).toBe(
+      "n0:brand n1:new-canvas n2:index*",
+    );
+  });
+
+  test("a SPLIT keeps its members, and they are named inside it", () => {
+    expect(
+      tree(
+        [BRAND, NEW_CANVAS, NEW_COMPOSITION, INDEX],
+        ["brand", { dir: "row", sections: ["new-canvas", "new-composition"] }, "index"],
+      ),
+    ).toBe("n0:brand n1[row n1.0:new-canvas n1.1:new-composition] n2:index*");
+  });
+
+  test("an EMPTY split is painted, because that is what a fresh drop from the palette is", () => {
+    // Dropping "Stack row" between two rows wedges a split with no members in it. If the tree
+    // dropped one for being empty, the palette's own drop would vanish on the frame after it
+    // landed and there would be nothing left to aim the first row into.
+    expect(tree([BRAND, INDEX], ["brand", { dir: "row", sections: [] }, "index"])).toBe(
+      "n0:brand n1[row] n2:index*",
+    );
+  });
+
+  test("a split emptied by the roster is a seat, not a hole", () => {
+    // Same shape, arrived at the other way: the one plugin seated in the split is disabled, so
+    // the split paints as the empty seat it now is and the reader can see where their row went.
+    const canvasOff = [BRAND, { ...NEW_CANVAS, enabled: false }, INDEX];
+    expect(tree(canvasOff, ["brand", { dir: "row", sections: ["new-canvas"] }, "index"])).toBe(
+      "n0:brand n1[row] n2:index*",
+    );
+  });
+
+  test("an invisible row leaves a numbering HOLE, so every other path still names its own seat", () => {
+    /*
+      The load-bearing property of the path: the drop gesture aims at a projection of this very
+      arrangement, and the projection numbers what the ARRANGEMENT holds. Closing the gap up
+      here would make `n2` mean the third stored node to the kernel and the second painted one
+      to the DOM, and every band below the missing row would describe the wrong row.
+    */
+    const canvasOff = [BRAND, { ...NEW_CANVAS, enabled: false }, NEW_COMPOSITION, INDEX];
+    expect(tree(canvasOff, ["brand", "new-canvas", "new-composition", "index"])).toBe(
+      "n0:brand n2:new-composition n3:index*",
+    );
+  });
+
+  test("the absorber is found wherever it sits, including inside a split", () => {
+    // `railRows` names the absorber off the flattened arrangement, so nesting cannot change
+    // which row gets the rail's leftover height — only where it is painted.
+    expect(
+      tree(
+        [BRAND, INDEX, MACHINES],
+        ["brand", { dir: "row", sections: ["index", "machines"] }],
+      ),
+    ).toBe("n0:brand n1[row n1.0:index* n1.1:machines]");
+  });
+
+  test("the COLLAPSED rail filters a nested row exactly as a flat one", () => {
+    // The icon strip keeps every plain row and the one absorber, whatever depth they sit at:
+    // `machines` has a body and is not the absorber, so it is left out of the split it is in.
+    expect(
+      tree(
+        [BRAND, INDEX, MACHINES],
+        ["brand", { dir: "row", sections: ["index", "machines"] }],
+        false,
+      ),
+    ).toBe("n0:brand n1[row n1.0:index*]");
+  });
+
+  test("nesting never invents or loses a row", () => {
+    const nested: readonly SectionNode[] = [
+      "brand",
+      { dir: "row", sections: ["new-canvas", { dir: "column", sections: ["new-composition"] }] },
+      "index",
+    ];
+    const flat = railRows(RAIL, ["brand", "new-canvas", "new-composition", "index"], true);
+    const nodes = railTree(RAIL, nested, true);
+    const ids = (list: readonly RailNode[]): readonly string[] =>
+      list.flatMap((node) => (node.kind === "row" ? [node.row.section.id] : ids(node.nodes)));
+
+    expect(ids(nodes)).toEqual(flat.map((row) => row.section.id));
+    expect(shape(nodes)).toBe(
+      "n0:brand n1[row n1.0:new-canvas n1.1[column n1.1.0:new-composition]] n2:index*",
+    );
   });
 });

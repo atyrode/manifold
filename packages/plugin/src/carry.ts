@@ -57,7 +57,8 @@ export interface CarrySource {
 
 /**
  * The placement id an envelope carries under, or null when the item is unplaced (a
- * pooled terminal) or named by identity alone (a container dragged from the sidebar).
+ * pooled terminal), named by identity alone (a container dragged from the sidebar), or
+ * not yet a thing at all (a palette carry, whose structure exists only after the drop).
  * A null gets a synthetic id from the caller: a carry always has a key, because a
  * carry with no key could not be ended.
  */
@@ -70,6 +71,7 @@ export function carryPlacementId(envelope: ItemEnvelope): string | null {
     case "terminal":
     case "canvas":
     case "composition":
+    case "structure":
       return null;
     default: {
       const exhaustive: never = envelope;

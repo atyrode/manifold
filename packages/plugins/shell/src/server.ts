@@ -2,6 +2,7 @@ import type { EmitEvent } from "@manifold/plugin";
 import {
   placementRefusal,
   validateTileLayout,
+  type ManifoldRef,
   type PlaceRequest,
   type PlaceResponse,
   type PlacementDenial,
@@ -48,6 +49,27 @@ interface PlaceCtx {
 type Outcome = { refused: string } | Record<string, never>;
 
 /**
+ * The node an `item_placed` announces on: the container the item landed IN, or — for
+ * `unplaced`, which has no destination left to name because every reference to the item goes —
+ * the item's OWN node, which is what a `PlacementRef` that names something already is.
+ *
+ * Null for the one ref that names nothing. A `structure` ref carries new tile material rather
+ * than a representation of something that exists (issue #104), so there is no node to address
+ * and no `manifold://` to mint for it. Unplacing it is unreachable anyway — a `tree_only` item
+ * is refused (`no_tree`) at every destination but a tile — and saying "nothing to address" is
+ * honest where inventing an address would not be.
+ */
+function placedTopic(
+  ref: PlaceRequest["ref"],
+  destination: PlaceRequest["destination"],
+): ManifoldRef | null {
+  if (destination.kind !== "unplaced") {
+    return { kind: "container", containerId: destination.containerId };
+  }
+  return ref.kind === "structure" ? null : ref;
+}
+
+/**
  * Validation here is STRUCTURAL ONLY, and that is a decision rather than an omission.
  *
  * The tree must be a tree (`validateTileLayout`) and every occupied leaf must hold a PANEL OR
@@ -58,6 +80,11 @@ type Outcome = { refused: string } | Record<string, never>;
  * plugin somebody just switched off would mean a disable could lock a principal out of
  * rearranging their own workspace. Those leaves render an inert placeholder naming the
  * plugin, with a remove control that commits the pruned tree back through this same door (D4).
+ *
+ * A VACANT leaf — `ref: null` — passes, and now load-bearing rather than incidental: dropping
+ * a Stack row or Stack column from `core.arrange`'s palette writes a split holding two empty
+ * seats (issue #104), and the whole point of that gesture is that the seats are still empty
+ * when the tree comes back through this door to be saved.
  */
 export const spaceHandlers = {
   async setLayout(ctx: LayoutCtx, args: { layout: TileLayout }): Promise<Outcome> {
@@ -104,23 +131,22 @@ export const spaceHandlers = {
       };
     }
     /*
-      THE DROP, announced once, on the container the item landed IN.
+      THE DROP, announced once, on the container the item landed IN — `placedTopic` above holds
+      that address rule, because it is the one part of this handler that has an unreachable arm
+      and so deserves to be stated in full rather than inlined.
 
       Only a PLACED outcome announces: a denial and a failure are answers about state, and an
-      event is a notification that something happened. The destination carries the container for
-      all three real forms; `unplaced` carries none, because unplacing means every reference
-      goes and there is no destination left to name — so it is addressed to the item's own node,
-      which is what the ref already is. `PlacementRef`'s four forms are structurally the four
-      `ManifoldRef` forms they address, so this is the compiler joining the address rather than
-      this file spelling one.
+      event is a notification that something happened. A ref that addresses nothing announces
+      nothing either — there is no node to notify about.
      */
-    ctx.emit(
-      args.destination.kind === "unplaced"
-        ? args.ref
-        : { kind: "container", containerId: args.destination.containerId },
-      "item_placed",
-      { op: outcome.result.op, item: args.ref.kind, destination: args.destination.kind },
-    );
+    const topic = placedTopic(args.ref, args.destination);
+    if (topic !== null) {
+      ctx.emit(topic, "item_placed", {
+        op: outcome.result.op,
+        item: args.ref.kind,
+        destination: args.destination.kind,
+      });
+    }
     return outcome.result;
   },
 };

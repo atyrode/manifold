@@ -365,6 +365,13 @@ export class PlaceExecutor {
           homeId: terminalId === null ? null : ref.containerId,
         };
       }
+      case "structure": {
+        // New structure is not anywhere yet: the palette's item is material rather than a
+        // representation of something, so there is nothing to find and nothing to prune
+        // (issue #104). `NO_SOURCE` is the truth, and `"not_found"` would be a lie that
+        // refuses every palette drop.
+        return NO_SOURCE;
+      }
       default: {
         const exhaustive: never = ref;
         return exhaustive;
@@ -793,9 +800,9 @@ export class PlaceExecutor {
   }
 
   /**
-   * A tileable ref joining a composition. The leaf is written FIRST: a tree that
-   * refuses the write leaves the source untouched, so a rejected placement mutates nothing —
-   * which is also why a note is READ before the write and moved only after it.
+   * A tileable ref — or NEW STRUCTURE — joining a composition. The leaf is written FIRST: a
+   * tree that refuses the write leaves the source untouched, so a rejected placement mutates
+   * nothing — which is also why a note is READ before the write and moved only after it.
    *
    * When the ref names a terminal from ANOTHER composition this is a MERGE. Its old home is
    * absorbed: the leaf moves, the terminal rebinds, every reference that pointed at the old
@@ -809,6 +816,14 @@ export class PlaceExecutor {
    * This is the one place this executor decides which op ran, and it says so in its
    * response: an EXCHANGE when the gesture holds a seat to trade back, and a DISPLACEMENT
    * when it does not.
+   *
+   * STRUCTURE is the one arm that places no item (issue #104). The palette carries material
+   * rather than a representation, so it is answered before any of the above: there is no
+   * occupant to read, no source leaf to prune, no note to adopt and no home to absorb, and
+   * `tileRefFor` cannot speak for it at all because a split is not a leaf occupant. It also
+   * has no seat to trade, so a center release onto an OCCUPIED leaf must neither swap nor
+   * displace — and it does not, because the tree itself refuses that write, which arrives
+   * here as the same `conflict` every other refused write does.
    */
   private executeAddTile(
     ref: PlacementRef,
@@ -821,6 +836,12 @@ export class PlaceExecutor {
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
+    if (ref.kind === "structure") {
+      const tileId = composition.placeStructure(ref.structure, targetTileId, edge, between);
+      return tileId === null
+        ? { status: "failed", failure: "conflict" }
+        : { status: "placed", result: { op: "add_tile", tileId } };
+    }
     const dragged = this.tileRefFor(item, source);
     if (dragged === null) return { status: "failed", failure: "conflict" };
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;

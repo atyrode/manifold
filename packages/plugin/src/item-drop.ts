@@ -161,6 +161,7 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
   unknown_container: () => "That container no longer exists.",
+  no_tree: (subject) => `${subject} only goes into an arrangement that already exists.`,
 };
 
 /**

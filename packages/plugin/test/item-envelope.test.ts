@@ -44,6 +44,7 @@ const ENVELOPES: Readonly<Record<ItemEnvelopeKind, ItemEnvelope>> = {
   composition: { kind: "composition", containerId: "v1" },
   tile: { kind: "tile", containerId: "v1", tileId: "t3" },
   element: { kind: "element", containerId: "c1", elementId: "e7" },
+  structure: { kind: "structure", structure: { kind: "split", dir: "row" } },
 };
 
 /**
@@ -57,6 +58,8 @@ const ITEMS: Readonly<Record<ItemEnvelopeKind, PlacementItem>> = {
   composition: { kind: "composition", containerId: "v1" },
   tile: { kind: "tile", containerId: null },
   element: { kind: "text", containerId: null },
+  // New structure classifies itself: nothing exists yet for a census to be asked about.
+  structure: { kind: "structure", containerId: null },
 };
 
 afterEach(() => endCarry());

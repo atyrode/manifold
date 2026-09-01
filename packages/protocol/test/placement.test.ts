@@ -122,6 +122,7 @@ const REFS: Readonly<Record<WorldKind, PlacementRef>> = {
   draw: { kind: "element", containerId: "canvas-1", elementId: "el-draw" },
   tile: { kind: "tile", containerId: "multi-1", tileId: "t1" },
   panel: { kind: "element", containerId: "canvas-1", elementId: "el-panel" },
+  structure: { kind: "structure", structure: { kind: "split", dir: "row" } },
 };
 
 /** One destination per declared form, each aimed at a container the item is not. */
@@ -209,6 +210,20 @@ const MATRIX: Readonly<Record<WorldKind, Readonly<Record<DestinationKind, string
     canvas: "not_accepted",
     tile: "add_tile",
     compose: "compose",
+    unplaced: "not_accepted",
+  },
+  /*
+    NEW STRUCTURE enters an existing tree and nothing else (issue #104). `tile` is the one
+    destination that points into one, so it is the one cell with an op; a canvas refuses it
+    on groups, and `compose` is refused BY NAME (`no_tree`) rather than on groups, because a
+    composition is exactly what that form builds — the guard is what says an empty split is
+    not something you compose a container out of. `unplaced` never reaches the guard: a
+    structure is not `unplaceable`, so group containment answers first.
+   */
+  structure: {
+    canvas: "not_accepted",
+    tile: "add_tile",
+    compose: "no_tree",
     unplaced: "not_accepted",
   },
 };
