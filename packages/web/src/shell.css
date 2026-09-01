@@ -1019,14 +1019,43 @@ button.sidebar-terminal.is-summary > small {
 }
 
 .sidebar-split > * {
-  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+}
+
+/*
+ * A MEMBER'S SHARE DEPENDS ON WHICH WAY THE SPLIT RUNS, and the two answers are not
+ * symmetric (issue #124).
+ *
+ * ACROSS the rail, `flex: 1 1 0` is the whole point: two rows abreast divide the width evenly
+ * whatever either of them contains, and their height still comes from their content because
+ * that is the cross axis.
+ *
+ * DOWN the rail it collapses them to nothing. A split's own height is its content's — nothing
+ * in the stack gives it one — so a column split sizes to its members while `flex-basis: 0`
+ * tells its members to size to the split: the circle resolves at zero, and `min-height: 0`
+ * (which every member needs, so a tall row can shrink under pressure) removes the automatic
+ * minimum that would otherwise have saved it. A row dragged into a Stack column therefore
+ * arrived, committed, and painted zero pixels tall — present in the arrangement, invisible in
+ * the rail, and impossible to aim a second row at. Down the rail a member takes the height it
+ * asks for, which is what every other row in the stack does.
+ */
+.sidebar-split[data-dir="row"] > * {
+  flex: 1 1 0;
+}
+
+.sidebar-split[data-dir="column"] > * {
+  flex: 0 1 auto;
 }
 
 /* An icon rail has no width to sit rows side by side in; the arrangement survives, folded. */
 .workspace.is-collapsed .sidebar-split[data-dir="row"] {
   flex-direction: column;
+}
+
+/* Folded, a row split runs DOWN the rail, so its members take the other rule with it. */
+.workspace.is-collapsed .sidebar-split[data-dir="row"] > * {
+  flex: 0 1 auto;
 }
 
 /*

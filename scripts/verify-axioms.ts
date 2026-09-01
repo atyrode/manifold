@@ -3510,16 +3510,27 @@ try {
     );
 
     /*
-      A PALETTE DROP LANDS IN THE RAIL TOO, and the rows it holds sit side by side (issue
-      #104). This is the operator's headline for the whole rework — "drop a stack between two
-      rows and drag rows into it" — and it is unreachable from a unit test twice over: the
-      drop is an HTML5 carry the RAIL claims (`.sidebar-sections` owns the dragover/drop, not
-      a row), and "side by side" is a fact about painted boxes inside a wrapper that only
-      exists once a reader has authored it.
+      THE PALETTE LANDS IN THE RAIL, AND THE STACK IT LEAVES BEHIND FILLS UP (issues #104,
+      #124). This is the operator's headline for the whole rework — "drop a stack between two
+      rows, then drag rows into it" — and issue #124 is what happens when a gate asserts that
+      a band RESOLVED instead of asserting WHICH PIXEL it resolved from.
 
-      The two halves are checked APART on purpose. A split that lands in the wrong place and
-      a split that will not take a row are different bugs with different owners, and one
-      conjunction that goes red says neither.
+      WHY THE OLD RUNGS WERE GREEN AGAINST A BROKEN SURFACE, in one paragraph, because it is
+      the whole lesson. They aimed at coordinates DERIVED FROM THE TREE rather than at the
+      pixels a reader aims at: the seat's centre, then `memberBox.right - 6` while the split
+      held exactly ONE member. A lone member spans its whole split, and the rail resolved every
+      pointer against the RAIL's box rather than the split's — so with one member the two
+      geometries coincided closely enough that the trailing band still overlapped the row, and
+      the rung passed. The instant a SECOND member existed the same arithmetic put both members'
+      bands a third of a rail-width to the right of where they were painted (a split arranged
+      into first place reserves the collapse control's width), so a reader aiming at the visible
+      join got `center`, which the rail refuses in silence: no third occupant, no reorder,
+      nothing. The old rungs never asked for a third occupant and never reordered inside a
+      split, so nothing they asserted was false — they simply stopped one rung short of every
+      gesture that was broken, and a conjunction of two true facts read as a working feature.
+      The rewrite below aims ONLY at painted boxes a reader can see, and it keeps going: fill,
+      pair, reorder, add a third, and drop on the middle of a row where there is no boundary
+      at all.
     */
     interface RailSeat {
       readonly id: string;
@@ -3549,18 +3560,30 @@ try {
       /** The rows this split sits BETWEEN, which is the whole of "where it landed". */
       readonly before: string;
       readonly after: string;
-      readonly memberBox: { readonly x: number; readonly y: number; readonly right: number } | null;
+      /** Every member's own painted box, in order: what a reader can actually aim at. */
+      readonly memberBoxes: readonly {
+        readonly id: string;
+        readonly x: number;
+        readonly y: number;
+        readonly left: number;
+        readonly right: number;
+        readonly top: number;
+        readonly bottom: number;
+      }[];
       readonly seatBox: { readonly x: number; readonly y: number } | null;
     }
     const railSplits = (): Promise<readonly RailSplit[]> =>
       browser!.evaluate<readonly RailSplit[]>(
         `Array.from(document.querySelectorAll('.sidebar-sections .sidebar-split'), (split) => {
-           const member = split.querySelector('[data-section-id]');
            const seat = split.querySelector('.sidebar-split-seat');
            const boxOf = (node) => {
              if (node === null) return null;
              const box = node.getBoundingClientRect();
-             return { x: box.left + box.width / 2, y: box.top + box.height / 2, right: box.right };
+             return {
+               id: node.dataset.sectionId ?? '',
+               x: box.left + box.width / 2, y: box.top + box.height / 2,
+               left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+             };
            };
            return {
              dir: split.dataset.dir ?? '',
@@ -3569,10 +3592,28 @@ try {
              members: split.querySelectorAll('[data-section-id]').length,
              before: split.previousElementSibling?.dataset?.sectionId ?? '',
              after: split.nextElementSibling?.dataset?.sectionId ?? '',
-             memberBox: boxOf(member),
+             memberBoxes: Array.from(split.querySelectorAll('[data-section-id]'), boxOf),
              seatBox: boxOf(seat),
            };
          })`,
+      );
+    /** The arrangement the rail is PAINTING, as one line, for a failure that has to be read. */
+    const railPaint = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+           const describe = (node) => {
+             if (node.classList.contains('sidebar-split')) {
+               const kids = Array.from(node.children).filter((k) => !k.classList.contains('sidebar-split-seat'));
+               return '[' + node.dataset.dir + (node.dataset.vacant === 'true' ? ' vacant' : '')
+                 + ' ' + kids.map(describe).join(' ') + ']';
+             }
+             if (node.dataset.sectionCluster !== undefined) {
+               return '(' + Array.from(node.children).map(describe).join(' ') + ')';
+             }
+             return node.dataset.sectionId ?? node.className;
+           };
+           return Array.from(document.querySelector('.sidebar-sections').children).map(describe).join(' ');
+         })()`,
       );
     /* Interpolated because the rail resolves its aim PER FRAME: a press and a jump gives the
        kernel one sample of a gesture that had no path, which is not the gesture a hand makes. */
@@ -3581,13 +3622,33 @@ try {
       to: { x: number; y: number },
     ): Promise<void> => {
       await browser!.drag(
-        Array.from({ length: 13 }, (_unused, step) => ({
-          x: from.x + ((to.x - from.x) * step) / 12,
-          y: from.y + ((to.y - from.y) * step) / 12,
+        Array.from({ length: 17 }, (_unused, step) => ({
+          x: from.x + ((to.x - from.x) * step) / 16,
+          y: from.y + ((to.y - from.y) * step) / 16,
         })),
         25,
       );
       await sleep(600);
+    };
+    /** The grab surface of one row, wherever in the rail it currently sits. */
+    const railGrip = (id: string): Promise<{ x: number; y: number } | null> =>
+      browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => {
+           const grip = document.querySelector('[data-section-id=' + ${JSON.stringify(
+             JSON.stringify(id),
+           )} + '] .sidebar-section-grip');
+           if (grip === null) return null;
+           const box = grip.getBoundingClientRect();
+           return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+         })()`,
+      );
+    /** Carries the FIRST top-level row to one painted point, and answers which row that was. */
+    const carryTopRow = async (to: { x: number; y: number }): Promise<string> => {
+      const id = (await railSeats())[0]?.id ?? "";
+      const grip = id === "" ? null : await railGrip(id);
+      if (grip === null) return "";
+      await grabTo(grip, to);
+      return id;
     };
 
     const flatRail = await railSeats();
@@ -3628,45 +3689,216 @@ try {
     );
 
     /*
-      AND IT TAKES ROWS. Two of them, because "side by side" is a claim about a PAIR — one
-      member in a split proves the seat accepts a drop and nothing about the axis. The first
-      row aims at the empty seat; the second aims at the first member's outer EDGE along the
-      split's own axis, which is the join every other tile row already answers to.
+      AND IT FILLS UP, FROM THE PIXELS THE ROWS ARE DRAWN ON. Four rungs, in the order a
+      reader performs them, each aimed at a box read off the DOM in the state the previous rung
+      left behind — never at a coordinate derived from the tree:
+
+        the SEAT: the dashed rectangle an empty split paints, aimed at its centre;
+        the PAIR: the lone member's own visible trailing edge, which is the join;
+        the REORDER: the lead member carried onto the TRAILING member's own trailing edge, which
+          has to mean "past it" — the one gesture that proves the split's interior is
+          addressable rather than merely enterable;
+        the THIRD: another row onto the last member's own trailing edge, because "one occupant
+          at most" was the operator's report and two is not evidence against it.
     */
-    const firstIn = await railSeats();
-    const firstRow = firstIn[0];
-    if (firstRow !== undefined && landed !== null && landed.seatBox !== null) {
-      await grabTo(
-        { x: (firstRow.left + firstRow.right) / 2, y: (firstRow.top + firstRow.bottom) / 2 },
-        landed.seatBox,
-      );
-    }
+    const seatAim = landed?.seatBox ?? null;
+    if (seatAim !== null) await carryTopRow(seatAim);
     const tookOne = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 1, 8_000);
-    await sleep(1_200);
+    await sleep(1_000);
     const withOne = (await railSplits())[0] ?? null;
-    const secondIn = await railSeats();
-    const secondRow = secondIn[0];
-    if (secondRow !== undefined && withOne !== null && withOne.memberBox !== null) {
-      await grabTo(
-        { x: (secondRow.left + secondRow.right) / 2, y: (secondRow.top + secondRow.bottom) / 2 },
-        { x: withOne.memberBox.right - 6, y: withOne.memberBox.y },
-      );
-    }
+    const lone = withOne?.memberBoxes[0] ?? null;
+    if (lone !== null) await carryTopRow({ x: lone.right - 6, y: lone.y });
     const tookTwo = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 2, 8_000);
-    await sleep(1_200);
+    await sleep(1_000);
     const paired = (await railSplits())[0] ?? null;
-    const sideBySide =
-      tookOne && tookTwo && paired !== null && paired.members === 2 && paired.dir === "row";
+    const pairOrder = (paired?.memberBoxes ?? []).map((member) => member.id).join(" ");
+    const trailing = paired?.memberBoxes[1] ?? null;
+    const leading = paired?.memberBoxes[0] ?? null;
+    if (leading !== null && trailing !== null) {
+      const grip = await railGrip(leading.id);
+      if (grip !== null) await grabTo(grip, { x: trailing.right - 6, y: trailing.y });
+    }
+    const swapped = await settles(async () => {
+      const now = (await railSplits())[0]?.memberBoxes ?? [];
+      return now.length === 2 && now.map((member) => member.id).join(" ") !== pairOrder;
+    }, 8_000);
+    await sleep(1_000);
+    const reordered = (await railSplits())[0] ?? null;
+    const last = reordered?.memberBoxes.at(-1) ?? null;
+    if (last !== null) await carryTopRow({ x: last.right - 6, y: last.y });
+    const tookThree = await settles(
+      async () => ((await railSplits())[0]?.members ?? 0) === 3,
+      8_000,
+    );
+    await sleep(1_000);
+    const trio = (await railSplits())[0] ?? null;
+    const abreast =
+      trio !== null &&
+      trio.memberBoxes.length === 3 &&
+      trio.memberBoxes.every(
+        (member, index) => index === 0 || member.left >= (trio.memberBoxes[index - 1]?.right ?? 0),
+      );
+    const filled = tookOne && tookTwo && swapped && tookThree && abreast && trio?.dir === "row";
     check(
-      "R4 two rows dragged into a rail split sit side by side",
-      sideBySide,
-      !tookOne
-        ? `the empty seat refused the first row: the split still holds ${String(withOne?.members ?? 0)} member(s)`
-        : !tookTwo
-          ? `the second row would not join the first: one member in, ${String(paired?.members ?? 0)} after aiming at its edge`
-          : sideBySide
-            ? `two rows inside one dir="${paired?.dir ?? "?"}" split, which is the rail's own stack running the other way`
-            : `${String(paired?.members ?? 0)} member(s) inside a dir="${paired?.dir ?? "?"}" split — the pair landed in the wrong axis`,
+      "R4 a rail split fills, pairs, reorders and takes a third from its own painted edges",
+      filled,
+      seatAim === null
+        ? "the dropped split painted no seat, so nothing could be aimed into it"
+        : !tookOne
+          ? `the seat refused the first row: the split still holds ${String(withOne?.members ?? 0)} member(s) — rail is "${await railPaint()}"`
+          : !tookTwo
+            ? `the lone member's own visible trailing edge would not take a second row: ${String(paired?.members ?? 0)} member(s) after aiming at x=${String(Math.round((lone?.right ?? 0) - 6))} on a row painted ${String(Math.round(lone?.left ?? 0))}..${String(Math.round(lone?.right ?? 0))} — rail is "${await railPaint()}"`
+            : !swapped
+              ? `two members abreast cannot be REORDERED: carrying "${leading?.id ?? "?"}" onto "${trailing?.id ?? "?"}"'s own trailing edge (x=${String(Math.round((trailing?.right ?? 0) - 6))} of a row painted ${String(Math.round(trailing?.left ?? 0))}..${String(Math.round(trailing?.right ?? 0))}) left the order at "${pairOrder}" — the split's bands are not over the split's rows`
+              : !tookThree
+                ? `the occupied split refused a THIRD row at the last member's own trailing edge: ${String(trio?.members ?? 0)} member(s) — rail is "${await railPaint()}"`
+                : filled
+                  ? `seat took one, its visible edge took a second, the pair reordered to "${(reordered?.memberBoxes ?? []).map((member) => member.id).join(" ")}", and a third joined abreast: "${await railPaint()}"`
+                  : `three members in a dir="${trio?.dir ?? "?"}" split but not side by side: ${(trio?.memberBoxes ?? []).map((member) => `${member.id} ${String(Math.round(member.left))}..${String(Math.round(member.right))}`).join(", ")}`,
+    );
+
+    /*
+      AND EVERY PIXEL OF THE RAIL MEANS SOMETHING. The rail projects its cross axis away — a
+      26 px row's left and right bands would otherwise cover half the sidebar — so the kernel's
+      `center` zone is not a small square inside a pane here, it is the middle HALF of every
+      row in the stack. The rail refuses a centre release (there is no trade in a stack), and
+      unfolded that made half of the surface a silent dead zone: a structure dropped on the
+      middle of a row produced no arrangement, no notice and no explanation, which is most of
+      what "stacking often doesn't apply" was.
+
+      One drop, on the exact centre of the TALLEST row, because a palette carry is a single
+      resolved point rather than a path: whatever it commits, it commits from that pixel alone.
+    */
+    const beforeCentre = await railPaint();
+    const centreRows = await railSeats();
+    const tallest = centreRows.reduce<RailSeat | null>(
+      (best, seat) =>
+        best === null || seat.bottom - seat.top > best.bottom - best.top ? seat : best,
+      null,
+    );
+    /* Counted BEFORE the drop and indexed by nothing: this rail already holds the split the
+       rungs above filled, so "a split appeared" is a change in how many VACANT ones there are. */
+    const vacantBefore = (await railSplits()).filter((split) => split.vacant).length;
+    const centrePalette = await paletteAt('[data-testid="palette-stack-row"]');
+    if (tallest !== null && centrePalette !== null) {
+      await browser.dragAndDrop(centrePalette, {
+        x: (tallest.left + tallest.right) / 2,
+        y: (tallest.top + tallest.bottom) / 2,
+      });
+    }
+    const tookCentre = await settles(
+      async () => (await railSplits()).filter((split) => split.vacant).length > vacantBefore,
+      8_000,
+    );
+    await sleep(1_200);
+    const centreSplit = (await railSplits()).find((split) => split.vacant) ?? null;
+    const besideIt =
+      tookCentre &&
+      centreSplit !== null &&
+      (centreSplit.before === tallest?.id || centreSplit.after === tallest?.id);
+    check(
+      "R4 the middle of a rail row takes a palette drop",
+      besideIt,
+      tallest === null || centrePalette === null
+        ? "no rail rows or no palette source: the middle of a row was never aimed at"
+        : !tookCentre
+          ? `a stack dropped on the exact middle of "${tallest.id}" (${String(Math.round(tallest.bottom - tallest.top))} px tall) authored nothing: the rail was "${beforeCentre}" before and "${await railPaint()}" after, so the middle half of every row is a silent dead zone`
+          : besideIt
+            ? `a stack dropped on the middle of "${tallest.id}" landed beside it, between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}"`
+            : `the drop authored a split, but nowhere near the row it was aimed at: between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}" rather than beside "${tallest.id}"`,
+    );
+
+    /*
+      THE OTHER DIRECTION, because the palette carries two and the rail only ever proved one.
+      A COLUMN split in a column rail nests rows one under the other inside one slot of the
+      stack — a different tree from the flat order it looks like, and the only way to tell them
+      apart is that the members share an x and stack in y.
+    */
+    const columnRows = await railSeats();
+    const columnAbove = columnRows[1];
+    const columnBelow = columnRows[2];
+    const columnPalette = await paletteAt('[data-testid="palette-stack-column"]');
+    if (columnPalette !== null && columnAbove !== undefined && columnBelow !== undefined) {
+      await browser.dragAndDrop(columnPalette, {
+        x: (columnAbove.left + columnAbove.right) / 2,
+        y: (columnAbove.bottom + columnBelow.top) / 2,
+      });
+    }
+    /* By DIRECTION, never by index: the rail carries the row split the rungs above authored,
+       and which of the two comes first in the DOM is a fact about where the pointer let go. */
+    const columnOf = async (): Promise<RailSplit | null> =>
+      (await railSplits()).find((split) => split.dir === "column") ?? null;
+    const columnLanded = await settles(async () => (await columnOf()) !== null, 8_000);
+    await sleep(1_200);
+    const columnSeat = (await columnOf())?.seatBox ?? null;
+    if (columnSeat !== null) await carryTopRow(columnSeat);
+    const columnOne = await settles(async () => ((await columnOf())?.members ?? 0) === 1, 8_000);
+    await sleep(1_000);
+    const columnMember = (await columnOf())?.memberBoxes[0] ?? null;
+    if (columnMember !== null) {
+      await carryTopRow({ x: columnMember.x, y: columnMember.bottom - 4 });
+    }
+    const columnTwo = await settles(async () => ((await columnOf())?.members ?? 0) === 2, 8_000);
+    await sleep(1_000);
+    const columnSplit = await columnOf();
+    const oneUnderTheOther =
+      columnSplit !== null &&
+      columnSplit.memberBoxes.length === 2 &&
+      (columnSplit.memberBoxes[1]?.top ?? 0) >= (columnSplit.memberBoxes[0]?.bottom ?? 0);
+    const columnWorks = columnLanded && columnOne && columnTwo && oneUnderTheOther;
+    check(
+      "R4 the palette's Stack column nests the rail the other way",
+      columnWorks,
+      columnPalette === null
+        ? "the armed toolbar painted no Stack column to drag out of"
+        : !columnLanded
+          ? `dropping a Stack column between two rows authored no column split: the rail is "${await railPaint()}"`
+          : !columnOne
+            ? `the column split's seat refused the first row: the rail is "${await railPaint()}"`
+            : !columnTwo
+              ? `the column split would not take a second row under the first: ${String(columnSplit?.members ?? 0)} member(s) — rail is "${await railPaint()}"`
+              : columnWorks
+                ? `two rows stacked one under the other inside one slot of the rail: "${await railPaint()}"`
+                : `two members in a column split that are not stacked: ${(columnSplit?.memberBoxes ?? []).map((member) => `${member.id} y ${String(Math.round(member.top))}..${String(Math.round(member.bottom))}`).join(", ")}`,
+    );
+
+    /*
+      AND THE ONE STRUCTURE THE RAIL REFUSES SAYS SO. A spacer holds ratios open, and a stack
+      of rows has none for an inert leaf to hold — so it is refused, and refused OUT LOUD,
+      because a silent no-op is exactly the failure the two rungs above exist to catch.
+    */
+    const railBeforeSpacer = await railPaint();
+    const spacerPalette = await paletteAt('[data-testid="palette-spacer"]');
+    const spacerRows = await railSeats();
+    const spacerAbove = spacerRows[0];
+    const spacerBelow = spacerRows[1];
+    if (spacerPalette !== null && spacerAbove !== undefined && spacerBelow !== undefined) {
+      await browser.dragAndDrop(spacerPalette, {
+        x: (spacerAbove.left + spacerAbove.right) / 2,
+        y: (spacerAbove.bottom + spacerBelow.top) / 2,
+      });
+    }
+    const said = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `Array.from(document.querySelectorAll('[class*="notice"]'), (n) => n.textContent ?? '')
+             .some((text) => text.includes('spacer'))`,
+        ),
+      8_000,
+    );
+    await sleep(600);
+    const railAfterSpacer = await railPaint();
+    const refusedAloud = said && railAfterSpacer === railBeforeSpacer;
+    check(
+      "R4 a spacer dropped in the rail is refused out loud",
+      refusedAloud,
+      spacerPalette === null
+        ? "the armed toolbar painted no spacer to drag out of"
+        : !said
+          ? "a spacer dropped between two rows raised no notice: the refusal is a silent no-op"
+          : refusedAloud
+            ? "the rail said why a spacer has nothing to hold open, and arranged nothing"
+            : `the refusal was announced and the arrangement changed anyway: "${railBeforeSpacer}" became "${railAfterSpacer}"`,
     );
 
     /*
