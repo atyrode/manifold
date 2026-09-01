@@ -52,6 +52,8 @@
 
 ### Fixed
 
+- A tab with two rooms open no longer streams events nobody is watching any more. When one room ends for good — its container deleted while the other keeps working on the same connection — the departing room now withdraws the nodes it had asked about instead of abandoning its claim on them, so the last watcher letting go really does stop the traffic. Before this, that connection stayed subscribed for the rest of its life. (#111, #PR)
+
 - A drag that began before the workspace index had catalogued a just-born terminal's home now still streams live motion to every collaborator — movement is unconditional, classification catches up. (#69, #70)
 - A canvas no longer re-renders in a loop while you do nothing: idle CPU on an open canvas dropped to near zero, node drags cost a tenth of their previous script time, and both improvements land below the v0.5.0 baseline. (#69, #70)
 - The browser stopped hammering the API: one shared poll per resource instead of one per component, unchanged answers render nothing, and a hidden tab makes zero requests — enforced by a new performance-budget gate. (#69, #70)

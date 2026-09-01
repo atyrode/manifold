@@ -446,7 +446,9 @@ export class SessionClient {
             this.setStatus("reconnecting");
             return;
           }
-          this.forgetSubscriptions();
+          // Only this ROOM died; the CONNECTION the refcounts live on is alive and still
+          // carrying the tab's other rooms, so the holds are withdrawn rather than dropped.
+          this.releaseSubscriptions();
           this.channel = null;
           this.closeError = new Error(
             reason.trim() === ""
@@ -471,10 +473,28 @@ export class SessionClient {
   }
 
   /**
+   * Withdraws this handle's refcounts ON THE WIRE and then drops them. The per-channel
+   * terminal close is exactly the case where the release closures still address something:
+   * the socket survives, other rooms keep using it, and this room's increments are the only
+   * thing standing between their topics and the 1→0 that emits `unsubscribe`. Discarding the
+   * closures here would strand those increments forever — a multiplexed socket permanently
+   * over-subscribed, with no later `off()` able to reach the withdrawal it was promised.
+   *
+   * The subscriptions themselves survive: `attach` re-declares them on the next channel.
+   */
+  private releaseSubscriptions(): void {
+    for (const record of this.subscriptions) {
+      record.release?.();
+      record.release = null;
+    }
+  }
+
+  /**
    * Drops this handle's refcounts WITHOUT withdrawing them on the wire: the connection they
-   * were counted on is gone, so there is nothing to tell and nobody to tell it. The
-   * subscriptions themselves survive — `attach` re-declares them on the next socket, which is
-   * what makes a subscription outlive a transport it never knew about.
+   * were counted on is gone, so there is nothing to tell and nobody to tell it. That premise
+   * holds for the TRANSPORT close alone, which is why the per-channel terminal path releases
+   * instead. The subscriptions themselves survive — `attach` re-declares them on the next
+   * socket, which is what makes a subscription outlive a transport it never knew about.
    */
   private forgetSubscriptions(): void {
     for (const record of this.subscriptions) record.release = null;
