@@ -537,7 +537,16 @@ export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): 
   return true;
 }
 
-/** Writes only the fields that actually changed, so untouched tiles never churn. */
+/**
+ * Writes only the fields that actually changed, so untouched tiles never churn.
+ *
+ * `sections` is deliberately NOT among them. A tile's section arrangement is PER-PRINCIPAL
+ * workspace data (protocol layout.ts): it lives on the tree `core.space.setLayout` stores
+ * per principal, and a composition document is shared state every occupant merges into. One
+ * reader's arrangement written there would be everyone's, so the composition writer drops it
+ * on the floor on purpose — the field cannot reach this path today, and the day something
+ * tries, this is the line that says the answer is no rather than yes-by-omission.
+ */
 function updateTileFields(map: Y.Map<unknown>, tile: Tile): void {
   if (map.get("id") !== tile.id) map.set("id", tile.id);
   if (map.get("dir") !== tile.dir) map.set("dir", tile.dir);

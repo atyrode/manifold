@@ -71,6 +71,7 @@ export const LOG_EVENTS = [
 
   // Server: session transport — channel multiplexing and connection-level frames.
   "session_channel_limit",
+  "session_liveness_timeout",
   "session_malformed_frame",
   "session_subscribe_forbidden",
   "session_subscription_limit",

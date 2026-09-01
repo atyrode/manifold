@@ -617,7 +617,7 @@ anything holding a user's work; `core.notes` deliberately declares no `dormant` 
 for `hide` only for chrome, never for a node holding work: hiding a record a person typed into makes
 their work invisible without deleting it, which is the one outcome worse than a placeholder.
 
-### The other four contribution kinds
+### The other contribution kinds
 
 - **`panels`** are leaves of the workspace tile tree. The workspace layout is itself a
   `TileLayout` whose leaf refs are `{ kind: "panel", panelId }` — the shell is a
@@ -630,6 +630,9 @@ their work invisible without deleting it, which is the one outcome worse than a 
 - **`tools`** appear in the canvas toolbar.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
+- **`bindings`** are the keys you answer to. The one contribution kind with no manifest row: the
+  declaration and its handler are the same object, registered by your WEB half, so §7 specifies
+  it beside the other web channels.
 
 ### Host services
 
@@ -783,9 +786,9 @@ deliberate: **assembly** is the plugin-roster join, while a **composition** is a
 discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.md` §Lexicon).
 
 - **Collisions refuse; nothing ever shadows.** Duplicate plugin ids, action full names, panel
-  ids, element types, or tool ids fail assembly loudly. There is no last-write-wins, no
-  load-order precedence, and no silent override — a shadowed capability name is an authority
-  bypass, so the answer is always a refusal that names both sides.
+  ids, element types, tool ids, binding ids or binding KEYS fail assembly loudly. There is no
+  last-write-wins, no load-order precedence, and no silent override — a shadowed capability name
+  is an authority bypass, so the answer is always a refusal that names both sides.
 - **Action caps must be a subset of manifest capabilities**, checked at assembly, not at
   dispatch.
 - **Enable/disable is hot, workspace-global, and an ENGINE door.**
@@ -810,7 +813,8 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
 
 ### The web registration channels (documented in full next wave)
 
-A plugin's web half registers through four channels, and this guide does not yet specify them:
+A plugin's web half registers through five channels. One of them is specified — **bindings**,
+below — and this guide does not yet specify the other four:
 **renderers** (a discipline's container renderer — the projection registry key this wave renamed
 from `padSurfaces` to `renderers`), **overlays** (chrome painted into a renderer's named slot,
 like `attendance` and `spotlight`), **routes** (a browser path prefix, as `core.uri` claims
@@ -822,6 +826,35 @@ That is a defect, not a design — it is fixed in the **defect-fix wave (wave F)
 change**, which gives each channel a manifest counterpart and a loud collision refusal, and
 writes them up in this section. Until then: read `packages/web/src/assembly.ts` and
 `packages/plugin/src/projection.ts` for the shapes, and do not rely on a duplicate being caught.
+
+**bindings** — the keys your plugin answers to:
+
+```ts
+// src/web.ts
+import type { WebBinding } from "@manifold/plugin";
+
+export const MY_BINDINGS: readonly WebBinding[] = [
+  {
+    id: "acme.notes.focus", // namespaced by YOUR plugin id, or composition refuses the row
+    key: "F6", // a KeyboardEvent.key value, verbatim
+    label: "Focus notes", // how the sidebar's key table reads it
+    when: "always", // or "canvas" / "composition"; defaults to "always"
+    run: (host) => {
+      /* your handler */
+    },
+  },
+];
+```
+
+A binding is a DECLARATION, and a key is claimed globally: two plugins that want `F6` fail
+composition naming both, exactly as two plugins claiming one tool id do. It carries no authority
+— dispatch calls your `run`, and anything that MUTATES fires a registered action from there, at
+the gesture's commit point. The host owns the listener, so it refuses chords (`Ctrl+F6` is a
+different key) and keystrokes going into a text field for every row at once. The composed table
+is published on the browser assembly and printed by the sidebar's key table, so a reader learns
+your key without reading your code — and a disabled plugin's rows drop out of both, because a
+key that still answered would be running a disabled plugin. `when` is declared for readers
+rather than enforced by the engine: your handler is the only thing that knows your surface.
 
 ---
 

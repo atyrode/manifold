@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 19;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -147,8 +147,21 @@ export const PROTOCOL_VERSION = 18;
  * cadence, a deadline or a close code — two identifiers, zero bytes. So
  * invariant 10's first clause applies verbatim: the set is `{16, 17, 18}` and
  * NO fleet restart is owed.
+ * v18 -> v19: SESSION-CHANNEL LIVENESS (issue #55), and the one bump whose session
+ * change REORIENTS a frame pair rather than adding one. The liveness pair on
+ * `/ws/session` now points the way it points on every other dial: the server sends
+ * `ping`, the client answers `pong`. The client's own keepalive ping and the server
+ * `pong` that answered it are GONE — both spellings existed at v18, neither direction
+ * did, so a v18 client on a v19 server would ignore every ping and be reaped two
+ * intervals later. That is a lockout, which is why this is a bump rather than a quiet
+ * addition: a stale tab is refused at the join with 4409 instead of churning.
+ *
+ * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
+ * lost and renamed nothing, and an agent never sees a session frame. So invariant 10's
+ * first clause applies verbatim: the set is `{16, 17, 18, 19}` and NO fleet restart is
+ * owed.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18, 19]);
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -161,19 +174,30 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16
  * two sets, one discipline (invariant 10, applied per wire).
  *
  * v18: the version that introduces the wire.
+ * v19: session-channel only — the liveness pair reoriented on `/ws/session`. The
+ * instance wire is byte-identical (a guest never sees a session frame), so invariant
+ * 10's first clause ADDS the version rather than resetting the set, and a v18 guest
+ * instance keeps its dial across this deploy.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19]);
 
 /**
- * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel and
- * the instance channel both have a long-lived peer that dialed OUT to a server,
- * and both answer the same question — is this transport still real? The dialed-in
- * side pings on this interval and closes (4008) when a ping is still unanswered as
- * the next one fires, bounding offline detection at two intervals. The dialing side
- * closes and re-dials when it hears NOTHING for DIAL_LIVENESS_TIMEOUT_MS — a
- * healthy but idle connection still carries pings, so silence longer than two
- * intervals plus grace means the transport is a phantom (dead TCP with no RST,
- * e.g. a proxy swallowed the close).
+ * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
+ * instance channel and the session channel all have a peer that dialed OUT to a server,
+ * and all three answer the same question — is this transport still real? The dialed-in
+ * side pings on this interval and closes (4008) when a ping is still unanswered as the
+ * next one fires, bounding offline detection at two intervals. The dialing side closes
+ * and re-dials when it hears NOTHING for DIAL_LIVENESS_TIMEOUT_MS — a healthy but idle
+ * connection still carries pings, so silence longer than two intervals plus grace means
+ * the transport is a phantom (dead TCP with no RST, e.g. a proxy swallowed the close).
+ *
+ * WHICH SIDE PINGS is not a coin flip, and the browser is the case that proves it: a
+ * background tab's timers are throttled to roughly one firing per minute, so a reap
+ * keyed on pings the DIALING side generates would close live tabs, while answering an
+ * inbound ping rides the message event and is throttled by nothing. The side that reaps
+ * is the side that pings; the side that re-dials is the side that watches for silence
+ * (issue #55). A late watchdog only detects late, which is harmless — an eager reap is
+ * not.
  *
  * Named for the DISCIPLINE rather than for one of its occupants, which is the
  * lesson wave 3 taught: these were `MACHINE_PING_INTERVAL_MS` and

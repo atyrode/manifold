@@ -1,4 +1,5 @@
 import {
+  DIAL_LIVENESS_TIMEOUT_MS,
   MAX_SESSION_BASE64_CHARS,
   MAX_SUBSCRIBE_TOPICS,
   SERVER_MESSAGE_TYPES,
@@ -45,12 +46,12 @@ export type ChannelFrame = Exclude<
 
 /**
  * A frame that addresses the SOCKET rather than a room, minus the one the pool answers
- * itself: `pong` is liveness and stops here. Every handle on the connection hears the
+ * itself: `ping` is liveness and stops here. Every handle on the connection hears the
  * same connection frame — that is what "connection-level" means.
  */
 export type ConnectionFrame = Exclude<
   Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
-  { type: "pong" }
+  { type: "ping" }
 >;
 
 /**
@@ -71,7 +72,7 @@ export interface ChannelSink {
   /** Built fresh per join so resume hints (epoch/rev) are always current. */
   joinBody(): JoinBody;
   /**
-   * One ROOM frame routed to this channel. Nothing routing-level arrives here: `pong`
+   * One ROOM frame routed to this channel. Nothing routing-level arrives here: `ping`
    * answers the socket, `channel_closed` is this layer's own business, and a
    * connection-level frame goes to `connectionFrame` instead.
    */
@@ -129,11 +130,11 @@ export interface PooledChannel {
 
 const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
 
-const KEEPALIVE_INTERVAL_MS = 45_000;
 const MALFORMED_FRAME_CLOSE_CODE = 4002;
+const LIVENESS_CLOSE_CODE = 4008;
 const TERMINAL_CLOSE_CODE_MIN = 4400;
 const TERMINAL_CLOSE_CODE_MAX = 4499;
-const PING_FRAME = JSON.stringify({ type: "ping" });
+const PONG_FRAME = JSON.stringify({ type: "pong" });
 
 type ClassifiedFrame =
   | { kind: "message"; message: ServerMessage }
@@ -227,7 +228,7 @@ class PooledConnection {
   private nextChannelSeq = 0;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private livenessTimer: ReturnType<typeof setTimeout> | null = null;
   private dead = false;
 
   constructor(
@@ -374,7 +375,7 @@ class PooledConnection {
   /** Opens a fresh socket, fencing every callback of the one it replaces. */
   private dial(): void {
     if (this.dead) return;
-    this.stopKeepalive();
+    this.clearLiveness();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -411,11 +412,14 @@ class PooledConnection {
         "subscribe",
         [...this.topics.values()].map((held) => held.ref),
       );
-      this.startKeepalive();
+      this.armLiveness(socket);
     };
 
     socket.onmessage = (event: MessageEvent) => {
       if (this.socket !== socket) return;
+      // ANY inbound frame is proof of life, a server ping included — so the deadline is
+      // reset here rather than where the pong is written.
+      this.armLiveness(socket);
       const classified = classifyServerFrame(event.data);
       switch (classified.kind) {
         case "message":
@@ -436,7 +440,7 @@ class PooledConnection {
     socket.onclose = (event: CloseEvent) => {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
-      this.stopKeepalive();
+      this.clearLiveness();
       for (const record of this.channels.values()) record.sent = false;
 
       // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
@@ -484,7 +488,16 @@ class PooledConnection {
       workspace news that EVERY handle on this socket hears. A future category that is not
       handled below stops compiling at `frame.ch`, which no connection frame carries.
      */
-    if (frame.type === "pong") return;
+    if (frame.type === "ping") {
+      /*
+        The answer is the whole client half of the liveness scheme, and answering rather
+        than asking is the point: a background tab's timers are throttled to roughly one
+        firing a minute, so a server reaping on heartbeats the CLIENT generated would close
+        tabs that are perfectly alive. Replying to an inbound frame is throttled by nothing.
+       */
+      if (this.socket?.readyState === 1) this.socket.send(PONG_FRAME);
+      return;
+    }
     if (frame.type === "plugins" || frame.type === "event") {
       this.acceptConnectionFrame(frame);
       return;
@@ -558,19 +571,30 @@ class PooledConnection {
     };
   }
 
-  private startKeepalive(): void {
-    this.stopKeepalive();
-    const timer = setInterval(() => {
-      if (this.keepaliveTimer !== timer) return;
-      if (this.socket?.readyState === 1) this.socket.send(PING_FRAME);
-    }, KEEPALIVE_INTERVAL_MS);
-    this.keepaliveTimer = timer;
+  /**
+   * Phantom-transport watchdog, the dialing side of the one liveness scheme (CONTRACTS.md):
+   * a healthy link carries server pings every `DIAL_PING_INTERVAL_MS` even when idle, so
+   * silence past the deadline means dead TCP nobody RST rather than a quiet server. Close
+   * locally, which is what puts this connection on its own reconnect path — waiting for the
+   * OS to notice a half-open socket can take the rest of the process's life.
+   */
+  private armLiveness(socket: WebSocket): void {
+    this.clearLiveness();
+    const timer = setTimeout(() => {
+      // clearTimeout cannot retract a callback already queued by the event loop; the
+      // identity check fences a stale one, exactly as the reconnect timer's does.
+      if (this.livenessTimer !== timer) return;
+      this.livenessTimer = null;
+      if (this.socket !== socket) return;
+      socket.close(LIVENESS_CLOSE_CODE, "server silent past deadline");
+    }, DIAL_LIVENESS_TIMEOUT_MS);
+    this.livenessTimer = timer;
   }
 
-  private stopKeepalive(): void {
-    if (this.keepaliveTimer === null) return;
-    clearInterval(this.keepaliveTimer);
-    this.keepaliveTimer = null;
+  private clearLiveness(): void {
+    if (this.livenessTimer === null) return;
+    clearTimeout(this.livenessTimer);
+    this.livenessTimer = null;
   }
 
   /**
@@ -581,7 +605,7 @@ class PooledConnection {
   private teardown(closeCode: number | null, error: Error | null): void {
     if (this.dead) return;
     this.dead = true;
-    this.stopKeepalive();
+    this.clearLiveness();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

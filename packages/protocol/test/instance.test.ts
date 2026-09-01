@@ -218,10 +218,15 @@ describe("the instance channel handshake", () => {
       Two wires, two sets, one discipline (invariant 10 applied per wire): sharing the machine
       set would mean an agent-wire reset locking out federated instances that never spoke that
       wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
-      one.
+      one. The set GROWS by the same first clause the machine set grows by — v19 moved a
+      session frame pair, which a guest instance never sees — so a v18 dial survives the
+      deploy.
     */
     expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
-    expect([...INSTANCE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION]);
+    expect([...INSTANCE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 1,
+      PROTOCOL_VERSION,
+    ]);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   CONNECTION_BODIES,
   CURSOR_MIN_INTERVAL_MS,
   ClientMessageSchema,
+  DIAL_PING_INTERVAL_MS,
   GESTURE_MIN_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
@@ -39,8 +40,12 @@ const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 const RESYNC_MIN_INTERVAL_MS = 1_000;
 const JOIN_DEADLINE_MS = 10_000;
 
-/** Connection-level liveness answer; it belongs to the socket, so it carries no channel. */
-const PONG_FRAME = JSON.stringify({ type: "pong" });
+/**
+ * Connection-level liveness probe; it belongs to the socket, so it carries no channel.
+ * The SERVER asks and the client answers — the same orientation every other dial uses,
+ * and the only one a throttled background tab can honour (see `DIAL_PING_INTERVAL_MS`).
+ */
+const PING_FRAME = JSON.stringify({ type: "ping" });
 
 /**
  * How a denial reads on a socket. The action door's five rungs are the workspace's refusal
@@ -79,7 +84,7 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   join: true,
   leave: true,
   resync_request: true,
-  ping: true,
+  pong: true,
   subscribe: true,
   unsubscribe: true,
   terminal_attach: true,
@@ -144,6 +149,14 @@ interface SessionConnection {
    */
   subscriber: EventSubscriber | null;
   cancelJoinTimeout: (() => void) | null;
+  /**
+   * The liveness watchdog, armed at the first surviving join and never re-armed: a socket
+   * that never joined is already governed by the ten-second join deadline, so pinging
+   * before then would be a second answer to a question one timer already settles.
+   */
+  cancelPing: (() => void) | null;
+  /** A ping is outstanding; the next tick reaps rather than asking again. */
+  awaitingPong: boolean;
   closed: boolean;
 }
 
@@ -210,6 +223,8 @@ export class SessionGateway {
       drainCursor: 0,
       subscriber: null,
       cancelJoinTimeout: null,
+      cancelPing: null,
+      awaitingPong: false,
       closed: false,
     };
     this.armJoinDeadline(connection);
@@ -217,7 +232,7 @@ export class SessionGateway {
     /*
       The roster, before anything else and before any join. It is CONNECTION-level state:
       it describes the workspace's vocabulary rather than any one room, so it is written
-      straight to the socket like `pong` and never passes through channel serialization —
+      straight to the socket like `ping` and never passes through channel serialization —
       a peer cannot tag it with a room, and a client with no room yet still learns what
       exists. Delivered here on open and again on every change (D3).
      */
@@ -241,6 +256,27 @@ export class SessionGateway {
     }, JOIN_DEADLINE_MS);
   }
 
+  /**
+   * Arms the next liveness ping; an unanswered previous ping closes the socket, which runs
+   * the normal `close(id)` path and releases room, presence and viewer state. Without this
+   * a half-open socket (laptop asleep, wifi handoff, a discarded tab) is held open for the
+   * lifetime of the process, inflating every presence count that names it (issue #55).
+   */
+  private schedulePing(connection: SessionConnection): void {
+    connection.cancelPing = this.timers.schedule(() => {
+      connection.cancelPing = null;
+      if (connection.closed) return;
+      if (connection.awaitingPong) {
+        this.logger.warn("session_liveness_timeout", { connectionId: connection.id });
+        connection.socket.close(4008, "liveness timeout");
+        return;
+      }
+      connection.awaitingPong = true;
+      connection.socket.send(PING_FRAME);
+      this.schedulePing(connection);
+    }, DIAL_PING_INTERVAL_MS);
+  }
+
   /** Classifies, validates, and routes one inbound text frame to its channel. */
   message(id: string, data: unknown): void {
     const connection = this.connections.get(id);
@@ -260,8 +296,8 @@ export class SessionGateway {
           connection.socket.close(4002, "first frame must be join");
           return;
         }
-        if (message.type === "ping") {
-          connection.socket.send(PONG_FRAME);
+        if (message.type === "pong") {
+          connection.awaitingPong = false;
           return;
         }
         if (message.type === "join") {
@@ -372,6 +408,11 @@ export class SessionGateway {
 
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
+    // Liveness starts where the join deadline stops governing: the ten-second deadline is
+    // the whole answer for a socket holding no rooms, and this watchdog is the answer for
+    // one that holds them (issue #55). Armed once — a second room on this socket is not a
+    // second transport.
+    if (connection.cancelPing === null) this.schedulePing(connection);
     // THE EVENT-PLANE SEAT, taken once per socket at the first join that survives every
     // refusal above. `context` is what the hub discharges every subscribe and every delivery
     // against; the closure is the only thing the hub ever learns about a WebSocket.
@@ -591,7 +632,7 @@ export class SessionGateway {
     }
     switch (message.type) {
       case "join":
-      case "ping":
+      case "pong":
       case "subscribe":
       case "unsubscribe":
         // Routed before dispatch: join creates channels, and the three connection-level frames
@@ -727,6 +768,8 @@ export class SessionGateway {
     connection.closed = true;
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
+    connection.cancelPing?.();
+    connection.cancelPing = null;
     for (const ch of [...connection.channels.keys()]) this.releaseChannel(connection, ch);
     connection.subscriber = null;
     this.events.release(id);

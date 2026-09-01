@@ -55,11 +55,16 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
   `Changed`, `Fixed`, `Removed`. Explain implementation details in the commit or PR instead.
 - Released sections are immutable. `packages/web/src/generated-changelog.ts` is generated
   from them; never edit it directly.
-- Changes accumulate under `Unreleased` without ad hoc version bumps. From a clean,
-  up-to-date `main`, `bun run release -- <major|minor|patch|x.y.z>` is the only release
-  path: it bumps the web package, freezes the changelog, regenerates the in-app history,
-  runs the full gate, creates the `release:` commit and tag, pushes atomically, and waits
-  for the GitHub Release workflow.
+- `Unreleased` is SHORT-LIVED, not a staging area (operator-ratified cadence): release at every
+  merged PR, or at every coherent day of work. A version names a frozen released artifact, so
+  "this landed in 0.6.2" is usable language instead of "it's on `main` somewhere", and releases
+  are cheap and frequent precisely because `bun run release -- patch|minor` is one command.
+- Releases stay deliberate operator/agent moments, and the one release path is how. From a clean,
+  up-to-date `main`, `bun run release -- <major|minor|patch|x.y.z>` is the only release path: it
+  bumps the web package, freezes the changelog, regenerates the in-app history, runs the full
+  gate, creates the `release:` commit and tag, pushes atomically, and waits for the GitHub
+  Release workflow. Frequent does not mean incidental: publishing is a fleet action
+  (invariant 10), so know what the release ships before running it.
 - Never edit a released version, create a release tag, or publish a GitHub Release by hand.
 
 ## Map
@@ -119,6 +124,17 @@ dated technology verdicts with evidence.
     that set and requires a coordinated fleet restart (server + spokes together). A
     version bump hidden in a `web:` commit silently locked every spoke out on
     2026-08-25.
+    Publishing a RELEASE is itself a fleet action, in the direction the compat set does NOT
+    guard. `MACHINE_PROTOCOL_COMPAT_VERSIONS` only makes a hub tolerant of agents OLDER than
+    itself; an agent binary NEWER than the deployed hub is unguarded upstream, because a hub can
+    never accept a version that did not exist when it was built — every dial closes 4409, forever
+    (CONTRACTS.md §machine channel). `bun run release` publishes the agent binary, and the
+    downstream pin cron ships it fleet-wide within hours, so a release that changes the agent wire
+    ships the hub and the fleet pins TOGETHER: the hub is deployed at or ahead of any release whose
+    `PROTOCOL_VERSION` exceeds the deployed one. `v0.5.0` (2026-08-30) was cut from work that was
+    not meant to ship, put a newer-protocol agent in front of an older hub, and took a fleet spoke
+    off the canvas while systemd still reported it healthy. The mechanical hold lives downstream
+    (atyrode/dotfiles#454); the coupling is this repo's to know.
 11. **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30):
     every shared behavior — previews, motion, fades, cues — is ONE producer-agnostic
     pipeline. Local input normalizes into the WIRE form first and is consumed as if

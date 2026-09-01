@@ -15,12 +15,16 @@ import {
   type RegisteredTool,
   type TerminalFacet,
 } from "@manifold/plugin/hooks";
-import type {
-  HostServices,
-  AuthoringHandle,
-  ViewportHandle,
-  PanelProps,
-  SectionProps,
+import {
+  composeBindings,
+  type BindingSource,
+  type ComposedBinding,
+  type WebBinding,
+  type HostServices,
+  type AuthoringHandle,
+  type ViewportHandle,
+  type PanelProps,
+  type SectionProps,
 } from "@manifold/plugin";
 import {
   MANIFOLD_URI_SCHEME,
@@ -114,6 +118,14 @@ export interface WebPluginDef {
    * plugin owns terminals, and a ref needs both to offer the affordance honestly.
    */
   readonly terminals?: TerminalFacet;
+  /**
+   * The keys this plugin claims, declaration and handler together. No manifest counterpart, and
+   * for a fifth distinct reason: a key is not a ref the WORKSPACE composes, so no layout and no
+   * sidebar order can name one — but unlike the four channels above it is claimed GLOBALLY, so
+   * the composition refuses two plugins that want one key naming both (D5). See
+   * `@manifold/plugin`'s `BindingDef`.
+   */
+  readonly bindings?: readonly WebBinding[];
 }
 
 /** A declared panel, keyed in the composition by its FULL id (`core.shell.sidebar`). */
@@ -186,6 +198,13 @@ export interface BrowserAssembly {
   readonly overlays: ReadonlyMap<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>;
   /** Null until some enabled-or-disabled plugin registers the terminal facet. */
   readonly terminals: WebTerminals | null;
+  /**
+   * The composed key table, sorted by key: the vocabulary the host dispatches and the help
+   * modal prints. A DISABLED plugin's rows are absent rather than tagged — the one registry
+   * here that drops instead of marking, because a keystroke has no surface to paint an absence
+   * on (`composeBindings`).
+   */
+  readonly bindings: readonly ComposedBinding[];
 }
 
 /**
@@ -208,6 +227,7 @@ export function buildBrowserAssembly(
   const renderers = new Map<string, RegisteredRenderer<ContainerRendererProps>>();
   const overlays = new Map<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>();
   let terminals: WebTerminals | null = null;
+  const bindingSources: BindingSource[] = [];
 
   for (const entry of roster) {
     const { manifest, enabled } = entry;
@@ -283,6 +303,15 @@ export function buildBrowserAssembly(
         facet: def.terminals,
       };
     }
+    /*
+      Bindings are collected rather than resolved here: the collision rules are the engine's
+      (`composeBindings`), including the one this loop could not enforce — a key claimed by a
+      DISABLED plugin still collides, so toggling a plugin off can never hide a clash that
+      toggling it back on resurrects.
+     */
+    if (def?.bindings !== undefined) {
+      bindingSources.push({ plugin: manifest.id, enabled, bindings: def.bindings });
+    }
   }
 
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
@@ -301,6 +330,7 @@ export function buildBrowserAssembly(
     tools,
     renderers,
     overlays,
+    bindings: composeBindings(bindingSources),
     terminals,
   };
 }
@@ -447,6 +477,46 @@ export function useAuthoringRegistration(): (handle: AuthoringHandle | null) => 
   return register;
 }
 
+/**
+ * Is the keystroke going into text? Then it is typing, not dispatching. A binding may claim a
+ * printable key, and one shared registry must not let that row eat a rename field's letters.
+ */
+function typingInto(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+/**
+ * THE key dispatcher: ONE listener for every declared binding in the composition, mounted by
+ * the host gate so a key answers wherever the viewer is — a route, a panel, a canvas.
+ *
+ * It is the whole of what the floor decides about a key: the composed table says which row owns
+ * it, and the row's own handler does the work (`@manifold/plugin`'s `BindingDef` — a binding
+ * carries no authority, so anything that mutates goes through a registered action). Two things
+ * are refused here rather than in every handler, because both are properties of the KEY and not
+ * of any plugin's behavior: a chord is a different key than the one it decorates, and typing is
+ * not dispatching.
+ *
+ * Undeclared listeners on `window` are what this replaces. One of them (F9's) shipped in the
+ * engine's own standard library, where nothing could collide with it, list it, or turn it off.
+ */
+function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServices): void {
+  useEffect(() => {
+    if (bindings.length === 0) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (typingInto(event.target)) return;
+      const binding = bindings.find((row) => row.key === event.key);
+      if (binding === undefined) return;
+      event.preventDefault();
+      binding.run(host);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [bindings, host]);
+}
+
 export interface HostServicesGateProps {
   readonly identity: StoredIdentity;
   /** The application's own navigation; the gate translates `manifold://` into it. */
@@ -553,6 +623,12 @@ export function HostServicesGate({
     }),
     [authoring, client, assembly, identity, navigateUri, containerId, viewport],
   );
+
+  /*
+    The composition's keys, live: the table moves when a plugin is toggled, and dispatch follows
+    it without a remount because the listener is keyed on the table itself.
+  */
+  useBindingDispatch(assembly.bindings, host);
 
   /**
    * THE PROJECTION REGISTRY, as plugin code sees it: the composition's registries plus this

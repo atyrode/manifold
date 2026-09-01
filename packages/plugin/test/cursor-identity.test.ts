@@ -1,3 +1,4 @@
+import { CURSOR_TTL_MS } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import {
   CURSOR_HALF_LIFE_MS,
@@ -8,9 +9,11 @@ import {
   clampCursorFraction,
   cursorFraction,
   cursorLabel,
+  expireRemoteCursors,
   pruneRemoteCursors,
   recordRemoteCursor,
   remoteCursorSocketId,
+  retractRemoteCursor,
   stepRemoteCursors,
   type RemoteCursor,
 } from "../src/presence/cursor-identity.ts";
@@ -20,10 +23,15 @@ describe("connection-scoped cursor identity", () => {
     const cursors = new Map<string, RemoteCursor>();
 
     expect(
-      recordRemoteCursor(cursors, { principalId: "owner", connId: "self", x: 1, y: 2 }, "self"),
+      recordRemoteCursor(cursors, { principalId: "owner", connId: "self", x: 1, y: 2 }, "self", 10),
     ).toBe(false);
     expect(
-      recordRemoteCursor(cursors, { principalId: "owner", connId: "sibling", x: 3, y: 4 }, "self"),
+      recordRemoteCursor(
+        cursors,
+        { principalId: "owner", connId: "sibling", x: 3, y: 4 },
+        "self",
+        10,
+      ),
     ).toBe(true);
 
     expect([...cursors]).toEqual([
@@ -36,6 +44,7 @@ describe("connection-scoped cursor identity", () => {
           y: 4,
           targetX: 3,
           targetY: 4,
+          updatedAt: 10,
         },
       ],
     ]);
@@ -43,8 +52,8 @@ describe("connection-scoped cursor identity", () => {
 
   test("retargets an existing cursor and advances it smoothly", () => {
     const cursors = new Map<string, RemoteCursor>();
-    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 0, y: 0 }, null);
-    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 100, y: 50 }, null);
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 0, y: 0 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "socket", x: 100, y: 50 }, null, 16);
 
     expect(cursors.get("peer:socket")).toMatchObject({
       x: 0,
@@ -61,14 +70,19 @@ describe("connection-scoped cursor identity", () => {
     // View-root fractions: the whole span of motion is smaller than the flow epsilon, so
     // easing at scene scale teleports the cursor on the very first frame — the defect
     // that made composition cursors jump while canvas cursors glided.
-    recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null);
-    recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null);
+    recordRemoteCursor(snapped, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null, 0);
+    recordRemoteCursor(
+      snapped,
+      { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 },
+      null,
+      16,
+    );
     expect(stepRemoteCursors(snapped, CURSOR_HALF_LIFE_MS, FLOW_SNAP_EPSILON)).toBe(true);
     expect(snapped.get("peer:socket")).toMatchObject({ x: 0.4, y: 0.8 });
 
     const eased = new Map<string, RemoteCursor>();
-    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null);
-    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null);
+    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.2, y: 0.4 }, null, 0);
+    recordRemoteCursor(eased, { principalId: "peer", connId: "socket", x: 0.4, y: 0.8 }, null, 16);
     expect(stepRemoteCursors(eased, CURSOR_HALF_LIFE_MS, FRACTION_SNAP_EPSILON)).toBe(true);
     const halfway = eased.get("peer:socket");
     expect(halfway?.x).toBeCloseTo(0.3, 10);
@@ -80,6 +94,7 @@ describe("connection-scoped cursor identity", () => {
       eased,
       { principalId: "peer", connId: "socket", x: 0.3001, y: 0.6001 },
       null,
+      32,
     );
     expect(stepRemoteCursors(eased, CURSOR_HALF_LIFE_MS, FRACTION_SNAP_EPSILON)).toBe(true);
     expect(eased.get("peer:socket")).toMatchObject({ x: 0.3001, y: 0.6001 });
@@ -93,10 +108,10 @@ describe("connection-scoped cursor identity", () => {
 
   test("prunes a closed tab's cursor while a sibling tab of the same principal stays", () => {
     const cursors = new Map<string, RemoteCursor>();
-    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-1", x: 1, y: 1 }, null);
-    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-2", x: 2, y: 2 }, null);
-    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-3", x: 3, y: 3 }, null);
-    recordRemoteCursor(cursors, { principalId: "peer", connId: "conn", x: 9, y: 9 }, null);
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-1", x: 1, y: 1 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-2", x: 2, y: 2 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-3", x: 3, y: 3 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "conn", x: 9, y: 9 }, null, 0);
 
     // Tabs 2 and 3 closed; the principal remains in the roster through tab 1.
     const changed = pruneRemoteCursors(cursors, [
@@ -119,6 +134,61 @@ describe("connection-scoped cursor identity", () => {
       true,
     );
     expect([...cursors.keys()]).toEqual(["owner:tab-1"]);
+  });
+
+  test("a retraction removes exactly the retracting connection's cursor", () => {
+    const cursors = new Map<string, RemoteCursor>();
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-1", x: 1, y: 1 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "tab-2", x: 2, y: 2 }, null, 0);
+    recordRemoteCursor(cursors, { principalId: "peer", connId: "conn", x: 9, y: 9 }, null, 0);
+
+    // The pointer left one tab's canvas. That tab's cursor goes and nothing else does —
+    // the same principal's other tab is a different pointer on a different screen.
+    expect(retractRemoteCursor(cursors, { principalId: "owner", connId: "tab-1" }, null)).toBe(
+      true,
+    );
+    expect([...cursors.keys()].sort()).toEqual(["owner:tab-2", "peer:conn"]);
+
+    // Retracting twice, or retracting a cursor that was never painted, changes nothing:
+    // the caller uses the answer to decide whether a repaint is owed.
+    expect(retractRemoteCursor(cursors, { principalId: "owner", connId: "tab-1" }, null)).toBe(
+      false,
+    );
+    expect(retractRemoteCursor(cursors, { principalId: "ghost", connId: "never" }, null)).toBe(
+      false,
+    );
+
+    // This socket's own retraction echo is dropped exactly like its motion echo.
+    recordRemoteCursor(cursors, { principalId: "owner", connId: "self", x: 5, y: 5 }, null, 0);
+    expect(retractRemoteCursor(cursors, { principalId: "owner", connId: "self" }, "self")).toBe(
+      false,
+    );
+    expect(cursors.has("owner:self")).toBe(true);
+  });
+
+  test("expires a cursor whose sender went silent past the TTL, sparing refreshed ones", () => {
+    const cursors = new Map<string, RemoteCursor>();
+    recordRemoteCursor(cursors, { principalId: "quiet", connId: "conn", x: 1, y: 1 }, null, 1_000);
+    recordRemoteCursor(cursors, { principalId: "live", connId: "conn", x: 2, y: 2 }, null, 1_000);
+
+    // Inside the bound a silent cursor stays: a resting pointer is still a present one.
+    expect(expireRemoteCursors(cursors, 1_000 + CURSOR_TTL_MS)).toBe(false);
+    expect(cursors.size).toBe(2);
+
+    // One sender keeps moving; the other's socket died without a retraction.
+    recordRemoteCursor(
+      cursors,
+      { principalId: "live", connId: "conn", x: 3, y: 3 },
+      null,
+      1_000 + CURSOR_TTL_MS,
+    );
+    expect(expireRemoteCursors(cursors, 1_001 + CURSOR_TTL_MS)).toBe(true);
+    expect([...cursors.keys()]).toEqual(["live:conn"]);
+
+    // The survivor rides its own refresh out to a full TTL, not the sweep's clock.
+    expect(expireRemoteCursors(cursors, 1_000 + 2 * CURSOR_TTL_MS)).toBe(false);
+    expect(expireRemoteCursors(cursors, 1_001 + 2 * CURSOR_TTL_MS)).toBe(true);
+    expect(cursors.size).toBe(0);
   });
 
   test("labels sibling tabs of one principal deterministically", () => {

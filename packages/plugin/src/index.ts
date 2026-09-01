@@ -7,6 +7,14 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
+  composeBindings,
+  type BindingDef,
+  type BindingScope,
+  type BindingSource,
+  type ComposedBinding,
+  type WebBinding,
+} from "./bindings.ts";
+export {
   ENGINE_DISABLED_EVENT,
   ENGINE_ENABLED_EVENT,
   ENGINE_PLUGINS_ID,
@@ -69,7 +77,14 @@ export {
   type PluginStorage,
   type PluginStorageAdmin,
 } from "./storage.ts";
-export { workspaceLayout, type WorkspacePanels } from "./layout.ts";
+export {
+  arrangedSectionIds,
+  movedSectionIds,
+  panelSections,
+  withPanelSections,
+  workspaceLayout,
+  type WorkspacePanels,
+} from "./layout.ts";
 export {
   buildIndexTree,
   projectIndexMove,

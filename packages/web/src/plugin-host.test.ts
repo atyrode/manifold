@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
+import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 import { buildBrowserAssembly, type WebPluginDef } from "./plugin-host.tsx";
 
 /**
@@ -276,5 +277,65 @@ describe("buildBrowserAssembly", () => {
     // Whereas the toggle that DOES concern elements moves the tuple, so the cache rebuilds.
     const drawOff = buildBrowserAssembly([entry(MACHINES, false), entry(DRAW, false)], 3, DEFS);
     expect(tuples(drawOff.elements)).not.toEqual(tuples(before.elements));
+  });
+});
+
+/**
+ * THE KEY TABLE, joined: bindings are the one registry with no manifest half — the declaration
+ * IS the registration — so this is where "who owns F8" gets decided for the browser, and where
+ * the shell's real rows are checked against the composition the app actually builds.
+ */
+describe("buildBrowserAssembly bindings", () => {
+  const zoneProbe = {
+    id: "core.shell.zone-probe",
+    key: "F9",
+    label: "Drop-zone probe",
+    run: (): void => undefined,
+  };
+  const grid = {
+    id: "core.canvas.grid",
+    key: "F7",
+    label: "Grid",
+    when: "canvas",
+    run: (): void => undefined,
+  } as const;
+
+  test("registered rows compose into the table with their owner", () => {
+    const assembly = buildBrowserAssembly([entry(SHELL), entry({ id: "core.canvas" })], 1, [
+      { id: "core.shell", bindings: [zoneProbe] },
+      { id: "core.canvas", bindings: [grid] },
+    ]);
+
+    expect(assembly.bindings.map((binding) => [binding.key, binding.plugin])).toEqual([
+      ["F7", "core.canvas"],
+      ["F9", "core.shell"],
+    ]);
+    expect(assembly.bindings[1]?.run).toBe(zoneProbe.run);
+  });
+
+  test("a disabled plugin's keys DROP, unlike its panels and elements", () => {
+    const assembly = buildBrowserAssembly([entry(SHELL), entry({ id: "core.canvas" }, false)], 1, [
+      { id: "core.shell", bindings: [zoneProbe] },
+      { id: "core.canvas", bindings: [grid] },
+    ]);
+
+    // A panel stays, tagged, so an outlet can name what it waits for; a key has no surface to
+    // paint an absence on, so the row is gone and nothing answers F7.
+    expect(assembly.bindings.map((binding) => binding.id)).toEqual(["core.shell.zone-probe"]);
+    expect(assembly.panels.get("core.shell.sidebar")?.enabled).toBe(true);
+  });
+
+  test("the composition the app builds carries the shell's two real keys, once each", () => {
+    const roster: PluginRoster = WEB_PLUGIN_DEFS.map((def) => entry({ id: def.id }));
+    const assembly = buildBrowserAssembly(roster, 1, WEB_PLUGIN_DEFS);
+
+    const rows = assembly.bindings.filter((binding) => binding.plugin === "core.shell");
+    expect(rows.map((binding) => [binding.id, binding.key, binding.when])).toEqual([
+      ["core.shell.arrange", "F8", "always"],
+      ["core.shell.zone-probe", "F9", "always"],
+    ]);
+    // Every registered plugin's rows go through one refusal-checking composition, so a second
+    // plugin claiming F8 or F9 would fail this build rather than shadow the shell.
+    expect(assembly.bindings.filter((binding) => binding.key === "F8")).toHaveLength(1);
   });
 });

@@ -12,6 +12,7 @@ import { indexManifest } from "@manifold-plugin/index";
 import { machinesManifest } from "@manifold-plugin/machines";
 import { presenceManifest } from "@manifold-plugin/presence";
 import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
+import { SHELL_BINDINGS } from "@manifold-plugin/shell/web";
 import { terminalsManifest } from "@manifold-plugin/terminals";
 import { panelRefId, type FeedTopics, type WorkspacePanels } from "@manifold/plugin";
 import { ContainerViewPanel } from "./container-view-panel.tsx";
@@ -105,10 +106,16 @@ export const FEED_TOPICS: FeedTopics = {
  * The shell's own two panels stay FLOOR components (`sidebar-panel.tsx`, `container-view-panel.tsx`)
  * attached to `core.shell`'s declared ids, and that is not a loophole: the sidebar chrome reads
  * the composition to know which sections exist, and the container view resolves a route to a
- * discipline and asks the registry for it. Neither knows how anything is drawn.
+ * discipline and asks the registry for it. Neither knows how anything is drawn. Its KEYS come
+ * from the plugin package instead (`SHELL_BINDINGS`), because a binding row spells its own
+ * plugin-namespaced id and a handler is behavior — neither is chrome the floor can hold.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
-  { id: "core.shell", panels: { sidebar: SidebarPanel, "container-view": ContainerViewPanel } },
+  {
+    id: "core.shell",
+    panels: { sidebar: SidebarPanel, "container-view": ContainerViewPanel },
+    bindings: SHELL_BINDINGS,
+  },
   { id: "core.index", sections: { index: IndexSection } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },

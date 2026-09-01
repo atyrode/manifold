@@ -35,11 +35,16 @@ export const PresencePayloadSchema = z.strictObject({
   status: PresenceStatusSchema.optional(),
   /**
    * VANTAGE, published: where this principal is standing and what it holds — which tool,
-   * what it is editing, which container has its focus, whether its sidebar is collapsed.
-   * This is the multiplayer axiom applied to the last private corner of the client — a
-   * chrome state only one browser tab could see is a capability no other principal can
-   * observe or drive, so it rides presence like everything else that dies with the
-   * connection.
+   * what it is editing, which container has its focus, whether its sidebar is collapsed,
+   * and whether it is ARRANGING (F8: the workspace stops being interactive and its panels
+   * and sections become grabbable). This is the multiplayer axiom applied to the last
+   * private corner of the client — a chrome state only one browser tab could see is a
+   * capability no other principal can observe or drive, so it rides presence like
+   * everything else that dies with the connection.
+   *
+   * `arranging` is here for the same reason `sidebarCollapsed` is, and it is the reason a
+   * mode is legible at all: a collaborator who can see that you are rearranging knows why
+   * your terminals stopped taking clicks, and an agent can watch the mode it is driving.
    */
   vantage: z
     .strictObject({
@@ -47,6 +52,7 @@ export const PresencePayloadSchema = z.strictObject({
       editingElementId: z.string().min(1).nullish(),
       focusedContainerId: z.string().min(1).nullish(),
       sidebarCollapsed: z.boolean().optional(),
+      arranging: z.boolean().optional(),
     })
     .optional(),
   /**
@@ -128,6 +134,17 @@ export type GestureKind = z.infer<typeof GestureKindSchema>;
 
 /** Client-side cursor send throttle; server may additionally drop under backpressure. */
 export const CURSOR_MIN_INTERVAL_MS = 16;
+/**
+ * How long a remote cursor survives with no frame behind it. A departing pointer says so
+ * explicitly — leaving the surface or hiding the tab publishes `cursor: null` — so this is
+ * the backstop for the goodbye that never arrives: a socket cut mid-motion, a tab killed
+ * before it can speak. It sits an order of magnitude above `GESTURE_TTL_MS` because the two
+ * silences mean different things. A gesture is motion by definition, so silence means it
+ * ended; a cursor emits frames only while it MOVES, so silence is the ordinary state of a
+ * pointer resting on the canvas. The bound has to outlast a reading pause, not a send
+ * interval, or peers would watch a present pointer blink out.
+ */
+export const CURSOR_TTL_MS = 30_000;
 /** Gesture updates use the same high-frequency cadence as cursor motion. */
 export const GESTURE_MIN_INTERVAL_MS = 16;
 /** Stale gesture overrides must disappear even when an end frame is dropped. */

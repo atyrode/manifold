@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CHANNEL_LIMIT_CLOSE_CODE,
   CURSOR_MIN_INTERVAL_MS,
+  DIAL_PING_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
   type Container,
@@ -242,18 +243,24 @@ describe("SessionGateway high-rate request cadence", () => {
     const fixture = gatewayFixture();
     const socket = new FakeSocket();
     join(fixture.gateway, "peer", socket, fixture.container.id, fixture.ownerKey);
+    /*
+      Every joined socket arms a liveness watchdog (issue #55), so the cadence assertions in
+      this file count what a room's THROTTLES arm beyond that baseline rather than counting
+      the clock's whole job table.
+     */
+    const armed = fixture.clock.pendingJobs;
 
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
 
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
-    expect(fixture.clock.pendingJobs).toBe(1);
+    expect(fixture.clock.pendingJobs).toBe(armed + 1);
     fixture.clock.advance(999);
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(1);
     fixture.clock.advance(1);
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(2);
-    expect(fixture.clock.pendingJobs).toBe(0);
+    expect(fixture.clock.pendingJobs).toBe(armed);
 
     fixture.gateway.shutdown();
     fixture.store.close();
@@ -265,6 +272,7 @@ describe("SessionGateway high-rate request cadence", () => {
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
+    const armed = fixture.clock.pendingJobs; // the joined sockets' liveness watchdogs
 
     send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     first.clear();
@@ -274,7 +282,7 @@ describe("SessionGateway high-rate request cadence", () => {
       send(fixture.gateway, "first", CH, { type: "cursor", x: coordinate, y: coordinate });
     }
 
-    expect(fixture.clock.pendingJobs).toBe(1);
+    expect(fixture.clock.pendingJobs).toBe(armed + 1);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
     fixture.clock.advance(CURSOR_MIN_INTERVAL_MS - 10 - 1);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
@@ -283,7 +291,7 @@ describe("SessionGateway high-rate request cadence", () => {
     const cursors = second.messages().filter((message) => message.type === "cursor");
     expect(cursors).toHaveLength(1);
     expect(cursors.map((message) => [message.x, message.y])).toEqual([[4, 4]]);
-    expect(fixture.clock.pendingJobs).toBe(0);
+    expect(fixture.clock.pendingJobs).toBe(armed);
     fixture.gateway.shutdown();
     fixture.store.close();
   });
@@ -294,14 +302,16 @@ describe("SessionGateway high-rate request cadence", () => {
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
+    const armed = fixture.clock.pendingJobs; // the joined sockets' liveness watchdogs
     send(fixture.gateway, "first", CH, { type: "cursor", x: 1, y: 1 });
     second.clear();
     fixture.clock.advance(10);
     send(fixture.gateway, "first", CH, { type: "cursor", x: 9, y: 9 });
-    expect(fixture.clock.pendingJobs).toBe(1);
+    expect(fixture.clock.pendingJobs).toBe(armed + 1);
 
     fixture.gateway.close("first");
-    expect(fixture.clock.pendingJobs).toBe(0);
+    // Its flush AND its watchdog are gone; the surviving socket keeps its own.
+    expect(fixture.clock.pendingJobs).toBe(armed - 1);
     fixture.clock.advance(30);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
     fixture.gateway.shutdown();
@@ -578,21 +588,100 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("liveness is a socket property: ping carries no channel", () => {
+  test("liveness is a socket property: the pair carries no channel", () => {
     const fixture = gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
     socket.clear();
 
-    fixture.gateway.message("tab", JSON.stringify({ type: "ping" }));
-    expect(socket.frames()).toEqual([{ type: "pong" }]);
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(socket.frames()).toEqual([{ type: "ping" }]);
+    fixture.gateway.message("tab", JSON.stringify({ type: "pong" }));
 
-    // A socket that has joined nothing must still join first.
+    // A socket that has joined nothing must still join first — and it is never pinged,
+    // because the ten-second join deadline already answers for a connection with no room.
     const fresh = new FakeSocket();
     fixture.gateway.open("fresh", fresh);
-    fixture.gateway.message("fresh", JSON.stringify({ type: "ping" }));
+    fixture.gateway.message("fresh", JSON.stringify({ type: "pong" }));
     expect(fresh.closed).toEqual({ code: 4002, reason: "first frame must be join" });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+});
+
+describe("SessionGateway liveness", () => {
+  test("a tab that answers stays open across many intervals", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket);
+    socket.clear();
+
+    for (let round = 0; round < 3; round += 1) {
+      fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+      expect(socket.frames().filter((frame) => frame.type === "ping")).toHaveLength(round + 1);
+      fixture.gateway.message("tab", JSON.stringify({ type: "pong" }));
+      expect(socket.closed).toBeNull();
+    }
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("an unanswered ping reaps the socket and the room stops counting it", () => {
+    /*
+      The defect this closes (issue #55): a half-open socket — laptop asleep, wifi handoff,
+      a tab the browser discarded — is a connection nothing will ever arrive on, and the room
+      went on counting it in every presence payload for the life of the process.
+     */
+    const fixture = gatewayFixture();
+    const liveSocket = new FakeSocket();
+    const ghostSocket = new FakeSocket();
+    const ghostToken = fixture.auth.mintToken(
+      { principal: { name: "ghost tab", kind: "human" }, caps: ["containers:read"] },
+      fixture.auth.authenticate(fixture.ownerKey),
+    ).token;
+    join(fixture.gateway, "live", liveSocket, fixture.container.id, fixture.ownerKey);
+    fixture.gateway.open("ghost", ghostSocket);
+    joinChannel(fixture, "ghost", ghostSocket, { token: ghostToken });
+    expect(fixture.rooms.presence()[0]?.principals).toHaveLength(2);
+
+    // First interval: both are asked. Only the live tab answers.
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(ghostSocket.frames().filter((frame) => frame.type === "ping")).toHaveLength(1);
+    fixture.gateway.message("live", JSON.stringify({ type: "pong" }));
+    expect(ghostSocket.closed).toBeNull();
+
+    // Second: the unanswered ping is the verdict, bounding detection at two intervals.
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(ghostSocket.closed).toEqual({ code: 4008, reason: "liveness timeout" });
+    expect(liveSocket.closed).toBeNull();
+
+    // The reap runs the ordinary close path, which is the whole point: room membership,
+    // presence and viewer registrations are released exactly as a clean disconnect frees them.
+    fixture.gateway.close("ghost");
+    expect(fixture.rooms.presence()).toEqual([
+      {
+        containerId: fixture.container.id,
+        principals: [expect.objectContaining({ name: "owner" })],
+      },
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("the watchdog dies with the connection rather than outliving it", () => {
+    const fixture = gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket);
+    expect(fixture.clock.pendingJobs).toBeGreaterThan(0);
+
+    fixture.gateway.close("tab");
+    expect(fixture.clock.pendingJobs).toBe(0);
 
     fixture.gateway.shutdown();
     fixture.store.close();
@@ -606,6 +695,7 @@ describe("SessionGateway gesture cadence", () => {
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
     join(fixture.gateway, "second", second, fixture.container.id, fixture.ownerKey);
+    const armed = fixture.clock.pendingJobs; // the joined sockets' liveness watchdogs
 
     const gesture = (phase: "active" | "end", x: number): void => {
       send(fixture.gateway, "first", CH, {
@@ -631,10 +721,10 @@ describe("SessionGateway gesture cadence", () => {
     gesture("active", 2);
     gesture("active", 3);
     expect(second.messages()).toEqual([]);
-    expect(fixture.clock.pendingJobs).toBe(1);
+    expect(fixture.clock.pendingJobs).toBe(armed + 1);
 
     gesture("end", 4);
-    expect(fixture.clock.pendingJobs).toBe(0);
+    expect(fixture.clock.pendingJobs).toBe(armed);
     expect(second.messages()).toEqual([
       expect.objectContaining({
         type: "gesture",
@@ -762,11 +852,15 @@ describe("SessionGateway spectator sockets", () => {
     // Refused means refused: nothing a watcher sent ever reached the room.
     expect(occupantSocket.messages()).toEqual([]);
 
-    // Recovery and keepalive stay open, or a dropped preview could never resync.
+    // Recovery and liveness stay open: a dropped preview could never resync otherwise, and a
+    // watcher forbidden to answer a ping would be reaped for being read-only.
     watcherSocket.clear();
     send(fixture.gateway, "watcher", CH, { type: "resync_request" });
-    fixture.gateway.message("watcher", JSON.stringify({ type: "ping" }));
-    expect(watcherSocket.messages().map((message) => message.type)).toEqual(["resync", "pong"]);
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(watcherSocket.messages().map((message) => message.type)).toEqual(["resync", "ping"]);
+    fixture.gateway.message("watcher", JSON.stringify({ type: "pong" }));
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(watcherSocket.closed).toBeNull();
 
     fixture.gateway.shutdown();
     fixture.store.close();

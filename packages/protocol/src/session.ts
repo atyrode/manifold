@@ -15,12 +15,12 @@ import { ManifoldRefSchema } from "./uri.ts";
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v17) — one socket per tab, many rooms. Every frame is either
+ * FRAME GRAMMAR (v19) — one socket per tab, many rooms. Every frame is either
  * connection-level or channel-level:
  *
- *   connection-level   client → server  {"type":"ping"}
+ *   connection-level   client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
- *                      server → client  {"type":"pong"}
+ *                      server → client  {"type":"ping"}
  *                      server → client  {"type":"plugins","roster":[…]}
  *                      server → client  {"type":"event","topic":{…},"kind":"…",…}
  *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
@@ -31,10 +31,11 @@ import { ManifoldRefSchema } from "./uri.ts";
  * portal's watching preview), so a container-keyed channel would be an id pun that
  * collides. `join` binds a fresh `ch` to a container, `leave` frees it, and every other
  * channel frame routes by it.
- * Liveness is a property of the socket, not of a room, so ping/pong carry no `ch`; neither
- * does the plugin roster, which describes the whole workspace rather than any one room, nor
- * the event plane, whose topics are NODES and therefore routinely name something no channel
- * on this socket has joined (see CONNECTION_BODIES and CLIENT_CONNECTION_BODIES).
+ * Liveness is a property of the socket, not of a room, so the ping/pong pair carries no
+ * `ch`; neither does the plugin roster, which describes the whole workspace rather than
+ * any one room, nor the event plane, whose topics are NODES and therefore routinely name
+ * something no channel on this socket has joined (see CONNECTION_BODIES and
+ * CLIENT_CONNECTION_BODIES).
  *
  * Handshake: the FIRST client frame on a connection MUST be `join` (ten-second
  * deadline, re-armed whenever the last channel leaves); the server answers `init` on
@@ -235,8 +236,13 @@ const CLIENT_BODIES = {
   }),
 } as const;
 
-/** Connection-level: liveness belongs to the socket, so it carries no channel. */
-const ClientPingSchema = z.strictObject({ type: z.literal("ping") });
+/**
+ * Connection-level: the answer to the server's liveness ping. Liveness belongs to the
+ * socket, so it carries no channel — and the client ANSWERS rather than asks, because a
+ * background tab's timers are throttled while its message handler is not (see
+ * `DIAL_PING_INTERVAL_MS`).
+ */
+const ClientPongSchema = z.strictObject({ type: z.literal("pong") });
 
 /**
  * CONNECTION-LEVEL client frames with a payload: the subscription pair (ADR 0012).
@@ -295,7 +301,7 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   CLIENT_BODIES.terminal_resize,
   CLIENT_BODIES.terminal_take,
   CLIENT_BODIES.terminal_kill,
-  ClientPingSchema,
+  ClientPongSchema,
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
 ]);
@@ -317,7 +323,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   channelized(CLIENT_BODIES.terminal_resize),
   channelized(CLIENT_BODIES.terminal_take),
   channelized(CLIENT_BODIES.terminal_kill),
-  ClientPingSchema,
+  ClientPongSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
@@ -439,8 +445,8 @@ const SERVER_BODIES = {
   }),
 } as const;
 
-/** Connection-level: the answer to a socket-level keepalive. */
-const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
+/** Connection-level: the liveness probe every dialed-in side sends on its own cadence. */
+const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
 
 /**
  * CONNECTION-LEVEL server frames: they address the SOCKET, not a channel, so they carry no
@@ -459,7 +465,7 @@ const ServerPongSchema = z.strictObject({ type: z.literal("pong") });
  * no offset, no acknowledgement and no replay, because catch-up is reading state back through
  * the door a fresh client already uses (ADR 0012 §5).
  *
- * Kept as a keyed table so routing can look a frame's parser up by type. `pong` stays a
+ * Kept as a keyed table so routing can look a frame's parser up by type. `ping` stays a
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
@@ -509,7 +515,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.saved,
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
-  ServerPongSchema,
+  ServerPingSchema,
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
 ]);
@@ -530,7 +536,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.saved),
   channelized(SERVER_BODIES.error),
   channelized(SERVER_BODIES.channel_closed),
-  ServerPongSchema,
+  ServerPingSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
@@ -574,7 +580,7 @@ export const SERVER_MESSAGE_TYPES = [
   "saved",
   "error",
   "channel_closed",
-  "pong",
+  "ping",
   "plugins",
   "event",
 ] as const satisfies readonly ServerMessage["type"][];
@@ -594,7 +600,7 @@ export const CLIENT_MESSAGE_TYPES = [
   "terminal_resize",
   "terminal_take",
   "terminal_kill",
-  "ping",
+  "pong",
   "subscribe",
   "unsubscribe",
 ] as const satisfies readonly ClientMessage["type"][];

@@ -33,7 +33,7 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
   repo — web, tests, and tools all use it. No parallel implementations. It pools ONE socket
   per (WebSocket factory, url, token) and a `SessionClient` is a channel handle on it, so a
   tab holds one connection no matter how many rooms it renders; the pool owns dialing,
-  keepalive, reconnect-with-rejoin-every-channel, and demultiplexing.
+  liveness, reconnect-with-rejoin-every-channel, and demultiplexing.
 - **testkit** (`packages/testkit`): spawn-real-processes helpers + e2e suites.
 
 ## Runtime contracts
@@ -77,7 +77,13 @@ name, mark and actions — a composition of one IS the item it holds — and ren
 renames the TERMINAL. The sidebar is itself a plugin panel (`core.shell.sidebar`) and its
 sections are manifest contributions — each plugin declares
 `sections: [{ id, title, order }]` — so the stack's ORDER is workspace vocabulary rather
-than device memory. Folder membership and tree order are durable server state; sidebar WIDTH
+than device memory. Manifest order is the DEFAULT and stays it; a reader who rearranges the
+stack in arrange mode (F8) stores their own order as per-principal LAYOUT data — the `sections`
+field on the tile holding the sidebar panel, committed at release through
+`core.space.setLayout` — so an arrangement follows the principal across devices, a section the
+manifests stopped declaring leaves no gap, and a newly contributed section appears after the
+arrangement rather than displacing a chosen slot. Folder membership and tree order are durable
+server state; sidebar WIDTH
 is the workspace layout's root ratio (`core.space.setLayout`), collapse is presence
 (`vantage.sidebarCollapsed`, with a device-local mirror for first paint), and terminal-row
 visibility plus folder expansion stay device-local (`REGISTRY.md` §Device-local register). The
@@ -180,8 +186,9 @@ ceiling on what a plugin's ACTIONS may declare, which is the other side of the i
 entirely. `packages/server/src/auth.ts` remains the one tagged evaluator call surface
 (`REGISTRY.md` floor registry).
 
-**No protocol bump.** `PROTOCOL_VERSION` stays 18 and all three compatibility sets are untouched:
-no session, machine or instance frame changed shape. The grant vocabulary reaches clients solely
+**No protocol bump.** The permission waterfall left `PROTOCOL_VERSION` where it found it and all
+three compatibility sets untouched: no session, machine or instance frame changed shape. The
+grant vocabulary reaches clients solely
 through the live action roster and `GET /api/protocol`'s `actions` block, both discovered at
 runtime rather than negotiated, so a client that never learned the new doors behaves identically.
 
@@ -868,16 +875,17 @@ Grants, spotlights, and (from wave 2) event topics all name nodes this way.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v18).** One socket per tab, many rooms. Every frame is either
-connection-level or channel-level. v18 changed no session FRAME: what it added is an optional
-`origin` on the `Principal` that `init`, `attendance` and `presence` already carry (§Identity),
-so a v17 reader parses every v18 frame unchanged.
+**Frame grammar (v19).** One socket per tab, many rooms. Every frame is either
+connection-level or channel-level. v19 changed exactly one pair: the liveness frames now point
+the way every dialed pipe points — the server asks `ping`, the client answers `pong` (§Liveness
+below) — and the v18 spellings of that pair (client `ping`, server `pong`) are gone, which is
+why this is a bump rather than an addition.
 
 ```
-connection-level   client → server  {"type":"ping"}
+connection-level   client → server  {"type":"pong"}
                    client → server  {"type":"subscribe","topics":[…]}
                    client → server  {"type":"unsubscribe","topics":[…]}
-                   server → client  {"type":"pong"}
+                   server → client  {"type":"ping"}
                    server → client  {"type":"plugins","roster":[…]}
                    server → client  {"type":"event","topic":{…},"kind":"…","at":…,"actor":…,"payload":{…}}
 channel-level      both ways        {"ch":"<channelId>","type":"…", …}
@@ -982,6 +990,28 @@ update for the room. `selfCaps` mirrors the joining principal's granted caps so 
 gate UI affordances without a separate introspection round-trip. Presence is carried by
 `attendance`, whose entries are `PresenceState`; there is no separate `presences` field.
 
+**Liveness (v19, issue #55).** The session channel is a DIAL like the machine and instance
+channels, so it runs their one scheme rather than a second (invariant 14) off the same
+constants. After a socket's FIRST surviving join the server sends `ping` every
+`DIAL_PING_INTERVAL_MS` (30s) and closes 4008 `liveness timeout` when a ping is still
+unanswered as the next one fires, bounding detection at two intervals; the close runs the
+ordinary close path, so room membership, presence entries and terminal viewers are released
+exactly as a clean disconnect frees them. Before that first join nothing is pinged — the
+ten-second join deadline is already the whole answer for a socket carrying no room. The
+client never generates a heartbeat: it answers `pong`, and when it hears NOTHING for
+`DIAL_LIVENESS_TIMEOUT_MS` (75s — two intervals plus grace) it closes 4008 itself and heals
+through the reconnect-and-rejoin path it already owns, rather than waiting on an OS that may
+never notice. ANY inbound frame resets that deadline, room traffic and pings alike: what it
+watches is the TRANSPORT, not the pair.
+
+Which side asks is not a coin flip. A background tab's timers are throttled to roughly one
+firing per minute, so a reap keyed on pings the BROWSER generates would close tabs that are
+perfectly alive, while answering an inbound ping rides the message event and is throttled by
+nothing. A late watchdog only detects late, which is harmless; an eager reap is not. Before
+v19 the pair pointed the other way and neither side enforced a deadline, so a half-open
+socket — a slept laptop, a wifi handoff, a discarded tab — stayed registered for the life of
+the process and inflated every presence count that named it.
+
 **Refusal scope.** A refusal closes the whole SOCKET when it invalidates the credential or
 the framing itself, and ONE CHANNEL — a `channel_closed { code, reason }` frame, socket
 untouched — when it concerns one room:
@@ -992,6 +1022,7 @@ untouched — when it concerns one room:
 | 4403      | socket  | forbidden, or revoked (a revocation fences every live connection of that principal)                                     |
 | 4409      | socket  | protocol version mismatch                                                                                               |
 | 4002      | socket  | malformed frame of a KNOWN type, non-`join` first frame, duplicate `ch`, or the join deadline elapsing with no channels |
+| 4008      | socket  | liveness timeout: the server's `ping` still unanswered as the next fires, or the client's silence deadline elapsing     |
 | 4404      | channel | unknown container at join; a DELETED container closes every channel of its room with the same code                      |
 | 4429      | channel | `MAX_SESSION_CHANNELS_PER_CONNECTION` (64) already held                                                                 |
 | 1009      | channel | that room's `init`/`resync` state exceeding the 16 MiB transport payload ceiling                                        |
@@ -1015,7 +1046,7 @@ it (absent ≡ occupant) — the two members of `ChannelRole`. A portal's restin
 the portal IS a real
 channel into another container, and counting that as membership faked occupant avatars. A
 spectator receives `init`/`resync`, `doc_update`, attendance/presence/cursor fan-out and
-terminal snapshots and output, and may send `leave`, `resync_request`, `ping`,
+terminal snapshots and output, and may send `leave`, `resync_request`, `pong`,
 `terminal_attach` and `terminal_detach`. Every other client frame is refused with
 `error { code:"forbidden" }` — a preview never writes. Spectators appear in NO attendance and
 in NO `GET /api/attendance` entry; a room holding watchers alone still counts as resident
@@ -1060,9 +1091,12 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   note into a composition MOVES the element instead of referencing it across two docs). The
   fourth ref kind, `{ kind:"panel", panelId }`, belongs to WORKSPACE layouts only: a room
   document never carries one, and the placement algebra refuses `panel` items into any
-  container (`not_accepted`). `validateTileLayout` gates every read: root exists, child
+  container (`not_accepted`). A panel leaf may additionally carry `sections: string[]` — the
+  reader's own arrangement of the sections that panel hosts, which is why the field is legal on
+  a panel leaf and nowhere else. `validateTileLayout` gates every read: root exists, child
   references resolve, nothing is reachable twice, ratios stay parallel to children, refs
-  sit on leaves only, and a container never tiles itself; unreachable tiles are inert garbage
+  sit on leaves only, a `sections` arrangement sits on a panel leaf and names each section at
+  most once, and a container never tiles itself; unreachable tiles are inert garbage
   the next structural write prunes. Ratio drags are CRDT writes (`setTileRatios` through the
   SDK); every STRUCTURAL mutation goes through a door — the action `core.space.place` and the one
   leaf-removal route — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
@@ -1082,11 +1116,14 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 - `presence { payload }` where payload is a partial of
   `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done", vantage: {…} | undefined, spotlight: {…} | null }`.
 - **Vantage is presence** (axiom A2: per-principal view state is observable AND drivable).
-  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed? }` is written by the
+  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging? }` is
+  written by the
   CLIENT through the same throttled presence writer as every other field and dies with the
-  connection, so a peer can see which tool somebody holds, what they are editing, and whether
-  their sidebar is open. It is descriptive, never authoritative: nothing downstream branches on
-  whose vantage it renders.
+  connection, so a peer can see which tool somebody holds, what they are editing, whether
+  their sidebar is open, and whether they are in ARRANGE MODE (F8: the workspace's panes stop
+  taking pointer input and its sidebar sections become grabbable). It is descriptive, never
+  authoritative: nothing downstream branches on whose vantage it renders, and the arrangement
+  arrange mode produces commits through `core.space.setLayout` like any other layout write.
 - **`spotlight { uri, from }` is SERVER-written only.** The server strips `spotlight` from any
   client payload; the sole writer is the action `core.presence.focus { targetPrincipalId, uri }`
   (cap `scenes:write`), which requires that the target shares a joined room with the caller and
@@ -1125,6 +1162,15 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   gesture frames are stamped per-membership, so viewers retire a closed tab's cursor from
   `connIds` — pruning by principal alone strands ghost cursors while sibling tabs remain —
   and disambiguate sibling-tab cursor labels ("name (2)") from the same shared order.
+- **A cursor is retracted, not just stopped.** A pointer leaving the rendering surface, or a
+  tab going hidden, publishes `presence { cursor: null }` — the payload's existing "null
+  clears" form, on the same ordered channel as the motion it ends, never a frame type of its
+  own. Viewers drop exactly that `(principalId, connId)` cursor and leave the sender's sibling
+  tabs alone. The backstop for a goodbye that never got sent (a socket cut mid-motion) is
+  `CURSOR_TTL_MS` (30s) since the last frame. It sits an order of magnitude above
+  `GESTURE_TTL_MS` because the silences differ: a gesture is motion by definition, while a
+  cursor emits only while it MOVES, so silence is the ordinary state of a resting pointer and
+  the bound must outlast a reading pause rather than a send interval.
 
 ### Terminals over the session channel
 
@@ -1243,21 +1289,35 @@ disconnected; absence is equivalent to `null`. Such exited terminals are retaine
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18}` (protocol/version.ts), NOT strict equality:
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19}` (protocol/version.ts), NOT strict equality:
 agents are long-lived and survive server deploys, so every compatible agent version stays
 accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
 new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
 restart — which v16 did: `terminal_event`, `TerminalInfo` and `MANIFOLD_CONTAINER` renamed
-the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 and
-v18 are both the other case and ADDED: the event plane is session-only and cross-instance
+the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17, v18
+and v19 are all the other case and ADDED: the event plane is session-only, cross-instance
 sharing is a channel of its own (`/ws/instance`, its own `INSTANCE_PROTOCOL_COMPAT_VERSIONS`
-set), so `AgentMessage` and `ServerToAgentMessage` are byte-identical across both bumps —
-an agent never sees a `Principal` and therefore never sees `origin` — and a v16 agent keeps
-its terminals across either deploy. Every
+set), and v19 reoriented a SESSION frame pair — so `AgentMessage` and `ServerToAgentMessage`
+are byte-identical across all three bumps (an agent never sees a `Principal`, and therefore
+never sees `origin`, nor any session frame) and a v16 agent keeps its terminals across any of
+those deploys. Every
 rejection path emits a structured server log (`machine_version_rejected`,
 `machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
+
+The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
+mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
+whose `protocolVersion` falls outside `MACHINE_PROTOCOL_COMPAT_VERSIONS` is closed 4409 on every
+dial and re-dials with jittered backoff indefinitely rather than exiting: the refusal is permanent,
+and from the spoke's side it is silent. systemd keeps reporting the unit `active (running)`, so
+unit state is NOT evidence the agent is on the canvas — the evidence is the agent journal's
+`protocol_version_rejected` (logged at error, with the close code, on every rejected dial) and the
+server's `machine_version_rejected`, which carries both versions. The guard is not in the handshake,
+it is in release
+discipline: `bun run release` publishes the agent binary and the fleet picks it up, so publishing a
+release is a fleet action (AGENTS.md invariant 10) and the hub ships at or ahead of any release
+whose `PROTOCOL_VERSION` exceeds the deployed one.
 
 Server→agent: `create { terminalId, cols, rows, cwd?, env }`, `input { terminalId, data }`,
 `resize`, `kill`, `snapshot_request { terminalId }`, `ping`.
@@ -1266,11 +1326,11 @@ Agent→server: `created { terminalId }` | `create_error { terminalId, message }
 `snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`.
 
 Liveness, server half: after `welcome` the server sends `ping` every
-`MACHINE_PING_INTERVAL_MS` (30s); a ping still unanswered when the next fires closes the
+`DIAL_PING_INTERVAL_MS` (30s); a ping still unanswered when the next fires closes the
 socket (4008 `liveness timeout`), so a frozen or partitioned agent (laptop sleep, dropped
 network) is marked offline within two intervals — TCP alone would keep it "online"
 indefinitely. Agent half: a healthy connection carries those pings even when idle, so the
-agent closes and re-dials after `AGENT_LIVENESS_TIMEOUT_MS` (75s) of total silence —
+agent closes and re-dials after `DIAL_LIVENESS_TIMEOUT_MS` (75s) of total silence —
 catching phantom transports (dead TCP with no RST, e.g. a proxy swallowing the close
 mid-reload). The agent also logs every disconnect's close code/reason.
 
@@ -1316,7 +1376,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18}` — its own wire, its own set, the same
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19}` — its own wire, its own set, the same
 invariant-10 discipline the machine channel follows.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
