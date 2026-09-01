@@ -70,9 +70,7 @@ export function DoorForms({
             <header className="door-form__head">
               <strong>{summary.title}</strong> <code>{summary.name}</code>
             </header>
-            <Suspense
-              fallback={<p className="door-form__loading">loading the form engine…</p>}
-            >
+            <Suspense fallback={<p className="door-form__loading">loading the form engine…</p>}>
               <LazyDoorForm
                 summary={summary}
                 dispatch={(args) => host.client.action(summary.name, args)}

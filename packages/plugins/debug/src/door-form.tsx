@@ -53,7 +53,9 @@ export function DoorForm({ summary, dispatch }: DoorFormProps): ReactElement {
       .then(setOutcome)
       .catch((reason: unknown) => {
         /* A transport failure is not a denial: denials arrive as data inside a 200. */
-        setFailure(reason instanceof Error ? reason.message : "the dispatch did not reach the server");
+        setFailure(
+          reason instanceof Error ? reason.message : "the dispatch did not reach the server",
+        );
       })
       .finally(() => setBusy(false));
   };

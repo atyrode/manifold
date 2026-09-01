@@ -56,12 +56,7 @@ export {
  * an adopter tints them from its own family's sheet.
  */
 export { Chip, type ChipProps } from "./chip.tsx";
-export {
-  KeyValueList,
-  KeyValueRow,
-  type KeyValueListProps,
-  type KeyValueRowProps,
-} from "./kv.tsx";
+export { KeyValueList, KeyValueRow, type KeyValueListProps, type KeyValueRowProps } from "./kv.tsx";
 /**
  * THE LAYOUT ALGEBRA — six intrinsic boxes (Stack, Cluster, Sidebar, Switcher, Cover,
  * Frame) that answer "how do things sit together?" once, so no plugin body re-invents

@@ -27,7 +27,7 @@ import { closeCommands, toggleCommands, useCommandsOpen } from "./store.ts";
  * `cmdk`: filtering, scoring, arrow-key traversal and the `role="option"` wiring are its job,
  * because a search list is a small interaction system with many failure modes and re-typing
  * one is how a product grows a second, worse one
- * (`docs/decisions/2026-09-01-cmdk-command-surface.md`).
+ * (`docs/decisions/2026-09-01-cmdk-command-menu.md`).
  *
  * ONE VERB PER GROUP, and each is the only thing that group's rows can honestly do:
  *
@@ -69,7 +69,7 @@ const VERBS: Record<CommandKind, string> = {
  * IT COLLIDES WITH A BROWSER DEFAULT, and the honest version of that sentence matters. Chrome,
  * Edge and Firefox all map Ctrl/Cmd+K to "focus the address bar to search" — a real default,
  * not a free key. It is also a CONTENT-PREVENTABLE one: unlike Ctrl+T, Ctrl+N, Ctrl+W or Cmd+Q,
- * the browser lets a page take it, which is why every command surface on the web is on this
+ * the browser lets a page take it, which is why every command menu on the web is on this
  * chord. The engine's dispatcher calls `preventDefault()` on a matched row, so taking it is
  * deliberate rather than incidental — and a reader whose browser, extension or muscle memory
  * disagrees rebinds this row like any other, from the table that lists it.

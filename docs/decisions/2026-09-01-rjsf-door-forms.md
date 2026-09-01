@@ -21,15 +21,15 @@ published action input schema: bounded strings, optional boolean, enum, and zod 
 `$schema: …/draft/2020-12/schema` header; bundle = `bun build --minify`, react external,
 gzipped):
 
-|                                | rjsf 6.8.0                                              | JSON Forms 3.8.0                                                             |
-| ------------------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| License                        | Apache-2.0                                              | MIT                                                                          |
-| Packages needed                | `@rjsf/core`, `@rjsf/utils`, `@rjsf/validator-ajv8`     | `@jsonforms/core`, `@jsonforms/react`, `@jsonforms/vanilla-renderers`        |
-| Draft 2020-12 (what zod emits) | one-liner: `customizeValidator({ AjvClass: Ajv2020 })`  | default validator THROWS on the published `$schema`; needs a hand-built ajv  |
-| Renders the real schema        | yes — labels, required marks, typed inputs, enum select | yes, once given the custom ajv; shows validation errors before first touch   |
-| Commit point                   | a real `<form>` with submit; `onSubmit` hands over validated data | no submit concept — continuous `onChange`, commit wiring is ours to hand-roll |
-| Bundle (min / gzip)            | 416 KB / 138 KB                                         | 268 KB / 86 KB                                                               |
-| Call-site vocabulary           | `schema`, `validator`, `onSubmit`                       | `renderers`, `cells` — `renderer` is canon for a discipline renderer (S11's law: one word per concept), so every call site would re-use the word for a foreign concept |
+|                                | rjsf 6.8.0                                                        | JSON Forms 3.8.0                                                                                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| License                        | Apache-2.0                                                        | MIT                                                                                                                                                                    |
+| Packages needed                | `@rjsf/core`, `@rjsf/utils`, `@rjsf/validator-ajv8`               | `@jsonforms/core`, `@jsonforms/react`, `@jsonforms/vanilla-renderers`                                                                                                  |
+| Draft 2020-12 (what zod emits) | one-liner: `customizeValidator({ AjvClass: Ajv2020 })`            | default validator THROWS on the published `$schema`; needs a hand-built ajv                                                                                            |
+| Renders the real schema        | yes — labels, required marks, typed inputs, enum select           | yes, once given the custom ajv; shows validation errors before first touch                                                                                             |
+| Commit point                   | a real `<form>` with submit; `onSubmit` hands over validated data | no submit concept — continuous `onChange`, commit wiring is ours to hand-roll                                                                                          |
+| Bundle (min / gzip)            | 416 KB / 138 KB                                                   | 268 KB / 86 KB                                                                                                                                                         |
+| Call-site vocabulary           | `schema`, `validator`, `onSubmit`                                 | `renderers`, `cells` — `renderer` is canon for a discipline renderer (S11's law: one word per concept), so every call site would re-use the word for a foreign concept |
 
 ## Decision
 
@@ -42,6 +42,7 @@ S2 already lets a plugin carry its own npm dependencies, and the engine's line b
 bundle pays nothing until an inspector actually pins a node.
 
 Three verdicts carried the day, in order:
+
 1. **The published dialect is not optional.** zod 4 stamps every action schema
    draft 2020-12. rjsf supports that dialect as a documented configuration of its own
    validator package; JSON Forms' default path rejects our schemas outright, and the

@@ -19,7 +19,7 @@ import { type PluginManifest } from "@manifold/protocol";
  * this one cannot have one, because it declares nothing.
  *
  * WHAT IT CONTRIBUTES is one binding and one workspace overlay, and no seat in the rail. A
- * command surface is reached by its key from wherever the viewer is standing — including the
+ * command menu is reached by its key from wherever the viewer is standing — including the
  * workspace root, where no container is mounted — which is what the workspace overlay channel
  * is for. A rail row would be a second door onto one surface (invariant 14) and would need a
  * mark the engine's closed control vocabulary has no neutral verb for; the key table lists
@@ -33,7 +33,7 @@ import { type PluginManifest } from "@manifold/protocol";
  * answer to "how is this door called", sitting beside the published contract.
  *
  * `cmdk` is the list behind it, pinned and boring
- * (`docs/decisions/2026-09-01-cmdk-command-surface.md`).
+ * (`docs/decisions/2026-09-01-cmdk-command-menu.md`).
  */
 export const commandsManifest: PluginManifest = {
   id: "core.commands",

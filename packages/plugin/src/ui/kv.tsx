@@ -24,7 +24,12 @@ export interface KeyValueRowProps extends HTMLAttributes<HTMLDivElement> {
   readonly label: ReactNode;
 }
 
-export function KeyValueRow({ label, className, children, ...rest }: KeyValueRowProps): ReactElement {
+export function KeyValueRow({
+  label,
+  className,
+  children,
+  ...rest
+}: KeyValueRowProps): ReactElement {
   return (
     <div {...rest} className={cx("kv__row", className)}>
       <dt className="kv__label">{label}</dt>

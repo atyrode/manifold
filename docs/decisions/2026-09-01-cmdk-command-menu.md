@@ -1,11 +1,11 @@
-# Use cmdk for the command surface's list
+# Use cmdk for the command menu's list
 
 **Date:** 2026-09-01  
 **Status:** Accepted
 
 ## Context
 
-`core.commands` (issue #129) puts one searchable surface over three registries the composition
+`core.commands` (issue #129) puts one searchable menu over three registries the composition
 already publishes: every composed action, every composed binding, every container in the index.
 The projection — which rows exist, which are runnable, what a refusal says — is ours and is a
 pure, tested module (`packages/plugins/commands/src/commands.ts`). What is left over is the
@@ -24,7 +24,7 @@ badly, once, in one plugin.
   `@radix-ui/*` (`react-id`, `react-primitive`, `react-compose-refs`, `react-dialog`); three of
   the four were already resolved in this tree by the 2026-08-31 Radix record. React 19 is in its
   peer range. It is headless: it ships no stylesheet and marks its parts with data attributes
-  (`[cmdk-item]`, `[cmdk-group-heading]`), which is what let the surface be skinned entirely from
+  (`[cmdk-item]`, `[cmdk-group-heading]`), which is what let the menu be skinned entirely from
   this repo's own palette. <https://github.com/pacocoursey/cmdk>
 - **kbar 1.0.0** — MIT, the named fallback on #129, and rejected on a structural reason rather
   than a size one. kbar is not a list, it is a COMMAND FRAMEWORK: it owns an action registry
@@ -49,7 +49,7 @@ Pin exactly one package in `@manifold-plugin/commands`:
 - `cmdk` **1.1.1** — the list behind `packages/plugins/commands/src/web.tsx`.
 
 Nothing else in the tree may import it. No other plugin gets a command list of its own: there
-is one surface, because there is one composition.
+is one menu, because there is one composition.
 
 ## The supersedeability contract
 
