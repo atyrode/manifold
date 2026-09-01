@@ -168,7 +168,7 @@ size stops being a rounding error — which is why the roadmap schedules the re-
 twice, which would be evidence that this repo cannot carry a bundled Chromium and should stop
 pretending otherwise.
 
-### 1.5 Security posture, as data (Q5: **yes** — the preload surface is the manifests, nothing ambient)
+### 1.5 Security posture, as data (Q5: **yes** — the preload exposes the manifests, nothing ambient)
 
 | Setting                     | Value                    | Why it is not a default                                                                                                      |
 | --------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
