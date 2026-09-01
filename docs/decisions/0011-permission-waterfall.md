@@ -235,9 +235,15 @@ derivation, recorded here rather than assumed. `core.access.grant`, `core.access
 
 **Invariant 10 verdict: NO protocol bump.** `PROTOCOL_VERSION` stays 18 and all three
 compatibility sets are untouched. No session, machine or instance frame changed shape; the grant
-vocabulary reaches clients solely through the live action roster and `GET /api/protocol`'s
-`actions` block, both discovered at runtime rather than negotiated. A client that never learned
-the new doors behaves byte-identically, which is the test the invariant actually asks.
+vocabulary reaches clients through the live action roster and `GET /api/protocol`, both discovered
+at runtime rather than negotiated. A client that never learned the new doors behaves
+byte-identically, which is the test the invariant actually asks.
+
+Amended (2026-09-01, #115): the doors' shapes shipped published only per-door, through each
+roster row's `ActionSummary`. The MODEL those three doors share — the two closed pairs, the row,
+the node's scheme — now has a section of its own, `grantContract`, from `grantVocabulary()` in
+`packages/protocol/src/grants.ts`, beside the placement, plugin and event vocabularies. Still no
+bump: a published section is a document growing a key, not a frame changing shape.
 
 **The seam held, and it is checkable rather than asserted.** `AuthContext.allows` kept its
 signature and every one of its 27 call sites; `http.ts`, `session-ws.ts`, `event-hub.ts` and

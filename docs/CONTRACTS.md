@@ -188,9 +188,17 @@ entirely. `packages/server/src/auth.ts` remains the one tagged evaluator call su
 
 **No protocol bump.** The permission waterfall left `PROTOCOL_VERSION` where it found it and all
 three compatibility sets untouched: no session, machine or instance frame changed shape. The
-grant vocabulary reaches clients solely
-through the live action roster and `GET /api/protocol`'s `actions` block, both discovered at
-runtime rather than negotiated, so a client that never learned the new doors behaves identically.
+grant vocabulary reaches clients through the live action roster, `GET /api/protocol`'s `actions`
+block and its `grantContract` block, all three discovered at runtime rather than negotiated, so a
+client that never learned the new doors behaves identically.
+
+**`grantContract` (`GET /api/protocol`).** The authority model as data, beside the wire schemas:
+`effects` and `reaches` (the two closed pairs), `nodeScheme` (`manifold://`, which the generated
+string schema cannot carry — the node's real constraint is the containment walk), `maxNodeLength`,
+`maxIdLength`, and JSON Schemas for the row, the principal, the node and each of the three doors'
+arguments and answers (`principal`, `node`, `grant`, `createRequest`, `revokeRequest`,
+`listRequest`, `listResult`). WHICH rows a workspace holds is not published here — that is
+`core.access.listGrants`, and a second copy of a live table is a second thing to keep true.
 
 **Principal origin (ADR 0014, shipped in v18).** `Principal.origin` says WHICH INSTANCE a
 principal belongs to, as one normalized absolute `http(s)` base URL
@@ -215,7 +223,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | Method+Path                              | Auth cap              | Req → Res                                                                                                                                                 |
 | ---------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET /healthz                             | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                 |
-| GET /api/protocol                        | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                    |
+| GET /api/protocol                        | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                   |
 | GET /api/attendance                      | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                 |
 | DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                 |
 | POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door            |
@@ -825,6 +833,13 @@ out", and a `grants:manage` would be a second answer to one question.
 | `core.access.grant`       | `*`  | workspace | `{ principal, node, caps, effect, reach }` → `Grant` (the whole row, `id` included) |
 | `core.access.revokeGrant` | `*`  | workspace | `{ grantId }` → `{ revoked: 0 \| 1 }` — **`cleanup: true`**                         |
 | `core.access.listGrants`  | `*`  | workspace | `{ node?, principalId? }` → `{ grants: Grant[] }`                                   |
+
+Every shape in that table is published as JSON Schema under `grantContract` at
+`GET /api/protocol` (`grantVocabulary()`, `packages/protocol/src/grants.ts`), so an agent learns
+the three doors' arguments — and that `effect` and `reach` are closed pairs with no default —
+without reading this file. `grantId` is bounded at the ROW's id width (160), not 128: a revoke
+argument is an id `GrantSchema` produced, and migration 13's derived
+`grant-token-<tokenId>` ids overflow the narrower bound.
 
 All three are ROOT-ONLY, which is stricter than `mint`, and the reason is `deny`. Minting
 attenuates monotonically — a minter hands out a subset of what it holds — but a deny row takes
