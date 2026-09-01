@@ -120,6 +120,9 @@ dated technology verdicts with evidence.
    fresh node objects at the paint boundary (CONTRACTS.md §Testability), and reconcile them
    into live node state so equivalent nodes keep their identity. User-visible interaction
    boundaries get tests AT that boundary: wire-level green is not evidence the UI layer works.
+   And gate green is not evidence a surface FEELS finished (operator-established on #124, where
+   a gate-green palette shipped visually broken): a UI-touching change is verified by
+   vision-model inspection of real screenshots from a real browser before it ships.
 10. **Protocol version discipline**: `PROTOCOL_VERSION` bumps ship as dedicated
     `protocol:` commits — never buried inside feature commits. Agents are long-lived:
     a bump that leaves the agent wire identical — or extends it with strictly
