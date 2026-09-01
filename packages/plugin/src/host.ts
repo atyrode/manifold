@@ -21,6 +21,7 @@ import type {
 import type { ScenePatch, Y } from "@manifold/scene";
 import type { AssemblyPanel, AssemblySection } from "./assemble.ts";
 import type { ComposedBinding } from "./bindings.ts";
+import type { ComposedSetting } from "./settings.ts";
 
 /**
  * What `place()` answers: the placement it executed, or the declared RULE that refused it.
@@ -275,12 +276,43 @@ export interface AssemblyFacet {
    */
   readonly bindingOverrides: Readonly<Record<string, string>>;
   /**
-   * RE-READ the stored overrides and recompose the table. The one verb on this facet, and it
-   * moves nothing: a door wrote a rebinding, the engine owns the read behind it, and this is
-   * how the writer says "your copy is stale" without either side importing the other. Neutral
-   * by construction — the engine learns that overrides changed, never who changed them.
+   * RE-READ the stored overrides and recompose the table. It moves nothing: a door wrote a
+   * rebinding, the engine owns the read behind it, and this is how the writer says "your copy
+   * is stale" without either side importing the other. Neutral by construction — the engine
+   * learns that overrides changed, never who changed them.
    */
   refreshBindings(): void;
+  /**
+   * THE COMPOSED SETTINGS TABLE, sorted by ref, carrying EFFECTIVE values — every declared
+   * preference in the roster with this principal's delta already applied, and the shipped
+   * default beside it (`ComposedSetting.declared`).
+   *
+   * A DISABLED plugin's rows are present, unlike its key bindings: a preference answers nobody
+   * while its plugin is off, so nothing can misfire, and the manager lists a disabled row's
+   * pane exactly while somebody is deciding whether to switch it back on.
+   *
+   * This is what makes the manager's pane GENERIC: it renders a control per row of this table
+   * and knows nothing about what any of them mean, so a stranger's plugin gets the pane
+   * `core.canvas` gets, by declaring.
+   */
+  readonly settings: readonly ComposedSetting[];
+  /**
+   * THIS PRINCIPAL'S SETTING VALUES, as setting ref → value: the delta the table above was
+   * composed with, published so chrome can tell "you chose this" from "this is what it ships",
+   * and see a stored value the composition IGNORED because no declaration answers it any more.
+   *
+   * A read, like everything else here. Writing one is `engine.plugins.setSetting`, and the map
+   * is stored per principal on the server, so what a reader sees here is the same delta every
+   * device of theirs composes with.
+   */
+  readonly settingValues: Readonly<Record<string, boolean>>;
+  /**
+   * RE-READ the stored values and recompose the table — `refreshBindings` for the other
+   * per-principal delta, and the same seam discipline: a door wrote a value, the engine owns
+   * the read behind it, and a section that vanishes or returns does so because the composition
+   * moved rather than because a component decided to hide itself.
+   */
+  refreshSettings(): void;
 }
 
 /**
@@ -340,6 +372,27 @@ export interface HostServices {
    */
   readonly containerId: string | null;
   navigate(uri: string): void;
+  /**
+   * THE ADDRESS THIS ROUTE WAS ASKED TO OPEN, when it carries one — null the rest of the time,
+   * which is almost always.
+   *
+   * `navigate` is the outbound half of the deep-link mechanism and this is the inbound half.
+   * Some addresses name a place a browser path already reaches, and the shell simply goes
+   * there; others name something a SURFACE inside the workspace shows — a plugin, shown by
+   * whichever manager is composed — and for those the shell arrives at the workspace and
+   * publishes the reference for whoever answers it.
+   *
+   * PARSED, not a string, so nobody re-implements the grammar; NEUTRAL, because it is a
+   * reference and references name everything the same way (invariant 13); and CONSUMED ONCE —
+   * the shell strips it from the address bar as it publishes it, so a reader who closes what
+   * opened does not have it reopen on the next render, and following the same link again is a
+   * fresh request rather than a no-op.
+   *
+   * It is deliberately NOT a modal bus. Nothing here opens anything: an address is published,
+   * and a surface that recognises the form it names answers it. A form nobody answers goes
+   * unanswered, exactly like a panel nobody registered.
+   */
+  readonly requestedRef: ManifoldRef | null;
   readonly viewport: ViewportHandle | null;
   readonly authoring: AuthoringHandle | null;
   /** The workspace's own tree, read-only — see {@link TileGeometryHandle}. */

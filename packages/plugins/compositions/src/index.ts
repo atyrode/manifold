@@ -45,8 +45,21 @@ export const compositionsManifest: PluginManifest = {
      * hand-written pair used to sit.
      */
     sections: [
-      { id: "new-composition", title: "New composition", order: 3, presentation: "plain" },
+      {
+        id: "new-composition",
+        title: "New composition",
+        order: 3,
+        presentation: "plain",
+        setting: "new-composition",
+      },
     ],
+    /**
+     * AND ONE PREFERENCE OVER IT (#133), the exact counterpart of `core.canvas`'s: the offer
+     * is gated on a declared boolean, dropped from the rail per principal when it reads
+     * false, and shipped `true`. The discipline, its renderer and every composition in the
+     * workspace are untouched by it — this is a row's visibility, not a disable.
+     */
+    settings: [{ id: "new-composition", title: "New composition", kind: "boolean", default: true }],
     elements: [],
     /**
      * THE `composition` DISCIPLINE, declared (#110, building the ruling ratified on #86),

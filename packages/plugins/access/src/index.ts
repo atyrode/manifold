@@ -123,7 +123,15 @@ export const accessManifest: PluginManifest = {
       The word carries no second meaning here: a session in this product is a client
       connection, and a live credential is precisely what makes one possible.
     */
-    sections: [{ id: "sessions", title: "Sessions", order: 30 }],
+    sections: [{ id: "sessions", title: "Sessions", order: 30, setting: "sessions" }],
+    /*
+      ONE PREFERENCE OVER THE ROW (#133), and this is the seat where the difference from a
+      disable matters most. `essential: true` refuses to let anyone switch this plugin off,
+      because a workspace nobody can hold a credential in is broken; a preference lets ONE
+      reader put ONE row away in their own rail while every door, every grant and every other
+      principal's view is untouched. Shipped `true`.
+     */
+    settings: [{ id: "sessions", title: "Sessions", kind: "boolean", default: true }],
     elements: [],
     tools: [],
     /*

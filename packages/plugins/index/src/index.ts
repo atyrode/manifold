@@ -60,8 +60,31 @@ export const indexManifest: PluginManifest = {
       first row in the order with a body (`railRows`).
      */
     sections: [
-      { id: "new-folder", title: "New folder", order: 4, presentation: "plain" },
-      { id: "index", title: "Index", order: 10 },
+      {
+        id: "new-folder",
+        title: "New folder",
+        order: 4,
+        presentation: "plain",
+        setting: "new-folder",
+      },
+      { id: "index", title: "Index", order: 10, setting: "index" },
+    ],
+    /*
+      TWO PREFERENCES, one per row (#133), because they are two different sentences: "I do not
+      make folders from the rail" and "I do not keep the tree open in the rail" are choices a
+      reader makes independently, and one toggle over both would force the second on whoever
+      wanted the first.
+
+      `essential: true` and these are ORTHOGONAL, deliberately. Essential says the workspace
+      cannot compose without this plugin — the index is where every container is found, and
+      turning it off would take the workspace's own contents away from everyone. A preference
+      says one reader would rather not have a row in their rail, and takes nothing from
+      anybody else: the index still answers, still receives, and every other surface that
+      reads it is untouched. Both ship `true`.
+     */
+    settings: [
+      { id: "new-folder", title: "New folder", kind: "boolean", default: true },
+      { id: "index", title: "Index", kind: "boolean", default: true },
     ],
     elements: [],
     tools: [],

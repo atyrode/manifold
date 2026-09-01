@@ -48,11 +48,19 @@ function resolveTarget(rest: string): Target {
       // Every terminal lives in a composition of its own — `containerId`, solo from birth — and
       // the URI names only the terminal, so the index is what answers "where is it".
       return { state: "terminal", terminalId: ref.terminalId };
-    case "principal":
     case "plugin":
+      /*
+        A PLUGIN IS A PLACE, and the shell's own navigation door knows which one: a plugin is
+        shown by a surface INSIDE the workspace — whichever composed manager answers that
+        form — rather than by a route of its own, so this hands the address straight back to
+        `host.navigate` exactly as a container does and stops caring what happens next
+        (`navigateUri`, issue #133). Nothing here names a manager, or knows that one exists.
+       */
+      return { state: "open", uri: decoded, center: false };
+    case "principal":
     case "action":
       // Addressable, but not places: there is nowhere to send a browser for a capability
-      // holder, a plugin or a verb. Naming the form is more useful than a blank screen.
+      // holder or a verb. Naming the form is more useful than a blank screen.
       return {
         state: "failed",
         reason: `${decoded} names a ${ref.kind}, which is not a place to open.`,

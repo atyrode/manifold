@@ -24,6 +24,7 @@ export {
   ENGINE_PURGED_EVENT,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  ENGINE_SET_SETTING_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
 } from "./builtin.ts";
@@ -43,12 +44,21 @@ export {
   type AssemblyEnv,
   type AssemblyPanel,
   type AssemblySection,
+  type AssemblySetting,
   type AssemblyTool,
   type Claims,
   type PluginAttribution,
   type PluginDef,
   type PluginStoredData,
 } from "./assemble.ts";
+export {
+  composeSettings,
+  settingRefId,
+  settingValue,
+  settingWriteRefusal,
+  visibleSections,
+  type ComposedSetting,
+} from "./settings.ts";
 export {
   FLOOR_ELEMENT_PAYLOADS,
   elementPayloadGuard,

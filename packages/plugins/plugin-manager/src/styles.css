@@ -405,3 +405,95 @@
   padding-left: 0.6rem;
   color: #868e96;
 }
+
+/*
+  THE SETTINGS PANE (#133). One gear per row opens it; the pane is generic — a control per
+  DECLARED setting, or one sentence naming the absence — so nothing here is keyed to any
+  particular plugin, and a stranger's declarations paint exactly as core's do.
+
+  It sits INSIDE the row, under the dependency block, so it reads as part of the row it belongs
+  to rather than as a second list beside it.
+*/
+.plugin-manager-settings-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0.2rem 0.32rem;
+  color: #868e96;
+  background: none;
+  cursor: pointer;
+}
+
+.plugin-manager-settings-open:hover,
+.plugin-manager-settings-open.is-open {
+  border-color: #495057;
+  color: #dee2e6;
+}
+
+.plugin-manager-settings,
+.plugin-manager-settings-empty {
+  margin: 0.3rem 0 0;
+  border-top: 1px solid #2b3036;
+  padding-top: 0.4rem;
+}
+
+.plugin-manager-settings-empty {
+  color: #868e96;
+  font-size: 0.78rem;
+}
+
+.plugin-manager-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.plugin-manager-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plugin-manager-setting-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.plugin-manager-setting-label strong {
+  color: #dee2e6;
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+.plugin-manager-setting-moved {
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.plugin-manager-setting-toggle {
+  flex: none;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0.12rem 0.5rem;
+  min-width: 2.6rem;
+  color: #adb5bd;
+  background: #1c2126;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.plugin-manager-setting-toggle[aria-checked="true"] {
+  border-color: #2f6f4f;
+  color: #b2f2bb;
+  background: #1b2b22;
+}
+
+.plugin-manager-setting-toggle:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}

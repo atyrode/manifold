@@ -2,7 +2,7 @@ import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { HEX_COLOR } from "./elements.ts";
 import { ContainerDisciplineSchema, TileLayoutSchema } from "./layout.ts";
-import { BindingOverridesSchema, PluginRosterSchema } from "./plugin.ts";
+import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 
@@ -419,3 +419,18 @@ export type LayoutResponse = z.infer<typeof LayoutResponseSchema>;
  */
 export const BindingsResponseSchema = z.strictObject({ overrides: BindingOverridesSchema });
 export type BindingsResponse = z.infer<typeof BindingsResponseSchema>;
+
+/**
+ * `GET /api/settings` — the CALLER's plugin setting values. Self-scoped exactly as the layout
+ * and binding doors are: a preference is per principal, so the door takes no id, and
+ * `engine.plugins.setSetting` writes only the caller's own.
+ *
+ * It is a FLOOR read for the same reason `/api/bindings` is one: the engine composes the
+ * sidebar — a row whose setting reads false is dropped before any plugin has drawn anything —
+ * so it needs the delta at boot, and a floor route that fetched it by dispatching some
+ * plugin's read door would make the browser engine name a favourite plugin (AXIOMS.md
+ * §Foundation law, neutrality). A failed read composes the DECLARED defaults, which is the
+ * honest degradation: every row answers what its plugin shipped.
+ */
+export const SettingsResponseSchema = z.strictObject({ values: PluginSettingValuesSchema });
+export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;

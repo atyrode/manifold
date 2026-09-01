@@ -703,6 +703,24 @@ their work invisible without deleting it, which is the one outcome worse than a 
   written before the field existed composes identically. The word is `cluster` and not `group`:
   `group` is the placement algebra's capability set, and one concept per word is the law
   (`REGISTRY.md` §Lexicon).
+  A row may also declare **`setting`**, naming one of your OWN
+  `contributes.settings` ids: while that value reads false for the reader, the row is DROPPED
+  from their sidebar. Assembly refuses a `setting` your manifest does not contribute, naming
+  both, and a row may never name another plugin's — a preference of theirs erasing a row of
+  yours is exactly the shadowing D5 refuses one level up. Absent ≡ unconditional.
+- **`settings`** are the preferences you declare and the reader decides:
+  `{ id, title, kind, default }`, `kind` a closed engine vocabulary whose one member today is
+  `boolean`. The VALUE is per principal and server-saved, so it follows a reader across every
+  device they sign in from, and the manager renders a GENERIC pane from your declarations — one
+  control per row, no component to register, and a named "declares no settings" for a plugin
+  with none. Write one through `engine.plugins.setSetting { plugin, setting, value }`
+  (`value: null` retracts, so the row reads your `default` again) and then call
+  `host.assembly.refreshSettings()`; READ them off `host.assembly.settings`, or with
+  `settingValue(host.assembly.settings, myId, "thing") !== false` when your row gates part of
+  ITSELF rather than the whole row — the engine drops rows, and what is inside one is yours.
+  Never spell your own default at the read: it lives in the manifest, and a second copy goes
+  stale the moment you change the first. Absent ≡ you declare no preferences, and your manifest
+  serializes exactly as it did before the field existed.
 - **`tools`** are buttons in a toolbar, and **`toolbar`** says WHICH one: `canvas` is the
   freeform discipline's tool strip, `arrange` is `core.arrange`'s floating F8 editor over the
   workspace itself. The vocabulary is the engine's and closed (`toolbars` in

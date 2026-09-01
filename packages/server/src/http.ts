@@ -11,6 +11,7 @@ import {
   PROTOCOL_VERSION,
   PluginsResponseSchema,
   ResolveResponseSchema,
+  SettingsResponseSchema,
   buildProtocolJsonSchema,
   formatManifoldUri,
   parseManifoldUri,
@@ -321,6 +322,24 @@ export class HttpApp {
       return jsonResponse(
         BindingsResponseSchema.parse({
           overrides: this.store.bindingOverrides(context.principal.id),
+        }),
+      );
+    }
+
+    if (request.method === "GET" && pathname === "/api/settings") {
+      /*
+        The CALLER's plugin setting values, self-scoped exactly as the two doors above are. A
+        FLOOR read of state a door writes, and the engine needs it earliest of the three: a
+        sidebar row whose setting reads false is dropped at composition, so the values are input
+        to the first paint rather than something a plugin asks for later.
+
+        `engine.plugins.setSetting` remains the only way one is WRITTEN.
+      */
+      const context = this.authenticate(request);
+      this.requireCap(context, "containers:read");
+      return jsonResponse(
+        SettingsResponseSchema.parse({
+          values: this.store.pluginSettings(context.principal.id),
         }),
       );
     }

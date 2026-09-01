@@ -18,6 +18,7 @@ import {
   ContainerSchema,
   GrantSchema,
   IndexEntrySchema,
+  PluginSettingValuesSchema,
   PrincipalSchema,
   TileLayoutSchema,
   validateTileLayout,
@@ -26,6 +27,7 @@ import {
   type Container,
   type Grant,
   type IndexEntry,
+  type PluginSettingValues,
   type Principal,
   type TileLayout,
   type TraceOutcome,
@@ -881,6 +883,40 @@ export class ServerStore {
       Object.entries(parsed).sort(([left], [right]) => (left < right ? -1 : 1)),
     );
     this.setMeta(`bindings:${principalId}`, JSON.stringify(sorted));
+  }
+
+  /**
+   * One principal's PLUGIN SETTING VALUES — the preferences they have expressed, as setting ref
+   * → value. Read exactly as `bindingOverrides` is, degradation included: an unreadable or
+   * schema-invalid stored value answers the empty map, because a principal whose stored deltas
+   * went bad must get their plugins' shipped defaults back rather than a sidebar that refuses
+   * to compose.
+   *
+   * ONE meta row per principal, for the reason the rebindings are one row: a value is a delta
+   * over declarations the STORE cannot see — the manifest vocabulary is the assembly's — so
+   * this keeps the map opaque and the meaning is applied at the one composition seam
+   * (`composeSettings`).
+   */
+  pluginSettings(principalId: string): PluginSettingValues {
+    const raw = this.getMeta(`settings:${principalId}`);
+    if (raw === null) return {};
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    const parsed = PluginSettingValuesSchema.safeParse(decoded);
+    return parsed.success ? parsed.data : {};
+  }
+
+  /** Writes one principal's whole value map, validated and key-sorted (`setBindingOverrides`). */
+  setPluginSettings(principalId: string, values: PluginSettingValues): void {
+    const parsed = PluginSettingValuesSchema.parse(values);
+    const sorted = Object.fromEntries(
+      Object.entries(parsed).sort(([left], [right]) => (left < right ? -1 : 1)),
+    );
+    this.setMeta(`settings:${principalId}`, JSON.stringify(sorted));
   }
 
   listIndex(): IndexEntry[] {
