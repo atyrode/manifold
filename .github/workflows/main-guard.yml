@@ -1,0 +1,26 @@
+# The merge path into main is dev, and nothing else (issue #95).
+#
+# The branch ruleset "main-guard" requires this check on every pull request
+# targeting main; a PR whose head is any other branch goes RED here and is
+# unmergeable through the normal path. Releases (`bun run release`) push to
+# main directly under the admin bypass and never meet this workflow.
+name: main-guard
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dev-only:
+    name: dev-only
+    runs-on: ubuntu-latest
+    steps:
+      - name: PRs into main must come from dev
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ]; then
+            echo "::error::PRs into main must come from dev (got '$HEAD_REF')."
+            exit 1
+          fi
+          echo "head is dev - allowed"
