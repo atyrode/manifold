@@ -1228,7 +1228,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "route",
-      "means": "one HTTP or browser path",
+      "means": "one HTTP or browser path. As a CONTRIBUTION KIND it is a browser path segment a plugin claims in its manifest (contributes.routes: { segment, title }): one URL space, so the segment is claimed globally and two manifests wanting it refuse with both names, while the web half only registers who draws it",
       "banned": [],
       "allow": []
     }

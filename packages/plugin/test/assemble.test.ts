@@ -405,6 +405,42 @@ describe("assembleRoster", () => {
     expect(error.message).toContain("vendor.beta");
   });
 
+  test("two plugins claiming one ROUTE SEGMENT refuse: there is one URL space", () => {
+    const alpha: PluginDef = {
+      manifest: manifest({
+        id: "vendor.alpha",
+        contributes: { routes: [{ segment: "links", title: "Links" }] },
+      }),
+      actions: [],
+    };
+    const beta: PluginDef = {
+      manifest: manifest({
+        id: "vendor.beta",
+        contributes: { routes: [{ segment: "links", title: "Links, differently" }] },
+      }),
+      actions: [],
+    };
+
+    /*
+      A route was a browser registration with no manifest row until wave F (issue #112), so
+      `/links/` went to whichever web half the roster composed last and no half of the system
+      could say who owned the path. The claim is refused HERE, where every other globally
+      named contribution is refused, so a build that composes has exactly one answer per path
+      and the browser's own join has a vocabulary to attach components to.
+     */
+    let thrown: unknown = null;
+    try {
+      assembleRoster([alpha, beta], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    const error = thrown as AssemblyError;
+    expect(error).toBeInstanceOf(AssemblyError);
+    expect(error.problems).toEqual([
+      'duplicate route "links" claimed by: vendor.alpha, vendor.beta',
+    ]);
+  });
+
   test("every invalid manifest is reported in ONE refusal, alongside the collisions", () => {
     // A boot that threw on the first bad manifest would make a broken plugin list a
     // one-fix-per-restart crawl; the composer is a validator, so it reports the whole batch.
