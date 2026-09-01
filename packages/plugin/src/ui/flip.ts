@@ -118,6 +118,19 @@ export function prefersReducedMotion(): boolean {
 export interface FlipOptions {
   /** The attribute that names a row, e.g. `data-section-id`. Direct children only. */
   readonly attribute: string;
+  /**
+   * HOLD STILL. While this is true the stack still MEASURES every commit — so the boxes a
+   * later reflow inverts against stay current — but plays nothing, and cancels whatever was
+   * already in flight.
+   *
+   * It exists because a live drag is the one reflow whose cause is already on screen: the
+   * pointer is the motion, and a row sliding to its new seat under it is a second answer to
+   * where that row is. Worse than redundant, it was WRONG (issue #94) — an animating row's
+   * `getBoundingClientRect` reports the transform, so the gesture's own hit test read rows
+   * mid-flight and swapped them back. Animation is for the reflows nobody's hand is on: an
+   * arrange commit, a keyboard nudge, a plugin enabled or disabled.
+   */
+  readonly paused?: boolean;
   readonly duration?: number;
   readonly easing?: string;
 }
@@ -158,7 +171,7 @@ export function useFlipStack(
   signature: string,
   options: FlipOptions,
 ): (element: HTMLElement | null) => void {
-  const { attribute, duration = FLIP_DURATION_MS, easing = FLIP_EASING } = options;
+  const { attribute, paused = false, duration = FLIP_DURATION_MS, easing = FLIP_EASING } = options;
   const container = useRef<HTMLElement | null>(null);
   const first = useRef<ReadonlyMap<string, FlipRect>>(NO_RECTS);
   const played = useRef<string | null>(null);
@@ -187,6 +200,17 @@ export function useFlipStack(
     const reflowed = played.current !== signature;
     first.current = last;
     played.current = signature;
+    /*
+      Paused, the measurement still lands and the signature is still marked played — the
+      stack is kept honest so the first reflow AFTER the pause inverts against real boxes —
+      but nothing plays, and anything mid-flight is cancelled so the rows snap to where the
+      layout actually put them. A gesture measuring this stack must read layout, not a
+      transform in progress.
+    */
+    if (paused) {
+      stop();
+      return;
+    }
     if (!reflowed || previous === NO_RECTS || prefersReducedMotion()) return;
     // One reflow, one set of animations: whatever was still playing described the old order.
     stop();

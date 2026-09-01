@@ -1,9 +1,11 @@
 import {
   arrangedSectionIds,
+  crossedSectionId,
   movedSectionIds,
   panelRefId,
   type ComposedSection,
   type PanelProps,
+  type SectionBox,
   type SectionProps,
 } from "@manifold/plugin";
 import {
@@ -89,7 +91,7 @@ interface SectionGrab {
 }
 
 /**
- * Which section the pointer is over, read off the live stack by geometry.
+ * The rows as they are PAINTED, top to bottom, for the drag's own policy to read.
  *
  * By RECT rather than by hit-testing, and that is forced rather than preferred: arrange mode
  * puts `pointer-events: none` on the pane content it disarms, and `elementFromPoint` skips
@@ -97,19 +99,24 @@ interface SectionGrab {
  * question returns nothing while the mode that needs the answer is on. Rows already carry
  * `data-section-id` for the gate's own queries, so the stack names itself and there is no ref
  * plumbing to keep in step with the order it is describing.
+ *
+ * These boxes are only trustworthy because the stack HOLDS STILL while a row is in hand
+ * (`useFlipStack`'s `paused`): `getBoundingClientRect` reports transforms, so measuring a
+ * stack mid-FLIP would describe where the rows are sliding rather than where they now sit.
  */
-function sectionIdAt(clientY: number): string | null {
+function sectionBoxes(): readonly SectionBox[] {
+  const boxes: SectionBox[] = [];
   for (const element of document.querySelectorAll<HTMLElement>("[data-section-id]")) {
+    const id = element.dataset["sectionId"];
+    if (id === undefined) continue;
     const box = element.getBoundingClientRect();
-    if (clientY >= box.top && clientY <= box.bottom) return element.dataset["sectionId"] ?? null;
+    boxes.push({ id, top: box.top, bottom: box.bottom });
   }
-  return null;
+  return boxes;
 }
 
 interface RowGestures {
   readonly onGrab: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
-  readonly onGrabMove: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
-  readonly onGrabEnd: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
   /** Keyboard arrangement: one slot up or down, committed immediately. */
   readonly onNudge: (id: string, delta: -1 | 1) => void;
 }
@@ -129,6 +136,20 @@ interface RowGestures {
  * and no guaranteed focusable content at all, so its grip IS the tab stop and speaks the
  * row's own title, exactly as the workspace's panel grip speaks a panel's.
  *
+ * IT DRAWS NO GLYPH, and neither does the panel grip it is the inner half of. The row's own
+ * TINT is the affordance — every grabbable row is washed the mode's blue at once, so what the
+ * mode offers is read off the stack in one look instead of hunted for one handle at a time.
+ * A grip glyph would also be a lie about the target it names: the grab surface is the whole
+ * row, so a 14px icon in the corner of it points at a fraction of what is live.
+ *
+ * IT STARTS THE GRAB AND NOTHING ELSE. The frames after the press are the WINDOW's, because
+ * the first thing a reorder does is move this very element: `insertBefore` on an already
+ * parented node removes it before re-inserting it, which implicitly releases the pointer
+ * capture the press took — so from the first swap on, `pointermove` retargeted to whichever
+ * row was under the pointer and a handler keyed on "am I the row in hand" stopped answering
+ * (issue #94: the drag died after one row). The panel leg above already tracks on the window
+ * for the same reason; a row does not merely prefer it, it has no alternative.
+ *
  * `data-action` names the door a release opens, so the DOM says which authority this
  * affordance reaches for (AGENTS.md invariant 12): a released arrangement commits through
  * `core.space.setLayout`, the same door the workspace's own panel grip names.
@@ -144,9 +165,6 @@ function RowGrip({
 }): ReactElement {
   const handlers = {
     onPointerDown: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrab(id, event),
-    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabMove(id, event),
-    onPointerUp: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabEnd(id, event),
-    onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabEnd(id, event),
   };
   if (label === null) {
     return (
@@ -165,9 +183,7 @@ function RowGrip({
       aria-label={`Move the ${label} row`}
       data-action="core.space.setLayout"
       {...handlers}
-    >
-      <ControlIcon kind="grip" size={14} />
-    </button>
+    />
   );
 }
 
@@ -395,12 +411,18 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * to leave (`@manifold/plugin/ui`'s `useFlipStack`; `prefers-reduced-motion: reduce` turns
    * every transform off, which is the plain re-render this had before).
    *
-   * The signature is the visible order itself, so a live drag's per-frame reflow animates too:
-   * the drag preview and the committed arrangement are one derivation, and motion that skipped
-   * the preview would make the release look like the only thing that moved.
+   * A LIVE DRAG IS THE EXCEPTION, and it is not a taste call. The preview used to animate too,
+   * on the argument that the drag and the commit are one derivation — but the pointer is
+   * already the motion, and an animating row reports its TRANSFORM from
+   * `getBoundingClientRect`, so the gesture's own measurement read rows in flight: a swap slid
+   * the displaced neighbour back under the pointer, the next frame swapped it back, and the
+   * stack rang instead of reordering (issue #94). While a row is in hand the stack holds still
+   * and the rows are exactly where the layout says they are; the release commits the order the
+   * preview is already showing, so there is nothing left to play.
    */
   const flipStack = useFlipStack(rows.map((row) => row.section.id).join(" "), {
     attribute: "data-section-id",
+    paused: grab !== null,
   });
 
   /**
@@ -417,36 +439,17 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   const gestures: RowGestures = {
     onGrab: (id, event) => {
       // The grab surface sits over the disclosure's toggle: swallowing the event here is what
-      // keeps a grab from folding the section it is about to move.
+      // keeps a grab from folding the section it is about to move — and `preventDefault` is
+      // also what keeps the drag from selecting the text it passes over, which is the job
+      // pointer capture would have done if a reorder let it live.
       event.preventDefault();
       event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
       holdSection({ moved: id, order: arrangedIds });
-    },
-    onGrabMove: (id, event) => {
-      const held = grabRef.current;
-      if (held === null || held.moved !== id) return;
-      const over = sectionIdAt(event.clientY);
-      if (over === null) return;
-      const next = movedSectionIds(held.order, held.moved, over);
-      // Referential identity IS the "nothing moved" answer, so a frame over the row already
-      // in hand costs one comparison and no render.
-      if (next === held.order) return;
-      holdSection({ moved: held.moved, order: next });
-    },
-    onGrabEnd: (id, event) => {
-      const held = grabRef.current;
-      if (held === null || held.moved !== id) return;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-      commitIfMoved(held.order);
-      holdSection(null);
     },
     onNudge: (id, delta) => {
       /*
         ONE PRESS, ONE VISIBLE MOVE. The neighbour is read off what is PAINTED and the move is
-        applied to what is STORED, which is the same split the drag has (`sectionIdAt` reads
+        applied to what is STORED, which is the same split the drag has (`sectionBoxes` reads
         geometry; `movedSectionIds` rewrites the whole order). Reading the neighbour off the
         stored order instead would let an arrow press swap a row past a seat nobody can see —
         a disabled plugin's, or a body the collapsed rail left out — and look like a press
@@ -459,6 +462,51 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
       commitIfMoved(movedSectionIds(arrangedIds, id, over));
     },
   };
+
+  /**
+   * THE REST OF THE GESTURE, on the window, for as long as a row is in hand.
+   *
+   * Not on the grip, and not by pointer capture: a reorder MOVES the grabbed row, and moving
+   * a node re-inserts it, and re-inserting it releases the capture the press took. Every
+   * frame after the first swap then arrived at whatever row had slid under the pointer, so
+   * the drag deadended one row from where it started (issue #94). The window is the one
+   * listener the stack cannot reorder out from under itself.
+   *
+   * NO DEPENDENCY LIST, deliberately: the handlers close over this render's arrangement and
+   * its commit door, so re-subscribing per commit is how they stay current. It costs three
+   * listener swaps on the handful of renders a drag produces, and the alternative is a ref
+   * per value with the same lifetime and none of the clarity.
+   */
+  useEffect(() => {
+    if (grab === null) return;
+    const move = (event: PointerEvent): void => {
+      const held = grabRef.current;
+      if (held === null) return;
+      // What the pointer has CROSSED, never merely what it is over: the policy excludes the
+      // row in hand and asks for a neighbour's midpoint, which is the whole of the drag's
+      // hysteresis (`crossedSectionId`, `packages/plugin/src/layout.ts`).
+      const over = crossedSectionId(sectionBoxes(), held.moved, event.clientY);
+      if (over === null) return;
+      const next = movedSectionIds(held.order, held.moved, over);
+      // Referential identity IS the "nothing moved" answer, so a frame that crossed nothing
+      // new costs one comparison and no render.
+      if (next === held.order) return;
+      holdSection({ moved: held.moved, order: next });
+    };
+    const end = (): void => {
+      const held = grabRef.current;
+      if (held !== null) commitIfMoved(held.order);
+      holdSection(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  });
 
   /*
     The rail is one body and has nothing to reorder against, so the rows are offered only

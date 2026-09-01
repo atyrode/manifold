@@ -584,9 +584,16 @@
  * The positioning ancestor is the ROW, granted only while the mode is on, so nothing about the
  * stack's stacking or containing blocks changes when nobody is arranging.
  *
+ * IT DRAWS NOTHING. The grip is an empty box and its TINT is the whole affordance: the mode
+ * washes every grabbable row at once, so what can be moved is read off the stack in one look
+ * rather than hunted for one handle at a time — and since the grab surface IS the whole row,
+ * a corner glyph would have been pointing at a fraction of what is live. So there is no
+ * `display`, no alignment and no `color` here: nothing is laid out inside this box, and the
+ * rules that once centred a 14px icon in it went with the icon.
+ *
  * On a plain row the grip is a real `<button>` (a plain row has no header button to carry the
- * tab stop), so the rule resets border, font and background the way `.workspace-panel-grip`
- * does for the panel leg's grip.
+ * tab stop), so the rule resets border and background the way `.workspace-panel-grip` does for
+ * the panel leg's grip.
  *
  * `min-height` is the grabbable FLOOR for a row that draws almost nothing (`core.shell.status`
  * with no container mounted): a zero-height row would be a seat nobody can take. It sits on
@@ -602,22 +609,15 @@
   position: absolute;
   z-index: 25;
   inset: 0;
-  display: flex;
   min-height: 1.7rem;
-  align-items: flex-start;
-  justify-content: center;
   border: 0;
-  padding-top: 0.42rem;
-  color: #adb5bd;
   background: rgb(76 110 245 / 12%);
-  font: inherit;
   cursor: grab;
   touch-action: none;
 }
 
 .sidebar-section-grip:hover,
 .sidebar-section-grip:focus-visible {
-  color: #edf2ff;
   background: rgb(76 110 245 / 22%);
 }
 

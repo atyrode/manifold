@@ -66,6 +66,71 @@ export function movedSectionIds(
   return next;
 }
 
+/** One row's vertical extent, in whatever coordinate space the pointer is reported in. */
+export interface SectionBox {
+  readonly id: string;
+  readonly top: number;
+  readonly bottom: number;
+}
+
+/**
+ * How far PAST a neighbour's midpoint the pointer must be before the stack answers, in the
+ * pointer's own units.
+ *
+ * The midpoint rule is already self-stabilising for a row with height: swapping past a
+ * neighbour puts that neighbour's new midpoint a whole held-row-height back up the way the
+ * pointer came, so undoing the swap costs real travel. A ZERO-HEIGHT row — `core.shell.status`
+ * with nothing to report is exactly one — has no height to spend, so its band would be the
+ * width of a jitter. This margin is the floor under that band and nothing else; it is not a
+ * feel constant, and a row with height never notices it.
+ */
+export const SECTION_CROSS_MARGIN = 4;
+
+/**
+ * WHICH ROW A HELD ROW HAS CROSSED, or null for "the stack has not been asked to move".
+ *
+ * The drag's whole hit test, and the reason it is a pure function of measured boxes rather
+ * than an `elementFromPoint` at the pointer: what a pointer is OVER is not what a reorder
+ * should answer to. Two rules, and both are the fix for a real oscillation (issue #94):
+ *
+ *   The held row is never a candidate. It is the REFERENCE — the scan starts at its
+ *   neighbours — so a frame that lands back inside the row in hand asks for nothing.
+ *
+ *   A neighbour is crossed only once the pointer is past its MIDPOINT (by
+ *   {@link SECTION_CROSS_MARGIN}), never merely inside its box. Entering a box was the old
+ *   rule, and it has no hysteresis at all: the swap it triggers slides the displaced
+ *   neighbour under the very pointer that displaced it, and the next frame swaps it back.
+ *   Past the midpoint, the swap moves the neighbour a full held-row-height clear of the
+ *   threshold that would undo it, so a slow drag back and forth over a boundary crosses it
+ *   once each way instead of ringing.
+ *
+ * The scan continues while successive neighbours are crossed and returns the FARTHEST one, so
+ * a fast drag that outruns the frames lands where the pointer is rather than one row behind
+ * it. `boxes` are the rows as they are PAINTED right now, in painted order.
+ */
+export function crossedSectionId(
+  boxes: readonly SectionBox[],
+  moved: string,
+  pointerY: number,
+  margin: number = SECTION_CROSS_MARGIN,
+): string | null {
+  const from = boxes.findIndex((box) => box.id === moved);
+  if (from === -1) return null;
+  let crossed: string | null = null;
+  for (let index = from + 1; index < boxes.length; index++) {
+    const box = boxes[index];
+    if (box === undefined || pointerY <= (box.top + box.bottom) / 2 + margin) break;
+    crossed = box.id;
+  }
+  if (crossed !== null) return crossed;
+  for (let index = from - 1; index >= 0; index--) {
+    const box = boxes[index];
+    if (box === undefined || pointerY >= (box.top + box.bottom) / 2 - margin) break;
+    crossed = box.id;
+  }
+  return crossed;
+}
+
 /** The leaf a panel occupies, in key order; null when the tree does not show that panel. */
 function panelLeaf(layout: TileLayout, panelId: string): Tile | null {
   for (const tile of Object.values(layout)) {
