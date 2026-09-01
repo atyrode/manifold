@@ -7,14 +7,21 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
+  KEYSTROKE_MOD,
   bindingRebindRefusal,
   composeBindings,
   effectiveBindings,
+  formatKeystroke,
+  keystrokeLabel,
+  keystrokeMatches,
+  parseKeystroke,
   type BindingDef,
   type BindingKeyRow,
   type BindingScope,
   type BindingSource,
   type ComposedBinding,
+  type Keystroke,
+  type KeystrokeEvent,
   type WebBinding,
 } from "./bindings.ts";
 export {

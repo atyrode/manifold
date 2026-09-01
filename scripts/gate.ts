@@ -72,6 +72,7 @@ const packages = [
   "plugins/canvas",
   "plugins/compositions",
   "plugins/arrange",
+  "plugins/commands",
 ];
 
 /**

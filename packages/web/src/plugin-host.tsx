@@ -24,6 +24,8 @@ import {
   AssemblyError,
   claim,
   composeBindings,
+  keystrokeMatches,
+  parseKeystroke,
   reportDuplicates,
   ENGINE_SET_ENABLED_ACTION,
   type BindingSource,
@@ -830,10 +832,21 @@ function typingInto(target: EventTarget | null): boolean {
  *
  * It is the whole of what the floor decides about a key: the composed table says which row owns
  * it, and the row's own handler does the work (`@manifold/plugin`'s `BindingDef` — a binding
- * carries no authority, so anything that mutates goes through a registered action). Two things
- * are refused here rather than in every handler, because both are properties of the KEY and not
- * of any plugin's behavior: a chord is a different key than the one it decorates, and typing is
- * not dispatching.
+ * carries no authority, so anything that mutates goes through a registered action). What is
+ * decided here rather than in every handler is what belongs to the KEY and not to any plugin's
+ * behavior: WHICH event produces a row's keystroke, and whether typing counts as dispatching.
+ *
+ * A CHORD IS A ROW NOW, and the matcher is the registry's own (`keystrokeMatches`), so "what
+ * the key table prints" and "what fires" are one answer (invariant 14). `Mod+k` answers to
+ * Control on a PC and Command on a Mac, and a bare row still refuses every modifier — the
+ * rule the old blanket `if (ctrlKey || metaKey || altKey) return` enforced, kept exactly, now
+ * as a property of the row instead of of the listener.
+ *
+ * TYPING GUARDS BARE ROWS ONLY, and that is the honest reading of the guard rather than a
+ * loosening: a printable key going into a rename field is typing, which is why a row may not
+ * eat it — but a chord is not a character any field is trying to receive, so a surface reached
+ * by `Mod+k` must be reachable from inside one. The field keeps every keystroke it could
+ * plausibly have meant.
  *
  * Undeclared listeners on `window` are what this replaces. One of them (F9's) shipped in the
  * engine's own standard library, where nothing could collide with it, list it, or turn it off.
@@ -842,10 +855,9 @@ function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServ
   useEffect(() => {
     if (bindings.length === 0) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (typingInto(event.target)) return;
-      const binding = bindings.find((row) => row.key === event.key);
+      const binding = bindings.find((row) => keystrokeMatches(row.key, event));
       if (binding === undefined) return;
+      if (!parseKeystroke(binding.key).mod && typingInto(event.target)) return;
       event.preventDefault();
       binding.run(host);
     };

@@ -5,11 +5,12 @@
   that cannot leave with the plugin it dresses is a plugin that was never really extracted (A1,
   REGISTRY.md §cssFamilies). What stays floor is the row VOCABULARY two plugins share — the
   discreet `.sidebar-opener` this seat's row wears, beside `core.plugins`' — because a class
-  filled by more than one plugin belongs to whoever owns the rail, not to one of its tenants.
+  filled by more than one plugin belongs to whoever owns the rail, not to one of its tenants;
+  and the `keycap`, which left for the same reason one host down, the day a second surface
+  began printing the engine's composed key table.
 
   The dialog deliberately reuses the measurements the key table has had since it was a row of
-  `core.shell`: same width, same card grid, same keycap. The extraction moved ownership, not
-  appearance.
+  `core.shell`: same width, same card grid. The extraction moved ownership, not appearance.
 */
 
 .keys-dialog {
@@ -139,22 +140,24 @@
   gap: 0.35rem;
 }
 
-/* A key reads as a key: this seat draws the one keycap in the product. */
-.keys-cap {
+/*
+  A key reads as a key — and the shape is the stdlib's `keycap` now, not this sheet's. It moved
+  the day a second surface printed the composed key table: the table is the engine's read, so
+  the drawing of one row's key cannot belong to whichever seat drew it first.
+
+  What stays here is the ARMED slot, because "press a key…" is this editor's own gesture and
+  nothing outside it has one. It is not a keycap wearing a state: while a row is armed there is
+  no keystroke to draw yet, which is the whole meaning of the slot.
+*/
+.keys-arming {
   flex: 0 0 auto;
-  border: 1px solid #3b4149;
-  border-bottom-width: 2px;
+  border: 1px dashed #4c6ef5;
   border-radius: 0.35rem;
   padding: 0.1rem 0.45rem;
-  color: #dee2e6;
-  background: #22262c;
+  color: #adb5bd;
   font-size: 0.72rem;
-  font-weight: 650;
-}
-
-.keys-cap[data-keys-overridden="true"] {
-  border-color: #4c6ef5;
-  color: #dbe4ff;
+  font-style: italic;
+  white-space: nowrap;
 }
 
 .keys-action {

@@ -37,6 +37,11 @@ export {
   type ControlKind,
   type IconProps,
 } from "./icons.tsx";
+/**
+ * THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl. Stdlib
+ * because the composed key table is the ENGINE's read, so more than one surface prints it.
+ */
+export { KeyCap, keyCapLabel, type KeyCapProps } from "./keycap.tsx";
 export {
   NodeTitleBar,
   TITLEBAR_ACTIONS_CLASS,
@@ -123,3 +128,14 @@ export {
   useVantage,
   type Vantage,
 } from "./vantage.ts";
+/**
+ * THE handoff between a surface that LISTS a key and the one that EDITS it. Same litmus as
+ * the store above and a different lifetime: a rebind request is consumed and gone, so it is
+ * device-local memory rather than published view state (`./rebind.ts`).
+ */
+export {
+  clearRebindRequest,
+  currentRebindRequest,
+  requestRebind,
+  useRebindRequest,
+} from "./rebind.ts";

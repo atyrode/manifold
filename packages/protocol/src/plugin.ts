@@ -713,10 +713,14 @@ export const BindingIdSchema = z.string().regex(BINDING_ID_PATTERN).max(96);
 export type BindingId = z.infer<typeof BindingIdSchema>;
 
 /**
- * ONE KEY, as `KeyboardEvent.key` reports it — `F9`, `a`, `ArrowUp`, `?`. Bounded and
- * otherwise unconstrained on purpose: the browser owns this vocabulary, an editor captures
- * the value from a real keystroke rather than composing it, and a server that tried to
- * enumerate legal keys would be a second, always-stale keyboard map.
+ * ONE KEYSTROKE — an optional `Mod+` prefix followed by the value `KeyboardEvent.key`
+ * reports: `F9`, `a`, `ArrowUp`, `?`, `Mod+k`. Bounded and otherwise unconstrained on
+ * purpose: the browser owns this vocabulary, an editor captures the value from a real
+ * keystroke rather than composing it, and a server that tried to enumerate legal keys would
+ * be a second, always-stale keyboard map. The GRAMMAR is the engine's
+ * (`@manifold/plugin`'s `parseKeystroke`), which is also why the bound has never moved: a
+ * prefixed stroke was already a string this schema accepted, so a stored override written by
+ * any build parses in every other.
  */
 export const BindingKeySchema = z.string().min(1).max(24);
 

@@ -2,6 +2,7 @@ import { SessionsSection } from "@manifold-plugin/access/web";
 import { ArrangeOverlay, ARRANGE_BINDINGS } from "@manifold-plugin/arrange/web";
 import { BrandRow } from "@manifold-plugin/brand/web";
 import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
+import { CommandsOverlay, COMMANDS_BINDINGS } from "@manifold-plugin/commands/web";
 import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
 import { debugWebPlugin } from "@manifold-plugin/debug/web";
 import { drawWebPlugin } from "@manifold-plugin/draw/web";
@@ -217,6 +218,17 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
     id: "core.arrange",
     bindings: ARRANGE_BINDINGS,
     workspaceOverlays: { toolbar: ArrangeOverlay },
+  },
+  /*
+    The command surface (issue #129), registered in exactly the arrange shape above it and for
+    the same two reasons: its one key is an ordinary row in the composed table, and what it
+    paints is chrome over the WORKSPACE rather than a seat in anybody's tree — reachable at the
+    workspace root, where no container and therefore no container slot exists.
+  */
+  {
+    id: "core.commands",
+    bindings: COMMANDS_BINDINGS,
+    workspaceOverlays: { commands: CommandsOverlay },
   },
   canvasWebPlugin,
   compositionsWebPlugin,

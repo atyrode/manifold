@@ -1,7 +1,20 @@
 import "./styles.css";
-import { bindingRebindRefusal, type ComposedBinding, type SectionProps } from "@manifold/plugin";
+import {
+  bindingRebindRefusal,
+  formatKeystroke,
+  type ComposedBinding,
+  type SectionProps,
+} from "@manifold/plugin";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
+import {
+  ControlIcon,
+  KeyCap,
+  ScrollRegion,
+  Stack,
+  clearRebindRequest,
+  keyCapLabel,
+  useRebindRequest,
+} from "@manifold/plugin/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
@@ -20,10 +33,13 @@ import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
  * WHAT IS NEW is that the table is now an EDITOR: plugins declare the defaults, the principal
  * rebinds (issue #91). Three constraints shape every line of it:
  *
- *   THE KEY IS CAPTURED, never typed. Arming a row listens for the next keystroke and takes
- *   `KeyboardEvent.key` verbatim, so the stored value is exactly what the dispatcher will
- *   compare against — a text field would let a reader store `f9` or `F 9` and discover the
- *   difference as a key that does nothing.
+ *   THE KEYSTROKE IS CAPTURED, never typed. Arming a row listens for the next keystroke and
+ *   stores exactly what the dispatcher will compare against (`formatKeystroke`) — a text field
+ *   would let a reader store `f9` or `F 9` and discover the difference as a key that does
+ *   nothing. Holding the platform's primary modifier captures a CHORD (`Mod+k`), because the
+ *   registry's grammar has one now and a table that could print a chord but not capture one
+ *   would be an editor that cannot edit half its rows. A bare modifier is still ignored, since
+ *   a chord is not a keystroke until it has a key.
  *
  *   A COLLISION REFUSES LOUDLY, naming both offenders, and never writes. The check is the
  *   engine's own (`bindingRebindRefusal`), run here against the whole EFFECTIVE table because
@@ -35,6 +51,12 @@ import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
  *   dispatches `core.keys.setBinding` and then asks the engine to re-read the stored map
  *   (`assembly.refreshBindings`), so the effective table this modal is printing and the table
  *   the dispatcher answers from are the same one object, recomposed at the one seam.
+ *
+ * AND IT ANSWERS A REQUEST FROM OUTSIDE. Any surface may PRINT a binding — the composed table
+ * is the engine's read — so any surface may want to send a reader here to change one. That
+ * handoff is the engine's neutral slot (`requestRebind`, `@manifold/plugin/ui`): a request
+ * names a binding id and nothing else, this editor opens on it, arms it and clears the slot.
+ * The asker never learns who answered, which is what lets a stranger's editor answer instead.
  */
 
 /** The rows the collision check sees — the effective table, as the engine's row shape. */
@@ -52,19 +74,41 @@ function keyRows(
  */
 function shadowedNote(binding: ComposedBinding, override: string | undefined): string | null {
   if (override === undefined || override === binding.key) return null;
-  return `rebinding to ${override} is not in effect — another row answers that key`;
+  return `rebinding to ${keyCapLabel(override)} is not in effect — another row answers that key`;
 }
 
 export function KeysRow({ host }: SectionProps): ReactElement {
   const assembly = host.assembly;
   const { sidebarOpen } = useWorkspaceShell();
-  const [open, setOpen] = useState(false);
-  /** The row waiting for a keystroke, or null. Device-local by nature: it is a gesture. */
-  const [armed, setArmed] = useState<string | null>(null);
+  /*
+    THE HANDOFF, answered by DERIVATION rather than by synchronisation. Somebody printed a key
+    row somewhere else and the reader asked to change it (`requestRebind`): a pending request
+    IS this editor being open on that row, so it is read during render instead of copied into
+    state by an effect — the copy would be a second answer to "is the editor open", and a
+    cascading render besides. An id the table no longer carries opens the editor and arms
+    nothing, which is the honest answer: the row left with its plugin.
+
+    `armed` is therefore THREE-valued. `undefined` is "this reader has not decided", which is
+    what lets the request supply the row; `null` is a decision — they pressed Escape or the
+    rebind landed — and it survives the request still sitting in the slot. The slot is cleared
+    when the dialog closes, so the same row can be asked for again.
+  */
+  const requested = useRebindRequest();
+  const [opened, setOpened] = useState(false);
+  const [armedRow, setArmedRow] = useState<string | null | undefined>(undefined);
   const [pending, setPending] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  const open = opened || requested !== null;
+  const armed =
+    armedRow === undefined
+      ? assembly.bindings.some((row) => row.id === requested)
+        ? requested
+        : null
+      : armedRow;
+  const setArmed = setArmedRow;
 
   useEffect(() => {
     if (!open) return;
@@ -73,9 +117,10 @@ export function KeysRow({ host }: SectionProps): ReactElement {
   }, [open]);
 
   const close = (): void => {
-    setOpen(false);
-    setArmed(null);
+    setOpened(false);
+    setArmedRow(undefined);
     setRefusal(null);
+    clearRebindRequest();
     window.requestAnimationFrame(() => buttonRef.current?.focus());
   };
 
@@ -117,9 +162,11 @@ export function KeysRow({ host }: SectionProps): ReactElement {
    * makes "press the key you want" mean pressing a key that is currently bound to something.
    *
    * Escape cancels rather than binds — every mode's universal "never mind" belongs to whatever
-   * is armed — and a bare modifier is not a keystroke yet, so it is ignored instead of stored:
-   * a chord is a different key than the one it decorates (the dispatcher refuses chords), so
-   * the editor must not let one be captured either.
+   * is armed. A bare MODIFIER is not a keystroke yet, so it is ignored instead of stored; the
+   * primary modifier held WITH a key is, because the registry's grammar spells that stroke
+   * (`Mod+k`) and the dispatcher answers it. Alt is refused rather than captured: it decorates
+   * the character a layout produces, so what `event.key` reports under it is a different
+   * character on every keyboard and the row would answer on one machine and not the next.
    */
   useEffect(() => {
     if (armed === null) return;
@@ -131,9 +178,9 @@ export function KeysRow({ host }: SectionProps): ReactElement {
         return;
       }
       if (event.key === "Shift" || event.key === "Control" || event.key === "Alt") return;
-      if (event.key === "Meta" || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === "Meta" || event.altKey) return;
       setArmed(null);
-      void rebind(armed, event.key);
+      void rebind(armed, formatKeystroke({ mod: event.ctrlKey || event.metaKey, key: event.key }));
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -160,7 +207,7 @@ export function KeysRow({ host }: SectionProps): ReactElement {
         title="Keyboard bindings"
         aria-label="Show keyboard bindings"
         data-testid="keys-open"
-        onClick={() => setOpen(true)}
+        onClick={() => setOpened(true)}
       >
         <ControlIcon kind="bindings" />
         {sidebarOpen ? <span>Keys</span> : null}
@@ -221,14 +268,18 @@ export function KeysRow({ host }: SectionProps): ReactElement {
                               <small>
                                 {assembly.pluginTitle(binding.plugin) ?? binding.plugin}
                                 {binding.when === "always" ? "" : ` · ${binding.when} only`}
-                                {overridden ? ` · declared ${binding.declaredKey}` : ""}
+                                {overridden
+                                  ? ` · declared ${keyCapLabel(binding.declaredKey)}`
+                                  : ""}
                               </small>
                               {note === null ? null : <small className="keys-note">{note}</small>}
                             </span>
                             <span className="keys-controls">
-                              <kbd className="keys-cap" data-keys-overridden={overridden}>
-                                {armed === binding.id ? "press a key…" : binding.key}
-                              </kbd>
+                              {armed === binding.id ? (
+                                <span className="keys-arming">press a key…</span>
+                              ) : (
+                                <KeyCap stroke={binding.key} overridden={overridden} />
+                              )}
                               <button
                                 className="keys-action"
                                 type="button"

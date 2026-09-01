@@ -858,3 +858,27 @@
   display: block;
   flex: none;
 }
+
+/*
+  THE keycap (`keycap.tsx`). It was `.keys-cap`, and that sheet claimed it was "the one keycap
+  in the product" — a claim that only held while one seat printed the key table. The table is
+  the engine's read, so the shape moved here with the component rather than being copied into
+  the second printer's stylesheet.
+*/
+.keycap {
+  flex: 0 0 auto;
+  border: 1px solid #3b4149;
+  border-bottom-width: 2px;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  color: #dee2e6;
+  background: #22262c;
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.keycap[data-keycap-overridden="true"] {
+  border-color: #4c6ef5;
+  color: #dbe4ff;
+}
