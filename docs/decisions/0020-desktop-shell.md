@@ -1,11 +1,11 @@
 # 0020 — The desktop shell: Electron as a host, the agent as the process it supervises
 
 Date: 2026-09-01
-Status: **PROPOSED — awaiting operator ratification.** This is the record #82 is the gate for, and
-#82's own ruling binds it: the ADR is authored and ratified **before any shell code exists** — not
-before the prototype ships, before the first line. Nothing in this file licenses a directory. Its
-§Ratification asks are the questions a yes answers; §Deferrals is the list of things a yes does
-**not** decide, each with the condition that reopens it.
+Status: **ACCEPTED — ratified by the operator 2026-09-01, with one amendment: acceptance claim 5
+(§6.3), the in-shell performance budget.** The ratification round weighed GPUI (§1.4a) at the
+operator's ask before the yes. #82's own ruling still binds what a yes licenses: the ADR precedes
+**any shell code** — nothing in this file licenses a directory, and §Deferrals is the list of
+things this yes does **not** decide, each with the condition that reopens it.
 
 ## Context
 
@@ -167,6 +167,23 @@ size stops being a rounding error — which is why the roadmap schedules the re-
 **Revisit condition:** the native-mobile milestone opens, **or** the Electron duty in §1.3 is missed
 twice, which would be evidence that this repo cannot carry a bundled Chromium and should stop
 pretending otherwise.
+
+### 1.4a GPUI: rejected as a category error, not on quality (operator ask, 2026-09-01)
+
+Weighed at the operator's request during ratification, against the fear that Electron is
+"notoriously bad in performances." GPUI (Zed's Apache-2.0 UI framework) is not a web-app host at
+all — it is a **native Rust UI framework**. Adopting it would not port the client; it would mean
+**writing a second client from scratch in another language** — every React component, the React
+Flow canvas, xterm, and every plugin's web half reimplemented and maintained in parallel forever —
+which is the one outcome the portable-lens rule forbids in as many words ("a fork of the client is
+never the answer"). Zed could build on GPUI because Zed had no web client to keep; manifold does.
+
+The performance reputation decomposes into two different facts: **memory** (a bundled Chromium's
+RSS — real, recorded as the honest cost) and **slowness** (bloated JS shipped inside Electron by
+apps that do not measure — not a property of the runtime). Rendering in Electron IS Chromium, the
+engine both hard surfaces already target and the engine `verify:budgets` already ratchets on every
+merge. That is why the ratification's amendment (§6.3 claim 5) answers the fear with measurement
+inside the shell rather than with reputation in either direction.
 
 ### 1.5 Security posture, as data (Q5: **yes** — the preload exposes the manifests, nothing ambient)
 
@@ -736,6 +753,14 @@ without a mechanism is an aspiration:
    refusal. "Killed with the window" is the part with a real failure mode: the box has been OOM'd by
    orphaned processes before, so the teardown path is the one that gets tested deliberately rather
    than assumed.
+5. **The performance budgets hold inside the shell** (the ratification's amendment, 2026-09-01):
+   `verify:budgets` runs against the app hosted in the shell's own window and every ceiling that
+   holds in the browser baseline holds there — idle re-renders, idle script time, long tasks,
+   request counts. The operator's stated fear about Electron is its reputation for slowness; this
+   claim converts the fear into a measurement. A miss does not merely fail the prototype: it
+   **triggers D1's Tauri re-evaluation early**, without waiting for the mobile milestone or the
+   twice-missed pin duty. Memory footprint is recorded alongside the run as the honest cost that
+   no budget currently bounds.
 
 **And one prerequisite that is not a claim but a gate on claim 1's premise:** "against a configurable
 instance URL" requires #109's two seams (§5.6). Before they land the prototype can only load its
