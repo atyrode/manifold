@@ -12,14 +12,15 @@ import { ITEM_KINDS, type ItemKind, type PluginRoster } from "@manifold/protocol
  * kind→noun map in the tree, that its keys are exactly `ITEM_KINDS`, and that each value
  * is the key's own canonical word.
  *
- * FLOOR KINDS ONLY, by construction. A contributed element kind's noun is its manifest
- * TITLE ({@link itemNoun}) — the plugin owns its own word, the floor owns the grammar —
- * which is why this table can stay closed while the kind vocabulary stays open.
+ * FLOOR KINDS ONLY, by construction. A CONTRIBUTED kind takes its manifest title — the
+ * plugin owns its own word, the floor owns the grammar — which is why this table can stay
+ * closed while the kind vocabulary stays open, and why `canvas` and `composition` left it
+ * when the discipline roster opened (#110): they are `core.canvas`'s and
+ * `core.compositions`' declared titles now, read through the same door a contributed
+ * element kind's word comes through.
  */
 export const ITEM_NOUNS: Readonly<Record<ItemKind, string>> = {
   terminal: "terminal",
-  canvas: "canvas",
-  composition: "composition",
   tile: "tile",
   panel: "panel",
   structure: "structure",
@@ -29,13 +30,21 @@ const FLOOR_NOUNS: Readonly<Record<string, string>> = ITEM_NOUNS;
 
 /**
  * What to call one item kind: the floor's word for a floor kind, the declaring plugin's
- * manifest title for a contributed element type, and a truthful generic for a kind this
- * build has never heard of (an element whose plugin is absent).
+ * manifest title for a contributed one — a container DISCIPLINE or an element type — and
+ * a truthful generic for a kind this build has never heard of.
+ *
+ * That last case is the whole reason this function cannot throw. A container whose
+ * discipline is uninstalled still has a row, still has a name, and still appears in the
+ * index; the refusal it earns is `unknown_discipline`, spoken in a sentence about an
+ * "item", never a crash in the sidebar that was only trying to draw it (#110).
  */
 export function itemNoun(kind: string, roster: PluginRoster): string {
   const floor = FLOOR_NOUNS[kind];
   if (floor !== undefined) return floor;
   for (const entry of roster) {
+    for (const discipline of entry.manifest.contributes.disciplines ?? []) {
+      if (discipline.id === kind) return discipline.title.toLowerCase();
+    }
     for (const element of entry.manifest.contributes.elements) {
       if (element.type === kind) return element.title.toLowerCase();
     }

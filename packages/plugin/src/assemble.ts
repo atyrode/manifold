@@ -6,6 +6,7 @@ import {
   LocalNameSchema,
   PluginManifestSchema,
   type ActionSummary,
+  type DisciplineDeclaration,
   type PlacementTraits,
   type PluginDataVersion,
   type PluginDependency,
@@ -135,6 +136,18 @@ export interface AssemblyElement {
   readonly payload: z.ZodType | null;
 }
 
+/**
+ * One contributed CONTAINER DISCIPLINE and who renders it (#110). The declaration is the
+ * manifest's verbatim — the placement algebra reads it unchanged — and `plugin` is what
+ * lets a reader answer the second question a discipline raises: this container's renderer
+ * is not painting, is that because its plugin is OFF (D4′, the engine-owned placeholder)
+ * or because nothing here declares the discipline at all.
+ */
+export interface AssemblyDiscipline {
+  readonly plugin: string;
+  readonly declaration: DisciplineDeclaration;
+}
+
 export interface AssemblyTool {
   readonly id: string;
   readonly plugin: string;
@@ -230,6 +243,13 @@ export interface Assembly {
   readonly sections: readonly AssemblySection[];
   /** Keyed by wire element type (`draw`) — the same string a scene element carries. */
   readonly elements: ReadonlyMap<string, AssemblyElement>;
+  /**
+   * Keyed by DISCIPLINE id (`canvas`) — the same string a container row carries and the
+   * key `ProjectionRegistry.renderer` is looked up by. Disabled plugins are in here for
+   * the reason every other registry holds them: their containers are still in the index,
+   * and a disable decides who renders one, never whether it composes.
+   */
+  readonly disciplines: ReadonlyMap<string, AssemblyDiscipline>;
   readonly tools: readonly AssemblyTool[];
   /**
    * THE DECLARED-TOPICS INDEX: event kind → the plugin that may originate it. Keyed by kind
@@ -441,6 +461,7 @@ export function assembleRoster(
   const panelIds: Claims = new Map();
   const sectionIds: Claims = new Map();
   const elementTypes: Claims = new Map();
+  const disciplineIds: Claims = new Map();
   const toolIds: Claims = new Map();
   const eventIds: Claims = new Map();
   const seatPanels: Claims = new Map();
@@ -452,6 +473,7 @@ export function assembleRoster(
   const panels = new Map<string, AssemblyPanel>();
   const sections: AssemblySection[] = [];
   const elements = new Map<string, AssemblyElement>();
+  const disciplines = new Map<string, AssemblyDiscipline>();
   const tools: AssemblyTool[] = [];
   const declaredEvents: [string, AssemblyEvent][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
@@ -603,6 +625,28 @@ export function assembleRoster(
         );
       }
     }
+    /*
+      CONTAINER DISCIPLINES (#110). A discipline id is claimed GLOBALLY for the same reason
+      an element type is, and more sharply: it is the value stored in `containers.discipline`
+      and the key a renderer is looked up by, so two plugins claiming one would make what a
+      stored row MEANS depend on which of them composed last. The claim refuses with both
+      names (D5).
+
+      This registry is ALSO the replacement for the retired last-segment invariant
+      (`layout.ts` records why it went): "which plugin renders this discipline?" is answered
+      by the `plugin` field of the row below — data, claimed once and published — instead of
+      by reading a spelling and hoping. That is what lets an UNINSTALLED discipline be
+      legible rather than a crash: the roster says who declares each one, and a discipline
+      with no row is exactly the case `unknown_discipline` names.
+
+      Nothing here bounds a plugin to a single discipline, deliberately. The old pun
+      implied that bound and never enforced it; a plugin that genuinely renders two related
+      disciplines composes as long as it claims two names nobody else claims.
+    */
+    for (const discipline of manifest.contributes.disciplines ?? []) {
+      claim(disciplineIds, discipline.id, manifest.id);
+      disciplines.set(discipline.id, { plugin: manifest.id, declaration: discipline });
+    }
     for (const tool of manifest.contributes.tools) {
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });
@@ -666,6 +710,7 @@ export function assembleRoster(
   reportDuplicates(panelIds, "panel", problems);
   reportDuplicates(sectionIds, "section", problems);
   reportDuplicates(elementTypes, "element type", problems);
+  reportDuplicates(disciplineIds, "discipline", problems);
   reportDuplicates(toolIds, "tool", problems);
   reportDuplicates(eventIds, "event", problems);
   reportDuplicates(seatPanels, "seat", problems);
@@ -791,6 +836,7 @@ export function assembleRoster(
     panels,
     sections,
     elements,
+    disciplines,
     tools,
     events: new Map(declaredEvents),
     order,

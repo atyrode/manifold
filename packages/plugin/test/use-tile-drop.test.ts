@@ -146,8 +146,25 @@ describe("the one state constructor", () => {
       kind: "terminal",
       label: "build",
     });
-    // A host that cannot: the chip falls back to the ONE label vocabulary, keyed by the
-    // ITEM the carry names — which is why it reads "composition" and not the address form.
+    // A FLOOR kind with no host name falls back to the one label vocabulary, keyed by the
+    // ITEM the carry names rather than by the address form it travels as.
+    expect(
+      previewFor(
+        context(),
+        wire,
+        carrying({ kind: "tile", containerId: "other", tileId: "a" }, { kind: "tile", containerId: null }),
+        null,
+      )?.chip,
+    ).toEqual({ kind: "tile", label: "tile" });
+    /*
+      A CONTRIBUTED kind with no host name reads "item", and that is the rule rather than a
+      gap: the floor owns the grammar and a plugin owns its word (S12), so `ITEM_NOUNS` holds
+      floor kinds only and every contributed kind — an element type like `text`, and since
+      #110 a container DISCIPLINE too — is named by the host's `describeCarry`. Both real
+      hosts answer it for a container carry (the container's own name), so the generic is
+      what a carry off an UNINDEXED container reads, and the chip's `kind` still carries the
+      discipline so the glyph is right either way.
+    */
     expect(
       previewFor(
         context(),
@@ -160,8 +177,19 @@ describe("the one state constructor", () => {
       )?.chip,
     ).toEqual({
       kind: "composition",
-      label: "composition",
+      label: "item",
     });
+    expect(
+      previewFor(
+        context(),
+        wire,
+        carrying(
+          { kind: "container", containerId: "p1" },
+          { kind: "composition", containerId: "p1" },
+        ),
+        "Journal",
+      )?.chip,
+    ).toEqual({ kind: "composition", label: "Journal" });
     expect(previewFor(context(), wire, null, null)?.chip).toBeNull();
   });
 
