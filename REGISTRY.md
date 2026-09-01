@@ -140,6 +140,8 @@ must never be taught one.
         "packages/web/src/assembly.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
+        "packages/web/src/lens.tsx",
+        "packages/web/sw.js",
         "packages/web/src/workspace.tsx",
         "packages/web/src/notice.tsx",
         "packages/web/src/styles.css",
@@ -216,7 +218,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, the session URL, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store)"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store)"
     },
     {
       "glob": "packages/agent/src/**",
@@ -337,6 +339,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/identity.tsx",
       "why": "identity bootstrap and token custody on this device"
+    },
+    {
+      "glob": "packages/web/src/lens.tsx",
+      "why": "the lens's own three conditions, above the identity gate: which instance this device looks at, whether it answers, and whether this bundle still speaks its protocol. Floor because it is the one surface that may REFUSE to compose an assembly at all — a cached bundle in front of a newer instance (AGENTS.md invariant 10) — and because a plugin cannot own the chrome for the app that hosts it. It also registers the app shell's cache (`packages/web/sw.js`); the offline condition it names is a state, never a second code path"
+    },
+    {
+      "glob": "packages/web/sw.js",
+      "why": "the app shell's cache, shipped verbatim into `dist/` by the existing vite build with this build's asset list injected. Plain JS because it is a service worker rather than a module in the bundle, and floor because it sits in front of EVERY request the browser makes: what it may answer for (the document, this build's hashed assets, the icon, the web app manifest) and what it must never answer for (`/api`, `/ws`, `/healthz`, any cross-origin request) is a foundation rule, not a preference — a worker that cached a door would be a second, silent source of scene state"
     },
     {
       "glob": "packages/web/src/error-boundary.tsx",
@@ -1344,6 +1354,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "`@keyframes skeleton-pulse`, ridden by the shell's container skeleton and the index's rows alike: a token, which is what the floor publishes"
     },
     {
+      "family": "lens",
+      "owner": "packages/web/src/styles.css",
+      "why": "the banner naming what this WINDOW is doing — offline, a newer build waiting, a foreign instance (`lens.tsx`). The floor's sheet rather than an owner's: it paints above the identity gate, before any plugin exists to have an opinion, and it is the one layer that has to be legible when the roster failed to load at all"
+    },
+    {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
       "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrapper a declared CLUSTER paints in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's two remaining rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
@@ -1610,11 +1625,17 @@ register. Anything else is presence, document, or action state — A2 leaves no 
   "deviceLocal": [
     {
       "key": "manifold.identity",
-      "why": "this device's principal grant (id, name, color, token) — the credential itself, which is why it never leaves the device"
+      "prefix": true,
+      "why": "this device's principal grant (id, name, color, token) — the credential itself, which is why it never leaves the device. PREFIXED because a grant belongs to ONE instance: a lens pointed elsewhere (`manifold:instance`) keys its grant `manifold.identity@<origin>` so pointing at a second instance can never read or overwrite the first's token. The served instance keeps the bare key, which is the spelling every reader and every browser gate already knows"
     },
     {
       "key": "manifold.ownerKey",
-      "why": "owner key captured from the #key= boot fragment; a secret, never sent anywhere but the Authorization header"
+      "prefix": true,
+      "why": "owner key captured from the #key= boot fragment; a secret, never sent anywhere but the Authorization header. Prefixed for the same reason as the grant beside it: an owner key authenticates as root at exactly one origin, so a lens looking at another instance stores it under `manifold.ownerKey@<origin>`"
+    },
+    {
+      "key": "manifold:instance",
+      "why": "WHICH INSTANCE this device's lens looks at, when that is not the origin that served it (`packages/plugin/src/instance.ts`, set by `?instance=<url>` and cleared by `?instance=`). Absent in the ordinary case, where the lens looks at its birthplace. Genuinely device-local and nothing else could be: it is a fact about this browser's choice of viewpoint, no part of any workspace, and publishing it would move somebody else's window to another server. AXIOMS §The portable lens is the rule it implements"
     },
     {
       "key": "manifold:debug",
@@ -1701,6 +1722,31 @@ string" is the question a broken gate actually asks.
       "testid": "connection-state",
       "renderer": "packages/plugins/shell/src/status-row.tsx",
       "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else. It moved out of the sidebar panel with the rest of the rail's chrome (2026-09-01): the status line is a CONTRIBUTED plain row (`core.shell.status`) now, so the renderer that owes this attribute is the row, not the panel that stacks it"
+    },
+    {
+      "testid": "lens-offline",
+      "renderer": "packages/web/src/lens.tsx",
+      "why": "the named disconnected condition the PWA gate reads with the network cut: the whole content of \"offline shell\" is that this word is on screen instead of a blank page, so the gate may not key off the copy around it. One shape (`lens-<condition>`) answers for every row of the banner"
+    },
+    {
+      "testid": "lens-update",
+      "renderer": "packages/web/src/lens.tsx",
+      "why": "the offer a live page shows when a newer build is installed and waiting. The PWA gate simulates a deploy and reads this row to prove the running page is not swapped underneath itself, then presses it to prove the handover completes and the old generation is swept"
+    },
+    {
+      "testid": "lens-instance",
+      "renderer": "packages/web/src/lens.tsx",
+      "why": "the row that says this device is pointed at another instance, and carries the way home. The PWA gate reads it to prove a lens served by one instance is looking at another (AXIOMS §The portable lens)"
+    },
+    {
+      "testid": "lens-skew",
+      "renderer": "packages/web/src/lens.tsx",
+      "why": "the protocol-skew REFUSAL card. The gate asserts it appears in both drift directions and that the workspace behind it does not paint — invariant 10's failure mode is precisely a client that looks ordinary while it cannot speak to its server"
+    },
+    {
+      "testid": "lens-skew-action",
+      "renderer": "packages/web/src/lens.tsx",
+      "why": "the refusal's one way out, whose LABEL and behaviour differ by drift direction (reload when this app is behind, re-check when the instance is), which is exactly why the gate cannot key off the copy"
     },
     {
       "testid": "sidebar-list",

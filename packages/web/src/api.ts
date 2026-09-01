@@ -11,6 +11,7 @@ import {
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
+import { instanceUrl } from "@manifold/plugin/hooks";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
 export interface StoredIdentity {
@@ -32,8 +33,15 @@ function errorFromBody(status: number, body: unknown): Error {
   return new Error(`Request failed (${status})`);
 }
 
+/**
+ * Every door this layer knocks on is addressed at the INSTANCE, not at the origin that served
+ * the page. The two are the same thing for an ordinary self-hosted deployment and deliberately
+ * not the same assumption: a lens may be pointed elsewhere (`@manifold/plugin/hooks`
+ * `instanceOrigin`, AXIOMS §The portable lens), and a relative path would quietly follow the
+ * bundle's birthplace instead.
+ */
 async function requestJson(path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(path, init);
+  const response = await fetch(instanceUrl(path), init);
   const body = await readBody(response);
   if (!response.ok) throw errorFromBody(response.status, body);
   return body;

@@ -3,6 +3,7 @@ import {
   WORKSPACE_OVERLAY_SLOTS,
   ProjectionProvider,
   ViewportRegistrationProvider,
+  instanceUrl,
   sessionUrl,
   type ContainerOverlayProps,
   type OverlayRegistrations,
@@ -544,7 +545,7 @@ function EssentialRecovery({
           enabled: true,
         });
       }
-      const response = await fetch("/api/plugins", {
+      const response = await fetch(instanceUrl("/api/plugins"), {
         headers: { Authorization: `Bearer ${identity.token}` },
       });
       if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
@@ -615,7 +616,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     const controller = new AbortController();
     void (async (): Promise<void> => {
       try {
-        const response = await fetch("/api/plugins", {
+        const response = await fetch(instanceUrl("/api/plugins"), {
           headers: { Authorization: `Bearer ${identity.token}` },
           signal: controller.signal,
         });
@@ -642,7 +643,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     const controller = new AbortController();
     void (async (): Promise<void> => {
       try {
-        const response = await fetch("/api/bindings", {
+        const response = await fetch(instanceUrl("/api/bindings"), {
           headers: { Authorization: `Bearer ${identity.token}` },
           signal: controller.signal,
         });

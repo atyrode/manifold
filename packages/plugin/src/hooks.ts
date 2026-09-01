@@ -170,7 +170,18 @@ export {
   type TerminalFacet,
   type TerminalRendererProps,
 } from "./projection.ts";
-export { sessionUrl } from "./session-url.ts";
+/**
+ * WHICH INSTANCE the lens looks at, and the doors derived from it. Browser-only (it reads
+ * `window.location` and this device's memory), so it rides this subpath with the rest of the
+ * platform-bound seam.
+ */
+export {
+  chooseInstance,
+  instanceOrigin,
+  instanceUrl,
+  isForeignInstance,
+  sessionUrl,
+} from "./instance.ts";
 /**
  * The read-only automation seam the browser gates read. It touches `window`, so it rides this
  * browser-only subpath and never `@manifold/plugin`'s platform-free root.

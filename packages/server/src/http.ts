@@ -69,6 +69,24 @@ function errorResponse(error: RequestError): Response {
   return jsonResponse(body, STATUS_BY_CODE[error.code]);
 }
 
+/**
+ * The cross-origin permission every door answers with, applied by {@link HttpApp.fetch} rather
+ * than by each door: the set is one sentence — anyone may ask, with a bearer token, using the
+ * verbs the API has — and a per-route spelling of it is a route that will one day disagree.
+ *
+ * `*` rather than an allowlist of instances, deliberately. An instance cannot know which lenses
+ * will be pointed at it (that is the whole content of the portable-lens rule), and the origin
+ * asking is not the authority: the token is. Credentials are never permitted, so `*` cannot be
+ * upgraded into ambient access by a browser that decides to send something.
+ */
+function corsResponse(response: Response): Response {
+  response.headers.set("access-control-allow-origin", "*");
+  response.headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+  response.headers.set("access-control-allow-headers", "authorization, content-type");
+  response.headers.set("access-control-max-age", "600");
+  return response;
+}
+
 export async function parseJsonBody(request: Request): Promise<unknown> {
   const length = request.headers.get("content-length");
   if (length !== null && Number(length) > MAX_HTTP_BODY_BYTES) {
@@ -124,9 +142,30 @@ export class HttpApp {
     private readonly logger: Logger,
   ) {}
 
-  /** Handles a request without allowing auth secrets to enter logs or errors. */
+  /**
+   * Handles a request without allowing auth secrets to enter logs or errors.
+   *
+   * THE CROSS-ORIGIN WRAPPER, and its scope is the whole point: a lens is configurable
+   * (`AXIOMS.md` §The portable lens), so an app installed from one instance may be pointed at
+   * another, and a browser will not let it knock on a door that does not answer the preflight.
+   * The doors therefore answer any origin — and are safe to, because a token is the ONLY
+   * authority here: this API has no cookies and no ambient session, so there is nothing a
+   * stranger's page could ride. `credentials` is never allowed for exactly that reason, so the
+   * permission stays "anyone holding a valid bearer token", which is what it already was.
+   *
+   * The SHELL is deliberately excluded. Static files answer same-origin only, because a page
+   * that wants manifold's bundle should be served it by an instance rather than hotlink one.
+   */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (!url.pathname.startsWith("/api") && url.pathname !== "/healthz") {
+      return await this.route(request, url);
+    }
+    if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
+    return corsResponse(await this.route(request, url));
+  }
+
+  private async route(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method === "GET" && url.pathname === "/healthz") {
         return jsonResponse(
