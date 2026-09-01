@@ -10,6 +10,7 @@ import {
   Folder,
   FolderOpen,
   GripVertical,
+  Keyboard,
   LayoutDashboard,
   ListTree,
   Maximize2,
@@ -190,6 +191,8 @@ export type ControlKind =
   | "restart"
   | "terminalTree"
   | "grip"
+  /** The keys this workspace answers to, as a table a reader can open. */
+  | "bindings"
   /**
    * Two placements exchange seats. Worn by the drop preview when releasing on the exact
    * spot of something already there, which trades the two rather than splitting the target.
@@ -219,6 +222,7 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   restart: RotateCw,
   terminalTree: ListTree,
   grip: GripVertical,
+  bindings: Keyboard,
   swap: ArrowLeftRight,
 };
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import {
+  DIAL_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
   ROOT_TILE_ID,
   type ManifoldRef,
@@ -72,7 +73,7 @@ class FakeSocket {
       typeof frame === "object" &&
       frame !== null &&
       !("ch" in frame) &&
-      Reflect.get(frame, "type") !== "pong"
+      Reflect.get(frame, "type") !== "ping"
         ? { ch: this.channel, ...frame }
         : frame;
     const data = typeof tagged === "string" ? tagged : JSON.stringify(tagged);
@@ -463,31 +464,64 @@ describe("shared transport", () => {
 });
 
 describe("connection lifecycle", () => {
-  test("sends a keepalive ping every 45 seconds while open", () => {
+  test("a server ping is answered; the client generates no heartbeat of its own", () => {
     vi.useFakeTimers();
     const { client, socket } = connected();
 
-    vi.advanceTimersByTime(45_000);
-    expect(sentTypes(socket)).toEqual(["join", "ping"]);
+    /*
+      The client ASKS nothing. A background tab's timers are throttled to roughly one firing
+      a minute, so a server reaping on client-generated pings would close live tabs; a reply
+      to an inbound frame rides the message event and is throttled by nothing (issue #55).
+     */
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1);
+    expect(sentTypes(socket)).toEqual(["join"]);
 
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(socket)).toEqual(["join", "ping", "ping", "ping"]);
+    socket.receive({ type: "ping" });
+    expect(sentTypes(socket)).toEqual(["join", "pong"]);
     client.close();
   });
 
-  test("stops keepalive pings after client or socket close", () => {
+  test("silence past the deadline closes the phantom transport and re-dials", () => {
     vi.useFakeTimers();
-    const first = connected();
-    vi.advanceTimersByTime(45_000);
-    first.client.close();
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(first.socket)).toEqual(["join", "ping"]);
+    const { socket } = connected({ reconnect: true, backoffCapMs: 250 });
 
-    const second = connected();
-    vi.advanceTimersByTime(45_000);
-    second.socket.close();
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(second.socket)).toEqual(["join", "ping"]);
+    // Dead TCP nobody RST — a slept laptop, a proxy that swallowed the close. Waiting for
+    // the OS to notice can take the rest of the tab's life, so the client closes it itself
+    // and heals through the reconnect path it already owns.
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS + 1);
+    expect(socket.closedWith?.code).toBe(4008);
+
+    vi.advanceTimersByTime(1_000);
+    expect(FakeSocket.instances).toHaveLength(2);
+  });
+
+  test("any inbound frame resets the deadline, room traffic and pings alike", () => {
+    vi.useFakeTimers();
+    const { socket } = connected({ reconnect: true, backoffCapMs: 250 });
+
+    for (let round = 0; round < 3; round += 1) {
+      vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+      socket.receive({ type: "ping" });
+    }
+    // The watchdog watches the TRANSPORT, not the liveness pair: a busy room proves the
+    // socket is real without any help from the ping.
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+    socket.receive({ ...INIT, type: "resync" });
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+    expect(socket.closedWith).toBeNull();
+
+    vi.advanceTimersByTime(1_001);
+    expect(socket.closedWith?.code).toBe(4008);
+  });
+
+  test("a closed connection watches nothing: no phantom close after teardown", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected();
+    client.close();
+
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS * 2);
+    expect(socket.closedWith?.code).toBe(1000);
+    expect(FakeSocket.instances).toHaveLength(1);
   });
 
   test("4403 is terminal, rejects connect with the reason, and does not redial", async () => {

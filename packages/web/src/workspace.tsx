@@ -1,5 +1,10 @@
 import "./shell.css";
-import { sameIndexEntries, workspaceLayout } from "@manifold/plugin";
+import {
+  panelSections,
+  sameIndexEntries,
+  withPanelSections,
+  workspaceLayout,
+} from "@manifold/plugin";
 import {
   ContainerRouteProvider,
   projectLocalPresence,
@@ -10,7 +15,13 @@ import {
   type ContainerRoute,
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
-import { TileTree, WORKSPACE_TREE_CLASSES, setVantage, useNotice } from "@manifold/plugin/ui";
+import {
+  TileTree,
+  WORKSPACE_TREE_CLASSES,
+  setVantage,
+  useNotice,
+  useVantage,
+} from "@manifold/plugin/ui";
 import { ContainerResponseSchema } from "@manifold/protocol";
 import type {
   MachineSummary,
@@ -94,6 +105,24 @@ const DEFAULT_CONTAINER_NAME = "Untitled";
  */
 const COLLAPSE_MIRROR_KEY = "manifold:sidebar-collapsed-mirror";
 
+/**
+ * The refusal the panel leg of arrange mode wears, until it has one.
+ *
+ * F8 arms the whole workspace, and only ONE of its two legs landed: sections rearrange
+ * inside the sidebar, panels do not rearrange inside the workspace tree. The reason is
+ * structural rather than unfinished plumbing — a carry streams over a ROOM channel
+ * (`Gesture` is channelized, protocol session.ts) and the workspace tree is per-principal
+ * chrome that belongs to no room, so grabbing a panel has no gesture to ride and no
+ * placement vocabulary to land in. Building a second drag grammar for it is exactly the
+ * thing that must not be built.
+ *
+ * So the leg says so, in-product, on the pane it would have moved: a deferral has to be
+ * visible as a named refusal, never as prose in a commit message (AGENTS.md §Conventions).
+ */
+const PANEL_ARRANGE_REFUSAL = "arrange_panel_unsupported";
+const PANEL_ARRANGE_REFUSAL_MESSAGE =
+  "Panels cannot be rearranged yet — a panel has no room channel to carry it. Sidebar sections can.";
+
 function initialSidebarOpen(): boolean {
   try {
     return window.localStorage.getItem(COLLAPSE_MIRROR_KEY) !== "true";
@@ -127,6 +156,17 @@ export interface WorkspaceShell {
   createContainer(discipline: Container["discipline"]): void;
   createFolder(name: string): Promise<void>;
   registerSidebarElement(element: HTMLElement | null): void;
+  /**
+   * This principal's stored section arrangement for the sidebar panel, or undefined for
+   * "the manifests decide" — which is the default and the overwhelmingly common case.
+   */
+  readonly sectionOrder: readonly string[] | undefined;
+  /**
+   * COMMIT: the arrangement the sidebar let go of, written through the workspace layout
+   * door. One call per gesture at the release, never per frame (the plane rule's commit
+   * point) — the sidebar previews locally and calls this once.
+   */
+  commitSectionOrder(order: readonly string[]): void;
 }
 
 const WorkspaceShellContext = createContext<WorkspaceShell | null>(null);
@@ -253,6 +293,62 @@ export function WorkspaceHost({
       const current = layoutRef.current;
       if (current === null) return;
       const next = withoutTileLeaf(current, tileId);
+      if (next === null) return;
+      applyLayout(next, true);
+    },
+    [applyLayout],
+  );
+
+  // ------------------------------------------------------------- arrange mode
+
+  /**
+   * ARRANGE MODE, read off the vantage store the F8 binding writes.
+   *
+   * The flag is not this component's state, and that is the whole design: it is PRESENCE
+   * (`vantage.arranging`), so the binding row in `core.shell` flips it, this shell renders it,
+   * the sidebar panel renders it, and every collaborator sees it — one value, no owner
+   * (AXIOMS.md A2, AGENTS.md invariant 11). A `useState` here would have been a mode only
+   * this browser tab could know about, which is the exact capability the vantage store exists
+   * to abolish.
+   */
+  const { arranging } = useVantage();
+
+  /**
+   * Escape leaves. Bound here rather than in the binding table because Escape is not a
+   * declared binding — it is the universal "never mind" every mode owes its user, and a table
+   * row would claim the key for the workspace against every dialog and menu that needs it.
+   * Armed only while the mode is, so nothing listens for a key it cannot act on.
+   */
+  useEffect(() => {
+    if (!arranging) return;
+    const leaveArranging = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setVantage({ arranging: false });
+    };
+    window.addEventListener("keydown", leaveArranging);
+    return () => window.removeEventListener("keydown", leaveArranging);
+  }, [arranging]);
+
+  /** The panel leg's deferral, spoken when somebody tries the affordance that is not there. */
+  const refusePanelArrange = useCallback((): void => {
+    notify(PANEL_ARRANGE_REFUSAL_MESSAGE, { key: PANEL_ARRANGE_REFUSAL });
+  }, [notify]);
+
+  /**
+   * The sidebar's arrangement, read out of the same tree the dividers write to — so it
+   * arrives with the layout, survives a reload, and follows the principal to another device
+   * without a second store, a second fetch or a second door.
+   */
+  const sectionOrder = panelSections(layout, WORKSPACE_PANELS.sidebar);
+
+  const commitSectionOrder = useCallback(
+    (order: readonly string[]): void => {
+      const current = layoutRef.current;
+      if (current === null) return;
+      const next = withPanelSections(current, WORKSPACE_PANELS.sidebar, order);
+      // Null means the arrangement was not writable (no sidebar leaf in this tree, or an
+      // order naming a section twice). The layout the reader is looking at is left alone.
       if (next === null) return;
       applyLayout(next, true);
     },
@@ -657,13 +753,17 @@ export function WorkspaceHost({
       createContainer,
       createFolder,
       registerSidebarElement,
+      sectionOrder,
+      commitSectionOrder,
     }),
     [
+      commitSectionOrder,
       createContainer,
       createFolder,
       creating,
       identity,
       registerSidebarElement,
+      sectionOrder,
       sidebarOpen,
       workspace,
     ],
@@ -706,7 +806,9 @@ export function WorkspaceHost({
   );
 
   return (
-    <main className={`workspace${sidebarOpen ? "" : " is-collapsed"}`}>
+    <main
+      className={`workspace${sidebarOpen ? "" : " is-collapsed"}${arranging ? " is-arranging" : ""}`}
+    >
       <WorkspaceShellContext.Provider value={shell}>
         <ContainerRouteProvider value={route}>
           {layout === null ? null : (
@@ -719,6 +821,32 @@ export function WorkspaceHost({
               renderLeaf={renderLeaf}
             />
           )}
+          {/*
+            THE MODE, said out loud. A workspace whose terminals have stopped answering the
+            mouse owes the reader the reason, the way out, and — because only one of the two
+            legs landed — an honest account of what it cannot do yet. The refused control is a
+            control, not a sentence in a stylesheet: it carries the rule as `data-refusal` and
+            explains itself when pressed, which is what makes the deferral a thing in the
+            product rather than a note in a commit message.
+          */}
+          {arranging ? (
+            <div className="workspace-arrange-bar" role="status">
+              <strong className="workspace-arrange-title">Arrange mode</strong>
+              <span className="workspace-arrange-hint">
+                Drag a sidebar section by its grip to reorder it. Esc or F8 to finish.
+              </span>
+              <button
+                type="button"
+                className="workspace-arrange-refused"
+                aria-disabled="true"
+                data-refusal={PANEL_ARRANGE_REFUSAL}
+                title={PANEL_ARRANGE_REFUSAL_MESSAGE}
+                onClick={refusePanelArrange}
+              >
+                Panels: not yet
+              </button>
+            </div>
+          ) : null}
         </ContainerRouteProvider>
       </WorkspaceShellContext.Provider>
     </main>

@@ -56,6 +56,87 @@
   flex: 0 0 3.25rem;
 }
 
+/*
+ * ── ARRANGE MODE (F8) ─────────────────────────────────────────────────────────────────
+ *
+ * The mode is one class on the workspace root, written from `vantage.arranging` — so what
+ * paints here is the same value every collaborator can read off presence, not a private
+ * flag. Two things change while it is armed.
+ *
+ * CONTENT STOPS TAKING POINTER INPUT. Suppression sits on `.tile-content-host`, the one seat
+ * every pane's content rides in (`tile-tree.tsx`), because that is the single place that
+ * covers every renderer at once — a terminal, a canvas, a plugin panel nobody has written
+ * yet. Dividers are deliberately NOT suppressed: resizing IS arranging, and the seam already
+ * commits through the layout door this mode's own release uses.
+ *
+ * THE PANES SAY WHAT THEY ARE. `not-allowed` on the pane is the panel leg's disabled state,
+ * on the exact surface a grab would have started from; the bar above carries the named
+ * refusal that explains it. The affordance that DOES work re-enables itself explicitly
+ * (`.sidebar-section-grip`), so exactly one thing is grabbable and it is the thing that
+ * moves.
+ */
+.workspace.is-arranging .tile-content-host {
+  pointer-events: none;
+}
+
+.workspace.is-arranging .workspace-pane {
+  cursor: not-allowed;
+}
+
+.workspace.is-arranging .sidebar-section-grip {
+  pointer-events: auto;
+}
+
+/* Floating, centred, above every pane: the mode's own chrome belongs to no pane. */
+.workspace-arrange-bar {
+  position: absolute;
+  z-index: 40;
+  bottom: 1.1rem;
+  left: 50%;
+  display: flex;
+  max-width: min(46rem, calc(100% - 2rem));
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid #3b4252;
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  color: #e9ecef;
+  background: #1f232b;
+  box-shadow: 0 0.6rem 1.6rem rgb(0 0 0 / 38%);
+  font-size: 0.78rem;
+  transform: translateX(-50%);
+}
+
+.workspace-arrange-title {
+  color: #edf2ff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workspace-arrange-hint {
+  min-width: 0;
+  color: #adb5bd;
+}
+
+/* A refusal that can be pressed: aria-disabled, never `disabled`, because a control the
+   reader cannot ask about is a deferral they cannot see the shape of. */
+.workspace-arrange-refused {
+  flex: 0 0 auto;
+  border: 1px dashed #565f70;
+  border-radius: 0.4rem;
+  padding: 0.2rem 0.45rem;
+  color: #868e96;
+  background: transparent;
+  font: inherit;
+  cursor: help;
+}
+
+.workspace-arrange-refused:hover,
+.workspace-arrange-refused:focus-visible {
+  color: #ced4da;
+  border-color: #6c7684;
+}
+
 .sidebar-header {
   display: flex;
   min-height: 2.25rem;
@@ -293,6 +374,54 @@
    while open: a collapsed section must shrink to its header instead of holding its slot. */
 .sidebar-section--grow[data-state="open"] {
   flex: 1 1 auto;
+}
+
+/*
+ * THE GRAB SURFACE — the one thing arrange mode makes grabbable.
+ *
+ * It exists only while the mode is armed (the panel renders it conditionally) and covers the
+ * WHOLE section, which does two jobs with one box: it says the section itself is the thing in
+ * hand, and it keeps the pointer off the disclosure's toggle underneath, so a grab can never
+ * fold the section it is moving. It re-enables its own pointer events out of the mode's
+ * blanket suppression (see §ARRANGE MODE) — the one live target in an inert workspace.
+ *
+ * The positioning ancestor is the SECTION, granted only while the mode is on, so nothing
+ * about the stack's stacking or containing blocks changes when nobody is arranging.
+ */
+.workspace.is-arranging .sidebar-section {
+  position: relative;
+}
+
+.sidebar-section-grip {
+  position: absolute;
+  z-index: 25;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0.42rem;
+  color: #adb5bd;
+  background: rgb(76 110 245 / 12%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sidebar-section-grip:hover {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 22%);
+}
+
+/* The section IN HAND. It keeps its place in the stack — the ORDER is the preview, so the
+   stack reflows under the pointer and there is no second floating copy to keep in step with
+   it. One derivation, which is also why a collaborator would see the same thing. */
+.sidebar-section--grabbed {
+  outline: 1px solid #4c6ef5;
+  outline-offset: -1px;
+}
+
+.sidebar-section--grabbed > .sidebar-section-header > .sidebar-section-grip {
+  background: rgb(76 110 245 / 30%);
+  cursor: grabbing;
 }
 
 /* The header IS the disclosure's toggle button (`.disclosure__header` resets the
@@ -722,6 +851,133 @@ button.sidebar-terminal.is-summary > small {
 .workspace.is-collapsed .sidebar-identity {
   justify-content: center;
   padding-inline: 0;
+}
+
+/* The key table's door: quiet chrome at the foot of the rail, over the identity line. */
+.sidebar-bindings {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.9rem;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0 0.35rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.sidebar-bindings:hover,
+.sidebar-bindings:focus-visible {
+  color: #edf2ff;
+  background: #292d35;
+}
+
+.workspace.is-collapsed .sidebar-bindings {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+/* The composed binding table, in a dialog: the changelog's shape, one size smaller. */
+.sidebar-bindings-dialog {
+  width: min(26rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100vh - 2rem));
+  overflow: hidden;
+  border: 1px solid #3b4149;
+  border-radius: 0.9rem;
+  padding: 0;
+  color: #e9ecef;
+  background: #1d2025;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.sidebar-bindings-dialog::backdrop {
+  background: rgb(7 9 12 / 72%);
+  backdrop-filter: blur(0.2rem);
+}
+
+.sidebar-bindings-card {
+  display: grid;
+  max-height: min(34rem, calc(100vh - 2rem));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.sidebar-bindings-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem 1.35rem 0.7rem;
+}
+
+.sidebar-bindings-card > header span {
+  color: #748ffc;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar-bindings-card h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+  letter-spacing: -0.025em;
+}
+
+.sidebar-bindings-card > header button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  color: #adb5bd;
+  background: #22262c;
+  cursor: pointer;
+}
+
+.sidebar-bindings-card > header button:hover,
+.sidebar-bindings-card > header button:focus-visible {
+  border-color: #495057;
+  color: #f1f3f5;
+  background: #2b3036;
+}
+
+.sidebar-bindings-body {
+  padding: 0 1.35rem 1.35rem;
+}
+
+.sidebar-bindings-label {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.sidebar-bindings-label > small {
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+/* A key reads as a key: the one keycap in the product, so it is drawn here and nowhere else. */
+.sidebar-bindings-key {
+  flex: 0 0 auto;
+  border: 1px solid #3b4149;
+  border-bottom-width: 2px;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  color: #dee2e6;
+  background: #22262c;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.sidebar-bindings-empty {
+  margin: 0;
+  color: #868e96;
+  font-size: 0.8rem;
 }
 
 .web-changelog-dialog {

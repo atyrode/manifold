@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   cursorLabel,
+  expireRemoteCursors,
   pruneRemoteCursors,
   recordRemoteCursor,
+  retractRemoteCursor,
   stepRemoteCursors,
   type RemoteCursor,
 } from "./cursor-identity.ts";
@@ -88,11 +90,23 @@ export function useRemoteCursors(
       publish();
     });
     const offCursor = client.on("cursor", (message) => {
-      if (recordRemoteCursor(map, message, client.selfConnId)) publish();
+      if (recordRemoteCursor(map, message, client.selfConnId, performance.now())) publish();
+    });
+    /**
+     * The other half of motion: a pointer saying it is GONE. Retraction rides the presence
+     * plane as an explicit null cursor — the wire form that plane has always spelled
+     * "cleared" with — so the departure arrives on the same ordered socket as the frames it
+     * ends, and no side channel exists to arrive out of order with them. Every other
+     * presence field is somebody else's business and is ignored here.
+     */
+    const offPresence = client.on("presence", (message) => {
+      if (message.payload.cursor !== null) return;
+      if (retractRemoteCursor(map, message, client.selfConnId)) publish();
     });
     return () => {
       offAttendance();
       offCursor();
+      offPresence();
       // A renderer swapping clients must not inherit the previous room's cursors.
       map.clear();
       publish();
@@ -106,10 +120,11 @@ export function useRemoteCursors(
       const elapsed = Math.max(0, now - previous);
       previous = now;
       // Idle rooms cost one comparison per cursor: stepping an unchanged map returns
-      // false and never touches React state.
-      if (stepRemoteCursors(cursorsRef.current, elapsed, SNAP_EPSILON[space])) {
-        setCursors([...cursorsRef.current.values()]);
-      }
+      // false and never touches React state. Expiry rides the same pass rather than a
+      // timer of its own — the frame loop is already the room's clock.
+      const stepped = stepRemoteCursors(cursorsRef.current, elapsed, SNAP_EPSILON[space]);
+      const expired = expireRemoteCursors(cursorsRef.current, now);
+      if (stepped || expired) setCursors([...cursorsRef.current.values()]);
       animationFrame = requestAnimationFrame(tick);
     };
     animationFrame = requestAnimationFrame(tick);

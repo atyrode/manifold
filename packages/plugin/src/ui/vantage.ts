@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 /**
  * This device's VIEW STATE, published (AXIOMS.md A2).
  *
@@ -28,6 +30,17 @@ export interface Vantage {
   /** Container whose tile the viewer has engaged. */
   readonly focusedContainerId: string | null;
   readonly sidebarCollapsed: boolean;
+  /**
+   * ARRANGE MODE (F8): the workspace's panels and the sidebar's sections are grabbable
+   * within their parent composition and everything else has stopped taking pointer input.
+   *
+   * A MODE, and published for exactly the reason the rest of this store is: a collaborator
+   * watching a principal whose terminals suddenly ignore clicks is owed the reason, and an
+   * agent driving the mode is owed a way to read it back. It is descriptive — the
+   * arrangement it produces commits through `core.space.setLayout`, which is where the
+   * authority lives; nothing downstream branches on WHOSE mode it is (invariant 11).
+   */
+  readonly arranging: boolean;
 }
 
 const INITIAL: Vantage = {
@@ -35,6 +48,7 @@ const INITIAL: Vantage = {
   editingElementId: null,
   focusedContainerId: null,
   sidebarCollapsed: false,
+  arranging: false,
 };
 
 let state: Vantage = INITIAL;
@@ -55,7 +69,8 @@ export function setVantage(patch: Partial<Vantage>): void {
     next.tool === state.tool &&
     next.editingElementId === state.editingElementId &&
     next.focusedContainerId === state.focusedContainerId &&
-    next.sidebarCollapsed === state.sidebarCollapsed
+    next.sidebarCollapsed === state.sidebarCollapsed &&
+    next.arranging === state.arranging
   ) {
     return;
   }
@@ -69,4 +84,24 @@ export function subscribeVantage(callback: (view: Vantage) => void): () => void 
   return () => {
     listeners.delete(callback);
   };
+}
+
+/**
+ * THE flip of arrange mode. It is a function rather than a `setVantage` call at each caller
+ * because the mode has more than one entrance — the F8 binding, the Escape exit, and any
+ * affordance a later wave adds — and "read the flag, write its negation" is the kind of
+ * two-step that grows a second answer the moment it is written twice (invariant 14).
+ */
+export function toggleArranging(): void {
+  setVantage({ arranging: !state.arranging });
+}
+
+/**
+ * This device's vantage, as a React value. Floor chrome and plugin chrome both need to
+ * RENDER the mode they publish — a pane that stops taking clicks, a section that grows a
+ * grip — and `useSyncExternalStore` is how a module store becomes a render input without
+ * an effect mirroring it into component state.
+ */
+export function useVantage(): Vantage {
+  return useSyncExternalStore(subscribeVantage, currentVantage, currentVantage);
 }

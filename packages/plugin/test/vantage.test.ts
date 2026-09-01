@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { currentVantage, setVantage, subscribeVantage, type Vantage } from "../src/ui/vantage.ts";
+import {
+  currentVantage,
+  setVantage,
+  subscribeVantage,
+  toggleArranging,
+  type Vantage,
+} from "../src/ui/vantage.ts";
 
 /**
  * VIEW STATE IS PUBLISHED STATE (A2).
@@ -20,6 +26,7 @@ const INITIAL: Vantage = {
   editingElementId: null,
   focusedContainerId: null,
   sidebarCollapsed: false,
+  arranging: false,
 };
 
 /** The same value the toolbar re-asserts, written as a full patch rather than a partial. */
@@ -28,6 +35,7 @@ const INITIAL_TOOL_PATCH: Partial<Vantage> = {
   editingElementId: null,
   focusedContainerId: null,
   sidebarCollapsed: false,
+  arranging: false,
 };
 
 /**
@@ -98,13 +106,21 @@ describe("view state store", () => {
     setVantage({ editingElementId: "el-1" });
     setVantage({ focusedContainerId: "container-1" });
     setVantage({ sidebarCollapsed: true });
-    expect(notifications).toBe(4);
+    // The mode flips through its own door, and that door IS a vantage write — so a mode
+    // entered by F8 is on the wire for the same reason a held tool is.
+    toggleArranging();
+    expect(notifications).toBe(5);
     expect(currentVantage()).toEqual({
       tool: "text",
       editingElementId: "el-1",
       focusedContainerId: "container-1",
       sidebarCollapsed: true,
+      arranging: true,
     });
+    // And it is a TOGGLE: the second press leaves, publishing that too.
+    toggleArranging();
+    expect(notifications).toBe(6);
+    expect(currentVantage().arranging).toBe(false);
     stop();
   });
 

@@ -1,3 +1,5 @@
+import { CURSOR_TTL_MS } from "@manifold/protocol";
+
 import { CURSOR_HALF_LIFE_MS, stepToward } from "./interpolate";
 
 export interface RemoteCursor {
@@ -7,6 +9,8 @@ export interface RemoteCursor {
   readonly y: number;
   readonly targetX: number;
   readonly targetY: number;
+  /** When this cursor last heard from its sender; the clock behind {@link expireRemoteCursors}. */
+  readonly updatedAt: number;
 }
 
 interface CursorFrame {
@@ -14,6 +18,12 @@ interface CursorFrame {
   readonly connId: string;
   readonly x: number;
   readonly y: number;
+}
+
+/** Which socket a retraction speaks for. A cursor is per-connection, so a retraction is too. */
+interface CursorSender {
+  readonly principalId: string;
+  readonly connId: string;
 }
 
 /** A socket id remains unique when one principal has several live browser connections. */
@@ -26,6 +36,7 @@ export function recordRemoteCursor(
   cursors: Map<string, RemoteCursor>,
   frame: CursorFrame,
   selfConnId: string | null,
+  now: number,
 ): boolean {
   if (frame.connId === selfConnId) return false;
   const id = remoteCursorSocketId(frame.principalId, frame.connId);
@@ -37,8 +48,48 @@ export function recordRemoteCursor(
     y: previous?.y ?? frame.y,
     targetX: frame.x,
     targetY: frame.y,
+    updatedAt: now,
   });
   return true;
+}
+
+/**
+ * Retires one sender's cursor because that sender SAID it is gone — a pointer off the
+ * surface, or a tab gone hidden, published as a null cursor on the presence plane.
+ *
+ * Exactly one socket's cursor goes: the sibling tabs of the same principal are separate
+ * pointers on separate screens, and the room's other principals are nobody's business
+ * here. Reporting whether anything was actually removed keeps a retraction for a cursor
+ * this viewer never painted — a peer who left before their first frame arrived, or this
+ * socket's own echo — from costing a repaint.
+ */
+export function retractRemoteCursor(
+  cursors: Map<string, RemoteCursor>,
+  sender: CursorSender,
+  selfConnId: string | null,
+): boolean {
+  if (sender.connId === selfConnId) return false;
+  return cursors.delete(remoteCursorSocketId(sender.principalId, sender.connId));
+}
+
+/**
+ * Retires what a missing retraction left behind. The explicit goodbye rides an ordered
+ * socket, so this fires only when the socket itself died between the last frame and the
+ * roster noticing — but "only" is not "never", and the cost of getting it wrong is a
+ * cursor nobody can dismiss sitting on a shared canvas forever (#54).
+ *
+ * The clock is a parameter, never `performance.now()` read in here: the caller already
+ * holds an animation-frame timestamp, and a pure module that reads a clock cannot be
+ * tested at the boundary that matters.
+ */
+export function expireRemoteCursors(cursors: Map<string, RemoteCursor>, now: number): boolean {
+  let changed = false;
+  for (const [id, cursor] of cursors) {
+    if (now - cursor.updatedAt <= CURSOR_TTL_MS) continue;
+    cursors.delete(id);
+    changed = true;
+  }
+  return changed;
 }
 
 interface AttendanceConnections {

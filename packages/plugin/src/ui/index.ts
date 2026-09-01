@@ -87,7 +87,7 @@ export {
   type TileTreeProps,
 } from "./tile-tree.tsx";
 export { TilePreviewOverlay, type TilePreviewOverlayProps } from "./tile-preview-overlay.tsx";
-export { TileZoneDebug } from "./tile-zone-debug.tsx";
+export { TileZoneDebug, toggleZoneProbe } from "./tile-zone-debug.tsx";
 export {
   NoticeContext,
   useNotice,
@@ -95,4 +95,11 @@ export {
   type NoticeLifetime,
   type NoticeOptions,
 } from "./notice.ts";
-export { currentVantage, setVantage, subscribeVantage, type Vantage } from "./vantage.ts";
+export {
+  currentVantage,
+  setVantage,
+  subscribeVantage,
+  toggleArranging,
+  useVantage,
+  type Vantage,
+} from "./vantage.ts";

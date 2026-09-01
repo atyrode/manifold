@@ -235,16 +235,21 @@ export class AssemblyError extends Error {
   }
 }
 
-/** Every claimant of a name, so a duplicate can be reported with all of its offenders. */
-type Claims = Map<string, string[]>;
+/**
+ * Every claimant of a name, so a duplicate can be reported with all of its offenders.
+ * Exported inside this package for the one other registry that composes claimed names — the
+ * binding table (`bindings.ts`) — because "two plugins claimed one thing" must read the same
+ * way whichever vocabulary it happened in.
+ */
+export type Claims = Map<string, string[]>;
 
-function claim(claims: Claims, name: string, claimant: string): void {
+export function claim(claims: Claims, name: string, claimant: string): void {
   const existing = claims.get(name);
   if (existing === undefined) claims.set(name, [claimant]);
   else existing.push(claimant);
 }
 
-function reportDuplicates(claims: Claims, noun: string, problems: string[]): void {
+export function reportDuplicates(claims: Claims, noun: string, problems: string[]): void {
   for (const [name, claimants] of claims) {
     if (claimants.length < 2) continue;
     problems.push(`duplicate ${noun} "${name}" claimed by: ${claimants.join(", ")}`);

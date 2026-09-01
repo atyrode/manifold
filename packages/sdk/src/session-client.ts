@@ -578,7 +578,7 @@ export class SessionClient {
         this.terminals.clear();
         for (const s of msg.terminals) this.terminals.set(s.id, s);
         this.setStatus("open");
-        // Keepalive belongs to the socket, which the pooled connection owns and pings.
+        // Liveness belongs to the socket, which the pooled connection owns and answers for.
         this.flushOutbox();
         if (this.hasLocalEdits) {
           const state = Y.encodeStateAsUpdate(this.currentDoc);

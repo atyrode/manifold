@@ -156,7 +156,7 @@ set empties — a file moves into its plugin, or a pillar states the litmus find
       "id": "sdk",
       "globs": ["packages/sdk/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the only WebSocket state machine plus the typed HTTP client: dial, keepalive, rejoin, channel demux, connection frames, action dispatch. Every principal — browser, agent, remote SDK — reaches the doors through it, which is the mechanism behind A2's 'one door, every principal'.",
+      "verdict": "the only WebSocket state machine plus the typed HTTP client: dial, liveness, rejoin, channel demux, connection frames, action dispatch. Every principal — browser, agent, remote SDK — reaches the doors through it, which is the mechanism behind A2's 'one door, every principal'.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -665,7 +665,13 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "vantage",
-      "means": "one principal's published view state: the tool in hand, the edit target, the focused container, whether the sidebar is open",
+      "means": "one principal's published view state: the tool in hand, the edit target, the focused container, whether the sidebar is open, whether they are arranging",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "arrange mode",
+      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
       "banned": [],
       "allow": []
     },
@@ -862,7 +868,13 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "contribution",
-      "means": "one declared offering of a plugin: a panel, a section, an element, a tool, an event",
+      "means": "one declared offering of a plugin: a panel, a section, an element, a tool, an event, a binding",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "binding",
+      "means": "contribution kind: one key this workspace answers to — a declared key, label and scope claimed globally, dispatched to its owning plugin's handler and printed in the sidebar's key table",
       "banned": [],
       "allow": []
     },
@@ -874,7 +886,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "section",
-      "means": "contribution kind: a collapsible block in the sidebar stack, ordered by its manifest",
+      "means": "contribution kind: a collapsible block in the sidebar stack, ordered by its manifest unless the reader has arranged it (see arrange mode)",
       "banned": [],
       "allow": []
     },
@@ -1737,7 +1749,7 @@ asserts is the same defect as an undeclared door, one register further in.
       "longTasks": 2,
       "longTaskMaxMs": 120,
       "socketFramesPerMin": 120,
-      "why": "an open canvas with a live terminal, at rest. The ceilings are near-zero on purpose: content-compared shared feeds mean an unchanged answer reaches no subscriber, so a STEADY workspace should re-render nobody at all (measured: 0 commits, 195ms of script and 0 socket frames per 30s). The socket-frame ceiling is headroom for keepalive and nothing else — an `event` frame at idle means something is emitting without a commit point behind it, which is the wave-2 shape of the same defect the re-render ceiling catches. Anything that puts a number here has found a new heartbeat"
+      "why": "an open canvas with a live terminal, at rest. The ceilings are near-zero on purpose: content-compared shared feeds mean an unchanged answer reaches no subscriber, so a STEADY workspace should re-render nobody at all (measured: 0 commits, 195ms of script and 0 socket frames per 30s). The socket-frame ceiling is headroom for LIVENESS and nothing else — the server pings on DIAL_PING_INTERVAL_MS (30s) and the tab answers, which is 4 frames a minute; an `event` frame at idle means something is emitting without a commit point behind it, which is the wave-2 shape of the same defect the re-render ceiling catches. Anything that puts a number here has found a new heartbeat"
     },
     "instanceChannel": {
       "framesPerMinPerDial": 4,

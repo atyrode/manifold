@@ -69,7 +69,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
 
     const wrongFirst = await rawSessionSocket(server);
     sockets.push(wrongFirst);
-    wrongFirst.sendRaw(JSON.stringify({ type: "ping" }));
+    wrongFirst.sendRaw(JSON.stringify({ type: "pong" }));
     const wrongFirstClose = await waitFor(() => wrongFirst.closeInfo, 5_000, 20);
     expect(wrongFirstClose.code).toBe(4002);
     expect(wrongFirstClose.reason).toBe("first frame must be join");
@@ -93,8 +93,10 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     sockets.push(unknownType);
     await joinRaw(unknownType, container.id, grant.token);
     unknownType.sendRaw(sessionFrame({ type: "zorp" }));
-    unknownType.sendRaw(JSON.stringify({ type: "ping" }));
-    await waitFor(() => unknownType.frames.some((frame) => frame.type === "pong"), 5_000, 20);
+    // The socket survived an unknown type, and it is still SERVING: a frame the server
+    // answers proves that, where a liveness pong (which the server never answers) could not.
+    unknownType.sendRaw(sessionFrame({ type: "resync_request" }));
+    await waitFor(() => unknownType.frames.some((frame) => frame.type === "resync"), 5_000, 20);
     expect(unknownType.readyState).toBe(WebSocket.OPEN);
 
     const oversized = await rawSessionSocket(server);

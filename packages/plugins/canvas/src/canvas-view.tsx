@@ -553,6 +553,39 @@ export function CanvasView({
     if (latest !== null) emitCursor(latest.x, latest.y);
   }, [emitCursor]);
 
+  /**
+   * "My pointer is no longer here", normalized into the WIRE form before it leaves this
+   * callback (invariant 11): the presence plane already spells a cleared cursor as an
+   * explicit null, so a departure needs no frame type of its own and arrives on the same
+   * ordered socket as the motion it ends. Without it the last frame before the pointer
+   * left stays on every peer's canvas as a cursor that will never move again (#54).
+   *
+   * `lastClientRef` doubles as the "is anything published" flag, so a hidden tab that was
+   * never pointed at, or a second visibility change, sends nothing. Clearing it also stops
+   * `reemitCursor` from resurrecting the retracted position on the next viewport change,
+   * and zeroing the throttle lets the pointer's return be seen on its first frame rather
+   * than one send interval later.
+   */
+  const retractCursor = useCallback((): void => {
+    if (lastClientRef.current === null) return;
+    lastClientRef.current = null;
+    cursorLastSentRef.current = 0;
+    client.sendPresence({ cursor: null });
+  }, [client]);
+
+  /**
+   * A hidden tab has no pointer, and it is the one departure no pointer event reports:
+   * switching tabs or minimizing fires no `pointerleave`, so without this the last frame
+   * before the switch is exactly the ghost this canvas is trying not to leave behind.
+   */
+  useEffect(() => {
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === "hidden") retractCursor();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [retractCursor]);
+
   const publishViewport = useCallback(
     (
       viewport: { readonly x: number; readonly y: number; readonly zoom: number },
@@ -1657,7 +1690,14 @@ export function CanvasView({
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
           completeStroke(event.pointerId);
+          // A cancelled pointer is gone without ever crossing the boundary: no
+          // `pointerleave` follows a touch the browser took back.
+          retractCursor();
         }}
+        // Fires only when the pointer leaves the canvas AND everything drawn inside it, so
+        // crossing into an element does not retract. A captured pointer (a live stroke)
+        // suppresses it, which is the wanted answer: that pointer has not left.
+        onPointerLeave={retractCursor}
       >
         {/*
           WHO is here, and "look at this" — `core.presence`'s chrome, mounted rather than

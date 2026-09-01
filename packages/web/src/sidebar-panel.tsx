@@ -1,9 +1,16 @@
-import type { PanelProps, SectionProps } from "@manifold/plugin";
+import {
+  arrangedSectionIds,
+  movedSectionIds,
+  type ComposedBinding,
+  type PanelProps,
+  type SectionProps,
+} from "@manifold/plugin";
 import {
   useEffect,
   useRef,
   useState,
   type ComponentType,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -16,6 +23,7 @@ import {
   ItemIcon,
   ScrollRegion,
   Stack,
+  useVantage,
 } from "@manifold/plugin/ui";
 import { PluginPlaceholder, useAssembly, type WebSection } from "./plugin-host.tsx";
 import { useWorkspaceShell } from "./workspace.tsx";
@@ -85,6 +93,30 @@ function renderChangelogChange(change: string): ReactNode {
 /** Per-section disclosure state. Device-LOCAL and in-memory: see the module note below. */
 type CollapsedSections = Readonly<Record<string, boolean>>;
 
+/** One live section grab: what is held, and the order the stack is showing because of it. */
+interface SectionGrab {
+  readonly moved: string;
+  readonly order: readonly string[];
+}
+
+/**
+ * Which section the pointer is over, read off the live stack by geometry.
+ *
+ * By RECT rather than by hit-testing, and that is forced rather than preferred: arrange mode
+ * puts `pointer-events: none` on the pane content it disarms, and `elementFromPoint` skips
+ * exactly the elements that opted out of the pointer — so the one obvious way to ask this
+ * question returns nothing while the mode that needs the answer is on. Sections already carry
+ * `data-section-id` for the gate's own queries, so the stack names itself and there is no ref
+ * plumbing to keep in step with the order it is describing.
+ */
+function sectionIdAt(clientY: number): string | null {
+  for (const element of document.querySelectorAll<HTMLElement>("[data-section-id]")) {
+    const box = element.getBoundingClientRect();
+    if (clientY >= box.top && clientY <= box.bottom) return element.dataset["sectionId"] ?? null;
+  }
+  return null;
+}
+
 interface SectionShellProps {
   readonly section: WebSection;
   /** The stack's height absorber and its icon-rail occupant; see {@link SidebarPanel}. */
@@ -93,6 +125,15 @@ interface SectionShellProps {
   readonly onCollapsedChange: (id: string, collapsed: boolean) => void;
   readonly host: SectionProps["host"];
   readonly pluginTitle: string;
+  /** Arrange mode is armed: this section is grabbable and nothing inside it is clickable. */
+  readonly arranging: boolean;
+  /** This is the section in hand right now. */
+  readonly grabbed: boolean;
+  readonly onGrab: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
+  readonly onGrabMove: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
+  readonly onGrabEnd: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
+  /** Keyboard arrangement: one slot up or down, committed immediately. */
+  readonly onNudge: (id: string, delta: -1 | 1) => void;
 }
 
 /**
@@ -114,11 +155,19 @@ function SectionShell({
   onCollapsedChange,
   host,
   pluginTitle,
+  arranging,
+  grabbed,
+  onGrab,
+  onGrabMove,
+  onGrabEnd,
+  onNudge,
 }: SectionShellProps): ReactElement {
   const Component: ComponentType<SectionProps> | null = section.Component;
   return (
     <Disclosure
-      className={`sidebar-section${grow ? " sidebar-section--grow" : ""}`}
+      className={`sidebar-section${grow ? " sidebar-section--grow" : ""}${
+        grabbed ? " sidebar-section--grabbed" : ""
+      }`}
       data-testid={`${section.id}-section`}
       data-section-id={section.id}
       data-plugin={section.plugin}
@@ -126,8 +175,47 @@ function SectionShell({
       onOpenChange={(open) => onCollapsedChange(section.id, !open)}
       headerClassName="sidebar-section-header"
       bodyClassName="sidebar-section-body"
+      /*
+        Arranging by KEYBOARD, on the section's own root: the arrow keys bubble up from the
+        focused header, so the mode is operable without a pointer and the nudge goes through
+        the very same policy function and the very same commit door the drag does. A mode
+        reachable only by dragging would be a mode half the operators cannot use.
+      */
+      onKeyDown={
+        arranging
+          ? (event) => {
+              const delta = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : null;
+              if (delta === null) return;
+              event.preventDefault();
+              onNudge(section.id, delta);
+            }
+          : undefined
+      }
       header={
         <>
+          {/*
+            THE GRAB SURFACE. It covers the whole section rather than a corner handle, because
+            the mode's promise is that the section IS the thing you are holding — and covering
+            it is also what stops the disclosure from folding under a grab, since the pointer
+            never reaches the toggle underneath. It lives in the header slot for want of a
+            sibling slot on the disclosure and positions against the section itself, which is
+            what `.workspace.is-arranging .sidebar-section { position: relative }` is for.
+
+            `aria-hidden` and no tab stop: the keyboard route is the arrow keys above, so this
+            never becomes an interactive descendant of the header button.
+          */}
+          {arranging ? (
+            <span
+              className="sidebar-section-grip"
+              aria-hidden="true"
+              onPointerDown={(event) => onGrab(section.id, event)}
+              onPointerMove={(event) => onGrabMove(section.id, event)}
+              onPointerUp={(event) => onGrabEnd(section.id, event)}
+              onPointerCancel={(event) => onGrabEnd(section.id, event)}
+            >
+              <ControlIcon kind="grip" size={14} />
+            </span>
+          ) : null}
           <span className="sidebar-section-chevron" aria-hidden="true">
             <ControlIcon kind="collapsed" size={13} />
           </span>
@@ -146,6 +234,45 @@ function SectionShell({
   );
 }
 
+/**
+ * THE KEY TABLE, as a reader sees it: every binding the composition composed, with the key, what
+ * it does and which plugin owns it.
+ *
+ * It prints the registry rather than a hand-kept list, which is the whole point of declaring
+ * keys: a plugin that ships a binding appears here for free, a disabled plugin's rows are gone
+ * because composition dropped them, and a key nobody declared cannot be listed — it also cannot
+ * be dispatched. Scope is shown only when a row narrows it: "canvas" beside a row that only
+ * answers on a canvas is information, and "always" beside eleven rows is noise.
+ */
+function BindingsTable({
+  bindings,
+  pluginTitle,
+}: {
+  readonly bindings: readonly ComposedBinding[];
+  readonly pluginTitle: (plugin: string) => string;
+}): ReactElement {
+  return (
+    <Stack gap="0.5rem">
+      {bindings.length === 0 ? (
+        <p className="sidebar-bindings-empty">No plugin claims a key in this workspace.</p>
+      ) : (
+        bindings.map((binding) => (
+          <Cluster key={binding.id} justify="space-between" gap="0.75rem">
+            <span className="sidebar-bindings-label">
+              {binding.label}
+              <small>
+                {pluginTitle(binding.plugin)}
+                {binding.when === "always" ? "" : ` · ${binding.when} only`}
+              </small>
+            </span>
+            <kbd className="sidebar-bindings-key">{binding.key}</kbd>
+          </Cluster>
+        ))
+      )}
+    </Stack>
+  );
+}
+
 export function SidebarPanel({ host }: PanelProps): ReactElement {
   const assembly = useAssembly();
   /*
@@ -155,15 +282,18 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     what keeps that true.
   */
   const {
+    commitSectionOrder,
     createContainer,
     createFolder,
     creating,
     identity,
     registerSidebarElement,
+    sectionOrder,
     setSidebarOpen,
     sidebarOpen,
     workspace,
   } = useWorkspaceShell();
+  const { arranging } = useVantage();
   /*
    * Per-section disclosure is in-memory only. The sidebar's four private storage keys are gone
    * with the rest of its device-only state (D13): a section's ORDER now comes from
@@ -178,6 +308,41 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   const [changelogOpen, setChangelogOpen] = useState(false);
   const versionButtonRef = useRef<HTMLButtonElement | null>(null);
   const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
+  const [bindingsOpen, setBindingsOpen] = useState(false);
+  const bindingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const bindingsDialogRef = useRef<HTMLDialogElement | null>(null);
+  /**
+   * THE SECTION IN HAND, and the order it has dragged the stack into so far.
+   *
+   * `order` is the WIRE FORM — the exact `readonly string[]` the layout tile stores — and the
+   * stack below renders it without knowing whether it came from this pointer or from the
+   * server (AGENTS.md invariant 11). That is what makes the live preview and the committed
+   * arrangement one derivation instead of a drag path beside a render path.
+   *
+   * A REF BESIDE THE STATE, for the reason the workspace's layout drag keeps one: the state is
+   * what renders, the ref is what the GESTURE reads. A grab writes state and the very next
+   * pointer frame arrives before React has re-rendered, so a handler reading the state
+   * variable through its closure sees `null` and drops the frame — which is exactly how a
+   * quick flick committed nothing at all. The ref is the read; the state is the paint.
+   */
+  const [grab, setGrab] = useState<SectionGrab | null>(null);
+  const grabRef = useRef<SectionGrab | null>(null);
+  const holdSection = (next: SectionGrab | null): void => {
+    grabRef.current = next;
+    setGrab(next);
+  };
+
+  // Leaving the mode mid-grab drops what was in hand: the release is the commit, so a
+  // gesture that never released must not survive as a pending arrangement. The STATE resets
+  // during render (React's derived-state guidance — an effect would paint one stale frame
+  // first); the REF resets in an effect, because a ref is for event handlers, and the next
+  // pointer frame after leaving the mode must read "nothing in hand".
+  if (!arranging && grab !== null) {
+    setGrab(null);
+  }
+  useEffect(() => {
+    if (!arranging) grabRef.current = null;
+  }, [arranging]);
 
   useEffect(() => {
     if (!changelogOpen) return;
@@ -185,9 +350,20 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     if (dialog !== null && !dialog.open) dialog.showModal();
   }, [changelogOpen]);
 
+  useEffect(() => {
+    if (!bindingsOpen) return;
+    const dialog = bindingsDialogRef.current;
+    if (dialog !== null && !dialog.open) dialog.showModal();
+  }, [bindingsOpen]);
+
   const closeChangelog = (): void => {
     setChangelogOpen(false);
     window.requestAnimationFrame(() => versionButtonRef.current?.focus());
+  };
+
+  const closeBindings = (): void => {
+    setBindingsOpen(false);
+    window.requestAnimationFrame(() => bindingsButtonRef.current?.focus());
   };
 
   const submitFolder = async (name: string): Promise<void> => {
@@ -201,20 +377,86 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   };
 
   /**
+   * WHAT ORDER THE STACK IS IN. Manifest order is the default; this principal's stored
+   * arrangement overrides it; a live grab overrides that for as long as it is held. Three
+   * inputs, one answer, and the merge itself is the tested policy module rather than
+   * arithmetic inlined here (`arrangedSectionIds`, `packages/plugin/src/layout.ts`).
+   *
+   * The order is computed over EVERY declared section and filtered for enabled afterwards, so
+   * a disabled plugin's slot closes without its stored place being forgotten — D4′ (ADR 0013):
+   * chrome renders absence, and re-enabling restores the exact seat the principal chose.
+   */
+  const declaredIds = assembly.sections.map((section) => section.id);
+  const arrangedIds = arrangedSectionIds(declaredIds, sectionOrder);
+  const liveIds = grab?.order ?? arrangedIds;
+  const declared = new Map(assembly.sections.map((section) => [section.id, section]));
+
+  /**
    * The icon rail keeps ONE section mounted, and the stack's leftover height goes to that
-   * same one: the section the manifests ordered first. One rule for both, read off the
-   * declared order rather than a hardcoded id — which is what makes the rail survive a
-   * plugin being disabled, added, or reordered.
+   * same one: the section the ORDER puts first — the manifests' choice until the principal
+   * makes one. One rule for both, read off the live order rather than a hardcoded id, which
+   * is what makes the rail survive a plugin being disabled, added, or rearranged.
    */
-  /*
-   * D4′ (ADR 0013): chrome renders ABSENCE. A disabled plugin's section VANISHES from the
-   * stack — its order is manifest data, so re-enabling restores its exact place for free,
-   * and the Plugins section is the one ledger of what is off. A tombstone here would make
-   * the floor look like it cannot exist without the plugin — the exact smell A1 forbids.
-   */
-  const sections = assembly.sections.filter((section) => section.enabled);
+  const sections: readonly WebSection[] = liveIds.flatMap((id) => {
+    const section = declared.get(id);
+    /*
+     * D4′ (ADR 0013): chrome renders ABSENCE. A disabled plugin's section VANISHES from the
+     * stack, and the Plugins section is the one ledger of what is off. A tombstone here would
+     * make the floor look like it cannot exist without the plugin — the smell A1 forbids.
+     */
+    return section === undefined || !section.enabled ? [] : [section];
+  });
   const railSection = sections[0];
   const visible = sidebarOpen ? sections : railSection === undefined ? [] : [railSection];
+
+  /**
+   * ONE ACTION PER GESTURE. The drag repaints per frame off `grab.order` and writes nothing;
+   * the release compares what is in hand against what is stored and commits once, through the
+   * workspace layout door — the plane rule's commit point (AGENTS.md invariant 13).
+   */
+  const commitIfMoved = (order: readonly string[]): void => {
+    const moved =
+      order.length !== arrangedIds.length || order.some((id, index) => id !== arrangedIds[index]);
+    if (moved) commitSectionOrder(order);
+  };
+
+  const grabSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
+    // The grab surface sits over the disclosure's toggle: swallowing the event here is what
+    // keeps a grab from folding the section it is about to move.
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    holdSection({ moved: id, order: arrangedIds });
+  };
+
+  const dragSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
+    const held = grabRef.current;
+    if (held === null || held.moved !== id) return;
+    const over = sectionIdAt(event.clientY);
+    if (over === null) return;
+    const next = movedSectionIds(held.order, held.moved, over);
+    // Referential identity IS the "nothing moved" answer, so a frame over the section
+    // already in hand costs one comparison and no render.
+    if (next === held.order) return;
+    holdSection({ moved: held.moved, order: next });
+  };
+
+  const releaseSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
+    const held = grabRef.current;
+    if (held === null || held.moved !== id) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    commitIfMoved(held.order);
+    holdSection(null);
+  };
+
+  const nudgeSection = (id: string, delta: -1 | 1): void => {
+    const from = arrangedIds.indexOf(id);
+    const over = arrangedIds[from + delta];
+    if (over === undefined) return;
+    commitIfMoved(movedSectionIds(arrangedIds, id, over));
+  };
 
   return (
     <>
@@ -351,6 +593,17 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
               }}
               host={host}
               pluginTitle={assembly.pluginTitle(section.plugin) ?? section.plugin}
+              /*
+                The rail is one section and has nothing to reorder against, so arranging is
+                offered only while the sidebar is open. The MODE stays on either way — the
+                workspace is still armed, the panes still say so.
+              */
+              arranging={arranging && sidebarOpen}
+              grabbed={grab?.moved === section.id}
+              onGrab={grabSection}
+              onGrabMove={dragSection}
+              onGrabEnd={releaseSection}
+              onNudge={nudgeSection}
               key={`${section.plugin}.${section.id}`}
             />
           ))}
@@ -363,6 +616,24 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
             rev={workspace.rev}
           />
         ) : null}
+
+        {/*
+          The key table's door, at the very bottom: the last thing in the rail, beside the
+          identity it belongs to. It is chrome over an ENGINE registry — the composed binding
+          table — so it lives here for the same reason the section stack does, and it names no
+          plugin to do it.
+        */}
+        <button
+          ref={bindingsButtonRef}
+          className="sidebar-bindings"
+          type="button"
+          title="Keyboard bindings"
+          aria-label="Show keyboard bindings"
+          onClick={() => setBindingsOpen(true)}
+        >
+          <ControlIcon kind="bindings" />
+          {sidebarOpen ? <span>Keys</span> : null}
+        </button>
 
         <footer className="sidebar-identity" title={identity.principal.name}>
           <span className="identity-dot" style={{ backgroundColor: identity.principal.color }} />
@@ -410,6 +681,46 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
                     </article>
                   ))}
                 </div>
+              </section>
+            </dialog>,
+            document.body,
+          )
+        : null}
+      {typeof document !== "undefined" && bindingsOpen
+        ? createPortal(
+            <dialog
+              ref={bindingsDialogRef}
+              className="sidebar-bindings-dialog"
+              aria-labelledby="sidebar-bindings-title"
+              onCancel={(event) => {
+                event.preventDefault();
+                closeBindings();
+              }}
+              onPointerDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                closeBindings();
+              }}
+            >
+              <section className="sidebar-bindings-card">
+                <header>
+                  <div>
+                    <span>Workspace</span>
+                    <h2 id="sidebar-bindings-title">Keyboard bindings</h2>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Close keyboard bindings"
+                    onClick={closeBindings}
+                  >
+                    <ControlIcon kind="close" />
+                  </button>
+                </header>
+                <ScrollRegion className="sidebar-bindings-body">
+                  <BindingsTable
+                    bindings={assembly.bindings}
+                    pluginTitle={(plugin) => assembly.pluginTitle(plugin) ?? plugin}
+                  />
+                </ScrollRegion>
               </section>
             </dialog>,
             document.body,

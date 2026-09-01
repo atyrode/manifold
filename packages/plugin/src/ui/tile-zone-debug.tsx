@@ -12,7 +12,7 @@ import { resolveTileAim } from "../tile-geometry.ts";
 import { areaUnits } from "../use-tile-drop.ts";
 
 /**
- * The drop-zone field, made visible (F9): a debug-only overlay that SAMPLES the real
+ * The drop-zone field, made visible: a debug-only overlay that SAMPLES the real
  * `resolveTileAim` across the tile area and paints what it answers at every point —
  * ring, seams, seam ends, edge bands, centers, precedence and all. Nothing here
  * re-declares zone geometry, so the picture cannot drift from the resolver: it IS
@@ -23,24 +23,25 @@ import { areaUnits } from "../use-tile-drop.ts";
  */
 
 let enabled = false;
-let listening = false;
 const listeners = new Set<() => void>();
 
-function ensureKeyListener(): void {
-  if (listening) return;
-  listening = true;
-  window.addEventListener("keydown", (event) => {
-    if (event.key !== "F9") return;
-    event.preventDefault();
-    enabled = !enabled;
-    for (const listener of [...listeners]) listener();
-  });
+/**
+ * THE zone probe's toggle, and the whole of what this module publishes about being on.
+ *
+ * The KEY that reaches it is not this module's business: F9 is a binding row `core.shell`
+ * declares, composed with every other plugin's keys and printed in the sidebar's help table,
+ * and the host dispatches it here. This file owned a `window` keydown listener of its own until
+ * that registry existed — an undeclared key nothing could collide with, nothing could list for
+ * a reader, and nothing could turn off.
+ */
+export function toggleZoneProbe(): void {
+  enabled = !enabled;
+  for (const listener of [...listeners]) listener();
 }
 
-function useZoneDebugEnabled(): boolean {
+function useZoneProbeEnabled(): boolean {
   return useSyncExternalStore(
     (listener) => {
-      ensureKeyListener();
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
@@ -72,7 +73,7 @@ export function TileZoneDebug({
   readonly areaRef: RefObject<HTMLElement | null>;
   readonly dividerPx: number;
 }): ReactNode {
-  const on = useZoneDebugEnabled();
+  const on = useZoneProbeEnabled();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [sizeTick, setSizeTick] = useState(0);
 
