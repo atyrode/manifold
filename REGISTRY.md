@@ -232,7 +232,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/auth.ts",
-      "why": "identity and authority at the boundary; tagged as the future A5 evaluator's one call surface — what effectiveCaps() replaces"
+      "why": "identity and authority at the boundary; the A5 evaluator's one call surface — what effectiveCaps() replaced when the waterfall landed (ADR 0011, wave 4, #77)"
     },
     {
       "glob": "packages/server/src/db.ts",
@@ -444,9 +444,10 @@ presentation and no renderer names the package.
 [`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md)
 §14: `POST /api/place` is superseded by `core.space.place` rather than left as a permanent
 exception (invariant 14 admits no second door onto "place a thing"), and `core.access` takes the
-token and principal administration verbs now, while the A5 evaluator (ADR 0011, grant rows,
-`effectiveCaps`) remains a later wave — "identity mechanism is floor" never made
-`POST /api/tokens` mechanism.
+token and principal administration verbs now. The A5 evaluator (ADR 0011, grant rows,
+`effectiveCaps`) landed in wave 4 (#77) beneath that same seam — "identity mechanism is floor"
+never made `POST /api/tokens` mechanism, and the evaluator arriving did not change which of the
+two is which.
 
 **The `until` tag is gone, and the registry now says so.** The floor registry once carried an
 `"until": "<plugin>"` field on rows that were floor today and plugin territory tomorrow, and this
@@ -471,9 +472,18 @@ by having its `Status:` line changed in the same commit that acts on it.
 
 | ADR                                                                   | Status                | What it gates                                                                                                     | Why it is here                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`0015-social-layer.md`](docs/decisions/0015-social-layer.md)         | awaiting-ratification | the Social-layer roadmap row: whether `core.social` exists at all, and whether Matrix stays its leading candidate | It proposes rejecting Matrix, XMPP and ActivityPub as the substrate and dissolving the seat, which contradicts `AXIOMS.md` §Roadmap as written — so ratifying it obliges an amendment there in the same act. Its §Ratification asks are the questions.                                                                                                                                                                                                                         |
-| [`0016-plugin-isolation.md`](docs/decisions/0016-plugin-isolation.md) | awaiting-ratification | the marketplace wave, hard-ordered behind it by `AXIOMS.md` §Roadmap                                              | It ratifies a runner (process per isolated plugin on the server, worker in the browser), reverses the synchronous `PluginStorage` ruling, and adds a pillar-or-pillar-row decision to §Pillar inventory. Nothing about distribution may land before it is answered.                                                                                                                                                                                                            |
 | [`0020-desktop-shell.md`](docs/decisions/0020-desktop-shell.md)       | awaiting-ratification | every line of desktop shell code, by `AXIOMS.md` §Roadmap's App shells ordering (#82 is the gate)                 | It takes Electron as a **runtime** dependency under invariant 8 — an exact 44.x pin with a CVE duty and a named owner — and it needs one new floor mechanism to be legal at all: a host-composed plugin has nowhere to live today (`WEB_PLUGIN_DEFS` is a static literal S1 parses), so its §6.2 proposes an additive-optional session-join field and `source: "host"` roster rows. Its §Ratification asks R1–R8 are the questions; a yes authorizes no code, only the design. |
+
+**One record is waiting as of 2026-09-01: ADR 0020.** The table's first two occupants were
+ratified that same day, so both left it by the rule above, and the record below is where they
+went — kept here, in the one place that indexes proposed records, because "the table is empty"
+and "the table was never filled in" have to be distinguishable a month from now.
+
+| ADR                                                                   | Ratified                                  | What the yes obliged                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`0015-social-layer.md`](docs/decisions/0015-social-layer.md)         | 2026-09-01, as written (R1-R5, R9)        | The `AXIOMS.md` §Roadmap amendment it predicted, landed in the same commit: there is no `core.social` seat, and Matrix is demoted from ratified leading candidate to an optional third-party bridge. R6-R8 ride the waterfall wave that implements `kind: "instance"` grants.                    |
+| [`0016-plugin-isolation.md`](docs/decisions/0016-plugin-isolation.md) | 2026-09-01, as written (R1-R3, R5, R8-R9) | The marketplace gate is discharged — a runner is ratified, so distribution is unblocked behind its stage 1. `PluginStorage` owes an async migration for every plugin, and §9's pillar question (R7) is a §Pillar inventory edit in the commit that adds the runner's files.                      |
+| [`0019-identity-posture.md`](docs/decisions/0019-identity-posture.md) | 2026-09-01, ratified on landing           | The layered posture for #58: the owner key stays forever as bootstrap and break-glass, three hardening items are owed NOW (session expiry, a principal/device list with revoke, bootstrap audit on the trace ledger), reverse-proxy deployment is documented, and OIDC waits for a second human. |
 
 ## Disable semantics (D4′)
 
@@ -1981,7 +1991,7 @@ Per-axiom round table — which checks would fail first if an axiom stopped hold
 | A2 multiplayer by design                      | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                                               |
 | A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12, R9 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn)                     |
 | A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                                                                                     |
-| A5 waterfall authority                        | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                                                                                      |
+| A5 waterfall authority                        | R8 guards the flat degenerate case; the evaluator LANDED in wave 4 (ADR 0011, #77) and its parity is proven by that wave's own suites rather than by a gate row, so a dedicated row is still owed        |
 | A6 every exercise of authority is traced      | T1, T2, T3, T4, T5 (T2 is the one that holds without a dispatch: a rung that refuses without recording fails in the parser, never in a scenario somebody has to think of)                                |
 | Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                                                                                 |
 | Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                                        |
