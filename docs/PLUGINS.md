@@ -145,9 +145,12 @@ export const manifest: PluginManifest = {
 Rules worth knowing before you write one:
 
 - **The id must be dotted** — at least one `.` — and it namespaces everything you contribute.
-  A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`. The prefix
-  `engine.` is **reserved**: it belongs to the engine's own builtin doors, and assembly refuses
-  any plugin that claims it.
+  A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`. TWO prefixes are
+  **reserved**: `engine.` belongs to the engine's own builtin doors, and `core.` is manifold's own
+  authorship — assembly refuses any plugin claiming either (the second unless the shipped
+  distribution registered it). Pick your own leading segment (`acme.notes`); it needs no
+  registration anywhere and buys you exactly what `core.` buys manifold, which is nothing but a
+  name (§7, "Three orthogonal facts about a plugin").
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
   where the name is a verb phrase, as in `setEnabled`), with two exceptions that are WIRE kinds
   and therefore globally unique on their own: element `type`, and event `id`, which is
@@ -944,6 +947,41 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   by id — is the order lifecycle hooks fire in. Missing `required` dependencies, `incompatible`
   peers, cycles, data-version mismatches and element-type squatting are all named refusals, never
   warnings.
+
+### Three orthogonal facts about a plugin
+
+Three words get conflated constantly — a "core plugin", a "builtin", an "essential" one — and they
+are three INDEPENDENT facts, each with its own owner, its own enforcement and its own consequence.
+A row can carry any combination; none of them implies another.
+
+| Fact                      | Question it answers                          | Who decides                                                                                   | What it changes                                                                                                          | Enforced by                                                                                             |
+| ------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `source`                  | who REGISTERED this row: engine or assembly? | the registrant, never the manifest — `builtin` is DERIVED from what the host itself registers | a `builtin` row has no toggle: `setEnabled` against it is `refused`/`builtin`                                            | `engine.` is reserved; assembly refuses a non-builtin id under it                                       |
+| `essential`               | can an administrator turn this one off?      | the manifest declares it; the engine enforces it                                              | `setEnabled(false)` is `refused`/`essential`; the row still composes, dispatches and purges like any other               | the named refusal class `essential`                                                                     |
+| the namespace of the `id` | WHO WROTE IT                                 | the author, bounded by the reservation: `core.` is manifold's own, `engine.` is the engine's  | NOTHING. No engine branch reads a prefix to decide what a row may do — a `core.` action is checked exactly as `acme.` is | assembly refuses a `core.` manifest the shipped distribution did not register (`CORE_NAMESPACE_PREFIX`) |
+
+Read the rows the other way round and each one names a squat it refuses:
+
+- **`engine.*` is the engine's.** A plugin publishing `engine.anything` would publish a row a
+  client draws WITHOUT a toggle, so the assembly refuses it by name. The builtin set is derived
+  from what the host registered, never claimed by a manifest — a manifest cannot make itself a
+  door.
+- **`core.*` is manifold's authorship, and it is the one thing that prefix buys.** It carries zero
+  privilege by design; what it must not carry is a stranger. A manifest under `core.` that the
+  shipped distribution never registered fails assembly naming the squatter, because an id is what a
+  principal reads on the roster and what an agent reads over `GET /api/plugins` — "looks official"
+  is the only authority a namespace could confer, and it is the one being defended. The permitted
+  set is DERIVED from the distribution's own registration table
+  (`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts`, handed to assembly as
+  `AssemblyEnv.distribution`); there is no hand-kept list of "our" plugins anywhere, so shipping a
+  new one is a row in that table and nothing else.
+- **Your own namespace is yours.** `acme.notes` needs no registration anywhere, collides with
+  nobody, and gets exactly the same dispatch, authority, disable, dormancy and purge treatment
+  `core.notes` gets. If you find a rule that treats a `core.` row better, that is a bug worth an
+  issue: it is the claim this table exists to keep checkable.
+
+`GET /api/protocol` publishes both prefixes (`engineNamespace`, `coreNamespace`), so an author
+choosing an id learns which two are taken without reading this file.
 
 ### The web registration channels (documented in full next wave)
 

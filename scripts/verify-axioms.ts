@@ -53,6 +53,7 @@ import { INDEX_RESOURCE, type PolledFeedReport } from "../packages/plugin/src/po
 import {
   ActionOutcomeSchema,
   ActionSummarySchema,
+  CORE_NAMESPACE_PREFIX,
   ITEM_KINDS,
   LOG_EVENTS,
   LayoutResponseSchema,
@@ -71,7 +72,7 @@ import {
   type ServerEvent,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
-import { SERVER_PLUGIN_DEFS } from "../packages/server/src/assembly.ts";
+import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
@@ -348,11 +349,15 @@ try {
     vocabulary this script compares against the live server has to include it, or every
     check that says "/api/protocol equals the composition" would fail on the enablement door
     itself.
+
+    `distribution` is the `core.` reservation, composed exactly as `main.ts` composes it: the
+    shipped ids derived from the registration table. Passing it here is what makes S1 a real
+    exercise of the reservation rather than a composition that happens to avoid it.
   */
   assembly = assembleRoster(
     [...SERVER_PLUGIN_DEFS, { manifest: enginePluginsManifest, actions: enginePluginsActions }],
     new Set(),
-    { builtins: new Set([ENGINE_PLUGINS_ID]) },
+    { builtins: new Set([ENGINE_PLUGINS_ID]), distribution: SHIPPED_PLUGIN_IDS },
   );
   check("S1 server assembly", true, `${String(assembly.roster.length)} plugins composed`);
 } catch (error) {
@@ -516,6 +521,25 @@ const webRegistrations: WebRegistration[] = [];
     unknown.length === 0
       ? `${String(webRegistrations.length)} web registrations, every id in the roster`
       : `web registers ids nothing composed: ${list(unknown.map((entry) => entry.id))}`,
+  );
+
+  /*
+    THE `core.` RESERVATION, read across the two registration files that define the shipped
+    distribution. The runtime half is `assembleRoster` refusing a manifest under `core.` that
+    `SHIPPED_PLUGIN_IDS` does not carry (composed above). This is the other half: the web file
+    claims ids too, and it holds no copy of the set — so a web registration under `core.` whose
+    id the server table never shipped is the one way the two files could disagree about who
+    inhabits the namespace. Derived from both files, never from a third list (invariant 14).
+  */
+  const squatters = webRegistrations
+    .filter((entry) => entry.id.startsWith(CORE_NAMESPACE_PREFIX))
+    .filter((entry) => !SHIPPED_PLUGIN_IDS.has(entry.id));
+  check(
+    "S1 core reservation",
+    squatters.length === 0,
+    squatters.length === 0
+      ? `every web-registered "${CORE_NAMESPACE_PREFIX}" id is one the shipped distribution registers`
+      : `web claims reserved ids the distribution never shipped: ${list(squatters.map((entry) => entry.id))}`,
   );
 
   const orphanContributions: string[] = [];

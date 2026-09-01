@@ -849,6 +849,48 @@ describe("assembleRoster reservations, builtins and stored data", () => {
     expect(assembly.builtin("engine.plugins")).toBe(true);
   });
 
+  test("the core namespace is reserved: only the shipped distribution's own ids may claim it", () => {
+    // The distribution, as its registration file yields it: derived from what is registered,
+    // never a hand-kept list of "our" plugins (invariant 14).
+    const distribution = new Set([drawing.manifest.id]);
+    const impostor: PluginDef = { manifest: manifest({ id: "core.impostor" }), actions: [] };
+
+    let thrown: unknown = null;
+    try {
+      assembleRoster([impostor], NONE, { distribution });
+    } catch (reason) {
+      thrown = reason;
+    }
+
+    /*
+      `core.` buys no privilege at dispatch — that is the point of the namespace — but an id is
+      what a principal reads on the roster and what an agent reads over `GET /api/plugins`, so a
+      stranger publishing `core.impostor` looks official to both. Refused by name, exactly like
+      an `engine.` squat.
+     */
+    expect(thrown).toBeInstanceOf(AssemblyError);
+    expect((thrown as AssemblyError).problems).toEqual([
+      'plugin "core.impostor" claims the reserved "core." namespace, which only the shipped distribution\'s own plugins may use',
+    ]);
+
+    // The distribution's own seats compose against the same set, and a stranger's own
+    // namespace is nobody's business but theirs.
+    const vendor: PluginDef = { manifest: manifest({ id: "vendor.impostor" }), actions: [] };
+    const assembly = assembleRoster([drawing, vendor], NONE, { distribution });
+    expect(assembly.roster.map((entry) => entry.manifest.id)).toEqual([
+      "core.draw",
+      "vendor.impostor",
+    ]);
+
+    /*
+      NO distribution declared means UNKNOWN rather than empty, and this case is why: the
+      browser and every unit test assemble the same definitions with none of the durable facts,
+      and refusing every `core.` id against a set nobody supplied would be a verdict invented
+      from missing information. The production wiring (`main.ts`) is what makes it real.
+     */
+    expect(() => assembleRoster([impostor], NONE)).not.toThrow();
+  });
+
   test("roster rows carry lifecycle state, attribution, and the essential refusal class", () => {
     // Deliberately WITHOUT the element contribution: `shell` already claims `draw`, and a
     // duplicate claim is its own refusal (D5) with nothing to say about roster fields.

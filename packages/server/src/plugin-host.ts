@@ -501,6 +501,13 @@ export class PluginHost {
   private readonly rosterListeners = new Set<(roster: PluginRoster) => void>();
   private readonly builtins: ReadonlySet<string>;
   /**
+   * The ids the shipped distribution registers, handed in by the composition root because
+   * this file may not name a plugin — the same direction `FLOOR_EVENT_OWNERS` travels. It is
+   * NOT derived from `defs`: a def list is what the host was given, so deriving the permitted
+   * set from it would let any manifest authorize its own `core.` id.
+   */
+  private readonly distribution: ReadonlySet<string> | undefined;
+  /**
    * The outcome of the last lifecycle fan-out per plugin. In MEMORY, deliberately: it
    * describes this process's attempt to tell a plugin about a transition, not a durable
    * fact about the workspace. A restart clears it because a restart re-runs nothing.
@@ -520,10 +527,14 @@ export class PluginHost {
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
     private readonly events: EventHub,
-    options: { readonly lifecycleTimeoutMs?: number } = {},
+    options: {
+      readonly lifecycleTimeoutMs?: number;
+      readonly distribution?: ReadonlySet<string>;
+    } = {},
   ) {
     this.defs = [...ENGINE_BUILTIN_DEFS, ...defs];
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
+    this.distribution = options.distribution;
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
     this.assembled = assembleRoster(this.defs, store.disabledPlugins(), this.env());
@@ -556,6 +567,7 @@ export class PluginHost {
     }
     return {
       builtins: this.builtins,
+      ...(this.distribution === undefined ? {} : { distribution: this.distribution }),
       elementOwners: this.store.elementOwners(),
       dataState,
       lifecycle: this.lifecycleStates,

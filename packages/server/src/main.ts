@@ -8,7 +8,7 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
-import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS } from "./assembly.ts";
+import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
@@ -165,6 +165,12 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime,
     logger,
     events,
+    /*
+      The `core.` reservation, made real: the ids this distribution registers, derived from
+      `assembly.ts` and handed to the host as data, because the host may not name a plugin.
+      Without this argument a manifest under `core.` composes unchecked (`AssemblyEnv`).
+    */
+    { distribution: SHIPPED_PLUGIN_IDS },
   );
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
