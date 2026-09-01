@@ -97,6 +97,12 @@ function seed(where: Fixture): void {
  * row families and this door reads both: every dispatch in these cases, including the read
  * itself, appends a trace row (`type: "trace"`). Cases about event rows therefore say so, and
  * the family boundary gets a case of its own below instead of leaking into all of them.
+ *
+ * `owner_authenticated` is dropped for the same reason and it is NOT a trace: ADR 0019 §4 made
+ * the owner path leave an event row, and every fixture here authenticates the owner key to get
+ * its root context — so that row is an artifact of the harness rather than of the case, exactly
+ * as the read's own trace is. The audit row's own behaviour is pinned where it belongs
+ * (`packages/server/test/identity-posture.test.ts`).
  */
 async function list(
   where: Fixture,
@@ -105,7 +111,9 @@ async function list(
 ): Promise<readonly { ts: number; type: string; containerId: string | null }[]> {
   const outcome = await where.host.dispatch(caller, "core.events.list", args);
   if (!outcome.ok) throw new Error(`expected rows, got ${outcome.denial.rule}`);
-  return EventsListResponseSchema.parse(outcome.result).events.filter((row) => row.door === null);
+  return EventsListResponseSchema.parse(outcome.result).events.filter(
+    (row) => row.door === null && row.type !== "owner_authenticated",
+  );
 }
 
 describe("core.events.list authority", () => {

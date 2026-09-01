@@ -10,6 +10,7 @@ import type {
   MintShareRequest,
   MintTokenRequest,
   OpenDialRequest,
+  PrincipalCredentials,
   RevokeGrantRequest,
   RevokeResult,
   RevokeShareRequest,
@@ -41,6 +42,14 @@ interface AccessCtx {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
     revokePrincipal(principalId: string): IdentityAnswer<number>;
+    /*
+      The credential READ (ADR 0019 §3), on the identity door because a credential is what
+      this door hands out: the list and the revoke it aims are the same concept read and
+      written, and a `credentials` surface beside `identity` would say otherwise. The
+      mechanism narrows the answer to what THIS caller could revoke, so the handler below has
+      nothing to filter and deliberately does not try.
+    */
+    listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
       The share trio sits on the identity door because a share IS a token bound to a node: the
       attenuation ladder it runs is `mintToken`'s, and putting it anywhere else would be a
@@ -113,6 +122,28 @@ export const accessHandlers = {
     // principal whose tokens are already dead is precisely what a nervous administrator
     // does. The refusals above it are about entitlement, never about the outcome being nil.
     return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
+  },
+
+  /**
+   * WHO HOLDS A CREDENTIAL HERE, and since when (ADR 0019 §3).
+   *
+   * The question "which browsers hold my key" had no answer at all before this door:
+   * `GET /api/introspect` published principals to a root caller and nothing else did, so a
+   * human could not look, and neither could an agent (A2). This is that question made
+   * readable — and readable by whoever may act on it, not only by root, for the reasons the
+   * mechanism records.
+   *
+   * No filtering here, and no widening either: the mechanism answers for the REAL caller and
+   * this handler relays. A plugin that re-derived which principals it may see would be a
+   * second authority check on one question, and the one that mattered would be the one
+   * further from the store.
+   */
+  async listCredentials(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<{ principals: readonly PrincipalCredentials[] }>> {
+    const listed = ctx.identity.listCredentials();
+    return listed.ok ? { principals: listed.value } : { refused: listed.message };
   },
 
   /*

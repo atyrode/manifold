@@ -4,6 +4,7 @@ import type {
   DialTicket,
   Grant,
   Principal,
+  PrincipalCredentials,
   Share,
   ShareGrant,
   TokenGrant,
@@ -31,6 +32,7 @@ interface Call {
     | "create"
     | "mint"
     | "revoke"
+    | "listCredentials"
     | "mintShare"
     | "revokeShare"
     | "listShares"
@@ -58,6 +60,20 @@ const grant: TokenGrant = {
   principal,
   caps: ["containers:read"],
   containerId: null,
+};
+
+/** One principal and its one live credential, as the credential list hands it back. */
+const credentials: PrincipalCredentials = {
+  principal,
+  createdAt: 1_700_000_000_000,
+  sessions: [
+    {
+      id: "token-1",
+      createdAt: 1_700_000_000_000,
+      caps: ["containers:read"],
+      expiresAt: 1_700_000_000_000 + 14 * 24 * 60 * 60 * 1000,
+    },
+  ],
 };
 
 const share: Share = {
@@ -108,6 +124,7 @@ function recorder(options: {
   create?: Answer<TokenGrant>;
   mint?: Answer<TokenGrant>;
   revoke?: Answer<number>;
+  listCredentials?: Answer<readonly PrincipalCredentials[]>;
   mintShare?: Answer<ShareGrant>;
   revokeShare?: Answer<number>;
   listShares?: Answer<readonly Share[]>;
@@ -136,6 +153,10 @@ function recorder(options: {
         revokePrincipal: (principalId) => {
           calls.push({ kind: "revoke", payload: principalId });
           return answer(options.revoke, 0);
+        },
+        listCredentials: () => {
+          calls.push({ kind: "listCredentials", payload: null });
+          return answer(options.listCredentials, [credentials]);
         },
         mintShare: (input) => {
           calls.push({ kind: "mintShare", payload: input });

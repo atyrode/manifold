@@ -51,10 +51,12 @@
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
+        "react": "19.2.8",
         "zod": "4.4.3",
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
       },
     },
     "packages/plugins/arrange": {
@@ -345,6 +347,7 @@
       "name": "@manifold/web",
       "version": "0.5.0",
       "dependencies": {
+        "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/arrange": "workspace:*",
         "@manifold-plugin/brand": "workspace:*",
         "@manifold-plugin/canvas": "workspace:*",

@@ -1,0 +1,104 @@
+/*
+  `core.access`' own skin: the credential list's rows (ADR 0019 §3).
+
+  It is this package's stylesheet rather than a block in the floor's shell sheet for the reason
+  `core.keys`' is — a skin that cannot leave with the plugin it dresses is a plugin that was
+  never really extracted (A1, REGISTRY.md §cssFamilies) — and `verify:axioms` S13 holds the
+  boundary: the cssFamilies registry names this file as the owner of the `credential` family,
+  and any of it painted from another stylesheet is gate RED.
+
+  The row VOCABULARY it fills is the rail's, not this plugin's: `.sidebar-section-content`,
+  `.sidebar-section-count` and `.sidebar-section-empty` belong to whoever owns the sidebar,
+  because they are shared by every tenant of it. What is here is only what a CREDENTIAL row
+  needs and nothing else has.
+*/
+
+/* A principal row: colour pip, name over its meta line, and the withdraw control. */
+.credential-row {
+  display: grid;
+  min-height: 2.1rem;
+  align-items: center;
+  gap: 0.4rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0 0.3rem;
+  border-radius: var(--border-radius-md, 0.4rem);
+  min-width: 0;
+}
+
+.credential-row:hover {
+  background: rgb(134 142 150 / 8%);
+}
+
+/* The caller's own identity, marked rather than hidden: withdrawing it is legal and loud. */
+.credential-row.is-self {
+  box-shadow: inset 0.12rem 0 0 currentcolor;
+}
+
+.credential-pip {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: none;
+  border-radius: 999px;
+}
+
+.credential-name {
+  display: grid;
+  min-width: 0;
+  gap: 0.05rem;
+}
+
+.credential-name strong {
+  overflow: hidden;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Origin, creation date and live-credential count, on one quiet line under the name. */
+.credential-meta {
+  overflow: hidden;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credential-revoke {
+  width: 1.45rem;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--border-radius-md, 0.4rem);
+  color: #868e96;
+  background: none;
+  cursor: pointer;
+}
+
+.credential-revoke:hover,
+.credential-revoke:focus-visible {
+  border-color: #495057;
+  color: #edf2ff;
+  background: #292d35;
+}
+
+/* ARMED: the second press is the one that acts, and the control says so before it does. */
+.credential-revoke[data-confirming="true"] {
+  border-color: #c92a2a;
+  color: #ffa8a8;
+  background: rgb(201 42 42 / 18%);
+}
+
+.credential-revoke:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* A refusal from the door, rendered where the press happened rather than as a toast. */
+.credential-failure {
+  padding: 0.35rem 0.3rem;
+  color: #ffa8a8;
+  font-size: 0.7rem;
+}

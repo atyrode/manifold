@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@manifold-plugin/access": "workspace:*",
     "@manifold-plugin/arrange": "workspace:*",
     "@manifold-plugin/brand": "workspace:*",
     "@manifold-plugin/canvas": "workspace:*",

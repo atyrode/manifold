@@ -145,6 +145,7 @@ interface TokenRow {
   created_at: number;
   revoked_at: number | null;
   grant_id: string | null;
+  expires_at: number | null;
 }
 
 interface GrantRow {
@@ -236,6 +237,14 @@ export interface TokenRecord {
   createdAt: number;
   revokedAt: number | null;
   grantId: string | null;
+  /**
+   * When this credential stops authenticating, or null for one that never does (ADR 0019 §2).
+   *
+   * NULL is not "unset": it is the standing answer for every non-interactive credential and
+   * for every row written before schema 15. The column is read on the hot path — off the row
+   * `authenticate` already fetched by hash — and written exactly once, at the mint.
+   */
+  expiresAt: number | null;
 }
 
 /**
@@ -459,6 +468,7 @@ function toToken(row: TokenRow): TokenRecord {
     createdAt: row.created_at,
     revokedAt: row.revoked_at,
     grantId: row.grant_id,
+    expiresAt: row.expires_at,
   };
 }
 
@@ -1178,6 +1188,23 @@ export class ServerStore {
       .map(toPrincipal);
   }
 
+  /**
+   * Every principal WITH the one fact `Principal` does not carry: when it was created.
+   *
+   * A second read rather than a widened `Principal`, because `created_at` is a fact only
+   * administration asks for and `Principal` is the identity attendance, presence and the
+   * session hello all pass around (ADR 0019 §3, `PrincipalCredentialsSchema`). Same row,
+   * same order, one extra column.
+   */
+  listPrincipalsWithCreation(): { principal: Principal; createdAt: number }[] {
+    return this.db
+      .query<PrincipalRow, []>(
+        "SELECT id, kind, name, color, created_at, origin FROM principals ORDER BY created_at, id",
+      )
+      .all()
+      .map((row) => ({ principal: toPrincipal(row), createdAt: row.created_at }));
+  }
+
   createToken(record: TokenRecord): void {
     this.db
       .query<
@@ -1192,12 +1219,13 @@ export class ServerStore {
           number,
           number | null,
           string | null,
+          number | null,
         ]
       >(
         `INSERT INTO tokens(
            id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-           grant_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           grant_id, expires_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -1209,6 +1237,7 @@ export class ServerStore {
         record.createdAt,
         record.revokedAt,
         record.grantId,
+        record.expiresAt,
       );
   }
 
@@ -1216,7 +1245,7 @@ export class ServerStore {
     const row = this.db
       .query<TokenRow, [string]>(
         `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-                grant_id
+                grant_id, expires_at
          FROM tokens WHERE hash = ?`,
       )
       .get(hash);
@@ -1227,11 +1256,33 @@ export class ServerStore {
     const row = this.db
       .query<TokenRow, [string]>(
         `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-                grant_id
+                grant_id, expires_at
          FROM tokens WHERE id = ?`,
       )
       .get(id);
     return row === null ? null : toToken(row);
+  }
+
+  /**
+   * Every token row for one principal, oldest first — the credential list's substrate
+   * (ADR 0019 §3). Revoked and expired rows come back too: what is live is a question about
+   * the CLOCK, and a store read that answered it would have to be handed a clock and would
+   * then be a second place the liveness rule is written (invariant 14). The reader filters.
+   *
+   * A machine's token has the MACHINE's id in `principal_id` and no principal row behind it,
+   * so no machine credential is ever reachable through this read: the fleet is
+   * `core.machines.list`'s answer, and asking for a machine here returns its rows only if a
+   * caller already knows a machine id, which is not a principal.
+   */
+  listTokensByPrincipal(principalId: string): TokenRecord[] {
+    return this.db
+      .query<TokenRow, [string]>(
+        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
+                grant_id, expires_at
+         FROM tokens WHERE principal_id = ? ORDER BY created_at, id`,
+      )
+      .all(principalId)
+      .map(toToken);
   }
 
   /** Whether this actor originally issued a token while creating the target identity. */
@@ -1842,6 +1893,31 @@ export class ServerStore {
       .query<MachineRow, []>("SELECT id, name, token_id, last_seen FROM machines ORDER BY name, id")
       .all()
       .map(toMachine);
+  }
+
+  /**
+   * Which enrolled machines hold a WITHDRAWN credential (`core.machines.revoke`,
+   * ADR 0019 §3).
+   *
+   * A machine row survives its credential — revoking a machine revokes that machine's
+   * credential, not the inventory entry — so "revoked" is a fact about the token the row
+   * currently references, and this is the one join that decides it. A LEFT join, because a
+   * machine whose token row has gone is not authenticating either: a credential that cannot
+   * be found cannot be presented, and reporting it live would be the one lie this read could
+   * tell.
+   *
+   * A Set rather than a per-machine question, because the caller is a LIST: asking the
+   * database once per row is the N+1 the roster read exists to avoid.
+   */
+  revokedMachineIds(): ReadonlySet<string> {
+    const rows = this.db
+      .query<{ id: string }, []>(
+        `SELECT m.id AS id
+         FROM machines m LEFT JOIN tokens t ON t.id = m.token_id
+         WHERE t.id IS NULL OR t.revoked_at IS NOT NULL`,
+      )
+      .all();
+    return new Set(rows.map((row) => row.id));
   }
 
   authenticateMachine(hash: string): MachineAuthRecord | null {

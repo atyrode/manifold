@@ -1,4 +1,5 @@
 import {
+  AUTH_REFUSALS,
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
   CONNECTION_BODIES,
@@ -383,8 +384,17 @@ export class SessionGateway {
     try {
       context = this.auth.authenticate(message.token);
     } catch (error) {
+      /*
+        THE REFUSAL CLASS, RELAYED VERBATIM (ADR 0019 §2). `AUTH_REFUSALS` is the closed set
+        of words a credential refusal can be, and the close reason is where a lens reads it:
+        `expired` says "come back with a fresh credential", `revoked` says "stop asking", and
+        anything else is the generic `forbidden` this line has always sent. Re-spelling the
+        words here — or mapping `expired` onto `forbidden` because the branch predates it —
+        would put the whole point of naming the class behind a translation nobody maintains.
+       */
       if (error instanceof ServiceError && error.code === "forbidden") {
-        connection.socket.close(4403, error.message === "revoked" ? "revoked" : "forbidden");
+        const named: readonly string[] = AUTH_REFUSALS;
+        connection.socket.close(4403, named.includes(error.message) ? error.message : "forbidden");
       } else {
         connection.socket.close(4401, "unauthorized");
       }

@@ -120,6 +120,32 @@ and produces negative geometry that the commit path then rejects.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
+- **Expiry** (ADR 0019 §2, schema 15, v20). A token row carries `expires_at`; NULL means
+  never, which is what every row written before schema 15 means and what nothing backfills.
+  An interactively minted credential gets `INTERACTIVE_TOKEN_TTL_MS` = **14 days**
+  (`packages/server/src/auth.ts`, with the reason for the number beside it). Enforced in
+  `authenticate` on the rung after revocation, refused `forbidden` with message **`expired`**.
+  `TokenGrant.expiresAt?` publishes it at the mint.
+- **The two named credential refusals** are the closed set `AUTH_REFUSALS`
+  (`revoked`, `expired`), published under `identity.authRefusals` in `GET /api/protocol`. They
+  travel verbatim: as the 4403 close reason on `/ws/session`, and as the `forbidden` message
+  on the HTTP door. A lens meeting `expired` re-bootstraps; one meeting `revoked` stops. Any
+  other `forbidden` from `authenticate` closes with the generic `forbidden`.
+- **Machine tokens are exempt, and so are agents' (ADR 0019 §2).** `expiryFor(kind)` answers
+  `never` for `kind: "agent"`, and `persistMachine` passes `never` outright;
+  `authenticateMachine` has no expiry rung at all, so a machine credential cannot expire by
+  two independent constructions. An agent cannot re-authenticate through a browser, so
+  shortening its credential is a fleet outage wearing a security hat.
+- **The owner key does not expire and is not revocable by a grant.** It is break-glass, and
+  break-glass that can lock you out is not break-glass (ADR 0019 §1, §Alternatives rejected).
+- **The bootstrap audit** (ADR 0019 §4) leaves EVENT rows, not trace rows:
+  `owner_authenticated` — at most one per `OWNER_AUDIT_WINDOW_MS` (**1 hour**), payload
+  `{ window }` and nothing else, because `authenticate` runs on every request carrying the key
+  and a row per request is a denial of service on the journal's own reader; and
+  `principal_bootstrapped { subjectPrincipalId, kind, byOwnerKey }` on every
+  `core.access.createPrincipal`. Neither row carries the key or any fragment of it. ADR 0018's
+  one-writer rule is untouched: an authentication has no `door`, so it is not a trace, and
+  `appendTrace`/`settleTrace` keep exactly the two callers `verify:trace` T1 permits.
 
 ### Authority is a waterfall of grants (ADR 0011, shipped)
 
@@ -763,6 +789,23 @@ because `GET /api/machines` answered any authenticated token including a scoped 
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
 
+`core.machines.revoke { machineId }` carries `machines:mint` at the default workspace scope and
+answers `{ revoked: 0 | 1 }`; it is **`cleanup: true`**. It is the door ADR 0019 §3 named as
+missing: `list` and `enroll` were the whole vocabulary, so a credential minted for a process
+nobody in the workspace can see could be REPLACED (`enroll { rotateToken: true }`) but never
+taken away. It revokes the token the machine row references, writes `token_revoked`, and severs
+the live machine socket through the same `AuthService.onRevoked` fence a principal's revocation
+rides — and it mints nothing, which is the difference from a rotation. **The inventory row
+survives**: withdrawing a credential and forgetting a box are different verbs, so the machine
+stays listed with `revoked: true` and comes back through `enroll { rotateToken: true }`. One
+door, one concept — there is no second spelling of "revoke this machine's credential"
+(invariant 14) — and it carries `machines:mint` rather than a new cap because minting and
+withdrawing a machine credential are one authority.
+
+A machine summary carries an optional **`revoked`** (absent ≡ live, so a pre-v20 row parses
+unchanged), derived from the token the row references by one store join
+(`ServerStore.revokedMachineIds`).
+
 A machine summary now carries an optional **`color`**, derived server-side by `identityColorFor`
 over the shared `IDENTITY_COLORS` palette — both exported from `@manifold/protocol`
 (`packages/protocol/src/principal.ts`), with the web layer re-exporting the palette rather than
@@ -779,6 +822,7 @@ cross-instance ones below:
 | `core.access.createPrincipal` | `*`           | workspace | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`) |
 | `core.access.mint`            | `tokens:mint` | container | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`            |
 | `core.access.revoke`          | `tokens:mint` | container | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**             |
+| `core.access.listCredentials` | `tokens:mint` | workspace | `{}` → `{ principals: PrincipalCredentials[] }`                              |
 
 `createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
 because the mechanism did. Both of those are `scope: "container"` (§Actions rung 3) because
@@ -883,7 +927,8 @@ the `events` table, `token_minted`'s precedent — audit rows, not manifest-decl
 holding two row families read through one door. **Event rows** are the durable half of a
 notification — `principal_joined`, `principal_left`,
 `terminal_opened`/`renamed`/`bound`/`exited`, `token_minted`, `token_revoked`,
-`grant_created`/`grant_revoked` — recorded since the first migration. **Trace rows** are axiom
+`grant_created`/`grant_revoked`, and — since ADR 0019 §4 — `owner_authenticated` and
+`principal_bootstrapped` — recorded since the first migration. **Trace rows** are axiom
 A6's ledger: one row per exercise of authority at a door, appended by the dispatch ladder
 (schema 14, ADR 0018). Both are pruned by the same policy — 30 days, 10,000 rows per container,
 and 100,000 rows in the container-less bucket (that last ceiling arrived with the ledger: a

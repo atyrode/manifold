@@ -28,6 +28,46 @@ The boot log line `manifold ready url=…` deliberately omits the key: `docker l
 output is a persisted stream, and the owner key must never enter logs (the command
 above reads it from the data volume instead; it goes only to your terminal).
 
+## Security posture
+
+One secret is root. `<data>/owner.key` (64 hex, mode 600) is compared with a
+constant-time equality in `AuthService.authenticate` (`packages/server/src/auth.ts`);
+whoever presents it gets `caps: ["*"]`, no container scope, and root on every door
+in every container. The fragment keeps it off the wire — it is never sent in a
+request, and the app moves it to localStorage and scrubs the URL — but that narrows
+the network path, not the human one.
+
+What the owner key does **not** protect against:
+
+- Anyone who obtains the string is you: browser history, a screenshared address
+  bar, a synced browser profile, a URL pasted into a chat log, a backup archive.
+- There is no second factor.
+- There is no way to tell two humans holding the same key apart — both are the one
+  `owner` principal, in presence and in the trace ledger alike.
+- It never expires and no grant row revokes it. That is deliberate: it is the
+  break-glass credential, and one that can lock you out is not break-glass.
+
+What is protected:
+
+- Every door is closed to an unauthenticated caller. There is no anonymous read.
+- Delegated authority is real and revocable. Per-principal bearer tokens minted
+  through `core.access.mint` carry a capability subset and an optional container
+  scope; `core.access.revoke` kills them and severs their live sockets at once.
+- Interactively minted credentials expire. The bearer token a browser bootstrap
+  receives carries a **14 day** default expiry and is refused past it as `expired`
+  — a socket close reason and an HTTP `forbidden` — after which the browser
+  re-bootstraps from the owner key. Machine tokens (`docs/ENROLL.md`) are exempt
+  and never expire: an agent's credential is long-lived by design.
+
+If your deployment needs real authentication — named humans, SSO, an audit trail
+of who opened the door — put an authenticating proxy in front: Cloudflare Access,
+Tailscale, an OIDC-terminating proxy. It costs manifold no runtime dependency and
+works today with no code (mechanics in the section below). Be exact about what it
+buys: it authenticates the EDGE. Behind it manifold still sees one owner and still
+cannot distinguish two humans holding the same key.
+
+The reasoning is recorded in `docs/decisions/0019-identity-posture.md`.
+
 ## Already running a reverse proxy on this box?
 
 Skip the bundled caddy: publish manifold on loopback and keep your existing proxy
@@ -72,6 +112,58 @@ docker compose exec manifold tar cz -C / data > manifold-backup-$(date +%F).tgz
 ```
 
 The archive contains the owner key — store it like a secret.
+
+## Rotating the owner key
+
+Enrolled machines are unaffected. A machine token is an independent credential —
+its own durable secret, hashed at rest, held by the spoke in its own 0600 file
+(`docs/ENROLL.md`) — neither derived from the owner key nor referencing it. The
+owner principal survives too: it is a durable row (`owner_principal_id`), so its
+presence history, the grants naming it, and the containers it created all persist
+across a rotation.
+
+1. Replace the key. Which command depends on where it comes from — generate it
+   inside the container either way, so it never enters shell history or an argv
+   (`/proc/<pid>/cmdline` is world-readable).
+
+   Generated-key deployment (the default — the key lives in the volume):
+
+   ```sh
+   docker compose exec manifold sh -c 'umask 077 && openssl rand -hex 32 > /data/owner.key'
+   docker compose restart manifold
+   ```
+
+   Pinned deployment (`MANIFOLD_OWNER_KEY` set in `.env` — the pin wins and no
+   `/data/owner.key` is written): print a fresh key, paste it into `.env` with an
+   editor, then recreate the container.
+
+   ```sh
+   docker compose exec manifold openssl rand -hex 32
+   docker compose up -d manifold
+   ```
+
+   The restart is not optional. `loadOwnerKey` (`packages/server/src/config.ts`)
+   reads the key once at boot and never re-reads it.
+
+2. Re-bootstrap your browsers. The old key in localStorage stops authenticating at
+   the restart. Print the new URL the way `## Install` does — one of these, matching
+   how you installed the key:
+
+   ```sh
+   # generated-key deployment
+   docker compose exec manifold sh -c 'echo "$MANIFOLD_PUBLIC_URL/#key=$(cat /data/owner.key)"'
+   # pinned deployment
+   docker compose exec manifold sh -c 'echo "$MANIFOLD_PUBLIC_URL/#key=$MANIFOLD_OWNER_KEY"'
+   ```
+
+3. Deal with the tokens already minted. They are not derived from the owner key, so
+   they keep working until they expire or are revoked. If you are rotating because
+   the old key is believed leaked, that is not good enough — revoke them explicitly
+   through the workspace's Access section (`core.access.revoke`), which severs their
+   live sockets immediately.
+
+4. Retire the old backups, or treat them as live secrets. Every archive from
+   `## Backup` taken before the rotation contains the old `owner.key`.
 
 ## Upgrade
 
