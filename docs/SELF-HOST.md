@@ -165,6 +165,39 @@ across a rotation.
 4. Retire the old backups, or treat them as live secrets. Every archive from
    `## Backup` taken before the rotation contains the old `owner.key`.
 
+## Install it as an app
+
+The web client is installable as-is: the same server, the same bundle, no second build. Open
+your instance in Chrome, Edge or any Chromium-based browser and use "Install app" (desktop) or
+"Add to Home Screen" (mobile). The installed window loads the same bundle from the same origin.
+
+Two things follow from installing, and both are deliberate:
+
+- **Offline, it loads and tells you the truth.** The app shell is cached, so the window paints
+  and shows a named `Offline` banner naming the instance it cannot reach. It is NOT offline
+  editing: the server is authoritative for scene state, so nothing is queued, nothing is saved,
+  and no door is answered from a cache.
+- **A deploy is never sticky.** Every build gets its own cache generation, the document is
+  revalidated on every load, and activating a new generation deletes the old ones. A window left
+  open across an upgrade offers `Update ready · Reload`; if its bundle is too old to speak to the
+  upgraded server it REFUSES with the reason and a reload button, instead of silently failing to
+  reconnect. Nothing on the server needs doing for any of this — no cache headers to set, and no
+  step in the upgrade above.
+
+## Point one client at another instance
+
+A client is a lens, not a part of the server it came from, so an installed app can look at a
+different instance without a rebuild and without a second client:
+
+```
+https://<served-instance>/?instance=https://<other-instance>
+```
+
+The choice is remembered on that device (and only there), the banner says which instance is
+being looked at, and `?instance=` with no value points it home again. Credentials are kept per
+instance, so pointing a device elsewhere never disturbs the grant it holds here — each instance
+still needs its own `#key=` bootstrap the first time. The API doors accept cross-origin requests
+for exactly this reason; a bearer token remains the only authority on them.
 ## Upgrade
 
 ```sh

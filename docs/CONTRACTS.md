@@ -315,6 +315,22 @@ Errors: non-2xx with `{ error: { code, message } }`. Codes: `unauthorized`, `for
 more: it is the action door's `refused` rung, carrying the rule that refused as the message's
 leading class (below).
 
+**Every door answers any origin (issue #109).** `/api/*` and `/healthz` carry
+`access-control-allow-origin: *`, allow `GET, POST, DELETE, OPTIONS` with `authorization` and
+`content-type`, and answer a preflight `OPTIONS` with 204. Static files do NOT: the shell is
+served same-origin only. The reason is the portable lens (`AXIOMS.md` §The portable lens): a
+client installed from one instance may be pointed at another (`?instance=<url>`), and a browser
+will not let it knock on a door that refuses the preflight. It is safe because a bearer token is
+the ONLY authority on these doors — there are no cookies and no ambient session — so
+`access-control-allow-credentials` is never sent and `*` cannot widen anything: the permission is
+still "whoever holds a valid token".
+
+**`GET /healthz` is the protocol handshake for the browser too.** A client compares its own
+compiled-in `PROTOCOL_VERSION` against the `protocolVersion` in that answer and REFUSES to
+compose when they disagree, in both directions, rather than dialing a socket that would be closed
+4409 forever (`AGENTS.md` invariant 10; `packages/web/src/lens.tsx`). This is what keeps a cached
+bundle honest about protocol skew.
+
 ## Containers, placement, and the index
 
 A container has one of two disciplines — `canvas` or `composition` — and is ONE object either
@@ -1666,6 +1682,34 @@ The server snapshots a full encoded Yjs document 1.5s after the last change, at 
 10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the
 newest retained documents and skips corrupt entries. Terminal bytes, presence, cursor,
 gesture, and carry frames NEVER touch SQLite.
+
+## The app shell (installable lens, issue #109)
+
+One bundle, installable from any instance, pointable at any instance. Nothing here is a second
+build target and nothing branches on which instance is being looked at.
+
+- **Web app manifest**: `packages/web/public/app.webmanifest`, linked from `index.html`, copied
+  into `dist/` by the existing vite build and served by the existing static route. `start_url`
+  and `scope` are `/`, icons are `icon.svg` (any) and `icon-maskable.svg` (maskable), display is
+  `standalone`. Every path in it is relative: the SHELL belongs to whoever served it.
+- **Shell cache**: `packages/web/sw.js`, emitted to `dist/sw.js` by the build with the shipped
+  asset list and a cache name of `manifold-shell-<build>-<digest of those asset names>`.
+  Registered by `packages/web/src/lens.tsx` in a built app. It caches the document, the build's
+  hashed assets, the icon and the manifest — and passes through `/api`, `/ws`, `/healthz`, every
+  non-GET and every CROSS-ORIGIN request untouched, so no scene state is ever served from a
+  cache and no API origin is baked into a worker.
+- **Update flow**: navigations are network-first (so the load after a deploy fetches the new
+  document even under the old worker), a new generation installs and WAITS rather than swapping a
+  running page, `activate` deletes every older `manifold-shell-*`, and the waiting generation is
+  offered to the human as a reload. Protocol skew is refused rather than degraded (§HTTP API,
+  `/healthz`).
+- **Which instance**: `instanceOrigin()` (`packages/plugin/src/instance.ts`, exported through
+  `@manifold/plugin/hooks`) is the ONE answer, resolved once per page: `?instance=<url>` (a
+  one-shot carrier, consumed and remembered in `manifold:instance`), else this device's memory,
+  else `window.location.origin`. `?instance=` with no value forgets the choice. Every HTTP door
+  and the session socket derive from it — `sessionUrl()` here, and the SDK's own `apiOrigin()`
+  from that — so a plugin inherits the choice without knowing it exists. Credentials are keyed
+  per instance (`REGISTRY.md` §Device-local register).
 
 ## Testability (agent-facing)
 

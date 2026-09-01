@@ -1,4 +1,5 @@
 import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
+import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
 import { Cover } from "@manifold/plugin/ui";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPrincipal, type StoredIdentity } from "./api.ts";
@@ -7,6 +8,22 @@ const OWNER_KEY_STORAGE = "manifold.ownerKey";
 const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
+
+/**
+ * A CREDENTIAL BELONGS TO ONE INSTANCE. A token is minted by the server that will be asked to
+ * honour it, and an owner key authenticates as root at exactly one origin — so a lens pointed
+ * at a second instance may not read, and must never overwrite, the grant it holds for the
+ * first. The key therefore carries the instance whenever the lens is looking somewhere other
+ * than its birthplace (`manifold.identity@https://other.example`), and stays bare in the
+ * ordinary case where those are the same place.
+ *
+ * Bare is not a special case dressed up: the served instance is the one every deployment has,
+ * so its key is the one every reader — a human in devtools, a browser gate — already knows.
+ * `REGISTRY.md` §Device-local register carries both spellings under one prefixed row.
+ */
+function credentialKey(base: string): string {
+  return isForeignInstance() ? `${base}@${instanceOrigin()}` : base;
+}
 
 /**
  * The one color scheme: principals pick from it, machine dots hash into it. It lives in the
@@ -20,7 +37,7 @@ export function captureOwnerKeyFromFragment(): void {
   const match = OWNER_FRAGMENT_PATTERN.exec(window.location.hash);
   const ownerKey = match?.[1];
   if (ownerKey === undefined) return;
-  window.localStorage.setItem(OWNER_KEY_STORAGE, ownerKey);
+  window.localStorage.setItem(credentialKey(OWNER_KEY_STORAGE), ownerKey);
   window.history.replaceState(
     window.history.state,
     "",
@@ -29,14 +46,15 @@ export function captureOwnerKeyFromFragment(): void {
 }
 
 function loadOwnerKey(): string | null {
-  const ownerKey = window.localStorage.getItem(OWNER_KEY_STORAGE);
+  const key = credentialKey(OWNER_KEY_STORAGE);
+  const ownerKey = window.localStorage.getItem(key);
   if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
-  if (ownerKey !== null) window.localStorage.removeItem(OWNER_KEY_STORAGE);
+  if (ownerKey !== null) window.localStorage.removeItem(key);
   return null;
 }
 
 function loadIdentity(): StoredIdentity | null {
-  const serialized = window.localStorage.getItem(IDENTITY_STORAGE);
+  const serialized = window.localStorage.getItem(credentialKey(IDENTITY_STORAGE));
   if (serialized === null) return null;
   try {
     const decoded: unknown = JSON.parse(serialized);
@@ -48,7 +66,7 @@ function loadIdentity(): StoredIdentity | null {
     }
     return { token, principal: principal.data };
   } catch {
-    window.localStorage.removeItem(IDENTITY_STORAGE);
+    window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
     return null;
   }
 }
@@ -93,7 +111,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
     setError(null);
     try {
       const grant = await createPrincipal(ownerKey, { name: trimmedName, color });
-      window.localStorage.setItem(IDENTITY_STORAGE, JSON.stringify(grant));
+      window.localStorage.setItem(credentialKey(IDENTITY_STORAGE), JSON.stringify(grant));
       setIdentity(grant);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create your identity");
