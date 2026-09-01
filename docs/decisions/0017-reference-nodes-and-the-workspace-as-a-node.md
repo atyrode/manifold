@@ -1,7 +1,9 @@
 # 0017 - Reference nodes: seats, cursors, and the workspace as an ordinary node
 
 Date: 2026-09-01
-Status: PROPOSED (awaiting operator ratification; ratified items become law, deferred items stay listed here)
+Status: ACCEPTED - R1-R5 ratified in full by the operator, 2026-09-01, after detailed
+per-ask review (dependency order R3→R2→R4→R1→R5; R1's door convergence executes only
+after S17-C proves cursor-seats live). Deferred-doors ledger below remains live.
 
 ## Context
 
@@ -9,12 +11,12 @@ The sidebar decomposition (#85) proved the shell was only partly composed: chrom
 JSX, the arrange surface covered one registry, and the workspace tree was a special structure
 beside the composition discipline rather than an instance of it. While ratifying the fixes,
 the operator pushed the question to its root: if everything is a plugin and everything is
-addressable, then the sidebar, the viewport, and the workspace itself must be *things with
-addresses that plugins build*, not files. This ADR names the model that answers that push,
+addressable, then the sidebar, the viewport, and the workspace itself must be _things with
+addresses that plugins build_, not files. This ADR names the model that answers that push,
 so the concepts stop drifting between conversations.
 
-The operator's acceptance intuition, verbatim in spirit: *"my computer screen split in half
-with their computer screen"* - seat a friend's live sidebar and viewport from THEIR instance
+The operator's acceptance intuition, verbatim in spirit: _"my computer screen split in half
+with their computer screen"_ - seat a friend's live sidebar and viewport from THEIR instance
 beside mine, with presence, because everything is a node and they granted me the nodes.
 
 ## The model

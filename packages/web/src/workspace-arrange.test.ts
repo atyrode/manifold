@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { workspaceLayout } from "@manifold/plugin";
 import { ROOT_RING_PX, resolveTileAim, type TileAim } from "@manifold/plugin/hooks";
 import { WORKSPACE_TREE_CLASSES } from "@manifold/plugin/ui";
 import { validateTileLayout, type Tile, type TileLayout } from "@manifold/protocol";
@@ -15,9 +14,23 @@ import {
 const SIDEBAR = "core.shell.sidebar";
 const MAIN = "core.shell.container-view";
 
-/** The tree every principal starts with: sidebar left, container view right. */
+/**
+ * The two-panel tree the arrange verbs act on: sidebar left, container view right. Spelled
+ * here rather than composed from the roster's seats — these cases are about what a MOVE does
+ * to a tree, so the tree is an input, not a thing that should change when a manifest does.
+ */
 function base(): TileLayout {
-  return workspaceLayout({ sidebar: SIDEBAR, main: MAIN });
+  return {
+    root: {
+      id: "root",
+      dir: "row",
+      ratios: [0.22, 0.78],
+      children: ["ws-sidebar", "ws-main"],
+      ref: null,
+    },
+    "ws-sidebar": leaf("ws-sidebar", SIDEBAR),
+    "ws-main": leaf("ws-main", MAIN),
+  };
 }
 
 function leaf(id: string, panelId: string | null, sections?: readonly string[]): Tile {

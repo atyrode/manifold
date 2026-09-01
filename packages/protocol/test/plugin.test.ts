@@ -7,6 +7,7 @@ import {
   CONNECTION_LEVEL_MESSAGE_TYPES,
   DEFAULT_DORMANT_MODE,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  DEFAULT_SEAT_RATIO,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_DEPENDENCY_TYPES,
   PLUGIN_DORMANT_MODES,
@@ -781,6 +782,29 @@ describe("the published plugin vocabulary", () => {
     }
     expect(pluginVocabulary()["rosterEntry"]).toBeDefined();
     expect(pluginVocabulary()["purgeResult"]).toBeDefined();
+  });
+
+  test("the SEAT intent is published, so a stranger's panel can ask for a place", () => {
+    /*
+      The default workspace is composed from this field (ADR 0017 S17-B), which makes it the one
+      manifest declaration deciding what a fresh principal SEES. An agent writing a plugin has
+      to learn the shape — and the resolved default for the ratio it may omit — from
+      `GET /api/protocol` rather than from the engine's source.
+    */
+    const vocabulary = pluginVocabulary();
+    expect(vocabulary["defaultSeatRatio"]).toBe(DEFAULT_SEAT_RATIO);
+    // A generated JSON Schema, produced two lines up by `z.toJSONSchema`: in-process output of
+    // a known shape, not input, which is why reading it is an assertion and not a parse.
+    const seat = vocabulary["seat"] as { properties: Record<string, unknown>; required: string[] };
+    expect(Object.keys(seat.properties).sort()).toEqual(["order", "panel", "ratio"]);
+    // `ratio` is the only optional half: a seat that cannot say WHERE is not a seat.
+    expect([...seat.required].sort()).toEqual(["order", "panel"]);
+
+    // Same provenance, same reason.
+    const manifestSchema = vocabulary["manifest"] as {
+      properties: { contributes: { properties: Record<string, unknown> } };
+    };
+    expect(Object.keys(manifestSchema.properties.contributes.properties)).toContain("seats");
   });
 
   test("the vocabulary describes SHAPES; the composition names inhabitants", () => {

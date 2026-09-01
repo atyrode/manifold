@@ -1,7 +1,6 @@
 import {
   arrangedSectionIds,
   movedSectionIds,
-  type ComposedBinding,
   type ComposedSection,
   type PanelProps,
   type SectionProps,
@@ -10,95 +9,65 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
-  type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
+import { SectionOutlet, useWorkspaceShell } from "@manifold/plugin/hooks";
 import {
-  SectionOutlet,
-  useWorkspaceShell,
-  type WorkspaceSidebarState,
-} from "@manifold/plugin/hooks";
-import {
-  Cluster,
   ControlIcon,
   Disclosure,
-  ItemIcon,
   ScrollRegion,
   Stack,
+  useFlipStack,
   useVantage,
 } from "@manifold/plugin/ui";
-import { parseChangelogReferences } from "./changelog-references.ts";
+import { railRows } from "./rail-rows.ts";
 
 /**
- * The `core.shell.sidebar` panel — `core.shell`'s own, and now it lives in `core.shell`.
+ * The `core.shell.sidebar` panel — and there is nothing in it but the rail's own layout.
  *
- * It used to be floor, on the argument that the sidebar's CHROME has to read the composition to
- * know which sections exist and `useAssembly` was engine state a plugin may not touch. That
- * argument named a missing DOOR, not a floor component: the read is now `host.assembly`, a
- * declared read-only surface every plugin may open, so the last thing keeping this file inside
- * `packages/web/src` is gone and the carve-out with it (A1 — everything above the floor is a
- * plugin). The manifest owned the vocabulary all along: `core.shell` declares this panel, the
- * roster publishes it, and a disabled shell renders a named placeholder like any other panel.
- * It is attached to the manifest's `sidebar` id in the web package's `assembly.ts`, the one
- * file there allowed to name plugin packages.
+ * IT USED TO BE FLOOR, on the argument that the sidebar's CHROME has to read the composition
+ * to know which sections exist and `useAssembly` was engine state a plugin may not touch.
+ * That argument named a missing DOOR, not a floor component: the read is `host.assembly`, a
+ * declared read-only surface every plugin may open, so the component followed its manifest.
+ * This wave finishes the same sentence one level down. Everything the rail DREW was still
+ * hand-written here — the brand line, three create buttons, the status line, the key table's
+ * door, the identity footer — so "the sidebar is composed" was true of the middle of the rail
+ * and false of its top and bottom, and no reader of the assembly could see the difference.
+ * Every one of those is a contributed row now:
  *
- * Two contexts reach it, both published by the floor workspace host above the tree, both
- * declared in `@manifold/plugin` because their two ends may not import each other:
+ *   `core.shell`        brand · status · keys · identity
+ *   `core.canvas`       new-canvas
+ *   `core.compositions` new-composition
+ *   `core.index`        new-folder · index
+ *   `core.machines`     machines
+ *   `core.plugins`      plugins
+ *
+ * One registry, one order, two presentations (`plain` draws itself end to end; `disclosure`
+ * is the titled, collapsible block). What is left in this file is the rail's LAYOUT and
+ * nothing else: the collapse control, the stack, the chrome each presentation wears, and the
+ * arrange gesture that reorders it. There is not one domain noun below this comment — no
+ * canvas, no folder, no version, no principal — and that is the property to preserve. A row
+ * that needs one belongs to the plugin that owns it.
+ *
+ * THE COLLAPSE CONTROL STAYS, and it is the only thing that could: how wide the rail is drawn
+ * is a fact about the rail, so the control that changes it cannot be a row inside it — a row
+ * would be a contribution that decides its own container's geometry, and disabling its plugin
+ * would strand a collapsed rail with no way back.
+ *
+ * Two contexts reach this file, both published by the floor workspace host above the tree,
+ * both declared in `@manifold/plugin` because their two ends may not import each other:
  * `useWorkspaceShell` for the facts that are genuinely the HOST's (rail width, this
- * principal's stored arrangement, the creation doors, the running build's version) and
- * `useVantage` for the arrange mode F8 arms.
+ * principal's stored arrangement) and `useVantage` for the arrange mode F8 arms. Contributed
+ * rows read the same shell context for the rail's width and the creation doors; a section
+ * that needs neither never touches it.
  *
- * Everything BELOW the stack is somebody else's plugin: each row's body is reached by
+ * Everything INSIDE a row is somebody else's plugin: each row's body is reached by
  * {@link SectionOutlet}, which resolves the id to whatever the composition registered and
  * paints the engine's named placeholder when nothing did. The stack knows only the order the
  * manifests declared and whether the owning plugin is enabled — never who fills a row.
  */
-
-/** Ambient connection and persistence state; intentionally compact and visually quiet. */
-function WorkspaceStatus({
-  status,
-  savedAt,
-  rev,
-}: Pick<WorkspaceSidebarState, "status" | "savedAt" | "rev">) {
-  const savedLabel = savedAt === null ? "Not saved yet" : new Date(savedAt).toLocaleTimeString();
-  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-  return (
-    <div
-      className="sidebar-status"
-      title={`Connection ${status} · ${savedLabel} · revision ${rev}`}
-      role="status"
-      data-testid="connection-status"
-    >
-      <span className={`status-dot ${status}`} aria-hidden="true" />
-      <span>
-        <strong data-testid="connection-state">{statusLabel}</strong>
-        <small>
-          {savedAt === null ? "Not saved" : `Saved ${savedLabel}`} · rev {rev}
-        </small>
-      </span>
-    </div>
-  );
-}
-
-function renderChangelogChange(change: string): ReactNode {
-  return parseChangelogReferences(change).map((part, index) =>
-    part.kind === "text" ? (
-      part.text
-    ) : (
-      <a
-        key={`${part.href}-${index}`}
-        href={part.href}
-        target="_blank"
-        rel="noreferrer"
-        aria-label={`${part.text} on GitHub`}
-      >
-        {part.text}
-      </a>
-    ),
-  );
-}
 
 /** Per-section disclosure state. Device-LOCAL and in-memory: see the module note below. */
 type CollapsedSections = Readonly<Record<string, boolean>>;
@@ -115,7 +84,7 @@ interface SectionGrab {
  * By RECT rather than by hit-testing, and that is forced rather than preferred: arrange mode
  * puts `pointer-events: none` on the pane content it disarms, and `elementFromPoint` skips
  * exactly the elements that opted out of the pointer — so the one obvious way to ask this
- * question returns nothing while the mode that needs the answer is on. Sections already carry
+ * question returns nothing while the mode that needs the answer is on. Rows already carry
  * `data-section-id` for the gate's own queries, so the stack names itself and there is no ref
  * plumbing to keep in step with the order it is describing.
  */
@@ -127,17 +96,7 @@ function sectionIdAt(clientY: number): string | null {
   return null;
 }
 
-interface SectionShellProps {
-  readonly section: ComposedSection;
-  /** The stack's height absorber and its icon-rail occupant; see {@link SidebarPanel}. */
-  readonly grow: boolean;
-  readonly collapsed: boolean;
-  readonly onCollapsedChange: (id: string, collapsed: boolean) => void;
-  readonly host: SectionProps["host"];
-  /** Arrange mode is armed: this section is grabbable and nothing inside it is clickable. */
-  readonly arranging: boolean;
-  /** This is the section in hand right now. */
-  readonly grabbed: boolean;
+interface RowGestures {
   readonly onGrab: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
   readonly onGrabMove: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
   readonly onGrabEnd: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
@@ -146,16 +105,123 @@ interface SectionShellProps {
 }
 
 /**
- * One shell for every section: a disclosure header over a scrollable body. The header is the
- * engine's one {@link Disclosure} — it carries the button role, `aria-expanded` and
- * `data-state` for free, and keeps a collapsed body's content in the DOM exactly as the
- * native `<details>` it replaced did, so a folded section's feeds survive the fold. The
- * body is the engine's one {@link ScrollRegion}: each section scrolls ITSELF, vertically
- * only — horizontal overflow is refused by contract, which is what obliges every label in a
- * section to declare ellipsis or wrap.
+ * THE GRAB SURFACE — the one thing arrange mode makes grabbable, worn by every row whatever
+ * its presentation.
  *
- * A section supplies no header count and no header actions any more: a plugin renders its own
- * body and nothing else, so anything it wants to say about itself it says inside that body.
+ * It covers the WHOLE row rather than a corner handle, because the mode's promise is that the
+ * row IS the thing you are holding — and covering it is also what stops a disclosure from
+ * folding under a grab, since the pointer never reaches the toggle underneath.
+ *
+ * `label` decides whether it is a TAB STOP, and the two answers are forced by the chrome
+ * around it. A disclosure row's header is already a real button, so the grip there is inert
+ * (`aria-hidden`, no tab stop) and the arrow keys arrive from that header — a `<button>` there
+ * would also be a button nested inside one, which is not markup. A plain row has no header
+ * and no guaranteed focusable content at all, so its grip IS the tab stop and speaks the
+ * row's own title, exactly as the workspace's panel grip speaks a panel's.
+ *
+ * `data-action` names the door a release opens, so the DOM says which authority this
+ * affordance reaches for (AGENTS.md invariant 12): a released arrangement commits through
+ * `core.space.setLayout`, the same door the workspace's own panel grip names.
+ */
+function RowGrip({
+  id,
+  label,
+  gestures,
+}: {
+  readonly id: string;
+  readonly label: string | null;
+  readonly gestures: RowGestures;
+}): ReactElement {
+  const handlers = {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrab(id, event),
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabMove(id, event),
+    onPointerUp: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabEnd(id, event),
+    onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => gestures.onGrabEnd(id, event),
+  };
+  if (label === null) {
+    return (
+      <span
+        className="sidebar-section-grip"
+        aria-hidden="true"
+        data-action="core.space.setLayout"
+        {...handlers}
+      />
+    );
+  }
+  return (
+    <button
+      className="sidebar-section-grip"
+      type="button"
+      aria-label={`Move the ${label} row`}
+      data-action="core.space.setLayout"
+      {...handlers}
+    >
+      <ControlIcon kind="grip" size={14} />
+    </button>
+  );
+}
+
+/**
+ * Arranging by KEYBOARD, on the row's own root: the arrow keys bubble up from whatever inside
+ * it has focus, so the mode is operable without a pointer and the nudge goes through the very
+ * same policy function and the very same commit door the drag does. A mode reachable only by
+ * dragging would be a mode half the operators cannot use.
+ */
+function nudgeKeys(
+  id: string,
+  gestures: RowGestures,
+): (event: ReactKeyboardEvent<HTMLElement>) => void {
+  return (event) => {
+    const delta = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : null;
+    if (delta === null) return;
+    event.preventDefault();
+    gestures.onNudge(id, delta);
+  };
+}
+
+interface RowProps {
+  readonly section: ComposedSection;
+  /** The stack's height absorber and its icon-rail occupant; see {@link railRows}. */
+  readonly grow: boolean;
+  readonly host: SectionProps["host"];
+  /** Arrange mode is armed: this row is grabbable and nothing inside it is clickable. */
+  readonly arranging: boolean;
+  /** This is the row in hand right now. */
+  readonly grabbed: boolean;
+  readonly gestures: RowGestures;
+}
+
+interface RowAttributes {
+  readonly "data-section-id": string;
+  readonly "data-plugin": string;
+  readonly "data-presentation": string;
+}
+
+/**
+ * Which attributes EVERY row carries, whatever chrome it wears: its id (the stack's own
+ * geometry query, the gate's, and the FLIP's key), its owner, and its resolved presentation.
+ * The DOM says who owns a row and how it draws, so neither question needs a class name to be
+ * inferred from.
+ */
+function rowAttributes(section: ComposedSection): RowAttributes {
+  return {
+    "data-section-id": section.id,
+    "data-plugin": section.plugin,
+    "data-presentation": section.presentation,
+  };
+}
+
+/**
+ * DISCLOSURE chrome: a titled header over a scrollable body. The header is the engine's one
+ * {@link Disclosure} — it carries the button role, `aria-expanded` and `data-state` for free,
+ * and keeps a collapsed body's content in the DOM exactly as the native `<details>` it
+ * replaced did, so a folded section's feeds survive the fold. The body is the engine's one
+ * {@link ScrollRegion}: each section scrolls ITSELF, vertically only — horizontal overflow is
+ * refused by contract, which is what obliges every label in a section to declare ellipsis or
+ * wrap.
+ *
+ * A section supplies no header count and no header actions: a plugin renders its own body and
+ * nothing else, so anything it wants to say about itself it says inside that body.
  */
 function SectionShell({
   section,
@@ -165,64 +231,26 @@ function SectionShell({
   host,
   arranging,
   grabbed,
-  onGrab,
-  onGrabMove,
-  onGrabEnd,
-  onNudge,
-}: SectionShellProps): ReactElement {
+  gestures,
+}: RowProps & {
+  readonly collapsed: boolean;
+  readonly onCollapsedChange: (id: string, collapsed: boolean) => void;
+}): ReactElement {
   return (
     <Disclosure
       className={`sidebar-section${grow ? " sidebar-section--grow" : ""}${
         grabbed ? " sidebar-section--grabbed" : ""
       }`}
       data-testid={`${section.id}-section`}
-      data-section-id={section.id}
-      data-plugin={section.plugin}
+      {...rowAttributes(section)}
       open={!collapsed}
       onOpenChange={(open) => onCollapsedChange(section.id, !open)}
       headerClassName="sidebar-section-header"
       bodyClassName="sidebar-section-body"
-      /*
-        Arranging by KEYBOARD, on the section's own root: the arrow keys bubble up from the
-        focused header, so the mode is operable without a pointer and the nudge goes through
-        the very same policy function and the very same commit door the drag does. A mode
-        reachable only by dragging would be a mode half the operators cannot use.
-      */
-      onKeyDown={
-        arranging
-          ? (event) => {
-              const delta = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : null;
-              if (delta === null) return;
-              event.preventDefault();
-              onNudge(section.id, delta);
-            }
-          : undefined
-      }
+      onKeyDown={arranging ? nudgeKeys(section.id, gestures) : undefined}
       header={
         <>
-          {/*
-            THE GRAB SURFACE. It covers the whole section rather than a corner handle, because
-            the mode's promise is that the section IS the thing you are holding — and covering
-            it is also what stops the disclosure from folding under a grab, since the pointer
-            never reaches the toggle underneath. It lives in the header slot for want of a
-            sibling slot on the disclosure and positions against the section itself, which is
-            what `.workspace.is-arranging .sidebar-section { position: relative }` is for.
-
-            `aria-hidden` and no tab stop: the keyboard route is the arrow keys above, so this
-            never becomes an interactive descendant of the header button.
-          */}
-          {arranging ? (
-            <span
-              className="sidebar-section-grip"
-              aria-hidden="true"
-              onPointerDown={(event) => onGrab(section.id, event)}
-              onPointerMove={(event) => onGrabMove(section.id, event)}
-              onPointerUp={(event) => onGrabEnd(section.id, event)}
-              onPointerCancel={(event) => onGrabEnd(section.id, event)}
-            >
-              <ControlIcon kind="grip" size={14} />
-            </span>
-          ) : null}
+          {arranging ? <RowGrip id={section.id} label={null} gestures={gestures} /> : null}
           <span className="sidebar-section-chevron" aria-hidden="true">
             <ControlIcon kind="collapsed" size={13} />
           </span>
@@ -238,41 +266,32 @@ function SectionShell({
 }
 
 /**
- * THE KEY TABLE, as a reader sees it: every binding the composition composed, with the key, what
- * it does and which plugin owns it.
+ * PLAIN chrome: a bare box around the row's own content, and deliberately almost nothing.
  *
- * It prints the registry rather than a hand-kept list, which is the whole point of declaring
- * keys: a plugin that ships a binding appears here for free, a disabled plugin's rows are gone
- * because composition dropped them, and a key nobody declared cannot be listed — it also cannot
- * be dispatched. Scope is shown only when a row narrows it: "canvas" beside a row that only
- * answers on a canvas is information, and "always" beside eleven rows is noise.
+ * No header, no fold, no scroll region — a plain row draws itself end to end, which is the
+ * whole reason the presentation exists: a create strip, a brand line, a status line and an
+ * identity footer are not collapsible blocks, and forcing them into disclosure chrome is what
+ * kept them hand-written in this file for as long as it lasted. The wrapper carries exactly
+ * what the STACK needs (the row's identity for geometry and motion, its owner, its
+ * presentation) plus the grab surface the mode adds, and it may not scroll: a row that
+ * outgrows the rail is the row's own contract to keep.
  */
-function BindingsTable({
-  bindings,
-  pluginTitle,
-}: {
-  readonly bindings: readonly ComposedBinding[];
-  readonly pluginTitle: (plugin: string) => string;
-}): ReactElement {
+function PlainRow({
+  section,
+  host,
+  arranging,
+  grabbed,
+  gestures,
+}: Omit<RowProps, "grow">): ReactElement {
   return (
-    <Stack gap="0.5rem">
-      {bindings.length === 0 ? (
-        <p className="sidebar-bindings-empty">No plugin claims a key in this workspace.</p>
-      ) : (
-        bindings.map((binding) => (
-          <Cluster key={binding.id} justify="space-between" gap="0.75rem">
-            <span className="sidebar-bindings-label">
-              {binding.label}
-              <small>
-                {pluginTitle(binding.plugin)}
-                {binding.when === "always" ? "" : ` · ${binding.when} only`}
-              </small>
-            </span>
-            <kbd className="sidebar-bindings-key">{binding.key}</kbd>
-          </Cluster>
-        ))
-      )}
-    </Stack>
+    <div
+      className={`sidebar-plain${grabbed ? " sidebar-plain--grabbed" : ""}`}
+      {...rowAttributes(section)}
+      onKeyDown={arranging ? nudgeKeys(section.id, gestures) : undefined}
+    >
+      {arranging ? <RowGrip id={section.id} label={section.title} gestures={gestures} /> : null}
+      <SectionOutlet id={section.id} host={host} />
+    </div>
   );
 }
 
@@ -284,39 +303,20 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     through a ref during render. The shell hands out plain values; naming them plainly is
     what keeps that true.
   */
-  const {
-    commitSectionOrder,
-    createContainer,
-    createFolder,
-    creating,
-    registerSidebarElement,
-    sectionOrder,
-    setSidebarOpen,
-    sidebarOpen,
-    webChangelog,
-    webVersionLabel,
-    workspace,
-  } = useWorkspaceShell();
+  const { commitSectionOrder, registerSidebarElement, sectionOrder, setSidebarOpen, sidebarOpen } =
+    useWorkspaceShell();
   const { arranging } = useVantage();
   /*
    * Per-section disclosure is in-memory only. The sidebar's four private storage keys are gone
-   * with the rest of its device-only state (D13): a section's ORDER now comes from
-   * its manifest, its presence from the roster, and its width from the workspace layout —
-   * all three observable by every principal. Which sections one tab happened to fold shut is
-   * the one piece of that state nobody else can act on, so it is not worth a key, a register
-   * entry, or a migration; it lasts as long as the tab does.
+   * with the rest of its device-only state (D13): a row's ORDER now comes from its manifest,
+   * its presence from the roster, and the rail's width from the workspace layout — all three
+   * observable by every principal. Which sections one tab happened to fold shut is the one
+   * piece of that state nobody else can act on, so it is not worth a key, a register entry, or
+   * a migration; it lasts as long as the tab does.
    */
   const [collapsedSections, setCollapsedSections] = useState<CollapsedSections>({});
-  const [folderName, setFolderName] = useState<string | null>(null);
-  const [creatingFolder, setCreatingFolder] = useState(false);
-  const [changelogOpen, setChangelogOpen] = useState(false);
-  const versionButtonRef = useRef<HTMLButtonElement | null>(null);
-  const changelogDialogRef = useRef<HTMLDialogElement | null>(null);
-  const [bindingsOpen, setBindingsOpen] = useState(false);
-  const bindingsButtonRef = useRef<HTMLButtonElement | null>(null);
-  const bindingsDialogRef = useRef<HTMLDialogElement | null>(null);
   /**
-   * THE SECTION IN HAND, and the order it has dragged the stack into so far.
+   * THE ROW IN HAND, and the order it has dragged the stack into so far.
    *
    * `order` is the WIRE FORM — the exact `readonly string[]` the layout tile stores — and the
    * stack below renders it without knowing whether it came from this pointer or from the
@@ -348,70 +348,37 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     if (!arranging) grabRef.current = null;
   }, [arranging]);
 
-  useEffect(() => {
-    if (!changelogOpen) return;
-    const dialog = changelogDialogRef.current;
-    if (dialog !== null && !dialog.open) dialog.showModal();
-  }, [changelogOpen]);
-
-  useEffect(() => {
-    if (!bindingsOpen) return;
-    const dialog = bindingsDialogRef.current;
-    if (dialog !== null && !dialog.open) dialog.showModal();
-  }, [bindingsOpen]);
-
-  const closeChangelog = (): void => {
-    setChangelogOpen(false);
-    window.requestAnimationFrame(() => versionButtonRef.current?.focus());
-  };
-
-  const closeBindings = (): void => {
-    setBindingsOpen(false);
-    window.requestAnimationFrame(() => bindingsButtonRef.current?.focus());
-  };
-
-  const submitFolder = async (name: string): Promise<void> => {
-    setCreatingFolder(true);
-    try {
-      await createFolder(name);
-      setFolderName(null);
-    } finally {
-      setCreatingFolder(false);
-    }
-  };
-
   /**
    * WHAT ORDER THE STACK IS IN. Manifest order is the default; this principal's stored
    * arrangement overrides it; a live grab overrides that for as long as it is held. Three
    * inputs, one answer, and the merge itself is the tested policy module rather than
    * arithmetic inlined here (`arrangedSectionIds`, `packages/plugin/src/layout.ts`).
    *
-   * The order is computed over EVERY declared section and filtered for enabled afterwards, so
-   * a disabled plugin's slot closes without its stored place being forgotten — D4′ (ADR 0013):
-   * chrome renders absence, and re-enabling restores the exact seat the principal chose.
+   * The order is computed over EVERY declared row and filtered for enabled afterwards, so a
+   * disabled plugin's slot closes without its stored place being forgotten — D4′ (ADR 0013):
+   * chrome renders absence, and re-enabling restores the exact seat the principal chose. That
+   * filter, and which row absorbs the rail's leftover height, are {@link railRows}.
    */
   const declaredIds = assembly.sections.map((section) => section.id);
   const arrangedIds = arrangedSectionIds(declaredIds, sectionOrder);
   const liveIds = grab?.order ?? arrangedIds;
-  const declared = new Map(assembly.sections.map((section) => [section.id, section]));
+  const rows = railRows(assembly.sections, liveIds, sidebarOpen);
 
   /**
-   * The icon rail keeps ONE section mounted, and the stack's leftover height goes to that
-   * same one: the section the ORDER puts first — the manifests' choice until the principal
-   * makes one. One rule for both, read off the live order rather than a hardcoded id, which
-   * is what makes the rail survive a plugin being disabled, added, or rearranged.
+   * MOTION, because the order is DATA. The stack reflows for three reasons a reader did not
+   * necessarily cause — their own arrange commit or nudge, and a roster change that adds or
+   * removes somebody else's row — and a re-render teleports. FLIP plays the difference, keyed
+   * on the visible order, so a nudge shows which row moved and a disabled plugin's row is seen
+   * to leave (`@manifold/plugin/ui`'s `useFlipStack`; `prefers-reduced-motion: reduce` turns
+   * every transform off, which is the plain re-render this had before).
+   *
+   * The signature is the visible order itself, so a live drag's per-frame reflow animates too:
+   * the drag preview and the committed arrangement are one derivation, and motion that skipped
+   * the preview would make the release look like the only thing that moved.
    */
-  const sections: readonly ComposedSection[] = liveIds.flatMap((id) => {
-    const section = declared.get(id);
-    /*
-     * D4′ (ADR 0013): chrome renders ABSENCE. A disabled plugin's section VANISHES from the
-     * stack, and the Plugins section is the one ledger of what is off. A tombstone here would
-     * make the floor look like it cannot exist without the plugin — the smell A1 forbids.
-     */
-    return section === undefined || !section.enabled ? [] : [section];
+  const flipStack = useFlipStack(rows.map((row) => row.section.id).join(" "), {
+    attribute: "data-section-id",
   });
-  const railSection = sections[0];
-  const visible = sidebarOpen ? sections : railSection === undefined ? [] : [railSection];
 
   /**
    * ONE ACTION PER GESTURE. The drag repaints per frame off `grab.order` and writes nothing;
@@ -424,311 +391,111 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     if (moved) commitSectionOrder(order);
   };
 
-  const grabSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
-    // The grab surface sits over the disclosure's toggle: swallowing the event here is what
-    // keeps a grab from folding the section it is about to move.
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    holdSection({ moved: id, order: arrangedIds });
+  const gestures: RowGestures = {
+    onGrab: (id, event) => {
+      // The grab surface sits over the disclosure's toggle: swallowing the event here is what
+      // keeps a grab from folding the section it is about to move.
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      holdSection({ moved: id, order: arrangedIds });
+    },
+    onGrabMove: (id, event) => {
+      const held = grabRef.current;
+      if (held === null || held.moved !== id) return;
+      const over = sectionIdAt(event.clientY);
+      if (over === null) return;
+      const next = movedSectionIds(held.order, held.moved, over);
+      // Referential identity IS the "nothing moved" answer, so a frame over the row already
+      // in hand costs one comparison and no render.
+      if (next === held.order) return;
+      holdSection({ moved: held.moved, order: next });
+    },
+    onGrabEnd: (id, event) => {
+      const held = grabRef.current;
+      if (held === null || held.moved !== id) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      commitIfMoved(held.order);
+      holdSection(null);
+    },
+    onNudge: (id, delta) => {
+      /*
+        ONE PRESS, ONE VISIBLE MOVE. The neighbour is read off what is PAINTED and the move is
+        applied to what is STORED, which is the same split the drag has (`sectionIdAt` reads
+        geometry; `movedSectionIds` rewrites the whole order). Reading the neighbour off the
+        stored order instead would let an arrow press swap a row past a seat nobody can see —
+        a disabled plugin's, or a body the collapsed rail left out — and look like a press
+        that did nothing.
+      */
+      const painted = rows.map((row) => row.section.id);
+      const from = painted.indexOf(id);
+      const over = painted[from + delta];
+      if (over === undefined) return;
+      commitIfMoved(movedSectionIds(arrangedIds, id, over));
+    },
   };
 
-  const dragSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
-    const held = grabRef.current;
-    if (held === null || held.moved !== id) return;
-    const over = sectionIdAt(event.clientY);
-    if (over === null) return;
-    const next = movedSectionIds(held.order, held.moved, over);
-    // Referential identity IS the "nothing moved" answer, so a frame over the section
-    // already in hand costs one comparison and no render.
-    if (next === held.order) return;
-    holdSection({ moved: held.moved, order: next });
-  };
-
-  const releaseSection = (id: string, event: ReactPointerEvent<HTMLElement>): void => {
-    const held = grabRef.current;
-    if (held === null || held.moved !== id) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    commitIfMoved(held.order);
-    holdSection(null);
-  };
-
-  const nudgeSection = (id: string, delta: -1 | 1): void => {
-    const from = arrangedIds.indexOf(id);
-    const over = arrangedIds[from + delta];
-    if (over === undefined) return;
-    commitIfMoved(movedSectionIds(arrangedIds, id, over));
-  };
+  /*
+    The rail is one body and has nothing to reorder against, so arranging is offered only
+    while the sidebar is open. The MODE stays on either way — the workspace is still armed,
+    the panes still say so.
+  */
+  const arrangingRows = arranging && sidebarOpen;
 
   return (
-    <>
-      <aside className="sidebar" aria-label="Sidebar" ref={registerSidebarElement}>
-        <header className="sidebar-header">
-          <span className="sidebar-brand">
-            <span className="sidebar-mark" aria-hidden="true">
-              M
-            </span>
-            {sidebarOpen ? (
-              <span className="sidebar-brand-copy">
-                <strong>manifold</strong>
-                <button
-                  ref={versionButtonRef}
-                  className="sidebar-version"
-                  type="button"
-                  aria-label={`Open web changelog for ${webVersionLabel}`}
-                  onClick={() => setChangelogOpen(true)}
-                >
-                  {webVersionLabel}
-                </button>
-              </span>
-            ) : null}
-          </span>
-          <button
-            className="sidebar-icon-button"
-            type="button"
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-          >
-            <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />
-          </button>
-        </header>
+    <aside className="sidebar" aria-label="Sidebar" ref={registerSidebarElement}>
+      {/*
+        The rail's own control, and the reason it is not a row: it changes the rail's width.
+        Open, it sits in the top-right corner over the first row — where it has always been,
+        beside the brand line that is now a contribution. Collapsed, the rail has no corner to
+        spare and the control takes the top of the icon strip (`.sidebar-collapse`).
+      */}
+      <div className="sidebar-collapse">
+        <button
+          className="sidebar-icon-button"
+          type="button"
+          title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+        >
+          <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />
+        </button>
+      </div>
 
-        <div className="sidebar-create-buttons">
-          <button
-            className="sidebar-new"
-            type="button"
-            data-action="core.index.createContainer"
-            title="New canvas"
-            aria-label="New canvas"
-            onClick={() => {
-              if (!sidebarOpen) setSidebarOpen(true);
-              createContainer("canvas");
-            }}
-            disabled={creating}
-          >
-            <ControlIcon kind="add" />
-            {sidebarOpen ? <span>New canvas</span> : null}
-          </button>
-          <button
-            className="sidebar-new container-sidebar-new-view"
-            type="button"
-            data-action="core.index.createContainer"
-            title="New composition"
-            aria-label="New composition"
-            onClick={() => {
-              if (!sidebarOpen) setSidebarOpen(true);
-              createContainer("composition");
-            }}
-            disabled={creating}
-          >
-            <ItemIcon kind="composition" />
-            {sidebarOpen ? <span>New composition</span> : null}
-          </button>
-          <button
-            className="sidebar-new sidebar-new-folder"
-            type="button"
-            title="New folder"
-            aria-label="New folder"
-            onClick={() => {
-              if (!sidebarOpen) setSidebarOpen(true);
-              setFolderName("");
-            }}
-          >
-            <ItemIcon kind="folder" />
-            {sidebarOpen ? <span>New folder</span> : null}
-          </button>
-        </div>
-
-        {/*
-          Top-level folder creation is chrome, beside the button that opens it. It used to be
-          rendered inside the Index section, which is no longer the shell's to reach into: the
-          section subscribes to the index's node, so the folder's own creation event puts the
-          new row there.
-        */}
-        {sidebarOpen && folderName !== null ? (
-          <form
-            className="sidebar-create sidebar-folder-create"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const trimmed = folderName.trim();
-              if (trimmed === "") return;
-              void submitFolder(trimmed);
-            }}
-          >
-            <input
-              maxLength={120}
-              value={folderName}
-              onChange={(event) => setFolderName(event.currentTarget.value)}
-              placeholder="Folder name"
-              aria-label="Folder name"
-              autoFocus
-              disabled={creatingFolder}
+      <Stack className="sidebar-sections" gap="0.4rem" ref={flipStack}>
+        {rows.map(({ section, grow }) =>
+          section.presentation === "plain" ? (
+            <PlainRow
+              section={section}
+              host={host}
+              arranging={arrangingRows}
+              grabbed={grab?.moved === section.id}
+              gestures={gestures}
+              key={`${section.plugin}.${section.id}`}
             />
-            <Cluster justify="flex-end" gap="0.35rem">
-              <button type="button" onClick={() => setFolderName(null)} disabled={creatingFolder}>
-                Cancel
-              </button>
-              <button
-                type="submit"
-                data-action="core.index.createFolder"
-                disabled={creatingFolder || folderName.trim() === ""}
-              >
-                {creatingFolder ? "Creating…" : "Create"}
-              </button>
-            </Cluster>
-          </form>
-        ) : null}
-
-        <Stack className="sidebar-sections" gap="0.4rem">
-          {visible.map((section) => (
+          ) : (
             <SectionShell
               section={section}
-              grow={section === railSection}
+              grow={grow}
               collapsed={sidebarOpen && collapsedSections[section.id] === true}
               onCollapsedChange={(id, collapsed) => {
-                // The icon rail force-opens its one section; that is layout, not a choice.
+                // The icon rail force-opens its one body; that is layout, not a choice.
                 if (!sidebarOpen) return;
                 setCollapsedSections((current) =>
                   current[id] === collapsed ? current : { ...current, [id]: collapsed },
                 );
               }}
               host={host}
-              /*
-                The rail is one section and has nothing to reorder against, so arranging is
-                offered only while the sidebar is open. The MODE stays on either way — the
-                workspace is still armed, the panes still say so.
-              */
-              arranging={arranging && sidebarOpen}
+              arranging={arrangingRows}
               grabbed={grab?.moved === section.id}
-              onGrab={grabSection}
-              onGrabMove={dragSection}
-              onGrabEnd={releaseSection}
-              onNudge={nudgeSection}
+              gestures={gestures}
               key={`${section.plugin}.${section.id}`}
             />
-          ))}
-        </Stack>
-
-        {sidebarOpen && workspace !== null ? (
-          <WorkspaceStatus
-            status={workspace.status}
-            savedAt={workspace.savedAt}
-            rev={workspace.rev}
-          />
-        ) : null}
-
-        {/*
-          The key table's door, at the very bottom: the last thing in the rail, beside the
-          identity it belongs to. It is chrome over an ENGINE registry — the composed binding
-          table — so it lives here for the same reason the section stack does, and it names no
-          plugin to do it.
-        */}
-        <button
-          ref={bindingsButtonRef}
-          className="sidebar-bindings"
-          type="button"
-          title="Keyboard bindings"
-          aria-label="Show keyboard bindings"
-          onClick={() => setBindingsOpen(true)}
-        >
-          <ControlIcon kind="bindings" />
-          {sidebarOpen ? <span>Keys</span> : null}
-        </button>
-
-        <footer className="sidebar-identity" title={host.principal.name}>
-          <span className="identity-dot" style={{ backgroundColor: host.principal.color }} />
-          {sidebarOpen ? <span>{host.principal.name}</span> : null}
-        </footer>
-      </aside>
-      {typeof document !== "undefined" && changelogOpen
-        ? createPortal(
-            <dialog
-              ref={changelogDialogRef}
-              className="web-changelog-dialog"
-              aria-labelledby="web-changelog-title"
-              onCancel={(event) => {
-                event.preventDefault();
-                closeChangelog();
-              }}
-              onPointerDown={(event) => {
-                if (event.target !== event.currentTarget) return;
-                closeChangelog();
-              }}
-            >
-              <section className="web-changelog-card">
-                <header>
-                  <div>
-                    <span>Web application</span>
-                    <h2 id="web-changelog-title">What’s new</h2>
-                    <code>{webVersionLabel}</code>
-                  </div>
-                  <button type="button" aria-label="Close changelog" onClick={closeChangelog}>
-                    <ControlIcon kind="close" />
-                  </button>
-                </header>
-                <div className="web-changelog-releases">
-                  {webChangelog.map((release) => (
-                    <article key={release.version}>
-                      <div>
-                        <h3>Version {release.version}</h3>
-                        <time dateTime={release.date}>{release.date}</time>
-                      </div>
-                      <ul>
-                        {release.changes.map((change) => (
-                          <li key={change}>{renderChangelogChange(change)}</li>
-                        ))}
-                      </ul>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            </dialog>,
-            document.body,
-          )
-        : null}
-      {typeof document !== "undefined" && bindingsOpen
-        ? createPortal(
-            <dialog
-              ref={bindingsDialogRef}
-              className="sidebar-bindings-dialog"
-              aria-labelledby="sidebar-bindings-title"
-              onCancel={(event) => {
-                event.preventDefault();
-                closeBindings();
-              }}
-              onPointerDown={(event) => {
-                if (event.target !== event.currentTarget) return;
-                closeBindings();
-              }}
-            >
-              <section className="sidebar-bindings-card">
-                <header>
-                  <div>
-                    <span>Workspace</span>
-                    <h2 id="sidebar-bindings-title">Keyboard bindings</h2>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label="Close keyboard bindings"
-                    onClick={closeBindings}
-                  >
-                    <ControlIcon kind="close" />
-                  </button>
-                </header>
-                <ScrollRegion className="sidebar-bindings-body">
-                  <BindingsTable
-                    bindings={assembly.bindings}
-                    pluginTitle={(plugin) => assembly.pluginTitle(plugin) ?? plugin}
-                  />
-                </ScrollRegion>
-              </section>
-            </dialog>,
-            document.body,
-          )
-        : null}
-    </>
+          ),
+        )}
+      </Stack>
+    </aside>
   );
 }

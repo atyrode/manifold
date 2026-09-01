@@ -18,6 +18,17 @@ import { shellManifest } from "./index.ts";
  */
 export { ContainerViewPanel } from "./container-view-panel.tsx";
 export { SidebarPanel } from "./sidebar-panel.tsx";
+/**
+ * THE RAIL'S OWN ROWS, exported beside the panel that stacks them — and reached the same way
+ * every other plugin's section is, through the registration in the web package's
+ * `assembly.ts`. The panel does NOT import them: it asks the projection registry for the
+ * component behind a section id, so `core.shell`'s four rows arrive by exactly the route a
+ * stranger's rows do, and the shell has no privileged path into its own sidebar.
+ */
+export { BrandRow } from "./brand-row.tsx";
+export { IdentityRow } from "./identity-row.tsx";
+export { KeysRow } from "./keys-row.tsx";
+export { StatusRow } from "./status-row.tsx";
 
 /**
  * The shell's BROWSER half: the keys the workspace itself answers to.

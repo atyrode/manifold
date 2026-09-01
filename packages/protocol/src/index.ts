@@ -151,6 +151,7 @@ export {
   ActionScopeSchema,
   ActionSummarySchema,
   DEFAULT_DORMANT_MODE,
+  DEFAULT_SEAT_RATIO,
   DEFAULT_SECTION_PRESENTATION,
   ENGINE_NAMESPACE_PREFIX,
   LOCAL_NAME_PATTERN,
@@ -177,6 +178,7 @@ export {
   PluginRosterSchema,
   PluginSourceSchema,
   SECTION_PRESENTATIONS,
+  SeatDefSchema,
   SectionDefSchema,
   SectionPresentationSchema,
   pluginVocabulary,
@@ -202,6 +204,7 @@ export {
   type PluginRoster,
   type PluginRosterEntry,
   type PluginSource,
+  type SeatDef,
   type SectionDef,
   type SectionPresentation,
 } from "./plugin.ts";

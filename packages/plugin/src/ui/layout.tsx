@@ -1,4 +1,4 @@
-import type { CSSProperties, HTMLAttributes, ReactElement, ReactNode } from "react";
+import type { CSSProperties, HTMLAttributes, ReactElement, ReactNode, Ref } from "react";
 
 /**
  * THE LAYOUT ALGEBRA — six composable boxes that answer "how do things sit together?"
@@ -54,6 +54,14 @@ function withVars(
 export interface LayoutProps extends HTMLAttributes<HTMLDivElement> {
   /** Any CSS length (`"0.4rem"`, `"clamp(0.2rem, 1cqi, 0.6rem)"`). Unset: the adaptive default. */
   readonly gap?: string;
+  /**
+   * The primitive's own node, for an adopter that has to MEASURE it — a FLIP over the rows of
+   * a stack, a geometric question about where the box is. Declared here rather than left to a
+   * bespoke wrapper div, because a wrapper would put a second box between the primitive and
+   * the children it arranges, and every rule about gaps and `min-width: 0` is written about
+   * that exact parent-child pair. It rides `...rest` onto the div like every other attribute.
+   */
+  readonly ref?: Ref<HTMLDivElement>;
 }
 
 export interface StackProps extends LayoutProps {

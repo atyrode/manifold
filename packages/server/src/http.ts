@@ -17,8 +17,8 @@ import {
   type Cap,
   type HttpError,
   type ManifoldRef,
-  type TileLayout,
 } from "@manifold/protocol";
+import { composeDefaultLayout } from "@manifold/plugin";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
@@ -121,19 +121,6 @@ export class HttpApp {
     private readonly machines: MachineGateway,
     private readonly plugins: PluginHost,
     private readonly logger: Logger,
-    /**
-     * The workspace tree `GET /api/layout` serves a principal who has never arranged one.
-     *
-     * INJECTED, not imported, and that is the whole point of the parameter. The default is a
-     * neutral arrangement (`workspaceLayout()` in `@manifold/plugin`) filled with two PANEL
-     * ids, and a panel id names a plugin. This file is floor and may not import
-     * `@manifold-plugin/*` (REGISTRY.md §Foundation, gate S2), so it cannot learn those names
-     * itself and must not try: `main.ts` reads them from `assembly.ts` — the one server file
-     * sanctioned to name a plugin — builds the tree there, and hands the result down. The HTTP
-     * door therefore serves a `TileLayout` it can neither author nor recognise, which is
-     * exactly the neutrality the floor owes.
-     */
-    private readonly defaultLayout: TileLayout,
   ) {}
 
   /** Handles a request without allowing auth secrets to enter logs or errors. */
@@ -261,7 +248,19 @@ export class HttpApp {
       // takes no id and answers the caller's own — the default until they write one.
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
-      const layout = this.store.workspaceLayout(context.principal.id) ?? this.defaultLayout;
+      /*
+        THE DEFAULT IS COMPOSED, not injected. It used to arrive as a constructor argument,
+        because the tree was a floor arrangement filled with two PANEL ids and a panel id names
+        a plugin, which this file may not do (REGISTRY.md §Foundation, gate S2). Now it is
+        composed from the ROSTER this app already serves at `/api/plugins` — the enabled half's
+        declared seats (ADR 0017 S17-B) — so the names come from the manifests and nothing here
+        learns which plugin drew what. Composed per request rather than cached because
+        enablement is hot: toggling a panel plugin changes what the next unarranged principal is
+        shown, and a cached tree would answer for a roster that no longer exists.
+      */
+      const layout =
+        this.store.workspaceLayout(context.principal.id) ??
+        composeDefaultLayout(this.plugins.roster()).layout;
       return jsonResponse(LayoutResponseSchema.parse({ layout }));
     }
 

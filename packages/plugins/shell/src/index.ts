@@ -8,13 +8,30 @@ import {
 import { z } from "zod";
 
 /**
- * The shell: the sidebar and the container view, as plugin panels. A principal's workspace is a
- * tile tree whose leaves name these two panel ids, rendered by the same component every
- * composition uses — which is why the shell is a composition rather than a frame with
- * plugin holes cut in it (D2).
+ * The shell: the sidebar and the container view, as plugin panels, and the rail's own chrome
+ * as CONTRIBUTED ROWS. A principal's workspace is a tile tree whose leaves name these two
+ * panel ids, rendered by the same component every composition uses — which is why the shell
+ * is a composition rather than a frame with plugin holes cut in it (D2).
+ *
+ * THE FOUR SECTIONS ARE THE RAIL'S OWN CHROME, declared instead of hand-written. Each was
+ * floor JSX inside the sidebar panel until this wave, which made "the shell owns the brand
+ * line" a fact about a file rather than about the assembly: no reader of `GET /api/plugins`
+ * could see it, nothing ordered it against the rows below it, and arrange mode could not move
+ * it. All four are `plain` — they draw themselves end to end, with no disclosure header and
+ * nothing to fold — and they inhabit the ONE section registry in the ONE order beside every
+ * other plugin's rows (ADR 0017 §S17-A/B; `SectionPresentationSchema`).
+ *
+ * THE ORDER NUMBERS ARE THE RAIL, TOP TO BOTTOM. `1` is the brand line; the creators the two
+ * container disciplines and the index contribute take `2`–`4`; the bodies (`index` 10,
+ * `machines` 20, `plugins` 30) sit in the middle where they always have; and the rail's foot
+ * is `status` 40, `keys` 50, `identity` 60. The default interleave therefore paints exactly
+ * the rail this file used to hard-code, and a principal's stored arrangement overrides all of
+ * it (`arrangedSectionIds`).
  *
  * ESSENTIAL: nothing else can draw the workspace, so disabling it is refused rather than
- * obeyed. It declares no actions and no capabilities — chrome is not authority.
+ * obeyed. It declares no actions and no capabilities — chrome is not authority, and every one
+ * of these rows either reads a published surface (`host.assembly`, `host.principal`) or calls
+ * a door somebody else owns.
  */
 export const shellManifest: PluginManifest = {
   id: "core.shell",
@@ -29,7 +46,27 @@ export const shellManifest: PluginManifest = {
       { id: "sidebar", title: "Sidebar" },
       { id: "container-view", title: "Container View" },
     ],
-    sections: [],
+    /*
+      WHERE THOSE TWO PANELS ASK TO SIT, which is how the classical workspace — rail left at
+      0.22, container view right at 0.78 — survives the engine's default-layout constant being
+      deleted (ADR 0017 S17-B). The numbers are the arrangement the shell has always had, moved
+      from a floor function into the manifest that owns the panels: the engine composes the
+      default from every enabled plugin's seats, so a stranger's panel plugin can now ask for a
+      place in a fresh workspace instead of waiting for somebody to edit a registration file.
+
+      A principal who has arranged a workspace is untouched by these numbers; their tree is
+      stored, and only the default is composed.
+    */
+    seats: [
+      { panel: "sidebar", order: 100, ratio: 0.22 },
+      { panel: "container-view", order: 200, ratio: 0.78 },
+    ],
+    sections: [
+      { id: "brand", title: "Manifold", order: 1, presentation: "plain" },
+      { id: "status", title: "Connection", order: 40, presentation: "plain" },
+      { id: "keys", title: "Keys", order: 50, presentation: "plain" },
+      { id: "identity", title: "Identity", order: 60, presentation: "plain" },
+    ],
     elements: [],
     tools: [],
     events: [],

@@ -406,6 +406,7 @@ export function assembleRoster(
   const elementTypes: Claims = new Map();
   const toolIds: Claims = new Map();
   const eventIds: Claims = new Map();
+  const seatPanels: Claims = new Map();
 
   const manifests = new Map<string, PluginManifest>();
   const summaries = new Map<string, ActionSummary[]>();
@@ -484,6 +485,30 @@ export function assembleRoster(
       const id = panelRefId(manifest.id, panel.id);
       claim(panelIds, id, manifest.id);
       panels.set(id, { plugin: manifest.id, title: panel.title });
+    }
+    /*
+      SEAT LEGALITY. Composition does not BUILD the default tree — `composeDefaultLayout` does
+      that from the published roster, so both halves compose from one implementation — but the
+      two claims a composer could not check for itself are refused here, at build time, where a
+      refusal names its offender instead of quietly seating the wrong thing.
+
+      A seat's `panel` is checked against THIS manifest's own contributions rather than against
+      the panel registry above: the registry is global and half-built at this point, so a lookup
+      there would make legality depend on registration order AND would let a plugin seat
+      somebody else's panel. A plugin seats only what it owns.
+
+      The full id is CLAIMED for the same reason every other name here is: two seats for one
+      panel would put that panel in two leaves of the default tree, and the arrange verbs find
+      a panel's leaf by its ref — so a duplicate refuses with its offenders (D5).
+    */
+    for (const seat of manifest.contributes.seats ?? []) {
+      if (!manifest.contributes.panels.some((panel) => panel.id === seat.panel)) {
+        problems.push(
+          `plugin "${manifest.id}" seats panel "${seat.panel}", which it does not contribute`,
+        );
+        continue;
+      }
+      claim(seatPanels, panelRefId(manifest.id, seat.panel), manifest.id);
     }
     // Sections, elements and tools are named GLOBALLY rather than per plugin: a section is a
     // slot in one sidebar, an element type is a wire kind a scene doc stores, and a tool id is
@@ -576,6 +601,7 @@ export function assembleRoster(
   reportDuplicates(elementTypes, "element type", problems);
   reportDuplicates(toolIds, "tool", problems);
   reportDuplicates(eventIds, "event", problems);
+  reportDuplicates(seatPanels, "seat", problems);
 
   /*
     DEPENDENCIES. Two axes, deliberately separate (NeoForge's and Home Assistant's shape):

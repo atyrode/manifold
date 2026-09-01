@@ -3,8 +3,9 @@ import {
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  assembleRoster,
+  composeDefaultLayout,
   defineAction,
-  workspaceLayout,
 } from "@manifold/plugin";
 import type {
   ActionOutcome,
@@ -16,7 +17,7 @@ import type {
 } from "@manifold/protocol";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
-import { WORKSPACE_PANELS } from "../src/assembly.ts";
+import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
@@ -47,12 +48,14 @@ const OWNER_KEY = "a".repeat(64);
 const OFFLINE_MACHINES: MachineLiveness = { isOnline: () => false };
 
 /**
- * The real default workspace tree: the floor's arrangement filled with the real
- * registration's panel ids. A layout fixture is worth building from the production pair
- * rather than a hand-written pair, because these cases assert what happens to a tree a
- * principal could actually have been served.
+ * The real default workspace tree, COMPOSED from the real registration's roster the way the
+ * layout door composes it (ADR 0017 S17-B). A layout fixture is worth deriving from the
+ * production manifests rather than hand-writing, because these cases assert what happens to a
+ * tree a principal could actually have been served.
  */
-const DEFAULT_LAYOUT = workspaceLayout(WORKSPACE_PANELS);
+const DEFAULT_LAYOUT = composeDefaultLayout(
+  assembleRoster(SERVER_PLUGIN_DEFS, new Set<string>()).roster,
+).layout;
 
 /**
  * A real executor over the fixture's real services. These cases compose plugin lists of

@@ -73,6 +73,24 @@ export {
 export { Disclosure, type DisclosureProps } from "./disclosure.tsx";
 export { ScrollRegion, type ScrollRegionProps } from "./scroll-region.tsx";
 /**
+ * THE motion primitive: FLIP over a stack of rows whose ORDER is data (a per-principal
+ * arrangement, a roster's enabled set). Two parties that may not import each other stack
+ * contributed rows and need the same measure-invert-play arithmetic, and
+ * `prefers-reduced-motion` has to be honoured in one place rather than per adopter.
+ */
+export {
+  FLIP_DURATION_MS,
+  FLIP_EASING,
+  FLIP_EPSILON,
+  flipKeyframes,
+  flipShifts,
+  prefersReducedMotion,
+  useFlipStack,
+  type FlipOptions,
+  type FlipRect,
+  type FlipShift,
+} from "./flip.ts";
+/**
  * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
  * workspace shell's own panes, a composition's leaves, a portal portal's preview — because
  * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer

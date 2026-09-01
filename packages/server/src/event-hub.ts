@@ -163,8 +163,8 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
  * because a floor file naming a favorite plugin is the neutrality criterion failing in the one
  * layer that must be replaceable wholesale (`AXIOMS.md` §Foundation law).
  *
- * So a floor door emits by CONCEPT and this table, built in `assembly.ts` beside
- * `WORKSPACE_PANELS` for exactly the same reason, says which plugin currently owns the words.
+ * So a floor door emits by CONCEPT and this table, built in `assembly.ts` — the one server file
+ * sanctioned to name a plugin at all — says which plugin currently owns the words.
  * Swap `core.terminals` for a stranger's terminals plugin and only `assembly.ts` changes.
  */
 export interface FloorEventOwners {

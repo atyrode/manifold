@@ -220,7 +220,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
 | POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
 | GET /api/plugins                         | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                |
-| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the injected default tree when unset. Self-scoped by construction                     |
+| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction  |
 | GET /api/resolve?uri=                    | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
 | GET /api/containers                      | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input    |
 | GET /api/introspect                      | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                            |
@@ -608,9 +608,19 @@ greater than code major is refused as a downgrade.
 
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
 `layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
-is injected rather than imported: `workspaceLayout(panels)` in `@manifold/plugin` owns the
-arrangement (two leaves in a row at `[0.22, 0.78]`) and `packages/server/src/assembly.ts` owns
-the two panel NAMES, because `http.ts` is floor and may not name a plugin. Its
+is COMPOSED rather than authored: `composeDefaultLayout(roster)` in `@manifold/plugin` lays the
+enabled roster's declared seats (`contributes.seats` — `{ panel, order, ratio? }`, absent ≡ the
+plugin seats nothing) out in one row, in seat order, ties broken by full panel id. It takes the
+published ROSTER, not an assembly, because that is the document both halves hold — the browser's
+boot fallback composes the same tree from the same declaration. `core.shell`
+declares the two seats that reproduce the classical workspace (`sidebar` at 0.22, `container-view` at
+0.78), so `http.ts` stays floor and names no plugin while nothing has to be injected into it
+either — the names come from the manifests and the arrangement is derived (ADR 0017 S17-B). A
+roster asking for nothing composes an empty-but-valid root leaf and reports the condition
+`unseated`; more seats than a split may hold report `crowded` and seat the first
+`MAX_TILE_CHILDREN`. Only the DEFAULT is composed: a stored tree is read out of the store
+untouched, so toggling a plugin changes what the next unarranged principal sees and nobody's
+arrangement. Its
 leaves are `{ kind:"panel", panelId }` refs — the shell IS a composition, rendered by the
 same `TileTree` a composition container uses, so there is one tree vocabulary everywhere. The ONLY
 writer is

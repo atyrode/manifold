@@ -1,9 +1,10 @@
 import "./shell.css";
 import {
+  DEFAULT_LAYOUT_NOTICES,
+  composeDefaultLayout,
   panelSections,
   sameIndexEntries,
   withPanelSections,
-  workspaceLayout,
 } from "@manifold/plugin";
 import {
   ContainerRouteProvider,
@@ -54,7 +55,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { WORKSPACE_PANELS } from "./assembly.ts";
+import { SIDEBAR_PANEL } from "./assembly.ts";
 import { getContainer, getAttendance, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
 import {
   browserContainerStorage,
@@ -372,6 +373,16 @@ export function WorkspaceHost({
   const layoutRef = useRef<TileLayout | null>(null);
   const commitTimerRef = useRef<number | null>(null);
   const pendingCommitRef = useRef<TileLayout | null>(null);
+  /**
+   * The CURRENT roster, readable from the boot fetch without being a reason to re-run it. The
+   * fallback below needs whatever is enabled at the moment the fetch fails; putting `assembly`
+   * in that effect's dependencies would instead re-fetch the stored tree on every enablement
+   * change and discard a gesture the debounce had not committed yet.
+   */
+  const assemblyRef = useRef(assembly);
+  useEffect(() => {
+    assemblyRef.current = assembly;
+  }, [assembly]);
 
   /**
    * ONE `core.space.setLayout` per gesture. A divider drag paints optimistically per frame and
@@ -431,20 +442,28 @@ export function WorkspaceHost({
       .catch((reason: unknown) => {
         if (cancelled) return;
         /*
-          A workspace with no readable tree is a workspace with no shell, so the engine's
-          default arrangement stands in rather than leaving the viewer with nothing to look at.
-          The ARRANGEMENT is the floor's; the two panel NAMES come from `assembly.ts`, the one
-          file here allowed to know which plugin draws a workspace (REGISTRY.md §Foundation).
+          A workspace with no readable tree is a workspace with no shell, so the DEFAULT stands
+          in rather than leaving the viewer with nothing to look at. It is composed from the
+          roster this browser already holds — its enabled half's own declared seats (ADR 0017
+          S17-B) — so the fallback is the tree the layout door would have answered with, derived
+          from the same manifests, rather than a second arrangement kept here beside a favourite
+          pair of panel names.
+
+          A composition that is not the ordinary one is SAID: a roster nothing seats composes an
+          empty workspace, and a reader owed the reason gets the sentence instead of an empty
+          pane and a guess.
         */
         console.error("evt=workspace_layout_fetch_failed", reason);
-        const fallback = workspaceLayout(WORKSPACE_PANELS);
-        layoutRef.current = fallback;
-        setLayout(fallback);
+        const seeded = composeDefaultLayout(assemblyRef.current.roster);
+        const notice = DEFAULT_LAYOUT_NOTICES[seeded.condition];
+        if (notice !== null) notify(notice, { key: "layout-default" });
+        layoutRef.current = seeded.layout;
+        setLayout(seeded.layout);
       });
     return () => {
       cancelled = true;
     };
-  }, [identity.token]);
+  }, [identity.token, notify]);
 
   const onRatios = useCallback(
     (splitId: string, ratios: readonly number[]): void => {
@@ -615,13 +634,13 @@ export function WorkspaceHost({
    * arrives with the layout, survives a reload, and follows the principal to another device
    * without a second store, a second fetch or a second door.
    */
-  const sectionOrder = panelSections(layout, WORKSPACE_PANELS.sidebar);
+  const sectionOrder = panelSections(layout, SIDEBAR_PANEL);
 
   const commitSectionOrder = useCallback(
     (order: readonly string[]): void => {
       const current = layoutRef.current;
       if (current === null) return;
-      const next = withPanelSections(current, WORKSPACE_PANELS.sidebar, order);
+      const next = withPanelSections(current, SIDEBAR_PANEL, order);
       // Null means the arrangement was not writable (no sidebar leaf in this tree, or an
       // order naming a section twice). The layout the reader is looking at is left alone.
       if (next === null) return;

@@ -633,8 +633,14 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "seat",
+      "means": "a place in an arranged tree whose content is something else's address, rendered by rendering its referent (ADR 0017 §3): a tile leaf is one, and a manifest's contributes.seats is its declared intent to occupy one in the default workspace",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "space",
-      "means": "the workspace's own arrangement: the core.space seat that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
+      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
       "banned": [],
       "allow": []
     },
@@ -1070,6 +1076,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "flip",
+      "means": "the ONE way a stack whose order is DATA animates a reflow: measure the rows' boxes, let the new order commit, measure again, invert each row with a transform and play it out (First-Last-Invert-Play). The engine's `@manifold/plugin/ui` owns the arithmetic (`flipShifts`, `useFlipStack`); `prefers-reduced-motion: reduce` disables it entirely rather than shortening it. Named because the sidebar's row stack reflows for three unrelated reasons — an arrange commit, a keyboard nudge, a plugin being enabled or disabled — and a re-render teleports: motion is what says which row went where",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "zone",
       "means": "a region of a renderer that resolves a carry to one destination",
       "banned": [],
@@ -1273,7 +1285,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its sections, rows and inline actions. The rail itself is painted by @manifold-plugin/shell's `sidebar-panel.tsx`, but the ROW vocabulary is filled by core.index, core.machines and core.plugins — so the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row"
+      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, and the chrome each presentation wears, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand`, `.sidebar-status`, `.sidebar-bindings`, `.sidebar-identity` by core.shell's own four contributed rows. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make five plugins depend on a sixth's stylesheet"
     },
     {
       "family": "workspace",
@@ -1602,8 +1614,8 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-state",
-      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
-      "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else"
+      "renderer": "packages/plugins/shell/src/status-row.tsx",
+      "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else. It moved out of the sidebar panel with the rest of the rail's chrome (2026-09-01): the status line is a CONTRIBUTED plain row (`core.shell.status`) now, so the renderer that owes this attribute is the row, not the panel that stacks it"
     },
     {
       "testid": "sidebar-list",
@@ -1612,8 +1624,8 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-status",
-      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
-      "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence"
+      "renderer": "packages/plugins/shell/src/status-row.tsx",
+      "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence. Same move as the row above: the block is the `core.shell.status` row's own"
     },
     {
       "testid": "machines-section",
@@ -1777,7 +1789,7 @@ against the source tree, its browser half against a real server and a real brows
 
 | Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree (`workspaceLayout(WORKSPACE_PANELS)` — the floor's arrangement applied to the registration's own pair) exists in the assembly. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree — `composeDefaultLayout(roster)`, composed from the enabled roster's declared `contributes.seats` rather than from a constant — exists in the assembly, and the composition is `validateTileLayout`-clean. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `assembly.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | S4    | Every `data-action` literal in the source names an action the assembly actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |

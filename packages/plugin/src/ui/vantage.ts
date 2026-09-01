@@ -87,7 +87,7 @@ export function subscribeVantage(callback: (view: Vantage) => void): () => void 
 }
 
 /**
- * THE flip of arrange mode. It is a function rather than a `setVantage` call at each caller
+ * THE toggle of arrange mode. It is a function rather than a `setVantage` call at each caller
  * because the mode has more than one entrance — the F8 binding, the Escape exit, and any
  * affordance a later wave adds — and "read the flag, write its negation" is the kind of
  * two-step that grows a second answer the moment it is written twice (invariant 14).

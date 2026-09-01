@@ -117,6 +117,13 @@ export const manifest: PluginManifest = {
   purges: ["storage", "elements", "ownership"], // audit visibility: what a purge would destroy
   contributes: {
     panels: [], // { id, title }        — a workspace tile leaf
+    seats: [], // { panel, order, ratio? } — OPTIONAL, and absent means you seat nothing.
+    //            Where one of YOUR panels asks to sit in a workspace nobody has arranged:
+    //            the engine composes that default from every enabled plugin's seats, in
+    //            `order`, as one row of leaves. `ratio` is a weight against its siblings
+    //            (default 1). core.shell seats its two at 0.22 and 0.78, which is the
+    //            classical workspace; declare a seat and yours appears in a fresh
+    //            workspace without anybody editing the floor (ADR 0017 §3).
     sections: [], // { id, title, order, presentation? } — a sidebar row; presentation is
     //            "disclosure" (default: a titled block that folds) or "plain" (you draw the
     //            whole row). One registry, one reader-arranged order, either shape.
@@ -626,9 +633,19 @@ their work invisible without deleting it, which is the one outcome worse than a 
   composition of panels (`core.shell.sidebar` and `core.shell.container-view` by default),
   rendered
   by the same `TileTree` component that renders a composition. One tree vocabulary everywhere.
-- **`sections`** are rows in the sidebar stack, ordered by the manifest's `order` field. There
-  is no user-visible section-order setting to read and no hardcoded section list to edit; the
-  manifests _are_ the order.
+- **`seats`** say where your panels ask to SIT in a workspace nobody has arranged yet. The
+  engine composes that default from the enabled roster's seats — one row of leaves in `order`,
+  `ratio` weighting each against its siblings — so there is no default-layout constant to edit
+  and no registration file to be added to: declare a seat and your panel is in a fresh
+  principal's workspace, absent one and you seat nothing. Only the DEFAULT is composed; a
+  principal who has arranged their workspace keeps the tree they arranged (ADR 0017 §3).
+- **`sections`** are rows in the sidebar stack, ordered by the manifest's `order` field, in one
+  of two presentations — `"disclosure"` (the default: a titled, collapsible block) or
+  `"plain"` (a row that draws itself end to end). There is no user-visible section-order
+  setting to read and no hardcoded section list to edit; the manifests _are_ the order. `plain`
+  is why the rail has no floor JSX left: the brand line, the three creators, the status line,
+  the key table's door and the identity footer are all ordinary rows now. See "Contributing a
+  plain row" below.
 - **`tools`** appear in the canvas toolbar.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
@@ -719,6 +736,76 @@ Addressing: `manifold://` URIs are the canonical way to refer to anything —
 `manifold://action/<actionName>`. `GET /api/resolve?uri=` tells you whether one exists and what
 it is called; `/uri/<encoded>` is a deep link to it. Use these instead of inventing an id
 format.
+
+### Contributing a plain row
+
+A `plain` row is the shape for anything in the rail that is not a collapsible block: a creator,
+a status line, a footer. It is an ORDINARY contribution — same registry, same per-principal
+arrangement, same D4′ placeholder — and the only difference from a disclosure section is that
+the stack wraps it in nothing and it draws itself end to end. Three pieces, and the third is
+one line:
+
+```ts
+// 1. the manifest row: `presentation` says how it draws, `order` says where it sits
+contributes: {
+  sections: [{ id: "new-canvas", title: "New canvas", order: 2, presentation: "plain" }],
+}
+```
+
+```tsx
+// 2. the component — reached like any other section, so it takes `SectionProps`
+import { useWorkspaceShell } from "@manifold/plugin/hooks";
+import { ControlIcon } from "@manifold/plugin/ui";
+
+export function NewCanvasRow() {
+  // The rail's WIDTH is the host's fact, and the one thing a row usually needs from it:
+  // collapsed to icons there is no room for a label. Read it here — never keep a second copy.
+  const { createContainer, creating, setSidebarOpen, sidebarOpen } = useWorkspaceShell();
+  return (
+    <button
+      className="sidebar-new"
+      type="button"
+      data-action="core.index.createContainer"
+      title="New canvas"
+      aria-label="New canvas"
+      onClick={() => {
+        if (!sidebarOpen) setSidebarOpen(true);
+        createContainer("canvas");
+      }}
+      disabled={creating}
+    >
+      <ControlIcon kind="add" />
+      {sidebarOpen ? <span>New canvas</span> : null}
+    </button>
+  );
+}
+```
+
+```ts
+// 3. the registration, in the web package's assembly.ts — the same map a disclosure uses
+export const canvasWebPlugin = { id: "core.canvas", sections: { "new-canvas": NewCanvasRow } };
+```
+
+Four rules the shipped rows follow, and the reasons:
+
+- **Own your own state.** A row that opens a form (`core.index.new-folder`) or a modal
+  (`core.shell.brand`'s changelog, `core.shell.keys`' key table) holds that state itself and
+  portals the dialog to `document.body`. The rail is a narrow, clipping, scrolling box; a
+  dialog inside it would be laid out by it.
+- **Render nothing when you have nothing.** `core.shell.status` returns `null` with no
+  container mounted and on a collapsed rail. A plain row that draws nothing is legitimate; its
+  seat in the arrangement is unaffected.
+- **Ask the host for the rail's width, once.** `useWorkspaceShell` is the ONE channel for
+  `sidebarOpen` and for the creation doors (a birth also has to be remembered on this device,
+  refresh the index and land the viewer inside it). A second channel would be a second answer.
+- **Do not decide the rail's geometry.** The collapse control is the panel's, not a row's: a
+  contribution that resized its own container could be disabled while the rail is collapsed,
+  and nothing would be left to expand it.
+
+Motion is free and not yours to write: the stack plays a FLIP whenever the visible order
+changes — your row being enabled, disabled, nudged or dragged — from `useFlipStack` in
+`@manifold/plugin/ui`, and it is off entirely under `prefers-reduced-motion: reduce`. Do not add
+a `transition` to a row; it would fight the transform.
 
 ### Marking your affordances
 

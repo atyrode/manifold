@@ -5,7 +5,6 @@ import {
   movedSectionIds,
   panelSections,
   withPanelSections,
-  workspaceLayout,
 } from "../src/layout.ts";
 
 /**
@@ -21,8 +20,35 @@ import {
 const SIDEBAR = "core.shell.sidebar";
 const MAIN = "core.shell.container-view";
 
-/** The real default tree, so the commit shape is exercised against the shape it will meet. */
-const shell = (): TileLayout => workspaceLayout({ sidebar: SIDEBAR, main: MAIN });
+/**
+ * A two-panel workspace tree, spelled here rather than composed: what the commit shape has to
+ * survive is the SHAPE of a tree a principal is looking at — a split over two panel leaves —
+ * and borrowing the default composer for it would tie this policy's cases to which plugins a
+ * roster happens to seat.
+ */
+const shell = (): TileLayout => ({
+  root: {
+    id: "root",
+    dir: "row",
+    ratios: [0.22, 0.78],
+    children: ["ws-sidebar", "ws-main"],
+    ref: null,
+  },
+  "ws-sidebar": {
+    id: "ws-sidebar",
+    dir: null,
+    ratios: [],
+    children: [],
+    ref: { kind: "panel", panelId: SIDEBAR },
+  },
+  "ws-main": {
+    id: "ws-main",
+    dir: null,
+    ratios: [],
+    children: [],
+    ref: { kind: "panel", panelId: MAIN },
+  },
+});
 
 describe("arrangedSectionIds", () => {
   test("no arrangement is manifest order, and the declared list is returned as-is", () => {

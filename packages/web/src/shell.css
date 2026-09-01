@@ -1,19 +1,24 @@
 /*
  * THE SHELL'S SKIN — the workspace frame, the sidebar rail, and the ROW VOCABULARY every
- * sidebar section is filled into. Painted by the floor workspace host (`workspace.tsx`) and by
- * `@manifold-plugin/shell`'s two panels (`sidebar-panel.tsx`, `container-view-panel.tsx`).
+ * contributed sidebar row is filled into. Painted by the floor workspace host
+ * (`workspace.tsx`) and by `@manifold-plugin/shell`'s two panels (`sidebar-panel.tsx`,
+ * `container-view-panel.tsx`).
  *
  * This file is the one asymmetry in the split, and the reason it stays floor CHANGED in the
- * wave that moved those two panels into their plugin. It is no longer "the shell is not a
- * package" — `core.shell` is one, and its components live in it. It is that the `sidebar`
- * family is a vocabulary the FLOOR PUBLISHES for every contributed section to fill:
- * `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-count`
- * and `.sidebar-section-action` are painted by `core.index`, `core.machines` and `core.plugins`,
- * never by the shell's own panel. Moving the family into `packages/plugins/shell` would make
- * three plugins depend on a fourth plugin's stylesheet for their own appearance — the exact
- * neutrality the row vocabulary exists to provide, inverted. So it belongs beside the
- * `plugin-placeholder` and `notice` families for the same stated reason those are the floor's:
- * the layer's skin is the layer owner's, and the layer owner here is the engine.
+ * wave that moved those two panels into their plugin — then got STRONGER in the wave that
+ * hollowed the rail. It is no longer "the shell is not a package" — `core.shell` is one, and
+ * its components live in it. It is that the `sidebar` family is a vocabulary the FLOOR
+ * PUBLISHES for every contributed row to fill, and the list of plugins filling it is now most
+ * of the roster: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted` and
+ * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`; `.sidebar-new`
+ * is `core.canvas`, `core.compositions` and `core.index`, one creator each; `.sidebar-brand`,
+ * `.sidebar-status`, `.sidebar-bindings` and `.sidebar-identity` are `core.shell`'s own four
+ * rows, which reach the rail through the projection registry exactly as a stranger's would.
+ * Moving the family into `packages/plugins/shell` would make five plugins depend on a sixth
+ * plugin's stylesheet for their own appearance — the exact neutrality the row vocabulary exists
+ * to provide, inverted. So it belongs beside the `plugin-placeholder` and `notice` families for
+ * the same stated reason those are the floor's: the layer's skin is the layer owner's, and the
+ * layer owner here is the engine.
  *
  * It is registered as its OWN owner in the cssFamilies registry rather than folded back into
  * the floor stylesheet, so what is shell chrome stays legible as shell chrome. Separate owner,
@@ -195,12 +200,30 @@
   color: #adb5bd;
 }
 
-.sidebar-header {
+/*
+ * THE RAIL'S ONE NON-CONTRIBUTED CONTROL: the collapse toggle. Every other thing in the
+ * sidebar is a contributed row now, and this one cannot be — it changes how wide the rail is
+ * DRAWN, so a row that owned it would be a contribution deciding its own container's geometry,
+ * and disabling that plugin would strand a collapsed rail with no way back.
+ *
+ * FLOATED over the rail's top-right corner while the rail is open, which is where it has
+ * always sat: the brand line beside it is a contribution now, and two siblings in a flex row
+ * cannot be one plugin's row and one panel's control. Whatever row the reader has arranged
+ * into first place reserves its width (see `.sidebar-sections > :first-child` below), so the
+ * float never lands on somebody else's content.
+ */
+.sidebar-collapse {
+  position: absolute;
+  z-index: 22;
+  top: 0.65rem;
+  right: 0.65rem;
   display: flex;
-  min-height: 2.25rem;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+}
+
+/* Collapsed there is no corner to spare: the control takes the top of the icon strip. */
+.workspace.is-collapsed .sidebar-collapse {
+  position: static;
+  justify-content: center;
 }
 
 .sidebar-brand {
@@ -294,22 +317,37 @@
 
 /* Icons describe themselves (size, stroke, currentColor) — see `.mf-icon`. */
 
-.sidebar-create-buttons {
+/*
+ * A PLAIN ROW — the stack's other presentation, and the wrapper the panel puts around a row
+ * that draws itself end to end (a creator, the brand line, the status line, the identity
+ * footer). A grid rather than a block because several of those rows are a control PLUS what it
+ * opens: the folder creator's button and its form are one row, spaced by this gap.
+ *
+ * The three creators no longer share a two-column strip, and that is the decomposition rather
+ * than a re-style: they belong to three different plugins now, and a grid across owners is a
+ * layout one plugin's roster change can break. Full-width rows in one order also hold at every
+ * rail width the R9 sweep tries, which the strip only managed with a `@container` query.
+ */
+.sidebar-plain {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
   gap: 0.35rem;
 }
 
-/* A narrow rail cannot seat two creators side by side; the CONTAINER says when,
-   so the same rule holds wherever the pane's divider was dragged. */
-@container sidebar (max-width: 236px) {
-  .sidebar-create-buttons {
-    grid-template-columns: 1fr;
-  }
+/*
+ * A ROW THAT DREW NOTHING TAKES NO SPACE. `core.shell.status` renders null with no container
+ * mounted and on a collapsed rail, and a plain row is entitled to: the seat stays in the
+ * arrangement, but the stack's gap must not open a phantom slot above the row below it. In
+ * arrange mode the row is never empty — it holds the grip — so the mode still shows the seat.
+ */
+.sidebar-plain:empty {
+  display: none;
+}
 
-  .sidebar-new-folder {
-    grid-column: auto;
-  }
+/* Every seat is grabbable while the mode is armed, including a row that draws almost nothing:
+   the grip covers the row, and a zero-height row would be a seat nobody can take. */
+.workspace.is-arranging .sidebar-plain {
+  min-height: 1.7rem;
 }
 
 .sidebar-new {
@@ -344,16 +382,14 @@
   padding-inline: 0.6rem;
 }
 
-.workspace.is-collapsed .sidebar-header {
-  flex-direction: column;
-}
-
 .workspace.is-collapsed .sidebar-brand {
   justify-content: center;
 }
 
-.workspace.is-collapsed .sidebar-create-buttons {
-  grid-template-columns: 1fr;
+/* Collapsed, the collapse control is back in the flow, so the first row reserves nothing. */
+.workspace.is-collapsed .sidebar-sections > .sidebar-plain:first-child,
+.workspace.is-collapsed .sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
+  padding-right: 0;
 }
 
 .workspace.is-collapsed .sidebar-new {
@@ -400,17 +436,35 @@
 }
 
 /*
- * Sidebar section stack: Machines, Containers, Terminals (and later Views) share one header
- * grammar and reorder by dragging their headers. The stack itself is a layout `Stack`
- * (direction and gap live in the primitive); each section is the engine's one Disclosure
- * over its one ScrollRegion, so the stack never scrolls — a section that outgrows its slot
- * scrolls ITSELF. While a header is held the stack makes space: sections translate into
- * their projected slots so the insertion gap follows the pointer.
+ * THE STACK, and by now it is the whole sidebar: every row the composition composed, in the
+ * one order, whatever its presentation — the brand line, the three creators, the bodies
+ * (Index, Machines, Plugins), the status line, the key-table door and the identity footer. The
+ * stack itself is a layout `Stack` (direction and gap live in the primitive); a `disclosure`
+ * row is the engine's one Disclosure over its one ScrollRegion, so the stack never scrolls — a
+ * section that outgrows its slot scrolls ITSELF — and a `plain` row draws itself end to end.
+ *
+ * While a row is held the stack makes space: the ORDER is the preview, so rows land in their
+ * projected slots and FLIP plays the difference (`@manifold/plugin/ui`'s `useFlipStack`, which
+ * is off entirely under `prefers-reduced-motion: reduce`). Nothing here animates: the transform
+ * is the motion primitive's, so there is no transition on a row to fight with it.
  */
 .sidebar-sections {
   min-height: 0;
   flex: 1;
   overflow: hidden;
+}
+
+/*
+ * ROOM FOR THE COLLAPSE CONTROL, which floats over the rail's top-right corner. Keyed on
+ * `:first-child` rather than on a section id, because which row is up there is the READER'S
+ * arrangement: the brand line by default, anything at all once they have rearranged it.
+ */
+.sidebar-sections > .sidebar-plain:first-child {
+  padding-right: 2.1rem;
+}
+
+.sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
+  padding-right: 2.5rem;
 }
 
 .sidebar-section {
@@ -435,18 +489,25 @@
 }
 
 /*
- * THE GRAB SURFACE — the one thing arrange mode makes grabbable.
+ * THE GRAB SURFACE — the one thing arrange mode makes grabbable, worn by every row whatever
+ * its presentation.
  *
  * It exists only while the mode is armed (the panel renders it conditionally) and covers the
- * WHOLE section, which does two jobs with one box: it says the section itself is the thing in
- * hand, and it keeps the pointer off the disclosure's toggle underneath, so a grab can never
- * fold the section it is moving. It re-enables its own pointer events out of the mode's
- * blanket suppression (see §ARRANGE MODE) — the one live target in an inert workspace.
+ * WHOLE row, which does two jobs with one box: it says the row itself is the thing in hand,
+ * and it keeps the pointer off whatever is underneath — a disclosure's toggle, a creator's
+ * button — so a grab can never fire the affordance it is moving. It re-enables its own pointer
+ * events out of the mode's blanket suppression (see §ARRANGE MODE) — the one live target in an
+ * inert workspace.
  *
- * The positioning ancestor is the SECTION, granted only while the mode is on, so nothing
- * about the stack's stacking or containing blocks changes when nobody is arranging.
+ * The positioning ancestor is the ROW, granted only while the mode is on, so nothing about the
+ * stack's stacking or containing blocks changes when nobody is arranging.
+ *
+ * On a plain row the grip is a real `<button>` (a plain row has no header button to carry the
+ * tab stop), so the rule resets border, font and background the way `.workspace-panel-grip`
+ * does for the panel leg's grip.
  */
-.workspace.is-arranging .sidebar-section {
+.workspace.is-arranging .sidebar-section,
+.workspace.is-arranging .sidebar-plain {
   position: relative;
 }
 
@@ -457,27 +518,33 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  border: 0;
   padding-top: 0.42rem;
   color: #adb5bd;
   background: rgb(76 110 245 / 12%);
+  font: inherit;
   cursor: grab;
   touch-action: none;
 }
 
-.sidebar-section-grip:hover {
+.sidebar-section-grip:hover,
+.sidebar-section-grip:focus-visible {
   color: #edf2ff;
   background: rgb(76 110 245 / 22%);
 }
 
-/* The section IN HAND. It keeps its place in the stack — the ORDER is the preview, so the
+/* The row IN HAND. It keeps its place in the stack — the ORDER is the preview, so the
    stack reflows under the pointer and there is no second floating copy to keep in step with
    it. One derivation, which is also why a collaborator would see the same thing. */
-.sidebar-section--grabbed {
+.sidebar-section--grabbed,
+.sidebar-plain--grabbed {
   outline: 1px solid #4c6ef5;
   outline-offset: -1px;
+  border-radius: 0.65rem;
 }
 
-.sidebar-section--grabbed > .sidebar-section-header > .sidebar-section-grip {
+.sidebar-section--grabbed > .sidebar-section-header > .sidebar-section-grip,
+.sidebar-plain--grabbed > .sidebar-section-grip {
   background: rgb(76 110 245 / 30%);
   cursor: grabbing;
 }
@@ -1668,16 +1735,6 @@ button.sidebar-terminal.is-summary > small {
   outline: 1px solid #748ffc;
   outline-offset: -1px;
   background: rgb(92 124 250 / 12%);
-}
-
-/* Three creators do not fit one 280px row: the two container creators share the
-   first row, the folder creator takes the second. */
-.sidebar-new-folder {
-  grid-column: 1 / -1;
-}
-
-.workspace.is-collapsed .sidebar-new-folder {
-  grid-column: auto;
 }
 
 /* A bubble: alive only while someone is inside it. */

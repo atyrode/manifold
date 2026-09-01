@@ -3,22 +3,31 @@ import { createContext, createElement, useContext, type ReactElement, type React
 import type { WorkspaceSidebarState } from "./container-route.ts";
 
 /**
- * THE SHELL'S OWN HALF, published — the second contract between the workspace host and the
- * plugin that draws its sidebar, and the exact counterpart of {@link ContainerRoute}.
+ * THE SHELL'S OWN HALF, published — the contract between the workspace host and whatever draws
+ * inside its rail, and the exact counterpart of {@link ContainerRoute}.
  *
  * It exists here for the same reason the route does, and by the same litmus: its two ends may
  * not import each other. The workspace host is FLOOR (`packages/web/src/workspace.tsx`); the
  * sidebar panel is `core.shell`'s browser half, a plugin, reached through a panel outlet that
  * takes no props. So the handful of facts that are genuinely the HOST's — how wide the rail is
- * drawn, which arrangement this principal stored, the two creation doors beside the stack, the
- * running build's own version — arrive as context the host publishes above the tree, and
- * `@manifold/plugin` is the only thing both halves are allowed to import (REGISTRY.md
- * §Plugin layer).
+ * drawn, which arrangement this principal stored, the two creation doors, the running build's
+ * own version — arrive as context the host publishes above the tree, and `@manifold/plugin` is
+ * the only thing both halves are allowed to import (REGISTRY.md §Plugin layer).
  *
- * It is NOT {@link HostServices}, and the difference is the point. `HostServices` is what EVERY
- * plugin may touch; this is what the one plugin occupying the shell's own panel is handed by the
- * host that mounts it. A section inside the stack never sees it — a section talks to the server
- * through `host.client` like any other contribution.
+ * CONTRIBUTED ROWS READ IT TOO, and that is the wave that hollowed the rail rather than a
+ * loosening. The rail's chrome is contributed now — a brand line, three creators from three
+ * plugins, a status line, a key table's door, an identity footer — and two of the facts here
+ * are exactly what such a row needs: whether the rail is drawn collapsed (a row that cannot
+ * ask renders a label into 64 pixels) and the creation doors (a birth also has to be
+ * remembered on this device, refresh the index and LAND the viewer inside it, none of which is
+ * a row's business). A row that needs neither never touches this context; a row that does
+ * reads it HERE, because a second channel for "is the sidebar collapsed" would be a second
+ * answer to it (invariant 14). Everything else a section does still goes through
+ * `host.client` and `host.assembly` like any other contribution.
+ *
+ * It is NOT {@link HostServices}, and the difference survives: `HostServices` is what every
+ * plugin may touch anywhere; this is published by ONE host, above ONE tree, and a plugin
+ * rendered outside it gets the throw below rather than a guess.
  *
  * It carries NO identity and NO assembly: `HostServices.principal` already answers "who is this
  * device" and `HostServices.assembly` already answers "what did the composition decide", and a
