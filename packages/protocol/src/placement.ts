@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { StructureSchema, TileEdgeSchema, type ContainerDiscipline } from "./layout.ts";
+import {
+  ContainerDisciplineSchema,
+  StructureSchema,
+  TileEdgeSchema,
+  type ContainerDiscipline,
+} from "./layout.ts";
 
 /**
  * The placement algebra: what composes with what, stated as DATA.
@@ -171,15 +176,20 @@ export const DEFAULT_ELEMENT_PLACEMENT_TRAITS: PlacementTraits = {
 };
 
 /**
- * The FLOOR's own item kinds: the structural kinds the algebra arbitrates between and
- * no plugin owns. A container is two kinds because its discipline decides what it can be:
- * a canvas tiles and embeds live, a composition only ever appears elsewhere as a portal —
- * the absence of `tileable` IS the no-nesting rule, and `mergeable` plus the `solo_only`
- * guard is what replaces it for the one case that is not nesting at all.
+ * The FLOOR's own item kinds: the structural kinds the algebra arbitrates between and no
+ * plugin owns.
  *
- * ELEMENT kinds are NOT here: they are manifest contribution data, resolved through
- * `PlacementLookup.itemTraits` (ADR 0013 §12). A kind is looked up in this table first, so
- * the floor's rows can never be redefined by a manifest.
+ * NEITHER element kinds NOR container kinds are here. An element kind is manifest
+ * contribution data, resolved through `PlacementLookup.itemTraits` (ADR 0013 §12). A
+ * CONTAINER's item kind IS ITS DISCIPLINE, and a discipline is manifest contribution data
+ * too (#110), resolved through `PlacementLookup.discipline` — so the `canvas` and
+ * `composition` rows that used to sit here are now `core.canvas`'s and
+ * `core.compositions`' own `contributes.disciplines[].item`, byte for byte, and the
+ * no-nesting rule is still the absence of `tileable` from a declaration rather than a
+ * branch in an executor.
+ *
+ * A kind is looked up in this table FIRST, so the floor's rows can never be redefined by
+ * a manifest.
  */
 export const ITEM_KINDS = {
   /**
@@ -192,18 +202,6 @@ export const ITEM_KINDS = {
     groups: ["tileable", "unplaceable", "canvas_item_as_portal"],
     guards: [],
     homed: "eager",
-  },
-  /** A container of the `canvas` discipline: it tiles, it embeds live, it never nests itself. */
-  canvas: {
-    groups: ["tileable", "embeddable", "unplaceable", "canvas_item_as_portal"],
-    guards: ["no_self_embed"],
-    homed: "inline",
-  },
-  /** A container of the `composition` discipline: it MERGES when solo and never nests. */
-  composition: {
-    groups: ["mergeable", "unplaceable", "canvas_item_as_portal"],
-    guards: ["no_self_embed", "solo_only"],
-    homed: "inline",
   },
   /**
    * A leaf of a composition, addressed as the PLACEMENT it is rather than as the item
@@ -247,54 +245,152 @@ export const ITEM_KINDS = {
 export type ItemKind = keyof typeof ITEM_KINDS;
 
 /**
- * The floor's kinds and the contributed traits for everything else, as one answer.
+ * The floor's kinds, the DISCIPLINE roster and the contributed element traits, as one
+ * answer.
  *
- * A kind is resolved in a fixed order — floor table, then the assembly, then the
- * element default — and the order is the contract: a manifest can never redefine a
- * structural kind, a composed element kind places by its declared traits, and a kind
- * nobody claims is ordinary canvas furniture rather than a refusal about who is installed.
+ * A kind is resolved in a fixed order — floor table, then the discipline roster, then the
+ * element assembly, then the element default — and the order is the contract: a manifest
+ * can never redefine a structural kind, a container places by the traits ITS DISCIPLINE
+ * declared, a composed element kind places by its own, and a kind nobody claims at all is
+ * ordinary canvas furniture rather than a refusal about who is installed.
+ *
+ * That last clause deliberately does NOT cover a container whose discipline is
+ * undeclared. An element kind nobody claims is furniture sitting in a document; an
+ * UNDECLARED DISCIPLINE is a renderer that is not installed, and treating it as furniture
+ * is precisely the silent downgrade to `canvas` that #86 ruled out. `resolveClassified`
+ * refuses that case by name (`unknown_discipline`) before this function is reached, so
+ * the element default can never answer for a container.
  */
 export function itemTraitsFor(kind: string, lookup: PlacementLookup): PlacementTraits {
   const floor: Readonly<Record<string, PlacementTraits>> = ITEM_KINDS;
-  return floor[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS;
+  return (
+    floor[kind] ??
+    lookup.discipline(kind)?.item ??
+    lookup.itemTraits(kind) ??
+    DEFAULT_ELEMENT_PLACEMENT_TRAITS
+  );
 }
 
-interface ContainerDeclaration {
+/**
+ * What a destination container takes: the groups it accepts, and the container-site
+ * guards it enforces. Exported because it is no longer a floor literal — a DISCIPLINE
+ * declares one of these (#110), and so does the one destination form that authors a
+ * container instead of entering one.
+ */
+export interface ContainerDeclaration {
   readonly accepts: readonly PlacementGroup[];
   readonly guards: readonly ContainerGuard[];
 }
 
 /**
- * Every destination container kind and the groups it takes. `unplaced` is the absence of
- * a container: it is listed here because "nowhere" has to be a destination the algebra
- * can refuse by name, not a request that quietly does nothing.
+ * The container-site guards as a value tuple, for the same reason `ITEM_GUARD_NAMES` is
+ * one: a manifest-declared discipline needs a schema to bound its `guards` list, and the
+ * completeness check below is what keeps the tuple from drifting from `PLACEMENT_GUARDS`.
  */
-export const CONTAINER_KINDS = {
-  canvas: {
-    accepts: ["canvas_item", "canvas_item_as_portal", "extractable"],
-    guards: ["discipline_match"],
-  },
-  composition: { accepts: ["tileable", "mergeable"], guards: ["discipline_match"] },
-  unplaced: { accepts: ["unplaceable"], guards: [] },
-} as const satisfies Record<string, ContainerDeclaration>;
-export type ContainerKind = keyof typeof CONTAINER_KINDS;
+export const CONTAINER_GUARD_NAMES = ["discipline_match"] as const satisfies readonly [
+  ContainerGuard,
+  ...ContainerGuard[],
+];
+type MissingContainerGuard = Exclude<ContainerGuard, (typeof CONTAINER_GUARD_NAMES)[number]>;
+const containerGuardsComplete: MissingContainerGuard extends never ? true : never = true;
+void containerGuardsComplete;
 
 /**
- * Destination forms and what each one implies: the container kind that admits the item,
- * and the discipline the destination container must have. `compose` is admitted by a
- * COMPOSITION because that is what the drop creates — while the container hosting the
- * merge must be a canvas.
+ * A destination's CONTAINER FAMILY: the three shapes a resolution can name when it says
+ * where an item landed, or what refused it. It is the discriminant of
+ * `PlacementContainer`, and it is NOT the discipline roster — the roster is open and
+ * lives in manifests, while this list is closed wire vocabulary that says whether the
+ * answer names a free surface, a tile tree, or nowhere at all.
+ *
+ * `unplaced` is here because "nowhere" has to be a destination the algebra can refuse by
+ * name rather than a request that quietly does nothing.
+ */
+export const CONTAINER_KINDS = ["canvas", "composition", "unplaced"] as const;
+export type ContainerKind = (typeof CONTAINER_KINDS)[number];
+
+/**
+ * Destination forms and what each one implies: the container FAMILY a resolution reports,
+ * and where its acceptance rows come from.
+ *
+ * `declaration: null` means the form ENTERS a container that already exists, so the
+ * TARGET'S DISCIPLINE declares what may land there — which is the whole of the old
+ * `requires` column, inverted. `requires` asked "which discipline does this form fit?"
+ * and could only ever hold one answer per form; a discipline now answers the same
+ * question from its own side, in `destinations`, and any number of them may answer for
+ * one form.
+ *
+ * A non-null `declaration` is a form that does not enter a container of the discipline it
+ * reports: `compose` AUTHORS one out of two canvas elements, and `unplaced` names none at
+ * all. Both state their acceptance in floor GROUP vocabulary and name no discipline, so
+ * opening the roster left no discipline id behind in this table.
  */
 export const DESTINATION_KINDS = {
-  canvas: { container: "canvas", requires: "canvas" },
-  tile: { container: "composition", requires: "composition" },
-  compose: { container: "composition", requires: "canvas" },
-  unplaced: { container: "unplaced", requires: null },
+  canvas: { container: "canvas", declaration: null },
+  tile: { container: "composition", declaration: null },
+  compose: {
+    container: "composition",
+    declaration: { accepts: ["tileable", "mergeable"], guards: [] },
+  },
+  unplaced: { container: "unplaced", declaration: { accepts: ["unplaceable"], guards: [] } },
 } as const satisfies Record<
   string,
-  { container: ContainerKind; requires: ContainerDiscipline | null }
+  { container: ContainerKind; declaration: ContainerDeclaration | null }
 >;
 export type DestinationKind = keyof typeof DESTINATION_KINDS;
+
+/**
+ * The destination forms as a value tuple, so a discipline's `destinations` list has a
+ * schema to be bounded by. Same completeness discipline as the guard tuples above.
+ */
+export const DESTINATION_KIND_NAMES = ["canvas", "tile", "compose", "unplaced"] as const satisfies
+  readonly [DestinationKind, ...DestinationKind[]];
+type MissingDestinationName = Exclude<DestinationKind, (typeof DESTINATION_KIND_NAMES)[number]>;
+const destinationNamesComplete: MissingDestinationName extends never ? true : never = true;
+void destinationNamesComplete;
+
+/**
+ * A CONTAINER DISCIPLINE, as the plugin that renders it declares it (#110, building the
+ * ruling ratified on #86). This is the whole of what the algebra knows about a discipline,
+ * and it is exactly the rows this file used to hold as literals for the two disciplines
+ * that happened to ship in the box:
+ *
+ *   `item`         what a container OF this discipline is when it is the thing being
+ *                  placed — the old `ITEM_KINDS.canvas` / `ITEM_KINDS.composition` row.
+ *   `accepts`      the groups a container of this discipline takes as a destination, and
+ *   `guards`       the container-site guards it enforces — the old `CONTAINER_KINDS` row.
+ *   `destinations` the destination forms that may address it — the old
+ *                  `DESTINATION_KINDS[...].requires` column, read from the other side.
+ *
+ * `title` is its display noun. The floor's label table holds FLOOR item kinds only, and a
+ * contributed kind takes its manifest title (S12) — a discipline is a contributed kind
+ * like any other, so its word travels with its declaration instead of in a second table.
+ *
+ * A discipline declaring no `discipline_match` guard is addressed by every destination
+ * form its `accepts` admits; both shipped disciplines declare it, which is why a `tile`
+ * drop onto a canvas is refused by name rather than by group containment.
+ */
+export interface DisciplineDeclaration {
+  readonly id: ContainerDiscipline;
+  readonly title: string;
+  readonly item: PlacementTraits;
+  readonly accepts: readonly PlacementGroup[];
+  readonly guards: readonly ContainerGuard[];
+  readonly destinations: readonly DestinationKind[];
+}
+
+/**
+ * The same declaration on the wire, so a manifest can carry it — bounded by the algebra's
+ * own vocabulary exactly the way {@link PlacementTraitsSchema} is: a discipline cannot
+ * declare a group, a guard or a destination form the floor does not define.
+ */
+export const DisciplineDefSchema = z.strictObject({
+  id: ContainerDisciplineSchema,
+  title: z.string().min(1).max(64),
+  item: PlacementTraitsSchema,
+  accepts: z.enum(PLACEMENT_GROUPS).array().max(PLACEMENT_GROUPS.length),
+  guards: z.enum(CONTAINER_GUARD_NAMES).array().max(CONTAINER_GUARD_NAMES.length),
+  destinations: z.enum(DESTINATION_KIND_NAMES).array().max(DESTINATION_KIND_NAMES.length),
+}) satisfies z.ZodType<DisciplineDeclaration>;
 
 /**
  * Where a canvas placement lands when the gesture named no point — a drop on a sidebar
@@ -375,13 +471,11 @@ export type ExecutionOnlyOp = (typeof EXECUTION_ONLY_OPS)[number];
  * What landing on a canvas MEANS per FLOOR item kind; a canvas is the one polymorphic
  * door. The canvas operation is never manifest data (ADR 0013 §12): letting a plugin name
  * the op a canvas performs on its kind would move an arbitration decision into a party's
- * declaration, so contributed kinds are answered by `canvasOpFor` from this table's own
- * rule instead.
+ * declaration, so contributed kinds — element kinds and CONTAINER disciplines alike — are
+ * answered by `canvasOpFor` from this table's own rules instead.
  */
 export const CANVAS_OPS = {
   terminal: "portal",
-  canvas: "portal",
-  composition: "portal",
   tile: "extract",
   /**
    * Unreachable by construction, and both declared anyway so the table stays total: a
@@ -396,14 +490,25 @@ export const CANVAS_OPS = {
 /**
  * The op a canvas performs on any kind, floor or contributed.
  *
- * Only ELEMENT kinds are contributed, and an element landing on a canvas is a MOVE: it
- * keeps its identity and changes documents. That is a floor ruling about the canvas, not a
- * property a manifest declares — which is exactly why it is one line here rather than a
- * field the algebra reads out of somebody's declaration.
+ * Two floor rulings answer everything this table does not, and both are rulings ABOUT THE
+ * CANVAS rather than properties a manifest declares — which is exactly why they are two
+ * lines here instead of fields the algebra reads out of somebody's declaration:
+ *
+ *   a CONTAINER landing on a canvas is a `portal` onto it, whatever discipline it wears.
+ *     This is the row `canvas: "portal"` and `composition: "portal"` used to state twice
+ *     for the only two disciplines that existed; stating it once, for every discipline
+ *     the roster holds, is the same ruling with the enumeration removed.
+ *   an ELEMENT landing on a canvas is a `move_element`: it keeps its identity and changes
+ *     documents.
+ *
+ * A kind that is neither — an undeclared discipline — never reaches here: it is refused
+ * by name at `resolveClassified` (`unknown_discipline`).
  */
-export function canvasOpFor(kind: string): PlacementOp {
+export function canvasOpFor(kind: string, lookup: PlacementLookup): PlacementOp {
   const floor: Readonly<Record<string, PlacementOp>> = CANVAS_OPS;
-  return floor[kind] ?? "move_element";
+  const declared = floor[kind];
+  if (declared !== undefined) return declared;
+  return lookup.discipline(kind) === null ? "move_element" : "portal";
 }
 
 /** Op per non-canvas destination; the canvas destination consults `CANVAS_OPS`. */
@@ -415,14 +520,32 @@ export const DESTINATION_OPS = {
 
 /**
  * Denial rules: one per guard (derived from `PLACEMENT_GUARDS`), one for failed group
- * containment, two for identity — an id that resolves to nothing is a denial too, so no
- * request can fall through to a silent no-op — and two for what a center drop asks of an
- * occupied spot: the exchange it cannot make, and the occupant it cannot move aside.
+ * containment, three for identity — an id, or a discipline, that resolves to nothing is a
+ * denial too, so no request can fall through to a silent no-op — and two for what a center
+ * drop asks of an occupied spot: the exchange it cannot make, and the occupant it cannot
+ * move aside.
  */
 export const PLACEMENT_DENIAL_RULES = [
   "not_accepted",
   "unknown_ref",
   "unknown_container",
+  /**
+   * THE CONTAINER IS THERE AND ITS RENDERER IS NOT. The row resolves, its discipline
+   * string is perfectly legal on the wire, and nothing in the composed roster declares
+   * that discipline — the plugin is uninstalled, or this build never had it (#110,
+   * ratifying #86 question 2).
+   *
+   * It is a rule of its own rather than `unknown_container` because the two are different
+   * truths and a caller acts differently on each: `unknown_container` says the container
+   * is gone, this says the container is fine and nobody here can read it. And it is a
+   * refusal rather than a fallback because the alternative — resolving an undeclared
+   * discipline through the element default — would quietly make every such container a
+   * canvas, which is the outcome the ratification named and forbade.
+   *
+   * It answers for BOTH sides of a placement: a destination whose container wears an
+   * undeclared discipline, and an item that IS such a container.
+   */
+  "unknown_discipline",
   /**
    * The CANVAS/COMPOSE door only. The element a center drop pointed at is taken, and the
    * ref offered is an IDENTITY form — a sidebar row, a bare terminal id — which names
@@ -729,8 +852,28 @@ export interface CarriedItem {
  * function drives a drag preview and the write that follows it.
  */
 export interface PlacementLookup {
-  /** A container's discipline; null when no such container exists. */
+  /**
+   * A container's discipline STRING, as its row carries it; null when no such container
+   * exists. It says what the row claims, never whether anything can read it — which is
+   * why it is a different question from {@link PlacementLookup.discipline} below and both
+   * are asked.
+   */
   disciplineOf(containerId: string): ContainerDiscipline | null;
+  /**
+   * THE DISCIPLINE ROSTER, as this reader holds it: the declaration a plugin contributed
+   * for `id`, or null for a discipline nothing in the composed roster declares (#110).
+   *
+   * It is the container-side twin of {@link PlacementLookup.itemTraits} and is read from
+   * the same published roster, so the algebra learns what a `spreadsheet` container
+   * accepts from the same document a stranger's agent reads at `GET /api/plugins`.
+   *
+   * DISABLED plugins are included, exactly as element traits are: their containers are
+   * still in the index, and a container that became unplaceable and un-unplaceable at
+   * once the moment somebody toggled a plugin is a workspace nobody can tidy. What a
+   * disable changes is who RENDERS the container (D4′, the engine-owned placeholder), not
+   * what composes with it.
+   */
+  discipline(id: string): DisciplineDeclaration | null;
   /**
    * What an existing canvas placement places: a portal places the container it points at
    * (hence `containerId`), any other element places its own type. Null when the element
@@ -842,9 +985,11 @@ export function placementItemFor(ref: PlacementRef, lookup: PlacementLookup): Pl
  * answer, and the answer is never silence.
  *
  * Check order is fixed so denials are stable and testable: the destination container must
- * exist and match its discipline (`unknown_container`, `discipline`), the ref must
- * resolve to a declared kind (`unknown_ref`), the container must accept one of its
- * groups (`not_accepted`), and finally the item-site guards run (`self_embed`, `not_solo`).
+ * exist, its discipline must be one the roster declares, and that discipline must admit
+ * this destination form (`unknown_container`, `unknown_discipline`, `discipline`); the ref
+ * must resolve to a declared kind, and to a READABLE one if it is a container
+ * (`unknown_ref`, `unknown_discipline`); the container must accept one of its groups
+ * (`not_accepted`); and finally the item-site guards run (`self_embed`, `not_solo`).
  *
  * It answers about KINDS, never about the contents of a document, which is why a center
  * placement resolves to `add_tile` or `compose` here whatever occupies the target: the
@@ -893,30 +1038,63 @@ function resolveClassified(
   lookup: PlacementLookup,
 ): PlacementResolution {
   const container = placementContainerFor(destination);
-  const declaration = DESTINATION_KINDS[destination.kind];
-  const containerDeclaration = CONTAINER_KINDS[container.kind];
+  const form = DESTINATION_KINDS[destination.kind];
   const deny = (rule: PlacementDenialRule): PlacementResolution => ({
     ok: false,
     denial: { rule, ref, container },
   });
 
-  const containerGuards: readonly PlacementGuard[] = containerDeclaration.guards;
-  if (
-    container.kind !== "unplaced" &&
-    containerGuards.includes("discipline_match") &&
-    declaration.requires !== null
-  ) {
+  /*
+    THE DESTINATION'S DISCIPLINE, resolved before anything else is asked. `unplaced` names
+    no container and skips the whole question; every other form names one, so the row has
+    to exist and its discipline has to be readable — three distinct truths, three named
+    refusals, none of them a fallback (#110).
+  */
+  let entered: DisciplineDeclaration | null = null;
+  if (container.kind !== "unplaced") {
     const discipline = lookup.disciplineOf(container.containerId);
     if (discipline === null) return deny("unknown_container");
-    if (discipline !== declaration.requires) return deny(PLACEMENT_GUARDS.discipline_match.rule);
+    entered = lookup.discipline(discipline);
+    if (entered === null) return deny("unknown_discipline");
+    const enteredGuards: readonly PlacementGuard[] = entered.guards;
+    if (
+      enteredGuards.includes("discipline_match") &&
+      !entered.destinations.includes(destination.kind)
+    ) {
+      return deny(PLACEMENT_GUARDS.discipline_match.rule);
+    }
   }
+  /*
+    WHOSE ACCEPTANCE ROWS APPLY. A form that enters an existing container is judged by
+    that container's discipline; `compose` and `unplaced` bring their own, because neither
+    enters a container of the discipline it reports. `entered` is non-null for every
+    `declaration: null` form by the block above, so the fallback is unreachable and the
+    `unplaced` row answers it if a future form ever changes that.
+  */
+  const containerDeclaration: ContainerDeclaration =
+    form.declaration ?? entered ?? DESTINATION_KINDS.unplaced.declaration;
 
   const item = itemOf();
   if (item === null) return deny("unknown_ref");
+  /*
+    THE ITEM SIDE OF THE SAME QUESTION. A container's item kind IS its discipline, so an
+    item naming a container whose kind is that container's own undeclared discipline is
+    the second half of #86's question 2: the thing being dragged has no renderer here. It
+    is refused by name rather than resolved through `DEFAULT_ELEMENT_PLACEMENT_TRAITS`,
+    which would silently make it canvas furniture.
+  */
+  if (
+    item.containerId !== null &&
+    !Object.hasOwn(ITEM_KINDS, item.kind) &&
+    lookup.disciplineOf(item.containerId) === item.kind &&
+    lookup.discipline(item.kind) === null
+  ) {
+    return deny("unknown_discipline");
+  }
 
   const itemDeclaration = itemTraitsFor(item.kind, lookup);
   const accepted = itemDeclaration.groups.some((group) =>
-    (containerDeclaration.accepts as readonly PlacementGroup[]).includes(group),
+    containerDeclaration.accepts.includes(group),
   );
   if (!accepted) return deny("not_accepted");
 
@@ -944,7 +1122,9 @@ function resolveClassified(
   }
 
   const op =
-    destination.kind === "canvas" ? canvasOpFor(item.kind) : DESTINATION_OPS[destination.kind];
+    destination.kind === "canvas"
+      ? canvasOpFor(item.kind, lookup)
+      : DESTINATION_OPS[destination.kind];
   return { ok: true, op, item, container };
 }
 
@@ -952,10 +1132,13 @@ function resolveClassified(
  * The algebra, published. `GET /api/protocol` serves this so agents and mods discover
  * what composes with what — and what cannot — from the declarations themselves.
  *
- * `items` and `canvasOps` are the FLOOR's kinds. A contributed element kind's traits are
- * published where the kind itself is — on its plugin's roster row at `GET /api/plugins` —
- * because a reader that learned the kind from one door should not have to learn its
- * legality from another.
+ * `items` and `canvasOps` are the FLOOR's kinds, and `containers` the closed family
+ * vocabulary a resolution answers in. What is NOT here is the DISCIPLINE roster: which
+ * disciplines a given build composed is a live fact, so it rides `ProtocolExtras` beside
+ * the action roster, the same way a contributed element kind's traits ride its plugin's
+ * row at `GET /api/plugins`. This package describes shapes and never their inhabitants —
+ * and `GET /api/protocol` serves both halves in the one document, so there is still
+ * exactly one door onto "what disciplines exist".
  */
 export function placementVocabulary(): Record<string, unknown> {
   return {

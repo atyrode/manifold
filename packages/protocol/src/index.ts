@@ -50,6 +50,8 @@ export {
 } from "./elements.ts";
 export {
   ContainerDisciplineSchema,
+  DISCIPLINE_ID_PATTERN,
+  MAX_DISCIPLINE_ID_LENGTH,
   MAX_PANEL_SECTIONS,
   MAX_SECTION_DEPTH,
   MAX_TILE_CHILDREN,
@@ -76,11 +78,14 @@ export {
 } from "./layout.ts";
 export {
   CANVAS_OPS,
+  CONTAINER_GUARD_NAMES,
   CONTAINER_KINDS,
   DEFAULT_CANVAS_DROP,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DESTINATION_KINDS,
+  DESTINATION_KIND_NAMES,
   DESTINATION_OPS,
+  DisciplineDefSchema,
   EXECUTION_ONLY_OPS,
   HOMING_MODES,
   ITEM_GUARD_NAMES,
@@ -107,9 +112,11 @@ export {
   resolveCarriedPlacement,
   resolvePlacement,
   type CarriedItem,
+  type ContainerDeclaration,
   type ContainerGuard,
   type ContainerKind,
   type DestinationKind,
+  type DisciplineDeclaration,
   type ExecutionOnlyOp,
   type HomingMode,
   type ItemGuard,
@@ -204,6 +211,7 @@ export {
   SectionDefSchema,
   SectionPresentationSchema,
   pluginVocabulary,
+  rosterDisciplines,
   type ActionDenial,
   type ActionDenialRule,
   type ActionOutcome,

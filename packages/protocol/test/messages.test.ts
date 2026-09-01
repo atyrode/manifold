@@ -636,7 +636,16 @@ describe("http schemas", () => {
     expect(ContainerSchema.safeParse({ id: "p1", name: "Notes", createdAt: 5 }).success).toBe(
       false,
     );
-    expect(ContainerSchema.safeParse({ ...container, discipline: "grid" }).success).toBe(false);
+    /*
+      The roster is OPEN (#110), so `grid` PARSES: it is a legal discipline id, and a stored
+      row whose plugin left this build must stay readable or the index cannot draw the
+      container at all. What refuses `grid` is the composed roster — `core.index.createContainer`
+      at the door, `unknown_discipline` at a placement — not this schema.
+    */
+    expect(ContainerSchema.parse({ ...container, discipline: "grid" }).discipline).toBe("grid");
+    // Bounded all the same: a value that is not a legal id is not a container.
+    expect(ContainerSchema.safeParse({ ...container, discipline: "Grid" }).success).toBe(false);
+    expect(ContainerSchema.safeParse({ ...container, discipline: "" }).success).toBe(false);
     // Transience is gone with the bubbles: every composition is durable, so a row still
     // carrying the flag is stale state and must fail to parse rather than be ignored.
     expect(ContainerSchema.safeParse({ ...container, transient: false }).success).toBe(false);
@@ -651,8 +660,12 @@ describe("http schemas", () => {
         discipline: "composition",
       },
     );
+    // Open roster: the SHAPE is the schema's question and existence is the door's (#110).
     expect(
-      CreateContainerRequestSchema.safeParse({ name: "Notes", discipline: "grid" }).success,
+      CreateContainerRequestSchema.parse({ name: "Notes", discipline: "grid" }).discipline,
+    ).toBe("grid");
+    expect(
+      CreateContainerRequestSchema.safeParse({ name: "Notes", discipline: "Grid" }).success,
     ).toBe(false);
     expect(CreateContainerRequestSchema.safeParse({ name: "Notes", transient: true }).success).toBe(
       false,

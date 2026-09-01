@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
-import { DEFAULT_ELEMENT_PLACEMENT_TRAITS, PlacementTraitsSchema } from "./placement.ts";
+import {
+  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  DisciplineDefSchema,
+  PlacementTraitsSchema,
+  type DisciplineDeclaration,
+} from "./placement.ts";
 
 /**
  * The plugin vocabulary: what a plugin IS on the wire, and what invoking one of its
@@ -280,6 +285,25 @@ const ContributesSchema = z.strictObject({
     )
     .max(8)
     .default([]),
+  /**
+   * THE CONTAINER DISCIPLINES THIS PLUGIN RENDERS (#110, building the ruling ratified on
+   * #86). A discipline is the value of `Container.discipline` and the key
+   * `ProjectionRegistry.renderer` is looked up by, and declaring it carries the placement
+   * rows `packages/protocol/src/placement.ts` used to hold as literals for the two
+   * disciplines that happened to ship in the box (see {@link DisciplineDefSchema}).
+   *
+   * Optional rather than defaulted to `[]` for the reason `seats` and `routes` are:
+   * absence is a MEANING — this plugin renders no container of its own — so every manifest
+   * written before the field existed keeps exactly the sense it had, and the composed
+   * roster stays the sum of what its members declared.
+   *
+   * `max(4)` bounds the payload the way every other list here is bounded, and nothing
+   * bounds it lower: the last-segment pun that used to imply one discipline per plugin was
+   * never true (`core.compositions` renders `composition`) and is retired on the record in
+   * `layout.ts`. What a declaration must actually survive is the global claim — a
+   * discipline id is one plugin's or nobody's, and two declarants refuse by name.
+   */
+  disciplines: z.array(DisciplineDefSchema).max(4).optional(),
   tools: z
     .array(
       z.strictObject({
@@ -611,6 +635,38 @@ export type PluginRosterEntry = z.infer<typeof PluginRosterEntrySchema>;
  */
 export const PluginRosterSchema = PluginRosterEntrySchema.array();
 export type PluginRoster = z.infer<typeof PluginRosterSchema>;
+
+/**
+ * THE DISCIPLINE ROSTER: discipline id → the declaration its plugin contributed, derived
+ * from a published `PluginRoster` (#110).
+ *
+ * It is the container-side twin of `rosterElementTraits`, and it lives HERE — in the
+ * protocol package, beside the roster shape it reads — rather than in the plugin engine,
+ * because both halves of the system and `GET /api/protocol` itself need the same
+ * projection, and a second walk of the same array is a second answer to "what disciplines
+ * exist" waiting to disagree (invariant 14). One derivation, one door.
+ *
+ * DISABLED plugins are included, deliberately and for exactly the reason element traits
+ * are: their containers are still in the index. A disable decides who RENDERS a container
+ * (D4′ — the engine-owned placeholder), never what composes with it, and a container that
+ * became unplaceable and un-unplaceable at once because somebody toggled a plugin is a
+ * workspace nobody can tidy. UNINSTALLED is the different case, and the one that has no
+ * row here at all: `unknown_discipline`.
+ *
+ * Iteration order follows the roster, and a duplicate id cannot reach here — assembly
+ * refuses one, naming every claimant.
+ */
+export function rosterDisciplines(
+  roster: PluginRoster,
+): ReadonlyMap<string, DisciplineDeclaration> {
+  const disciplines = new Map<string, DisciplineDeclaration>();
+  for (const entry of roster) {
+    for (const discipline of entry.manifest.contributes.disciplines ?? []) {
+      disciplines.set(discipline.id, discipline);
+    }
+  }
+  return disciplines;
+}
 
 /**
  * Why a dispatch was refused. The ladder is MONOTONIC and evaluated in this order, so a

@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   CANVAS_OPS,
+  CONTAINER_GUARD_NAMES,
   CONTAINER_KINDS,
+  ContainerDisciplineSchema,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DESTINATION_KINDS,
   DESTINATION_OPS,
+  DisciplineDefSchema,
   EXECUTION_ONLY_OPS,
   HOMING_MODES,
   ITEM_GUARD_NAMES,
@@ -28,6 +31,7 @@ import {
   resolvePlacement,
   type ContainerDiscipline,
   type DestinationKind,
+  type DisciplineDeclaration,
   type ItemKind,
   type PlaceResponse,
   type PlacementDenialRule,
@@ -52,6 +56,7 @@ const DISCIPLINES: Readonly<Record<string, ContainerDiscipline>> = {
   "solo-1": "composition",
   "multi-1": "composition",
   "multi-2": "composition",
+  "orphan-1": "grid",
 };
 
 /** Every terminal lives in a composition from birth, so nothing else answers here. */
@@ -96,8 +101,51 @@ const CONTRIBUTED_TRAITS: Readonly<Record<string, PlacementTraits>> = {
   draw: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
 };
 
-/** Every kind this world can place: the floor's own, plus what its plugins contribute. */
-type WorldKind = ItemKind | "text" | "draw";
+/**
+ * The DISCIPLINE half of the same contributed vocabulary (#110). `canvas` and
+ * `composition` are no longer floor rows: they are what `core.canvas` and
+ * `core.compositions` declare in their manifests, so this world declares them too — and
+ * `packages/server/test/discipline-roster.test.ts` pins that these values are the shipped
+ * manifests' verbatim, which is what makes this fixture a statement about the algebra
+ * rather than a private universe.
+ *
+ * `grid` is deliberately absent: it is the discipline of `orphan-1` below, the container
+ * whose plugin this build does not have.
+ */
+const CONTRIBUTED_DISCIPLINES: Readonly<Record<string, DisciplineDeclaration>> = {
+  canvas: {
+    id: "canvas",
+    title: "Canvas",
+    item: {
+      groups: ["tileable", "embeddable", "unplaceable", "canvas_item_as_portal"],
+      guards: ["no_self_embed"],
+      homed: "inline",
+    },
+    accepts: ["canvas_item", "canvas_item_as_portal", "extractable"],
+    guards: ["discipline_match"],
+    destinations: ["canvas", "compose"],
+  },
+  composition: {
+    id: "composition",
+    title: "Composition",
+    item: {
+      groups: ["mergeable", "unplaceable", "canvas_item_as_portal"],
+      guards: ["no_self_embed", "solo_only"],
+      homed: "inline",
+    },
+    accepts: ["tileable", "mergeable"],
+    guards: ["discipline_match"],
+    destinations: ["tile"],
+  },
+};
+
+/**
+ * Every kind this world can place: the floor's own STRUCTURAL kinds, the two disciplines
+ * its plugins declare, and the element types they contribute. `canvas` and `composition`
+ * are listed explicitly because they are contributions now (#110) rather than members of
+ * `ITEM_KINDS` — the matrix still has to exercise every one of them at every door.
+ */
+type WorldKind = ItemKind | "canvas" | "composition" | "text" | "draw";
 
 const lookup: PlacementLookup = {
   disciplineOf: (containerId) => DISCIPLINES[containerId] ?? null,
@@ -105,6 +153,7 @@ const lookup: PlacementLookup = {
     DISCIPLINES[containerId] === undefined ? null : (ELEMENTS[elementId] ?? null),
   terminalHome: (terminalId) => TERMINAL_HOMES[terminalId] ?? null,
   soloOccupant: (containerId) => SOLO_OCCUPANTS[containerId] ?? null,
+  discipline: (id) => CONTRIBUTED_DISCIPLINES[id] ?? null,
   itemTraits: (kind) => CONTRIBUTED_TRAITS[kind] ?? null,
 };
 
@@ -259,11 +308,25 @@ describe("placement matrix", () => {
     expect(seen.length).toBeGreaterThan(0);
   });
 
+  /**
+   * Where a destination's acceptance rows come from, spelled the way the resolver reads
+   * them (#110): a form that ENTERS a container is judged by that container's DISCIPLINE,
+   * and the two forms that do not — `compose`, which authors one, and `unplaced`, which
+   * names none — carry their own.
+   */
+  function destinationAccepts(kind: DestinationKind): readonly string[] {
+    const form = DESTINATION_KINDS[kind];
+    if (form.declaration !== null) return form.declaration.accepts;
+    const destination = DESTINATIONS[kind];
+    if (!("containerId" in destination)) return [];
+    const discipline = DISCIPLINES[destination.containerId] ?? "";
+    return CONTRIBUTED_DISCIPLINES[discipline]?.accepts ?? [];
+  }
+
   test("acceptance follows group containment, so the table cannot drift from declarations", () => {
     for (const itemKind of worldKinds) {
       for (const destinationKind of destinationKinds) {
-        const container = DESTINATION_KINDS[destinationKind].container;
-        const accepts: readonly string[] = CONTAINER_KINDS[container].accepts;
+        const accepts = destinationAccepts(destinationKind);
         const overlaps = (itemTraitsFor(itemKind, lookup).groups as readonly string[]).some(
           (group) => accepts.includes(group),
         );
@@ -708,6 +771,196 @@ describe("placement wire shapes", () => {
   });
 });
 
+/**
+ * THE ROSTER IS OPEN (#110, building the ruling ratified on #86).
+ *
+ * Four things have to be true at once for that to be more than a loosened parse: a
+ * discipline nobody declares is refused BY NAME on both sides of a placement rather than
+ * crashing or degrading to `canvas`; a discipline somebody declares composes without the
+ * floor learning its name; the legality rows really do come from the declaration; and the
+ * two shipped disciplines mean exactly what they meant when they were literals.
+ */
+describe("open discipline roster", () => {
+  /** A container of the `grid` discipline, which this world's roster does not declare. */
+  const ORPHAN = "orphan-1";
+
+  test("a bounded string is the wire form, and existence is not the parse's question", () => {
+    // Every id a plugin could legally declare parses. Whether one EXISTS is the roster's
+    // answer, asked at the doors below, and a stored row must survive its plugin leaving.
+    expect(ContainerDisciplineSchema.parse("canvas")).toBe("canvas");
+    expect(ContainerDisciplineSchema.parse("spreadsheet")).toBe("spreadsheet");
+    expect(ContainerDisciplineSchema.parse("acme-grid")).toBe("acme-grid");
+    // Bounded, though: a discipline id appears in an index row, a placeholder and a
+    // `manifold://` path, so it wears the same grammar every other published name does.
+    expect(ContainerDisciplineSchema.safeParse("Canvas").success).toBe(false);
+    expect(ContainerDisciplineSchema.safeParse("core.canvas").success).toBe(false);
+    expect(ContainerDisciplineSchema.safeParse("").success).toBe(false);
+    expect(ContainerDisciplineSchema.safeParse("x".repeat(33)).success).toBe(false);
+  });
+
+  test("placement INTO an undeclared discipline is refused by name, never downgraded", () => {
+    /*
+      The exact case #86's second question asked about: the plugin is uninstalled, not
+      merely disabled. The container row is fine, so `unknown_container` would be a lie a
+      principal would act on by recreating something they already have — and treating the
+      undeclared discipline as ordinary furniture would let a terminal land in it as if it
+      were a canvas, which is the silent downgrade the ratification forbade.
+    */
+    const dropped = resolvePlacement(
+      REFS.terminal,
+      { kind: "canvas", containerId: ORPHAN, x: 0, y: 0 },
+      lookup,
+    );
+    expect(dropped.ok).toBe(false);
+    if (!dropped.ok) expect(dropped.denial.rule).toBe("unknown_discipline");
+    // Every form that names a container asks the same question and gets the same answer.
+    const tiled = resolvePlacement(
+      REFS.terminal,
+      { kind: "tile", containerId: ORPHAN, targetTileId: null, edge: null },
+      lookup,
+    );
+    expect(tiled.ok).toBe(false);
+    if (!tiled.ok) expect(tiled.denial.rule).toBe("unknown_discipline");
+    // And it is distinct from the container simply not being there.
+    const missing = resolvePlacement(
+      REFS.terminal,
+      { kind: "canvas", containerId: "nope", x: 0, y: 0 },
+      lookup,
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.denial.rule).toBe("unknown_container");
+  });
+
+  test("placing the orphaned container ITSELF is refused by name too", () => {
+    /*
+      The other side of the same truth. A container's item kind IS its discipline, so
+      dragging `orphan-1` onto a canvas would otherwise resolve through
+      `DEFAULT_ELEMENT_PLACEMENT_TRAITS` and author a portal onto a container nothing can
+      paint. The refusal is the same word, because it is the same missing renderer.
+    */
+    const carried = resolvePlacement(
+      { kind: "container", containerId: ORPHAN },
+      DESTINATIONS.canvas,
+      lookup,
+    );
+    expect(carried.ok).toBe(false);
+    if (!carried.ok) expect(carried.denial.rule).toBe("unknown_discipline");
+    // `unplaced` names no container, so the DESTINATION check never runs — and the item
+    // check still does, which is exactly why the item side is checked separately.
+    const released = resolvePlacement(
+      { kind: "container", containerId: ORPHAN },
+      DESTINATIONS.unplaced,
+      lookup,
+    );
+    expect(released.ok).toBe(false);
+    if (!released.ok) expect(released.denial.rule).toBe("unknown_discipline");
+  });
+
+  test("a THIRD-PARTY discipline composes without the floor learning its name", () => {
+    /*
+      The acceptance criterion in one assertion: `spreadsheet` appears in no table in
+      `packages/protocol`, and a terminal tiles into it because its declaration says
+      `tileable` is accepted and the `tile` form addresses it.
+    */
+    const spreadsheet: DisciplineDeclaration = {
+      id: "spreadsheet",
+      title: "Spreadsheet",
+      item: { groups: ["tileable", "unplaceable"], guards: ["no_self_embed"], homed: "inline" },
+      accepts: ["tileable"],
+      guards: ["discipline_match"],
+      destinations: ["tile"],
+    };
+    const withSheets: PlacementLookup = {
+      ...lookup,
+      disciplineOf: (id) => (id === "sheet-1" ? "spreadsheet" : (DISCIPLINES[id] ?? null)),
+      discipline: (id) =>
+        id === "spreadsheet" ? spreadsheet : (CONTRIBUTED_DISCIPLINES[id] ?? null),
+    };
+    const tiled = resolvePlacement(
+      REFS.terminal,
+      { kind: "tile", containerId: "sheet-1", targetTileId: null, edge: null },
+      withSheets,
+    );
+    expect(tiled.ok && tiled.op).toBe("add_tile");
+    // Its own legality rows are enforced, not the canvas's: it declared only the `tile`
+    // form, so a coordinate drop is the `discipline` refusal and not a silent success.
+    const dropped = resolvePlacement(
+      REFS.terminal,
+      { kind: "canvas", containerId: "sheet-1", x: 0, y: 0 },
+      withSheets,
+    );
+    expect(dropped.ok).toBe(false);
+    if (!dropped.ok) expect(dropped.denial.rule).toBe("discipline");
+    // And a spreadsheet CONTAINER places by the traits it declared: no `canvas_item_as_portal`,
+    // so a canvas refuses it on containment rather than authoring a portal it cannot paint.
+    const onCanvas = resolvePlacement(
+      { kind: "container", containerId: "sheet-1" },
+      DESTINATIONS.canvas,
+      withSheets,
+    );
+    expect(onCanvas.ok).toBe(false);
+    if (!onCanvas.ok) expect(onCanvas.denial.rule).toBe("not_accepted");
+  });
+
+  test("a discipline's OWN rows decide, so changing one changes the answer", () => {
+    /*
+      The rows are data, and this is what proves it: the same canvas, with `compose` removed
+      from its declared destinations, refuses the merge it accepted a line earlier — no
+      floor edit, no version bump, one field.
+    */
+    const merge = resolvePlacement(REFS.text, DESTINATIONS.compose, lookup);
+    expect(merge.ok && merge.op).toBe("compose");
+    const canvasDeclaration = CONTRIBUTED_DISCIPLINES["canvas"];
+    if (canvasDeclaration === undefined) throw new Error("fixture lost its canvas");
+    const noMerging: PlacementLookup = {
+      ...lookup,
+      discipline: (id) =>
+        id === "canvas"
+          ? { ...canvasDeclaration, destinations: ["canvas"] }
+          : (CONTRIBUTED_DISCIPLINES[id] ?? null),
+    };
+    const refused = resolvePlacement(REFS.text, DESTINATIONS.compose, noMerging);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.denial.rule).toBe("discipline");
+  });
+
+  test("the floor holds no discipline row: the two shipped ones are contributions", () => {
+    // The blast radius #110's probe named, asserted as absence. All four tables, plus the
+    // guard, which SURVIVES — it is a discipline's declaration now, not a container kind's.
+    expect(Object.keys(ITEM_KINDS)).toEqual(["terminal", "tile", "panel", "structure"]);
+    expect(Object.keys(CANVAS_OPS)).toEqual(["terminal", "tile", "panel", "structure"]);
+    expect(CONTAINER_KINDS).toEqual(["canvas", "composition", "unplaced"]);
+    for (const form of Object.values(DESTINATION_KINDS)) {
+      expect(Object.keys(form)).toEqual(["container", "declaration"]);
+    }
+    expect(PLACEMENT_GUARDS.discipline_match.site).toBe("container");
+    expect([...CONTAINER_GUARD_NAMES]).toEqual(["discipline_match"]);
+  });
+
+  test("a declaration is bounded by the algebra's own vocabulary", () => {
+    const sheets = {
+      id: "spreadsheet",
+      title: "Spreadsheet",
+      item: { groups: ["tileable"], guards: [], homed: "inline" },
+      accepts: ["tileable"],
+      guards: ["discipline_match"],
+      destinations: ["tile"],
+    };
+    expect(DisciplineDefSchema.safeParse(sheets).success).toBe(true);
+    expect(DisciplineDefSchema.safeParse({ ...sheets, accepts: ["floaty"] }).success).toBe(false);
+    expect(DisciplineDefSchema.safeParse({ ...sheets, destinations: ["sideways"] }).success).toBe(
+      false,
+    );
+    // An ITEM-site guard in the container slot is the mistake the site split exists to
+    // catch, and its mirror is already covered for traits.
+    expect(DisciplineDefSchema.safeParse({ ...sheets, guards: ["solo_only"] }).success).toBe(false);
+    // A declaration is the WHOLE description; a fifth field would be behavior outside it.
+    expect(DisciplineDefSchema.safeParse({ ...sheets, render: "SheetView" }).success).toBe(false);
+    // And the id obeys the wire grammar, so a declaration cannot name an unaddressable one.
+    expect(DisciplineDefSchema.safeParse({ ...sheets, id: "Spread Sheet" }).success).toBe(false);
+  });
+});
+
 describe("placement introspection", () => {
   test("GET /api/protocol publishes the whole vocabulary", () => {
     const placement = buildProtocolJsonSchema()["placement"];
@@ -730,10 +983,20 @@ describe("placement introspection", () => {
         "response",
         "denial",
         "traits",
+        /*
+          The discipline vocabulary, both halves (#110): the SHAPE a plugin declares one
+          with, and the composed roster this build holds. A reader that learned the
+          `discipline` field from `Container` learns what its values can be from the same
+          document, so there is no second door onto "what disciplines exist" (A2).
+        */
+        "discipline",
+        "disciplines",
       ].sort(),
     );
     expect(Object.keys(published["items"] as object)).toEqual(itemKinds);
-    expect(Object.keys(published["containers"] as object)).toEqual(Object.keys(CONTAINER_KINDS));
+    expect(published["containers"]).toEqual(CONTAINER_KINDS);
+    // No assembly was handed in, so the roster is the honest empty rather than a guess.
+    expect(published["disciplines"]).toEqual([]);
     expect(published["groups"]).toEqual(PLACEMENT_GROUPS);
     // Homing belongs to the published algebra: where a kind LIVES decides whether placing
     // it moves something or births its home.
@@ -761,6 +1024,15 @@ describe("placement introspection", () => {
       "unknown_ref",
       "unknown_container",
       /*
+        The third identity rule, and the one the OPEN discipline roster made necessary
+        (#110): the container row resolves, and nothing in the composed roster declares the
+        discipline it wears. It is distinct from `unknown_container` — the container is
+        there — and it is a refusal rather than a fallback, because resolving an undeclared
+        discipline through the element default would silently turn every such container into
+        a canvas, which is what #86's ratification forbade.
+      */
+      "unknown_discipline",
+      /*
         Not a guard: a guard is a property of a KIND, and this one is a property of the
         gesture — whether the ref offered is a placement with a seat to trade, or an
         identity form that names an item and nothing else. Only the executor can see the
@@ -785,10 +1057,23 @@ describe("placement introspection", () => {
         expect(PLACEMENT_GUARDS[guard].site).toBe("item");
       }
     }
-    for (const declaration of Object.values(CONTAINER_KINDS)) {
-      for (const group of declaration.accepts) expect(groups).toContain(group);
-      for (const guard of declaration.guards) {
+    /*
+      The container half is DECLARED now, so closure is checked against the declarations a
+      roster can carry rather than against a floor table (#110): a discipline's item traits
+      are item-site, its acceptance is group vocabulary, and its guards are container-site.
+      The same three checks the floor rows used to get, applied to every contributor.
+    */
+    for (const discipline of Object.values(CONTRIBUTED_DISCIPLINES)) {
+      for (const group of discipline.item.groups) expect(groups).toContain(group);
+      for (const guard of discipline.item.guards) {
+        expect(PLACEMENT_GUARDS[guard].site).toBe("item");
+      }
+      for (const group of discipline.accepts) expect(groups).toContain(group);
+      for (const guard of discipline.guards) {
         expect(PLACEMENT_GUARDS[guard].site).toBe("container");
+      }
+      for (const form of discipline.destinations) {
+        expect(Object.keys(DESTINATION_KINDS)).toContain(form);
       }
     }
     for (const guard of Object.values(PLACEMENT_GUARDS)) {
@@ -796,14 +1081,21 @@ describe("placement introspection", () => {
     }
     for (const op of Object.values(CANVAS_OPS)) expect(ops).toContain(op);
     for (const op of Object.values(DESTINATION_OPS)) expect(ops).toContain(op);
-    for (const declaration of Object.values(DESTINATION_KINDS)) {
-      expect(Object.keys(CONTAINER_KINDS)).toContain(declaration.container);
+    const families: readonly string[] = CONTAINER_KINDS;
+    for (const form of Object.values(DESTINATION_KINDS)) {
+      expect(families).toContain(form.container);
+      for (const group of form.declaration?.accepts ?? []) expect(groups).toContain(group);
     }
-    // Groups only matter if something accepts them, except `embeddable`, which declares a
-    // rendering capability (live depth-2 embedding) rather than a placement.
-    const accepted = new Set<string>(
-      Object.values(CONTAINER_KINDS).flatMap((declaration) => [...declaration.accepts]),
-    );
+    /*
+      Groups only matter if something accepts them, except `embeddable`, which declares a
+      rendering capability (live depth-2 embedding) rather than a placement. The accepting
+      side is now the disciplines plus the two self-declaring forms, which is exactly the
+      set `CONTAINER_KINDS` used to be a table of.
+    */
+    const accepted = new Set<string>([
+      ...Object.values(CONTRIBUTED_DISCIPLINES).flatMap((discipline) => [...discipline.accepts]),
+      ...Object.values(DESTINATION_KINDS).flatMap((form) => [...(form.declaration?.accepts ?? [])]),
+    ]);
     const unaccepted = PLACEMENT_GROUPS.filter((group) => !accepted.has(group));
     expect(unaccepted).toEqual(["embeddable"]);
   });
@@ -903,8 +1195,16 @@ describe("placement traits", () => {
     const refused = resolvePlacement(REFS.text, DESTINATIONS.tile, unclaimed);
     expect(refused.ok).toBe(false);
     if (!refused.ok) expect(refused.denial.rule).toBe("not_accepted");
-    expect(canvasOpFor("text")).toBe("move_element");
-    expect(canvasOpFor("chart")).toBe("move_element");
-    expect(canvasOpFor("terminal")).toBe("portal");
+    expect(canvasOpFor("text", lookup)).toBe("move_element");
+    expect(canvasOpFor("chart", lookup)).toBe("move_element");
+    expect(canvasOpFor("terminal", lookup)).toBe("portal");
+    /*
+      A CONTAINER landing on a canvas is a portal whatever discipline it wears, and that is
+      one floor ruling now rather than a `canvas:`/`composition:` pair in `CANVAS_OPS`
+      (#110). The table holds neither name; the answer comes from the roster.
+    */
+    expect(canvasOpFor("composition", lookup)).toBe("portal");
+    expect(canvasOpFor("canvas", lookup)).toBe("portal");
+    expect(Object.keys(CANVAS_OPS)).not.toContain("composition");
   });
 });
