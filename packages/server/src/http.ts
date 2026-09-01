@@ -8,7 +8,6 @@ import {
   BindingsResponseSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
-  OkResponseSchema,
   PROTOCOL_VERSION,
   PluginsResponseSchema,
   ResolveResponseSchema,
@@ -24,7 +23,6 @@ import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { MachineGateway } from "./machine-ws.ts";
-import type { PlaceExecutor } from "./placement.ts";
 import type { PluginHost } from "./plugin-host.ts";
 import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
@@ -118,7 +116,6 @@ export class HttpApp {
     private readonly auth: AuthService,
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
-    private readonly placement: PlaceExecutor,
     private readonly machines: MachineGateway,
     private readonly plugins: PluginHost,
     private readonly logger: Logger,
@@ -305,24 +302,6 @@ export class HttpApp {
           ...this.resolveRef(ref, context),
         }),
       );
-    }
-
-    const tileMatch = /^\/api\/containers\/([^/]+)\/tiles\/([^/]+)$/.exec(pathname);
-    if (tileMatch !== null && request.method === "DELETE") {
-      const containerId = decodePathSegment(tileMatch[1], "container id");
-      const context = this.authenticate(request);
-      this.requireCap(context, "containers:write");
-      if (context.containerScope !== null) {
-        throw new RequestError("forbidden", "scoped tokens cannot remove tiles");
-      }
-      // Leaf removal is NOT a placement: nothing accepts "nowhere" as a destination for a
-      // LEAF, so a leaf is addressed directly here while every MOVE of its occupant goes
-      // through `core.space.place`. Removing a terminal's last leaf closes the terminal.
-      const tileId = decodePathSegment(tileMatch[2], "tile id");
-      const removed = this.placement.removeTile(containerId, tileId);
-      if (removed === "not_found") throw new RequestError("not_found", "tile not found");
-      if (removed === "conflict") throw new RequestError("conflict", "tile is not removable");
-      return jsonResponse(OkResponseSchema.parse({ ok: true }));
     }
 
     if (request.method === "GET" && pathname === "/api/introspect") {

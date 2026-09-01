@@ -43,6 +43,7 @@
 ### Changed
 
 - The plugin manager says dependencies only when there are any — an absent line now means independence — and every named plugin is a link that jumps to its row, clearing whatever search or filter was hiding it. (#105, #106)
+- Closing a tile is an action like everything else. The last bespoke HTTP route that changed your workspace — `DELETE /api/containers/:id/tiles/:tileId` — is gone, and leaf removal is now `core.space.removeTile { containerId, tileId }`: same authority, same rules, same refusals, and now the same journal line every other action leaves, so "who closed that terminal" is a question the workspace can answer. The app behaves exactly as it did; a script or agent that called the old route dispatches the action instead. (#114, #PR)
 
 - Terminal rename and kill moved from bespoke HTTP routes to `core.terminals.rename` / `core.terminals.kill` actions; killing a terminal keeps working even while the terminals plugin is disabled. (#69, #70)
 - Sidebar width, collapse, and section order left this device: width lives in your server-saved workspace layout, collapse is shared presence state, and section order comes from plugin manifests. (#69, #70)

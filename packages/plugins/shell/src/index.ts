@@ -96,15 +96,20 @@ export const shellManifest: PluginManifest = {
  * and "the tree" and "the panels that fill it" are two concepts even when one package ships
  * both.
  *
- * It contributes no panel, no section and no element. Disabling it stops layout writes
- * and placements without taking the shell's panels down with it.
+ * It contributes no panel, no section and no element. Disabling it stops layout writes and
+ * placements without taking the shell's panels down with it — and never stops REMOVAL:
+ * `removeTile` is `cleanup`, so an administrator switching this plugin off can no more
+ * strand a composition's leaves than they can strand a terminal (D12, `core.terminals.kill`'s
+ * carve-out for the same reason).
  *
- * The two events it declares are its two doors' commit points, and each is addressed to the
+ * The three events it declares are its three doors' commit points, and each is addressed to the
  * node it actually changed. `layout_set` is announced on the CALLER'S PRINCIPAL node, because a
  * workspace tree is per principal (`setWorkspaceLayout(principal.id, ...)`) and no other node
  * describes it. `item_placed` is announced on the destination CONTAINER, so a socket watching a
  * canvas or composition learns something landed in it — once per gesture, at the drop, never
- * per frame of the drag (`AXIOMS.md` §Axioms, the plane rule's commit point). Both are also
+ * per frame of the drag (`AXIOMS.md` §Axioms, the plane rule's commit point). `tile_removed` is
+ * that emission's mirror: the same container node, because a leaf that goes is a change to the
+ * composition that held it. All three are also
  * DELIVERED at this plugin's own node, which is how the workspace-wide readings a placement
  * moves — the index's top level, both terminal rosters — hear a commit in a room they cannot
  * name in advance (ADR 0012 §2b). That is delivery, not a second emission: one row, one frame.
@@ -124,6 +129,7 @@ export const spaceManifest: PluginManifest = {
     events: [
       { id: "layout_set", title: "Workspace layout written" },
       { id: "item_placed", title: "Item placed" },
+      { id: "tile_removed", title: "Composition leaf removed" },
     ],
   },
 };
@@ -158,5 +164,34 @@ export const spaceActions = [
     caps: ["containers:write"],
     input: PlaceRequestSchema,
     result: PlaceResponseSchema,
+  }),
+  /**
+   * LEAF REMOVAL, as a door (issue #114). This was `DELETE /api/containers/:id/tiles/:tileId`,
+   * the one mutation left standing outside the dispatch ladder: it committed workspace state
+   * and wrote no trace row, and it fits none of A6's three named exemptions — it is neither
+   * presence, nor a continuous stream, nor a document-plane delta discharged at `doc_update`.
+   * A discrete authority-bearing mutation is an action (invariant 13), so it is one, and the
+   * T3 completeness gate covers it from here on rather than a reviewer having to remember it.
+   *
+   * Removal is NOT a placement, which is why it is a SECOND door on this plugin rather than a
+   * `PlaceRequest` form: nothing accepts "nowhere" for a LEAF, and `tile -> unplaced` already
+   * means the opposite thing — releasing a leaf re-homes its occupant, closing one destroys it.
+   * Two verbs, two doors, and the destructive one is never reached by a drag.
+   *
+   * `containers:write` and the workspace scope are the deleted route's own rungs, unchanged:
+   * the route refused container-scoped tokens by hand, and an undeclared scope IS that refusal.
+   * `cleanup`, for `core.terminals.kill`'s reason — closing a tile and killing from the sidebar
+   * are the same write, so a disable may not reach one and leave the other (D12).
+   */
+  defineAction({
+    cleanup: true,
+    name: "removeTile",
+    title: "Remove a composition leaf",
+    caps: ["containers:write"],
+    input: z.strictObject({
+      containerId: z.string().min(1),
+      tileId: z.string().min(1),
+    }),
+    result: z.strictObject({}),
   }),
 ];

@@ -878,24 +878,6 @@ export class SessionClient {
     );
   }
 
-  /**
-   * One authed write to a route that is NOT an action. Exactly one door needs it — leaf
-   * removal — and the comment there says why that door is a route.
-   */
-  private async sendJson(method: string, path: string): Promise<void> {
-    const response = await fetch(`${this.apiOrigin()}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.opts.token}` },
-    });
-    if (response.ok) return;
-    const failure = HttpErrorSchema.safeParse(await response.json().catch(() => null));
-    throw new Error(
-      failure.success
-        ? failure.data.error.message
-        : `${method} ${path} failed (${String(response.status)})`,
-    );
-  }
-
   /** The enrolled machines with live online state (`core.machines.list`). */
   async machines(): Promise<readonly MachineSummary[]> {
     return MachinesResponseSchema.parse(await this.invoke("core.machines.list", {})).machines;
@@ -984,15 +966,15 @@ export class SessionClient {
   }
 
   /**
-   * Removes one leaf from a composition (`DELETE /api/containers/:id/tiles/:tileId`). Removal is
-   * the one tile gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so
-   * it keeps its own route while every MOVE of a leaf's occupant goes through `place`.
+   * Removes one leaf from a composition (`core.space.removeTile`). Removal is the one tile
+   * gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so it is its own
+   * door while every MOVE of a leaf's occupant goes through `place`. It was its own ROUTE until
+   * issue #114: a bespoke `DELETE` that committed workspace state outside the dispatch ladder
+   * and therefore left no trace row. Same wrapper, same signature, same throw-on-refusal shape
+   * every caller was already written around — only the door underneath moved.
    */
   async removeContainerTile(containerId: string, tileId: string): Promise<void> {
-    await this.sendJson(
-      "DELETE",
-      `/api/containers/${encodeURIComponent(containerId)}/tiles/${encodeURIComponent(tileId)}`,
-    );
+    await this.invoke("core.space.removeTile", { containerId, tileId });
   }
 
   /** Creates an index folder (`core.index.createFolder`); answers the whole new index. */

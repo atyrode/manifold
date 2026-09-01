@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   CONNECTION_BODIES,
+  ContainerResponseSchema,
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
   PROTOCOL_VERSION,
+  PlaceResponseSchema,
   ServerMessageSchema,
   formatManifoldUri,
   topicMatches,
@@ -230,6 +232,50 @@ describe("event plane subscription authority", () => {
     expect(heard.map((event) => event.kind)).toEqual(["item_placed"]);
     expect(heard[0]?.topic).toEqual({ kind: "container", containerId: fixture.container.id });
     expect(heard[0]?.actor).toBe(fixture.owner.principal.id);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("leaf removal announces on the container that held it, once, at the commit", async () => {
+    const fixture = planeFixture();
+    /*
+      `core.space.removeTile` was a bespoke DELETE route until issue #114, so it had no
+      commit point a socket could hear. Now it does, and the property worth pinning is the
+      ADDRESS: `tile_removed` is `item_placed`'s mirror, on the composition that lost the
+      leaf, because that is the node the write changed.
+     */
+    const created = await fixture.host.dispatch(fixture.owner, "core.index.createContainer", {
+      name: "watched composition",
+      discipline: "composition",
+    });
+    if (!created.ok) throw new Error(`the composition was refused: ${created.denial.message}`);
+    const composition = ContainerResponseSchema.parse(created.result).container;
+    const placed = await fixture.host.dispatch(fixture.owner, "core.space.place", {
+      ref: { kind: "container", containerId: fixture.other.id },
+      destination: { kind: "tile", containerId: composition.id, targetTileId: null, edge: null },
+    });
+    if (!placed.ok) throw new Error(`the leaf was refused: ${placed.denial.message}`);
+    const landed = PlaceResponseSchema.parse(placed.result);
+    if (landed.op !== "add_tile") throw new Error(`expected add_tile, got ${landed.op}`);
+
+    // Subscribed AFTER the placement, so the only frame in flight is the removal's own.
+    const socket = connect(fixture, "tab");
+    subscribe(fixture, "tab", [{ kind: "container", containerId: composition.id }]);
+
+    const removed = await fixture.host.dispatch(fixture.owner, "core.space.removeTile", {
+      containerId: composition.id,
+      tileId: landed.tileId,
+    });
+
+    expect(removed).toEqual({ ok: true, result: {} });
+    const heard = eventsOn(socket);
+    expect(heard.map((event) => event.kind)).toEqual(["tile_removed"]);
+    expect(heard[0]?.topic).toEqual({ kind: "container", containerId: composition.id });
+    expect(heard[0]?.actor).toBe(fixture.owner.principal.id);
+    expect(heard[0]?.payload).toEqual({ tileId: landed.tileId });
+    // An emission whose kind no manifest declares is a logged error and no frame, so the
+    // frame above is only evidence once nothing was refused on the way out.
+    expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(false);
     fixture.gateway.shutdown();
     fixture.store.close();
   });

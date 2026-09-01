@@ -662,7 +662,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "space",
-      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
+      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout), the placement verb (core.space.place) and leaf removal (core.space.removeTile)",
       "banned": [],
       "allow": []
     },

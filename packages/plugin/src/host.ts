@@ -92,9 +92,9 @@ export interface SessionHandle {
   /** One container's record, for a reference the index has not answered yet. */
   getContainer(containerId: string): Promise<Container>;
   /**
-   * Removes one leaf from an assembly. Removal is the one tile gesture that is NOT a
-   * placement — nothing accepts "nowhere" for a LEAF — so it is its own verb here, while
-   * every MOVE of a leaf's occupant goes through `place`.
+   * Removes one leaf from an assembly (`core.space.removeTile`). Removal is the one tile
+   * gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so it is its own
+   * verb here, while every MOVE of a leaf's occupant goes through `place`.
    */
   removeContainerTile(containerId: string, tileId: string): Promise<void>;
   /**

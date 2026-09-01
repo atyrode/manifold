@@ -220,19 +220,18 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                              | Auth cap              | Req → Res                                                                                                                                                 |
-| ---------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                             | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                 |
-| GET /api/protocol                        | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                   |
-| GET /api/attendance                      | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                 |
-| DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                 |
-| POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door            |
-| GET /api/plugins                         | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                           |
-| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction             |
-| GET /api/bindings                        | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer |
-| GET /api/resolve?uri=                    | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
-| GET /api/containers                      | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input               |
-| GET /api/introspect                      | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                       |
+| Method+Path             | Auth cap              | Req → Res                                                                                                                                                 |
+| ----------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz            | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                 |
+| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                   |
+| GET /api/attendance     | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                 |
+| POST /api/actions/:name | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door            |
+| GET /api/plugins        | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                           |
+| GET /api/layout         | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction             |
+| GET /api/bindings       | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer |
+| GET /api/resolve?uri=   | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
+| GET /api/containers     | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input               |
+| GET /api/introspect     | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                       |
 
 `IndexEntry` is either `{ kind:"container", container:{ id, name, createdAt, discipline },
 parentId: string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name,
@@ -456,8 +455,8 @@ anybody.
 - **Reaping, and the ONE lifecycle predicate.** A terminal stops in exactly one of two ways,
   and the whole difference is INTENT.
   - **KILLED** — somebody asked for it: `terminal_kill`, the action
-    `core.terminals.kill { terminalId }`, or `DELETE /api/containers/:id/tiles/:tileId` on its
-    last
+    `core.terminals.kill { terminalId }`, or `core.space.removeTile { containerId, tileId }` on
+    its last
     leaf. All three are one write: the PTY, the terminal row, every leaf its home held for it,
     and — when the terminal was the last thing its home held — the home itself plus EVERY
     portal onto that home, on every canvas, whether or not anybody has it open. Nothing
@@ -655,6 +654,22 @@ and those leaves render placeholders whose chrome offers a remove control that c
 tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.space.setLayout` at the commit point, never one per frame.
 
+**Leaf removal (`core.space.removeTile`).** `DELETE /api/containers/:id/tiles/:tileId` is
+deleted, not aliased. It was the LAST bespoke route that mutated workspace state, and the one
+committed mutation the trace ledger never saw (issue #114): it fits none of A6's three
+exemptions, so the honest fix was to make it what it always was — a discrete
+authority-bearing mutation, therefore an action. `core.space.removeTile { containerId, tileId }`
+→ `{}` carries `containers:write` at the default workspace scope (the route refused
+container-scoped callers by hand) and is `cleanup: true`, for `core.terminals.kill`'s reason:
+closing a tile and killing from the sidebar are the same write, so a disable may not reach one
+and leave the other. The route's two statuses are now `refused` denials carrying its own
+sentences — `not_found: tile not found`, `conflict: tile is not removable` — which is the
+`core.space.place` move again: a refusal is data, so every outcome answers 200. What did not
+change: removal is still NOT a placement (nothing accepts "nowhere" for a leaf), a terminal's
+last leaf still reaps the terminal, and a composition emptied BY a departure still retires
+while an empty root stays put. The commit announces `tile_removed` on the container that held
+the leaf — `item_placed`'s mirror.
+
 **Terminal administration (`core.terminals`).** `PATCH /api/terminals/:id`,
 `DELETE /api/terminals/:id`, `GET /api/terminals` and `GET /api/container-terminals` are deleted,
 with no
@@ -703,8 +718,8 @@ through `ctx.outsideScope`.
 
 **Index and container administration (`core.index`).** `GET`/`POST /api/pads`,
 `GET`/`PATCH`/`DELETE /api/pads/:id`, `GET`/`PUT /api/pad-tree` and the three `/api/pad-folders`
-routes are deleted; `DELETE /api/containers/:id/tiles/:tileId` survives as leaf removal, which is
-not a
+routes are deleted, and so is `DELETE /api/containers/:id/tiles/:tileId` — leaf removal is
+`core.space.removeTile` (§Leaf removal above), which is not a
 placement. The doors, with the routes' own request schemas as their inputs:
 
 | Action                       | Caps             | Scope     | Args → Result                              |
@@ -1172,8 +1187,8 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   sit on leaves only, a `sections` arrangement sits on a panel leaf and names each section at
   most once, and a container never tiles itself; unreachable tiles are inert garbage
   the next structural write prunes. Ratio drags are CRDT writes (`setTileRatios` through the
-  SDK); every STRUCTURAL mutation goes through a door — the action `core.space.place` and the one
-  leaf-removal route — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
+  SDK); every STRUCTURAL mutation goes through a door — the actions `core.space.place` and
+  `core.space.removeTile` — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
 - **Portal elements.** A canvas record `{ type:"portal", containerId, ...geometry }` renders
   another container in place. This is also how a TERMINAL appears on a canvas: the portal
   points at the composition the terminal lives in, so one element kind covers both. Nesting
