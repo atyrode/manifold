@@ -102,13 +102,15 @@ set empties — a file moves into its plugin, or a pillar states the litmus find
         "packages/server/src/session-ws.ts",
         "packages/server/src/event-hub.ts",
         "packages/server/src/machine-ws.ts",
+        "packages/server/src/instance-ws.ts",
+        "packages/server/src/instance-dialer.ts",
         "packages/server/src/terminal-broker.ts",
         "packages/server/src/agent-spawn.ts",
         "packages/server/src/log.ts",
         "packages/agent/src/**"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, the PTY broker's attach state machine and no-gap invariant, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — the transport moves bytes and stops knowing why.",
+      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — the transport moves bytes and stops knowing why.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -248,6 +250,14 @@ enforcement machinery itself, not a test of somebody else's subject.
     {
       "glob": "packages/server/src/machine-ws.ts",
       "why": "machine transport: agent enrolment, version negotiation, liveness"
+    },
+    {
+      "glob": "packages/server/src/instance-ws.ts",
+      "why": "instance transport, host half: share authentication, origin binding, version negotiation, liveness, the ticket hop"
+    },
+    {
+      "glob": "packages/server/src/instance-dialer.ts",
+      "why": "instance transport, guest half: the dial rows this instance holds, their outbound sockets, and the door that turns one into a per-principal ticket"
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
@@ -441,6 +451,19 @@ compositions, terminals and presence conversions absorb, and wave C deletes the 
 together rather than re-annotating either. Integration verifies that the list has emptied before the
 gate run, so "awaiting" is a sentence in a `why` that a human reads during review — not a machine
 licence, and not a state a gate can be taught to tolerate.
+
+## Decisions awaiting ratification
+
+Dated ADRs that are written, complete and **not yet ratified**. The ratified wave order is
+`AXIOMS.md` §Roadmap and stays there — this is not a second copy of it, and a row here changes
+nothing about what is law. It answers one question the roadmap cannot: which proposed record is
+currently waiting on the operator, and what a yes to it would oblige. A record leaves this table
+by having its `Status:` line changed in the same commit that acts on it.
+
+| ADR                                                                   | Status                | What it gates                                                                                                     | Why it is here                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`0015-social-layer.md`](docs/decisions/0015-social-layer.md)         | awaiting-ratification | the Social-layer roadmap row: whether `core.social` exists at all, and whether Matrix stays its leading candidate | It proposes rejecting Matrix, XMPP and ActivityPub as the substrate and dissolving the seat, which contradicts `AXIOMS.md` §Roadmap as written — so ratifying it obliges an amendment there in the same act. Its §Ratification asks are the questions.              |
+| [`0016-plugin-isolation.md`](docs/decisions/0016-plugin-isolation.md) | awaiting-ratification | the marketplace wave, hard-ordered behind it by `AXIOMS.md` §Roadmap                                              | It ratifies a runner (process per isolated plugin on the server, worker in the browser), reverses the synchronous `PluginStorage` ruling, and adds a pillar-or-pillar-row decision to §Pillar inventory. Nothing about distribution may land before it is answered. |
 
 ## Disable semantics (D4′)
 
@@ -955,6 +978,48 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "machine",
       "means": "one enrolled host running an agent daemon that owns PTYs",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "instance",
+      "means": "one manifold server and its data: an addressing space with exactly one origin, and the unit a share crosses between",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "origin",
+      "means": "which instance something belongs to, as one normalized absolute http(s) base URL; absent on a principal means this instance",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "share",
+      "means": "a token bound to a node and minted for a named guest origin: the cross-instance form of a grant, revocable and never expiring",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "dial",
+      "means": "a long-lived outbound pipe from a process to an instance, and the guest-side row for one accepted share: the machine channel and the instance channel are both dials",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "host",
+      "means": "the instance a shared node lives at: it mints the share, answers the dial and owns the room the projection joins",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "guest",
+      "means": "the instance a share was minted for: it holds the secret, dials the host and asks for tickets on behalf of its own principals",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "ticket",
+      "means": "the per-principal token a host mints under a share, carrying the guest's origin: an ordinary attenuated token, never a second credential kind",
       "banned": [],
       "allow": []
     },
@@ -1650,6 +1715,11 @@ asserts is the same defect as an undeclared door, one register further in.
       "longTaskMaxMs": 120,
       "socketFramesPerMin": 120,
       "why": "an open canvas with a live terminal, at rest. The ceilings are near-zero on purpose: content-compared shared feeds mean an unchanged answer reaches no subscriber, so a STEADY workspace should re-render nobody at all (measured: 0 commits, 195ms of script and 0 socket frames per 30s). The socket-frame ceiling is headroom for keepalive and nothing else — an `event` frame at idle means something is emitting without a commit point behind it, which is the wave-2 shape of the same defect the re-render ceiling catches. Anything that puts a number here has found a new heartbeat"
+    },
+    "instanceChannel": {
+      "framesPerMinPerDial": 4,
+      "requestsPerMin": 0,
+      "why": "ONE dialled instance, at rest. A dial is not idle chatter and the number says exactly how much it is: the host pings on DIAL_PING_INTERVAL_MS (30s) and the guest answers, which is two frames per interval, so two intervals a minute is 4 frames per dial per minute and NOTHING else — no catalogue poll, no share refresh, no keepalive of its own. `requestsPerMin` is 0 because the control link asks the host no HTTP questions at all: a share's vocabulary arrives on the welcome and is cached in the dial row, so a guest drawing an index row while the socket is down reads its own database. The ceiling is per DIAL rather than per instance because dials are the thing an operator adds, and a budget that did not scale with the countable thing would stop being a budget the first time somebody accepted a second share. This row is DECLARED rather than measured by `verify:budgets`, which boots one server and one browser and therefore cannot see a second instance; declaring it anyway is the undeclared-resource rule applying to its own author — a resource with no row is a resource that escaped the budget, and the honest thing when the stopwatch cannot reach is to write the number down where the next person can check it against the code"
     }
   }
 }

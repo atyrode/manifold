@@ -1,7 +1,12 @@
 import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { elementPayloadGuard, workspaceLayout } from "@manifold/plugin";
-import { defaultRuntime, type RuntimeDeps } from "@manifold/protocol";
+import {
+  defaultRuntime,
+  INSTANCE_CHANNEL_PATH,
+  normalizeInstanceOrigin,
+  type RuntimeDeps,
+} from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
 import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
@@ -9,6 +14,8 @@ import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
 import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
+import { InstanceDialer } from "./instance-dialer.ts";
+import { InstanceGateway } from "./instance-ws.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
 import { assemblyElementTraits, assemblyItemNouns, PlaceExecutor } from "./placement.ts";
@@ -20,7 +27,7 @@ import { ServerStore } from "./stores.ts";
 import { TerminalBroker } from "./terminal-broker.ts";
 
 interface WebSocketData {
-  endpoint: "session" | "machine";
+  endpoint: "session" | "machine" | "instance";
   id: string;
 }
 
@@ -106,6 +113,21 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime,
   );
   /*
+    THE INSTANCE CHANNEL, both ends. The host gateway sits beside the machine gateway for
+    the same reason it looks like it (ADR 0014): a remote process dialing in with a token,
+    version-negotiated, liveness-pinged, superseded on re-dial. The guest dialer is its
+    mirror and is STARTED last, after the socket is bound, because a dial re-opened at boot
+    is outbound traffic and an instance that dials before it can answer is a partner nobody
+    can call back.
+
+    Both are constructed here rather than inside the host because the assembly consults
+    NEITHER: a share is authority, and authority is the identity mechanism's, not a
+    plugin's. What the assembly gets is the door binding, further down.
+  */
+  const selfOrigin = (): string => normalizeInstanceOrigin(config.publicUrl) ?? config.publicUrl;
+  const instances = new InstanceGateway(auth, store, timers, logger, runtime.newId(), selfOrigin);
+  const dialer = new InstanceDialer(store, runtime, logger, selfOrigin);
+  /*
     THE EVENT PLANE, before the host and after everything it reads from — the same thunk
     treatment the placement executor gets above, and for the same reason: the hub validates an
     emission against the ASSEMBLY and the host that owns the assembly needs the hub, so the
@@ -139,6 +161,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     broker,
     placement,
     machines,
+    dialer,
     runtime,
     logger,
     events,
@@ -153,13 +176,15 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   */
   rooms.setElementPayloadGuard(elementPayloadGuard(() => plugins.assembly()));
   /*
-    The two floor doors that announce on the plane, installed rather than constructed for the
-    reason directly above: the broker and the rooms are both upstream of the assembly the hub
-    reads. Until these lines run, each writes its durable `events` row itself and fans nothing
-    out — the correct behaviour during boot, since nobody can be subscribed yet.
+    The three floor doors that announce on the plane, installed rather than constructed for
+    the reason directly above: the broker, the rooms and the dialer are all upstream of the
+    assembly the hub reads. Until these lines run, each writes its durable `events` row
+    itself and fans nothing out — the correct behaviour during boot, since nobody can be
+    subscribed yet.
    */
   broker.setEvents(events);
   rooms.setEvents(events);
+  dialer.setEvents(events);
   const sessions = new SessionGateway(
     auth,
     rooms,
@@ -198,6 +223,10 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
       let endpoint: WebSocketData["endpoint"] | null = null;
       if (pathname === "/ws/session") endpoint = "session";
       if (pathname === "/ws/machine") endpoint = "machine";
+      // The literal comes from the protocol, not from here: the endpoint is a join between
+      // the server that serves it and the SDK that dials it, and the foundation law prefers
+      // a join the compiler can see to two string literals in two packages.
+      if (pathname === INSTANCE_CHANNEL_PATH) endpoint = "instance";
       if (endpoint !== null) {
         const upgraded = bunServer.upgrade(request, {
           data: { endpoint, id: runtime.newId() },
@@ -209,28 +238,22 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     websocket: {
       open(socket) {
         const transport = new BunSocket(socket);
-        if (socket.data.endpoint === "session") {
-          sessions.open(socket.data.id, transport);
-        } else {
-          machines.open(socket.data.id, transport);
-        }
+        if (socket.data.endpoint === "session") sessions.open(socket.data.id, transport);
+        else if (socket.data.endpoint === "machine") machines.open(socket.data.id, transport);
+        else instances.open(socket.data.id, transport);
       },
       message(socket, message) {
-        if (socket.data.endpoint === "session") {
-          sessions.message(socket.data.id, message);
-        } else {
-          machines.message(socket.data.id, message);
-        }
+        if (socket.data.endpoint === "session") sessions.message(socket.data.id, message);
+        else if (socket.data.endpoint === "machine") machines.message(socket.data.id, message);
+        else instances.message(socket.data.id, message);
       },
       drain(socket) {
         if (socket.data.endpoint === "session") sessions.drain(socket.data.id);
       },
       close(socket) {
-        if (socket.data.endpoint === "session") {
-          sessions.close(socket.data.id);
-        } else {
-          machines.close(socket.data.id);
-        }
+        if (socket.data.endpoint === "session") sessions.close(socket.data.id);
+        else if (socket.data.endpoint === "machine") machines.close(socket.data.id);
+        else instances.close(socket.data.id);
       },
       maxPayloadLength: SESSION_TRANSPORT_PAYLOAD_BYTES,
       idleTimeout: 120,
@@ -243,6 +266,13 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
 
   finalizePublicUrl(config, boundPort);
   const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger);
+  /*
+    Dials resume AFTER the socket is bound and the public URL is final, and both halves of
+    that ordering are load-bearing: a dial declares this instance's origin in its hello, so
+    it cannot run before `finalizePublicUrl`, and a partner that answers a welcome may want
+    to reach back, so it should not run before this process can be reached.
+  */
+  dialer.start();
   if (options.announce !== false) {
     // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
     // dev/test only) so the owner key never enters persisted log streams;
@@ -261,6 +291,8 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
       rooms.flushAll();
       sessions.shutdown();
       machines.shutdown();
+      instances.shutdown();
+      dialer.shutdown();
       await server.stop(true);
       localAgent?.release();
       store.close();

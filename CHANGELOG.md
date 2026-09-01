@@ -13,6 +13,8 @@
 - One action door for mutations: `POST /api/actions/:name` with a published, machine-readable vocabulary (`GET /api/protocol`, `GET /api/plugins`) and named refusals — terminal rename/kill are the first occupants, and all future mutations land here. (#69, #70)
 - Sidebar sections (Machines, Index, Plugins), freehand drawing, and vantage — the tool in hand, what someone is editing, whether their sidebar is open — are core plugins; a stranger's agent can author its own against `docs/PLUGINS.md`. (#69, #70)
 - `manifold://` addresses for everything — terminals, containers, elements, tiles, principals, plugins, actions — with a `GET /api/resolve` door and `/uri/…` deep links that navigate the app. (#69, #70)
+- Manifold instances now share with each other: mint a share naming any container, hand its token to another instance, and their people open it live through your instance's own doors — same canvas, same terminals, same presence, revocable in one action that severs live viewers. (#74, #75)
+- Remote collaborators carry their home instance as visible identity data (`origin`) — one pipeline renders everyone; nothing anywhere branches on where a principal lives. (#74, #75)
 - Observable vantage: collaborators' active tool shows beside their name, and a consent-guarded spotlight action can center a peer's canvas on any address — with a dismissible chip and an ignore switch. (#69, #70)
 - Purging a disabled plugin's data is now a two-press affordance in the Plugins section, showing what the plugin declared it stores and reporting exactly what was removed. (#69, #70)
 - An audit door: `core.events.list` exposes the server's lifecycle event log to owners through the same action vocabulary as everything else. (#69, #70)

@@ -50,9 +50,9 @@ export const WORKSPACE_PANELS: WorkspacePanels = {
  * roster, and the machine registry owns liveness — but none of the three may name a plugin,
  * because a floor file naming a favorite plugin is the neutrality criterion of
  * `AXIOMS.md` §Foundation law failing in the one layer that must be replaceable wholesale.
- * So each of them emits by CONCEPT (`"terminals"`, `"attendance"`, `"machines"`) and this
- * table is where the concept meets a name. Swap `core.terminals` for a stranger's terminals
- * plugin and this line is the whole diff.
+ * So each of them emits by CONCEPT (`"terminals"`, `"attendance"`, `"machines"`, `"shares"`)
+ * and this table is where the concept meets a name. Swap `core.terminals` for a stranger's
+ * terminals plugin and this line is the whole diff.
  *
  * Each id must DECLARE the kinds its concept's door emits, or the hub refuses the emission by
  * name — which is the D5 collision refusal's other half: a vocabulary nobody claimed is as
@@ -62,6 +62,13 @@ export const FLOOR_EVENT_OWNERS: FloorEventOwners = {
   terminals: terminalsManifest.id,
   attendance: presenceManifest.id,
   machines: machinesManifest.id,
+  /*
+    `core.access` owns the cross-instance words because it owns the doors that create and
+    destroy the relationship — mintShare, revokeShare, dialShare, openDial. The dialer
+    announces a socket coming up or going down, which no action commits, but the vocabulary
+    for what a share IS belongs to the plugin a principal administers shares through.
+  */
+  shares: accessManifest.id,
 };
 
 /**

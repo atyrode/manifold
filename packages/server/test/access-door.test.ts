@@ -356,3 +356,244 @@ describe("core.access ladder", () => {
     fix.store.close();
   });
 });
+
+/**
+ * THE SHARE DOORS, on the same ladder and against the same assembly (ADR 0014).
+ *
+ * A share is a token bound to a node, so what has to be pinned is that it is TREATED as one:
+ * the caps rung is `mint`'s, the attenuation refusals are `mintToken`'s words, the scope rung
+ * admits a container-scoped minter to its own container and no further, and the secret it
+ * produces is subject to invariant 6 like every other. The two GUEST doors are the exception
+ * that proves the rule — they are `scope: "workspace"` because a dial names a node at another
+ * instance, which no local container scope can describe.
+ */
+describe("core.access share ladder", () => {
+  const GUEST_ORIGIN = "http://guest.localhost:7778";
+
+  function containerNode(containerId: string) {
+    return { kind: "container" as const, containerId };
+  }
+
+  test("a container-scoped minter may share its own container and no other", async () => {
+    const fix = fixture();
+    const home = accessContainer(fix);
+    const elsewhere = accessContainer(fix);
+    const scoped = context(fix, ["tokens:mint", "containers:read"], home);
+
+    const own = await fix.host.dispatch(scoped, "core.access.mintShare", {
+      node: containerNode(home),
+      caps: ["containers:read"],
+      origin: GUEST_ORIGIN,
+    });
+    const trespass = await fix.host.dispatch(scoped, "core.access.mintShare", {
+      node: containerNode(elsewhere),
+      caps: ["containers:read"],
+      origin: GUEST_ORIGIN,
+    });
+
+    /*
+      `scope: "container"` is a preservation, not a widening: the agent confined to one
+      container is exactly the principal that should be able to show that container to somebody
+      — and the containment check that keeps it honest runs in the mechanism, on the real
+      caller, in the words `mint` already uses.
+    */
+    expect(result(own)).toMatchObject({
+      share: { ref: containerNode(home), caps: ["containers:read"], origin: GUEST_ORIGIN },
+    });
+    expect(denial(trespass)).toEqual({ rule: "refused", message: "cannot widen container scope" });
+    fix.store.close();
+  });
+
+  test("minting a share is `tokens:mint`, and it attenuates in the mechanism's words", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const bystander = context(fix, ["containers:read"]);
+    const minter = context(fix, ["tokens:mint", "containers:read"]);
+
+    const unauthorized = await fix.host.dispatch(bystander, "core.access.mintShare", {
+      node: containerNode(container),
+      caps: ["containers:read"],
+      origin: GUEST_ORIGIN,
+    });
+    const tooWide = await fix.host.dispatch(minter, "core.access.mintShare", {
+      node: containerNode(container),
+      caps: ["scenes:write"],
+      origin: GUEST_ORIGIN,
+    });
+
+    // No new capability was invented for sharing: handing authority to another instance is
+    // handing authority out, and a share whose caps exceed the minter's is the same refusal a
+    // token's would be. A second cap here would have been a second answer to "who may delegate".
+    expect(denial(unauthorized)).toEqual({
+      rule: "forbidden",
+      message: "tokens:mint capability required",
+    });
+    expect(denial(tooWide)).toEqual({
+      rule: "refused",
+      message: "cannot mint capability scenes:write",
+    });
+    fix.store.close();
+  });
+
+  test("only a container can be shared, and a bad origin is refused rather than normalized", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+
+    const terminal = await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+      node: { kind: "terminal", terminalId: "t1" },
+      caps: ["containers:read"],
+      origin: GUEST_ORIGIN,
+    });
+    const pathMounted = await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+      node: containerNode(container),
+      caps: ["containers:read"],
+      origin: "http://guest.localhost:7778/workspace",
+    });
+
+    /*
+      The node rule is the door's: a grant a token cannot express must not be answered
+      "minted". The origin rule is the schema's, and it refuses rather than trimming to the
+      host — sharing to `example.com/manifold` by silently addressing `example.com` would hand
+      a node to a DIFFERENT instance than the one the minter named.
+    */
+    expect(denial(terminal)).toEqual({
+      rule: "refused",
+      message: "only a container can be shared",
+    });
+    expect(denial(pathMounted).rule).toBe("invalid_args");
+    fix.store.close();
+  });
+
+  test("the guest doors are workspace-grade, because a dial is not in any local container", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const scoped = context(fix, ["containers:read", "containers:write"], container);
+
+    const dialed = await fix.host.dispatch(scoped, "core.access.dialShare", {
+      origin: GUEST_ORIGIN,
+      token: "someone-elses-secret",
+    });
+    const opened = await fix.host.dispatch(scoped, "core.access.openDial", { dialId: "d1" });
+
+    // Not a policy choice — a forced one. A container-scoped token is scoped to a LOCAL
+    // container id, and the node a dial names lives at another instance entirely, so admitting
+    // the caller would be admitting it to something its scope cannot describe.
+    for (const outcome of [dialed, opened]) {
+      expect(denial(outcome)).toEqual({
+        rule: "forbidden",
+        message: "scoped tokens cannot invoke workspace actions",
+      });
+    }
+    fix.store.close();
+  });
+
+  test("opening a dial reads containers; accepting one writes them", async () => {
+    const fix = fixture();
+    const reader = context(fix, ["containers:read"]);
+
+    const acceptedByReader = await fix.host.dispatch(reader, "core.access.dialShare", {
+      origin: GUEST_ORIGIN,
+      token: "someone-elses-secret",
+    });
+    const openedByReader = await fix.host.dispatch(reader, "core.access.openDial", {
+      dialId: "no-such-dial",
+    });
+
+    /*
+      Accepting a share changes what this workspace SHOWS, which is `containers:write`; using
+      one is a read. The reader therefore gets past the caps rung on `openDial` and meets a real
+      refusal from the dialer instead — the shape that matters is that the two doors sit on
+      different rungs, not the wording of a missing row.
+    */
+    expect(denial(acceptedByReader)).toEqual({
+      rule: "forbidden",
+      message: "containers:write capability required",
+    });
+    expect(denial(openedByReader).rule).toBe("refused");
+    fix.store.close();
+  });
+
+  test("disabling the plugin stops sharing and dialling, but never revocation", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const minted = result(
+      await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+        node: containerNode(container),
+        caps: ["containers:read"],
+        origin: GUEST_ORIGIN,
+      }),
+    );
+    const shareId = Reflect.get(Reflect.get(minted as object, "share") as object, "id");
+    if (typeof shareId !== "string") throw new Error("no share id");
+    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({ ok: true });
+
+    const blocked = await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+      node: containerNode(container),
+      caps: ["containers:read"],
+      origin: GUEST_ORIGIN,
+    });
+    const listed = await fix.host.dispatch(fix.owner, "core.access.listShares", {});
+    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeShare", { shareId });
+
+    /*
+      D12 with the sharpest possible subject: the holder of a share secret is ANOTHER INSTANCE,
+      beyond this workspace's reach entirely. If a disable suspended `revokeShare`, an
+      administrative toggle would keep a foreign instance projecting a node whose owner had
+      already decided to cut the pipe — A4's "when an owner cuts the pipe, the projection dies
+      everywhere", defeated by a checkbox.
+    */
+    expect(denial(blocked).rule).toBe("plugin_disabled");
+    expect(denial(listed).rule).toBe("plugin_disabled");
+    expect(result(revoked)).toEqual({ revoked: 0 });
+    fix.store.close();
+  });
+
+  test("the inventory publishes the share and never its secret", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const minted = result(
+      await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+        node: containerNode(container),
+        caps: ["containers:read"],
+        origin: GUEST_ORIGIN,
+      }),
+    );
+    const token = Reflect.get(minted as object, "token");
+    if (typeof token !== "string" || token.length === 0) throw new Error("no share secret");
+
+    const inventory = result(await fix.host.dispatch(fix.owner, "core.access.listShares", {}));
+
+    // One door, both directions, and the secrets discipline enforced by the SHAPE: `Share` has
+    // no field a secret fits in, so a list door cannot leak one even by accident.
+    expect(inventory).toMatchObject({ dials: [] });
+    expect(JSON.stringify(inventory)).not.toContain(token);
+    expect((Reflect.get(inventory as object, "shares") as unknown[]).length).toBe(1);
+    fix.store.close();
+  });
+
+  test("a dispatch that mints a SHARE secret records no secret", async () => {
+    const recorded: string[] = [];
+    const capture = (evt: string, fields?: Readonly<Record<string, unknown>>): void => {
+      recorded.push(JSON.stringify({ evt, ...(fields ?? {}) }));
+    };
+    const fix = fixture({ info: capture, warn: capture, error: capture });
+    const container = accessContainer(fix);
+
+    const minted = result(
+      await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+        node: containerNode(container),
+        caps: ["containers:read"],
+        origin: GUEST_ORIGIN,
+      }),
+    );
+    const token = Reflect.get(minted as object, "token");
+    if (typeof token !== "string" || token.length === 0) throw new Error("no share secret");
+
+    const log = recorded.join("\n");
+    // The one credential in this wave that travels to another organization's machine, checked
+    // rather than assumed: the dispatch is logged by name, and the secret is nowhere in it.
+    expect(log).toContain("core.access.mintShare");
+    expect(log).not.toContain(token);
+    fix.store.close();
+  });
+});

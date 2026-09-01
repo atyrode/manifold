@@ -376,7 +376,7 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(11);
+      expect(SCHEMA_VERSION).toBe(12);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.
@@ -713,10 +713,12 @@ describe("migration 11: the lexicon cut", () => {
       const seeded = seedPreV11(path);
       const db = openDatabase(path);
 
+      // Migration 11 is a step, not the top of the stack (see migration 9's case): opening a
+      // pre-v11 database runs every later migration too.
       expect(
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
-      ).toBe("11");
+      ).toBe(String(SCHEMA_VERSION));
 
       // A one-way move that rewrites the authority column takes its pre-migration image first.
       expect(existsSync(`${path}.pre-v11.bak`)).toBeTrue();
@@ -1082,7 +1084,7 @@ describe("pre-migration snapshot retention", () => {
       expect(
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
-      ).toBe("11");
+      ).toBe(String(SCHEMA_VERSION));
       db.close();
 
       // Still one image for version 11, not two: a retried version replaces its predecessor

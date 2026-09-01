@@ -21,9 +21,13 @@ import type {
   ActionOutcome,
   BootstrapPrincipalRequest,
   Cap,
+  Dial,
+  DialShareRequest,
+  DialTicket,
   EventKind,
   EventPayload,
   ManifoldRef,
+  MintShareRequest,
   MintTokenRequest,
   PluginLifecycleState,
   PluginPurgeResult,
@@ -31,11 +35,14 @@ import type {
   PluginRoster,
   Principal,
   RuntimeDeps,
+  Share,
+  ShareGrant,
   TokenGrant,
 } from "@manifold/protocol";
 import { ServiceError } from "./auth.ts";
 import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
 import type { EventHub } from "./event-hub.ts";
+import type { InstanceDialer } from "./instance-dialer.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
@@ -90,12 +97,60 @@ export interface IdentityDoor {
   enrollMachine(name: string): IdentityResult<MachineEnrollment>;
   /** Re-mints an enrolled machine's secret, revoking the previous one. */
   rotateMachineToken(machine: MachineRecord): IdentityResult<MachineEnrollment>;
+  /**
+   * Mints a share: a token bound to a node, for a named guest instance. Same ladder as
+   * `mintToken` — a share IS a token (A5), so it is attenuated by the same rules and
+   * refused with the same words.
+   */
+  mintShare(input: MintShareRequest): IdentityResult<ShareGrant>;
+  /** Cuts a share and every guest identity minted under it; answers how many were severed. */
+  revokeShare(shareId: string): IdentityResult<number>;
+  /** Every share the caller is entitled to see. Never a secret, only its record. */
+  listShares(): IdentityResult<readonly Share[]>;
+}
+
+/**
+ * The GUEST end, which is deliberately NOT part of {@link IdentityDoor}.
+ *
+ * A dial is not the identity mechanism: nothing here mints, hashes or compares a secret
+ * this instance issued. It is a store of grants somebody ELSE issued plus an outbound
+ * network client, and folding it into the identity door would say the opposite — that this
+ * instance is the authority over a share its host owns. Two surfaces, because there are two
+ * authorities, and the whole of wave 3 is about not confusing them.
+ *
+ * Both mutating calls are async because both are round trips to another machine, and a door
+ * that pretended otherwise would answer before it knew anything.
+ */
+export interface DialDoor {
+  /** Accepts a share and holds open until the host welcomes it, or refuses with why not. */
+  dial(input: DialShareRequest): Promise<IdentityResult<Dial>>;
+  /** THIS instance deciding a local principal may use a grant addressed to the instance. */
+  open(dialId: string): Promise<IdentityResult<DialTicket>>;
+  /** Every dial this instance holds, live status included. */
+  list(): IdentityResult<readonly Dial[]>;
 }
 
 /** Runs one mechanism call, turning its expected refusal into data and nothing else. */
 function identityCall<T>(run: () => T): IdentityResult<T> {
   try {
     return { ok: true, value: run() };
+  } catch (error) {
+    if (error instanceof ServiceError) {
+      return { ok: false, code: error.code, message: error.message };
+    }
+    throw error;
+  }
+}
+
+/**
+ * The same, for a mechanism call that crosses the network. It exists rather than being
+ * folded into {@link identityCall} with a union return because a caller must know at the
+ * type level whether it is awaiting: "sometimes a promise" is the shape that produces a
+ * handler quietly returning an unresolved value as a result.
+ */
+async function identityCallAsync<T>(run: () => Promise<T>): Promise<IdentityResult<T>> {
+  try {
+    return { ok: true, value: await run() };
   } catch (error) {
     if (error instanceof ServiceError) {
       return { ok: false, code: error.code, message: error.message };
@@ -220,6 +275,12 @@ export interface ActionCtx {
    * second question.
    */
   readonly identity: IdentityDoor;
+  /**
+   * The GUEST end of cross-instance sharing: the dials this instance holds and the door
+   * that turns one into a ticket for the calling principal. Separate from `identity`
+   * because a dial is somebody else's grant — see {@link DialDoor}.
+   */
+  readonly dials: DialDoor;
   /**
    * This plugin's OWN durable storage: namespaced, versioned, migration-ledgered. It is the
    * only place a plugin may keep data of its own — the bespoke tables floor code still owns
@@ -354,6 +415,7 @@ export class PluginHost {
     private readonly broker: TerminalBroker,
     private readonly placement: PlaceExecutor,
     private readonly machines: MachineLiveness,
+    private readonly dialer: InstanceDialer,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
     private readonly events: EventHub,
@@ -852,6 +914,20 @@ export class PluginHost {
         enrollMachine: (name) => identityCall(() => this.authService.enrollMachine(name, auth)),
         rotateMachineToken: (machine) =>
           identityCall(() => this.authService.rotateMachineToken(machine, auth.principal.id)),
+        mintShare: (input) => identityCall(() => this.authService.mintShare(input, auth)),
+        revokeShare: (shareId) => identityCall(() => this.authService.revokeShare(shareId, auth)),
+        listShares: () => identityCall(() => this.authService.listShares(auth)),
+      },
+      /*
+        The guest door is bound to the CALLING PRINCIPAL the same way the identity door is,
+        and that binding is what makes `openDial` this instance's own decision rather than a
+        credential hand-off: the ticket the host mints stands for whoever asked here, and a
+        plugin cannot choose somebody else to ask as.
+      */
+      dials: {
+        dial: (input) => identityCallAsync(() => this.dialer.dial(input)),
+        open: (dialId) => identityCallAsync(() => this.dialer.open(dialId, auth.principal)),
+        list: () => identityCall(() => this.dialer.list()),
       },
       storage: this.storage(pluginId),
       now: () => this.runtime.now(),

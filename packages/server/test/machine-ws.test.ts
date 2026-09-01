@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  MACHINE_PING_INTERVAL_MS,
+  DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
@@ -449,7 +449,7 @@ describe("machine liveness heartbeat", () => {
     const value = fixture("1".repeat(64));
 
     for (let round = 0; round < 3; round++) {
-      value.clock.advance(MACHINE_PING_INTERVAL_MS);
+      value.clock.advance(DIAL_PING_INTERVAL_MS);
       const pings = machineMessages(value.socket).filter((m) => m.type === "ping");
       expect(pings).toHaveLength(round + 1);
       value.gateway.message("connection", JSON.stringify({ type: "pong" }));
@@ -464,9 +464,9 @@ describe("machine liveness heartbeat", () => {
   test("an unanswered ping closes the socket within two intervals", () => {
     const value = fixture("2".repeat(64));
 
-    value.clock.advance(MACHINE_PING_INTERVAL_MS); // ping sent
+    value.clock.advance(DIAL_PING_INTERVAL_MS); // ping sent
     expect(value.socket.closed).toBeNull();
-    value.clock.advance(MACHINE_PING_INTERVAL_MS); // still unanswered -> close
+    value.clock.advance(DIAL_PING_INTERVAL_MS); // still unanswered -> close
 
     expect(value.socket.closed?.code).toBe(4008);
     expect(value.socket.closed?.reason).toBe("liveness timeout");

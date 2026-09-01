@@ -156,11 +156,20 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   puts a stopwatch on the claim. The wave-1 roster frame may later be re-expressed as an
   always-on subscription over the mechanism it itself pioneered; the frame shape is unchanged
   either way.
-- **Wave 3 — cross-instance sharing** (A4, riding wave 2's pipes). Instance dialing that
-  generalizes the machine channel, share minting bound to subtree grants, principal `origin` in
-  the schema. Wave 1 reserves the structural room: SDK pool channels are conceptually keyed by
-  `(origin, containerId)` with origin fixed to the current instance, and CONTRACTS carries the
-  principal-origin note.
+- **Wave 3 — cross-instance sharing** (A4, ADR 0014, #74). Landed: protocol v18 and the
+  **instance channel** (`/ws/instance`), a guest instance dialing OUT to a host with a share
+  token under the machine channel's own discipline — version-negotiated against its own
+  acceptance set, hello-carried resume, one liveness scheme shared with the machine channel
+  (`DIAL_PING_INTERVAL_MS`); **shares** minted and revoked through `core.access` as tokens bound
+  to a node and addressed to a named guest origin, hashed at rest and carrying no expiry because
+  revocation is the mechanism; and `Principal.origin` as an additive-optional datum whose
+  absence means this instance. The projection is deliberately NOT new machinery: a guest's lens
+  dials the HOST's existing session channel with a per-principal ticket — an ordinary attenuated
+  token — so a remote viewer is another participant in the same room, fenced by the same
+  revocation fanout, and there is no relay, no second sync path and no second renderer. Wave 1's
+  reserved room was exactly right: the SDK pool keys connections by (factory, url, token), which
+  IS the `(origin, containerId)` keying, so pointing a lens at a second instance needed no
+  re-keying and no new client (§The portable lens).
 - **Later waves, each gated on its own dated ADR:**
   - **Permission waterfall implementation** (ADR 0011): the evaluator, the `grants` table, and
     the one call-surface swap in `auth.ts`. Its dependency duty (evaluate `casbin` and `CASL`

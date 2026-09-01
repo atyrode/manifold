@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { InstanceOriginSchema } from "./origin.ts";
 
 /** One identity model for humans and agents — presence, ownership, terminals, audit. */
 export const PrincipalSchema = z.strictObject({
@@ -9,6 +10,20 @@ export const PrincipalSchema = z.strictObject({
     .string()
     .regex(/^#[0-9a-f]{6}$/i)
     .describe("stable presence color, assigned at principal creation"),
+  /**
+   * WHICH INSTANCE this principal belongs to, and ABSENT means this one (ADR 0014 §4).
+   *
+   * Optional rather than nullable so that "local" has exactly one representation: every
+   * pre-v18 payload parses unchanged, and a reader that never meets a remote peer sees the
+   * field it always saw. It rides the principal and nowhere else — attendance carries it
+   * because an attendance row IS a principal — because a fact stored twice is a fact that
+   * disagrees with itself.
+   *
+   * Invariant 11 across instances: this is DATA. Nothing downstream of arbitration may branch
+   * on it; rendering it beside a peer's name and color is presentation of a datum, not a
+   * branch, and a second "remote flavor" of any shared behavior is a defect.
+   */
+  origin: InstanceOriginSchema.optional(),
 });
 export type Principal = z.infer<typeof PrincipalSchema>;
 

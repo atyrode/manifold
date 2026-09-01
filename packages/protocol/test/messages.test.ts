@@ -744,26 +744,32 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v17 ADDS to the acceptance set, because the agent wire did not move", () => {
+  test("v18 ADDS to the acceptance set, because the agent wire still did not move", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
       `hello.sessions` became `hello.terminals` — so a v15 agent could neither be understood
       nor understand this server, and the upgrade was a coordinated fleet restart.
 
-      v16 -> v17 is the event plane, and it is the other case. Three connection-level SESSION
-      frames arrive (`subscribe`, `unsubscribe`, `event`); `AgentMessage` and
-      `ServerToAgentMessage` gained, lost and renamed nothing, and an agent sees neither a
-      session frame nor a manifest. So the invariant's first clause applies verbatim — a bump
-      that leaves the agent wire identical ADDS — and a v16 agent keeps its terminals across
-      this deploy instead of being locked out by a version check for a change it cannot see.
+      v16 -> v17 (the event plane) and v17 -> v18 (cross-instance sharing) are both the other
+      case. v18 adds an OPTIONAL `Principal.origin` to the session wire and a whole new WIRE
+      beside the machine one (the instance channel), and it renamed the shared liveness
+      constants; `AgentMessage` and `ServerToAgentMessage` gained, lost and renamed nothing,
+      an agent never sees a principal, and a renamed constant changes two identifiers and zero
+      bytes. So the invariant's first clause applies verbatim — a bump that leaves the agent
+      wire identical ADDS — and a v16 agent keeps its terminals across this deploy instead of
+      being locked out by a version check for a change it cannot see.
 
       Both halves are asserted: the running version must be accepted (or every agent is
-      refused), and the PREDECESSOR must still be accepted (or this is a reset wearing an
-      additive bump's clothes, and somebody owes the fleet a restart).
+      refused), and every version since the last reset must STILL be accepted (or this is a
+      reset wearing an additive bump's clothes, and somebody owes the fleet a restart).
     */
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
-    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([PROTOCOL_VERSION - 1, PROTOCOL_VERSION]);
+    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 2,
+      PROTOCOL_VERSION - 1,
+      PROTOCOL_VERSION,
+    ]);
   });
 });

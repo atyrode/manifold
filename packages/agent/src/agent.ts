@@ -1,5 +1,5 @@
 import {
-  AGENT_LIVENESS_TIMEOUT_MS,
+  DIAL_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
@@ -153,7 +153,7 @@ export class Agent {
     this.baseMs = opts.backoff?.baseMs ?? 500;
     this.capMs = opts.backoff?.capMs ?? 15_000;
     this.shellCommand = opts.shellCommand;
-    this.livenessTimeoutMs = opts.livenessTimeoutMs ?? AGENT_LIVENESS_TIMEOUT_MS;
+    this.livenessTimeoutMs = opts.livenessTimeoutMs ?? DIAL_LIVENESS_TIMEOUT_MS;
     this.shutdownGraceMs = opts.shutdownGraceMs ?? SHUTDOWN_GRACE_MS;
     this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
   }

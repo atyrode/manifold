@@ -14,6 +14,7 @@ import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { EventHub } from "../src/event-hub.ts";
+import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import {
   PlaceExecutor,
@@ -26,6 +27,9 @@ import type { RoomManager, RoomTimers } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
 import type { TerminalBroker } from "../src/terminal-broker.ts";
+
+/** What a test instance calls itself. Fixed, because no test dials a second process. */
+const TEST_ORIGIN = "http://localhost:7777";
 
 /**
  * The retired verbs, expressed over `place()`.
@@ -317,6 +321,12 @@ export function testPluginHost(
      * fixture that never mentions events still exercises the production emission path.
      */
     readonly events?: EventHub;
+    /**
+     * The guest end of cross-instance sharing. A real one by default over the same store,
+     * because it dials nothing until a row exists and a fixture that stubbed it would let
+     * the `core.access` dial doors pass here and refuse in the server.
+     */
+    readonly dialer?: InstanceDialer;
   } = {},
 ): PluginHost {
   /*
@@ -356,6 +366,8 @@ export function testPluginHost(
     broker,
     placement,
     options.machines ?? { isOnline: () => false },
+    options.dialer ??
+      new InstanceDialer(store, runtime, options.logger ?? silentLogger, () => TEST_ORIGIN),
     runtime,
     options.logger ?? silentLogger,
     events,
