@@ -27,6 +27,7 @@ const INITIAL: Vantage = {
   focusedContainerId: null,
   sidebarCollapsed: false,
   arranging: false,
+  arrangeScope: null,
 };
 
 /** The same value the toolbar re-asserts, written as a full patch rather than a partial. */
@@ -36,6 +37,7 @@ const INITIAL_TOOL_PATCH: Partial<Vantage> = {
   focusedContainerId: null,
   sidebarCollapsed: false,
   arranging: false,
+  arrangeScope: null,
 };
 
 /**
@@ -110,18 +112,40 @@ describe("view state store", () => {
     // entered by F8 is on the wire for the same reason a held tool is.
     toggleArranging();
     expect(notifications).toBe(5);
+    // Zooming into one panel's own arrangement is a sixth facet, and it publishes like the
+    // rest: a collaborator who cannot see WHICH arrangement is live cannot tell why the rows
+    // of one pane suddenly answer the pointer and nothing else does.
+    setVantage({ arrangeScope: "core.shell.sidebar" });
+    expect(notifications).toBe(6);
     expect(currentVantage()).toEqual({
       tool: "text",
       editingElementId: "el-1",
       focusedContainerId: "container-1",
       sidebarCollapsed: true,
       arranging: true,
+      arrangeScope: "core.shell.sidebar",
     });
-    // And it is a TOGGLE: the second press leaves, publishing that too.
-    toggleArranging();
+    // Re-asserting the same scope is not news, exactly as re-asserting a tool is not.
+    setVantage({ arrangeScope: "core.shell.sidebar" });
     expect(notifications).toBe(6);
+    // And F8 is the whole-mode key in both directions: the second press leaves, and it leaves
+    // from wherever the reader was standing rather than stranding a scope behind it.
+    toggleArranging();
+    expect(notifications).toBe(7);
     expect(currentVantage().arranging).toBe(false);
+    expect(currentVantage().arrangeScope).toBeNull();
     stop();
+  });
+
+  test("F8 arms at the ROOT scope, never inside a stale one", () => {
+    // Arming is "arrange the workspace". A ref left over from a previous session of the mode
+    // would drop the reader straight into somebody's inner arrangement with no gesture that
+    // asked for it — so the toggle clears the scope on the way in as well as on the way out.
+    setVantage({ arranging: true, arrangeScope: "core.shell.sidebar" });
+    toggleArranging();
+    expect(currentVantage()).toEqual({ ...INITIAL, arranging: false, arrangeScope: null });
+    toggleArranging();
+    expect(currentVantage()).toEqual({ ...INITIAL, arranging: true, arrangeScope: null });
   });
 
   test("unsubscribing is final, and one subscriber leaving does not silence the rest", () => {

@@ -42,8 +42,19 @@ export const shellManifest: PluginManifest = {
   capabilities: [],
   essential: true,
   contributes: {
+    /*
+      THE SIDEBAR DECLARES ITS INNER ARRANGEMENT. Its rows reorder inside it, which is a
+      SECOND arrangement nested in the workspace's own — and the floor may not know that, so
+      the panel says it here and names it. Arrange mode reads the declaration off the roster,
+      offers a zoom-in control on this panel's pill labelled with that name, and publishes the
+      scope it enters as `vantage.arrangeScope`; the rows themselves are still entirely this
+      package's business (`sidebar-panel.tsx`).
+
+      The container view declares nothing: what it shows is a container's own composition,
+      which already arranges by its own dividers and drags, not by a second mode.
+    */
     panels: [
-      { id: "sidebar", title: "Sidebar" },
+      { id: "sidebar", title: "Sidebar", arranges: { title: "Sidebar rows" } },
       { id: "container-view", title: "Container View" },
     ],
     /*

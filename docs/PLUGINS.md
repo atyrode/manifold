@@ -116,7 +116,8 @@ export const manifest: PluginManifest = {
   dormant: { mode: "ghost", label: "Drawing (plugin disabled)" }, // how your stuff looks while you are off
   purges: ["storage", "elements", "ownership"], // audit visibility: what a purge would destroy
   contributes: {
-    panels: [], // { id, title }        — a workspace tile leaf
+    panels: [], // { id, title, arranges? } — a workspace tile leaf. `arranges: { title }` says
+    //            your panel contains an arrangement of its OWN and names it (below).
     seats: [], // { panel, order, ratio? } — OPTIONAL, and absent means you seat nothing.
     //            Where one of YOUR panels asks to sit in a workspace nobody has arranged:
     //            the engine composes that default from every enabled plugin's seats, in
@@ -152,6 +153,17 @@ Rules worth knowing before you write one:
   and therefore globally unique on their own: element `type`, and event `id`, which is
   `snake_case` (`^[a-z][a-z0-9_]*$`, max 48) because the audit log has spelled its kinds that way
   since before the plane existed and one concept gets one spelling.
+- **`panels[].arranges` declares an inner arrangement**, and it is the whole of what the floor
+  learns about it. Arrange mode (F8) is SCOPED: at the root the reader moves the workspace's
+  panels; a panel that declares `arranges: { title }` grows a way in on its own name, and
+  stepping through it publishes `vantage.arrangeScope = "<yourPlugin>.<panel>"` — at which point
+  nothing else in the workspace is reachable and your panel's parts are. The engine renders the
+  control, labels it with your title, prints the crumb `Workspace › <title>`, and knows nothing
+  else: WHAT is in there, how it reorders and where it commits stay yours. Read the scope with
+  `useVantage()` and compare it against your own panel ref (`panelRefId(manifest.id, "panel")`)
+  — that comparison is how your parts decide whether they are reachable, and it is the only
+  wiring the mode needs from you. Absent ≡ nothing to arrange inside, which is every panel that
+  never says otherwise. `core.shell.sidebar` declares `{ title: "Sidebar rows" }`.
 - **`capabilities` is a ceiling, not a request.** Every action's declared caps must be a subset
   of it; a violation refuses composition. It exists so a reader can see a plugin's maximum
   authority without reading its actions. **The permission waterfall (ADR 0011) did not change

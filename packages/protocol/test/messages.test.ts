@@ -11,6 +11,7 @@ import {
   MAX_SESSION_BASE64_CHARS,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
+  PresencePayloadSchema,
   ContainerSchema,
   ROOT_TILE_ID,
   ServerMessageSchema,
@@ -291,6 +292,39 @@ describe("session channel schemas", () => {
     expect(
       ClientMessageSchema.safeParse({ type: "cursor", ch: "c1", connId: "spoof", x: 12, y: 34 })
         .success,
+    ).toBe(false);
+  });
+
+  test("the vantage carries WHICH arrangement is live, and absence still means the root", () => {
+    /*
+      Arrange mode is scoped: the workspace arranges its panels, and a panel that declared an
+      inner arrangement arranges its own parts. Which one is live is published for exactly the
+      reason the mode itself is — a collaborator watching panes stop answering the pointer is
+      owed the whole sentence, not half of it.
+    */
+    const scoped = PresencePayloadSchema.parse({
+      vantage: { arranging: true, arrangeScope: "core.shell.sidebar" },
+    });
+    expect(scoped.vantage).toEqual({ arranging: true, arrangeScope: "core.shell.sidebar" });
+
+    // ABSENT PARSES ABSENT. A frame written before the field existed says "arranging, at the
+    // root", which is precisely what it meant then — the additive-optional rule, pinned.
+    const rootByOmission = PresencePayloadSchema.parse({ vantage: { arranging: true } });
+    expect(rootByOmission.vantage).toEqual({ arranging: true });
+    expect(rootByOmission.vantage?.arrangeScope).toBeUndefined();
+
+    // And `null` CLEARS it, which is how every nullable facet of a partial update returns to
+    // its default: zooming back out to the workspace is one frame, not a re-send of the mode.
+    expect(
+      PresencePayloadSchema.parse({ vantage: { arranging: true, arrangeScope: null } }).vantage
+        ?.arrangeScope,
+    ).toBeNull();
+
+    // It is a panel REF, bounded exactly as a `panel` tile leaf's is: the same string, so the
+    // scope resolves against the assembly rather than against a second address space.
+    expect(PresencePayloadSchema.safeParse({ vantage: { arrangeScope: "" } }).success).toBe(false);
+    expect(
+      PresencePayloadSchema.safeParse({ vantage: { arrangeScope: "x".repeat(97) } }).success,
     ).toBe(false);
   });
 

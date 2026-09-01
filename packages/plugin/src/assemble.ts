@@ -74,6 +74,14 @@ export interface AssemblyPanel {
   /** Owning plugin id. */
   readonly plugin: string;
   readonly title: string;
+  /**
+   * What this panel calls the arrangement it holds INSIDE itself, when it declared one
+   * (`PanelDefSchema.arranges`). Undefined ≡ nothing to arrange in there — the answer for
+   * every panel that never said otherwise. Carried through rather than re-read from the
+   * manifest so a reader resolving a `panel` ref learns everything about that panel in one
+   * lookup, exactly as it learns the title.
+   */
+  readonly arranges?: { readonly title: string } | undefined;
 }
 
 export interface AssemblySection {
@@ -484,7 +492,7 @@ export function assembleRoster(
     for (const panel of manifest.contributes.panels) {
       const id = panelRefId(manifest.id, panel.id);
       claim(panelIds, id, manifest.id);
-      panels.set(id, { plugin: manifest.id, title: panel.title });
+      panels.set(id, { plugin: manifest.id, title: panel.title, arranges: panel.arranges });
     }
     /*
       SEAT LEGALITY. Composition does not BUILD the default tree — `composeDefaultLayout` does

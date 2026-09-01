@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   Ellipsis,
   Eye,
   Folder,
@@ -191,6 +192,13 @@ export type ControlKind =
   | "restart"
   | "terminalTree"
   | "grip"
+  /**
+   * GO INTO the arrangement this thing holds. Arrange mode is scoped — the workspace arranges
+   * its panels, and a panel that declared an inner arrangement arranges its own parts — and
+   * this is the control that steps one level down into the second. Named for the move, not
+   * for the picture: the way back up is the bar's own breadcrumb, which needs words.
+   */
+  | "scopeIn"
   /** The keys this workspace answers to, as a table a reader can open. */
   | "bindings"
   /**
@@ -222,6 +230,7 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   restart: RotateCw,
   terminalTree: ListTree,
   grip: GripVertical,
+  scopeIn: CornerDownRight,
   bindings: Keyboard,
   swap: ArrowLeftRight,
 };

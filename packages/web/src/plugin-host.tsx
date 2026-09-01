@@ -135,6 +135,14 @@ export interface WebPluginDef {
 export interface WebPanel {
   readonly plugin: string;
   readonly title: string;
+  /**
+   * What this panel calls the arrangement it holds INSIDE itself, when its manifest declared
+   * one (`PanelDefSchema.arranges`). Undefined ≡ nothing in there to arrange. This is the
+   * ONLY thing the floor knows about an inner arrangement: arrange mode offers a zoom-in
+   * control for panels that carry it, labelled with this title, and learns nothing else — a
+   * floor that enumerated arrangeable panels would be a floor naming plugins.
+   */
+  readonly arranges?: { readonly title: string } | undefined;
   /** Null when the plugin declared the panel but registered no component. */
   readonly Component: ComponentType<PanelProps> | null;
   readonly enabled: boolean;
@@ -245,6 +253,7 @@ export function buildBrowserAssembly(
       panels.set(`${manifest.id}.${panel.id}`, {
         plugin: manifest.id,
         title: panel.title,
+        arranges: panel.arranges,
         Component: def?.panels?.[panel.id] ?? null,
         enabled,
       });

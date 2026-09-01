@@ -43,6 +43,39 @@ import {
  */
 
 /**
+ * WHAT SCOPE A PUBLISHED REF MEANS, resolved rather than trusted.
+ *
+ * `vantage.arrangeScope` carries a panel ref and nothing else — absent is the root, where the
+ * workspace's own panels are what a gesture reaches. A ref is a live scope only while the
+ * composition still says that panel holds an arrangement: a plugin can be disabled, or its
+ * panel dropped from the tree, while a reader is standing inside it. An unresolvable ref
+ * therefore reads as the ROOT rather than as a workspace with nothing to reach and no way to
+ * say why.
+ *
+ * Pure, and keyed by the declared TITLE, because the title is the whole of what the floor may
+ * learn about somebody else's arrangement: it is the crumb the chrome prints and the word the
+ * way-in control is labelled with, and there is deliberately nothing else to resolve.
+ */
+export interface ArrangeScope {
+  /** The panel whose own parts are reachable, or null for the workspace's panels. */
+  readonly panelId: string | null;
+  /** What that panel calls its arrangement; null at the root. */
+  readonly title: string | null;
+}
+
+export const ROOT_ARRANGE_SCOPE: ArrangeScope = { panelId: null, title: null };
+
+export function resolveArrangeScope(
+  panels: ReadonlyMap<string, { readonly arranges?: { readonly title: string } | undefined }>,
+  ref: string | null,
+): ArrangeScope {
+  if (ref === null) return ROOT_ARRANGE_SCOPE;
+  const title = panels.get(ref)?.arranges?.title;
+  if (title === undefined) return ROOT_ARRANGE_SCOPE;
+  return { panelId: ref, title };
+}
+
+/**
  * The refusal classes this policy can answer with. A class, never a sentence, for the same
  * reason a placement denial is one (ADR 0013 §2): a caller switches on the class and reads
  * the prose only to show it.

@@ -1,6 +1,7 @@
 import {
   arrangedSectionIds,
   movedSectionIds,
+  panelRefId,
   type ComposedSection,
   type PanelProps,
   type SectionProps,
@@ -23,6 +24,15 @@ import {
   useVantage,
 } from "@manifold/plugin/ui";
 import { railRows } from "./rail-rows.ts";
+import { shellManifest } from "./index.ts";
+
+/**
+ * THIS PANEL'S OWN REF, spelled the one way a full panel id is ever spelled. The manifest is
+ * this package's, so naming its own panel is a plugin naming itself and nothing else — the
+ * floor still knows no sidebar. It is what the published arrange scope is compared against:
+ * `vantage.arrangeScope` carries a panel ref, and this is the ref that means "in here".
+ */
+const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
 
 /**
  * The `core.shell.sidebar` panel — and there is nothing in it but the rail's own layout.
@@ -59,9 +69,9 @@ import { railRows } from "./rail-rows.ts";
  * Two contexts reach this file, both published by the floor workspace host above the tree,
  * both declared in `@manifold/plugin` because their two ends may not import each other:
  * `useWorkspaceShell` for the facts that are genuinely the HOST's (rail width, this
- * principal's stored arrangement) and `useVantage` for the arrange mode F8 arms. Contributed
- * rows read the same shell context for the rail's width and the creation doors; a section
- * that needs neither never touches it.
+ * principal's stored arrangement) and `useVantage` for the arrange mode F8 arms and the SCOPE
+ * it is standing in. Contributed rows read the same shell context for the rail's width and the
+ * creation doors; a section that needs neither never touches it.
  *
  * Everything INSIDE a row is somebody else's plugin: each row's body is reached by
  * {@link SectionOutlet}, which resolves the id to whatever the composition registered and
@@ -105,8 +115,8 @@ interface RowGestures {
 }
 
 /**
- * THE GRAB SURFACE — the one thing arrange mode makes grabbable, worn by every row whatever
- * its presentation.
+ * THE GRAB SURFACE — how a row is taken hold of, worn by every row whatever its presentation,
+ * and present only while THIS panel is the arrangement arrange mode is standing in.
  *
  * It covers the WHOLE row rather than a corner handle, because the mode's promise is that the
  * row IS the thing you are holding — and covering it is also what stops a disclosure from
@@ -305,7 +315,19 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   */
   const { commitSectionOrder, registerSidebarElement, sectionOrder, setSidebarOpen, sidebarOpen } =
     useWorkspaceShell();
-  const { arranging } = useVantage();
+  /**
+   * ARRANGING THIS PANEL'S ROWS is not the same thing as arrange mode being armed. The mode
+   * is one; the arrangement it is standing in is `vantage.arrangeScope`, and these rows are
+   * grabbable only when that scope IS this panel — the reader zoomed in on the control the
+   * workspace draws on this panel's name.
+   *
+   * Read off presence rather than handed down as a prop, exactly as the mode itself always
+   * was: the scope is published, so the panel decides what it offers by comparing a ref it
+   * owns against a value every collaborator can also read (invariant 11). Nothing here holds
+   * a second copy of "am I the live arrangement".
+   */
+  const { arranging, arrangeScope } = useVantage();
+  const scopedIn = arranging && arrangeScope === SIDEBAR_PANEL;
   /*
    * Per-section disclosure is in-memory only. The sidebar's four private storage keys are gone
    * with the rest of its device-only state (D13): a row's ORDER now comes from its manifest,
@@ -336,17 +358,18 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     setGrab(next);
   };
 
-  // Leaving the mode mid-grab drops what was in hand: the release is the commit, so a
-  // gesture that never released must not survive as a pending arrangement. The STATE resets
-  // during render (React's derived-state guidance — an effect would paint one stale frame
-  // first); the REF resets in an effect, because a ref is for event handlers, and the next
-  // pointer frame after leaving the mode must read "nothing in hand".
-  if (!arranging && grab !== null) {
+  // Leaving the arrangement mid-grab drops what was in hand — whether the mode ended or the
+  // reader merely zoomed back out to the workspace: the release is the commit, so a gesture
+  // that never released must not survive as a pending arrangement. The STATE resets during
+  // render (React's derived-state guidance — an effect would paint one stale frame first);
+  // the REF resets in an effect, because a ref is for event handlers, and the next pointer
+  // frame after leaving must read "nothing in hand".
+  if (!scopedIn && grab !== null) {
     setGrab(null);
   }
   useEffect(() => {
-    if (!arranging) grabRef.current = null;
-  }, [arranging]);
+    if (!scopedIn) grabRef.current = null;
+  }, [scopedIn]);
 
   /**
    * WHAT ORDER THE STACK IS IN. Manifest order is the default; this principal's stored
@@ -438,11 +461,12 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   };
 
   /*
-    The rail is one body and has nothing to reorder against, so arranging is offered only
+    The rail is one body and has nothing to reorder against, so the rows are offered only
     while the sidebar is open. The MODE stays on either way — the workspace is still armed,
-    the panes still say so.
+    the panes still say so — and so does the SCOPE: zooming out is the reader's move, never a
+    consequence of collapsing the rail.
   */
-  const arrangingRows = arranging && sidebarOpen;
+  const arrangingRows = scopedIn && sidebarOpen;
 
   return (
     <aside className="sidebar" aria-label="Sidebar" ref={registerSidebarElement}>

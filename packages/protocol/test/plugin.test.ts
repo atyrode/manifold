@@ -17,6 +17,7 @@ import {
   PLUGIN_REFUSAL_REASONS,
   PLUGIN_RESIDUAL_MECHANISMS,
   PLUGIN_SOURCES,
+  PanelDefSchema,
   PluginManifestSchema,
   PluginPurgeResultSchema,
   PluginRosterEntrySchema,
@@ -466,6 +467,55 @@ describe("the panel tile ref", () => {
 });
 
 /**
+ * ARRANGING IS SCOPED, AND THE SCOPES ARE PUBLISHED BY THE PLUGINS THAT HOLD THEM.
+ *
+ * The workspace's arrange mode makes panels grabbable inside the tree. A panel that stacks
+ * parts of its own can offer a second arrangement to step into — and the engine may not know
+ * which panels those are, because knowing would mean the floor holding a list of favourite
+ * plugins. So the panel DECLARES it, here, in the same inert manifest that declares the panel.
+ */
+describe("a panel that arranges something inside itself", () => {
+  test("the declaration is the panel's own word for what is in there", () => {
+    const parsed = PluginManifestSchema.parse(
+      manifest({
+        contributes: {
+          panels: [{ id: "sidebar", title: "Sidebar", arranges: { title: "Sidebar rows" } }],
+          sections: [],
+          elements: [],
+          tools: [],
+          events: [],
+        },
+      }),
+    );
+    expect(parsed.contributes.panels[0]?.arranges).toEqual({ title: "Sidebar rows" });
+  });
+
+  test("ABSENT means the panel arranges nothing, which is every panel written before it", () => {
+    // Additive-optional, and the whole point of the field: a v18 manifest parses unchanged
+    // and reproduces exactly the pre-change semantics — no inner arrangement, no way in.
+    const parsed = PanelDefSchema.parse({ id: "container-view", title: "Container View" });
+    expect(parsed).toEqual({ id: "container-view", title: "Container View" });
+    expect(parsed.arranges).toBeUndefined();
+  });
+
+  test("the declaration is a NAME and nothing else, so it can never smuggle behaviour", () => {
+    // A title is all the floor may learn: what the arrangement contains, how it reorders and
+    // where it commits stay the panel's. A shape carrying more would be the manifest telling
+    // the engine how to draw somebody else's rows.
+    expect(
+      PanelDefSchema.safeParse({ id: "sidebar", title: "Sidebar", arranges: {} }).success,
+    ).toBe(false);
+    expect(
+      PanelDefSchema.safeParse({
+        id: "sidebar",
+        title: "Sidebar",
+        arranges: { title: "Sidebar rows", sections: ["index"] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+/**
  * THE BEHAVIORAL CONTRACT, ON THE WIRE.
  *
  * A plugin owns what happens to it and to its creations when it is composed, ordered,
@@ -805,6 +855,28 @@ describe("the published plugin vocabulary", () => {
       properties: { contributes: { properties: Record<string, unknown> } };
     };
     expect(Object.keys(manifestSchema.properties.contributes.properties)).toContain("seats");
+  });
+
+  test("a panel's inner arrangement is PUBLISHED, and adding it required nothing new", () => {
+    /*
+      A stranger writing a panel plugin learns from `GET /api/protocol` that a panel may say
+      what it arranges inside itself — and an agent driving the mode learns the same shape
+      from the same place. It rides the manifest schema rather than a new vocabulary key: one
+      door onto "what a manifest may declare".
+    */
+    const manifestSchema = pluginVocabulary()["manifest"] as {
+      properties: {
+        contributes: { properties: { panels: { items: Record<string, unknown> } } };
+      };
+    };
+    const panel = manifestSchema.properties.contributes.properties.panels.items as {
+      properties: Record<string, unknown>;
+      required: readonly string[];
+    };
+    expect(Object.keys(panel.properties).sort()).toEqual(["arranges", "id", "title"]);
+    // ADDITIVE-OPTIONAL, pinned where a reader would notice: the required set is exactly what
+    // it was before the field existed, so no manifest anywhere becomes invalid.
+    expect([...panel.required].sort()).toEqual(["id", "title"]);
   });
 
   test("the vocabulary describes SHAPES; the composition names inhabitants", () => {

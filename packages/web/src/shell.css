@@ -82,10 +82,18 @@
  * yet. Dividers are deliberately NOT suppressed: resizing IS arranging, and the seam already
  * commits through the layout door this mode's own releases use.
  *
- * THE GRABBABLE THINGS RE-ENABLE THEMSELVES, and they are the only live targets in an inert
- * workspace: a panel's grip over each pane, a section's grip inside the sidebar's stack. The
- * host becomes a positioning ancestor for the pane's grip only while the mode lasts, so
- * nothing about any renderer's containing blocks changes when nobody is arranging.
+ * THE MODE'S OWN AFFORDANCES RE-ENABLE THEMSELVES out of that blanket, one rule per thing the
+ * mode puts on screen: today a panel's grip over each pane, the control on its pill that steps
+ * into the panel's own arrangement, and a section's grip inside the sidebar's stack. The list
+ * grows with the mode; what does not change is that an affordance is live because it says so
+ * here, not because the suppression missed it. The host becomes a positioning ancestor for the
+ * pane's own chrome only while the mode lasts, so nothing about any renderer's containing
+ * blocks changes when nobody is arranging.
+ *
+ * NOTHING MOVES WHEN THE MODE ARMS. Every affordance the mode adds is out of flow — the grip
+ * and the pill are absolute, the bar is absolute, the mode's only in-flow effect would be a
+ * box that changed a size. There is deliberately none: a reader who presses F8 to look at
+ * their arrangement must not have the arrangement rearrange itself under them first.
  */
 .workspace.is-arranging .tile-content-host {
   position: relative;
@@ -93,7 +101,8 @@
 }
 
 .workspace.is-arranging .sidebar-section-grip,
-.workspace-panel-grip {
+.workspace-panel-grip,
+.workspace-panel-scope {
   pointer-events: auto;
 }
 
@@ -107,12 +116,8 @@
   position: absolute;
   z-index: 26;
   inset: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
   border: 0;
-  padding: 0.5rem;
-  color: #adb5bd;
+  padding: 0;
   background: rgb(76 110 245 / 8%);
   font: inherit;
   cursor: grab;
@@ -121,7 +126,6 @@
 
 .workspace-panel-grip:hover,
 .workspace-panel-grip:focus-visible {
-  color: #edf2ff;
   background: rgb(76 110 245 / 18%);
 }
 
@@ -131,14 +135,52 @@
   cursor: grabbing;
 }
 
-.workspace-panel-grip-label {
+/*
+ * THE PANEL'S NAME, and the way into whatever it arranges inside itself. A SIBLING of the
+ * grab surface rather than its content, because a button may not contain a button: the pill
+ * floats one layer above the grip and takes no pointer input of its own, so every pixel of
+ * the pane still grabs the panel except the one control that does something else.
+ */
+.workspace-panel-pill {
+  position: absolute;
+  z-index: 27;
+  top: 0.5rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
   border: 1px solid #4c6ef5;
   border-radius: 0.4rem;
-  padding: 0.15rem 0.5rem;
+  padding: 0.15rem 0.35rem 0.15rem 0.5rem;
+  color: #edf2ff;
   background: #1f232b;
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.02em;
+  transform: translateX(-50%);
+}
+
+.workspace-panel-pill-label {
+  white-space: nowrap;
+}
+
+/* One step DOWN a scope: this panel's own parts become the grabbable things. */
+.workspace-panel-scope {
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 0.25rem;
+  padding: 0.1rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workspace-panel-scope:hover,
+.workspace-panel-scope:focus-visible {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 35%);
 }
 
 /*
@@ -169,7 +211,11 @@
   background: rgb(247 103 7 / 16%);
 }
 
-/* Floating, centred, above every pane: the mode's own chrome belongs to no pane. */
+/*
+ * Floating, centred, above every pane: the mode's own chrome belongs to no pane — and it is
+ * OUT OF FLOW, which is load-bearing rather than decorative. Arming the mode must not move a
+ * single box, so the one thing the mode adds to the frame is positioned over it.
+ */
 .workspace-arrange-bar {
   position: absolute;
   z-index: 40;
@@ -198,6 +244,45 @@
 .workspace-arrange-hint {
   min-width: 0;
   color: #adb5bd;
+}
+
+/*
+ * THE TRAIL. Arranging is scoped — the workspace arranges its panels, a panel that declared
+ * one arranges its own parts — so the bar says which arrangement is live, and the crumb it
+ * starts with is the way back up. A breadcrumb rather than a "back" glyph because the reader
+ * needs the name of where they are as much as the way out of it, and the root's name is the
+ * button.
+ */
+.workspace-arrange-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.workspace-arrange-up {
+  border: 1px solid #3b4252;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workspace-arrange-up:hover,
+.workspace-arrange-up:focus-visible {
+  border-color: #4c6ef5;
+  color: #edf2ff;
+}
+
+.workspace-arrange-crumb-sep {
+  color: #6c757d;
+}
+
+.workspace-arrange-crumb {
+  color: #edf2ff;
+  font-weight: 600;
 }
 
 /*
@@ -344,12 +429,6 @@
   display: none;
 }
 
-/* Every seat is grabbable while the mode is armed, including a row that draws almost nothing:
-   the grip covers the row, and a zero-height row would be a seat nobody can take. */
-.workspace.is-arranging .sidebar-plain {
-  min-height: 1.7rem;
-}
-
 .sidebar-new {
   display: flex;
   min-width: 0;
@@ -489,15 +568,18 @@
 }
 
 /*
- * THE GRAB SURFACE — the one thing arrange mode makes grabbable, worn by every row whatever
- * its presentation.
+ * THE GRAB SURFACE — how a row is taken hold of inside the sidebar's own arrangement, worn by
+ * every row whatever its presentation.
  *
- * It exists only while the mode is armed (the panel renders it conditionally) and covers the
- * WHOLE row, which does two jobs with one box: it says the row itself is the thing in hand,
- * and it keeps the pointer off whatever is underneath — a disclosure's toggle, a creator's
- * button — so a grab can never fire the affordance it is moving. It re-enables its own pointer
- * events out of the mode's blanket suppression (see §ARRANGE MODE) — the one live target in an
- * inert workspace.
+ * It exists only while the reader is standing INSIDE this panel's arrangement (the panel
+ * renders it from `vantage.arrangeScope`) and covers the WHOLE row, which does two jobs with
+ * one box: it says the row itself is the thing in hand, and it keeps the pointer off whatever
+ * is underneath — a disclosure's toggle, a creator's button — so a grab can never fire the
+ * affordance it is moving. It re-enables its own pointer events out of the mode's blanket
+ * suppression (see §ARRANGE MODE), the way every affordance the mode paints does.
+ *
+ * There is no z-order fight with the panel grip any more, and no z-order arbitration either:
+ * one scope is live at a time, so while these exist the panel's own grip does not.
  *
  * The positioning ancestor is the ROW, granted only while the mode is on, so nothing about the
  * stack's stacking or containing blocks changes when nobody is arranging.
@@ -505,6 +587,11 @@
  * On a plain row the grip is a real `<button>` (a plain row has no header button to carry the
  * tab stop), so the rule resets border, font and background the way `.workspace-panel-grip`
  * does for the panel leg's grip.
+ *
+ * `min-height` is the grabbable FLOOR for a row that draws almost nothing (`core.shell.status`
+ * with no container mounted): a zero-height row would be a seat nobody can take. It sits on
+ * the grip, which is out of flow, rather than on the row — a floor on the row would reflow the
+ * stack the moment the arrangement opened.
  */
 .workspace.is-arranging .sidebar-section,
 .workspace.is-arranging .sidebar-plain {
@@ -516,6 +603,7 @@
   z-index: 25;
   inset: 0;
   display: flex;
+  min-height: 1.7rem;
   align-items: flex-start;
   justify-content: center;
   border: 0;

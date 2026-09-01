@@ -36,15 +36,27 @@ export const PresencePayloadSchema = z.strictObject({
   /**
    * VANTAGE, published: where this principal is standing and what it holds — which tool,
    * what it is editing, which container has its focus, whether its sidebar is collapsed,
-   * and whether it is ARRANGING (F8: the workspace stops being interactive and its panels
-   * and sections become grabbable). This is the multiplayer axiom applied to the last
-   * private corner of the client — a chrome state only one browser tab could see is a
-   * capability no other principal can observe or drive, so it rides presence like
-   * everything else that dies with the connection.
+   * and whether it is ARRANGING (F8: the workspace stops being interactive and the parts of
+   * ONE arrangement become grabbable) and which arrangement that is. This is the multiplayer
+   * axiom applied to the last private corner of the client — a chrome state only one browser
+   * tab could see is a capability no other principal can observe or drive, so it rides
+   * presence like everything else that dies with the connection.
    *
    * `arranging` is here for the same reason `sidebarCollapsed` is, and it is the reason a
    * mode is legible at all: a collaborator who can see that you are rearranging knows why
    * your terminals stopped taking clicks, and an agent can watch the mode it is driving.
+   *
+   * `arrangeScope` says WHICH ARRANGEMENT is live, because arranging is nested: a workspace
+   * holds panels, and a panel may hold an arrangement of its own. It names the panel ref
+   * whose OWN children are grabbable right now. ABSENT ≡ the root scope, where the grabbable
+   * things are the workspace's panels — which is exactly what every frame written before this
+   * field existed says, so a pre-change producer keeps its pre-change meaning and arming the
+   * mode still needs to publish nothing but `arranging`.
+   *
+   * It is a REF, not a kind: the floor never learns the vocabulary of inner arrangements, and
+   * a panel that offers one declares it in its manifest (`contributes.panels[].arranges`).
+   * Reading a scope therefore means resolving the ref against the assembly, exactly as a
+   * `panel` tile leaf is resolved — one address space, not a second enumeration.
    */
   vantage: z
     .strictObject({
@@ -53,6 +65,8 @@ export const PresencePayloadSchema = z.strictObject({
       focusedContainerId: z.string().min(1).nullish(),
       sidebarCollapsed: z.boolean().optional(),
       arranging: z.boolean().optional(),
+      /** Bounded exactly as a `panel` tile ref is (`TileRefSchema`): it is the same string. */
+      arrangeScope: z.string().min(1).max(96).nullish(),
     })
     .optional(),
   /**

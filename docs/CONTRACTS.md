@@ -1126,15 +1126,25 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 - `presence { payload }` where payload is a partial of
   `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done", vantage: {…} | undefined, spotlight: {…} | null }`.
 - **Vantage is presence** (axiom A2: per-principal view state is observable AND drivable).
-  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging? }` is
-  written by the
+  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging?, arrangeScope? }`
+  is written by the
   CLIENT through the same throttled presence writer as every other field and dies with the
   connection, so a peer can see which tool somebody holds, what they are editing, whether
   their sidebar is open, and whether they are in ARRANGE MODE (F8: the workspace's panes stop
-  taking pointer input, and both its sidebar sections and its panels become grabbable). It is
+  taking pointer input and one arrangement's parts become reachable). It is
   descriptive, never authoritative: nothing downstream branches on whose vantage it renders,
   and every arrangement arrange mode produces — a section order, a moved panel — commits
   through `core.space.setLayout` like any other layout write.
+- **Arranging is SCOPED, and the scope is a panel ref.** `arrangeScope` names the panel whose
+  own parts are reachable right now; ABSENT ≡ the root, where the workspace's panels are. One
+  scope is live at a time. Which panels offer an inner arrangement is PUBLISHED BY THE PLUGIN,
+  never known to the floor: a manifest's `contributes.panels[].arranges { title }` says "this
+  panel contains an arrangement, and this is its name", the workspace draws a way in labelled
+  with that name, and it learns nothing else. Escape pops one scope level and leaves the mode
+  at the root; F8 leaves from anywhere and always arms at the root. Both fields are
+  additive-optional: a frame that carries neither is a client that never arranges, and a frame
+  carrying only `arranging` means "arranging, at the root" — exactly what it meant before the
+  scope existed.
 - **`spotlight { uri, from }` is SERVER-written only.** The server strips `spotlight` from any
   client payload; the sole writer is the action `core.presence.focus { targetPrincipalId, uri }`
   (cap `scenes:write`), which requires that the target shares a joined room with the caller and

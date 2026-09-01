@@ -86,6 +86,31 @@ export const SectionDefSchema = z.strictObject({
 export type SectionDef = z.infer<typeof SectionDefSchema>;
 
 /**
+ * ONE CONTRIBUTED PANEL: a tile-ref leaf, named `${manifest.id}.${id}` in a `panel` ref.
+ *
+ * `arranges` is the panel saying "I CONTAIN AN INNER ARRANGEMENT, AND THIS IS ITS NAME". A
+ * workspace's arrange mode (`vantage.arranging`) makes panels grabbable inside the tree; a
+ * panel that stacks parts of its own — the shell's sidebar and its rows are the first, and
+ * deliberately not the only conceivable one — can offer a SECOND scope to arrange inside,
+ * and the chrome that offers it needs a word for the thing it is about to zoom into.
+ *
+ * The declaration is the whole vocabulary, which is the point: the floor renders a zoom-in
+ * control for panels that declare one and knows nothing else about what is in there — no
+ * enumerated list of arrangeable panels, no "sidebar" anywhere in the engine. What the inner
+ * arrangement CONTAINS, how it reorders and where it commits stay entirely the panel's; this
+ * says only that it exists and what to call it.
+ *
+ * Absent ≡ the panel arranges nothing inside itself, which is what every manifest written
+ * before this field existed says.
+ */
+export const PanelDefSchema = z.strictObject({
+  id: LocalNameSchema,
+  title: TitleSchema,
+  arranges: z.strictObject({ title: TitleSchema }).optional(),
+});
+export type PanelDef = z.infer<typeof PanelDefSchema>;
+
+/**
  * The weight a seat's leaf carries in its split when the manifest declares none. Ratios are
  * RELATIVE: the tile renderer normalizes a split's `ratios` before it paints (flex-grow on a
  * zero basis), so a declaration is a weight against its siblings rather than a promised
@@ -124,17 +149,15 @@ export type SeatDef = z.infer<typeof SeatDefSchema>;
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
  *
- * `panels` are tile-ref leaves (the workspace shell is itself a composition of them), `seats`
+ * `panels` are tile-ref leaves (the workspace shell is itself a composition of them, and one
+ * may declare an inner arrangement of its own — see {@link PanelDefSchema}), `seats`
  * are where those panels ask to sit in a workspace nobody has arranged (see
  * {@link SeatDefSchema}), `sections` are sidebar rows ordered by their declared `order` (see
  * {@link SectionDefSchema}), `elements` are canvas element renderers keyed by wire type,
  * `tools` are toolbar tools.
  */
 const ContributesSchema = z.strictObject({
-  panels: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
-    .max(8)
-    .default([]),
+  panels: z.array(PanelDefSchema).max(8).default([]),
   /**
    * WHERE THIS PLUGIN'S PANELS ASK TO SIT in the default workspace ({@link SeatDefSchema}).
    * Optional rather than defaulted to `[]`: absence is a MEANING here — the plugin seats

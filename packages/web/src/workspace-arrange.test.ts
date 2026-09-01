@@ -4,10 +4,12 @@ import { WORKSPACE_TREE_CLASSES } from "@manifold/plugin/ui";
 import { validateTileLayout, type Tile, type TileLayout } from "@manifold/protocol";
 import {
   PANEL_ARRANGE_RULES,
+  ROOT_ARRANGE_SCOPE,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
   panelsCanMove,
+  resolveArrangeScope,
   type PanelArrangeOutcome,
 } from "./workspace-arrange.ts";
 
@@ -266,5 +268,44 @@ describe("panel arrange: pointer to tree", () => {
 
   test("a panel's own pane aims at nothing: no release there means anything", () => {
     expect(aimFor(base(), "ws-sidebar", 0.1, 0.5)).toBeNull();
+  });
+});
+
+/**
+ * ARRANGING IS SCOPED, and the scope is a published REF: `vantage.arrangeScope` names the
+ * panel whose own parts a gesture reaches, absent for the workspace's panels. These pin the
+ * resolution, because a ref is data on the presence plane and the composition it addresses
+ * changes underneath it.
+ */
+describe("the arrange scope a published ref means", () => {
+  const panels = new Map([
+    [SIDEBAR, { arranges: { title: "Sidebar rows" } }],
+    [MAIN, {}],
+  ]);
+
+  test("absent is the ROOT: the workspace's own panels are what a gesture reaches", () => {
+    expect(resolveArrangeScope(panels, null)).toEqual(ROOT_ARRANGE_SCOPE);
+  });
+
+  test("a ref to a panel that declared an arrangement resolves to its declared name", () => {
+    // The title is the whole of what the floor learns: the crumb it prints and the word the
+    // way-in control is labelled with. Nothing here knows what a "row" is.
+    expect(resolveArrangeScope(panels, SIDEBAR)).toEqual({
+      panelId: SIDEBAR,
+      title: "Sidebar rows",
+    });
+  });
+
+  test("a ref to a panel that arranges NOTHING reads as the root, not as a dead scope", () => {
+    // Otherwise a stale ref would leave a workspace where nothing is reachable and no chrome
+    // can say why — a mode armed over an arrangement that does not exist.
+    expect(resolveArrangeScope(panels, MAIN)).toEqual(ROOT_ARRANGE_SCOPE);
+  });
+
+  test("a ref the composition no longer carries reads as the root too", () => {
+    // A plugin can be disabled, or its panel dropped from the tree, while a reader stands
+    // inside it. The scope is resolved against the LIVE registry on every render for exactly
+    // this reason.
+    expect(resolveArrangeScope(panels, "some.plugin.gone")).toEqual(ROOT_ARRANGE_SCOPE);
   });
 });

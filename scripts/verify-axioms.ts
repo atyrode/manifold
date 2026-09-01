@@ -2690,6 +2690,68 @@ try {
         ? "a second principal still reads the default tree"
         : "one principal's drag moved another's workspace",
     );
+
+    /*
+      ARMING A MODE IS NOT AN EDIT. F8 publishes `vantage.arranging` and the workspace becomes
+      a thing you can rearrange — but nothing has been rearranged yet, and a reader who pressed
+      the key to LOOK at their arrangement must not have it move under them first. Every
+      affordance the mode adds is therefore out of flow, and this is the assertion that keeps
+      it that way: the same boxes, to the pixel, before and during.
+
+      Two rects, one per leg of the tree: a sidebar row (the arrangement the sidebar panel
+      holds inside itself) and the container view's content host (the arrangement the workspace
+      holds). A regression in either — a bar that takes a row of the frame, a grabbable floor
+      applied to a row instead of to its grip — moves one of them.
+    */
+    const boxes = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+          const box = (selector) => {
+            const node = document.querySelector(selector);
+            if (node === null) return null;
+            const rect = node.getBoundingClientRect();
+            return [rect.x, rect.y, rect.width, rect.height].map((n) => Math.round(n * 100) / 100);
+          };
+          return JSON.stringify({
+            row: box('.sidebar-sections > *'),
+            view: box('.workspace-pane:last-child > .tile-content-host'),
+            tree: box('.workspace > [data-tile-id]'),
+          });
+        })()`,
+      );
+    const pressF8 = async (): Promise<void> => {
+      for (const type of ["rawKeyDown", "keyUp"]) {
+        await browser!.send("Input.dispatchKeyEvent", {
+          type,
+          key: "F8",
+          code: "F8",
+          windowsVirtualKeyCode: 119,
+          nativeVirtualKeyCode: 119,
+        });
+      }
+      await sleep(400);
+    };
+    const restBoxes = await boxes();
+    await pressF8();
+    const armed = await browser.evaluate<boolean>(
+      `document.querySelector('.workspace')?.classList.contains('is-arranging') === true`,
+    );
+    const armedBoxes = await boxes();
+    await pressF8();
+    const leftMode = await browser.evaluate<boolean>(
+      `document.querySelector('.workspace')?.classList.contains('is-arranging') === false`,
+    );
+    check(
+      "R4 arming arrange mode moves nothing",
+      armed && leftMode && armedBoxes === restBoxes,
+      !armed
+        ? "F8 did not arm the mode, so the claim was never tested"
+        : !leftMode
+          ? "F8 armed the mode and would not leave it"
+          : armedBoxes === restBoxes
+            ? `sidebar row and container-view content hold their rects across F8: ${restBoxes}`
+            : `arming reflowed the frame — at rest ${restBoxes}, armed ${armedBoxes}`,
+    );
   }
 
   // ─────────────────────────────────────────── R7: every marker names an action

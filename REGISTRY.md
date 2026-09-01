@@ -664,13 +664,19 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "vantage",
-      "means": "one principal's published view state: the tool in hand, the edit target, the focused container, whether the sidebar is open, whether they are arranging",
+      "means": "one principal's published view state: the tool in hand, the edit target, the focused container, whether the sidebar is open, whether they are arranging and which arrangement they are standing in",
       "banned": [],
       "allow": []
     },
     {
       "term": "arrange mode",
-      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder inside the sidebar and panels move inside the workspace tree, by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
+      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and the parts of ONE arrangement become reachable within their parent composition: at the root the workspace's panels move inside its tree, and inside a scoped panel that panel's own parts reorder — by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Arming it moves nothing: every affordance the mode adds is out of flow. Manifest order remains the default; an untouched workspace stores no arrangement",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "arrange scope",
+      "means": "which arrangement arrange mode is standing in, published as `vantage.arrangeScope`: a panel ref whose own parts are reachable, absent for the root (the workspace's panels). One scope at a time; Escape pops one level and F8 leaves from anywhere. Which panels HAVE an inner arrangement is declared by the plugin that owns them (`contributes.panels[].arranges { title }`), never enumerated by the floor",
       "banned": [],
       "allow": []
     },

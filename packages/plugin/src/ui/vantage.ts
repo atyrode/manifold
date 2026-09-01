@@ -31,8 +31,8 @@ export interface Vantage {
   readonly focusedContainerId: string | null;
   readonly sidebarCollapsed: boolean;
   /**
-   * ARRANGE MODE (F8): the workspace's panels and the sidebar's sections are grabbable
-   * within their parent composition and everything else has stopped taking pointer input.
+   * ARRANGE MODE (F8): the parts of ONE arrangement are grabbable within their parent, and
+   * everything else has stopped taking pointer input.
    *
    * A MODE, and published for exactly the reason the rest of this store is: a collaborator
    * watching a principal whose terminals suddenly ignore clicks is owed the reason, and an
@@ -41,6 +41,23 @@ export interface Vantage {
    * authority lives; nothing downstream branches on WHOSE mode it is (invariant 11).
    */
   readonly arranging: boolean;
+  /**
+   * WHICH ARRANGEMENT the mode is standing in, as a panel ref. `null` is the ROOT scope: the
+   * grabbable things are the workspace's own panels. A ref names the panel whose OWN children
+   * are grabbable instead — the one panel that declared an inner arrangement in its manifest
+   * (`contributes.panels[].arranges`) and that the reader zoomed into.
+   *
+   * ONE SCOPE AT A TIME, which is why this is a ref and not a set: an arrangement is a place
+   * you are standing, and two places at once is not a vantage. Every renderer — the floor's
+   * panel grips, a panel's own row grips — decides what it offers by READING this value
+   * against its own ref, so the scope is data on the presence plane and never a flag some
+   * component kept privately (invariant 11).
+   *
+   * It rides here rather than beside `arranging` as a boolean per arrangeable thing because
+   * the floor may not enumerate arrangements: a panel PUBLISHES that it has one, and a scope
+   * is then just its address.
+   */
+  readonly arrangeScope: string | null;
 }
 
 const INITIAL: Vantage = {
@@ -49,6 +66,7 @@ const INITIAL: Vantage = {
   focusedContainerId: null,
   sidebarCollapsed: false,
   arranging: false,
+  arrangeScope: null,
 };
 
 let state: Vantage = INITIAL;
@@ -70,7 +88,8 @@ export function setVantage(patch: Partial<Vantage>): void {
     next.editingElementId === state.editingElementId &&
     next.focusedContainerId === state.focusedContainerId &&
     next.sidebarCollapsed === state.sidebarCollapsed &&
-    next.arranging === state.arranging
+    next.arranging === state.arranging &&
+    next.arrangeScope === state.arrangeScope
   ) {
     return;
   }
@@ -91,9 +110,14 @@ export function subscribeVantage(callback: (view: Vantage) => void): () => void 
  * because the mode has more than one entrance — the F8 binding, the Escape exit, and any
  * affordance a later wave adds — and "read the flag, write its negation" is the kind of
  * two-step that grows a second answer the moment it is written twice (invariant 14).
+ *
+ * F8 IS THE WHOLE-MODE KEY, in both directions: it arms the mode at the ROOT scope and it
+ * leaves from wherever you are standing. So the scope is cleared on every press rather than
+ * only on the way out — arming while a stale ref sat here would drop a reader into somebody
+ * else's inner arrangement (Escape is the key that pops one level; see the workspace host).
  */
 export function toggleArranging(): void {
-  setVantage({ arranging: !state.arranging });
+  setVantage({ arranging: !state.arranging, arrangeScope: null });
 }
 
 /**
