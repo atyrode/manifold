@@ -46,6 +46,7 @@ import {
   ENGINE_SET_ENABLED_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
+  panelRefId,
   type Assembly,
 } from "../packages/plugin/src/index.ts";
 import { INDEX_RESOURCE, type PolledFeedReport } from "../packages/plugin/src/polled-resource.ts";
@@ -2752,6 +2753,218 @@ try {
             ? `sidebar row and container-view content hold their rects across F8: ${restBoxes}`
             : `arming reflowed the frame — at rest ${restBoxes}, armed ${armedBoxes}`,
     );
+
+    /*
+      ARRANGING A ROW IS ONE DECISION PER BOUNDARY, and nothing but a browser can say so.
+
+      Issue #94 was three faults compounding inside one gesture, none of them visible to a
+      unit test: the hit test asked "which box is the pointer in", which has no hysteresis and
+      swaps a row straight back; the live preview ANIMATED, and an animating row reports its
+      transform from `getBoundingClientRect`, so the gesture measured rows in flight; and the
+      reorder re-inserts the grabbed node, which releases its pointer capture, so the drag
+      deadended one row from where it started. The order the operator saw therefore rang and
+      then stopped, and every one of those causes needs a real pointer over a real stack.
+
+      So the assertion is about the PATH, not just the destination: sample the painted order
+      after every frame, and require the sequence of orders to be strictly progressive — an
+      order the stack has already left must never come back. A destination-only check passes
+      on a gesture that flickered its way there, which is exactly the bug.
+    */
+    const railOrder = (): Promise<readonly string[]> =>
+      browser!.evaluate<readonly string[]>(
+        `Array.from(document.querySelectorAll('.sidebar-sections > [data-section-id]'), (row) => row.dataset.sectionId)`,
+      );
+    const railBoxes = (): Promise<readonly { id: string; top: number; bottom: number }[]> =>
+      browser!.evaluate(
+        `Array.from(document.querySelectorAll('.sidebar-sections > [data-section-id]'), (row) => {
+           const box = row.getBoundingClientRect();
+           return { id: row.dataset.sectionId, top: box.top, bottom: box.bottom };
+         })`,
+      );
+    /** One pointer gesture down the rail, collapsed to the orders it actually passed through. */
+    const railDrag = async (x: number, path: readonly number[]): Promise<readonly string[]> => {
+      const start = path[0] ?? 0;
+      const seen: string[] = [(await railOrder()).join(" ")];
+      await browser!.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: start });
+      await browser!.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x,
+        y: start,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      for (const y of path.slice(1)) {
+        await browser!.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x,
+          y,
+          button: "left",
+          buttons: 1,
+        });
+        await sleep(20);
+        const now = (await railOrder()).join(" ");
+        if (seen.at(-1) !== now) seen.push(now);
+      }
+      await browser!.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x,
+        y: path.at(-1) ?? start,
+        button: "left",
+        clickCount: 1,
+      });
+      await sleep(400);
+      return seen;
+    };
+
+    const restore = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
+    /* The scope control is named after the panel that declared an arrangement, not after a
+       word this script knows: the ref is spelled the one way a panel ref is ever spelled. */
+    const sidebarPanel = panelRefId("core.shell", "sidebar");
+    await pressF8();
+    await browser.evaluate(
+      `document.querySelector('.workspace-panel-scope[data-panel-id="${sidebarPanel}"]')?.click()`,
+    );
+    await sleep(400);
+
+    /*
+      GLYPHLESS, and asserted on the live DOM rather than on the source: the row's TINT is the
+      whole affordance now, so a grip that draws anything at all is the regression. The same
+      query proves the grips exist, which is what makes the drag below a test of arranging
+      rather than a test of clicking on nothing.
+    */
+    const grips = await browser.evaluate<{ count: number; drawn: number }>(
+      `(() => {
+         const all = Array.from(document.querySelectorAll('.sidebar-section-grip'));
+         return { count: all.length, drawn: all.filter((g) => g.childElementCount > 0).length };
+       })()`,
+    );
+    check(
+      "R4 arrange grips are glyphless",
+      grips.count >= 3 && grips.drawn === 0,
+      grips.count < 3
+        ? `only ${String(grips.count)} grabbable rows: the arrangement never opened`
+        : grips.drawn === 0
+          ? `${String(grips.count)} grabbable rows, none drawing chrome of its own`
+          : `${String(grips.drawn)} of ${String(grips.count)} grips still draw a glyph`,
+    );
+
+    const laid = await railBoxes();
+    const held = laid[1];
+    const aim = laid[4];
+    const x = 60;
+    const across =
+      held === undefined || aim === undefined
+        ? []
+        : await railDrag(
+            x,
+            Array.from({ length: 41 }, (_unused, step) => {
+              const from = (held.top + held.bottom) / 2;
+              return from + ((aim.bottom - 4 - from) * step) / 40;
+            }),
+          );
+    /* Three rows crossed, so three orders after the one it started in — and no order twice. */
+    const settled = (await railOrder()).join(" ");
+    const wanted =
+      held === undefined || aim === undefined
+        ? ""
+        : (() => {
+            const ids = laid.map((row) => row.id);
+            const next = ids.filter((id) => id !== held.id);
+            next.splice(next.indexOf(aim.id) + 1, 0, held.id);
+            return next.join(" ");
+          })();
+    const progressive = new Set(across).size === across.length;
+    check(
+      "R4 a drag across three rows lands where the pointer did, with no flip-back",
+      across.length === 4 && progressive && settled === wanted,
+      across.length !== 4
+        ? `the drag passed through ${String(across.length)} orders, not the four a three-row crossing makes:\n      ${across.join("\n      ")}`
+        : !progressive
+          ? `the stack returned to an order it had already left — it fought its own reflow:\n      ${across.join("\n      ")}`
+          : settled === wanted
+            ? `${held?.id ?? "?"} walked past three rows into ${aim?.id ?? "?"}'s seat, one order per boundary`
+            : `landed on "${settled}", not the pointer's "${wanted}"`,
+    );
+
+    /*
+      THE SLOW HAND, which is the case a destination-only assertion cannot reach: hold a row
+      over the boundary below it and rock across it three times. Each crossing is one decision,
+      so six orders — a stack whose swap slides its own neighbour back under the pointer counts
+      them by the frame instead, and never comes home.
+    */
+    const rocked = await railBoxes();
+    const pivot = rocked[1];
+    const neighbour = rocked[2];
+    const rock =
+      pivot === undefined || neighbour === undefined
+        ? []
+        : await railDrag(x, [
+            (pivot.top + pivot.bottom) / 2,
+            ...[0, 1, 2].flatMap(() => [
+              (neighbour.top + neighbour.bottom) / 2 + 10,
+              (neighbour.top + neighbour.bottom) / 2 + 10,
+              pivot.top + 2,
+              pivot.top + 2,
+            ]),
+          ]);
+    check(
+      "R4 a slow hand over one boundary crosses it once each way",
+      rock.length === 7 && rock[0] === rock.at(-1),
+      rock.length === 7 && rock[0] === rock.at(-1)
+        ? "three passes over one boundary: six reorders, and the stack ends where it began"
+        : `three passes produced ${String(rock.length - 1)} reorders (six expected) and ended ${
+            rock[0] === rock.at(-1) ? "home" : "somewhere else"
+          }`,
+    );
+
+    /*
+      AND WITHOUT A POINTER AT ALL. A glyphless row still has to announce itself and answer
+      the arrow keys — the whole reason the grip on a plain row stayed a labelled `<button>`
+      when its icon went. Focus one by its label, press once, and the stack moves one seat.
+    */
+    const beforeNudge = await railOrder();
+    const focused = await browser.evaluate<string | null>(
+      `(() => {
+         const grip = document.querySelector('.sidebar-plain > .sidebar-section-grip[aria-label]');
+         if (!(grip instanceof HTMLElement)) return null;
+         grip.focus();
+         return grip.getAttribute('aria-label');
+       })()`,
+    );
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await browser.send("Input.dispatchKeyEvent", {
+        type,
+        key: "ArrowDown",
+        code: "ArrowDown",
+        windowsVirtualKeyCode: 40,
+        nativeVirtualKeyCode: 40,
+      });
+    }
+    await sleep(600);
+    const afterNudge = await railOrder();
+    const nudged =
+      focused !== null &&
+      afterNudge.join(" ") !== beforeNudge.join(" ") &&
+      [...afterNudge].sort().join(" ") === [...beforeNudge].sort().join(" ");
+    check(
+      "R4 a glyphless row still announces itself and nudges",
+      nudged,
+      focused === null
+        ? "no labelled grab surface on any plain row: the tab stop went with the glyph"
+        : nudged
+          ? `"${focused}" took the arrow key and the stack moved one seat`
+          : `"${focused}" was focused and ArrowDown moved nothing`,
+    );
+
+    /*
+      The arrangement this check made is not this check's to leave behind: later checks read a
+      rail whose rows sit where their manifests put them (R3's disable/re-enable, R9's sweep).
+      So the tree goes back through the same door the drag committed through.
+    */
+    await dispatch("core.space.setLayout", { layout: restore }, viewer.token);
+    await pressF8();
+    await sleep(400);
   }
 
   // ─────────────────────────────────────────── R7: every marker names an action

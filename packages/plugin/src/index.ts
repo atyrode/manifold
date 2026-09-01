@@ -84,7 +84,15 @@ export {
   type DefaultLayout,
   type DefaultLayoutCondition,
 } from "./default-layout.ts";
-export { arrangedSectionIds, movedSectionIds, panelSections, withPanelSections } from "./layout.ts";
+export {
+  SECTION_CROSS_MARGIN,
+  arrangedSectionIds,
+  crossedSectionId,
+  movedSectionIds,
+  panelSections,
+  withPanelSections,
+  type SectionBox,
+} from "./layout.ts";
 export {
   buildIndexTree,
   projectIndexMove,

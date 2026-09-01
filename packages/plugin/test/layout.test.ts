@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_PANEL_SECTIONS, validateTileLayout, type TileLayout } from "@manifold/protocol";
 import {
+  SECTION_CROSS_MARGIN,
   arrangedSectionIds,
+  crossedSectionId,
   movedSectionIds,
   panelSections,
   withPanelSections,
+  type SectionBox,
 } from "../src/layout.ts";
 
 /**
@@ -122,6 +125,111 @@ describe("movedSectionIds", () => {
         expect(new Set(next).size).toBe(next.length);
       }
     }
+  });
+});
+
+/**
+ * THE DRAG'S HIT TEST, which is a decision and not a lookup.
+ *
+ * Issue #94: the rule used to be "whichever row's box the pointer is in", and that rule has no
+ * hysteresis — the swap it asks for slides the displaced neighbour straight back under the
+ * pointer, and the next frame asks for the swap back. So what is tested here is the property
+ * a lookup cannot have: that applying the answer moves the stack AWAY from the threshold that
+ * would undo it, for every pointer position on a slow sweep in both directions.
+ */
+
+/** A stack laid out top to bottom from a row order and a height per row. */
+function stack(order: readonly string[], heights: Readonly<Record<string, number>>): SectionBox[] {
+  let top = 0;
+  return order.map((id) => {
+    const box = { id, top, bottom: top + (heights[id] ?? 0) };
+    top = box.bottom;
+    return box;
+  });
+}
+
+/** Four 40px rows: a at 0–40, b at 40–80, c at 80–120, d at 120–160. */
+const EVEN: Readonly<Record<string, number>> = { a: 40, b: 40, c: 40, d: 40 };
+
+describe("crossedSectionId", () => {
+  test("entering a neighbour's box is not crossing it — the midpoint is", () => {
+    const boxes = stack(["a", "b", "c", "d"], EVEN);
+    // Inside `b` (40–80) but above its midpoint: the old rule's swap point, and now nothing.
+    expect(crossedSectionId(boxes, "a", 45)).toBeNull();
+    expect(crossedSectionId(boxes, "a", 60)).toBeNull();
+    expect(crossedSectionId(boxes, "a", 60 + SECTION_CROSS_MARGIN)).toBeNull();
+    expect(crossedSectionId(boxes, "a", 61 + SECTION_CROSS_MARGIN)).toBe("b");
+  });
+
+  test("crossing upward is the same rule mirrored", () => {
+    const boxes = stack(["a", "b", "c", "d"], EVEN);
+    expect(crossedSectionId(boxes, "d", 115)).toBeNull();
+    expect(crossedSectionId(boxes, "d", 100 - SECTION_CROSS_MARGIN)).toBeNull();
+    expect(crossedSectionId(boxes, "d", 99 - SECTION_CROSS_MARGIN)).toBe("c");
+  });
+
+  test("the row in hand is never the answer, wherever the pointer sits inside it", () => {
+    const boxes = stack(["a", "b", "c", "d"], EVEN);
+    for (let y = 40; y <= 80; y++) expect(crossedSectionId(boxes, "b", y)).not.toBe("b");
+    expect(crossedSectionId(boxes, "b", 60)).toBeNull();
+  });
+
+  test("a pointer that outran the frames lands where it IS, not one row behind it", () => {
+    const boxes = stack(["a", "b", "c", "d"], EVEN);
+    // Past b's midpoint and c's, short of d's: two rows crossed, and the far one is the seat.
+    expect(crossedSectionId(boxes, "a", 110)).toBe("c");
+    expect(crossedSectionId(boxes, "a", 155)).toBe("d");
+    expect(crossedSectionId(boxes, "d", 5)).toBe("a");
+  });
+
+  test("a row the stack does not hold moves nothing", () => {
+    expect(crossedSectionId(stack(["a", "b"], EVEN), "ghost", 60)).toBeNull();
+    expect(crossedSectionId([], "a", 60)).toBeNull();
+  });
+
+  test("a slow sweep down and back crosses each boundary exactly once", () => {
+    /*
+      The oscillation, reproduced as arithmetic: sweep the pointer one pixel at a time, apply
+      every answer the way the drag does, and re-measure. Each boundary may be crossed once
+      going down and once coming back — 6 for three boundaries — and a stack that rings would
+      count dozens.
+    */
+    const heights: Readonly<Record<string, number>> = { a: 40, b: 24, c: 64, d: 40 };
+    let order: readonly string[] = ["a", "b", "c", "d"];
+    const seen: string[] = [order.join(" ")];
+    const sweep = [
+      ...Array.from({ length: 169 }, (_, step) => 1 + step),
+      ...Array.from({ length: 169 }, (_, step) => 169 - step),
+    ];
+    for (const y of sweep) {
+      const over = crossedSectionId(stack(order, heights), "a", y);
+      if (over === null) continue;
+      const next = movedSectionIds(order, "a", over);
+      if (next === order) continue;
+      order = next;
+      seen.push(order.join(" "));
+    }
+    expect(seen.length - 1).toBe(6);
+    // And it came home: a sweep that ends where it started ends in the order it started in.
+    expect(order).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("a zero-height row in hand still has a band to cross back over", () => {
+    /*
+      `core.shell.status` reports nothing and draws no box, so the held row's own height —
+      which is what separates a swap from its own undo everywhere else — is zero. The margin
+      is the floor under that, and this is the case that needs it: crossing `c` must not be
+      undone by the very next pixel back.
+    */
+    const heights: Readonly<Record<string, number>> = { a: 40, status: 0, c: 40 };
+    const order = ["a", "status", "c"];
+    const crossing = crossedSectionId(stack(order, heights), "status", 61 + SECTION_CROSS_MARGIN);
+    expect(crossing).toBe("c");
+    const next = movedSectionIds(order, "status", crossing ?? "");
+    expect(next).toEqual(["a", "c", "status"]);
+    // Same pointer, new layout: `c` now sits at 40–80 with its midpoint at 60, and the pointer
+    // is a whole margin past it in the direction it came from. Nothing is asked for.
+    expect(crossedSectionId(stack(next, heights), "status", 61 + SECTION_CROSS_MARGIN)).toBeNull();
   });
 });
 
