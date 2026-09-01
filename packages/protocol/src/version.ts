@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -175,8 +175,24 @@ export const PROTOCOL_VERSION = 20;
  * agent's credential is long-lived by design, so nothing an enrolled spoke holds changes
  * meaning across this deploy. So invariant 10's first clause applies verbatim: the set is
  * `{16, 17, 18, 19, 20}` and NO fleet restart is owed.
+ * v20 -> v21: THE CARRY AIM'S TWO MISSING FIELDS (issue #66), additive-optional on the
+ * session channel and nowhere else. `CarryAim` gained an OPTIONAL `revision` — a content
+ * hash of the tile tree the producer resolved against, so a viewer whose layout has skewed
+ * withholds a confidently wrong preview instead of painting one — and the SERVER's gesture
+ * frame gained an OPTIONAL `aimOnly`, stamped on the copy the server fans into the room a
+ * carry's aim addresses so that room reads the aim without painting a ghost from another
+ * room's coordinates. Absent reproduces v20 exactly: at v20 no aim carried a revision (so
+ * every remote preview was unverifiable, which is what absence still means) and no frame
+ * was ever fanned across rooms (so no frame could be aim-only).
+ *
+ * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
+ * lost and renamed nothing, and an agent never sees a gesture frame or a carry. So
+ * invariant 10's first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and
+ * NO fleet restart is owed.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18, 19, 20]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  16, 17, 18, 19, 20, 21,
+]);
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -196,8 +212,11 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16
  * v20: session/HTTP only — credential expiry and the credential list (ADR 0019). A guest
  * instance holds a SHARE secret, which is not a token row and carries no expiry, so the
  * instance wire is byte-identical again and the version is ADDED.
+ * v21: session-channel only — the carry aim's revision stamp and the server's aim-only
+ * gesture fan (issue #66). A guest instance never sees a gesture frame, so the instance
+ * wire is byte-identical again and the version is ADDED.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
