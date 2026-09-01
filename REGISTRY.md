@@ -395,6 +395,16 @@ the litmus that puts a thing there rather than in whichever package used it firs
 reaches the host through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring
 guide.
 
+A plugin also imports NO DRAWING. `lucide-react` is named in
+`packages/plugin/src/ui/icons.tsx` and nowhere else in the tree (ADR 0009 and its #116
+addendum): a plugin asks `@manifold/plugin/ui` for a KIND — `<ControlIcon kind="discard" />`,
+`<ItemIcon kind={container.discipline} />` — so re-drawing the set stays a change to one file,
+and S2 checks it rather than remembering it. `ControlKind` is closed to ADDITIONS and not to
+callers: a plugin may not grow the union, and is expected to call it, because a plugin's chrome
+wearing a different mark for the same verb is the disagreement the vocabulary exists to end.
+Every kind is spelled neutrally — a verb, or a noun for what pressing opens — so the list reads
+the same with every plugin in this build replaced.
+
 ## Full-conversion inventory
 
 The ratified wave order is `AXIOMS.md` §Roadmap; this is wave 1's work list under it.

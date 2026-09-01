@@ -3,6 +3,25 @@
 **Date:** 2026-08-29
 **Status:** Accepted
 
+Addendum 2026-09-01 (#116): the CONTROL half is narrowed the same way, and in the opposite
+direction from where the pressure came. `ControlKind` stays closed, but "closed" is closed to
+ADDITIONS, not to callers: `ControlIcon` ships through `@manifold/plugin/ui` so a plugin's
+chrome wears the same mark for the same verb the shell's does, and the discipline that keeps the
+list the engine's own is on the NAME, not on the consumer — every kind is a neutral verb (or a
+neutral noun for what pressing opens), so the list reads the same with every plugin in this
+build replaced. Two kinds failed that and were deleted: `endTerminal` and `terminalTree` named
+one plugin's object in the floor's vocabulary, and neither had a call site. `restart` stayed:
+the word carries no object, and relocating it would have bought neutrality by forcing the
+terminals plugin to hand-roll the wrapper this record exists to abolish. Added, for call sites
+that were doing exactly that: `locked` (a control's refusal, drawn in the control's slot),
+`assembly` (what a thing is composed of, as a list), `nesting` (reveal the level inside every
+row, the bulk sibling of `disclosed`/`collapsed`, which is where `terminalTree`'s drawing went).
+`core.pluginManager`, `core.index` and `core.machines` stopped importing lucide directly — the
+index alone had fifteen call sites behind a local re-implementation of the one wrapper — and
+`verify:axioms` S2 now refuses the import from any plugin package, so the decision's last clause
+is a check rather than a habit: outside `packages/plugin/src/ui/icons.tsx`, no call site names a
+lucide drawing.
+
 Addendum 2026-08-31 (#69 wave F): this record is history and is not rewritten, but one clause of
 the decision below has been narrowed. The ITEM half of the vocabulary is no longer a closed type:
 `ItemIconKind` is deleted and `ItemIcon` takes a plain kind string, because item kinds are the
