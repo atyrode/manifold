@@ -2,6 +2,7 @@ import {
   DOOR_SELECTOR,
   IDENTITY_ATTRIBUTES,
   IDENTITY_SELECTOR,
+  declarationOf,
   distinctDoors,
   type Declared,
 } from "./identity.ts";
@@ -36,6 +37,29 @@ export function ancestryOf(element: Element): readonly Declared[] {
     chain.push(declared(node));
   }
   return chain;
+}
+
+/**
+ * THE ELEMENTS THAT DECLARE, outermost first — the same filter and the same order `chainOf`
+ * applies to the same walk, so hop `i` of an identity's chain is painted by element `i` of this
+ * one and a highlight can be zipped on by POSITION.
+ *
+ * Position rather than a match on attribute and id, because two ancestors may declare the
+ * identical pair (a tile nested in a tile of the same id in another tree) and only where they
+ * sit tells them apart. `declarationOf` decides membership rather than {@link IDENTITY_SELECTOR}
+ * because the two genuinely disagree: React Flow puts `data-id` on its handles as well as its
+ * nodes, the selector matches both and the rule accepts only the node — and a chain that
+ * included a box the chip would never name is a highlight pointing at a lie.
+ *
+ * Walked only when a reading is PINNED. The hovered box is the aim's own ancestor and costs
+ * nothing to find; this second walk buys the pinned card's breadcrumb its boxes, once.
+ */
+export function declaringChainOf(element: Element): readonly Element[] {
+  const chain: Element[] = [];
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    if (declarationOf(declared(node)) !== null) chain.push(node);
+  }
+  return chain.reverse();
 }
 
 /** What sits UNDER a pinned element: how many declared things, and which doors. */

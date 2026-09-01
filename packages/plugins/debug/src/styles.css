@@ -144,12 +144,78 @@
   border-color: #4c6ef5;
 }
 
-.inspector-hops,
 .inspector-doors,
 .inspector-occupants {
   display: flex;
   flex-wrap: wrap;
   gap: 0.2rem;
+}
+
+/* THE PATH: one chain, wrapping where it must. The seam carries the spacing between two hops
+   rather than a margin on the hops themselves — a hop's own box belongs to the hop. */
+.inspector-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.inspector-path__seam {
+  color: #495057;
+}
+
+/* One row per grant and per trace, because each is a sentence rather than a chip: they stack
+   vertically where the doors and occupants above them flow inline. */
+.inspector-grants,
+.inspector-traces {
+  display: grid;
+  gap: 0.2rem;
+}
+
+/* A TRACE IS TWO LINES BY DESIGN, not by wrapping: what happened, then who and when. A door
+   name plus a principal id does not fit one line at any size this card is readable at, so the
+   break is chosen — and a chosen break can be aligned, where a flex wrap cannot. */
+.inspector-trace {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  align-items: baseline;
+  column-gap: 0.35rem;
+}
+
+/* Outcome over time, flush right: two ragged edges down a column of otherwise identical rows
+   is what makes them unscannable, and these two are the columns a reader scans. */
+.inspector-trace > :nth-child(2n) {
+  justify-self: end;
+}
+
+.inspector-grant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+/* The rule between entries is what makes five of them read as five rather than as fifteen
+   lines. Between, never around: a border under the last one would fence the section off from
+   the row below it. */
+.inspector-grant + .inspector-grant,
+.inspector-trace + .inspector-trace {
+  border-top: 1px solid #343a40;
+  padding-top: 0.2rem;
+}
+
+/* HOW IT ENDED, coloured as what it means: the ledger's vocabulary is closed (TRACE_OUTCOMES),
+   and every word in it that is not `ok` is a door that did not do what was asked. */
+.inspector-outcome.is-ok {
+  color: #8ce99a;
+}
+
+.inspector-outcome.is-refused {
+  color: #ffa8a8;
+}
+
+.inspector-outcome.is-open {
+  color: #868e96;
 }
 
 /* A hop is a button when it has an address to go to, and prose when it has none. Both read
@@ -199,4 +265,33 @@
   padding-top: 0.3rem;
   color: #868e96;
   font-size: 0.65rem;
+}
+
+/* THE OUTLINE, painted over the workspace and never in it.
+
+   `outline` rather than `border`, and that is a measurement rule rather than a taste: the box is
+   sized in JavaScript from the target's own `getBoundingClientRect()`, and a border would add
+   two pixels the rect never had — the mark would sit outside the thing it claims to be around.
+   Nothing here may add padding, a border or a box-sizing change for the same reason.
+
+   Inert to the pointer, like the whole layer: an outline you could hover would be an outline
+   that changes what is under the pointer. */
+.inspector-highlight {
+  position: fixed;
+  top: 0;
+  left: 0;
+  outline-offset: -1px;
+  pointer-events: none;
+}
+
+/* The thing being read, and the hop being pointed at: two marks, told apart by tone rather than
+   by a label, because a caption over a workspace is chrome competing with the card. */
+.inspector-highlight.is-subject {
+  outline: 2px solid #4c6ef5;
+  background: rgb(76 110 245 / 12%);
+}
+
+.inspector-highlight.is-hop {
+  outline: 2px dashed #ffd8a8;
+  background: rgb(255 216 168 / 10%);
 }
