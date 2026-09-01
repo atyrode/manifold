@@ -218,7 +218,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store)"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store)"
     },
     {
       "glob": "packages/agent/src/**",
@@ -1265,7 +1265,13 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "stroke",
-      "means": "one freehand ink record",
+      "means": "one freehand ink record: `core.draw`'s element kind, the sampling distance a gesture retains points at, and the width it is painted with. A stroke is not a POLYLINE — the ink is the domain noun, the coordinates are the geometry — and only a plugin may say the word",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "polyline",
+      "means": "a flat `[x0, y0, x1, y1, …]` coordinate sequence and the geometry over it: extents, SVG path data, a viewBox, a rebase onto an origin (`packages/plugin/src/polyline.ts`). The neutral half of what used to be two private copies of stroke math (issue #117) — it names no plugin and no element kind, which is why the ENGINE may hold it while `stroke` stays `core.draw`'s word",
       "banned": [],
       "allow": []
     },

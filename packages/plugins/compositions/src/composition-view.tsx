@@ -3,6 +3,7 @@ import {
   elementString,
   elementPayload,
   placementItemFor,
+  soloLeaf,
   type MachineSummary,
   type PlacementItem,
   type TileLayout,
@@ -113,25 +114,23 @@ const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
 };
 
 /**
- * What this composition holds when it holds exactly ONE thing — the arity fact the
- * placement algebra looks through. An empty second leaf still counts as a second leaf:
- * splitting is how someone declares a container to be a composition.
+ * What this composition holds when it holds exactly ONE thing, as the placement algebra reads
+ * it — an occupancy map of one entry, or none.
+ *
+ * The ARITY half is `soloLeaf` in `@manifold/protocol`: "exactly one leaf, occupied", including
+ * the edge that an EMPTY second leaf still ends it, because splitting is how someone declares a
+ * container to be a composition. That walk used to be written out here and again in
+ * `core.canvas`'s portal, two sibling plugins that may not import each other, each re-deriving
+ * the same rule about the same wire record (issue #117). What is left here is the TRANSLATION —
+ * from a ref form to the noun the algebra places by — which is this renderer's own business.
  */
 function soloOccupancy(
   containerId: string,
   layout: TileLayout | null,
 ): ReadonlyMap<string, PlacementItem> {
-  if (layout === null) return NO_SOLO_OCCUPANTS;
-  let only: TileRef | null = null;
-  let leaves = 0;
-  for (const node of Object.values(layout)) {
-    if (node.dir !== null) continue;
-    leaves += 1;
-    if (leaves > 1 || node.ref === null) return NO_SOLO_OCCUPANTS;
-    only = node.ref;
-  }
-  if (only === null) return NO_SOLO_OCCUPANTS;
-  const kind = SOLO_ITEM_KINDS[only.kind];
+  const solo = layout === null ? null : soloLeaf(layout);
+  if (solo === null) return NO_SOLO_OCCUPANTS;
+  const kind = SOLO_ITEM_KINDS[solo.ref.kind];
   return new Map<string, PlacementItem>([[containerId, { kind, containerId: containerId }]]);
 }
 

@@ -1,4 +1,5 @@
 import "./styles.css";
+import { polylinePath, polylineViewBox } from "@manifold/plugin/hooks";
 import type { NodeProps } from "@xyflow/react";
 import { memo } from "react";
 
@@ -10,58 +11,20 @@ import { memo } from "react";
  * this component never learns how a scene is written: it is handed the node's `data` and a
  * box, and it fills the box with ink. That is the whole element contract.
  *
- * The path math is here rather than shared with the canvas because a plugin package may not
- * import web floor modules (REGISTRY.md §Foundation import boundary) — and because the shape of
- * a stroke IS this plugin's business. The engine's copy survives only for the in-flight
- * gesture preview it still owns (`until core.canvas`).
+ * The path math is NOT here. It is `@manifold/plugin/hooks`' polyline geometry, the element
+ * plane's one derivation of a coordinate payload into the strings that paint it — shared with
+ * `core.canvas`'s in-flight preview, which draws the same wire form before it is committed
+ * (issue #117). What this plugin owns is the STROKE: which payload fields carry it, what a
+ * stroke authored by an older client falls back to, and that the ink is its own hit target.
  */
 
 /** Fallbacks match the wire schema's own defaults for a stroke authored by an older client. */
 const FALLBACK_STROKE_WIDTH = 3;
 const FALLBACK_COLOR = "#f8f9fa";
-/** A degenerate stroke still needs a viewBox; 1×1 keeps the SVG valid and invisible. */
-const MIN_EXTENT = 1;
 
 function numbers(value: unknown): readonly number[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is number => typeof item === "number");
-}
-
-function strokePath(points: readonly number[]): string {
-  const commands: string[] = [];
-  for (let index = 0; index + 1 < points.length; index += 2) {
-    commands.push(
-      `${index === 0 ? "M" : "L"} ${String(points[index])} ${String(points[index + 1])}`,
-    );
-  }
-  return commands.join(" ");
-}
-
-/**
- * The stroke's natural bounds, published as the viewBox: mapping them onto whatever box the
- * node currently has is what makes a resized element SCALE its ink instead of growing an
- * empty frame around a fixed drawing. The origin is read from the points rather than assumed,
- * because nothing in the schema guarantees a canonical one.
- */
-function strokeViewBox(points: readonly number[], strokeWidth: number): string {
-  if (points.length < 2) return `0 0 ${String(MIN_EXTENT)} ${String(MIN_EXTENT)}`;
-  let minX = points[0] ?? 0;
-  let maxX = minX;
-  let minY = points[1] ?? 0;
-  let maxY = minY;
-  for (let index = 2; index + 1 < points.length; index += 2) {
-    const x = points[index] ?? 0;
-    const y = points[index + 1] ?? 0;
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
-  }
-  const x = minX - strokeWidth;
-  const y = minY - strokeWidth;
-  const width = Math.max(MIN_EXTENT, maxX - minX + strokeWidth * 2);
-  const height = Math.max(MIN_EXTENT, maxY - minY + strokeWidth * 2);
-  return `${String(x)} ${String(y)} ${String(width)} ${String(height)}`;
 }
 
 function DrawStrokeNodeImpl({ data }: NodeProps): React.ReactElement {
@@ -69,13 +32,13 @@ function DrawStrokeNodeImpl({ data }: NodeProps): React.ReactElement {
   const strokeWidth =
     typeof data["strokeWidth"] === "number" ? data["strokeWidth"] : FALLBACK_STROKE_WIDTH;
   const color = typeof data["color"] === "string" ? data["color"] : FALLBACK_COLOR;
-  const path = strokePath(points);
+  const path = polylinePath(points);
   return (
     <svg
       className="draw"
       width="100%"
       height="100%"
-      viewBox={strokeViewBox(points, strokeWidth)}
+      viewBox={polylineViewBox(points, strokeWidth)}
       preserveAspectRatio="none"
       overflow="visible"
     >

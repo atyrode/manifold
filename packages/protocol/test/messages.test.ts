@@ -26,6 +26,7 @@ import {
   buildProtocolJsonSchema,
   elementPayload,
   hasCap,
+  soloLeaf,
   validateTileLayout,
   type Tile,
   type TileRef,
@@ -815,6 +816,45 @@ describe("tile layout schemas", () => {
     expect(validateTileLayout(layout, "c-1")).toBe(false);
     expect(validateTileLayout(layout, "c-2")).toBe(true);
     expect(validateTileLayout(layout)).toBe(true);
+  });
+
+  /*
+    The arity fact two renderers used to walk for themselves (issue #117). The edge that made
+    the duplication dangerous is the empty second leaf: splitting a container is how a
+    principal declares it a composition, so arity counts LEAVES rather than occupants — which
+    is also what separates this from `censusSolo`, where the same tree IS solo.
+  */
+  test("solo arity is one leaf, occupied — an empty second leaf ends it", () => {
+    expect(soloLeaf({ root: leaf(ROOT_TILE_ID, terminal("s1")) })).toEqual({
+      tileId: ROOT_TILE_ID,
+      ref: terminal("s1"),
+    });
+    // Any occupant, not just a terminal: the ARITY fact names no kind.
+    expect(
+      soloLeaf({ root: leaf(ROOT_TILE_ID, { kind: "container", containerId: "c-1" }) })?.ref,
+    ).toEqual({ kind: "container", containerId: "c-1" });
+
+    // A vacant container holds nothing to render as.
+    expect(soloLeaf({ root: leaf(ROOT_TILE_ID) })).toBeNull();
+    // Two leaves, one of them EMPTY: still a composition, and the empty half is the invitation.
+    expect(
+      soloLeaf({
+        root: split(ROOT_TILE_ID, ["t1", "t2"]),
+        t1: leaf("t1", terminal("s1")),
+        t2: leaf("t2"),
+      }),
+    ).toBeNull();
+    expect(
+      soloLeaf({
+        root: split(ROOT_TILE_ID, ["t1", "t2"]),
+        t1: leaf("t1", terminal("s1")),
+        t2: leaf("t2", terminal("s2")),
+      }),
+    ).toBeNull();
+    // Splits are structure, never occupants: depth alone never makes a tree non-solo.
+    expect(soloLeaf({ root: split(ROOT_TILE_ID, ["t1"]), t1: leaf("t1", terminal("s1")) })).toEqual(
+      { tileId: "t1", ref: terminal("s1") },
+    );
   });
 });
 

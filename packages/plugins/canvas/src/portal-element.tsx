@@ -1,6 +1,7 @@
 import { itemNoun, type HostServices } from "@manifold/plugin";
 import {
   elementString,
+  soloLeaf,
   type Principal,
   type TileLayout,
   type Tile,
@@ -474,21 +475,19 @@ function PortalContainerTile({
 }
 
 /**
- * The one terminal a composition holds, or null when it holds anything else. This is
- * the whole arity rule: a container of exactly one terminal renders AS that terminal.
+ * The one terminal a composition holds, or null when it holds anything else.
+ *
+ * The ARITY half — "exactly one occupied leaf" — is `soloLeaf` in `@manifold/protocol`, a fact
+ * about the layout record that the compositions renderer needs in the same words (issue #117).
+ * What is left here is the SPECIES test: this renderer only stands in for a TERMINAL, because
+ * a terminal is the one occupant whose own chrome can carry a portal's verbs.
  */
-export function soloTerminalLeaf(
+function soloTerminal(
   layout: TileLayout,
 ): { readonly tileId: string; readonly terminalId: string } | null {
-  let found: { readonly tileId: string; readonly terminalId: string } | null = null;
-  for (const node of Object.values(layout)) {
-    if (node.dir !== null) continue;
-    // A second leaf ends it even when that leaf is EMPTY: splitting a container is how
-    // someone says "this is a composition now", and the empty half is the invitation.
-    if (found !== null || node.ref?.kind !== "terminal") return null;
-    found = { tileId: node.id, terminalId: node.ref.terminalId };
-  }
-  return found;
+  const solo = soloLeaf(layout);
+  if (solo === null || solo.ref.kind !== "terminal") return null;
+  return { tileId: solo.tileId, terminalId: solo.ref.terminalId };
 }
 
 interface PortalLeafProps {
@@ -498,7 +497,7 @@ interface PortalLeafProps {
   readonly interactive: boolean;
   readonly engagedTileId: string | null;
   readonly onEngage: (tileId: string) => void;
-  /** Non-null only for the ONE leaf of a mono container — see {@link soloTerminalLeaf}. */
+  /** Non-null only for the ONE leaf of a mono container — see {@link soloTerminal}. */
   readonly mono: PortalMonoChrome | null;
 }
 
@@ -722,7 +721,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
    * titlebar carrying this element's verbs. Everything else — an empty container, two
    * tiles, a canvas, a note — is a composition and wears composition chrome.
    */
-  const solo = client === null || layout === null ? null : soloTerminalLeaf(layout);
+  const solo = client === null || layout === null ? null : soloTerminal(layout);
   const mono: PortalMonoChrome | null =
     solo === null
       ? null
