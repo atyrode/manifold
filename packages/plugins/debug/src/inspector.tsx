@@ -1,4 +1,8 @@
-import { useProjection, type ProjectionRegistry, type WorkspaceOverlayProps } from "@manifold/plugin/hooks";
+import {
+  useProjection,
+  type ProjectionRegistry,
+  type WorkspaceOverlayProps,
+} from "@manifold/plugin/hooks";
 import { currentVantage, setVantage, useNotice, useVantage } from "@manifold/plugin/ui";
 import {
   containmentPath,
@@ -303,8 +307,7 @@ function PinCard({
           </Row>
         )}
         <Row label="holds">
-          {String(pin.subtree.children)} declared{" "}
-          {pin.subtree.children === 1 ? "thing" : "things"}
+          {String(pin.subtree.children)} declared {pin.subtree.children === 1 ? "thing" : "things"}
         </Row>
         <Row label="doors">
           {pin.subtree.doors.length === 0 ? (
@@ -508,8 +511,7 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
         worse than no reading.
       */
       const attribute = identity.subject?.attribute;
-      const scope =
-        attribute === undefined ? target : (target.closest(`[${attribute}]`) ?? target);
+      const scope = attribute === undefined ? target : (target.closest(`[${attribute}]`) ?? target);
       setPin({
         aim: { x: event.clientX, y: event.clientY, element: target },
         identity,
@@ -570,12 +572,17 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
     };
   }, [armed]);
 
-  /** Leaving the mode drops the pin: a card floating over a workspace nobody is inspecting. */
-  useEffect(() => {
-    if (armed) return;
-    setPin(null);
-    setAim(null);
-  }, [armed]);
+  /** Leaving the mode drops the pin: a card floating over a workspace nobody is inspecting.
+   * Compared during render rather than reset from an effect (react.dev's remedy for "reset
+   * state when a prop changes") — one extra render on the transition, no cascade. */
+  const [wasArmed, setWasArmed] = useState(armed);
+  if (wasArmed !== armed) {
+    setWasArmed(armed);
+    if (!armed) {
+      setPin(null);
+      setAim(null);
+    }
+  }
 
   /**
    * A PIN ASKS THE WORKSPACE, and only a pin does. Hovering is a local read of the page's own

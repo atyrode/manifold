@@ -185,9 +185,9 @@ describe("binding overrides", () => {
   });
 
   test("an override to the key a row already answers is not a collision with itself", () => {
-    expect(table({ "core.shell.arrange": "F8" }).find((b) => b.id === "core.shell.arrange")?.key).toBe(
-      "F8",
-    );
+    expect(
+      table({ "core.shell.arrange": "F8" }).find((b) => b.id === "core.shell.arrange")?.key,
+    ).toBe("F8");
   });
 
   test("a disabled plugin's declared key still refuses a rebind onto it", () => {

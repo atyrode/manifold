@@ -158,21 +158,21 @@ function BrowsePanel(): ReactElement {
     <Stack className="plugin-manager-browse" gap="0.6rem" data-testid="plugin-manager-browse">
       <h3 className="plugin-manager-browse-title">Marketplace and dynamic plugin distribution</h3>
       <p>
-        Not built yet, and named rather than hidden: installing plugin code that is not
-        compiled into this build is a ratified roadmap wave (<code>AXIOMS.md</code> §Roadmap),
-        not an oversight in this screen.
+        Not built yet, and named rather than hidden: installing plugin code that is not compiled
+        into this build is a ratified roadmap wave (<code>AXIOMS.md</code> §Roadmap), not an
+        oversight in this screen.
       </p>
       <p>
         What is missing is the isolation verdict it waits on. Every plugin in this workspace is
-        first-party code compiled into the build, so a store is the moment code manifold did
-        not author starts running in-process; a dated ADR has to ratify a runner for it first,
-        and that ordering is a hard prerequisite. The seams are already reserved — a manifest
-        may declare <code>entry</code>, and every row in the Installed tab already publishes
-        the <code>source</code> a downloaded plugin would arrive under.
+        first-party code compiled into the build, so a store is the moment code manifold did not
+        author starts running in-process; a dated ADR has to ratify a runner for it first, and that
+        ordering is a hard prerequisite. The seams are already reserved — a manifest may declare{" "}
+        <code>entry</code>, and every row in the Installed tab already publishes the{" "}
+        <code>source</code> a downloaded plugin would arrive under.
       </p>
       <p className="plugin-manager-browse-meanwhile">
-        Until that wave lands, the Installed tab is the whole list: what this workspace
-        composed, and every door you can open on it.
+        Until that wave lands, the Installed tab is the whole list: what this workspace composed,
+        and every door you can open on it.
       </p>
     </Stack>
   );

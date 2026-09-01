@@ -153,7 +153,11 @@ function withLeafSections(
  * other's share, and the arrangements travel with the refs rather than staying behind on the
  * seats.
  */
-export function tradedSeats(layout: TileLayout, aTileId: string, bTileId: string): TileLayout | null {
+export function tradedSeats(
+  layout: TileLayout,
+  aTileId: string,
+  bTileId: string,
+): TileLayout | null {
   const aSections = layout[aTileId]?.sections;
   const bSections = layout[bTileId]?.sections;
   const swapped = withTilesSwapped(layout, aTileId, bTileId);
@@ -301,7 +305,13 @@ export function rootEqualized(layout: TileLayout | null): PanelArrangeOutcome {
   const root = layout[ROOT_TILE_ID];
   if (root === undefined || root.dir === null) return refuse("panel_alone");
   const share = 1 / root.children.length;
-  return settled(withTileRatios(layout, ROOT_TILE_ID, root.children.map(() => share)));
+  return settled(
+    withTileRatios(
+      layout,
+      ROOT_TILE_ID,
+      root.children.map(() => share),
+    ),
+  );
 }
 
 /** Swap: trades exactly two selected seats, occupied or not — the toolbar's own Swap tool. */

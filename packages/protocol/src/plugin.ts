@@ -247,7 +247,13 @@ const ContributesSchema = z.strictObject({
     .max(8)
     .default([]),
   tools: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema, toolbar: ToolbarSchema.optional() }))
+    .array(
+      z.strictObject({
+        id: LocalNameSchema,
+        title: TitleSchema,
+        toolbar: ToolbarSchema.optional(),
+      }),
+    )
     .max(8)
     .default([]),
   /**

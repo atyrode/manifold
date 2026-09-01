@@ -328,12 +328,7 @@ describe("section clusters", () => {
 
   test("members of one word paint as one unit where the earliest of them sits", () => {
     expect(
-      units([
-        row("status"),
-        row("keys", "utility"),
-        row("plugins", "utility"),
-        row("identity"),
-      ]),
+      units([row("status"), row("keys", "utility"), row("plugins", "utility"), row("identity")]),
     ).toEqual([["status"], ["keys", "plugins"], ["identity"]]);
   });
 
@@ -347,12 +342,7 @@ describe("section clusters", () => {
 
   test("two words interleave without merging, each at its own earliest member", () => {
     expect(
-      units([
-        row("a", "left"),
-        row("b", "right"),
-        row("c", "left"),
-        row("d", "right"),
-      ]),
+      units([row("a", "left"), row("b", "right"), row("c", "left"), row("d", "right")]),
     ).toEqual([
       ["a", "c"],
       ["b", "d"],

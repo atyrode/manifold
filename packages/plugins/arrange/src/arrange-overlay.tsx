@@ -8,7 +8,13 @@ import {
   type UnitRect,
   type WorkspaceOverlayProps,
 } from "@manifold/plugin/hooks";
-import { ControlIcon, WORKSPACE_TREE_CLASSES, setVantage, useNotice, useVantage } from "@manifold/plugin/ui";
+import {
+  ControlIcon,
+  WORKSPACE_TREE_CLASSES,
+  setVantage,
+  useNotice,
+  useVantage,
+} from "@manifold/plugin/ui";
 import { ROOT_TILE_ID, type TileEdge, type TileLayout } from "@manifold/protocol";
 import {
   useCallback,
@@ -75,7 +81,12 @@ function loadToolbarOffset(): ToolbarOffset {
     if (typeof parsed !== "object" || parsed === null) return ORIGIN_OFFSET;
     const dx = Reflect.get(parsed, "dx");
     const dy = Reflect.get(parsed, "dy");
-    if (typeof dx !== "number" || typeof dy !== "number" || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+    if (
+      typeof dx !== "number" ||
+      typeof dy !== "number" ||
+      !Number.isFinite(dx) ||
+      !Number.isFinite(dy)
+    ) {
       return ORIGIN_OFFSET;
     }
     return { dx, dy };
@@ -116,18 +127,16 @@ function useTileRects(
   layout: TileLayout | null,
   getTreeElement: () => HTMLElement | null,
 ): ReadonlyMap<string, DOMRect> | null {
-  const [rects, setRects] = useState<ReadonlyMap<string, DOMRect> | null>(null);
+  const [measured, setMeasured] = useState<{
+    readonly forLayout: TileLayout;
+    readonly rects: ReadonlyMap<string, DOMRect>;
+  } | null>(null);
   useEffect(() => {
-    if (!armed || layout === null) {
-      setRects(null);
-      return;
-    }
+    if (!armed || layout === null) return;
     const root = getTreeElement();
-    if (root === null) {
-      setRects(null);
-      return;
-    }
-    const measure = (): void => setRects(measureRects(root, layout));
+    if (root === null) return;
+    const measure = (): void =>
+      setMeasured({ forLayout: layout, rects: measureRects(root, layout) });
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(root);
@@ -137,7 +146,9 @@ function useTileRects(
       window.removeEventListener("resize", measure);
     };
   }, [armed, layout, getTreeElement]);
-  return rects;
+  // Disarmed, no layout, or a stale measurement from a layout that has since changed: no rects
+  // rather than a snapshot the reader never asked for and might not match what is on screen.
+  return armed && layout !== null && measured?.forLayout === layout ? measured.rects : null;
 }
 
 interface WireframeProps {
@@ -165,7 +176,6 @@ function Wireframe({ layout, rects, inScope }: WireframeProps): ReactNode {
       top: rect.top,
       width: rect.width,
       height: rect.height,
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- a CSS custom property
       ["--arrange-depth" as string]: depth,
     };
     if (tile.dir !== null) {
@@ -204,6 +214,7 @@ interface GripState {
 }
 
 interface DragFrame {
+  readonly tileId: string;
   readonly aim: TileAim;
   readonly units: AreaFractions;
 }
@@ -280,9 +291,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
 
   // -------------------------------------------------------------- selection (Swap's own)
   const [selected, setSelected] = useState<readonly string[]>([]);
-  useEffect(() => {
-    if (!arranging) setSelected([]);
-  }, [arranging]);
+  // Leaving arrange mode drops the selection: a pending swap made sense only while armed.
+  // Compared during render rather than reset from an effect (react.dev's own remedy for
+  // "reset state when a prop changes") — one extra render on the transition, no cascade.
+  const [wasArranging, setWasArranging] = useState(arranging);
+  if (wasArranging !== arranging) {
+    setWasArranging(arranging);
+    if (!arranging && selected.length > 0) setSelected([]);
+  }
   const toggleSelected = useCallback((tileId: string): void => {
     setSelected((current) => {
       if (current.includes(tileId)) return current.filter((id) => id !== tileId);
@@ -308,22 +324,25 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     [applyLayout, notify],
   );
 
-  const beginGrip = useCallback(
-    (tileId: string, draggable: boolean, event: ReactPointerEvent<HTMLElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      gripRef.current = {
-        tileId,
-        draggable,
-        moved: false,
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-      };
-    },
-    [],
-  );
+  // Reads its target off the DOM (`data-tile-id`/`data-panel-id`, already painted by the grip
+  // markup below) rather than closing over `tile.id` per grip: passed to `onPointerDown`
+  // directly, so no inline wrapper calls a ref-touching function during render.
+  const beginGrip = useCallback((event: ReactPointerEvent<HTMLElement>): void => {
+    const tileId = event.currentTarget.dataset["tileId"];
+    if (tileId === undefined) return;
+    const draggable = event.currentTarget.dataset["panelId"] !== undefined;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    gripRef.current = {
+      tileId,
+      draggable,
+      moved: false,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+  }, []);
 
   const nudgeGrip = useCallback(
     (tileId: string, direction: Exclude<TileEdge, "center">): void => {
@@ -374,7 +393,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
       ) {
         return;
       }
-      setFrame({ aim: next, units });
+      setFrame({ tileId: grip.tileId, aim: next, units });
     };
     const end = (event: PointerEvent): void => {
       const grip = gripRef.current;
@@ -524,13 +543,15 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
       {!grabbable || layout === null || rects === null
         ? null
         : Object.values(layout)
-            .filter((tile) => tile.dir === null && (tile.ref?.kind === "panel" || tile.ref?.kind === "spacer"))
+            .filter(
+              (tile) =>
+                tile.dir === null && (tile.ref?.kind === "panel" || tile.ref?.kind === "spacer"),
+            )
             .map((tile) => {
               const rect = rects.get(tile.id);
               if (rect === undefined || tile.ref === null) return null;
               const ref = tile.ref;
               const panelId = ref.kind === "panel" ? ref.panelId : null;
-              const isPanel = panelId !== null;
               const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
               const title = panelId === null ? "Spacer" : (panel?.title ?? panelId);
               const style: CSSProperties = {
@@ -550,7 +571,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                     data-panel-id={panelId ?? undefined}
                     data-tile-id={tile.id}
                     aria-label={`Move the ${title} panel`}
-                    onPointerDown={(event) => beginGrip(tile.id, isPanel, event)}
+                    onPointerDown={beginGrip}
                     onKeyDown={(event) => {
                       const direction = ARROW_EDGES[event.key];
                       if (direction === undefined) return;
@@ -579,9 +600,9 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         ? null
         : (() => {
             const prospect =
-              layout === null || gripRef.current === null
+              layout === null
                 ? null
-                : tileProspect(layout, frame.aim, gripRef.current.tileId, frame.units.dividers);
+                : tileProspect(layout, frame.aim, frame.tileId, frame.units.dividers);
             if (prospect === null) return null;
             const paint = (unit: UnitRect): CSSProperties => ({
               left: frame.units.rect.left + unit.x * frame.units.rect.width,
@@ -598,7 +619,11 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                   aria-hidden="true"
                 />
                 {prospect.partner === null ? null : (
-                  <div className="arrange-slot is-swap" style={paint(prospect.partner)} aria-hidden="true" />
+                  <div
+                    className="arrange-slot is-swap"
+                    style={paint(prospect.partner)}
+                    aria-hidden="true"
+                  />
                 )}
               </>
             );
@@ -610,7 +635,9 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         className="arrange-toolbar"
         role="toolbar"
         aria-label="Arrange toolbar"
-        style={{ transform: `translate(-50%, 0) translate(${toolbarOffset.dx}px, ${toolbarOffset.dy}px)` }}
+        style={{
+          transform: `translate(-50%, 0) translate(${toolbarOffset.dx}px, ${toolbarOffset.dy}px)`,
+        }}
       >
         <button
           type="button"
@@ -673,7 +700,11 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
               data-action="core.space.setLayout"
               data-testid={`toolbar-${tool.id}`}
               disabled={toolsDisabled}
-              onClick={() => (tool.id === "shelf" ? selected[0] !== undefined && runShelve(selected[0]) : runTool(tool.id))}
+              onClick={() =>
+                tool.id === "shelf"
+                  ? selected[0] !== undefined && runShelve(selected[0])
+                  : runTool(tool.id)
+              }
             >
               {tool.title}
             </button>

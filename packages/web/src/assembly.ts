@@ -176,7 +176,11 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
     floating toolbar, the panel grips and their live preview, and the wireframe delimitation,
     all painted through the SAME slot channel a container overlay uses one host up.
   */
-  { id: "core.arrange", bindings: ARRANGE_BINDINGS, workspaceOverlays: { toolbar: ArrangeOverlay } },
+  {
+    id: "core.arrange",
+    bindings: ARRANGE_BINDINGS,
+    workspaceOverlays: { toolbar: ArrangeOverlay },
+  },
   canvasWebPlugin,
   compositionsWebPlugin,
   drawWebPlugin,

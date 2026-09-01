@@ -224,12 +224,7 @@ describe("doors under a pinned thing", () => {
     // One affordance is often several elements — a row's grip and its keyboard nudge name the
     // same door — and a reader compares this list between two pins.
     expect(
-      distinctDoors([
-        "core.terminals.kill",
-        "core.space.setLayout",
-        "core.terminals.kill",
-        "",
-      ]),
+      distinctDoors(["core.terminals.kill", "core.space.setLayout", "core.terminals.kill", ""]),
     ).toEqual(["core.space.setLayout", "core.terminals.kill"]);
   });
 });

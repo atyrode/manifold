@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  PluginDependencyMap,
-  PluginRosterEntry,
-  PluginSource,
-} from "@manifold/protocol";
+import type { PluginDependencyMap, PluginRosterEntry, PluginSource } from "@manifold/protocol";
 import {
   pluginCatalog,
   pluginDependencies,

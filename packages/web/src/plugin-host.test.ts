@@ -304,10 +304,14 @@ describe("buildBrowserAssembly bindings", () => {
   } as const;
 
   test("registered rows compose into the table with their owner", () => {
-    const assembly = buildBrowserAssembly([entry({ id: "core.debug" }), entry({ id: "core.canvas" })], 1, [
-      { id: "core.debug", bindings: [zoneProbe] },
-      { id: "core.canvas", bindings: [grid] },
-    ]);
+    const assembly = buildBrowserAssembly(
+      [entry({ id: "core.debug" }), entry({ id: "core.canvas" })],
+      1,
+      [
+        { id: "core.debug", bindings: [zoneProbe] },
+        { id: "core.canvas", bindings: [grid] },
+      ],
+    );
 
     expect(assembly.bindings.map((binding) => [binding.key, binding.plugin])).toEqual([
       ["F7", "core.canvas"],

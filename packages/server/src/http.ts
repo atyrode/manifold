@@ -283,7 +283,9 @@ export class HttpApp {
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
       return jsonResponse(
-        BindingsResponseSchema.parse({ overrides: this.store.bindingOverrides(context.principal.id) }),
+        BindingsResponseSchema.parse({
+          overrides: this.store.bindingOverrides(context.principal.id),
+        }),
       );
     }
 

@@ -352,7 +352,13 @@ describe("the toolbar's tools", () => {
 
   test("Equalize normalizes the root's ratios to one even share each", () => {
     const layout: TileLayout = {
-      root: { id: "root", dir: "row", ratios: [0.1, 0.6, 0.3], children: ["a", "b", "c"], ref: null },
+      root: {
+        id: "root",
+        dir: "row",
+        ratios: [0.1, 0.6, 0.3],
+        children: ["a", "b", "c"],
+        ref: null,
+      },
       a: leaf("a", SIDEBAR),
       b: leaf("b", MAIN),
       c: leaf("c", "core.notes"),

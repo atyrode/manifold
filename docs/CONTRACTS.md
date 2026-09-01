@@ -212,19 +212,19 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path                              | Auth cap              | Req → Res                                                                                                                                      |
-| ---------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz                             | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                      |
-| GET /api/protocol                        | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                         |
-| GET /api/attendance                      | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                      |
-| DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                      |
-| POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door |
-| GET /api/plugins                         | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                |
-| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction  |
-| GET /api/bindings                        | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                                                    |
-| GET /api/resolve?uri=                    | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                      |
-| GET /api/containers                      | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input    |
-| GET /api/introspect                      | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                            |
+| Method+Path                              | Auth cap              | Req → Res                                                                                                                                                 |
+| ---------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                             | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                 |
+| GET /api/protocol                        | none                  | → generated JSON-Schema of all wire messages, plus the published placement vocabulary and the plugin/action vocabulary                                    |
+| GET /api/attendance                      | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                 |
+| DELETE /api/containers/:id/tiles/:tileId | containers:write      | → `{ ok }`; removes ONE leaf (not a placement). A terminal's last leaf reaps the terminal; an emptied composition retires                                 |
+| POST /api/actions/:name                  | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door            |
+| GET /api/plugins                         | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                           |
+| GET /api/layout                          | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction             |
+| GET /api/bindings                        | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer |
+| GET /api/resolve?uri=                    | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
+| GET /api/containers                      | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input               |
+| GET /api/introspect                      | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                       |
 
 `IndexEntry` is either `{ kind:"container", container:{ id, name, createdAt, discipline },
 parentId: string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name,

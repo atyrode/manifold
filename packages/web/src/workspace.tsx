@@ -188,7 +188,7 @@ export function WorkspaceHost({
           });
       }, LAYOUT_COMMIT_MS);
     },
-    [host, notify],
+    [host.client, notify],
   );
 
   useEffect(

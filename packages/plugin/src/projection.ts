@@ -6,7 +6,13 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import type { MachineSummary, Container, Attendance, PlacementItem, Toolbar } from "@manifold/protocol";
+import type {
+  MachineSummary,
+  Container,
+  Attendance,
+  PlacementItem,
+  Toolbar,
+} from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";

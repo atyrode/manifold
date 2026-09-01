@@ -34,9 +34,7 @@ export const keysManifest: PluginManifest = {
   essential: true,
   contributes: {
     panels: [],
-    sections: [
-      { id: "keys", title: "Keys", order: 50, presentation: "plain", cluster: "utility" },
-    ],
+    sections: [{ id: "keys", title: "Keys", order: 50, presentation: "plain", cluster: "utility" }],
     elements: [],
     tools: [],
     events: [],

@@ -1,7 +1,4 @@
-import {
-  WORKSPACE_OVERLAY_SLOTS,
-  WorkspaceOverlayOutlet,
-} from "@manifold/plugin/hooks";
+import { WORKSPACE_OVERLAY_SLOTS, WorkspaceOverlayOutlet } from "@manifold/plugin/hooks";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WorkspaceHost } from "./workspace.tsx";

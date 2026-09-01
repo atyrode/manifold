@@ -432,7 +432,6 @@ const PluginsAttachContext = createContext<((client: SessionClient) => () => voi
  */
 const BindingsRefreshContext = createContext<(() => void) | null>(null);
 
-
 /** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
 export function useAssembly(): BrowserAssembly {
   const assembly = useContext(AssemblyContext);
@@ -551,7 +550,9 @@ function EssentialRecovery({
       if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
       onRestored(PluginsResponseSchema.parse(await response.json()).plugins);
     } catch (reason: unknown) {
-      setFailure(reason instanceof Error ? reason.message : "Could not restore the default plugins");
+      setFailure(
+        reason instanceof Error ? reason.message : "Could not restore the default plugins",
+      );
     } finally {
       setRestoring(false);
     }

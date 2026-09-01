@@ -38,7 +38,9 @@ import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
  */
 
 /** The rows the collision check sees — the effective table, as the engine's row shape. */
-function keyRows(bindings: readonly ComposedBinding[]): { id: string; key: string; plugin: string }[] {
+function keyRows(
+  bindings: readonly ComposedBinding[],
+): { id: string; key: string; plugin: string }[] {
   return bindings.map((binding) => ({ id: binding.id, key: binding.key, plugin: binding.plugin }));
 }
 
@@ -190,8 +192,8 @@ export function KeysRow({ host }: SectionProps): ReactElement {
                   </button>
                 </header>
                 <p className="keys-lede">
-                  Plugins declare these keys; your rebindings are saved to your principal and
-                  follow you to every device. Press Rebind, then press the key you want.
+                  Plugins declare these keys; your rebindings are saved to your principal and follow
+                  you to every device. Press Rebind, then press the key you want.
                 </p>
                 {refusal === null ? null : (
                   <p className="keys-refusal" role="alert" data-testid="keys-refusal">
@@ -233,9 +235,7 @@ export function KeysRow({ host }: SectionProps): ReactElement {
                                 data-action={KEYS_SET_ACTION}
                                 data-testid="keys-rebind"
                                 disabled={pending !== null}
-                                onClick={() =>
-                                  setArmed(armed === binding.id ? null : binding.id)
-                                }
+                                onClick={() => setArmed(armed === binding.id ? null : binding.id)}
                               >
                                 {armed === binding.id ? "Cancel" : "Rebind"}
                               </button>
