@@ -18,7 +18,12 @@ import { InstanceDialer } from "./instance-dialer.ts";
 import { InstanceGateway } from "./instance-ws.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
-import { assemblyItemNouns, assemblyPlacementVocabulary, PlaceExecutor } from "./placement.ts";
+import {
+  assemblyItemNouns,
+  assemblyPlacementVocabulary,
+  assemblyTileTrees,
+  PlaceExecutor,
+} from "./placement.ts";
 import { PluginHost } from "./plugin-host.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-channel.ts";
@@ -71,7 +76,19 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   const logger = options.logger ?? createLogger(runtime);
   const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
   const auth = new AuthService(store, config.ownerKey, runtime);
-  const rooms = new RoomManager(store, runtime, timers, logger);
+  /*
+    THE ASSEMBLY'S PLACEMENT VOCABULARY, before anything that reads it. Element traits, the
+    discipline roster and the tile-tree question all come off the same declarations (ADR 0013
+    §12, #110, #125), so one cached derivation serves the rooms, the broker and the executor.
+
+    The roster arrives as a THUNK because everything here is mutually dependent — the
+    executor resolves legality against the assembly, the assembly's space plugin drives the
+    executor, and the host that owns the assembly is built over these three — and because
+    enablement is hot: a table captured here would answer for a roster that no longer exists.
+   */
+  const vocabulary = assemblyPlacementVocabulary(() => plugins.roster());
+  const tileTrees = assemblyTileTrees(vocabulary);
+  const rooms = new RoomManager(store, runtime, timers, logger, tileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -80,22 +97,17 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     timers,
     logger,
     () => config.publicUrl,
+    tileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  /*
-    The executor resolves legality against the ASSEMBLY's placement vocabulary — element
-    traits AND the discipline roster (ADR 0013 §12, #110) — names species by the assembly's
-    noun table, and
-    the assembly's space plugin drives the executor — mutually dependent, so the roster
-    arrives as a thunk read at placement time rather than a table captured here.
-   */
+  /* Species are named by the assembly's noun table, on the same terms as the vocabulary. */
   const placement: PlaceExecutor = new PlaceExecutor(
     store,
     rooms,
     broker,
     runtime,
-    assemblyPlacementVocabulary(() => plugins.roster()),
+    vocabulary,
     assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);

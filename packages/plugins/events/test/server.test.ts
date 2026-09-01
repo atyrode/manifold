@@ -6,7 +6,13 @@ import { RoomManager } from "../../../server/src/room.ts";
 import type { ServerStore } from "../../../server/src/stores.ts";
 import { TerminalBroker } from "../../../server/src/terminal-broker.ts";
 import type { PluginHost } from "../../../server/src/plugin-host.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore } from "../../../server/test/helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "../../../server/test/helpers.ts";
 import { EVENTS_LIST_MAX, EventsListResponseSchema } from "../src/index.ts";
 
 /**
@@ -41,7 +47,7 @@ function fixture(): Fixture {
   const clock = new FakeClock(runtime);
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -50,6 +56,7 @@ function fixture(): Fixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   return {
     store,

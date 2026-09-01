@@ -11,7 +11,7 @@ import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from ".
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
@@ -48,7 +48,7 @@ function openingFixture() {
     discipline: "composition",
   };
   store.createContainer(container);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -57,6 +57,7 @@ function openingFixture() {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
@@ -341,6 +342,7 @@ describe("TerminalBroker controller lease", () => {
       fixture.clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     restarted.reconcileMachineHello(fixture.machine.machineId, [
       {

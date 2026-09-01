@@ -131,6 +131,19 @@ export interface RoomTimers {
   schedule(callback: () => void, delayMs: number): () => void;
 }
 
+/**
+ * "Does a container of this discipline hold a tile tree?" — asked of the DECLARATIONS
+ * rather than spelled as a literal (#110, #125). A discipline whose `destinations` include
+ * `tile` is one whose containers are addressed by naming a leaf, and that is exactly what
+ * having a tree means, so the declared list IS the answer.
+ *
+ * A function rather than a table for the reason every other assembly fact reaches this
+ * pillar as one (`payloadRefusal`, `announce`): enablement is hot, a captured table would
+ * answer for a roster that no longer exists, and no floor file may name a plugin
+ * (`AXIOMS.md` §Foundation law). `assemblyTileTrees` builds the production one.
+ */
+export type TileTreeDisciplines = (discipline: string) => boolean;
+
 /** Production wall-clock scheduler for room snapshot debounce. */
 export const defaultRoomTimers: RoomTimers = {
   schedule(callback, delayMs): () => void {
@@ -196,6 +209,13 @@ export class Room {
      * container; the function it is handed decides who hears it and where it is recorded.
      */
     private readonly announce: (containerId: string, principalId: string, kind: EventKind) => void,
+    /**
+     * Whether THIS container holds a tile tree — the declared fact (`TileTreeDisciplines`),
+     * resolved by the manager, which already read the row it answers for. A bit rather than
+     * the lookup, because a room is ONE container: reading the discipline a second time here
+     * would be a second chance to disagree about one fact (invariant 14).
+     */
+    holdsTileTree: boolean,
   ) {
     const record = store.latestDoc(containerId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
@@ -228,21 +248,18 @@ export class Room {
     });
 
     /*
-      A composition renders its layout tree, so the tree must exist before the first channel
-      joins. The discipline lives on the container row, and seeding is idempotent, so a
-      container loaded from a snapshot keeps its stored tree.
+      A container that holds a tile tree renders that tree, so the root must exist before the
+      first channel joins. Seeding is idempotent, so a container loaded from a snapshot keeps
+      the tree it stored.
 
-      THE ONE PLACE THE DISCIPLINE ROSTER DID NOT REACH (#110). "Does this container hold a
-      tile tree?" is declared data now — it is `destinations: ["tile"]` on the discipline —
-      but a `Room` is built from a store row and a clock, with no reach into the assembly,
-      and the roster is bound after the room manager exists. So a THIRD-PARTY tile-tree
-      discipline gets no seeded root here, and behaves like a canvas until this asks the
-      declaration instead of the literal. The two shipped disciplines are unaffected; the
-      remainder is named rather than left to be discovered.
+      WHICH containers those are is DECLARED, never spelled here (#110, #125): a discipline
+      whose `destinations` include `tile` is one whose containers are addressed by naming a
+      leaf, and that is what holding a tree means. The answer arrives from the manager for
+      the reason the payload boundary and the announcement above arrive as functions — the
+      declarations are the assembly's and this pillar may not know a plugin exists — so a
+      third-party tile-tree discipline is seeded exactly like the shipped one.
     */
-    if (store.getContainer(containerId)?.discipline === "composition") {
-      initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
-    }
+    if (holdsTileTree) initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
   }
 
   private attendance(): PresenceState[] {
@@ -1021,6 +1038,15 @@ export class RoomManager {
     private readonly runtime: RuntimeDeps,
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
+    /**
+     * The declared tile-tree question (`TileTreeDisciplines`), a CONSTRUCTOR dependency
+     * rather than an installed one like the providers below. The roster reaches it as a
+     * thunk (`assemblyTileTrees`), so nothing here has to wait for the assembly — and a
+     * default would have to answer "does this hold a tile tree?" before anything declared
+     * an answer, which for a room means seeding no root over somebody's tree or seeding one
+     * over a canvas. There is no honest default, so there is no default.
+     */
+    private readonly holdsTileTree: TileTreeDisciplines,
   ) {}
 
   /** Installs the broker's per-container terminal view after circular startup wiring done. */
@@ -1091,7 +1117,7 @@ export class RoomManager {
         Y.applyUpdate(doc, record.doc);
         census = censusFor(
           container.id,
-          container.discipline === "composition" ? readTileLayout(doc, container.id) : null,
+          this.holdsTileTree(container.discipline) ? readTileLayout(doc, container.id) : null,
           [...readElements(doc).values()].sort(compareElements),
         );
       } catch {
@@ -1115,7 +1141,8 @@ export class RoomManager {
 
   /** Returns a canonical room only when its durable container exists. */
   get(containerId: string): Room | null {
-    if (this.store.getContainer(containerId) === null) return null;
+    const container = this.store.getContainer(containerId);
+    if (container === null) return null;
     let room = this.rooms.get(containerId);
     if (room === undefined) {
       room = new Room(
@@ -1136,6 +1163,7 @@ export class RoomManager {
         (announcedContainerId, principalId, kind) => {
           this.announce(announcedContainerId, principalId, kind);
         },
+        this.holdsTileTree(container.discipline),
       );
       this.rooms.set(containerId, room);
     }

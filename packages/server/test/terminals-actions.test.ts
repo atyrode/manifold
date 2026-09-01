@@ -23,6 +23,7 @@ import {
   testEventHub,
   testPluginHost,
   testStore,
+  testTileTrees,
 } from "./helpers.ts";
 
 /**
@@ -85,7 +86,7 @@ function fixture(): TerminalsFixture {
     discipline: "composition",
   };
   store.createContainer(container);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -94,6 +95,7 @@ function fixture(): TerminalsFixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));

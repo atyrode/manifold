@@ -23,6 +23,7 @@ import {
   testEventHub,
   testPluginHost,
   testStore,
+  testTileTrees,
 } from "./helpers.ts";
 
 /** Tests that are not about routing drive one channel per socket, exactly as v11 did. */
@@ -55,7 +56,7 @@ function gatewayFixture(): GatewayFixture {
     discipline: "canvas",
   };
   store.createContainer(container);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -64,6 +65,7 @@ function gatewayFixture(): GatewayFixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));

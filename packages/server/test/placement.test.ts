@@ -64,6 +64,7 @@ import {
   placeTile,
   testPluginHost,
   testStore,
+  testTileTrees,
 } from "./helpers.ts";
 
 const OWNER_KEY = "f".repeat(64);
@@ -184,7 +185,7 @@ function placementFixture(): PlacementFixture {
   const spare = newContainer("spare", "canvas");
   const composition = newContainer("composition", "composition");
   const otherComposition = newContainer("other composition", "composition");
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -193,6 +194,7 @@ function placementFixture(): PlacementFixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
