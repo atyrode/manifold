@@ -820,7 +820,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "inspector",
-      "means": "the operator-facing probe (core.debug, F10): point at any painted thing and be told its display noun, its manifold:// address, its owning plugin, which registered component paints it, the doors reachable under it and who occupies it. A probe read by a PERSON rather than by a gate or an agent, which is why it has its own word, and read-only like every probe — its only writes are vantage.tool while armed, the clipboard, and the host's own navigation",
+      "means": "the operator-facing probe (core.debug, F10): point at any painted thing and be told its display noun, its manifold:// address, its owning plugin, which registered component paints it, the doors reachable under it and who occupies it. A probe read by a PERSON rather than by a gate or an agent, which is why it has its own word. It holds no write of its own — its direct writes are vantage.tool while armed, the clipboard, and the host's own navigation — but since #128 its pinned card OPENS the doors it lists: a generated form per action schema, dispatched through the action door exactly as any client would, refusals rendered as data",
       "banned": [],
       "allow": []
     },
