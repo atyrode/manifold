@@ -32,7 +32,7 @@
  * server + agent on an ephemeral port, restores every plugin it toggled, cleans up.
  * Env: MANIFOLD_CHROMIUM (else system chromium), MANIFOLD_GATE_DIST (shared bundle).
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ts from "typescript";
@@ -76,25 +76,13 @@ import {
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const failures: string[] = [];
 
-function check(name: string, ok: boolean, detail: string): void {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-  if (!ok) failures.push(`${name}: ${detail}`);
-}
-
-/** Polls a rendered condition and ANSWERS instead of throwing, so a miss reads as FAIL. */
-async function settles(probe: () => Promise<boolean> | boolean, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await probe()) return true;
-    if (Date.now() > deadline) return false;
-    await sleep(200);
-  }
-}
+const check = checkInto(failures);
 
 /**
  * OPENS THE PLUGIN MANAGER, because the ledger is a MODAL now (issue #91): the rail's row is
@@ -2260,16 +2248,6 @@ async function consumeServerLog(): Promise<void> {
   }
 }
 
-async function stopServer(): Promise<void> {
-  if (server.exitCode === null) server.kill("SIGTERM");
-  const stopped = await Promise.race([
-    server.exited.then(() => true),
-    Bun.sleep(5_000).then(() => false),
-  ]);
-  if (!stopped && server.exitCode === null) server.kill("SIGKILL");
-  await server.exited;
-}
-
 function debugPortIsAvailable(port: number): boolean {
   try {
     const probe = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
@@ -2312,7 +2290,7 @@ try {
     "local server healthz",
   );
 
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
 
   const getJson = async (path: string, token = ownerKey): Promise<unknown> =>
     await (
@@ -4553,7 +4531,7 @@ try {
     `core.draw` off is a check that broke the thing it was inspecting.
   */
   if (disabledHere.size > 0 && origin !== "") {
-    const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+    const ownerKey = await ownerKeyOf(dataDir);
     for (const id of disabledHere) {
       try {
         await fetch(`${origin}/api/actions/${ENGINE_SET_ENABLED_ACTION}`, {
@@ -4569,8 +4547,7 @@ try {
   canvasClient?.close();
   terminalClient?.close();
   await browser?.close();
-  await stopServer();
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
   cleanupDist();
 }
 

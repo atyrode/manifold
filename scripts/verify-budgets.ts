@@ -29,14 +29,15 @@
  * no armed timer. A dead feed and a subscribed one are both silent on the network; only the feed
  * can tell them apart, so it is asked.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PolledFeedReport as FeedReport } from "../packages/plugin/src/polled-resource.ts";
 import { ActionOutcomeSchema, type SceneElement } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { checkInto, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -111,10 +112,7 @@ const failures: string[] = [];
 let browser: Browser | null = null;
 let seeder: SessionClient | null = null;
 
-function check(name: string, ok: boolean, detail: string): void {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-  if (!ok) failures.push(`${name}: ${detail}`);
-}
+const check = checkInto(failures);
 
 async function ownerAction(name: string, args: unknown): Promise<unknown> {
   const response = await fetch(`${origin}/api/actions/${name}`, {
@@ -546,9 +544,7 @@ try {
 } finally {
   (seeder as SessionClient | null)?.close();
   await browser?.close();
-  server.kill();
-  await server.exited;
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
   cleanupDist();
 }
 

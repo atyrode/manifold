@@ -30,7 +30,7 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -47,7 +47,8 @@ import {
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { ROOT_RING_PX } from "../packages/plugin/src/tile-geometry.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-tile-");
@@ -76,26 +77,13 @@ let viewer: Browser | null = null;
 let canvasClient: SessionClient | null = null;
 let viewClient: SessionClient | null = null;
 
-function check(name: string, ok: boolean, detail: string): void {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-  if (!ok) failures.push(`${name}: ${detail}`);
-}
+const check = checkInto(failures);
 
 interface Rect {
   readonly left: number;
   readonly top: number;
   readonly width: number;
   readonly height: number;
-}
-
-/** Polls a rendered condition and ANSWERS instead of throwing, so a miss reads as FAIL. */
-async function settles(probe: () => Promise<boolean> | boolean, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await probe()) return true;
-    if (Date.now() > deadline) return false;
-    await sleep(200);
-  }
 }
 
 const elementRect = (target: Browser, selector: string): Promise<Rect | null> =>
@@ -257,7 +245,7 @@ try {
     20_000,
     "local server healthz",
   );
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
   const listTerminals = async (): Promise<readonly TerminalSummary[]> => {
@@ -1367,8 +1355,7 @@ try {
   canvasClient?.close();
   await browser?.close();
   await viewer?.close();
-  server.kill();
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
   cleanupDist();
 }
 
