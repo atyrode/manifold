@@ -204,17 +204,7 @@ function lifecycleFixture(): LifecycleFixture {
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
   const opener = new SessionChannel(runtime.newId(), socket, root, canvas.id, "c1");
-  const app = new HttpApp(
-    config,
-    store,
-    auth,
-    rooms,
-    broker,
-    placement,
-    machines,
-    plugins,
-    silentLogger,
-  );
+  const app = new HttpApp(config, store, auth, rooms, broker, machines, plugins, silentLogger);
   const fixture: LifecycleFixture = {
     runtime,
     store,
@@ -419,6 +409,25 @@ function actionContainer(payload: unknown): Container {
   return ContainerResponseSchema.parse(outcome.result).container;
 }
 
+/**
+ * Leaf removal, through the door that owns it (`core.space.removeTile`). It was a bespoke
+ * `DELETE /api/containers/:id/tiles/:tileId` until issue #114 — the one mutation that committed
+ * workspace state without passing the dispatch ladder — and these cases are that route's cases
+ * rung for rung. The two state failures now read as `refused` denials rather than HTTP 404/409,
+ * which is the move `core.space.place` already made: a refusal is data, so every outcome is 200.
+ */
+async function removeTile(
+  fixture: LifecycleFixture,
+  containerId: string,
+  tileId: string,
+  token = OWNER_KEY,
+): Promise<{ status: number; payload: unknown }> {
+  return await call(fixture, "POST", "/api/actions/core.space.removeTile", token, {
+    containerId,
+    tileId,
+  });
+}
+
 /** The terminal index, through the door that owns it (`core.terminals.listAll`). */
 async function indexRows(fixture: LifecycleFixture): Promise<readonly TerminalSummary[]> {
   const response = await call(
@@ -604,15 +613,10 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     const born = bornOnCanvas(fixture, "ref-1");
     fixture.machine.clear();
 
-    const removed = await call(
-      fixture,
-      "DELETE",
-      `/api/containers/${born.homeId}/tiles/${born.leafId}`,
-      OWNER_KEY,
-    );
+    const removed = await removeTile(fixture, born.homeId, born.leafId);
 
     expect(removed.status).toBe(200);
-    expect(removed.payload).toEqual({ ok: true });
+    expect(removed.payload).toEqual({ ok: true, result: {} });
     // There is no pool to fall back into: the operator who closed the last leaf closed the
     // terminal, and nothing about that is recoverable state.
     expect(fixture.machine.sent).toEqual([{ type: "kill", terminalId: born.terminalId }]);
@@ -627,12 +631,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     if (second === null) throw new Error("second leaf refused");
     fixture.machine.clear();
 
-    const removed = await call(
-      fixture,
-      "DELETE",
-      `/api/containers/${born.homeId}/tiles/${second}`,
-      OWNER_KEY,
-    );
+    const removed = await removeTile(fixture, born.homeId, second);
 
     expect(removed.status).toBe(200);
     expect(fixture.machine.sent).toEqual([]);
@@ -767,12 +766,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     );
     byIdentity.machine.clear();
 
-    const closed = await call(
-      byTile,
-      "DELETE",
-      `/api/containers/${tileBorn.homeId}/tiles/${tileBorn.leafId}`,
-      OWNER_KEY,
-    );
+    const closed = await removeTile(byTile, tileBorn.homeId, tileBorn.leafId);
     const identityKilled = await call(
       byIdentity,
       "POST",
@@ -808,7 +802,7 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
     const fixture = lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
-    await call(fixture, "DELETE", `/api/containers/${born.homeId}/tiles/${born.leafId}`, OWNER_KEY);
+    await removeTile(fixture, born.homeId, born.leafId);
 
     expect(fixture.store.getContainer(born.homeId)).toBeNull();
     expect(fixture.store.listContainers().map((container) => container.id)).toEqual([
@@ -832,28 +826,21 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
     const emptyId = actionContainer(created.payload).id;
     expect(leafIds(fixture, emptyId)).toEqual([ROOT_TILE_ID]);
 
-    const refused = await call(
-      fixture,
-      "DELETE",
-      `/api/containers/${emptyId}/tiles/${ROOT_TILE_ID}`,
-      OWNER_KEY,
-    );
+    const refused = await removeTile(fixture, emptyId, ROOT_TILE_ID);
 
     // Nothing ever LEFT this container, so nothing retires it: the root of an empty
     // composition is not removable and the row stays in the index. This asymmetry is what
     // replaced the stored `transient` flag — it is the departure that deletes, not the
     // emptiness, and only the call site right after a removal may apply the rule.
-    expect(refused.status).toBe(409);
+    expect(refused.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "conflict: tile is not removable" },
+    });
     expect(fixture.store.getContainer(emptyId)).not.toBeNull();
 
     // The other half of the asymmetry, in the same world: a home emptied BY a departure goes.
     const born = bornOnCanvas(fixture, "ref-1");
-    const reaped = await call(
-      fixture,
-      "DELETE",
-      `/api/containers/${born.homeId}/tiles/${born.leafId}`,
-      OWNER_KEY,
-    );
+    const reaped = await removeTile(fixture, born.homeId, born.leafId);
     expect(reaped.status).toBe(200);
     expect(fixture.store.getContainer(born.homeId)).toBeNull();
     expect(fixture.store.getContainer(emptyId)).not.toBeNull();

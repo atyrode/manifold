@@ -167,17 +167,7 @@ function indexFixture(): IndexFixture {
   const machine = new FakeMachine(auth.enrollMachine(MACHINE_NAME, root).machine.id);
   broker.setMachineOnline(machine);
   const opener = new SessionChannel(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
-  const app = new HttpApp(
-    config,
-    store,
-    auth,
-    rooms,
-    broker,
-    placement,
-    machines,
-    plugins,
-    silentLogger,
-  );
+  const app = new HttpApp(config, store, auth, rooms, broker, machines, plugins, silentLogger);
   const fixture: IndexFixture = {
     runtime,
     store,

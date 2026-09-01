@@ -1514,10 +1514,10 @@ export class PlaceExecutor {
   }
 
   /**
-   * Removes one leaf (`DELETE /api/containers/:id/tiles/:tileId`). Removal is NOT a
-   * placement, and it is deliberately not what `tile -> unplaced` means: releasing a leaf
-   * RE-HOMES its occupant, while closing one DESTROYS it. Two verbs, two doors, and the
-   * destructive one is never reached by a drag.
+   * Removes one leaf, for the door `core.space.removeTile`. Removal is NOT a placement, and
+   * it is deliberately not what `tile -> unplaced` means: releasing a leaf RE-HOMES its
+   * occupant, while closing one DESTROYS it. Two verbs, two doors, and the destructive one is
+   * never reached by a drag.
    *
    * Removing a terminal's LAST home leaf destroys the terminal. That is deliberate and it
    * is the only honest reading of the model: a terminal lives in exactly one composition,

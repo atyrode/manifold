@@ -918,7 +918,6 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/layout",
   "/api/bindings",
   "/api/attendance",
-  "/api/containers/:id/tiles/:id",
   "/api/plugins",
   "/api/protocol",
   "/api/resolve",

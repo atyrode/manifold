@@ -377,7 +377,6 @@ export {
   MachineSummarySchema,
   type MachineSummary,
   MachinesResponseSchema,
-  OkResponseSchema,
   IndexResponseSchema,
   ContainerResponseSchema,
   AttendanceResponseSchema,
