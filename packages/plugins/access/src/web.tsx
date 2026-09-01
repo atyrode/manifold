@@ -76,6 +76,12 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
   const caps = host.client.selfCaps();
   const mayRevoke = caps.includes("*") || caps.includes("tokens:mint");
   const [rows, setRows] = useState<readonly PrincipalCredentials[] | null>(null);
+  /**
+   * When the list was READ, which is the instant every "expires in N days" label is
+   * relative to. State written beside the rows it describes, never `Date.now()` in render:
+   * the label describes the list as of its read, and a re-read refreshes both together.
+   */
+  const [readAt, setReadAt] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
   /**
    * Which row's withdrawal is ARMED. Revocation severs live sockets, so it is a two-press
@@ -99,11 +105,24 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
       return;
     }
     setFailure(null);
+    setReadAt(Date.now());
     setRows(parsed.data.principals);
   }, [host.client]);
 
+  /*
+   * The boot read, in the shape the floor's own boot fetches wear (plugin-host.tsx): the
+   * async work lives inside the effect and a stale flag swallows a resolution that lands
+   * after unmount. `read` itself stays for the post-withdrawal refresh, an event path.
+   */
   useEffect(() => {
-    void read();
+    let stale = false;
+    void (async (): Promise<void> => {
+      if (stale) return;
+      await read();
+    })();
+    return () => {
+      stale = true;
+    };
   }, [read]);
 
   /**
@@ -137,7 +156,7 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
     }
   };
 
-  const now = Date.now();
+  const now = readAt;
   const live = rows?.reduce((total, row) => total + row.sessions.length, 0) ?? 0;
 
   return (
