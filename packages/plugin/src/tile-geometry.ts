@@ -331,28 +331,25 @@ interface Seam {
  * flank's own `SNAP_EDGE_BAND`, so a flank always keeps an outer stretch meaning "split
  * this pane".
  *
- * ALONG: THREE rings from each end, because what an end stretch competes with is the ROOT
- * RING. A group's seam frequently terminates ON the area border (in `A | (B / (C|D))` the
- * inner row's bottom end IS the frame's bottom edge), the ring resolves first and is up to
- * one ring deep there, so an end only one ring long would sit entirely inside it and the
- * group's "split across, below" — the one geometry issue #60 exists to make reachable —
- * would have no pixels at all.
- *
- * TWO is not enough either, and the reason is 2.1's latch in a new place: the hysteresis
- * margin is bounded by half the stretch, so a held MIDDLE pulls the end boundary in to at
- * worst half of it. At two rings that lands exactly on the ring's lip, and a pointer
- * travelling out of the middle — which is every approach — could never reach the end at
- * all. At three, half the stretch is a ring and a half, so at least half a ring of the end
- * stays live in every hysteresis state. The result is a square-ish target rather than the
+ * ALONG: FOUR rings from each end, and every one of them is load-bearing. The end stretch
+ * competes with the ROOT RING, because a group's seam frequently terminates ON the area
+ * border (in `A | (B / (C|D))` the inner row's bottom end IS the frame's bottom edge); the
+ * ring resolves first and is up to one ring deep there, so the outermost ring-width is
+ * never the end's. And the hysteresis margin is bounded by half the stretch, so a held
+ * MIDDLE — which is the state of every pointer travelling OUT of the middle toward an end,
+ * i.e. every approach — pulls the boundary in to at worst half. Two rings leaves the
+ * held-middle boundary exactly on the ring's lip and the end unreachable by approach,
+ * which is 2.1's latch in a new place; three leaves half a ring, measurably live but too
+ * thin to aim at. Four leaves a full ring-width live under a held middle and three
+ * ring-widths once the end is held, which is a square-ish target rather than the
  * 6 px × 500 px sliver the old fraction produced.
  *
  * Capped at `SNAP_EDGE_BAND` of the split, which is where the old flat cut sat, so the
- * middle always keeps at least half the seam. In real geometry the cap never binds — three
- * 20 px rings is 60 px against a quarter of the axis — so it only governs a group thinner
- * than about twelve ring-widths, where the ring legitimately owns the whole end anyway.
+ * middle always keeps at least half the seam. In real geometry the cap only binds on a
+ * group thinner than sixteen ring-widths, where the ring legitimately owns the end anyway.
  */
 const SEAM_ACROSS = { reach: 0.5, cap: 0.5 * SNAP_EDGE_BAND } as const;
-const SEAM_END = { reach: 3, cap: SNAP_EDGE_BAND } as const;
+const SEAM_END = { reach: 4, cap: SNAP_EDGE_BAND } as const;
 
 /**
  * THE seam measurement, in unit space and in one place (see the block above). `ringAxis`

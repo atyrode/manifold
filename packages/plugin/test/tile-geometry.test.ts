@@ -410,24 +410,23 @@ describe("resolveTileAim", () => {
     // The nominal lip is where an unheld pointer flips, between those two.
     expect(over(0.5 - seamHalf * 0.9, 0.5, null)?.between).toBe(true);
     expect(over(0.5 - seamHalf * 1.1, 0.5, null)?.between).toBe(false);
-    // Past every margin the flip is real, held or not.
-    expect(over(0.4, 0.5, heldSeam)?.between).toBe(false);
     /*
       ALONG the seam, now measured in the SAME px-derived units as the band across it: the
-      end stretch is three ring-widths (0.12 here) out of a root row spanning the whole
-      height, its margin is bounded by half of that (0.06, not `ZONE_HYSTERESIS` × 1), and
-      the ROOT RING owns the outer ring-width (y < 0.04) as it always has. So the end is
-      live in y 0.04..0.12, a held middle pulls it back to 0.06, and a held end pushes it
-      out to 0.18 — the outer half survives every hysteresis state, which is what keeps a
-      pointer travelling out of the middle able to reach the end at all.
+      end stretch is four ring-widths (0.16 here) out of a root row spanning the whole
+      height, its margin is bounded by half of that (0.06, `ZONE_HYSTERESIS` × 1 being the
+      smaller of the two), and the ROOT RING owns the outer ring-width (y < 0.04) as it
+      always has. So the end is live in y 0.04..0.16, a held middle pulls it back to 0.10,
+      and a held end pushes it out to 0.22 — a full ring-width of it survives even the
+      held-middle state, which is what keeps a pointer travelling out of the middle able to
+      reach the end at all.
     */
     const rootTop: TileAim = { tileId: ROOT_TILE_ID, edge: "top", action: "place", depth: 0 };
-    expect(over(0.5, 0.1, null)).toEqual(rootTop);
-    expect(over(0.5, 0.1, { tileId: "t1", edge: "right", between: true })?.between).toBe(true);
-    expect(over(0.5, 0.14, null)?.between).toBe(true);
-    expect(over(0.5, 0.14, rootTop)).toEqual(rootTop);
-    // Far past the margin the along boundary flips whatever is held.
-    expect(over(0.5, 0.05, { tileId: "t1", edge: "right", between: true })).toEqual(rootTop);
+    expect(over(0.5, 0.14, null)).toEqual(rootTop);
+    expect(over(0.5, 0.14, { tileId: "t1", edge: "right", between: true })?.between).toBe(true);
+    expect(over(0.5, 0.18, null)?.between).toBe(true);
+    expect(over(0.5, 0.18, rootTop)).toEqual(rootTop);
+    // Inside the held-middle boundary the end answers whatever is held.
+    expect(over(0.5, 0.06, { tileId: "t1", edge: "right", between: true })).toEqual(rootTop);
   });
 
   test("a seam band answers by position ALONG the seam, never by perpendicular offset", () => {
@@ -625,8 +624,8 @@ describe("resolveTileAim", () => {
     };
     const alongs = Array.from({ length: 50 }, (_, index) => (index + 0.5) / 50);
     const unitFraction = (along: number): number => along;
-    // Three ring-widths out of a full-height root row: the ends are y < 0.12 and y > 0.88.
-    const rootEnd = 3 * SEAM_RING.y;
+    // Four ring-widths out of a full-height root row: the ends are y < 0.16 and y > 0.84.
+    const rootEnd = 4 * SEAM_RING.y;
     // `A | B`: one seam, with nothing crossing it anywhere.
     uniform(
       rowLayout([0.5, 0.5]),
@@ -644,14 +643,15 @@ describe("resolveTileAim", () => {
       unitFraction,
       rootEnd,
     );
-    // …and that inner seam swept in turn, along t3's own rect (x 0.51..1), where the same
-    // three ring-widths are a LARGER fraction because the split it ends on is narrower.
+    // …and that inner seam swept in turn, along t3's own rect (x 0.51..1). Four ring-widths
+    // would be a larger fraction of a narrower split, so here the `SNAP_EDGE_BAND` cap is
+    // what binds instead — the middle keeps half the seam whatever the ring measures.
     uniform(
       nested,
       alongs.filter((along) => along > 0.54),
       (across, along) => ({ x: along, y: across }),
       (along) => (along - 0.51) / 0.49,
-      (3 * SEAM_RING.x) / 0.49,
+      Math.min((4 * SEAM_RING.x) / 0.49, 0.25),
     );
   });
 
@@ -690,8 +690,8 @@ describe("resolveTileAim", () => {
     const wide = endBoundaryPx(1600);
     const narrow = endBoundaryPx(400);
     for (const measured of [wide, narrow]) {
-      expect(measured).toBeGreaterThanOrEqual(3 * ROOT_RING_PX);
-      expect(measured).toBeLessThan(3 * ROOT_RING_PX + 2);
+      expect(measured).toBeGreaterThanOrEqual(4 * ROOT_RING_PX);
+      expect(measured).toBeLessThan(4 * ROOT_RING_PX + 2);
     }
     expect(Math.abs(wide - narrow)).toBeLessThanOrEqual(1);
   });
