@@ -3,7 +3,15 @@ import {
   type ProjectionRegistry,
   type WorkspaceOverlayProps,
 } from "@manifold/plugin/hooks";
-import { currentVantage, setVantage, useNotice, useVantage } from "@manifold/plugin/ui";
+import {
+  Chip,
+  KeyValueList,
+  KeyValueRow,
+  currentVantage,
+  setVantage,
+  useNotice,
+  useVantage,
+} from "@manifold/plugin/ui";
 import {
   GrantsSchema,
   MANIFOLD_ROOT_URI,
@@ -24,11 +32,11 @@ import {
   useRef,
   useState,
   type ReactElement,
-  type ReactNode,
 } from "react";
 import { z } from "zod";
 
 import { ancestryOf, declaringChainOf, subtreeOf, type Subtree } from "./dom.ts";
+import { DoorForms } from "./door-forms.tsx";
 import {
   actionOwner,
   declarationAddress,
@@ -52,17 +60,22 @@ import {
  * assembly) with things existing doors already answer, and it holds no state of its own about
  * the workspace.
  *
- * READ-ONLY, and structurally so: it MUTATES nothing, opens no pipe, writes no document. It
- * does dispatch — four read doors, and only from a PIN: `/api/resolve` and `/api/attendance`
- * for what an address names and who is in it, `core.access.listGrants` for the authority that
- * reaches it, and `core.events.list` for the trace ledger's last word on it. Every one is a
- * read somebody else already published; none of them is reachable except by deliberately
- * pinning a reading, and three of the four are root-only, so a non-root reader gets the
- * door's own refusal printed as an answer rather than a section that quietly says nothing.
- * The only thing it WRITES anywhere is `vantage.tool`, which is how a mode becomes observable
- * (A2) — a collaborator can see that this principal is inspecting rather than working, and an
- * agent can read the mode back. Its other affordances — copy, and navigating a breadcrumb hop
- * — are the clipboard and the host's own navigation.
+ * READ-ONLY BY DEFAULT, and structurally so: it MUTATES nothing on its own, opens no pipe,
+ * writes no document. It does dispatch — four read doors, and only from a PIN: `/api/resolve`
+ * and `/api/attendance` for what an address names and who is in it, `core.access.listGrants`
+ * for the authority that reaches it, and `core.events.list` for the trace ledger's last word
+ * on it. Every one is a read somebody else already published; none of them is reachable except
+ * by deliberately pinning a reading, and three of the four are root-only, so a non-root reader
+ * gets the door's own refusal printed as an answer rather than a section that quietly says
+ * nothing. The ONE exception is deliberate and loud (#128): a pinned door renders its
+ * published input schema as a generated form (`door-forms.tsx`), and SUBMITTING it dispatches
+ * that door through `host.client.action` — the same one door every dispatch takes, refusals
+ * answered as data, every invocation traced (A6). Reading stays free; acting is a form the
+ * reader filled and a button the reader pressed, never a side effect of looking.
+ * The only thing it writes on its own account is `vantage.tool`, which is how a mode becomes
+ * observable (A2) — a collaborator can see that this principal is inspecting rather than
+ * working, and an agent can read the mode back. Its other affordances — copy, and navigating
+ * a breadcrumb hop — are the clipboard and the host's own navigation.
  *
  * THE DOORS ARE NAMED AS STRINGS, deliberately and by the same rule the Index's terminal
  * rename follows: a plugin never imports another plugin's package (that is gate RED, S-checks),
@@ -249,16 +262,6 @@ function painterOf(subject: Declaration | null, registry: ProjectionRegistry): P
   };
 }
 
-/** One labelled row of the chip or the card. The chip is a definition list, because it is one. */
-function Row({ label, children }: { label: string; children: ReactNode }): ReactElement {
-  return (
-    <div className="inspector-row">
-      <dt className="inspector-label">{label}</dt>
-      <dd className="inspector-value">{children}</dd>
-    </div>
-  );
-}
-
 /**
  * The chip and the card share their identity block: noun, address, owner, painter. The card adds
  * to it rather than restating it, so what a reader learns by hovering never disagrees with what
@@ -289,34 +292,30 @@ function IdentityBlock({
       : (roster.find((entry) => entry.manifest.id === identity.plugin) ?? null);
   const noun = identity.subject === null ? "nothing" : declarationNoun(identity.subject, roster);
   return (
-    <dl className="inspector-rows">
-      <Row label="is">
+    <KeyValueList>
+      <KeyValueRow label="is">
         <strong className="inspector-noun">{noun}</strong>
         {identity.subject === null ? null : (
           <span className="inspector-declared">
             {identity.subject.attribute}=&quot;{identity.subject.id}&quot;
           </span>
         )}
-      </Row>
-      <Row label="at">
+      </KeyValueRow>
+      <KeyValueRow label="at">
         {identity.uri === null ? (
           <span className="inspector-absent">not addressable</span>
         ) : (
           <>
             <code className="inspector-uri">{identity.uri}</code>
             {onCopy === null ? null : (
-              <button
-                type="button"
-                className="inspector-copy"
-                onClick={() => onCopy(identity.uri ?? "")}
-              >
+              <Chip className="inspector-copy" onClick={() => onCopy(identity.uri ?? "")}>
                 Copy
-              </button>
+              </Chip>
             )}
           </>
         )}
-      </Row>
-      <Row label="owner">
+      </KeyValueRow>
+      <KeyValueRow label="owner">
         {owner === null ? (
           <span className="inspector-absent">unowned</span>
         ) : (
@@ -330,8 +329,7 @@ function IdentityBlock({
             {onNavigate === null ? (
               owner.manifest.title
             ) : (
-              <button
-                type="button"
+              <Chip
                 className="inspector-hop"
                 title={formatManifoldUri({ kind: "plugin", pluginId: owner.manifest.id })}
                 onClick={() =>
@@ -339,15 +337,15 @@ function IdentityBlock({
                 }
               >
                 {owner.manifest.title}
-              </button>
+              </Chip>
             )}{" "}
             <span className="inspector-muted">{owner.manifest.id}</span>{" "}
             <span className="inspector-muted">v{owner.manifest.version}</span>
             {owner.enabled ? null : <span className="inspector-absent"> disabled</span>}
           </>
         )}
-      </Row>
-      <Row label="painted by">
+      </KeyValueRow>
+      <KeyValueRow label="painted by">
         {painter === null ? (
           <span className="inspector-absent">the engine</span>
         ) : (
@@ -356,8 +354,8 @@ function IdentityBlock({
             <span className="inspector-muted">{painter.plugin}</span>
           </>
         )}
-      </Row>
-    </dl>
+      </KeyValueRow>
+    </KeyValueList>
   );
 }
 
@@ -472,15 +470,14 @@ function CrumbHop({
         };
   if (crumb.uri === null) {
     return (
-      <span className="inspector-hop is-inert" {...aiming}>
+      <Chip className="inspector-hop is-inert" {...aiming}>
         {crumb.label}
-      </span>
+      </Chip>
     );
   }
   const uri = crumb.uri;
   return (
-    <button
-      type="button"
+    <Chip
       className="inspector-hop"
       title={uri}
       onClick={() => {
@@ -489,7 +486,7 @@ function CrumbHop({
       {...aiming}
     >
       {crumb.label}
-    </button>
+    </Chip>
   );
 }
 
@@ -637,8 +634,8 @@ function PinCard({
         onCopy={onCopy}
         onNavigate={navigate}
       />
-      <dl className="inspector-rows">
-        <Row label="resolves">
+      <KeyValueList>
+        <KeyValueRow label="resolves">
           {pin.identity.uri === null ? (
             <span className="inspector-absent">no address to resolve</span>
           ) : resolved === null ? (
@@ -650,8 +647,8 @@ function PinCard({
           ) : (
             <span className="inspector-absent">the workspace holds no such node</span>
           )}
-        </Row>
-        <Row label="path">
+        </KeyValueRow>
+        <KeyValueRow label="path">
           <span className="inspector-path">
             {path.map((crumb, index) => (
               <Fragment key={`${crumb.label}:${String(index)}`}>
@@ -664,24 +661,24 @@ function PinCard({
               </Fragment>
             ))}
           </span>
-        </Row>
-        <Row label="holds">
+        </KeyValueRow>
+        <KeyValueRow label="holds">
           {String(pin.subtree.children)} declared {pin.subtree.children === 1 ? "thing" : "things"}
-        </Row>
-        <Row label="doors">
+        </KeyValueRow>
+        {/*
+          THE DOORS, OPENABLE (#128): each composed door is a chip whose popover holds the
+          form GENERATED from its published input schema, and submitting dispatches through
+          `host.client.action` — the inspector as the no-code console. A declared door the
+          assembly does not hold stays an inert chip: unreachable is an answer, not a gap.
+        */}
+        <KeyValueRow label="doors">
           {pin.subtree.doors.length === 0 ? (
             <span className="inspector-absent">none — nothing under here mutates</span>
           ) : (
-            <span className="inspector-doors">
-              {pin.subtree.doors.map((door) => (
-                <code key={door} className="inspector-door">
-                  {door}
-                </code>
-              ))}
-            </span>
+            <DoorForms doors={pin.subtree.doors} host={host} />
           )}
-        </Row>
-        <Row label="occupants">
+        </KeyValueRow>
+        <KeyValueRow label="occupants">
           {occupants === null ? (
             <span className="inspector-absent">not a room</span>
           ) : occupants.length === 0 ? (
@@ -700,7 +697,7 @@ function PinCard({
               ))}
             </span>
           )}
-        </Row>
+        </KeyValueRow>
         {/*
           EFFECTIVE AUTHORITY, which is the walk and not the row. `listGrants({ node })` matches
           one node exactly, so the rows that decide what may happen HERE are the union over the
@@ -708,7 +705,7 @@ function PinCard({
           a `node` grant at an ancestor does not. Printing only the rows filed at this exact
           address would answer a different question than the evaluator asks.
         */}
-        <Row label="authority">
+        <KeyValueRow label="authority">
           {pin.identity.uri === null ? (
             <span className="inspector-absent">no address to hold authority over</span>
           ) : grants.state === "asking" ? (
@@ -733,7 +730,7 @@ function PinCard({
               ))}
             </span>
           )}
-        </Row>
+        </KeyValueRow>
         {/*
           THE LEDGER'S LAST WORD ON THIS NODE — the A6 join, and only a join: `core.events.list`
           answers the newest traces, `targets` says which nodes each one named, and the match is
@@ -741,7 +738,7 @@ function PinCard({
           because the scan is bounded (see {@link TRACE_SCAN}) and "no history" and "none in the
           newest hundred" are different sentences.
         */}
-        <Row label="trace">
+        <KeyValueRow label="trace">
           {pin.identity.uri === null ? (
             <span className="inspector-absent">no address the ledger could have named</span>
           ) : traces.state === "asking" ? (
@@ -771,17 +768,17 @@ function PinCard({
                   ? `nothing in the newest ${String(traces.value.scanned)} traces`
                   : `${String(Math.min(shown, traces.value.matches.length))} of ${String(traces.value.matches.length)} in the newest ${String(traces.value.scanned)} traces`}
                 {shown < traces.value.matches.length || !traces.value.exhausted ? (
-                  <button type="button" className="inspector-copy" onClick={onMore}>
+                  <Chip className="inspector-copy" onClick={onMore}>
                     Load more
-                  </button>
+                  </Chip>
                 ) : (
                   " — as deep as the door reads"
                 )}
               </span>
             </span>
           )}
-        </Row>
-      </dl>
+        </KeyValueRow>
+      </KeyValueList>
       <p className="inspector-hint">
         {`Pinned — hover is frozen. ${String(roster.length)} plugins are assembled; Esc unpins, F10 leaves.`}
       </p>
@@ -1342,6 +1339,8 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
             onCopy={null}
             onNavigate={null}
           />
+          {/* The invitation, where the mode's one gesture is decided (#131 item 2). */}
+          <p className="inspector-hint">click to pin</p>
         </div>
       )}
       {pin === null ? null : (
@@ -1369,7 +1368,7 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
  * right-hand edge of the screen is still readable: a chip that follows the pointer off-screen
  * is a chip that stops answering exactly where the sidebar rail and the identity footer live.
  */
-const CHIP_BOX = { width: 320, height: 190 } as const;
+const CHIP_BOX = { width: 320, height: 212 } as const;
 const CARD_BOX = { width: 400, height: 460 } as const;
 const EDGE_GUTTER = 10;
 

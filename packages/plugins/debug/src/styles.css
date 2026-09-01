@@ -1,6 +1,6 @@
 /*
- * THE INSPECTOR'S SKIN — the chip that follows the pointer, the card a press pins, and the rows
- * both are built from.
+ * THE INSPECTOR'S SKIN — the chip that follows the pointer, the card a press pins, and the
+ * tints both wear.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
  * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
@@ -8,8 +8,12 @@
  * another stylesheet is gate RED.
  *
  * ONE FAMILY, deliberately: the chip and the card are one reading at two levels of detail, so
- * they share their row vocabulary rather than each declaring a private one. Nothing here paints
- * outside `.inspector*`, and nothing in the product paints inside it.
+ * they share their vocabulary rather than each declaring a private one. The BOXES of that
+ * vocabulary — the labelled row grid, the bordered token, the floating layer — are the ui
+ * stdlib's (`.kv`, `.chip`, `.popover__content`, #131 item 7), so this sheet is down to what
+ * is genuinely this reading's own: which colour an address, a door, a hop or an absence
+ * wears. Nothing here paints outside `.inspector*`, and nothing in the product paints inside
+ * it; the door forms' skin is its own family (`door-form.css`, S13).
  */
 
 /* The layer. Above everything, and transparent to the pointer: a mode whose chrome could be
@@ -82,31 +86,9 @@
   color: #dee2e6;
 }
 
-/* The row vocabulary: a definition list, because a reading of one thing IS one. */
-.inspector-rows {
-  display: grid;
-  margin: 0;
-  gap: 0.15rem;
-}
-
-.inspector-row {
-  display: grid;
-  grid-template-columns: 4.6rem 1fr;
-  gap: 0.4rem;
-  min-width: 0;
-}
-
-.inspector-label {
-  color: #868e96;
-  text-align: right;
-}
-
-.inspector-value {
-  margin: 0;
-  min-width: 0;
-  /* Every value wraps rather than earning a scrollbar: an address is long by nature. */
-  overflow-wrap: anywhere;
-}
+/* The row vocabulary is the stdlib's now (`.kv` in `@manifold/plugin/ui`): the list, the
+   two columns and the wrap-not-scroll value contract all come from `KeyValueList` /
+   `KeyValueRow`. What stays here is TINT — the words' colours are this reading's own. */
 
 .inspector-noun {
   color: #f8f9fa;
@@ -130,18 +112,10 @@
   font-size: 0.7rem;
 }
 
+/* A chip tint, not a box: `Chip` owns the border, padding and hover cue. The margin keeps
+   the control off the address it copies. */
 .inspector-copy {
   margin-left: 0.3rem;
-  border: 1px solid #343a40;
-  border-radius: 0.25rem;
-  background: #1f2226;
-  cursor: pointer;
-  color: #dee2e6;
-  font-size: 0.65rem;
-}
-
-.inspector-copy:hover {
-  border-color: #4c6ef5;
 }
 
 .inspector-doors,
@@ -218,30 +192,21 @@
   color: #868e96;
 }
 
-/* A hop is a button when it has an address to go to, and prose when it has none. Both read
-   the same width so the path does not jitter as the pointer moves. */
+/* A hop is a `Chip` — a button when it has an address to go to, and prose when it has none.
+   The BOX (border, padding, hover cue) is the chip's own, which is what ended the era of
+   button hops with browser padding beside inert spans with none; these rules are the tint
+   that says "this token navigates". */
 .inspector-hop {
-  border: 1px solid #343a40;
-  border-radius: 0.25rem;
-  background: #1f2226;
-  cursor: pointer;
   color: #a5d8ff;
-  font-size: 0.65rem;
-}
-
-.inspector-hop:hover {
-  border-color: #4c6ef5;
 }
 
 .inspector-hop.is-inert {
-  cursor: default;
   color: #868e96;
 }
 
+/* The door tint: amber on a `Chip` in the doors row, amber on a bare `<code>` in a grant or
+   trace sentence — a colour, never a box, so the two uses cannot drift apart. */
 .inspector-door {
-  border-radius: 0.25rem;
-  background: #1f2226;
-  padding: 0 0.2rem;
   color: #ffd8a8;
   font-size: 0.65rem;
 }
@@ -265,6 +230,13 @@
   padding-top: 0.3rem;
   color: #868e96;
   font-size: 0.65rem;
+}
+
+/* The hover chip's one instruction — "click to pin" — gray and italic (#131 item 2): an
+   aside in the mode's own voice, told apart from the reading above it by slant alone. */
+.inspector-chip .inspector-hint {
+  margin-top: 0.25rem;
+  font-style: italic;
 }
 
 /* THE OUTLINE, painted over the workspace and never in it.
