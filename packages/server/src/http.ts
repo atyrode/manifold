@@ -224,6 +224,10 @@ export class HttpApp {
       place a container-scoped token is refused). A denial answers 200 carrying `ok: false`, the
       shape a refused placement uses too — a refusal is an answer about authority or state,
       never a transport failure.
+
+      The trace's `session` is left absent here, and the absence is the datum: a request over
+      this door carries a credential rather than a connection, so "no session" is what the
+      ledger should say about it (axiom A6, ADR 0018 §2).
      */
     const actionMatch = /^\/api\/actions\/([^/]+)$/.exec(pathname);
     if (actionMatch !== null && request.method === "POST") {

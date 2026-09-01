@@ -834,22 +834,49 @@ read door and converts nothing: a grant row had no other door onto it, so this i
 to see what decides every other answer. The floor records `grant_created` and `grant_revoked` in
 the `events` table, `token_minted`'s precedent — audit rows, not manifest-declared event kinds.
 
-**The audit trail (`core.events`).** The server has recorded events since the first migration —
-`principal_joined`, `principal_left`, `terminal_opened`/`renamed`/`bound`/`exited`,
-`token_minted`, `token_revoked` — into the `events` table (`id`, `container_id`, `ts`,
-`principal_id`, `type`, `payload`), pruned to 30 days and 10,000 rows per container. Nothing
-could read them back, so the trail was a fact about the database rather than about the
-workspace. One door now reads it:
+**The journal and its two families (`core.events`).** ONE durable append-only table, `events`,
+holding two row families read through one door. **Event rows** are the durable half of a
+notification — `principal_joined`, `principal_left`,
+`terminal_opened`/`renamed`/`bound`/`exited`, `token_minted`, `token_revoked`,
+`grant_created`/`grant_revoked` — recorded since the first migration. **Trace rows** are axiom
+A6's ledger: one row per exercise of authority at a door, appended by the dispatch ladder
+(schema 14, ADR 0018). Both are pruned by the same policy — 30 days, 10,000 rows per container,
+and 100,000 rows in the container-less bucket (that last ceiling arrived with the ledger: a
+workspace-grade dispatch's trace belongs to no container, and those arrive per dispatch rather
+than per token mint) — and both come back from the same read:
 
 | Action             | Caps | Scope     | Args → Result                                                                                             |
 | ------------------ | ---- | --------- | --------------------------------------------------------------------------------------------------------- |
 | `core.events.list` | `*`  | workspace | `{ limit?: 1..500, kind?: string(1..64), containerId?: string }` → `{ events: EventRow[] }`, newest first |
 
-`EventRow` is `{ id, containerId: string\|null, ts, principalId: string\|null, type, payload }` —
+`EventRow` is
+`{ id, containerId: string\|null, ts, principalId: string\|null, type, payload, door: string\|null, authority: string\|null, targets: string[], outcome: string\|null, session: string\|null }` —
 camelCase, with `payload` carried as the stored JSON TEXT because no schema declares what a given
 event type's payload holds, so a reader decides what to parse and a malformed row still reads as a
 row. The filter's word is `kind` while the row publishes `type`: the filter is the caller's
 question, the row is the column's own name.
+
+**The five trace fields are `door`-discriminated**: an event row carries `door: null`, no
+authority, no outcome, no session and an empty `targets`; a trace row carries all five and
+`type: "trace"`, so `{ kind: "trace" }` IS the ledger and nothing has to be inferred from a NULL
+check. `door` is the full action name; `authority` is what the ladder discharged (`root`, the
+declared caps joined by `+`, or `open` for a door that demands nothing); `targets` are the
+`manifold://` nodes the door named, read off the same emissions the event plane carries and
+published PARSED because the ladder is their only writer; `outcome` is `ok`, `failed`, or the
+denial rung (`TRACE_OUTCOMES` in `@manifold/protocol`), and NULL means the dispatch was still in
+flight — the ledger is written AHEAD of the handler, so an unsettled row is a dispatch that never
+came back rather than a row somebody forgot to finish; `session` is the socket it arrived on, NULL
+meaning the HTTP action door. The `payload` of a trace row is the ARGUMENTS as received, run
+through the same field redaction the JSONL log applies (no `token`/`key`/`authorization`/`secret`,
+no `data`/`env`/`payload` — invariants 5 and 6) and bounded at 4 KiB, past which the row keeps
+`{ oversize, keys }` instead of the bytes.
+
+**Refusals are traced and unregistered names are not.** Every denial rung the ladder can answer
+with lands in the ledger; `unknown_action` does not, because there is no door, no declared
+authority and nothing to attribute, and because the name is caller-chosen — a ledger a stranger
+can write arbitrary `door` values into is a denial-of-service surface (ADR 0018 §4). It stays
+observable in the structured `action` log line. `verify:trace` (T1-T5, `REGISTRY.md` §Gates)
+asserts both halves against the real composed server.
 
 `*` is root-only and deliberate. The trail is workspace-wide and carries OTHER principals'
 activity; no cap in the vocabulary means "may read other people's history", and reusing
@@ -860,9 +887,16 @@ way out of a container — which is why the handler owes `ctx.outsideScope` noth
 bounded at the schema instead of clamped, so the maximum is published in the roster's JSON
 Schema; reading past 500 rows needs paging, and paging needs a cursor this wave does not invent.
 
+The ledger inherits that ruling verbatim, which is half the reason it is a row family here
+rather than a table with a door of its own: a trace names who exercised what, so a second read
+door would be a second place to get the authority question wrong (invariant 14). Traces are also
+deliberately NOT subscribable — the event plane carries what a door announced, not the record of
+its being allowed to.
+
 `core.events` contributes no panel, section, element or tool — a door-only plugin, like
 `core.access`. It is not `essential`: the rows keep accruing while it is off (a disable retains,
-ADR 0013 §1), so re-enabling restores the whole trail.
+ADR 0013 §1) — trace rows included, because the ladder writes them through the store rather than
+through this plugin — so re-enabling restores the whole trail.
 
 **`manifold://` addressing.** One canonical serialization of the addressing algebra, bijective
 with the structured wire forms (`parseManifoldUri` / `formatManifoldUri`,
@@ -1441,7 +1475,14 @@ container_folders(id TEXT PK, name TEXT, created_at INTEGER, parent_folder_id TE
 scene_docs(container_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, doc BLOB,
            PRIMARY KEY (container_id, epoch, rev))     -- keep newest 30 valid docs each
 events(id INTEGER PK AUTOINCREMENT, container_id TEXT, ts INTEGER, principal_id TEXT,
-       type TEXT, payload TEXT)                       -- lifecycle/caps/join-leave ONLY
+       type TEXT, payload TEXT,
+       door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT)
+                            -- THE JOURNAL, two row families. door IS NULL: an event row
+                            -- (lifecycle/caps/join-leave). door IS NOT NULL and type='trace':
+                            -- axiom A6's ledger — one exercise of authority at one door, with
+                            -- the authority discharged, the manifold:// nodes it named (JSON
+                            -- array), its outcome (NULL = in flight), and the session it
+                            -- arrived on (NULL = the HTTP action door). One retention for both
 principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER, origin TEXT)
                             -- origin NULL means THIS instance; a remote principal carries
                             -- the guest origin its share was minted for
@@ -1479,10 +1520,15 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 12 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
-— `shares`, `share_tickets`, `dials` and `principals.origin`, all plain SQL because none of
-it touches a stored document and existing rows need no backfill: a NULL origin already means
-"this instance"). A migration is SQL, or CODE
+Schema version 14 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+— `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
+`grants` substrate; 14 is the trace ledger — five nullable columns on `events`). Migrations 12
+and 14 are plain SQL for the same reason: neither touches a stored document and existing rows
+need no backfill, since absence already means the right thing — a NULL origin means "this
+instance", and a NULL `door` means "this row is an event, not a trace". Neither takes a
+pre-migration snapshot, and that is the house rule rather than an exception to it: the snapshot
+belongs to a one-way DATA move (9, 11, 13), and adding nullable columns is reversible by a later
+migration that drops them. A migration is SQL, or CODE
 when the move is not
 expressible as SQL:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
@@ -1565,6 +1611,12 @@ gesture, and carry frames NEVER touch SQLite.
 
 JSONL to stdout: `{ ts, level: "info"|"warn"|"error", evt, ...fields }`. Never log tokens,
 owner keys, or terminal data. `/api/introspect` exposes live state for agent-operators.
+
+The log is the OPERATIONAL stream and it is not the audit: the durable record of who exercised
+what is the journal's trace family, read through `core.events.list` (axiom A6, §The journal and
+its two families). The two say the same word for the same dispatch — the `action` line's
+`outcome` and the trace row's `outcome` are the same vocabulary — and one field rule redacts both
+(`redactFields`, `packages/server/src/log.ts`), so a secret cannot reach either.
 
 ## Hard rules
 

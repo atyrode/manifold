@@ -86,7 +86,34 @@ data. The full evaluator design is normative in
 it is designed now and implemented in a later wave, and `packages/server/src/auth.ts` is
 registry-tagged as the one call surface it replaces.
 
-**"One door per concept" is not a sixth axiom.** It is an engineering law and lives as
+**A6 — Every exercise of authority leaves a trace.** Authority that cannot be audited is
+indistinguishable from authority nobody has. So every dispatch at a door — granted, refused, or
+broken — is recorded as a **trace**: one durable row, appended by the dispatch ladder itself and
+never by a handler, carrying `ts`, the **actor** principal, the **authority** satisfied (the
+capability set discharged, or `root`), the **door**, the **targets** the door named as
+`manifold://` refs, the **payload** of arguments, the **outcome** (`ok`, the denial rung, or
+`failed`), and the **origin** it came from. **Refusals are traced**: a denial is the answer an
+audit most needs and the one nobody thinks to keep. A trace is a row in the workspace's ONE
+journal, read through the ONE door that already reads it (`core.events.list`) — never a second
+audit surface — and the ledger is written AHEAD of the effect: the attribution commits before a
+handler can mutate anything, so a committed mutation with no trace is not a state this engine can
+reach. Secrets and terminal bytes are redacted from a payload by the same rule that redacts them
+from the log, because a ledger that leaks a credential is a worse artifact than no ledger.
+**The exemptions are these three and no others, each because it is not an exercise of authority
+at a door**: presence, which is never persisted and dies with its connection; continuous streams
+— PTY bytes, cursor motion, live drags — whose LIFECYCLE is traced because opening, taking and
+killing are doors, while the bytes themselves are exempt by invariant 5; and document-plane
+deltas, whose authority is discharged at the socket and whose commit point is a batch, to be
+traced as attributed batches when that batch has an attribution (the seam is named in
+[`docs/decisions/0018-trace-ledger.md`](docs/decisions/0018-trace-ledger.md)). An unregistered
+action name is not an exemption from tracing an exercise — it is the absence of one: no door, no
+authority, nothing to attribute, and a caller-chosen name the ledger must never let a stranger
+write. It is recorded in the structured log instead. The record, the placement, the guarantee
+achieved per door class and the staged path to tamper-evidence are normative in
+[`docs/decisions/0018-trace-ledger.md`](docs/decisions/0018-trace-ledger.md); the completeness
+check is `REGISTRY.md` §Gates (T1-T5), and a registered door that yields no trace is gate RED.
+
+**"One door per concept" is not a seventh axiom.** It is an engineering law and lives as
 `AGENTS.md` invariant 14: every concept has exactly one authoritative implementation and every
 consumer goes through it. It is referenced here because the axioms above are unenforceable
 without it — two doors onto one concept means two authority decisions, and the second one is
@@ -170,6 +197,17 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   reserved room was exactly right: the SDK pool keys connections by (factory, url, token), which
   IS the `(origin, containerId)` keying, so pointing a lens at a second instance needed no
   re-keying and no new client (§The portable lens).
+- **The trace ledger — traceability made constitutional** (A6, ADR 0018, #93). Landed with the
+  axiom: the ledger is a row family in the ONE journal (schema 14 widens `events` with `door`,
+  `authority`, `targets`, `outcome`, `session`), appended by the dispatch ladder at the choke
+  point every principal already goes through, WRITE-AHEAD of the handler so a committed mutation
+  cannot exist without its attribution, settled exactly once, read through `core.events.list`
+  with `kind: "trace"` and through no second door. Refusals are traced; the payload is redacted
+  by the log's own field rule and bounded; unregistered names are ruled out of the ledger with
+  the reasoning recorded. `verify:trace` is the completeness check and it dispatches every
+  registered door against the real composed server. **The direction is operator-ratified
+  (2026-09-01); A6's WORDING is presented for approval with this change**, which is the one
+  thing the ADR does not decide (§Change control: axiom text changes by ratification only).
 - **Later waves, each gated on its own dated ADR:**
   - **Permission waterfall implementation** (ADR 0011): the evaluator, the `grants` table, and
     the one call-surface swap in `auth.ts`. Its dependency duty (evaluate `casbin` and `CASL`
@@ -335,7 +373,9 @@ as data by a stranger's agent, or A3 has nothing to onboard against:
   manifest and `ActionSummary` shapes as a plugin's and dispatched through the same ladder —
   never a hidden entry point;
 - every dispatch is **logged**, one structured line, with the principal, the action and the
-  outcome;
+  outcome — and **traced**, one durable row on the workspace's journal, with the authority it
+  discharged and the nodes it named (A6). The log is what an operator tails; the trace is what
+  the workspace can be asked;
 - every registry is **machine-readable** and checked in both directions: the pillar inventory,
   the floor rows, the lexicon, the `cssFamilies` register, the device-local register and the gate
   contracts in `REGISTRY.md`, the live roster at `GET /api/plugins`, the schemas at

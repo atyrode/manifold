@@ -104,7 +104,8 @@ dated technology verdicts with evidence.
 4. **Terminal attach no-gap invariant** (CONTRACTS.md §attach): viewer stream ≡
    snapshot(S) + outputs(S+1…). Guarded by e2e; do not weaken the test.
 5. **Never persist**: presence, cursor traffic, terminal bytes. **Always persist**: scene
-   snapshots, principals/tokens (hashed), session lifecycle events.
+   snapshots, principals/tokens (hashed), session lifecycle events, and traces — every
+   dispatch at a door, granted or refused, write-ahead per axiom A6 (ADR 0018).
 6. **Secrets discipline**: owner key and tokens never appear in logs, URLs (fragment `#key=`
    is the one allowed carrier), errors, or committed files.
 7. **Determinism**: unit tests need no network, no real PTYs (except agent PTY tests, which

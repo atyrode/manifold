@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -350,6 +350,41 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '12');
    * the rows.
    */
   13: { backup: true, apply: migrateToGrantRows },
+  /**
+   * The trace ledger's columns (#93, axiom A6, ADR 0018). FIVE nullable columns on the ONE
+   * journal, and the shape of the change is the whole argument: a trace is a row in the
+   * `events` table, not a table of its own.
+   *
+   * The journal family is the reason. `events` is already the durable, pruned, append-only
+   * record of what happened here, already read by exactly one door
+   * (`core.events.list`) — so a second table would be a second audit API, a second
+   * retention policy and a second thing to remember to read (invariant 14). What a trace
+   * needs that an event row does not is the ATTRIBUTION of an exercise of authority, and
+   * that is what these columns carry: `door` (the action dispatched), `authority` (the
+   * capability set discharged, or `root`), `targets` (the `manifold://` nodes the door named,
+   * as a JSON array), `outcome` (`TRACE_OUTCOMES`), and `session` (the socket the dispatch
+   * arrived on; NULL means it came through the HTTP action door, which is itself the answer).
+   * A row with `door IS NULL` is an ordinary event row and always was.
+   *
+   * Plain SQL and NO pre-migration snapshot, which is the house rule rather than an
+   * exception to it (`backupBeside`): nothing here rewrites a byte of existing data, every
+   * existing row's answer to every existing query is unchanged, and the move is reversible by
+   * a later migration that drops five columns. The snapshot belongs to migrations 9, 11 and
+   * 13, which each move data one way.
+   *
+   * No index, deliberately. The trail is read newest-first through the two indexes it already
+   * has, and `type` — the column `kind: "trace"` filters on — was already documented as a
+   * predicate the ordering scan applies rather than a seek (`ServerStore.listEvents`). A
+   * third index would cost every write to speed a read nobody has measured.
+   */
+  14: `
+ALTER TABLE events ADD COLUMN door TEXT;
+ALTER TABLE events ADD COLUMN authority TEXT;
+ALTER TABLE events ADD COLUMN targets TEXT;
+ALTER TABLE events ADD COLUMN outcome TEXT;
+ALTER TABLE events ADD COLUMN session TEXT;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '14');
+`,
 };
 
 interface TableRow {

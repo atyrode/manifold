@@ -376,7 +376,7 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(13);
+      expect(SCHEMA_VERSION).toBe(14);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.

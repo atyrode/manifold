@@ -541,7 +541,8 @@ which is the bug class the axioms exist to prevent.
 The continuous-stream row has a corollary you must obey: **an action fires at the commit point
 of a gesture, never per frame.** Dragging a workspace divider paints locally for every pointer
 move and dispatches exactly one `core.space.setLayout` on pointerup. A per-frame action is a
-performance bug and an audit-log flood.
+performance bug and a trace flood — every dispatch leaves a durable row (axiom A6), so sixty
+of them per drag is sixty rows saying the same thing.
 
 State that belongs to none of the four is **unplaned**, and unplaned state is a bug. There is
 one legitimate escape: genuinely device-local presentation state (a remembered viewport, "this

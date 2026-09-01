@@ -61,6 +61,34 @@ describe("ServerStore event retention", () => {
     expect(rows.some((row) => row.type === "recent-0")).toBeFalse();
     store.close();
   });
+
+  test("a trace row is pruned by the same 30-day window as an event row", () => {
+    const store = testStore();
+    const now = 40 * DAY_MS;
+    const stale = store.appendTrace({
+      ts: now - 30 * DAY_MS - 1,
+      actor: "principal-1",
+      authority: "root",
+      door: "test.door.stale",
+      containerId: null,
+      payload: {},
+      session: null,
+      outcome: "ok",
+      targets: [],
+    });
+    /*
+      ONE RETENTION FOR BOTH FAMILIES is half the argument for the ledger being a row family
+      rather than a table of its own (ADR 0018 §1): a second table would have needed a second
+      pruning, and two prunings drift the first time either is changed. So writing anything
+      must expire an old trace exactly as it expires an old event.
+     */
+    store.addEvent(null, now, null, "token_revoked", {});
+
+    expect(store.listEvents({ limit: 10 }).some((row) => row.id === stale)).toBeFalse();
+    // And the settle cannot resurrect what retention removed: the row is gone, not unsettled.
+    expect(store.settleTrace(stale, "failed", [])).toBeFalse();
+    store.close();
+  });
 });
 
 describe("ServerStore index", () => {
