@@ -212,12 +212,20 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   - **Permission waterfall implementation** (ADR 0011): the evaluator, the `grants` table, and
     the one call-surface swap in `auth.ts`. Its dependency duty (evaluate `casbin` and `CASL`
     by name before hand-building) is recorded in that ADR.
-  - **Social layer** — a `core.social` plugin: identity beyond a device-local grant, friends,
-    invites, agent chat, share-invitation signaling. **Matrix is the ratified leading
-    candidate**, to be judged at that wave against ActivityPub and plain invite links in its
-    own ADR. Matrix is **rejected as foundation**: adopting it below the floor would install a
-    second room model, a second event model and a second permission model beside manifold's
-    own, and A5 plus the plane rule would then have two answers to every question.
+  - **Social layer — there is no `core.social` seat** (ADR 0015, ratified by the operator
+    2026-09-01, which is the amendment this bullet carries). Matrix, XMPP and ActivityPub are
+    rejected as the SUBSTRATE and not only as foundation, on the evidence in that file: **Matrix
+    is demoted from ratified leading candidate to an optional third-party bridge that is never in
+    the default distribution.** The five nouns this row used to promise are redistributed rather
+    than seated — identity is #58's question and ADR 0019's posture, contacts are a local,
+    asymmetric ledger on `core.access` keyed by ADR 0014's `(origin, ref)` pair, share-invitation
+    signaling is wave 3's instance channel, and agent chat is a durable notification owed to the
+    Notifications wave, never an event. Matrix stays **rejected as foundation** for the original
+    reason: adopting it below the floor would install a second room model, a second event model
+    and a second permission model beside manifold's own, and A5 plus the plane rule would then
+    have two answers to every question. Nothing recognisably social ships in the default
+    distribution; anything social is therefore third-party, and waits on the marketplace wave and
+    so on ADR 0016's runner.
   - **Marketplace and dynamic plugin distribution** — plugin code that is not compiled into the
     build. The seams are already reserved: the manifest's `entry { web?, server? }` and the
     roster's `source` field. This wave also carries the explicit **core-plugin override**
@@ -235,7 +243,10 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     stranger's plugin and the store, the broker and the room map. So the isolation ADR is the
     PREREQUISITE deliverable: it judges a runner (wasmtime-class, Worker-class, or a separate
     process) against the serialization cost ADR 0010 measured, and the marketplace wave
-    implements distribution on top of whatever it ratifies.
+    implements distribution on top of whatever it ratifies. **That prerequisite is discharged:**
+    ADR 0016 was ratified 2026-09-01 and judges the runner as one OS process per isolated plugin
+    on the server and one dedicated worker per isolated plugin in the browser, staged engine →
+    protocol → distribution, with this wave hard-gated on its stage 1.
   - **Settings** — a `core.settings` plugin over per-principal preferences. The mechanism is
     already floor and already neutral: `ctx.storage` is a namespaced per-plugin key-value store,
     so a preference is a plugin's own row and there is nothing for the engine to centralize. What
@@ -293,7 +304,10 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     and because the local agent already fits the sidecar shape it packages well. **Tauri is
     re-evaluated at a native-mobile milestone**, where a system web view stops being a liability
     and binary size starts being one. Whatever ships obeys the portable-lens rule: a shell adds
-    host-composed plugins, never a second client.
+    host-composed plugins, never a second client. **The ordering is ratified (operator,
+    2026-09-01, #82): the PWA pass lands FIRST, and the desktop ADR is authored and ratified
+    before any shell code exists** — no Electron directory, no packaging target, no sidecar
+    wiring ahead of the record. #82 is that gate and stays open until the ADR does.
 
 ### Explicitly not a goal: themes
 
