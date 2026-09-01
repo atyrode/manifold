@@ -93,6 +93,34 @@ interface PrincipalRow {
   name: string;
   color: string;
   created_at: number;
+  origin: string | null;
+}
+
+interface ShareRow {
+  id: string;
+  hash: string;
+  container_id: string;
+  caps: string;
+  origin: string;
+  minted_by: string;
+  created_at: number;
+  revoked_at: number | null;
+  tickets: number;
+}
+
+interface DialRow {
+  id: string;
+  origin: string;
+  secret: string;
+  ref: string | null;
+  caps: string;
+  title: string | null;
+  dialed_at: number;
+  revoked_at: number | null;
+}
+
+interface TicketRow {
+  principal_id: string;
 }
 
 interface TokenRow {
@@ -199,6 +227,43 @@ export interface MachineAuthRecord extends MachineRecord {
   revokedAt: number | null;
 }
 
+/**
+ * A grant this instance HANDS OUT: one container, one capability set, one guest origin.
+ * Like `TokenRecord`, the raw secret deliberately has no field here — only its hash — and
+ * `tickets` is the count of guest identities minted under it, computed by the read rather
+ * than kept as a denormalized counter that could drift from the rows it claims to count.
+ */
+export interface ShareRecord {
+  id: string;
+  hash: string;
+  containerId: string;
+  caps: readonly Cap[];
+  origin: string;
+  mintedBy: string;
+  createdAt: number;
+  revokedAt: number | null;
+  tickets: number;
+}
+
+/**
+ * The same relationship from the other end: a grant this instance DIALS OUT with. The
+ * secret is here in the clear because dialling requires presenting it, which is exactly
+ * what a hash cannot do (db.ts migration 12). `ref` and `caps` are the host's last word on
+ * what the share names — cached vocabulary this instance draws a row from while the socket
+ * is down, and never an authority it evaluates.
+ */
+export interface DialRecord {
+  id: string;
+  origin: string;
+  secret: string;
+  /** NULL only between `createDial` and the host's first welcome; see db.ts migration 12. */
+  ref: string | null;
+  caps: readonly Cap[];
+  title: string | null;
+  dialedAt: number;
+  revokedAt: number | null;
+}
+
 /** Durable terminal row; geometry/controller remain live broker state by schema. */
 export interface StoredTerminal {
   id: string;
@@ -254,8 +319,7 @@ export function sha256Hex(value: string | Uint8Array): string {
 }
 
 function toToken(row: TokenRow): TokenRecord {
-  const parsed: unknown = JSON.parse(row.caps);
-  const caps = CapSchema.array().parse(parsed);
+  const caps = parseCaps(row.caps);
   return {
     id: row.id,
     hash: row.hash,
@@ -267,6 +331,60 @@ function toToken(row: TokenRow): TokenRecord {
     revokedAt: row.revoked_at,
   };
 }
+
+function parseCaps(raw: string): readonly Cap[] {
+  const parsed: unknown = JSON.parse(raw);
+  return CapSchema.array().parse(parsed);
+}
+
+/**
+ * A NULL `origin` column means "this instance", and the wire says that by OMITTING the key
+ * rather than by carrying a null: `PrincipalSchema` is strict and there is one
+ * representation of local. The database keeps a nullable column because SQL has no third
+ * way to say absent, and this function is the one place the two spellings meet.
+ */
+function toPrincipal(row: PrincipalRow): Principal {
+  return PrincipalSchema.parse(
+    row.origin === null
+      ? { id: row.id, kind: row.kind, name: row.name, color: row.color }
+      : { id: row.id, kind: row.kind, name: row.name, color: row.color, origin: row.origin },
+  );
+}
+
+function toShare(row: ShareRow): ShareRecord {
+  return {
+    id: row.id,
+    hash: row.hash,
+    containerId: row.container_id,
+    caps: parseCaps(row.caps),
+    origin: row.origin,
+    mintedBy: row.minted_by,
+    createdAt: row.created_at,
+    revokedAt: row.revoked_at,
+    tickets: row.tickets,
+  };
+}
+
+function toDial(row: DialRow): DialRecord {
+  return {
+    id: row.id,
+    origin: row.origin,
+    secret: row.secret,
+    ref: row.ref,
+    caps: parseCaps(row.caps),
+    title: row.title,
+    dialedAt: row.dialed_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+const SHARE_SELECT = `SELECT s.id, s.hash, s.container_id, s.caps, s.origin, s.minted_by,
+          s.created_at, s.revoked_at,
+          (SELECT COUNT(*) FROM share_tickets t WHERE t.share_id = s.id) AS tickets
+   FROM shares s`;
+
+const DIAL_SELECT = `SELECT id, origin, secret, ref, caps, title, dialed_at, revoked_at
+   FROM dials`;
 
 function toMachine(row: MachineRow): MachineRecord {
   return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
@@ -820,42 +938,35 @@ export class ServerStore {
   createPrincipal(principal: Principal, createdAt: number): void {
     PrincipalSchema.parse(principal);
     this.db
-      .query<void, [string, string, string, string, number]>(
-        `INSERT INTO principals(id, kind, name, color, created_at) VALUES (?, ?, ?, ?, ?)`,
+      .query<void, [string, string, string, string, number, string | null]>(
+        `INSERT INTO principals(id, kind, name, color, created_at, origin) VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(principal.id, principal.kind, principal.name, principal.color, createdAt);
+      .run(
+        principal.id,
+        principal.kind,
+        principal.name,
+        principal.color,
+        createdAt,
+        principal.origin ?? null,
+      );
   }
 
   getPrincipal(id: string): Principal | null {
     const row = this.db
       .query<PrincipalRow, [string]>(
-        "SELECT id, kind, name, color, created_at FROM principals WHERE id = ?",
+        "SELECT id, kind, name, color, created_at, origin FROM principals WHERE id = ?",
       )
       .get(id);
-    return row === null
-      ? null
-      : PrincipalSchema.parse({
-          id: row.id,
-          kind: row.kind,
-          name: row.name,
-          color: row.color,
-        });
+    return row === null ? null : toPrincipal(row);
   }
 
   listPrincipals(): Principal[] {
     return this.db
       .query<PrincipalRow, []>(
-        "SELECT id, kind, name, color, created_at FROM principals ORDER BY created_at, id",
+        "SELECT id, kind, name, color, created_at, origin FROM principals ORDER BY created_at, id",
       )
       .all()
-      .map((row) =>
-        PrincipalSchema.parse({
-          id: row.id,
-          kind: row.kind,
-          name: row.name,
-          color: row.color,
-        }),
-      );
+      .map(toPrincipal);
   }
 
   createToken(record: TokenRecord): void {
@@ -935,6 +1046,170 @@ export class ServerStore {
         )
         .run(revokedAt, tokenId).changes > 0
     );
+  }
+
+  /*
+    SHARES — what this instance hands out. Every read below counts its own tickets with a
+    correlated subquery rather than keeping a column, because a stale counter beside the
+    rows it counts is the kind of lie that only shows up in an audit.
+  */
+
+  createShare(record: Omit<ShareRecord, "tickets">): void {
+    this.db
+      .query<void, [string, string, string, string, string, string, number, number | null]>(
+        `INSERT INTO shares(
+           id, hash, container_id, caps, origin, minted_by, created_at, revoked_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.id,
+        record.hash,
+        record.containerId,
+        JSON.stringify(record.caps),
+        record.origin,
+        record.mintedBy,
+        record.createdAt,
+        record.revokedAt,
+      );
+  }
+
+  getShareByHash(hash: string): ShareRecord | null {
+    const row = this.db.query<ShareRow, [string]>(`${SHARE_SELECT} WHERE s.hash = ?`).get(hash);
+    return row === null ? null : toShare(row);
+  }
+
+  getShare(id: string): ShareRecord | null {
+    const row = this.db.query<ShareRow, [string]>(`${SHARE_SELECT} WHERE s.id = ?`).get(id);
+    return row === null ? null : toShare(row);
+  }
+
+  listShares(): ShareRecord[] {
+    return this.db
+      .query<ShareRow, []>(`${SHARE_SELECT} ORDER BY s.created_at, s.id`)
+      .all()
+      .map(toShare);
+  }
+
+  revokeShare(shareId: string, revokedAt: number): boolean {
+    return (
+      this.db
+        .query<void, [number, string]>(
+          "UPDATE shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        )
+        .run(revokedAt, shareId).changes > 0
+    );
+  }
+
+  /**
+   * The host-side principal standing for one of the guest's, minted once and reused. The
+   * insert is `OR IGNORE` and the read follows it in the same transaction, so two
+   * `ticket_request`s racing on one socket resolve to the SAME principal instead of
+   * quietly minting a second identity for the same person.
+   */
+  claimShareTicket(
+    shareId: string,
+    guestPrincipalId: string,
+    principalId: string,
+    createdAt: number,
+  ): string {
+    return this.transaction(() => {
+      this.db
+        .query<void, [string, string, string, number]>(
+          `INSERT OR IGNORE INTO share_tickets(share_id, guest_principal_id, principal_id, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(shareId, guestPrincipalId, principalId, createdAt);
+      const row = this.db
+        .query<TicketRow, [string, string]>(
+          "SELECT principal_id FROM share_tickets WHERE share_id = ? AND guest_principal_id = ?",
+        )
+        .get(shareId, guestPrincipalId);
+      return row === null ? principalId : row.principal_id;
+    });
+  }
+
+  /** Every host-side principal a share has minted — the exact set a revocation must fence. */
+  shareTicketPrincipals(shareId: string): string[] {
+    return this.db
+      .query<TicketRow, [string]>(
+        "SELECT principal_id FROM share_tickets WHERE share_id = ? ORDER BY created_at, principal_id",
+      )
+      .all(shareId)
+      .map((row) => row.principal_id);
+  }
+
+  /*
+    DIALS — what this instance dials out with. The guest half of the same relationship.
+  */
+
+  createDial(record: DialRecord): void {
+    this.db
+      .query<
+        void,
+        [string, string, string, string | null, string, string | null, number, number | null]
+      >(
+        `INSERT INTO dials(
+           id, origin, secret, ref, caps, title, dialed_at, revoked_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.id,
+        record.origin,
+        record.secret,
+        record.ref,
+        JSON.stringify(record.caps),
+        record.title,
+        record.dialedAt,
+        record.revokedAt,
+      );
+  }
+
+  getDial(id: string): DialRecord | null {
+    const row = this.db.query<DialRow, [string]>(`${DIAL_SELECT} WHERE id = ?`).get(id);
+    return row === null ? null : toDial(row);
+  }
+
+  getDialByOriginSecret(origin: string, secret: string): DialRecord | null {
+    const row = this.db
+      .query<DialRow, [string, string]>(`${DIAL_SELECT} WHERE origin = ? AND secret = ?`)
+      .get(origin, secret);
+    return row === null ? null : toDial(row);
+  }
+
+  listDials(): DialRecord[] {
+    return this.db.query<DialRow, []>(`${DIAL_SELECT} ORDER BY dialed_at, id`).all().map(toDial);
+  }
+
+  /**
+   * What the host told us this share names, written back after every `welcome`. A dial's
+   * cached vocabulary is refreshed by the authority that owns it and by nothing else.
+   */
+  updateDialGrant(id: string, ref: string, caps: readonly Cap[], title: string | null): void {
+    this.db
+      .query<void, [string, string, string | null, string]>(
+        "UPDATE dials SET ref = ?, caps = ?, title = ? WHERE id = ?",
+      )
+      .run(ref, JSON.stringify(caps), title, id);
+  }
+
+  revokeDial(id: string, revokedAt: number): boolean {
+    return (
+      this.db
+        .query<void, [number, string]>(
+          "UPDATE dials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        )
+        .run(revokedAt, id).changes > 0
+    );
+  }
+
+  /**
+   * Erases a dial that never completed its handshake. Deliberately a DELETE and not a
+   * revocation: nothing was ever granted, so there is no authority to record the end of,
+   * and a `revoked` row for a partnership that never existed would be a lie in the one
+   * table an operator reads to answer "who can see my work".
+   */
+  deleteDial(id: string): boolean {
+    return this.db.query<void, [string]>("DELETE FROM dials WHERE id = ?").run(id).changes > 0;
   }
 
   addEvent(

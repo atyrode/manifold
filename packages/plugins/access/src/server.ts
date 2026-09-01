@@ -1,7 +1,16 @@
 import type {
   BootstrapPrincipalRequest,
+  Dial,
+  DialShareRequest,
+  DialTicket,
+  MintShareRequest,
   MintTokenRequest,
+  OpenDialRequest,
   RevokeResult,
+  RevokeShareRequest,
+  Share,
+  ShareGrant,
+  ShareInventory,
   TokenGrant,
 } from "@manifold/protocol";
 
@@ -27,6 +36,24 @@ interface AccessCtx {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
     revokePrincipal(principalId: string): IdentityAnswer<number>;
+    /*
+      The share trio sits on the identity door because a share IS a token bound to a node: the
+      attenuation ladder it runs is `mintToken`'s, and putting it anywhere else would be a
+      second place authority is handed out (invariant 14).
+    */
+    mintShare(input: MintShareRequest): IdentityAnswer<ShareGrant>;
+    revokeShare(shareId: string): IdentityAnswer<number>;
+    listShares(): IdentityAnswer<readonly Share[]>;
+  };
+  /*
+    The GUEST half is not the identity mechanism — it is a store plus an outbound network
+    client — so it is its own surface. Nothing here mints authority: `dial` accepts a secret
+    somebody else minted, and `open` asks the HOST for a ticket over the instance channel.
+  */
+  readonly dials: {
+    dial(input: DialShareRequest): Promise<IdentityAnswer<Dial>>;
+    open(dialId: string): Promise<IdentityAnswer<DialTicket>>;
+    list(): IdentityAnswer<readonly Dial[]>;
   };
 }
 
@@ -72,5 +99,67 @@ export const accessHandlers = {
     // principal whose tokens are already dead is precisely what a nervous administrator
     // does. The refusals above it are about entitlement, never about the outcome being nil.
     return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
+  },
+
+  /*
+    THE SHARE HALF (ADR 0014). Same discipline as the three above and for the same reason: the
+    ladder lives in the mechanism, on the real caller, and these handlers relay. What they add
+    is one rule each that is genuinely the DOOR's — the node form a share may name, and the
+    fact that accepting a dial waits for the far side to say what it is.
+  */
+  async mintShare(ctx: AccessCtx, args: MintShareRequest): Promise<Outcome<ShareGrant>> {
+    if (args.node.kind !== "container") {
+      /*
+        The one check that is this door's own. A share is a token bound to a node, and the
+        degenerate grant a token can express today is a CONTAINER scope — so a share naming an
+        element, a terminal or a principal would be a grant the mechanism beneath cannot
+        express, and answering "minted" would be a lie about what was granted. ADR 0011 widens
+        the field to subtree grants without reshaping the request, at which point this rung is
+        the evaluator's rather than a refusal.
+      */
+      return { refused: "only a container can be shared" };
+    }
+    const minted = ctx.identity.mintShare(args);
+    return minted.ok ? minted.value : { refused: minted.message };
+  },
+
+  async revokeShare(ctx: AccessCtx, args: RevokeShareRequest): Promise<Outcome<RevokeResult>> {
+    // Zero severed tickets is a SUCCESS for `revoke`'s reason: a share nobody walked through
+    // is exactly the one an owner revokes on a hunch, and the pipe is cut either way.
+    const revoked = ctx.identity.revokeShare(args.shareId);
+    return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
+  },
+
+  async listShares(ctx: AccessCtx): Promise<Outcome<ShareInventory>> {
+    /*
+      One door, both directions. A refusal from either half refuses the whole answer rather
+      than being folded into a half-populated record: "here are your dials, and something went
+      wrong with your shares" is a shape a caller cannot act on, and a partially-true inventory
+      of who holds authority over this workspace is worse than none.
+    */
+    const shares = ctx.identity.listShares();
+    if (!shares.ok) return { refused: shares.message };
+    const dials = ctx.dials.list();
+    if (!dials.ok) return { refused: dials.message };
+    return { shares: [...shares.value], dials: [...dials.value] };
+  },
+
+  async dialShare(ctx: AccessCtx, args: DialShareRequest): Promise<Outcome<Dial>> {
+    // Blocks on the host's welcome by design (see the action's note): a row that named nothing
+    // yet would be a zombie nobody can tell from a live share that happens to be offline.
+    const dialed = await ctx.dials.dial(args);
+    return dialed.ok ? dialed.value : { refused: dialed.message };
+  },
+
+  async openDial(ctx: AccessCtx, args: OpenDialRequest): Promise<Outcome<DialTicket>> {
+    /*
+      The guest's own authority question, answered before the host is asked anything: this
+      instance decides whether this principal may use this dial, and only then does the
+      instance channel request a ticket for it. The share secret never appears in the answer —
+      what the caller receives is a per-principal token the HOST minted, which is what makes a
+      remote viewer attributable and revocable one principal at a time.
+    */
+    const opened = await ctx.dials.open(args.dialId);
+    return opened.ok ? opened.value : { refused: opened.message };
   },
 };

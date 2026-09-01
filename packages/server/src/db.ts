@@ -4,7 +4,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -265,6 +265,76 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10');
    * and the whole set must land together or a composition reads as empty (migrate-lexicon.ts).
    */
   11: { backup: true, apply: migrateToCanonLexicon },
+  /**
+   * Cross-instance sharing (#74). Three tables and one column, and the shape of every one
+   * of them is dictated by what already exists rather than by anything new.
+   *
+   * `shares` is the grant a host hands another instance: a container, a capability set, and
+   * the guest ORIGIN it was minted for. The secret is stored the way every other bearer in
+   * this schema is stored — as a SHA-256 hash in a `hash` column with a UNIQUE index, never
+   * in the clear — so the tokens table's rule ("the raw bearer secret deliberately has no
+   * field here") holds for the newest bearer too. `revoked_at` mirrors `tokens.revoked_at`
+   * for the same reason: revocation is durable, so it survives the restart that a
+   * memory-only fence would forget.
+   *
+   * `share_tickets` is the dedupe map from one of the GUEST's principals to the host-side
+   * principal minted to stand for it, and it exists so that asking twice is idempotent and
+   * so that revoking a share can name every identity it created. It is deliberately a
+   * mapping rather than a second identity system: the row's `principal_id` is an ordinary
+   * principal with an ordinary token, which is what makes the host's doors, its revocation
+   * fence and its attendance roster work on a remote guest with no special case anywhere.
+   *
+   * `dials` is the same grant seen from the GUEST end — one row per outbound instance
+   * channel, holding the secret this instance dials OUT with. One dial is one share by
+   * ratified design, so the row carries the share's node and caps as the host last
+   * reported them: cached vocabulary the guest can draw a row from while the socket is
+   * down, never an authority the guest evaluates. Authority is decided at the host's doors
+   * and nowhere else. The secret here IS stored in the clear, and that asymmetry with
+   * `shares.hash` is the point rather than an oversight: a host only ever VERIFIES a
+   * presented secret, which a hash does, while a guest must PRESENT one, which a hash
+   * cannot. It is the same trust boundary the auto-spawned agent's raw machine token
+   * already sits on (`<data>/agent.token`, mode 600) — one directory, mode 0700, holding
+   * the credentials this instance dials out with.
+   *
+   * `principals.origin` is the principal-origin field wave 1 reserved in prose (CONTRACTS
+   * §Identity). NULL means "this instance", which is every row that already exists — the
+   * column needs no backfill because absence IS the local answer, and that is the whole
+   * reason the field is nullable rather than defaulted to a string.
+   */
+  12: `
+CREATE TABLE shares(
+  id TEXT PRIMARY KEY,
+  hash TEXT UNIQUE NOT NULL,
+  container_id TEXT NOT NULL,
+  caps TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  minted_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE TABLE share_tickets(
+  share_id TEXT NOT NULL,
+  guest_principal_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (share_id, guest_principal_id)
+) WITHOUT ROWID;
+CREATE TABLE dials(
+  id TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  -- NULL only while the handshake is in flight: the host's welcome is what says which
+  -- node the share names, and a row that never hears one is deleted rather than kept.
+  ref TEXT,
+  caps TEXT NOT NULL,
+  title TEXT,
+  dialed_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE UNIQUE INDEX dials_origin_secret_unique ON dials(origin, secret);
+ALTER TABLE principals ADD COLUMN origin TEXT;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '12');
+`,
 };
 
 interface TableRow {

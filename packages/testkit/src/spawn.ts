@@ -10,13 +10,23 @@ import {
   AttendanceResponseSchema,
   ContainerResponseSchema,
   ContainerTerminalsResponseSchema,
+  DialSchema,
+  DialTicketSchema,
+  RevokeResultSchema,
+  ShareGrantSchema,
+  ShareInventorySchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
   type ActionOutcome,
+  type Cap,
+  type Dial,
+  type DialTicket,
   type HttpError,
   type MintTokenRequest,
   type Container,
   type ContainerTerminalSummary,
+  type ShareGrant,
+  type ShareInventory,
   type TerminalSummary,
   type TokenGrant,
 } from "@manifold/protocol";
@@ -635,6 +645,141 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
   }
+}
+
+/**
+ * TWO real instances, spawned together, for the one class of claim a single process cannot
+ * make: that a share crosses a genuine trust boundary.
+ *
+ * The owner keys are DIFFERENT on purpose, and it is the fixture's whole point. Every other
+ * multi-process helper here reuses `OWNER_KEY` because the processes are halves of one
+ * instance; two instances sharing an owner key would authenticate at each other's doors
+ * before any share existed, and every assertion downstream would pass for the wrong reason.
+ * A guest that can already open the host's container proves nothing about sharing.
+ */
+export interface InstancePair {
+  readonly host: TestServer;
+  readonly guest: TestServer;
+  stop(signal?: StopSignal): Promise<void>;
+}
+
+/** Per-side overrides; both sides otherwise take the ordinary isolated-server defaults. */
+export interface SpawnInstancePairOptions {
+  readonly host?: StartServerOptions;
+  readonly guest?: StartServerOptions;
+}
+
+const HOST_OWNER_KEY = "11111111111111111111111111111111111111111111111111111111111111a1";
+const GUEST_OWNER_KEY = "22222222222222222222222222222222222222222222222222222222222222b2";
+
+/** Spawns a host and a guest instance concurrently; a failure on either side stops both. */
+export async function spawnInstancePair(
+  options: SpawnInstancePairOptions = {},
+): Promise<InstancePair> {
+  const started = await Promise.allSettled([
+    startServer({ ownerKey: HOST_OWNER_KEY, ...options.host }),
+    startServer({ ownerKey: GUEST_OWNER_KEY, ...options.guest }),
+  ]);
+  const live = started.filter(
+    (result): result is PromiseFulfilledResult<TestServer> => result.status === "fulfilled",
+  );
+  if (live.length < started.length) {
+    await Promise.allSettled(live.map((result) => result.value.stop()));
+    const failure = started.find((result) => result.status === "rejected");
+    throw failure?.status === "rejected"
+      ? new Error(`instance pair failed to start: ${String(failure.reason)}`, {
+          cause: failure.reason,
+        })
+      : new Error("instance pair failed to start");
+  }
+  const [host, guest] = live.map((result) => result.value) as [TestServer, TestServer];
+  return {
+    host,
+    guest,
+    async stop(signal?: StopSignal): Promise<void> {
+      await Promise.allSettled([guest.stop(signal), host.stop(signal)]);
+    },
+  };
+}
+
+/**
+ * The instance origin a server declares and a share is minted for. It is derived from the
+ * ready URL and from nothing else, because `MANIFOLD_PUBLIC_URL` is the ONE door onto "how
+ * this instance is addressed" — a fixture that invented a second spelling would be testing
+ * a configuration the product does not have.
+ */
+export function instanceOrigin(server: Pick<TestServer, "httpUrl">): string {
+  return new URL(server.httpUrl).origin;
+}
+
+/** Mints a share on the HOST for the guest's origin and returns the one-time raw token. */
+export async function mintShare(
+  host: TestServer,
+  guest: Pick<TestServer, "httpUrl">,
+  containerId: string,
+  caps: readonly Cap[],
+): Promise<ShareGrant> {
+  return ShareGrantSchema.parse(
+    await ownerAction(host, "core.access.mintShare", {
+      node: { kind: "container", containerId },
+      caps,
+      origin: instanceOrigin(guest),
+    }),
+  );
+}
+
+/**
+ * Dials the host from the GUEST and waits until the control link reports itself live. The
+ * door answers as soon as the row exists, so the wait is on the socket rather than on the
+ * call — a dial that returned before its `welcome` would make every downstream assertion
+ * race the handshake.
+ */
+export async function dialShare(
+  guest: TestServer,
+  host: Pick<TestServer, "httpUrl">,
+  token: string,
+): Promise<Dial> {
+  const dialed = DialSchema.parse(
+    await ownerAction(guest, "core.access.dialShare", {
+      origin: instanceOrigin(host),
+      token,
+    }),
+  );
+  return await waitFor(
+    async () => {
+      const { dials } = ShareInventorySchema.parse(
+        await ownerAction(guest, "core.access.listShares", {}),
+      );
+      const current = dials.find((candidate) => candidate.id === dialed.id);
+      return current?.status === "live" ? current : false;
+    },
+    READY_TIMEOUT_MS,
+    50,
+  );
+}
+
+/** The guest's own door: turns a dial into a host ticket THIS principal may project with. */
+export async function openDial(
+  server: TestServer,
+  token: string,
+  dialId: string,
+): Promise<DialTicket> {
+  const outcome = await callAction(server, token, "core.access.openDial", { dialId });
+  if (!outcome.ok) throw new Error(`openDial refused: ${outcome.denial.message}`);
+  return DialTicketSchema.parse(outcome.result);
+}
+
+/** Every share this instance hands out and every dial it holds, in one answer. */
+export async function listShares(server: TestServer): Promise<ShareInventory> {
+  return ShareInventorySchema.parse(await ownerAction(server, "core.access.listShares", {}));
+}
+
+/** Revokes a share at the host and answers how many guest identities it severed. */
+export async function revokeShare(host: TestServer, shareId: string): Promise<number> {
+  const { revoked } = RevokeResultSchema.parse(
+    await ownerAction(host, "core.access.revokeShare", { shareId }),
+  );
+  return revoked;
 }
 
 /** Returns true only when the enrolled machine is owner-visible as online after reconnect. */

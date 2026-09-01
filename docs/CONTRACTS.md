@@ -10,13 +10,22 @@ this document explains semantics the schemas cannot).
 ```
 browser (web) ──┐
 agent SDK ──────┼── WS /ws/session ──► manifold server ── SQLite (data/manifold.db)
-tools/tests ─────┘                            ▲
+tools/tests ─────┘                            ▲  ▲
+                                             │  │ WS /ws/instance (outbound from the GUEST
+                                             │  │   instance; control only — shares, liveness,
+                                             │  │   tickets. No scene, presence or PTY bytes.)
+                                             │  └── another manifold server
                                              │ WS /ws/machine (outbound from machine)
                               manifold-agent daemon ── Bun.Terminal PTYs
 ```
 
+A guest instance's USERS do not ride `/ws/instance`. They point their own lens at the host's
+`/ws/session` with a ticket the instance channel obtained for them, so a shared container
+projects through the room, the document, the attendance roster and the PTY broker a local
+viewer uses. There is no relay and no second sync path (ADR 0014).
+
 - **server** (`packages/server`, entry `src/main.ts`): one Bun process. Serves web dist,
-  HTTP API, both WebSocket endpoints, owns rooms + SQLite.
+  HTTP API, all three WebSocket endpoints, owns rooms + SQLite.
 - **agent** (`packages/agent`, entry `src/main.ts`): separate long-lived process on any
   machine. Owns PTYs. Dials the server. Survives server restarts.
 - **web** (`packages/web`): Vite/React client over `/ws/session` via `@manifold/sdk`.
@@ -44,6 +53,15 @@ Auto-spawned local agent: server mints a machine token (raw copy kept at
 `<data>/agent.token`, mode 600, for respawns — DB stores only the hash), spawns
 `bun packages/agent/src/main.ts` **detached** (survives server exit), and writes
 `<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one.
+
+**Cross-instance sharing adds NO variable, and that is a ruling rather than an omission.** An
+instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
+host compares, the value a remote principal carries — is `MANIFOLD_PUBLIC_URL`'s origin and
+nothing else. A `MANIFOLD_INSTANCE_ORIGIN` beside it would be a second door onto "how this
+instance is addressed", which is invariant 14 in the one place it would be most tempting to
+fudge; a deployment behind a proxy configures the URL it already configures. There is no
+dial on/off switch either: disabling `core.access` stops new dials, and live ones surviving
+that is D4′'s "creation dies, cleanup survives" applying exactly as written.
 
 Web URL scheme: `/` is the authenticated browser entry point. It replaces itself with the
 last container used by that principal on this device, falling back to the first visible
@@ -82,7 +100,7 @@ and produces negative geometry that the commit path then rejects.
 
 ## Identity, tokens, capabilities
 
-- `Principal { id, kind: "human" | "agent", name, color }`. Stable; stored in SQLite.
+- `Principal { id, kind: "human" | "agent", name, color, origin? }`. Stable; stored in SQLite.
 - Every request, and every CHANNEL on a session socket, acts as exactly one principal via
   bearer token; a connection carries one credential's channels, because the SDK pools by
   token.
@@ -112,10 +130,23 @@ registry): the
 evaluator replaces ONE call surface and the action door's declared-capability intersection
 sits unchanged on top of it.
 
-Principals reserve a future `origin` notion — which instance a principal belongs to — for
-cross-instance sharing. Wave 1 writes no such field, and the SDK's channel pool is
-conceptually keyed by `(origin, containerId)` with origin fixed to this instance, so wave 3 supplies
-real origins without re-keying anything (`AXIOMS.md` §Roadmap).
+**Principal origin (ADR 0014, shipped in v18).** `Principal.origin` says WHICH INSTANCE a
+principal belongs to, as one normalized absolute `http(s)` base URL
+(`normalizeInstanceOrigin`, `packages/protocol/src/origin.ts` — lowercase scheme and host, no
+path, no trailing slash, ≤256 chars). It is OPTIONAL and **absent means this instance**, which
+is the one representation of local: `null` is refused, so no consumer branches on two spellings
+of the same fact, and every pre-v18 payload parses unchanged.
+
+It rides the principal and nothing else. Attendance carries it because an attendance row IS a
+principal, and a ticket carries it because a ticket carries a principal; no frame grows a second
+origin field. A remote participant is otherwise ORDINARY: the host mints its ticket through the
+same attenuation ladder, fences it through the same revocation fanout, and rooms it through the
+same `Room`. Invariant 11 across instances — origin is DATA, and nothing downstream of
+arbitration may branch on it. Rendering a peer's origin beside its name and color is
+presentation of a datum; a "remote flavor" of a cursor, a roster row or a projection is a defect.
+The SDK's channel pool keys connections by (factory, url, token), which is the
+`(origin, containerId)` keying wave 1 reserved — a lens pointed at a second instance is a second
+pool entry and no new client (`AXIOMS.md` §The portable lens).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
@@ -630,7 +661,8 @@ lets any principal render the same badge.
 
 **Access administration (`core.access`).** `POST /api/principals`, `POST /api/tokens` and
 `POST /api/tokens/revoke` are deleted; the identity MECHANISM (hashing, bearer authentication,
-attenuation, the revocation fence) stays floor and unchanged. The three doors:
+attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
+cross-instance ones below:
 
 | Action                        | Caps          | Scope     | Args → Result                                                                |
 | ----------------------------- | ------------- | --------- | ---------------------------------------------------------------------------- |
@@ -656,6 +688,34 @@ revoke", which the deleted route could not say. `core.access` is NOT `essential`
 authenticates outside the token system, so no disable can lock the owner out. The A5 evaluator
 (ADR 0011) later replaces what happens BENEATH these doors; their published vocabulary does not
 move.
+
+**Sharing across instances (`core.access`, ADR 0014).** A **share** is a token bound to a node
+and minted for a named guest **origin**; a **dial** is the guest's side of one accepted share.
+No new capability: a share hands authority out, so it declares the cap that already means that.
+
+| Action                    | Caps               | Scope     | Args → Result                                                           |
+| ------------------------- | ------------------ | --------- | ----------------------------------------------------------------------- |
+| `core.access.mintShare`   | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE     |
+| `core.access.revokeShare` | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**  |
+| `core.access.listShares`  | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets |
+| `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
+| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId }` → `DialTicket { origin, ref, caps, token }`                |
+
+`node` is a `manifold://` reference, never a bare container id (invariant 13); a ref that is not
+a container is refused `only a container can be shared`, which is the one rung these handlers
+own — everything else is `mint`'s ladder, run by the mechanism on the real caller. The two guest
+doors are `scope: "workspace"` because a dial names a node at ANOTHER instance, so a
+container-scoped token here is scoped to something the dial cannot be inside. `dialShare` waits
+for the host to say what the share names (ten seconds, then `conflict` `host did not answer`)
+because a `Dial` that named nothing yet would be indistinguishable from a live share that
+happens to be offline; an unanswered attempt is deleted, not revoked.
+
+`openDial` is the guest's own authority question — may THIS principal use this dial — and its
+answer is a per-principal TICKET the host minted, never the share secret. Every admitted
+principal gets the share's full caps this wave; narrowing per remote principal is a grant
+question (ADR 0011). Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
+declared by this plugin and emitted by the floor on `manifold://plugin/core.access`, which is
+`machine_online`'s split: a socket coming up is nobody's commit point.
 
 **The audit trail (`core.events`).** The server has recorded events since the first migration —
 `principal_joined`, `principal_left`, `terminal_opened`/`renamed`/`bound`/`exited`,
@@ -708,8 +768,10 @@ Grants, spotlights, and (from wave 2) event topics all name nodes this way.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v17).** One socket per tab, many rooms. Every frame is either
-connection-level or channel-level:
+**Frame grammar (v18).** One socket per tab, many rooms. Every frame is either
+connection-level or channel-level. v18 changed no session FRAME: what it added is an optional
+`origin` on the `Principal` that `init`, `attendance` and `presence` already carry (§Identity),
+so a v17 reader parses every v18 frame unchanged.
 
 ```
 connection-level   client → server  {"type":"ping"}
@@ -1081,17 +1143,19 @@ disconnected; absence is equivalent to `null`. Such exited terminals are retaine
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17}` (protocol/version.ts), NOT strict equality:
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18}` (protocol/version.ts), NOT strict equality:
 agents are long-lived and survive server deploys, so every compatible agent version stays
 accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
 new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
 restart — which v16 did: `terminal_event`, `TerminalInfo` and `MANIFOLD_CONTAINER` renamed
-the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 is
-the other case and ADDED: the event plane is session-only, `AgentMessage` and
-`ServerToAgentMessage` are byte-identical, and a v16 agent keeps its terminals across the
-deploy. Every
+the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 and
+v18 are both the other case and ADDED: the event plane is session-only and cross-instance
+sharing is a channel of its own (`/ws/instance`, its own `INSTANCE_PROTOCOL_COMPAT_VERSIONS`
+set), so `AgentMessage` and `ServerToAgentMessage` are byte-identical across both bumps —
+an agent never sees a `Principal` and therefore never sees `origin` — and a v16 agent keeps
+its terminals across either deploy. Every
 rejection path emits a structured server log (`machine_version_rejected`,
 `machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
 
@@ -1127,6 +1191,65 @@ an agent process restart kills every PTY it owns; PTYs do not survive the daemon
 upgrades and redeploys therefore MUST be operator-timed or idle-gated, never automatic on
 deploy.
 
+## WS /ws/instance — instance channel (JSON text frames; ADR 0014)
+
+The CONTROL link between two instances, and only the control link. A guest dials OUT to a
+host, exactly as a machine agent dials out, and the socket carries three things: proof the
+guest holds a share, liveness, and per-principal tickets. **No scene, presence or PTY bytes
+ever cross it.** A guest's users project by pointing their own lens at the HOST's
+`/ws/session` with a ticket obtained here, which is why a shared container renders through
+the same room, document, attendance roster and PTY broker a local viewer uses — one door per
+concept (invariant 14), and no second sync path.
+
+Handshake: guest sends `hello { protocolVersion, origin, instanceVersion, token, tickets? }`.
+`token` is the raw share secret (the host stores only its SHA-256). `origin` is the guest's
+own `MANIFOLD_PUBLIC_URL` origin and MUST equal the origin the share was minted for —
+mismatch closes 4401 `origin mismatch`, because the credential is not valid as presented.
+That comparison is what makes a principal's `origin` trustworthy DATA rather than a claim,
+which invariant 11 depends on. `tickets` is RESUME, carried on the hello exactly as a machine
+hello advertises retained PTYs: the host-side ticket principals the guest believes it still
+holds. There is no separate resume frame.
+
+Host replies `welcome { origin, serverEpoch, shareId, ref, caps, title, tickets }` — `ref` is
+the shared node in the HOST's address space and `origin` says whose space that is; the pair
+IS the cross-instance reference. `tickets` answers with the subset of the advertised ones
+still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
+mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
+hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18}` — its own wire, its own set, the same
+invariant-10 discipline the machine channel follows.
+
+Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
+verbatim; the host mints its own mirror id and never adopts a foreign one, because two
+instances' id spaces are independent.
+Host→guest: `ping`, `ticket { requestId, token, principal }` — an ORDINARY attenuated token
+for an ordinary host-side principal whose `origin` is the guest's; that is the whole of
+federation — or `ticket_error { requestId, reason }` with `reason` ∈ `share_revoked` |
+`invalid_principal` | `unavailable`. Refusals are data, never a dropped request.
+
+Liveness is the machine channel's, not a second scheme: after `welcome` the host pings every
+`DIAL_PING_INTERVAL_MS` (30s) and closes 4008 when a ping is still unanswered as the next one
+fires; the guest closes and re-dials after `DIAL_LIVENESS_TIMEOUT_MS` (75s) of total silence.
+Re-dial uses jittered backoff. A 4403 STOPS re-dialing and marks the dial `revoked` — an
+unreachable host is a transport problem worth retrying, a revoked share is a decision.
+
+**One dial is one share.** The token authenticates the share, so there is no share id in a
+ticket request and no catalogue frame; a second share to the same origin is a second token
+and a second dial. Per-origin pairing would need an instance-level principal, which is new
+authority semantics and belongs to ADR 0011's waterfall.
+
+Revocation cuts BOTH credentials through their own fences: `core.access.revokeShare` marks
+the share row revoked durably, revokes every ticket principal it minted — which closes those
+principals' live `/ws/session` sockets through the ordinary revocation fence — and closes
+this control link with 4403. Nothing cross-instance is added to the session path to make that
+work; a ticket is a token, and tokens were always revocable.
+
+Every rejection emits a structured log (`instance_rejected`, `instance_version_rejected`,
+`instance_liveness_timeout`, `instance_ticket_refused`, …). Guest-side status transitions
+emit `dial_online` / `dial_offline` / `dial_revoked` on the event plane, declared by
+`core.access` and emitted by the floor for the reason `machine_online` is: a socket coming up
+is not a commit point any action owns.
+
 ## Persistence (SQLite, WAL; server-only)
 
 ```
@@ -1138,7 +1261,9 @@ scene_docs(container_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, do
            PRIMARY KEY (container_id, epoch, rev))     -- keep newest 30 valid docs each
 events(id INTEGER PK AUTOINCREMENT, container_id TEXT, ts INTEGER, principal_id TEXT,
        type TEXT, payload TEXT)                       -- lifecycle/caps/join-leave ONLY
-principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER)
+principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER, origin TEXT)
+                            -- origin NULL means THIS instance; a remote principal carries
+                            -- the guest origin its share was minted for
 tokens(id TEXT PK, hash TEXT UNIQUE, principal_id TEXT, caps TEXT, container_id TEXT,
        created_at INTEGER, revoked_at INTEGER, minted_by TEXT)  -- HASH only, never raw
 machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
@@ -1149,13 +1274,34 @@ terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, statu
 plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
                             -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
                             -- engine-reserved ($version stamp, $migration:<name> ledger)
+shares(id TEXT PK, hash TEXT UNIQUE, container_id TEXT, caps TEXT, origin TEXT,
+       minted_by TEXT, created_at INTEGER, revoked_at INTEGER)  -- HASH only, never raw
+share_tickets(share_id TEXT, guest_principal_id TEXT, principal_id TEXT, created_at INTEGER,
+              PRIMARY KEY (share_id, guest_principal_id))
+                            -- WITHOUT ROWID; the dedupe map from one of the GUEST's
+                            -- principals to the host-side principal minted to stand for it.
+                            -- Not a second identity system: principal_id is an ordinary
+                            -- principal with an ordinary token, which is why revocation,
+                            -- the doors and attendance need no cross-instance special case
+dials(id TEXT PK, origin TEXT, secret TEXT, ref TEXT, caps TEXT, title TEXT,
+      dialed_at INTEGER, revoked_at INTEGER)            -- UNIQUE(origin, secret)
+                            -- The GUEST half. `secret` is RAW here, and the asymmetry with
+                            -- shares.hash is the design: a host only VERIFIES a presented
+                            -- secret, which a hash does; a guest must PRESENT one, which a
+                            -- hash cannot. `ref`/`caps`/`title` are the host's last word,
+                            -- cached to draw a row while the socket is down — never an
+                            -- authority the guest evaluates. `ref` is NULL only between the
+                            -- row's creation and the first welcome
 meta(key TEXT PK, value TEXT)                         -- schema_version, plugins:disabled,
                                                       -- plugins:attribution,
                                                       -- plugins:element-owners,
                                                       -- layout:<principalId>
 ```
 
-Schema version 11 (10 added `plugin_kv`; 11 is the lexicon cut). A migration is SQL, or CODE
+Schema version 12 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+— `shares`, `share_tickets`, `dials` and `principals.origin`, all plain SQL because none of
+it touches a stored document and existing rows need no backfill: a NULL origin already means
+"this instance"). A migration is SQL, or CODE
 when the move is not
 expressible as SQL:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a

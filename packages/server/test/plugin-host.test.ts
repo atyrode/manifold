@@ -17,6 +17,7 @@ import type {
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { WORKSPACE_PANELS } from "../src/assembly.ts";
+import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
 import {
@@ -709,6 +710,7 @@ function customHost(
     fixture.broker,
     testPlacement(fixture),
     OFFLINE_MACHINES,
+    new InstanceDialer(fixture.store, fixture.runtime, silentLogger, () => "http://localhost:7777"),
     fixture.runtime,
     silentLogger,
     events,

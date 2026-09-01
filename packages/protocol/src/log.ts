@@ -51,6 +51,24 @@ export const LOG_EVENTS = [
   "machine_unknown_frame",
   "machine_version_rejected",
 
+  // Server: instance transport (ADR 0014) — the host half of a dial, and the guest half.
+  // Named `instance_*` for the inbound gateway and `dial_*` for the outbound service,
+  // because an operator debugging a partnership is always asking about one END of it, and
+  // one prefix for both would make "who refused whom" a matter of reading the fields.
+  "dial_opened",
+  "dial_status",
+  "dial_unanswered",
+  "instance_dialed",
+  "instance_hello_timeout",
+  "instance_liveness_timeout",
+  "instance_malformed_frame",
+  "instance_rejected",
+  "instance_superseded",
+  "instance_ticket_issued",
+  "instance_ticket_refused",
+  "instance_unknown_frame",
+  "instance_version_rejected",
+
   // Server: session transport — channel multiplexing and connection-level frames.
   "session_channel_limit",
   "session_malformed_frame",

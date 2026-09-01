@@ -174,6 +174,12 @@ export interface FloorEventOwners {
   readonly machines: string;
   /** Room attendance: the room owns the roster, a plugin owns the words. */
   readonly attendance: string;
+  /**
+   * Instance-channel liveness: the dialer owns the socket, a plugin owns the words. It is
+   * the `machines` row's shape exactly — a long-lived outbound pipe going up or down is not
+   * a commit point any action owns, so the floor is the only party that can announce it.
+   */
+  readonly shares: string;
 }
 
 /** Late-bound halves: both are downstream of this class in startup order, so both are thunks. */

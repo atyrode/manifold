@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -130,18 +130,56 @@ export const PROTOCOL_VERSION = 17;
  * rather than resetting the set. The set is `{16, 17}` and NO fleet restart is
  * owed; an enrolled v16 agent keeps its terminals across this server deploy,
  * which is the exact outcome the invariant exists to protect.
+ * v17 -> v18: CROSS-INSTANCE SHARING (ADR 0014), session-side additive and a
+ * brand-new wire beside the existing two. `Principal` gained an OPTIONAL
+ * `origin` — which instance a principal belongs to, absent ≡ this one — so
+ * every v17 principal payload parses unchanged and a client that never meets a
+ * remote peer observes a v17 server exactly. The instance channel
+ * (`/ws/instance`, `instance.ts`) is a NEW wire rather than a change to an old
+ * one: a guest instance dials a host with a share token, and the host answers
+ * tickets that are ordinary attenuated tokens.
+ *
+ * The machine wire is BYTE-IDENTICAL. `AgentMessage` and
+ * `ServerToAgentMessage` gained, lost and renamed nothing; an agent never sees
+ * a `Principal`, and the liveness constants below were RENAMED
+ * (`MACHINE_PING_INTERVAL_MS` -> `DIAL_PING_INTERVAL_MS`,
+ * `AGENT_LIVENESS_TIMEOUT_MS` -> `DIAL_LIVENESS_TIMEOUT_MS`) without changing a
+ * cadence, a deadline or a close code — two identifiers, zero bytes. So
+ * invariant 10's first clause applies verbatim: the set is `{16, 17, 18}` and
+ * NO fleet restart is owed.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18]);
 
 /**
- * Machine-channel liveness cadence (CONTRACTS.md): the server pings on this
- * interval and closes (4008) when a ping is still unanswered as the next one
- * fires, bounding server-side offline detection at two intervals. The agent
- * closes and re-dials when it hears NOTHING for AGENT_LIVENESS_TIMEOUT_MS —
- * a healthy but idle connection still carries pings, so silence longer than
- * two intervals plus grace means the transport is a phantom (dead TCP with no
- * RST, e.g. a proxy swallowed the close). Both halves share these constants
- * so the deadline math stays coherent.
+ * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
+ *
+ * A guest instance is long-lived in the same way an agent is, so its wire needs
+ * the same negotiation discipline — and it is not the agent's wire. Pointing the
+ * instance channel at the machine set would mean an agent-wire reset silently
+ * locking out federated instances that never spoke that wire, and the reverse:
+ * an instance-frame change forcing a fleet of PTY agents to restart. Two wires,
+ * two sets, one discipline (invariant 10, applied per wire).
+ *
+ * v18: the version that introduces the wire.
  */
-export const MACHINE_PING_INTERVAL_MS = 30_000;
-export const AGENT_LIVENESS_TIMEOUT_MS = MACHINE_PING_INTERVAL_MS * 2 + 15_000;
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18]);
+
+/**
+ * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel and
+ * the instance channel both have a long-lived peer that dialed OUT to a server,
+ * and both answer the same question — is this transport still real? The dialed-in
+ * side pings on this interval and closes (4008) when a ping is still unanswered as
+ * the next one fires, bounding offline detection at two intervals. The dialing side
+ * closes and re-dials when it hears NOTHING for DIAL_LIVENESS_TIMEOUT_MS — a
+ * healthy but idle connection still carries pings, so silence longer than two
+ * intervals plus grace means the transport is a phantom (dead TCP with no RST,
+ * e.g. a proxy swallowed the close).
+ *
+ * Named for the DISCIPLINE rather than for one of its occupants, which is the
+ * lesson wave 3 taught: these were `MACHINE_PING_INTERVAL_MS` and
+ * `AGENT_LIVENESS_TIMEOUT_MS` while the machine channel was the only dial, and
+ * the second dial is what exposed the name as an accident. One scheme, one pair
+ * of constants, every dial (invariant 14).
+ */
+export const DIAL_PING_INTERVAL_MS = 30_000;
+export const DIAL_LIVENESS_TIMEOUT_MS = DIAL_PING_INTERVAL_MS * 2 + 15_000;

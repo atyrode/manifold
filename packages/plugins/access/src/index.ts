@@ -1,12 +1,21 @@
 import { defineAction } from "@manifold/plugin";
 import {
   BootstrapPrincipalRequestSchema,
+  DialSchema,
+  DialShareRequestSchema,
+  DialTicketSchema,
+  MintShareRequestSchema,
   MintTokenRequestSchema,
+  OpenDialRequestSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
+  RevokeShareRequestSchema,
+  ShareGrantSchema,
+  ShareInventorySchema,
   TokenGrantSchema,
   type PluginManifest,
 } from "@manifold/protocol";
+import { z } from "zod";
 
 /**
  * Access administration, as a plugin: the three verbs that hand authority out and take it
@@ -55,17 +64,41 @@ import {
  */
 export const accessManifest: PluginManifest = {
   id: "core.access",
-  version: "1.0.0",
+  version: "1.1.0",
   title: "Access",
   description:
-    "Creates principals, mints delegated tokens, and revokes them — admin UI: deferred, door-only",
+    "Creates principals, mints delegated tokens, shares nodes with other instances, and revokes them — admin UI: deferred, door-only; share UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
-    one of these doors is root-only.
+    one of these doors is root-only. The share doors add no capability — a share IS a token
+    bound to a node (A5), so the cap that already means "hands authority out" is the one they
+    declare, and `containers:read`/`containers:write` are what accepting and using a foreign
+    node costs on the guest side.
   */
-  capabilities: ["*", "tokens:mint"],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  capabilities: ["*", "tokens:mint", "containers:read", "containers:write"],
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    /*
+      THE DIAL'S NEWS (ADR 0012 §1, ADR 0014 §1). A dial has no `manifold://` form of its own,
+      so all three are addressed to this plugin's node — the node whose doors create and
+      destroy the relationship — and WHICH dial moved is the payload.
+
+      All three are emitted by the FLOOR, and that is the same ruling `machine_online` already
+      makes: a long-lived outbound socket coming up or going down is not the commit point of
+      any action, so only the socket registry can know it. The engine emits; the plugin
+      declares. `dial_revoked` is the one a guest's UI acts on hardest — it is the moment a
+      projection stopped being legal, arriving without anybody at this instance doing anything.
+     */
+    events: [
+      { id: "dial_online", title: "Dial live" },
+      { id: "dial_offline", title: "Dial offline" },
+      { id: "dial_revoked", title: "Dial revoked by its host" },
+    ],
+  },
 };
 
 /**
@@ -127,5 +160,103 @@ export const accessActions = [
       result and every client's parse of it are the same object.
     */
     result: RevokeResultSchema,
+  }),
+
+  /*
+    THE SHARE DOORS (ADR 0014). Five verbs, one job each, and no new capability: a share is a
+    token bound to a node, so `tokens:mint` — the cap that already means "may hand authority
+    out" — is what the host-side three declare, and the ladder they run is `mint`'s ladder
+    unchanged (caps ⊆ the minter's at that node, `*` root-only, no widening of container
+    scope). Inventing `share:manage` would have been a second answer to "who may delegate".
+
+    The three host doors are `scope: "container"` for the same preservation `mint` records
+    above: a container-scoped agent may share the container it is confined to, and the
+    mechanism confines the answer on the real caller.
+
+    The two guest doors are `scope: "workspace"`, and that is not a widening either — it is
+    forced. A dial names a node at ANOTHER instance, so a container-scoped token here is
+    scoped to a local container id that the dial cannot be inside; admitting scoped callers
+    would mean admitting them to something their scope does not describe.
+  */
+  defineAction({
+    name: "mintShare",
+    title: "Share a node with another instance",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: MintShareRequestSchema,
+    /*
+      The raw secret, exactly once, the `TokenGrant` precedent verbatim: the host keeps only a
+      hash, so this answer is the one moment it exists anywhere it can be copied from. Every
+      other door that mentions a share publishes `Share`, which structurally cannot carry one.
+    */
+    result: ShareGrantSchema,
+  }),
+  defineAction({
+    /*
+      CLEANUP, for `revoke`'s reason and one of its own. Revocation is what somebody reaches
+      for when a secret has leaked, and a share's secret is held by ANOTHER INSTANCE — the one
+      case where the holder is beyond this workspace's reach entirely. A disable that suspended
+      this door would leave a foreign instance projecting a node whose owner had already
+      decided to cut the pipe, which is A4's "when an owner cuts the pipe, the projection dies
+      everywhere" broken by an administrative toggle.
+    */
+    cleanup: true,
+    name: "revokeShare",
+    title: "Revoke a share and every ticket under it",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: RevokeShareRequestSchema,
+    /*
+      The same count `revoke` publishes, meaning the same thing: how many TICKET principals
+      actually died. Zero is a success — a share nobody had walked through is exactly the case
+      a nervous owner revokes — and the share row is marked revoked either way.
+    */
+    result: RevokeResultSchema,
+  }),
+  defineAction({
+    name: "listShares",
+    title: "List shares granted and dials held",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: z.strictObject({}),
+    /*
+      BOTH directions through one door, because the concept is "the cross-instance
+      relationships this instance has" and two list doors would be two answers to one question
+      (invariant 14). Neither collection carries a secret: `Share` cannot hold one by
+      construction, and a `Dial` publishes the host, the node and the status — never the
+      secret this instance holds to reach it.
+    */
+    result: ShareInventorySchema,
+  }),
+  defineAction({
+    name: "dialShare",
+    title: "Accept a share from another instance",
+    caps: ["containers:write"],
+    scope: "workspace",
+    input: DialShareRequestSchema,
+    /*
+      BLOCKS on the handshake rather than answering optimistically, and the schema is what
+      forces it: a `Dial` names the node and the caps the host reported, which are facts only
+      the welcome carries. The alternative — a row written before the host answers — turns a
+      bad token, a wrong origin, an already-revoked share and an unreachable host into the same
+      permanently-offline zombie row, which is exactly the deferral-nobody-can-see shape
+      AXIOMS.md §Change control forbids. One honest refusal instead.
+    */
+    result: DialSchema,
+  }),
+  defineAction({
+    name: "openDial",
+    title: "Get this principal's ticket for a dialed share",
+    caps: ["containers:read"],
+    scope: "workspace",
+    input: OpenDialRequestSchema,
+    /*
+      The first of A4's three steps, answered by the guest's OWN instance (ADR 0014 §3): may
+      THIS principal use this dial. The answer is an address and a per-principal ticket — never
+      the share secret, which stays with this instance the way a machine token stays with the
+      agent daemon. Every admitted principal gets the share's full caps this wave; narrowing
+      per remote principal is a grant question, and grants are ADR 0011.
+    */
+    result: DialTicketSchema,
   }),
 ];

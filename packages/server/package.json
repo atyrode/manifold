@@ -22,6 +22,7 @@
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
+    "@manifold/sdk": "workspace:*",
     "yjs": "13.6.32",
     "zod": "4.4.3"
   },

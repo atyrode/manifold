@@ -1,7 +1,7 @@
 import {
   AGENT_MESSAGE_TYPES,
   AgentMessageSchema,
-  MACHINE_PING_INTERVAL_MS,
+  DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -268,7 +268,7 @@ export class MachineGateway {
         return;
       }
       this.schedulePing(connection);
-    }, MACHINE_PING_INTERVAL_MS);
+    }, DIAL_PING_INTERVAL_MS);
   }
 
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {

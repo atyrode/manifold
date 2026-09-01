@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
+import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from "./instance.ts";
 import { eventVocabulary } from "./events.ts";
 import {
   PlaceRequestSchema,
@@ -58,6 +59,17 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     machine: {
       agent: z.toJSONSchema(AgentMessageSchema),
       server: z.toJSONSchema(ServerToAgentMessageSchema),
+    },
+    /**
+     * The third wire (ADR 0014): the instance channel a guest dials a host over. Published
+     * beside the other two because a stranger's INSTANCE is as much an integrator as a
+     * stranger's agent — it has to learn the handshake, the ticket exchange and the closed
+     * refusal set from a document rather than from this source tree.
+     */
+    instance: {
+      ...instanceVocabulary(),
+      guest: z.toJSONSchema(GuestMessageSchema),
+      host: z.toJSONSchema(HostToGuestMessageSchema),
     },
     placement: {
       ...placementVocabulary(),
