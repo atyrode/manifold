@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -160,8 +160,23 @@ export const PROTOCOL_VERSION = 19;
  * lost and renamed nothing, and an agent never sees a session frame. So invariant 10's
  * first clause applies verbatim: the set is `{16, 17, 18, 19}` and NO fleet restart is
  * owed.
+ * v19 -> v20: SESSION EXPIRY AND THE CREDENTIAL LIST (ADR 0019 §2-§3), additive-optional
+ * on both halves it touches. `TokenGrant` gained an OPTIONAL `expiresAt` and
+ * `MachineSummary` an OPTIONAL `revoked`; absent reproduces v19 exactly, because at v19 no
+ * credential expired and no machine could be withdrawn. `AUTH_REFUSALS` publishes the two
+ * words a credential refusal can be — `revoked`, which v19 already sent as a 4403 close
+ * reason, and the new `expired` — so a lens can tell "come back with a fresh credential"
+ * from "stop asking"; a client that switches on neither reads them as the prose it always
+ * read. `core.access.listCredentials` and `core.machines.revoke` are new DOORS, which the
+ * roster publishes and no version gates.
+ *
+ * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
+ * lost and renamed nothing, and machine tokens are the deliberate expiry EXEMPTION — an
+ * agent's credential is long-lived by design, so nothing an enrolled spoke holds changes
+ * meaning across this deploy. So invariant 10's first clause applies verbatim: the set is
+ * `{16, 17, 18, 19, 20}` and NO fleet restart is owed.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18, 19]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18, 19, 20]);
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -178,8 +193,11 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16
  * instance wire is byte-identical (a guest never sees a session frame), so invariant
  * 10's first clause ADDS the version rather than resetting the set, and a v18 guest
  * instance keeps its dial across this deploy.
+ * v20: session/HTTP only — credential expiry and the credential list (ADR 0019). A guest
+ * instance holds a SHARE secret, which is not a token row and carries no expiry, so the
+ * instance wire is byte-identical again and the version is ADDED.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
