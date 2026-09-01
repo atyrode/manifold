@@ -667,6 +667,11 @@ export function refKey(ref: TileRef | null): string | null {
       return `text:${ref.elementId}`;
     case "panel":
       return `panel:${ref.panelId}`;
+    case "spacer":
+      // No persistent identity — interchangeable with every other spacer, exactly like the
+      // empty leaf `refKey` already treats this way (`null` falls back to `empty:${node.id}`
+      // in `leafNodesInOrder`, keyed by the tile's OWN id rather than by anything it shows).
+      return null;
     default: {
       const exhaustive: never = ref;
       return exhaustive;

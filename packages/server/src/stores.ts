@@ -12,6 +12,7 @@ import {
   type PluginStorageAdmin,
 } from "@manifold/plugin";
 import {
+  BindingOverridesSchema,
   CapSchema,
   ContainerSchema,
   GrantSchema,
@@ -19,6 +20,7 @@ import {
   PrincipalSchema,
   TileLayoutSchema,
   validateTileLayout,
+  type BindingOverrides,
   type Cap,
   type Container,
   type Grant,
@@ -820,6 +822,45 @@ export class ServerStore {
       throw new Error("workspace layout is not a valid tile tree");
     }
     this.setMeta(`layout:${principalId}`, JSON.stringify(parsed));
+  }
+
+  /**
+   * One principal's KEY OVERRIDES — the rebindings they have made, as binding id → key. The
+   * empty map means "nothing rebound", and so does an unreadable or schema-invalid stored value:
+   * a principal whose stored deltas went bad must get their plugins' declared keys back rather
+   * than a workspace that refuses to compose (the same recovery reading `workspaceLayout` gives
+   * a broken tree).
+   *
+   * Stored as ONE meta row per principal rather than a row per binding, for the reason the
+   * layout is one row: a rebinding is a delta over a table the SERVER cannot see — the key
+   * registry is browser-side registration data — so this store keeps the map opaque and the
+   * meaning is applied at the one composition seam (`composeBindings`).
+   */
+  bindingOverrides(principalId: string): BindingOverrides {
+    const raw = this.getMeta(`bindings:${principalId}`);
+    if (raw === null) return {};
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    const parsed = BindingOverridesSchema.safeParse(decoded);
+    return parsed.success ? parsed.data : {};
+  }
+
+  /**
+   * Writes one principal's whole override map, validated, with the keys sorted — a stored map
+   * whose iteration order depended on write order would make two servers with the same deltas
+   * serve two different JSON bodies, and this row is read by an engine that applies overrides in
+   * a defined order.
+   */
+  setBindingOverrides(principalId: string, overrides: BindingOverrides): void {
+    const parsed = BindingOverridesSchema.parse(overrides);
+    const sorted = Object.fromEntries(
+      Object.entries(parsed).sort(([left], [right]) => (left < right ? -1 : 1)),
+    );
+    this.setMeta(`bindings:${principalId}`, JSON.stringify(sorted));
   }
 
   listIndex(): IndexEntry[] {

@@ -9,23 +9,16 @@ import {
 import {
   ContainerRouteProvider,
   WorkspaceShellProvider,
-  areaUnits,
   projectLocalPresence,
-  resolveTileAim,
-  tileProspect,
   usePolledResource,
   ATTENDANCE_RESOURCE,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
-  type AreaFractions,
   type ContainerRoute,
-  type TileAim,
-  type UnitRect,
   type WorkspaceShell,
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
 import {
-  ControlIcon,
   TileTree,
   WORKSPACE_TREE_CLASSES,
   setVantage,
@@ -40,7 +33,6 @@ import type {
   IndexEntry,
   PlacementItem,
   TerminalSummary,
-  TileEdge,
   TileLayout,
   Tile,
 } from "@manifold/protocol";
@@ -51,8 +43,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -69,15 +59,8 @@ import {
   useAssembly,
   useAuthoringRegistration,
   useHostServices,
+  useTileGeometryRegistration,
 } from "./plugin-host.tsx";
-import {
-  movedPanelLayout,
-  nudgedPanelLayout,
-  panelArrangeMessage,
-  panelsCanMove,
-  resolveArrangeScope,
-  type PanelArrangeOutcome,
-} from "./workspace-arrange.ts";
 import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
 /**
@@ -126,251 +109,12 @@ const DEFAULT_CONTAINER_NAME = "Untitled";
  */
 const COLLAPSE_MIRROR_KEY = "manifold:sidebar-collapsed-mirror";
 
-/**
- * ── THE PANEL LEG OF ARRANGE MODE ────────────────────────────────────────────────────
- *
- * F8 arms the whole workspace, and BOTH its legs now land: sections rearrange inside the
- * sidebar, and panels rearrange inside the workspace tree. The panel leg's grab surface
- * belongs HERE, at the outlet that seats a panel, rather than inside any panel's own
- * component — a panel is a plugin's renderer and knows nothing about the tree it is a leaf
- * of, so the affordance for moving one is the floor's the way the seam already is.
- *
- * There is no new grammar. The pointer resolves through `resolveTileAim` — the same leaf
- * zones, seam bands and border ring every composition's own drag aims with — the preview is
- * `tileProspect` over the same kernel, and the release commits through
- * `core.space.setLayout`, the one layout door. What arriving here needed was not plumbing
- * but the realisation that this surface needs no CARRY: see {@link WorkspaceHost}'s commit
- * point for why a per-principal tree has nothing to stream.
- */
-
-/** Which sibling an arrow key reaches for; the tile vocabulary's own edges, not a new one. */
-const ARROW_EDGES: Readonly<Record<string, Exclude<TileEdge, "center">>> = {
-  ArrowLeft: "left",
-  ArrowRight: "right",
-  ArrowUp: "top",
-  ArrowDown: "bottom",
-};
-
-/** One panel in hand: the leaf it is leaving, and the pointer that is holding it. */
-interface PanelGrab {
-  readonly tileId: string;
-  readonly panelId: string;
-  readonly pointerId: number;
-}
-
 function initialSidebarOpen(): boolean {
   try {
     return window.localStorage.getItem(COLLAPSE_MIRROR_KEY) !== "true";
   } catch {
     return true;
   }
-}
-
-interface PanelGripProps {
-  readonly tileId: string;
-  readonly panelId: string;
-  /** What the panel calls itself, so the control names the thing it moves. */
-  readonly title: string;
-  /**
-   * What the panel calls the arrangement it holds INSIDE itself, or null for "none". The
-   * floor learns this from the panel's own manifest (`contributes.panels[].arranges`) and
-   * learns nothing else: it renders the way in and names it with the panel's word.
-   */
-  readonly arranges: string | null;
-  /** This is the panel in hand right now. */
-  readonly grabbed: boolean;
-  readonly onGrab: (grab: PanelGrab, event: ReactPointerEvent<HTMLElement>) => void;
-  readonly onNudge: (
-    tileId: string,
-    panelId: string,
-    direction: Exclude<TileEdge, "center">,
-  ) => void;
-  /** Step one scope down: this panel's own parts become the grabbable things. */
-  readonly onScopeIn: (panelId: string) => void;
-}
-
-/**
- * THE GRAB SURFACE for one panel, covering the whole pane — the same shape the section leg
- * uses, for the same two reasons: it says the PANEL is the thing in hand, and it keeps the
- * pointer off everything underneath, which in a pane is somebody else's renderer.
- *
- * A real button, unlike the section's grip, because a pane has no header button above it for
- * arrow keys to bubble out of: this control is the panel leg's tab stop AND its keyboard
- * route. `data-action` names the door a release opens, so the DOM says which authority this
- * affordance reaches for (AGENTS.md invariant 12).
- *
- * THE PILL IS A SIBLING of the grab surface, not its content, and that is what lets the way
- * IN be a real control: a button inside a button is not a document, so the panel's name and
- * the scope control ride their own box above the grip. The pill takes no pointer input at all
- * (the mode's blanket suppression already sees to that) — only the one button inside it
- * re-enables itself, so every pixel of the pane except that button still grabs the panel.
- */
-function PanelGrip({
-  tileId,
-  panelId,
-  title,
-  arranges,
-  grabbed,
-  onGrab,
-  onNudge,
-  onScopeIn,
-}: PanelGripProps): ReactElement {
-  return (
-    <>
-      <button
-        type="button"
-        className={`workspace-panel-grip${grabbed ? " is-grabbed" : ""}`}
-        data-action="core.space.setLayout"
-        data-panel-id={panelId}
-        aria-label={`Move the ${title} panel`}
-        onPointerDown={(event) => {
-          onGrab({ tileId, panelId, pointerId: event.pointerId }, event);
-        }}
-        onKeyDown={(event) => {
-          const direction = ARROW_EDGES[event.key];
-          if (direction === undefined) return;
-          event.preventDefault();
-          onNudge(tileId, panelId, direction);
-        }}
-      />
-      <div className="workspace-panel-pill">
-        <span className="workspace-panel-pill-label">{title}</span>
-        {arranges === null ? null : (
-          <button
-            type="button"
-            className="workspace-panel-scope"
-            data-panel-id={panelId}
-            aria-label={`Arrange ${arranges}`}
-            onClick={() => onScopeIn(panelId)}
-          >
-            <ControlIcon kind="scopeIn" size={13} />
-          </button>
-        )}
-      </div>
-    </>
-  );
-}
-
-interface PanelArrangeLayerProps {
-  readonly layout: TileLayout;
-  readonly grab: PanelGrab;
-  /** The tree's own area box, resolved per frame: the tree is drawn by `TileTree`, not here. */
-  readonly area: () => HTMLElement | null;
-  /** The release, with whatever the last frame aimed at — null means "nowhere". */
-  readonly onRelease: (aim: TileAim | null) => void;
-}
-
-/** One frame of the gesture: what it aims at, and the measurement that resolved it. */
-interface PanelArrangeFrame {
-  readonly aim: TileAim;
-  readonly units: AreaFractions;
-}
-
-/**
- * THE LIVE DESTINATION, and the only thing in this file that runs per pointer frame.
- *
- * It is its own component for the reason the composition's preview overlay is: a per-frame
- * `setState` on the shell would re-render every pane's renderer sixty times a second, and
- * one of those panes holds terminals. Here the shell re-renders exactly twice per gesture —
- * once when a panel is grabbed, once when it is let go — and this layer owns the frames.
- *
- * It listens on the WINDOW rather than on the grip: the grip has pointer capture, so every
- * frame is retargeted to it and bubbles here regardless of what the pointer is over, which
- * is what lets an aim resolve over a pane whose content is inert.
- */
-function PanelArrangeLayer({ layout, grab, area, onRelease }: PanelArrangeLayerProps): ReactNode {
-  const [frame, setFrame] = useState<PanelArrangeFrame | null>(null);
-  /** The aim the release will commit, readable without a render (the divider drag's rule). */
-  const aimRef = useRef<TileAim | null>(null);
-
-  useEffect(() => {
-    const track = (event: PointerEvent): void => {
-      if (event.pointerId !== grab.pointerId) return;
-      const element = area();
-      const units = element === null ? null : areaUnits(element, WORKSPACE_TREE_CLASSES.dividerPx);
-      if (units === null) return;
-      const next = resolveTileAim(
-        layout,
-        {
-          x: (event.clientX - units.rect.left) / units.rect.width,
-          y: (event.clientY - units.rect.top) / units.rect.height,
-        },
-        // The panel in hand always holds a seat to trade: it is a leaf of THIS tree.
-        { carriedTileId: grab.tileId, holdsTileSeat: true },
-        units.dividers,
-        units.ring,
-        // The zone already held, so a pointer near a boundary does not flutter (hysteresis).
-        aimRef.current,
-      );
-      const held = aimRef.current;
-      aimRef.current = next;
-      if (next === null) {
-        if (held !== null) setFrame(null);
-        return;
-      }
-      // A pointer sliding inside one zone repaints nothing: same aim, same preview.
-      if (
-        held !== null &&
-        held.tileId === next.tileId &&
-        held.edge === next.edge &&
-        held.action === next.action &&
-        (held.between === true) === (next.between === true)
-      ) {
-        return;
-      }
-      setFrame({ aim: next, units });
-    };
-    const release = (event: PointerEvent): void => {
-      if (event.pointerId !== grab.pointerId) return;
-      onRelease(aimRef.current);
-    };
-    const abandon = (event: PointerEvent): void => {
-      if (event.pointerId !== grab.pointerId) return;
-      onRelease(null);
-    };
-    window.addEventListener("pointermove", track);
-    window.addEventListener("pointerup", release);
-    window.addEventListener("pointercancel", abandon);
-    return () => {
-      window.removeEventListener("pointermove", track);
-      window.removeEventListener("pointerup", release);
-      window.removeEventListener("pointercancel", abandon);
-    };
-  }, [area, grab, layout, onRelease]);
-
-  const prospect =
-    frame === null ? null : tileProspect(layout, frame.aim, grab.tileId, frame.units.dividers);
-  if (frame === null || prospect === null) return null;
-
-  /*
-    Unit space out, client px in — and painted `fixed`, so the slot needs no containing block
-    and cannot be clipped by the pane it overlaps. The tree's own area is what the fractions
-    are fractions OF, which is why the rect comes from the frame that resolved them.
-  */
-  const paint = (unit: UnitRect): CSSProperties => ({
-    left: frame.units.rect.left + unit.x * frame.units.rect.width,
-    top: frame.units.rect.top + unit.y * frame.units.rect.height,
-    width: unit.width * frame.units.rect.width,
-    height: unit.height * frame.units.rect.height,
-  });
-  const trade = frame.aim.action === "swap";
-  return (
-    <>
-      <div
-        className={`workspace-arrange-slot${trade ? " is-swap" : ""}`}
-        style={paint(prospect.slot)}
-        aria-hidden="true"
-      />
-      {prospect.partner === null ? null : (
-        // The seat the panel came from: a trade is two rects, because two panels move.
-        <div
-          className="workspace-arrange-slot is-swap"
-          style={paint(prospect.partner)}
-          aria-hidden="true"
-        />
-      )}
-    </>
-  );
 }
 
 interface NavigateOptions {
@@ -444,7 +188,7 @@ export function WorkspaceHost({
           });
       }, LAYOUT_COMMIT_MS);
     },
-    [host, notify],
+    [host.client, notify],
   );
 
   useEffect(
@@ -523,170 +267,15 @@ export function WorkspaceHost({
     [applyLayout],
   );
 
-  // ------------------------------------------------------------- arrange mode
-
-  /**
-   * ARRANGE MODE AND THE SCOPE IT IS STANDING IN, read off the vantage store the F8 binding
-   * writes.
-   *
-   * Neither is this component's state, and that is the whole design: both are PRESENCE
-   * (`vantage.arranging`, `vantage.arrangeScope`), so the binding row in `core.shell` flips
-   * the mode, this shell renders it, the sidebar panel renders it, and every collaborator
-   * sees it — one value, no owner (AXIOMS.md A2, AGENTS.md invariant 11). A `useState` here
-   * would have been a mode only this browser tab could know about, which is the exact
-   * capability the vantage store exists to abolish.
-   *
-   * ARRANGING IS SCOPED, and the scope is a panel REF rather than a name the floor knows.
-   * At the root — `arrangeScope` absent — the grabbable things are the workspace's panels.
-   * Zoom into a panel that declared an inner arrangement and the grabbable things become that
-   * panel's own parts; nothing else in the workspace offers a grip, including the zoomed-into
-   * panel itself, whose pane is now a place to work rather than a thing to move.
-   *
-   * THE SCOPE IS RESOLVED, not trusted. A ref is only a scope if the roster still says that
-   * panel holds an arrangement — a plugin can be disabled while a reader stands inside its
-   * rows — so an unresolvable ref reads as the root rather than as a workspace with nothing
-   * grabbable and no way to say why.
-   */
-  const { arranging, arrangeScope } = useVantage();
-  const { panelId: scopedPanelId, title: scopeTitle } = resolveArrangeScope(
-    assembly.panels,
-    arranging ? arrangeScope : null,
-  );
-
-  /**
-   * Escape POPS ONE LEVEL, and at the root it leaves. Bound here rather than in the binding
-   * table because Escape is not a declared binding — it is the universal "never mind" every
-   * mode owes its user, and a table row would claim the key for the workspace against every
-   * dialog and menu that needs it. Armed only while the mode is, so nothing listens for a key
-   * it cannot act on.
-   *
-   * One level, because a reader who zoomed in twice is owed the way back they took: F8 is the
-   * key that leaves from anywhere, and giving Escape the same meaning would leave the mode no
-   * way out of an inner arrangement short of leaving the mode.
-   */
-  useEffect(() => {
-    if (!arranging) return;
-    const popScope = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      if (scopedPanelId !== null) setVantage({ arrangeScope: null });
-      else setVantage({ arranging: false, arrangeScope: null });
-    };
-    window.addEventListener("keydown", popScope);
-    return () => window.removeEventListener("keydown", popScope);
-  }, [arranging, scopedPanelId]);
-
-  /**
-   * THE PANEL IN HAND, and the tree area the gesture aims inside.
-   *
-   * A ref beside the state, for the reason every gesture in this codebase keeps one: the
-   * state is what paints, the ref is what the next pointer frame reads before React has
-   * re-rendered. The AREA is resolved lazily rather than held: the tree's boxes are
-   * `TileTree`'s to draw and a committed move replaces them, so the only honest way to ask
-   * where the area is, is to ask the DOM when a frame needs it.
-   */
-  const [panelGrab, setPanelGrab] = useState<PanelGrab | null>(null);
-  const panelGrabRef = useRef<PanelGrab | null>(null);
-  const workspaceRef = useRef<HTMLElement | null>(null);
-  const holdPanel = useCallback((next: PanelGrab | null): void => {
-    panelGrabRef.current = next;
-    setPanelGrab(next);
-  }, []);
-  const treeArea = useCallback(
-    (): HTMLElement | null =>
-      workspaceRef.current?.querySelector<HTMLElement>(":scope > [data-tile-id]") ?? null,
-    [],
-  );
-
-  /*
-    Leaving the mode mid-grab drops what was in hand — the section leg's semantics exactly:
-    the RELEASE is the commit, so a gesture the mode outlived commits nothing. The state
-    resets during render (React's derived-state guidance; an effect would paint one stale
-    frame first) and the ref resets in an effect, because the ref is what event handlers read.
-  */
-  if (!arranging && panelGrab !== null) {
-    setPanelGrab(null);
-  }
-  useEffect(() => {
-    if (!arranging) panelGrabRef.current = null;
-  }, [arranging]);
-
-  /**
-   * THE COMMIT POINT of a panel arrange gesture — and the place invariant 11 reads
-   * differently, so it says why out loud.
-   *
-   * Everywhere else a live drag is producer-agnostic pipeline: the local pointer normalises
-   * into the WIRE form (`CarryAim`) and is consumed as if received, so a collaborator sees
-   * the drag the dragger sees. There is no such form to normalise into here, and that is not
-   * an omission — a workspace tree is PER-PRINCIPAL chrome. Nobody else renders this tree,
-   * so there is no second viewer for a frame to reach and no arbitration to perform: this
-   * pointer is the only producer this surface can ever have. What IS shared is published
-   * already — the MODE is presence (`vantage.arranging`, which is how a collaborator knows
-   * why your panes stopped answering), and the OUTCOME is the layout write below. So the
-   * commit is the one observable truth about a panel move, which is exactly why it is one
-   * action at the release and never a frame per pointer move (the plane rule's commit point,
-   * invariant 13).
-   */
-  const landPanel = useCallback(
-    (outcome: PanelArrangeOutcome): void => {
-      if (!outcome.ok) {
-        // A refusal is a named rule with a sentence, never a silent no-op: the reader who
-        // pressed the key is owed the reason the tree would not take it.
-        notify(panelArrangeMessage(outcome.rule), { key: "panel-arrange" });
-        return;
-      }
-      applyLayout(outcome.layout, true);
-    },
-    [applyLayout, notify],
-  );
-
-  const grabPanel = useCallback(
-    (grab: PanelGrab, event: ReactPointerEvent<HTMLElement>): void => {
-      // Swallowed: the grip covers somebody else's renderer, which must not see the press.
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      holdPanel(grab);
-    },
-    [holdPanel],
-  );
-
-  const releasePanel = useCallback(
-    (aim: TileAim | null): void => {
-      const held = panelGrabRef.current;
-      holdPanel(null);
-      const current = layoutRef.current;
-      // Nothing was armed under the pointer, so nothing was promised and nothing is said.
-      if (held === null || current === null || aim === null) return;
-      landPanel(movedPanelLayout(current, held.tileId, aim));
-    },
-    [holdPanel, landPanel],
-  );
-
-  const nudgePanel = useCallback(
-    (tileId: string, panelId: string, direction: Exclude<TileEdge, "center">): void => {
-      const current = layoutRef.current;
-      if (current === null) return;
-      landPanel(nudgedPanelLayout(current, tileId, direction));
-      /*
-        A committed move re-seats every pane's content host with `appendChild`, and moving a
-        focused element that way blurs it — so without this the SECOND arrow key would have
-        nothing focused to act on. The grip is re-found by the panel it moves rather than held
-        in a ref, because the panel's leaf (and therefore its grip's seat) is what just moved.
-      */
-      window.requestAnimationFrame(() => {
-        document
-          .querySelector<HTMLElement>(`.workspace-panel-grip[data-panel-id="${panelId}"]`)
-          ?.focus();
-      });
-    },
-    [landPanel],
-  );
-
   /**
    * The sidebar's arrangement, read out of the same tree the dividers write to — so it
    * arrives with the layout, survives a reload, and follows the principal to another device
    * without a second store, a second fetch or a second door.
+   *
+   * This plumbing stays floor: it is the generic write door for ANY panel's declared inner
+   * order (`panelSections`/`withPanelSections`, `@manifold/plugin`), tied to this file's own
+   * `layoutRef`/`applyLayout` — not arrange-mode UI. `core.shell`'s sidebar panel is its one
+   * caller today, reached through `WorkspaceShell` exactly as `sidebarOpen` is.
    */
   const sectionOrder = panelSections(layout, SIDEBAR_PANEL);
 
@@ -704,34 +293,56 @@ export function WorkspaceHost({
   );
 
   /**
-   * ZOOM IN: the reader stands inside one panel's own arrangement, and the workspace's panels
-   * stop being the grabbable things. It is a plain presence write — the scope IS the wire form
-   * every renderer reads, so there is nothing local to keep in step with it (invariant 11).
+   * ARRANGE MODE, read off the vantage store the F8 binding writes — presence, not this
+   * component's state (AXIOMS.md A2, AGENTS.md invariant 11). The only thing the frame still
+   * does with it is blank its own tile content hosts (`.is-arranging`, `shell.css`) so
+   * `core.arrange`'s overlay is the only thing left answering the pointer while armed; every
+   * grip, every gesture and every commit that mode once ran HERE now lives in that plugin,
+   * reached through the tile-geometry read surface registered below (issue #89).
    */
-  const scopeInto = useCallback((panelId: string): void => {
-    setVantage({ arrangeScope: panelId });
-  }, []);
+  const { arranging } = useVantage();
 
   /**
-   * WHETHER A PANEL IS GRABBABLE AT ALL: the mode is armed, the ROOT scope is the live one,
-   * and this tree holds a second panel for one to move against. A workspace showing one panel
-   * offers no grip rather than a grip that refuses — the same honesty the collapsed rail
-   * practises with its one section.
-   *
-   * Zoomed in, no panel offers a grip, and the zoomed-into one least of all: a pane you are
-   * arranging INSIDE is not a thing you are holding, and a grip over it would sit on top of
-   * the very rows the scope exists to reach. That is the whole of the z-order fight the two
-   * legs used to have — it does not need arbitrating, it needs one scope at a time.
+   * THE WORKSPACE TREE'S OWN DOM ROOT, and the read surface built over it — see
+   * {@link TileGeometryHandle}. `getTreeElement` stays a live query rather than a cached
+   * node for the reason the deleted gesture code always re-asked it: a committed move
+   * replaces the boxes `TileTree` draws, and a stored element would go stale silently.
    */
-  const panelsGrabbable = arranging && scopedPanelId === null && panelsCanMove(layout);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const registerTileGeometry = useTileGeometryRegistration();
+  const getTreeElement = useCallback(
+    (): HTMLElement | null =>
+      workspaceRef.current?.querySelector<HTMLElement>(":scope > [data-tile-id]") ?? null,
+    [],
+  );
+  /**
+   * The write half of {@link TileGeometryHandle}: a stable wrapper over the floor's own
+   * `applyLayout`, always committing (every plugin-driven change is a discrete gesture, never
+   * a per-frame paint) — so a toolbar click or a grip release gets the identical local echo
+   * and debounced `core.space.setLayout` a divider drag already has, through one function
+   * rather than two write paths that could drift apart.
+   */
+  const applyLayoutFromHost = useCallback(
+    (next: TileLayout): void => {
+      applyLayout(next, true);
+    },
+    [applyLayout],
+  );
+  useEffect(() => {
+    registerTileGeometry({ layout, getTreeElement, applyLayout: applyLayoutFromHost });
+    return () => registerTileGeometry(null);
+  }, [applyLayoutFromHost, getTreeElement, layout, registerTileGeometry]);
 
   const renderLeaf = useCallback(
     (node: Tile): ReactNode => {
       const ref = node.ref;
       if (ref === null || ref.kind !== "panel") {
-        // `core.space.setLayout` refuses a non-panel leaf, so this is either an empty pane or a
-        // tree written by a client that spoke a different vocabulary. Named, and removable.
-        return (
+        // `core.space.setLayout` refuses a non-panel, non-spacer leaf, so this is either an
+        // empty pane, a spacer (its own inert render, never a placeholder) or a tree written
+        // by a client that spoke a different vocabulary. Named, and removable.
+        return ref?.kind === "spacer" ? (
+          <div className="workspace-tile-spacer" aria-hidden="true" />
+        ) : (
           <PluginPlaceholder
             name={ref === null ? "empty pane" : ref.kind}
             state="unknown"
@@ -739,31 +350,9 @@ export function WorkspaceHost({
           />
         );
       }
-      const panel = assembly.panels.get(ref.panelId);
-      /*
-        The grip is a SIBLING of the panel inside the leaf's content host, never a wrapper
-        around it: a box between the host and the panel would change the flex layout every
-        renderer already lays itself out in, and the grip takes itself out of flow instead.
-      */
-      return (
-        <>
-          {panelsGrabbable ? (
-            <PanelGrip
-              tileId={node.id}
-              panelId={ref.panelId}
-              title={panel?.title ?? ref.panelId}
-              arranges={panel?.arranges?.title ?? null}
-              grabbed={panelGrab?.tileId === node.id}
-              onGrab={grabPanel}
-              onNudge={nudgePanel}
-              onScopeIn={scopeInto}
-            />
-          ) : null}
-          <PanelOutlet panelId={ref.panelId} onRemove={() => pruneLeaf(node.id)} />
-        </>
-      );
+      return <PanelOutlet panelId={ref.panelId} onRemove={() => pruneLeaf(node.id)} />;
     },
-    [assembly, grabPanel, nudgePanel, panelGrab, panelsGrabbable, pruneLeaf, scopeInto],
+    [pruneLeaf],
   );
 
   // ------------------------------------------------------------- sidebar state
@@ -1213,61 +802,6 @@ export function WorkspaceHost({
               interactive={true}
               onRatios={onRatios}
               renderLeaf={renderLeaf}
-            />
-          )}
-          {/*
-            THE MODE, said out loud — and WHERE IN IT the reader is standing. A workspace whose
-            terminals have stopped answering the mouse owes the reader the reason and the way
-            out, and once arranging is scoped it owes them the trail too: the crumb says which
-            arrangement is live, its first crumb is the way back up, and Esc walks the same
-            path one step at a time.
-
-            An OVERLAY, absolutely positioned out of flow and mounted above the tree, because
-            arming a mode must move nothing. A bar that took a row of the frame would push
-            every pane down the instant F8 was pressed, and the first thing a reader would see
-            of "nothing is being changed yet" is the whole workspace jumping.
-          */}
-          {arranging ? (
-            <div className="workspace-arrange-bar" role="status">
-              <strong className="workspace-arrange-title">Arrange mode</strong>
-              {scopeTitle === null ? (
-                <span className="workspace-arrange-hint">
-                  Drag a panel by its grip, or nudge it with the arrow keys. Open a panel&apos;s own
-                  arrangement with the control on its name. Esc or F8 to finish.
-                </span>
-              ) : (
-                <>
-                  <span className="workspace-arrange-crumbs">
-                    <button
-                      type="button"
-                      className="workspace-arrange-up"
-                      onClick={() => setVantage({ arrangeScope: null })}
-                    >
-                      Workspace
-                    </button>
-                    <span className="workspace-arrange-crumb-sep" aria-hidden="true">
-                      ›
-                    </span>
-                    <span className="workspace-arrange-crumb">{scopeTitle}</span>
-                  </span>
-                  <span className="workspace-arrange-hint">
-                    Drag a row by its grip, or nudge it with the arrow keys. Esc goes back to the
-                    workspace; F8 finishes.
-                  </span>
-                </>
-              )}
-            </div>
-          ) : null}
-          {/*
-            The live destination, mounted only while a panel is in hand — so the per-frame
-            component does not exist at all in a workspace nobody is arranging.
-          */}
-          {panelGrab === null || layout === null ? null : (
-            <PanelArrangeLayer
-              layout={layout}
-              grab={panelGrab}
-              area={treeArea}
-              onRelease={releasePanel}
             />
           )}
         </ContainerRouteProvider>

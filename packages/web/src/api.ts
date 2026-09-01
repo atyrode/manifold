@@ -129,7 +129,7 @@ export async function getAttendance(token: string): Promise<readonly Attendance[
  * have no rung to branch on. Code holding a `SessionClient` uses `client.action` instead —
  * this exists for the boot-time paths that hold a token and nothing else.
  */
-async function dispatchAction(token: string, name: string, args: unknown): Promise<unknown> {
+export async function dispatchAction(token: string, name: string, args: unknown): Promise<unknown> {
   const body = await requestJson(`/api/actions/${encodeURIComponent(name)}`, {
     method: "POST",
     headers: authHeaders(token, true),

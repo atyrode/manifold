@@ -101,6 +101,18 @@ export interface AssemblySection {
    * indifferent to the value; only the component that fills the row reads it.
    */
   readonly presentation: SectionPresentation;
+  /**
+   * WHICH CLUSTER this row declared, or undefined for "its own". Rows sharing a cluster paint
+   * side by side as one horizontal row at the cluster's earliest member (`clusteredSections`,
+   * `layout.ts`); absent is not defaulted to anything, because there is no such thing as a
+   * default cluster — a row without one IS its own unit.
+   *
+   * Carried verbatim from the manifest and nothing more. The engine never resolves membership,
+   * never orders a cluster and never learns who is in one: a word is the whole vocabulary, so
+   * `core.keys` and `core.plugins` sitting side by side is a fact of their two manifests
+   * (issue #91) rather than of any registry, panel or floor file.
+   */
+  readonly cluster?: string;
 }
 
 export interface AssemblyElement {
@@ -564,6 +576,9 @@ export function assembleRoster(
         plugin: manifest.id,
         title: section.title,
         order: section.order,
+        // Spread rather than assigned: absent means "its own unit", and under
+        // `exactOptionalPropertyTypes` an explicit `undefined` is a different statement.
+        ...(section.cluster === undefined ? {} : { cluster: section.cluster }),
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
       });
     }

@@ -55,6 +55,16 @@ export const TileRefSchema = z.discriminatedUnion("kind", [
    * disabled plugin must never make a layout unwritable.
    */
   z.strictObject({ kind: z.literal("panel"), panelId: z.string().min(1).max(96) }),
+  /**
+   * AN INERT SPACER: a leaf that holds nothing and refers to nothing, and is legal
+   * everywhere `panel` is (issue #89). It exists so a stack can be given deliberate empty
+   * room without a vacant `ref: null` leaf being mistaken for a target nobody has filled
+   * in yet — `core.arrange`'s Spacer tool is the one writer, and only into the workspace's
+   * own tree (`core.space.setLayout`'s handler still refuses every other kind there).
+   * Carries no identity: every spacer is interchangeable with every other, the way an
+   * empty leaf already is (`sameTileRef`, `refKey`).
+   */
+  z.strictObject({ kind: z.literal("spacer") }),
 ]);
 export type TileRef = z.infer<typeof TileRefSchema>;
 

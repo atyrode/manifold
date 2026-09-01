@@ -94,12 +94,36 @@ export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
  * the row a reader has grabbed, and a disabled plugin's slot is named by the ENGINE's own
  * placeholder (D4′) — neither may ask a row's component for a name, least of all a plain row
  * whose code may not be loaded.
+ *
+ * `cluster` is the row saying "I BELONG BESIDE WHOEVER ELSE DECLARES THIS WORD". Rows sharing a
+ * cluster render as ONE horizontal row, placed where the cluster's earliest member sits in the
+ * live order — so two discreet rows can sit side by side at the rail's foot without the rail
+ * knowing which rows those are. The mechanism is deliberately total and dumb: the word is the
+ * whole vocabulary, membership is declared rather than positional, and no floor file, panel or
+ * engine registry holds a list of a cluster's members (`clusteredSections`,
+ * `packages/plugin/src/layout.ts`). That is what makes it survive a plugin being disabled,
+ * added or rearranged, and what keeps `core.keys` and `core.plugins` from being named anywhere
+ * but in their own manifests (issue #91).
+ *
+ * NOT `group`: that word is taken, by the placement algebra's capability sets (§Lexicon), and
+ * one concept per word is the law. `cluster` is this concept's canon term — a declared set of
+ * sidebar rows painted side by side — and the `Cluster` box from `@manifold/plugin/ui` is what
+ * happens to paint one, the same way the `layout` family's components are named for the shape
+ * they draw without touching the canon term.
+ *
+ * A cluster is not a second order and not a container: the members keep their own ids, their
+ * own arrangement seats and their own owners, and a cluster with one live member paints exactly
+ * as that member always did.
+ *
+ * Absent ≡ this row is its own cluster, which is what every manifest written before the field
+ * existed says, and why a rail of unclustered rows is byte-identical to today's.
  */
 export const SectionDefSchema = z.strictObject({
   id: LocalNameSchema,
   title: TitleSchema,
   order: z.number().int(),
   presentation: SectionPresentationSchema.optional(),
+  cluster: LocalNameSchema.optional(),
 });
 export type SectionDef = z.infer<typeof SectionDefSchema>;
 
@@ -163,6 +187,26 @@ export const SeatDefSchema = z.strictObject({
 export type SeatDef = z.infer<typeof SeatDefSchema>;
 
 /**
+ * WHICH TOOLBAR a contributed tool paints into. The engine owns the closed vocabulary of
+ * toolbars that exist; plugins own the tools inside one, so two plugins contributing `select`
+ * into different toolbars is not a collision (D5 still refuses two plugins claiming the same
+ * `id` WITHIN one toolbar).
+ *
+ * `canvas` is the freeform discipline's tool strip (`core.canvas`'s own two modes, `core.draw`'s
+ * pen — {@link CanvasToolbar}). `arrange` is `core.arrange`'s floating F8 editor toolbar
+ * (issue #89) — a workspace-level toolbar, unrelated to any one container.
+ *
+ * Absent ≡ `canvas`, which is what every `tools` row written before this field existed means:
+ * the only toolbar the product had. A tool naming a toolbar the reading strip does not draw
+ * from is simply invisible there — the same "declare and let the ref filter" shape `arranges`,
+ * `cluster` and every other closed-vocabulary field in this file already uses.
+ */
+export const TOOLBARS = ["canvas", "arrange"] as const;
+export const ToolbarSchema = z.enum(TOOLBARS);
+export type Toolbar = (typeof TOOLBARS)[number];
+export const DEFAULT_TOOLBAR: Toolbar = "canvas";
+
+/**
  * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
@@ -203,7 +247,13 @@ const ContributesSchema = z.strictObject({
     .max(8)
     .default([]),
   tools: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
+    .array(
+      z.strictObject({
+        id: LocalNameSchema,
+        title: TitleSchema,
+        toolbar: ToolbarSchema.optional(),
+      }),
+    )
     .max(8)
     .default([]),
   /**
@@ -554,6 +604,50 @@ export const ActionOutcomeSchema = z.union([
 export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
 
 /**
+ * A BINDING's published name: its owning plugin's id followed by one local name
+ * (`core.shell.arrange`), which is the same pair rule an action name obeys — a plugin can
+ * never name a key outside its own namespace, and a full name always says who owns it.
+ * Spelled as its own pattern rather than reused from {@link PluginIdSchema} because the last
+ * segment is a LOCAL name and those admit interior capitals (`core.keys.setBinding`), while
+ * every segment before it is a plugin-id segment.
+ */
+export const BINDING_ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+\.[a-z][a-zA-Z0-9-]*$/;
+export const BindingIdSchema = z.string().regex(BINDING_ID_PATTERN).max(96);
+export type BindingId = z.infer<typeof BindingIdSchema>;
+
+/**
+ * ONE KEY, as `KeyboardEvent.key` reports it — `F9`, `a`, `ArrowUp`, `?`. Bounded and
+ * otherwise unconstrained on purpose: the browser owns this vocabulary, an editor captures
+ * the value from a real keystroke rather than composing it, and a server that tried to
+ * enumerate legal keys would be a second, always-stale keyboard map.
+ */
+export const BindingKeySchema = z.string().min(1).max(24);
+
+/**
+ * ONE PRINCIPAL'S BINDING OVERRIDES: the keys this principal has rebound, as binding id →
+ * key. Server-saved rather than device-local, because a principal is one actor across every
+ * device they sit at (multiplayer-first, invariant 11) and a rebind that lived in one
+ * browser's storage would be a fact no other client could read.
+ *
+ * An override is a DELTA, never a table: what a workspace answers to is the declared rows
+ * with this map applied at composition (`composeBindings`), so a plugin that ships a new key,
+ * a plugin that is disabled and a plugin that renames its own row all keep exactly the
+ * meaning they have without anybody rewriting stored overrides. A row with no entry here
+ * answers its declared default, which is why the empty map is the whole of "nothing rebound".
+ *
+ * Bounded at 64 entries: this is one principal's deltas over a key table a manifest bounds at
+ * a handful of rows per plugin, and an unbounded per-principal map is a write door with no
+ * ceiling.
+ */
+export const MAX_BINDING_OVERRIDES = 64;
+export const BindingOverridesSchema = z
+  .record(BindingIdSchema, BindingKeySchema)
+  .refine((overrides) => Object.keys(overrides).length <= MAX_BINDING_OVERRIDES, {
+    message: `at most ${MAX_BINDING_OVERRIDES} binding overrides`,
+  });
+export type BindingOverrides = z.infer<typeof BindingOverridesSchema>;
+
+/**
  * The plugin vocabulary, published — the counterpart of `placementVocabulary()`. A
  * stranger's agent reading `GET /api/protocol` learns what a manifest may declare, what a
  * roster row can say about state and attribution, and every CLOSED set a refusal can name,
@@ -586,6 +680,8 @@ export function pluginVocabulary(): Record<string, unknown> {
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
     sectionPresentations: SECTION_PRESENTATIONS,
     defaultSectionPresentation: DEFAULT_SECTION_PRESENTATION,
+    toolbars: TOOLBARS,
+    defaultToolbar: DEFAULT_TOOLBAR,
     defaultSeatRatio: DEFAULT_SEAT_RATIO,
     seat: z.toJSONSchema(SeatDefSchema),
     manifest: z.toJSONSchema(PluginManifestSchema),
@@ -593,5 +689,12 @@ export function pluginVocabulary(): Record<string, unknown> {
     outcome: z.toJSONSchema(ActionOutcomeSchema),
     rosterEntry: z.toJSONSchema(PluginRosterEntrySchema),
     purgeResult: z.toJSONSchema(PluginPurgeResultSchema),
+    /*
+      The rebind vocabulary, published beside the manifest's: an agent reading this learns
+      that keys are declared by plugins and overridden per principal, and what shape a
+      `GET /api/bindings` answer and a `core.keys.setBinding` argument take.
+    */
+    maxBindingOverrides: MAX_BINDING_OVERRIDES,
+    bindingOverrides: z.toJSONSchema(BindingOverridesSchema),
   };
 }

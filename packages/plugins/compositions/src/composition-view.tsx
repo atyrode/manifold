@@ -107,6 +107,10 @@ const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
   container: "canvas",
   text: "text",
   panel: "panel",
+  // Unreachable in practice — a composition never legitimately holds a spacer, exactly as it
+  // never holds a panel (issue #89's spacer is workspace-tree furniture) — but the record is
+  // total over the ref union so a new tileable form cannot be added silently.
+  spacer: "panel",
 };
 
 /**
@@ -847,7 +851,11 @@ export function CompositionView({
    * to draw it.
    */
   const renderRef = (node: Tile, ref: TileRef | null): ReactNode => {
-    if (ref === null) {
+    // A spacer is inert workspace furniture (issue #89) — a composition never legitimately
+    // holds one, any more than it holds a panel, but unlike a stray panel it carries no
+    // capability worth naming: it reads exactly like the empty tile it is functionally equal
+    // to, and drops a terminal, a canvas or a note into it exactly the same way.
+    if (ref === null || ref.kind === "spacer") {
       return (
         <Cover className="composition-empty">
           <Stack gap="0.5rem" align="center">

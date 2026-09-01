@@ -1,0 +1,282 @@
+/*
+ * `arrange` cssFamily (REGISTRY.md) — core.arrange's own chrome: the floating toolbar, the
+ * panel-move grip overlay, the live move preview slot, and the wireframe delimitation. All of
+ * it paints while `vantage.arranging` is true and nowhere else, mounted through the workspace
+ * overlay outlet rather than in the tree's own flow, so none of it ever reflows a pane.
+ */
+
+.arrange-grip-host {
+  position: fixed;
+  z-index: 26;
+  pointer-events: none;
+}
+
+.arrange-grip {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgb(76 110 245 / 8%);
+  font: inherit;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.arrange-grip:hover,
+.arrange-grip:focus-visible {
+  background: rgb(76 110 245 / 18%);
+}
+
+.arrange-grip.is-grabbed {
+  background: rgb(76 110 245 / 26%);
+  cursor: grabbing;
+}
+
+.arrange-grip.is-selected {
+  background: rgb(247 103 7 / 22%);
+  outline: 2px solid #f76707;
+  outline-offset: -2px;
+}
+
+.arrange-grip-pill {
+  position: absolute;
+  z-index: 27;
+  top: 0.5rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.35rem 0.15rem 0.5rem;
+  color: #edf2ff;
+  background: #1f232b;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.arrange-grip-label {
+  white-space: nowrap;
+}
+
+.arrange-scope {
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 0.25rem;
+  padding: 0.1rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.arrange-scope:hover,
+.arrange-scope:focus-visible {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 35%);
+}
+
+.arrange-slot {
+  position: fixed;
+  z-index: 38;
+  border: 2px solid #4c6ef5;
+  border-radius: 0.35rem;
+  background: rgb(76 110 245 / 18%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease;
+}
+
+.arrange-slot.is-swap {
+  border-color: #f76707;
+  background: rgb(247 103 7 / 16%);
+}
+
+/*
+ * THE WIREFRAME: every stack/split's outline plus its axis marker, and a lighter outline on
+ * every spacer leaf — issue #89's second comment. `--arrange-depth` steps the hue and the
+ * inset so nesting reads at a glance; `is-out-of-scope` dims the workspace's own containers
+ * while a reader is zoomed into a panel's inner arrangement instead.
+ */
+.arrange-wireframe-outline {
+  position: fixed;
+  z-index: 24;
+  inset: calc(var(--arrange-depth, 0) * 3px);
+  border: 1.5px dashed hsl(calc(220 + var(--arrange-depth, 0) * 18) 70% 62% / 70%);
+  border-radius: 0.25rem;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.arrange-wireframe-outline.is-out-of-scope {
+  opacity: 0.35;
+}
+
+.arrange-wireframe-axis {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  display: block;
+  background: hsl(calc(220 + var(--arrange-depth, 0) * 18) 70% 62% / 85%);
+  border-radius: 1px;
+}
+
+.arrange-wireframe-axis[data-dir="row"] {
+  width: 0.9rem;
+  height: 2px;
+}
+
+.arrange-wireframe-axis[data-dir="column"] {
+  width: 2px;
+  height: 0.9rem;
+}
+
+.arrange-wireframe-spacer {
+  position: fixed;
+  z-index: 23;
+  border: 1.5px dashed rgb(173 181 189 / 55%);
+  border-radius: 0.2rem;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.arrange-wireframe-spacer.is-out-of-scope {
+  opacity: 0.35;
+}
+
+/*
+ * THE FLOATING TOOLBAR: bottom-center default, drag-anywhere, device-local (REGISTRY.md's
+ * device-local register: `manifold:arrange-toolbar-position`). Absolutely positioned so
+ * arming the mode moves nothing else on screen.
+ */
+.arrange-toolbar {
+  position: fixed;
+  z-index: 40;
+  bottom: 1.1rem;
+  left: 50%;
+  display: flex;
+  max-width: min(50rem, calc(100% - 2rem));
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid #3b4252;
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  color: #e9ecef;
+  background: #1f232b;
+  box-shadow: 0 0.6rem 1.6rem rgb(0 0 0 / 38%);
+  font-size: 0.78rem;
+}
+
+.arrange-toolbar-handle {
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 0.35rem;
+  padding: 0.2rem;
+  color: #adb5bd;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.arrange-toolbar-handle:hover,
+.arrange-toolbar-handle:focus-visible {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 25%);
+}
+
+.arrange-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.arrange-toolbar-title {
+  color: #edf2ff;
+  font-weight: 600;
+}
+
+.arrange-toolbar-hint {
+  color: #adb5bd;
+}
+
+.arrange-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.arrange-crumb-up {
+  border: 1px solid #3b4252;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.arrange-crumb-up:hover,
+.arrange-crumb-up:focus-visible {
+  border-color: #4c6ef5;
+  color: #edf2ff;
+}
+
+.arrange-crumb-sep {
+  color: #6c757d;
+}
+
+.arrange-crumb {
+  color: #edf2ff;
+  font-weight: 600;
+}
+
+.arrange-shelf {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  border-left: 1px solid #3b4252;
+  padding-left: 0.65rem;
+}
+
+.arrange-shelf-item,
+.arrange-toolbar-button {
+  border: 1px solid #3b4252;
+  border-radius: 0.4rem;
+  padding: 0.25rem 0.55rem;
+  color: #e9ecef;
+  background: #262a33;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.arrange-shelf-item:hover,
+.arrange-shelf-item:focus-visible,
+.arrange-toolbar-button:hover,
+.arrange-toolbar-button:focus-visible {
+  border-color: #4c6ef5;
+  color: #edf2ff;
+}
+
+.arrange-shelf-item:disabled,
+.arrange-toolbar-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.arrange-toolbar-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}

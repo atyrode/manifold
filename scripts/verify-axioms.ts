@@ -95,6 +95,52 @@ async function settles(probe: () => Promise<boolean> | boolean, ms: number): Pro
   }
 }
 
+/**
+ * OPENS THE PLUGIN MANAGER, because the ledger is a MODAL now (issue #91): the rail's row is
+ * only the opener, so every rung that reads a plugin row has to press it first.
+ *
+ * Idempotent and addressed by contract — it presses `plugin-manager-open` only when the dialog
+ * is not already OPEN, and answers whether it is. Openness is read off the `<dialog>` rather
+ * than off the listing's presence: a closed dialog keeps its subtree in the DOM, so "the row
+ * exists" is not the same question as "a reader can see it". Keyed off declared test ids rather
+ * than button copy, which is the §Gate-contracts rule that made this a function instead of a
+ * click pasted into four rungs.
+ */
+async function openPluginManager(): Promise<boolean> {
+  return await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const card = document.querySelector('[data-testid="plugin-manager-modal"]');
+          const dialog = card === null ? null : card.closest('dialog');
+          if (dialog instanceof HTMLDialogElement && dialog.open) return true;
+          const opener = document.querySelector('[data-testid="plugin-manager-open"]');
+          if (opener instanceof HTMLElement) opener.click();
+          return false;
+        })()`,
+      ),
+    10_000,
+  );
+}
+
+/**
+ * And closes it, the way a reader does: a pointer press on the backdrop. Never
+ * `HTMLDialogElement.close()` — that shuts the element while the component still believes it is
+ * open, and the next press on the opener would then be a no-op against unchanged state.
+ */
+async function closePluginManager(): Promise<void> {
+  await browser!.evaluate(
+    `(() => {
+      const card = document.querySelector('[data-testid="plugin-manager-modal"]');
+      const dialog = card === null ? null : card.closest('dialog');
+      if (dialog instanceof HTMLDialogElement && dialog.open) {
+        dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      }
+      return null;
+    })()`,
+  );
+}
+
 const list = (values: Iterable<string>): string => {
   const all = [...values];
   return all.length === 0 ? "none" : all.join(", ");
@@ -870,6 +916,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/containers",
   "/api/introspect",
   "/api/layout",
+  "/api/bindings",
   "/api/attendance",
   "/api/containers/:id/tiles/:id",
   "/api/plugins",
@@ -2304,6 +2351,9 @@ try {
    * would leave a plugin off after a click-driven disable.
    */
   const pressToggle = async (id: string, becomes: boolean): Promise<boolean> => {
+    // The ledger is a modal: the row a human presses is behind the opener, so the gate opens it
+    // exactly as they would (`openPluginManager`).
+    if (!(await openPluginManager())) return false;
     const selector = JSON.stringify(managerToggle(id));
     const pressed = await browser!.evaluate<boolean>(
       `(() => { const hit = document.querySelector(${selector});
@@ -2779,6 +2829,288 @@ try {
     );
 
     /*
+      THE F8 EDITOR, DRIVEN (issue #89). The check above proves arming COSTS nothing; these
+      prove the mode then does something, through the only surface a reader has — the floating
+      toolbar `core.arrange` paints into the workspace overlay slot.
+
+      Four claims, none of them reachable without a browser. The chrome is OVERLAY-ONLY: the
+      wireframe exists while the mode is armed and at no other time, so its count reads zero,
+      then positive, then zero again across two F8s. The toolbar is a DEVICE-LOCAL object:
+      dragged elsewhere it is still there after a reload, which is the only way to tell a
+      remembered position from a re-centred one. A grip TAP selects rather than nudging, which
+      is what the 6px threshold is for and what a synthetic press-and-release would break
+      first. And every tool commits ONCE — the same trailing-debounce claim the divider drag
+      makes above, made again for each button, because seven verbs wired into one
+      optimistic-local write path is seven chances to write twice, or not at all.
+    */
+    interface ArrangeChrome {
+      readonly toolbar: { readonly centreX: number; readonly bottomGap: number } | null;
+      readonly viewportCentreX: number;
+      readonly wireframes: number;
+      readonly dimmed: number;
+      readonly toolsEnabled: number;
+      readonly toolsDisabled: number;
+      readonly selected: number;
+    }
+    /** Everything the mode paints, in one read: the bar's box, the wireframe, the selection. */
+    const arrangeChrome = (): Promise<ArrangeChrome> =>
+      browser!.evaluate<ArrangeChrome>(
+        `(() => {
+          const bar = document.querySelector('.arrange-toolbar');
+          const box = bar === null ? null : bar.getBoundingClientRect();
+          const tools = Array.from(document.querySelectorAll('.arrange-toolbar-button'));
+          return {
+            toolbar:
+              box === null
+                ? null
+                : { centreX: box.left + box.width / 2, bottomGap: window.innerHeight - box.bottom },
+            viewportCentreX: window.innerWidth / 2,
+            wireframes: document.querySelectorAll(
+              '.arrange-wireframe-outline, .arrange-wireframe-spacer',
+            ).length,
+            dimmed: document.querySelectorAll(
+              '.arrange-wireframe-outline.is-out-of-scope, .arrange-wireframe-spacer.is-out-of-scope',
+            ).length,
+            toolsEnabled: tools.filter((tool) => !tool.disabled).length,
+            toolsDisabled: tools.filter((tool) => tool.disabled).length,
+            selected: document.querySelectorAll('.arrange-grip.is-selected').length,
+          };
+        })()`,
+      );
+
+    const atRest = await arrangeChrome();
+    await pressF8();
+    const armedChrome = await arrangeChrome();
+    const toolbarPainted = await browser.evaluate<boolean>(
+      `document.querySelector('[data-testid="toolbar-reset"]') !== null`,
+    );
+    await pressF8();
+    const leftChrome = await arrangeChrome();
+    const bottomCentre =
+      armedChrome.toolbar !== null &&
+      Math.abs(armedChrome.toolbar.centreX - armedChrome.viewportCentreX) <= 2 &&
+      armedChrome.toolbar.bottomGap > 4 &&
+      armedChrome.toolbar.bottomGap < 64;
+    const overlayOnly =
+      atRest.wireframes === 0 &&
+      atRest.toolbar === null &&
+      armedChrome.wireframes > 0 &&
+      leftChrome.wireframes === 0 &&
+      leftChrome.toolbar === null;
+    check(
+      "R4 the arrange toolbar and its wireframe belong to the mode",
+      toolbarPainted && bottomCentre && overlayOnly,
+      !toolbarPainted
+        ? "F8 armed the mode and painted no toolbar"
+        : !bottomCentre
+          ? `the toolbar did not park bottom-centre: centre ${String(Math.round(armedChrome.toolbar?.centreX ?? -1))} against a viewport centre of ${String(Math.round(armedChrome.viewportCentreX))}, ${String(Math.round(armedChrome.toolbar?.bottomGap ?? -1))}px off the bottom`
+          : overlayOnly
+            ? `bottom-centre toolbar, and ${String(armedChrome.wireframes)} wireframe boxes that exist only while armed (0 → ${String(armedChrome.wireframes)} → 0)`
+            : `the wireframe is not overlay-only: ${String(atRest.wireframes)} boxes at rest, ${String(armedChrome.wireframes)} armed, ${String(leftChrome.wireframes)} after leaving`,
+    );
+
+    /*
+      WHERE THIS DEVICE PARKED IT, across a reload. The offset is the one thing about this
+      plugin that is device-local (REGISTRY.md §Device-local register:
+      `manifold:arrange-toolbar-position`), and a position that only survives inside one page
+      is not memory — so the bar is dragged, the page reloaded, and the bar asked where it is.
+    */
+    await pressF8();
+    const handleAt = (): Promise<{ x: number; y: number } | null> =>
+      browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => {
+           const grip = document.querySelector('.arrange-toolbar-handle');
+           if (grip === null) return null;
+           const box = grip.getBoundingClientRect();
+           return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+         })()`,
+      );
+    const handle = await handleAt();
+    if (handle !== null) {
+      await browser.drag(
+        [handle, { x: handle.x - 40, y: handle.y - 30 }, { x: handle.x - 90, y: handle.y - 70 }],
+        30,
+      );
+    }
+    await sleep(300);
+    const parked = await arrangeChrome();
+    const stored = await browser.evaluate<string | null>(
+      `window.localStorage.getItem('manifold:arrange-toolbar-position')`,
+    );
+    await browser.goto(`${origin}/p/${canvasContainerId}`);
+    await until(
+      () => browser!.evaluate<boolean>(`document.querySelector('.react-flow') !== null`),
+      20_000,
+      "the canvas back after the toolbar-memory reload",
+    );
+    await pressF8();
+    const remembered = await arrangeChrome();
+    const dragged =
+      parked.toolbar !== null && Math.abs(parked.toolbar.centreX - parked.viewportCentreX) > 40;
+    const persisted =
+      dragged &&
+      stored !== null &&
+      remembered.toolbar !== null &&
+      Math.abs(remembered.toolbar.centreX - (parked.toolbar?.centreX ?? 0)) <= 2;
+    check(
+      "R4 the arrange toolbar parks where this device left it",
+      persisted,
+      !dragged
+        ? "the toolbar did not move under a drag on its handle, so its memory was never tested"
+        : persisted
+          ? `dragged to x=${String(Math.round(parked.toolbar?.centreX ?? -1))} and still there after a reload, off ${stored ?? "nothing"}`
+          : `dragged to x=${String(Math.round(parked.toolbar?.centreX ?? -1))}, came back at x=${String(Math.round(remembered.toolbar?.centreX ?? -1))} with ${stored ?? "no stored offset"}`,
+    );
+    /* Put it back under the centre and forget the key: a parked toolbar is this check's
+       artefact, not a starting condition the checks after it should inherit. */
+    const parkedHandle = await handleAt();
+    if (parkedHandle !== null) {
+      await browser.drag(
+        [
+          parkedHandle,
+          { x: parkedHandle.x + 45, y: parkedHandle.y + 35 },
+          { x: parkedHandle.x + 90, y: parkedHandle.y + 70 },
+        ],
+        30,
+      );
+    }
+    await browser.evaluate(
+      `(window.localStorage.removeItem('manifold:arrange-toolbar-position'), null)`,
+    );
+
+    /*
+      EVERY TOOL, ONCE. `changed` is read off the SERVER's tree rather than off the DOM, so a
+      tool that repainted optimistically and never committed fails here; `commits` counts the
+      dispatches the server logged, so a tool that committed twice fails too. The order is not
+      arbitrary: a default tree is already a row, and `rootStacked` refuses `aim_unchanged`
+      rather than committing a no-op, so Stack column goes first and Stack row undoes it.
+      Equalize follows while the divider drag above still has the root's ratios skewed.
+    */
+    interface ToolPress {
+      readonly pressed: boolean;
+      readonly changed: boolean;
+      readonly commits: number;
+    }
+    const commitCount = (): number =>
+      actionLog.filter((entry) => entry.name === "core.space.setLayout").length;
+    const treeNow = async (): Promise<string> =>
+      JSON.stringify(LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout);
+    const pressTool = async (selector: string): Promise<ToolPress> => {
+      const was = await treeNow();
+      const before = commitCount();
+      const pressed = await browser!.evaluate<boolean>(
+        `(() => { const hit = document.querySelector(${JSON.stringify(selector)});
+           if (!(hit instanceof HTMLElement) || hit.matches(':disabled')) return false;
+           hit.click(); return true; })()`,
+      );
+      const changed = pressed && (await settles(async () => (await treeNow()) !== was, 8_000));
+      // The write is a TRAILING debounce: a second dispatch would land inside this window.
+      await sleep(1_200);
+      return { pressed, changed, commits: commitCount() - before };
+    };
+
+    const stackColumn = await pressTool('[data-testid="toolbar-stack-column"]');
+    const stackRow = await pressTool('[data-testid="toolbar-stack-row"]');
+    const equalize = await pressTool('[data-testid="toolbar-equalize"]');
+    const spacer = await pressTool('[data-testid="toolbar-spacer"]');
+
+    /* A spacer is a TILE, not a margin: the frame paints a leaf for it and the wireframe
+       outlines that leaf, which is the whole of what the new `{kind:'spacer'}` ref buys. */
+    const spacerPaint = await browser.evaluate<{ tile: number; frame: number }>(
+      `({
+         tile: document.querySelectorAll('.workspace-tile-spacer').length,
+         frame: document.querySelectorAll('.arrange-wireframe-spacer').length,
+       })`,
+    );
+    check(
+      "R4 a spacer is a tile of the reader's own",
+      spacer.changed && spacerPaint.tile === 1 && spacerPaint.frame === 1,
+      spacer.changed
+        ? `the spacer tool seated ${String(spacerPaint.tile)} spacer leaf/leaves, wireframed ${String(spacerPaint.frame)}`
+        : "the spacer tool committed nothing, so nothing was painted to look at",
+    );
+
+    /*
+      TAP VERSUS DRAG, under a real pointer. Selection is Swap's precondition and a tap is how
+      it is expressed, so a press-and-release that travelled zero pixels must select and must
+      NOT be read as a one-pixel move — a threshold that failed open would rearrange the
+      workspace every time somebody aimed at a panel.
+    */
+    const sidebarPanel = panelRefId("core.shell", "sidebar");
+    const containerViewPanel = panelRefId("core.shell", "container-view");
+    const tapGrip = async (selector: string): Promise<boolean> => {
+      const at = await browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => { const grip = document.querySelector(${JSON.stringify(selector)});
+           if (grip === null) return null;
+           const box = grip.getBoundingClientRect();
+           return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`,
+      );
+      if (at === null) return false;
+      await browser!.drag([at], 0);
+      await sleep(250);
+      return true;
+    };
+    const beforeTaps = commitCount();
+    const tapped =
+      (await tapGrip(`.arrange-grip[data-panel-id="${sidebarPanel}"]`)) &&
+      (await tapGrip(`.arrange-grip[data-panel-id="${containerViewPanel}"]`));
+    await sleep(600);
+    const afterTaps = await arrangeChrome();
+    const tapCommits = commitCount() - beforeTaps;
+    check(
+      "R4 a grip tap selects and rearranges nothing",
+      tapped && afterTaps.selected === 2 && tapCommits === 0,
+      !tapped
+        ? "no panel grip to tap: the mode painted no grabbable seats"
+        : afterTaps.selected === 2 && tapCommits === 0
+          ? "two taps, two selected seats, and not one layout write between them"
+          : `${String(afterTaps.selected)} seats selected after two taps, and ${String(tapCommits)} layout write(s) a tap should never have made`,
+    );
+
+    const swap = await pressTool('[data-testid="toolbar-swap"]');
+    const reselected = await tapGrip(`.arrange-grip[data-panel-id="${containerViewPanel}"]`);
+    const shelf = await pressTool('[data-testid="toolbar-shelf"]');
+    const reseat = await pressTool('[data-testid="arrange-shelf-item"]');
+    const reset = await pressTool('[data-testid="toolbar-reset"]');
+    const presses = [
+      { what: "Stack column", press: stackColumn },
+      { what: "Stack row", press: stackRow },
+      { what: "Equalize", press: equalize },
+      { what: "Spacer", press: spacer },
+      { what: "Swap", press: swap },
+      { what: "Shelf", press: shelf },
+      { what: "Re-seat", press: reseat },
+      { what: "Reset", press: reset },
+    ];
+    const misbehaved = presses.filter(
+      (row) => !row.press.pressed || !row.press.changed || row.press.commits !== 1,
+    );
+    check(
+      "R4 every arrange tool commits exactly once",
+      reselected && misbehaved.length === 0,
+      !reselected
+        ? "the shelf tool's one-seat selection could not be made, so Shelf was never pressed honestly"
+        : misbehaved.length === 0
+          ? `${String(presses.length)} presses — ${presses.map((row) => row.what).join(", ")} — one core.space.setLayout each`
+          : `not exactly one commit: ${list(
+              misbehaved.map(
+                (row) =>
+                  `${row.what} (${row.press.pressed ? "pressed" : "NOT pressed"}, tree ${
+                    row.press.changed ? "changed" : "UNCHANGED"
+                  }, ${String(row.press.commits)} dispatch(es))`,
+              ),
+            )}`,
+    );
+    await pressF8();
+    /* Reset put the composed default back; the canvas is remounting behind it, and the checks
+       after this one read that canvas. */
+    await until(
+      () => browser!.evaluate<boolean>(`document.querySelector('.react-flow') !== null`),
+      20_000,
+      "the canvas back after Reset",
+    );
+
+    /*
       ARRANGING A ROW IS ONE DECISION PER BOUNDARY, and nothing but a browser can say so.
 
       Issue #94 was three faults compounding inside one gesture, none of them visible to a
@@ -2844,10 +3176,32 @@ try {
     const restore = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     /* The scope control is named after the panel that declared an arrangement, not after a
        word this script knows: the ref is spelled the one way a panel ref is ever spelled. */
-    const sidebarPanel = panelRefId("core.shell", "sidebar");
     await pressF8();
     await browser.evaluate(
-      `document.querySelector('.workspace-panel-scope[data-panel-id="${sidebarPanel}"]')?.click()`,
+      `document.querySelector('.arrange-scope[data-panel-id="${sidebarPanel}"]')?.click()`,
+    );
+    await sleep(400);
+
+    /*
+      ZOOMED IN, the workspace's own tools go quiet. Every one of them acts on the ROOT split,
+      and none of them means anything while the reader is standing inside a panel's private
+      arrangement — so they are disabled rather than left to refuse one by one, and the
+      workspace containers they would have acted on dim behind the arrangement in hand.
+    */
+    const scoped = await arrangeChrome();
+    check(
+      "R4 zooming into a panel's arrangement disarms the workspace's own tools",
+      scoped.toolsDisabled > 0 &&
+        scoped.toolsEnabled === 0 &&
+        scoped.wireframes > 0 &&
+        scoped.dimmed === scoped.wireframes,
+      scoped.toolsEnabled > 0
+        ? `${String(scoped.toolsEnabled)} root tool(s) still pressable from inside a panel's arrangement`
+        : scoped.wireframes === 0
+          ? "no wireframe at all while scoped in, so nothing was dimmed or left lit to read"
+          : scoped.dimmed === scoped.wireframes
+            ? `${String(scoped.toolsDisabled)} root tools disabled and all ${String(scoped.wireframes)} workspace containers dimmed out of scope`
+            : `${String(scoped.dimmed)} of ${String(scoped.wireframes)} wireframe boxes dimmed: the scope crumb says one thing and the paint another`,
     );
     await sleep(400);
 
@@ -2989,6 +3343,84 @@ try {
     await dispatch("core.space.setLayout", { layout: restore }, viewer.token);
     await pressF8();
     await sleep(400);
+
+    /*
+      AND THE MODE DIES WITH ITS PLUGIN — the one failure this extraction could have shipped
+      invisibly. `core.arrange` publishes `vantage.arranging`, and the FRAME reads that flag to
+      blank its own tile content hosts, so an overlay that unmounted with the flag still set
+      would leave every pane inert with nothing left on screen to turn it back on. Nothing but
+      disabling the plugin MID-MODE can reach it: a typecheck sees two files agreeing, and a
+      unit test has no frame to go dead.
+    */
+    await pressF8();
+    const armedIntoDisable = await browser.evaluate<boolean>(
+      `document.querySelector('.workspace')?.classList.contains('is-arranging') === true`,
+    );
+    const wentDark = await pressToggle("core.arrange", false);
+    await closePluginManager();
+    await sleep(800);
+    const handedBack = await browser.evaluate<{
+      armed: boolean;
+      toolbar: boolean;
+      grips: number;
+      pointerEvents: string;
+      reaches: boolean;
+    }>(
+      `(() => {
+         const workspace = document.querySelector('.workspace');
+         const host = document.querySelector('.workspace-pane:last-child > .tile-content-host');
+         const box = host === null ? null : host.getBoundingClientRect();
+         const hit =
+           box === null
+             ? null
+             : document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+         return {
+           armed: workspace?.classList.contains('is-arranging') === true,
+           toolbar: document.querySelector('.arrange-toolbar') !== null,
+           grips: document.querySelectorAll('.arrange-grip').length,
+           pointerEvents: host === null ? 'no host' : getComputedStyle(host).pointerEvents,
+           reaches: hit !== null && host !== null && host.contains(hit),
+         };
+       })()`,
+    );
+    const gaveItBack =
+      wentDark &&
+      armedIntoDisable &&
+      !handedBack.armed &&
+      !handedBack.toolbar &&
+      handedBack.grips === 0 &&
+      handedBack.pointerEvents === "auto" &&
+      handedBack.reaches;
+    check(
+      "R4 disabling the editor mid-mode hands the workspace back",
+      gaveItBack,
+      !armedIntoDisable
+        ? "the mode would not arm, so disabling it mid-mode was never tested"
+        : !wentDark
+          ? "the manager would not turn core.arrange off"
+          : gaveItBack
+            ? "the overlay took the mode with it: no toolbar, no grips, no is-arranging, and the pane under the pointer answers again"
+            : `the workspace stayed ${handedBack.armed ? "armed" : "disarmed"} with ${String(handedBack.grips)} grip(s), a ${handedBack.toolbar ? "live" : "gone"} toolbar and pointer-events: ${handedBack.pointerEvents}${handedBack.reaches ? "" : " — and nothing under the pointer"}`,
+    );
+
+    const backOn = await pressToggle("core.arrange", true);
+    await closePluginManager();
+    await sleep(800);
+    await pressF8();
+    const rearmed = await browser.evaluate<boolean>(
+      `document.querySelector('[data-testid="toolbar-reset"]') !== null`,
+    );
+    check(
+      "R4 re-enabling the editor brings its key back with it",
+      backOn && rearmed,
+      !backOn
+        ? "the manager would not turn core.arrange back on"
+        : rearmed
+          ? "F8 answers again the moment the plugin is back, from the same binding row"
+          : "the plugin came back and F8 did not: the binding did not return with it",
+    );
+    await pressF8();
+    await sleep(400);
   }
 
   // ─────────────────────────────────────────── R7: every marker names an action
@@ -3062,10 +3494,14 @@ try {
       paths land on the SAME door, and a gate can only say that by exercising both.
      */
     await until(
-      () =>
-        browser!.evaluate<boolean>(
+      async () => {
+        // The listing lives in the manager's modal, so the wait presses the opener first and
+        // then asks for the row: the rung is about the row existing, not about who opened it.
+        if (!(await openPluginManager())) return false;
+        return await browser!.evaluate<boolean>(
           `document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.draw"]') !== null`,
-        ),
+        );
+      },
       20_000,
       "the plugin manager listing core.draw",
     );
@@ -3135,12 +3571,17 @@ try {
         ),
       10_000,
     );
-    const ledgered = await browser.evaluate<boolean>(
-      `(() => {
+    // The ledger is behind the opener now, so the read presses it: what is under test is that
+    // the row still says "off", not where the list is mounted.
+    const ledgerOpen = await openPluginManager();
+    const ledgered =
+      ledgerOpen &&
+      (await browser.evaluate<boolean>(
+        `(() => {
         const row = document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.machines"] [data-testid="plugin-manager-toggle"]');
         return row instanceof HTMLElement && row.getAttribute("aria-checked") === "false";
       })()`,
-    );
+      ));
     const on = await setEnabled("core.machines", true);
     /*
       "In its manifest-ordered place" is asserted among the rows of its OWN presentation, and
@@ -3452,7 +3893,15 @@ try {
        divider drag writes — presentation only, restored after the last pass. */
     const sweepWidths = [168, 208, 248, 288, 336, 400];
     const auditRoots = [".sidebar", '[data-testid="plugin-manager"]', ".composition-leaf"];
-    const broken: string[] = [];
+    /*
+      The manager's listing is one of the audited roots and it now lives in a MODAL, so the
+      sweep opens it and leaves it open for every width: a root that is not mounted answers no
+      defects, which would quietly retire a third of this rung.
+    */
+    const managerAudited = await openPluginManager();
+    const broken: string[] = managerAudited
+      ? []
+      : ["the plugin manager's listing would not open, so its layout went unaudited"];
     let passes = 0;
     for (const width of sweepWidths) {
       await browser.evaluate(
@@ -3480,6 +3929,12 @@ try {
         return null;
       })()`,
     );
+    /*
+      And closed again, so the rungs below meet the workspace as they always did: an open modal
+      holds focus and swallows keystrokes, which is exactly what R10's plane traffic and the key
+      dispatch rungs are about.
+    */
+    await closePluginManager();
     check(
       "R9 layout resilience",
       broken.length === 0,

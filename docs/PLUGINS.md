@@ -125,9 +125,10 @@ export const manifest: PluginManifest = {
     //            (default 1). core.shell seats its two at 0.22 and 0.78, which is the
     //            classical workspace; declare a seat and yours appears in a fresh
     //            workspace without anybody editing the floor (ADR 0017 §3).
-    sections: [], // { id, title, order, presentation? } — a sidebar row; presentation is
-    //            "disclosure" (default: a titled block that folds) or "plain" (you draw the
-    //            whole row). One registry, one reader-arranged order, either shape.
+    sections: [], // { id, title, order, presentation?, cluster? } — a sidebar row; presentation
+    //            is "disclosure" (default: a titled block that folds) or "plain" (you draw the
+    //            whole row). `cluster` is a bare word: rows sharing it paint side by side as one
+    //            unit at the earliest member's place. One registry, one reader-arranged order.
     elements: [
       {
         type: "draw",
@@ -135,7 +136,10 @@ export const manifest: PluginManifest = {
         placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
       },
     ],
-    tools: [{ id: "draw", title: "Draw" }], // a toolbar tool
+    // `tools` are toolbar tools. `toolbar` NAMES THE BAR the tool paints into, from the
+    // engine's closed vocabulary — `canvas` (the freeform discipline's tool strip) or
+    // `arrange` (`core.arrange`'s floating F8 workspace editor). Absent ≡ `canvas`.
+    tools: [{ id: "draw", title: "Draw", toolbar: "canvas" }],
     events: [], // event kinds THIS plugin originates (§6b); core.draw emits none — a stroke is a document edit
   },
   // entry: { web: "...", server: true }, // reserved: dynamic distribution, a later wave
@@ -191,11 +195,17 @@ Rules worth knowing before you write one:
   `label`. It is **data, not a component**: the engine draws the placeholder, because a plugin that
   is off cannot be asked to render its own absence. Omitting the field is a real declaration
   (absent ≡ `ghost`), and `hide` is for chrome only — never for a node holding a user's work (§6).
-- **`essential: true` means the workspace cannot be drawn without you.** Only `core.shell` claims
-  it. Attempting to disable an essential plugin returns
+- **`essential: true` means the workspace cannot be drawn without you.** Four plugins claim it:
+  `core.shell` (the panels), `core.brand`, `core.keys` and `core.plugins` — the rail's
+  non-negotiables (issue #91). Attempting to disable an essential plugin returns
   `{ ok: false, denial: { rule: "refused", message: "essential" } }`, where the message is one
   member of the published refusal-class set (`essential`, `builtin`, the dependency classes, the
-  data-version classes, `still_enabled`, …) — never free-form text.
+  data-version classes, `still_enabled`, …) — never free-form text. Essential protects the SEAT,
+  never a mechanism: `core.plugins` is still the manager UI only, and the enablement door it
+  presses is the engine's own builtin row, reachable over the API with `plugins:manage` even if
+  every UI were gone. A boot that finds an essential seat off — reachable only out of band, since
+  the door refuses it — offers "Restore default plugins" at the identity gate, one dispatch per
+  shipped row.
 - **Element contributions carry placement traits.** An element declares how it behaves in the
   placement algebra as manifest data, so the algebra never has to learn your kind's name:
 
@@ -577,8 +587,9 @@ export const webDef = {
 ```
 
 The engine merges your element renderers into the canvas node-type map and your tools into the
-toolbar. Nothing in the engine mentions "draw"; disable the plugin and the tool button
-disappears and existing strokes render as placeholders, live, without a reload.
+toolbar each one NAMED (`contributes.tools[].toolbar`, defaulting to `canvas`). Nothing in the
+engine mentions "draw"; disable the plugin and the tool button disappears and existing strokes
+render as placeholders, live, without a reload.
 
 ### What an element renderer receives
 
@@ -660,9 +671,27 @@ their work invisible without deleting it, which is the one outcome worse than a 
   `"plain"` (a row that draws itself end to end). There is no user-visible section-order
   setting to read and no hardcoded section list to edit; the manifests _are_ the order. `plain`
   is why the rail has no floor JSX left: the brand line, the three creators, the status line,
-  the key table's door and the identity footer are all ordinary rows now. See "Contributing a
+  the key table's opener and the identity footer are all ordinary rows now. See "Contributing a
   plain row" below.
-- **`tools`** appear in the canvas toolbar.
+  A row may also declare **`cluster`**, a bare word: rows that declare the SAME word paint side
+  by side as one horizontal unit of the stack, placed where the cluster's earliest member sits
+  in the live order. It is how `core.keys` and `core.plugins` sit together at the rail's foot —
+  both declare `cluster: "utility"`, neither knows about the other, and no floor file, panel or
+  registry holds a list of the members. Membership is declared rather than positional, so an
+  arrangement can move a cluster but never break one apart, and a word with one live member
+  paints exactly as an unclustered row does. Absent ≡ this row is its own unit, so a manifest
+  written before the field existed composes identically. The word is `cluster` and not `group`:
+  `group` is the placement algebra's capability set, and one concept per word is the law
+  (`REGISTRY.md` §Lexicon).
+- **`tools`** are buttons in a toolbar, and **`toolbar`** says WHICH one: `canvas` is the
+  freeform discipline's tool strip, `arrange` is `core.arrange`'s floating F8 editor over the
+  workspace itself. The vocabulary is the engine's and closed (`toolbars` in
+  `GET /api/protocol`'s `vocabulary`); the tools inside a bar are yours. Absent ≡ `canvas`,
+  which is what every row written before the field existed means — the only bar there was.
+  A bar paints exactly the enabled tools that named it, so two plugins may both contribute a
+  `select` into DIFFERENT bars without colliding (D5 still refuses two plugins claiming one id
+  within one bar), and a tool naming a bar this screen does not draw is simply not painted
+  rather than leaking into somebody else's strip.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
 - **`bindings`** are the keys you answer to. The one contribution kind with no manifest row: the
@@ -683,7 +712,11 @@ interface SectionProps {
 
 interface HostServices {
   readonly client: SessionHandle; // the SDK doors: action(), place(), selfCaps(), machines(),
-  // index(), attendanceByContainer(), terminalsByContainer(), allTerminals()
+  // index(), attendanceByContainer(), terminalsByContainer(), allTerminals(),
+  // resolve(uri) — what a manifold:// address names right now: its canonical
+  // spelling, its structured ref, whether the node exists, and its title. Parsing
+  // an address is local (`parseManifoldUri`); whether it still names anything is
+  // this door, and a plugin that PRODUCES an address should check the one it shows.
   readonly principal: Principal; // who this device is — paint in this principal's colour
   readonly token: string; // this device's bearer: the grant a renderer opens its own pipe with
   readonly containerId: string | null; // the container the route is showing, null at the root
@@ -985,19 +1018,49 @@ choosing an id learns which two are taken without reading this file.
 
 ### The web registration channels (documented in full next wave)
 
-A plugin's web half registers through five channels. One of them is specified — **bindings**,
-below — and this guide does not yet specify the other four:
+A plugin's web half registers through six channels. Two are specified here — **bindings** and
+**workspace overlays**, below — and this guide does not yet specify the other four:
 **renderers** (a discipline's container renderer — the projection registry key this wave renamed
-from `padSurfaces` to `renderers`), **overlays** (chrome painted into a renderer's named slot,
-like `attendance` and `spotlight`), **routes** (a browser path prefix, as `core.uri` claims
-`/uri/`), and the **terminal facet** (the viewer `core.terminals` publishes for other renderers
-to mount). They work, `packages/plugins/*` uses all four, and today they are registration-time
-conventions rather than manifest contributions: they have no `contributes` counterpart, so the
-roster cannot publish them, and one of them does not refuse a duplicate the way D5 requires.
-That is a defect, not a design — it is fixed in the **defect-fix wave (wave F) of this same
-change**, which gives each channel a manifest counterpart and a loud collision refusal, and
-writes them up in this section. Until then: read `packages/web/src/assembly.ts` and
+from `padSurfaces` to `renderers`), **overlays** (chrome painted into a container renderer's
+named slot, like `attendance` and `spotlight`), **routes** (a browser path prefix, as `core.uri`
+claims `/uri/`), and the **terminal facet** (the viewer `core.terminals` publishes for other
+renderers to mount). They work, `packages/plugins/*` uses all four, and today they are
+registration-time conventions rather than manifest contributions: they have no `contributes`
+counterpart, so the roster cannot publish them, and one of them does not refuse a duplicate the
+way D5 requires. That is a defect, not a design — it is fixed in the **defect-fix wave (wave F)
+of this same change**, which gives each channel a manifest counterpart and a loud collision
+refusal, and writes them up in this section. Until then: read `packages/web/src/assembly.ts` and
 `packages/plugin/src/projection.ts` for the shapes, and do not rely on a duplicate being caught.
+
+**workspace overlays** — chrome with no container to hang on:
+
+```ts
+// src/web.tsx
+export const acmeWebPlugin = {
+  id: "acme.notes",
+  // WORKSPACE_OVERLAY_SLOTS is the closed vocabulary; the key type is the slot union, never
+  // `string`, because an unregistered slot paints NOTHING and a typo would compile clean.
+  workspaceOverlays: { inspector: MyChrome },
+};
+
+function MyChrome({ host }: WorkspaceOverlayProps) {
+  /* `host` is the only prop: an overlay over the WORKSPACE has no container to be about, and
+     the routed one is already `host.containerId`. */
+}
+```
+
+The same kind as a container overlay, one host up. Use it when your chrome genuinely cannot be
+scoped to a container: `core.debug`'s inspector chip follows the pointer across the sidebar rail
+and the workspace frame alike, and `core.arrange`'s toolbar is about the arrangement of the
+workspace rather than about anything inside a room. Everything else belongs in a container's
+slot, a panel or a section.
+
+The outlets are mounted once, above the route switch, so your overlay outlives the routed shell
+and sits outside the subtree the sidebar's collapse can unmount. Absence paints NOTHING — no
+placeholder — because an inert box floating over somebody's workspace is worse than the missing
+decoration, which is also what makes disabling your plugin remove your chrome entirely. Paint
+`position: fixed` and keep the layer `pointer-events: none` unless your chrome is genuinely
+interactive: an overlay that swallows clicks is an overlay that changes what it decorates.
 
 **bindings** — the keys your plugin answers to:
 

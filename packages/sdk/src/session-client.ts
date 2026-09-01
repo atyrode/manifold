@@ -15,6 +15,7 @@ import {
   PlaceResponseSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
+  ResolveResponseSchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
   placementContainerFor,
@@ -42,6 +43,7 @@ import {
   type PresenceState,
   type Principal,
   type RevokeResult,
+  type ResolveResponse,
   type SceneElement,
   type ServerEvent,
   type ServerMessageBody,
@@ -887,6 +889,26 @@ export class SessionClient {
   /** Who occupies which container right now (`GET /api/attendance`). */
   async attendanceByContainer(): Promise<readonly Attendance[]> {
     return AttendanceResponseSchema.parse(await this.getJson("/api/attendance")).attendance;
+  }
+
+  /**
+   * WHAT THIS ADDRESS NAMES (`GET /api/resolve`): the canonical spelling of the reference, its
+   * structured form, whether the node exists, and what the workspace calls it.
+   *
+   * The typed half of the addressing algebra's one read door. `manifold://` is the canonical
+   * reference form for anything addressable (AGENTS invariant 13), and a caller holding a URI
+   * had until now no way to ask whether it still names anything — so every consumer either
+   * guessed or parsed the string itself and believed the answer. Parsing tells you the SHAPE;
+   * only the server knows whether the node is there.
+   *
+   * Refusals are HTTP errors on purpose, matching the door: an unparseable address is a bad
+   * request and throws, while an address that parses and points at nothing is a successful
+   * answer carrying `exists: false`.
+   */
+  async resolve(uri: string): Promise<ResolveResponse> {
+    return ResolveResponseSchema.parse(
+      await this.getJson(`/api/resolve?uri=${encodeURIComponent(uri)}`),
+    );
   }
 
   /** Every container-homed terminal, for per-container counts (`core.terminals.listByContainer`). */

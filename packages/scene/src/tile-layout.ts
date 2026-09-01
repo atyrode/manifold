@@ -75,6 +75,10 @@ export function sameTileRef(a: TileRef, b: TileRef): boolean {
       return b.kind === "text" && a.elementId === b.elementId;
     case "panel":
       return b.kind === "panel" && a.panelId === b.panelId;
+    case "spacer":
+      // Every spacer is interchangeable with every other — the same reason the identity
+      // question has no per-instance data to compare.
+      return b.kind === "spacer";
     default: {
       const exhaustive: never = a;
       return exhaustive;

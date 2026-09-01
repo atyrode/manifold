@@ -1,10 +1,14 @@
 import { accessActions, accessManifest } from "@manifold-plugin/access";
 import { accessHandlers } from "@manifold-plugin/access/server";
+import { arrangeManifest } from "@manifold-plugin/arrange";
+import { brandManifest } from "@manifold-plugin/brand";
 import { canvasManifest } from "@manifold-plugin/canvas";
 import { compositionsManifest } from "@manifold-plugin/compositions";
 import { drawElements, drawManifest } from "@manifold-plugin/draw";
 import { eventsActions, eventsManifest } from "@manifold-plugin/events";
 import { eventsHandlers } from "@manifold-plugin/events/server";
+import { keysActions, keysManifest } from "@manifold-plugin/keys";
+import { keysHandlers } from "@manifold-plugin/keys/server";
 import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
 import { machinesHandlers } from "@manifold-plugin/machines/server";
 import { notesElements, notesManifest } from "@manifold-plugin/notes";
@@ -16,6 +20,7 @@ import { spaceHandlers } from "@manifold-plugin/shell/server";
 import { terminalsActions, terminalsManifest } from "@manifold-plugin/terminals";
 import { terminalsHandlers } from "@manifold-plugin/terminals/server";
 import { uriManifest } from "@manifold-plugin/uri";
+import { debugManifest } from "@manifold-plugin/debug";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
 import type { FloorEventOwners } from "./event-hub.ts";
@@ -76,6 +81,18 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   // are the ENGINE's builtin row (`engine.plugins`), registered by the host itself rather
   // than here, because administration of the assembly cannot be a member of it.
   { manifest: pluginManagerManifest, actions: [], handlers: {} },
+  /*
+    THE RAIL'S NON-NEGOTIABLES (issue #91). `core.brand` is browser-only — a mark is not
+    authority — and registered here all the same, because the ROSTER is what publishes a
+    plugin's existence, its title and its `essential` flag to every reader and administrator.
+
+    `core.keys` owns both halves: the seat that lists every key the composition composed, and
+    the two doors that write this principal's rebindings over it. The key REGISTRY itself is
+    browser-side registration data the server has never seen, which is exactly why these
+    handlers refuse only what a stored override map can prove (`keysHandlers`).
+  */
+  { manifest: brandManifest, actions: [], handlers: {} },
+  { manifest: keysManifest, actions: keysActions, handlers: keysHandlers },
   { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
   { manifest: accessManifest, actions: accessActions, handlers: accessHandlers },
@@ -111,6 +128,18 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: drawManifest, actions: [], handlers: {}, elements: drawElements },
   { manifest: notesManifest, actions: [], handlers: {}, elements: notesElements },
   { manifest: uriManifest, actions: [], handlers: {} },
+  /*
+    The diagnostic seat: browser-only, door-less, and registered here for the reason every
+    browser-only plugin is — the roster is what makes it nameable in the key table and
+    toggleable in the manager. Turning it off is how an operator takes the probes away.
+  */
+  { manifest: debugManifest, actions: [], handlers: {} },
+  /*
+    The F8 scene editor: browser-only, door-less — every write it makes is `core.space`'s own
+    `setLayout` — and registered here for the reason every browser-only plugin is: the roster
+    is what makes it nameable, toggleable, and its F8 row visible in the key table.
+  */
+  { manifest: arrangeManifest, actions: [], handlers: {} },
   // The two container renderers are browser-only for the same reason: what they draw is a
   // projection, and every write they make is somebody else's declared door.
   { manifest: canvasManifest, actions: [], handlers: {} },

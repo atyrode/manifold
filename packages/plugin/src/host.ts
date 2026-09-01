@@ -13,11 +13,13 @@ import type {
   PlacementRef,
   Principal,
   PluginRoster,
+  ResolveResponse,
   ServerEvent,
   TerminalSummary,
+  TileLayout,
 } from "@manifold/protocol";
 import type { ScenePatch, Y } from "@manifold/scene";
-import type { AssemblySection } from "./assemble.ts";
+import type { AssemblyPanel, AssemblySection } from "./assemble.ts";
 import type { ComposedBinding } from "./bindings.ts";
 
 /**
@@ -57,6 +59,16 @@ export interface SessionHandle {
   index(): Promise<readonly IndexEntry[]>;
   attendanceByContainer(): Promise<readonly Attendance[]>;
   terminalsByContainer(): Promise<readonly ContainerTerminalSummary[]>;
+  /**
+   * WHAT A `manifold://` ADDRESS NAMES — the canonical spelling, the structured reference,
+   * whether the node exists and what the workspace calls it (`GET /api/resolve`).
+   *
+   * A plugin that PRODUCES an address — a deep link, a chip, a grant row — can now check the
+   * one it is about to show instead of asserting it. Parsing an address is a pure question any
+   * consumer answers locally (`parseManifoldUri`); whether the node is still there is the
+   * server's, and this is the one door onto it.
+   */
+  resolve(uri: string): Promise<ResolveResponse>;
   allTerminals(): Promise<readonly TerminalSummary[]>;
   /*
     The workspace index's own writes. They are HTTP routes rather than actions this wave
@@ -141,6 +153,45 @@ export interface AuthoringHandle {
 }
 
 /**
+ * THE WORKSPACE TREE, as a plugin reading its structure is allowed to: the live tile layout
+ * plus a way to find any tile's own painted box. It exists for `core.arrange` (issue #89),
+ * whose F8 editor moved OUT of the floor host `workspace.tsx` and needed a documented read
+ * surface in its place rather than a private import of the file it used to be part of — the
+ * host publishes the tree, a plugin reads it, and the litmus that used to be "this code lives
+ * in the floor because it needs the floor's own state" is answered by a contract instead.
+ *
+ * `getTreeElement` is a GETTER, not a stored ref, for the same reason the floor's own gesture
+ * code always read its tree area live rather than holding it: the tree can remount (a layout
+ * arriving after the boot fetch replaces the whole subtree), and a cached element would go
+ * stale silently. Every tile in the returned element carries `data-tile-id` — splits and
+ * leaves alike (`TileTree`) — so a caller locates tile `id`'s own box the exact way the tree
+ * seats its own content hosts: the element itself if its own attribute matches, else
+ * `querySelector('[data-tile-id="..."]')` beneath it.
+ *
+ * Typed `unknown` rather than `HTMLElement` because this file is read by every consumer of
+ * `@manifold/plugin`, the SERVER included, and the server's own `tsconfig.json` carries no
+ * `DOM` lib (it never touches one) — a DOM type here would fail ITS typecheck for a member it
+ * can never call. A browser caller narrows it once, at the one boundary that legitimately
+ * knows more than this shared file can say (`arrange-overlay.tsx`).
+ *
+ * `applyLayout` is the ONE write: the floor's own optimistic-local-then-debounced-commit
+ * function (`LAYOUT_COMMIT_MS`), exposed rather than duplicated, so a plugin-driven change
+ * (a toolbar click, a grip release) paints instantly through the SAME local echo a divider
+ * drag gets and settles through the SAME one `core.space.setLayout` per burst (D6) — never a
+ * second write path that could diverge from the floor's own.
+ *
+ * Null when no workspace tree is mounted (there always is one once the shell boots, but a
+ * reader mounted outside it — a test, a preview — gets an honest absence rather than a stale
+ * handle).
+ */
+export interface TileGeometryHandle {
+  readonly layout: TileLayout | null;
+  /** An `HTMLElement | null` in every browser caller — see the type note above. */
+  getTreeElement(): unknown;
+  applyLayout(next: TileLayout): void;
+}
+
+/**
  * ONE COMPOSED SIDEBAR ROW, as any plugin may read it: {@link AssemblySection} — the manifest
  * facts the composition already resolved, `presentation` included — plus the one roster fact a
  * reader needs beside them.
@@ -152,6 +203,17 @@ export interface AuthoringHandle {
  * `presentation`.
  */
 export interface ComposedSection extends AssemblySection {
+  /** False for a DISABLED owner and for an id the roster does not carry. */
+  readonly enabled: boolean;
+}
+
+/**
+ * ONE COMPOSED PANEL, as any plugin may read it: {@link AssemblyPanel} — the manifest facts
+ * the composition already resolved, `arranges` included — plus the one roster fact a reader
+ * needs beside them. The read surface `core.arrange` (issue #89) resolves a scope and names
+ * a grip through: a panel ref's title and its declared inner arrangement, never a component.
+ */
+export interface ComposedPanel extends AssemblyPanel {
   /** False for a DISABLED owner and for an id the roster does not carry. */
   readonly enabled: boolean;
 }
@@ -187,11 +249,36 @@ export interface AssemblyFacet {
    */
   readonly sections: readonly ComposedSection[];
   /**
-   * The composed key table, sorted by key. A disabled plugin's rows are ABSENT rather than
-   * marked — the one registry here that drops instead of marking, because a keystroke has no
-   * surface to paint an absence on (`composeBindings`).
+   * Every DECLARED panel, keyed by its FULL id (`core.shell.sidebar`) — the id a `panel` tile
+   * ref names. `core.arrange` (issue #89) is this member's one reader today: a panel's title
+   * names the grip that moves it, and `arranges` is the #88 scope it may offer to zoom into.
+   */
+  readonly panels: ReadonlyMap<string, ComposedPanel>;
+  /**
+   * The composed key table, sorted by key, carrying EFFECTIVE keys — every row's declared key
+   * with this principal's overrides already applied, plus the declared one beside it
+   * (`ComposedBinding.declaredKey`). A disabled plugin's rows are ABSENT rather than marked —
+   * the one registry here that drops instead of marking, because a keystroke has no place to
+   * paint an absence on (`composeBindings`).
    */
   readonly bindings: readonly ComposedBinding[];
+  /**
+   * THIS PRINCIPAL'S REBINDINGS, as binding id → key: the delta the table above was composed
+   * with, published so an editor can tell "rebound" from "declared this way", and see an
+   * override the composition DROPPED because a declaration has since claimed that key.
+   *
+   * A read, like everything else here. Writing one is a door somebody owns
+   * (`core.keys.setBinding`), and the map is stored per principal on the server, so what a
+   * reader sees here is the same delta every device of theirs composes with.
+   */
+  readonly bindingOverrides: Readonly<Record<string, string>>;
+  /**
+   * RE-READ the stored overrides and recompose the table. The one verb on this facet, and it
+   * moves nothing: a door wrote a rebinding, the engine owns the read behind it, and this is
+   * how the writer says "your copy is stale" without either side importing the other. Neutral
+   * by construction — the engine learns that overrides changed, never who changed them.
+   */
+  refreshBindings(): void;
 }
 
 /**
@@ -253,6 +340,8 @@ export interface HostServices {
   navigate(uri: string): void;
   readonly viewport: ViewportHandle | null;
   readonly authoring: AuthoringHandle | null;
+  /** The workspace's own tree, read-only — see {@link TileGeometryHandle}. */
+  readonly tileGeometry: TileGeometryHandle | null;
   readonly assembly: AssemblyFacet;
   /**
    * The nodes the shared feeds subscribe to. Handed down rather than spelled here: see

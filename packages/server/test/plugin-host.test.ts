@@ -403,34 +403,43 @@ describe("PluginHost enablement", () => {
     fixture.store.close();
   });
 
-  test("the manager UI plugin is ORDINARY: disabling it keeps the door reachable", async () => {
+  test("the manager's SEAT is essential while the door stays outside the assembly", async () => {
     const fixture = hostFixture();
 
-    // `core.plugins` lost `essential` when it lost the action. Turning it off costs a
-    // section, not the ability to administer — which is what makes "everything is a plugin"
-    // true of the plugin list itself.
-    expect(
-      await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
-        id: "core.plugins",
-        enabled: false,
-      }),
-    ).toEqual({ ok: true, result: {} });
-    expect(fixture.host.assembly().enabled("core.plugins")).toBe(false);
+    /*
+      TWO CLAIMS THAT USED TO LOOK LIKE ONE, and separating them is what issue #91 changed.
 
-    // Administration is still alive with the manager UI dark, and can bring it back.
+      `core.plugins` carried `essential: true` once for the wrong reason — a plugin made
+      permanently undisableable so the enablement MECHANISM inside it could not be switched off
+      (ADR 0013 §11). That cure was replaced by moving the door out of the assembly entirely,
+      and the flag came off with it. It is back now for a different reason, and the difference is
+      the whole point: the ledger of what is on and off is one of the rail's non-negotiables, so
+      a workspace that could switch off its own plugin list would hide its own recovery. What is
+      protected is the SEAT, never the mechanism.
+
+      So this test pins both halves at once: the disable is refused by CLASS, and the door it
+      would have taken down is not a member of the assembly at all — administration keeps
+      working while the row that draws it is untouched.
+    */
+    const refused = await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
+      id: "core.plugins",
+      enabled: false,
+    });
+    expect(denial(refused)).toEqual({ rule: "refused", message: "essential" });
+    expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
+    // Nothing was written: a refused disable is an answer, not a half-applied transition.
+    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+
+    // The door is reachable and effective on an ORDINARY plugin, with the manager's own seat
+    // still standing — which is what "the door is not a member of the assembly it administers"
+    // buys, and it is the claim the old form of this test was really making.
     expect(
       await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
         id: "core.draw",
         enabled: false,
       }),
     ).toEqual({ ok: true, result: {} });
-    expect([...fixture.store.disabledPlugins()].sort()).toEqual(["core.draw", "core.plugins"]);
-    expect(
-      await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
-        id: "core.plugins",
-        enabled: true,
-      }),
-    ).toEqual({ ok: true, result: {} });
+    expect([...fixture.store.disabledPlugins()]).toEqual(["core.draw"]);
     expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
     fixture.store.close();
   });

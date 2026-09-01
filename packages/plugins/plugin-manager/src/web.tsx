@@ -12,20 +12,38 @@ import {
   type PluginRefusalReason,
   type PluginRosterEntry,
 } from "@manifold/protocol";
-import { Stack } from "@manifold/plugin/ui";
-import { Lock, Trash2 } from "lucide-react";
-import { useState, type ReactElement } from "react";
+import { useWorkspaceShell } from "@manifold/plugin/hooks";
+import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
+import { Blocks, Lock, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import { createPortal } from "react-dom";
+import {
+  PLUGIN_FILTERS,
+  PLUGIN_FILTER_LABELS,
+  pluginCatalog,
+  pluginDependencies,
+  type PluginFilter,
+  type PluginRelations,
+} from "./catalog.ts";
 
 /**
  * Composition administration, rendered by the composition it administers. The list is the
- * server's roster verbatim (`host.composition.roster()`), so this section can never disagree
+ * server's roster verbatim (`host.assembly.roster()`), so this section can never disagree
  * with what the workspace actually composed, and the toggle is one action — enablement is
  * workspace-GLOBAL and hot, so flipping it here changes what every principal's client
  * composes and the new roster is pushed rather than polled (D4).
  *
  * The door it calls is the ENGINE's (`engine.plugins.setEnabled`), not this plugin's. This
- * plugin owns the UI and only the UI; it is itself an ordinary, disableable row in the list
- * it renders.
+ * plugin owns the UI and only the UI.
+ *
+ * WHAT THE RAIL SEES is one discreet row that opens a MODAL (issue #91). The ledger of what
+ * is on and off is a whole administrative screen — two tabs, a search, a filter, categories,
+ * dependencies in both directions — and a rail row is 240px wide: the inline disclosure it
+ * used to be could only ever show a slice of it, and the rail's foot is precisely where a
+ * reader wants a door rather than a drawer. The row clusters beside the key table's row
+ * (`cluster: "utility"`), which is why the opener wears the shell's own `.sidebar-opener`
+ * vocabulary instead of a skin of its own: two doors side by side must be identical by
+ * construction, not by two stylesheets agreeing.
  *
  * Which rows offer a lever is decided by the roster's own `refusal` class rather than by a
  * rule written twice. Every class below is a refusal the door would produce, so the UI names
@@ -74,10 +92,102 @@ function lockHint(entry: PluginRosterEntry): string | null {
   return LOCK_HINTS[reason] ?? reason;
 }
 
+/** The two views the modal holds. `installed` is the ledger; `browse` is the deferral. */
+const MANAGER_TABS = ["installed", "browse"] as const;
+type ManagerTab = (typeof MANAGER_TABS)[number];
+const TAB_LABELS: Readonly<Record<ManagerTab, string>> = {
+  installed: "Installed",
+  browse: "Browse",
+};
+
+/**
+ * WHAT DEPENDS ON WHAT, in both directions and in words rather than a graph.
+ *
+ * Both sentences are always printed, including their empty forms. "Needs nothing" and
+ * "Nothing needs it" are the two facts a reader is actually after before pressing a toggle,
+ * and a block that renders only when it has something to say makes their absence
+ * indistinguishable from a UI that forgot to ask — the reader cannot tell "safe to turn off"
+ * from "not computed", which is the one thing this block exists to answer.
+ *
+ * Titles come from the ASSEMBLY (`host.assembly.pluginTitle`), the one name table for
+ * plugins, and fall back to the id: a `required` dependency that was never composed has no
+ * title anywhere, and printing its id is exactly the information a `missing_dependency`
+ * refusal is about.
+ */
+function DependencyBlock({
+  relations,
+  pluginTitle,
+}: {
+  readonly relations: PluginRelations;
+  readonly pluginTitle: (id: string) => string;
+}): ReactElement {
+  const { needs, neededBy } = relations;
+  return (
+    <p className="plugin-manager-deps">
+      <span className="plugin-manager-dep">
+        {needs.length === 0 ? "Needs nothing" : `Needs ${needs.map(pluginTitle).join(", ")}`}
+      </span>
+      <span className="plugin-manager-dep">
+        {neededBy.length === 0
+          ? "Nothing needs it"
+          : `Needed by ${neededBy.map(pluginTitle).join(", ")}`}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * THE BROWSE TAB, which is a named absence rather than an empty panel.
+ *
+ * Installing a plugin that is not compiled into this build is a RATIFIED roadmap wave —
+ * "Marketplace and dynamic plugin distribution" (AXIOMS.md §Roadmap) — gated behind a dated
+ * isolation ADR that must ratify a runner first, because a marketplace is the moment code
+ * manifold did not author runs in-process. That ordering is a hard prerequisite, not a
+ * preference, so this tab cannot ship a store and must not pretend the question was never
+ * asked: a deferral has to be visible IN THE PRODUCT, as a placeholder that says what is
+ * missing, never only in prose an operator would have to go and find (AGENTS.md
+ * §Conventions). A reader who opens a plugin manager and finds a blank second tab learns
+ * that the product is broken; a reader who finds this learns what manifold has decided.
+ *
+ * It names the seams too, because they are the reason this is a wave rather than a wish: the
+ * manifest's `entry { web?, server? }` and the roster's `source` field are already reserved
+ * for it, and the roster already distinguishes a builtin door from an assembled plugin.
+ */
+function BrowsePanel(): ReactElement {
+  return (
+    <Stack className="plugin-manager-browse" gap="0.6rem" data-testid="plugin-manager-browse">
+      <h3 className="plugin-manager-browse-title">Marketplace and dynamic plugin distribution</h3>
+      <p>
+        Not built yet, and named rather than hidden: installing plugin code that is not compiled
+        into this build is a ratified roadmap wave (<code>AXIOMS.md</code> §Roadmap), not an
+        oversight in this screen.
+      </p>
+      <p>
+        What is missing is the isolation verdict it waits on. Every plugin in this workspace is
+        first-party code compiled into the build, so a store is the moment code manifold did not
+        author starts running in-process; a dated ADR has to ratify a runner for it first, and that
+        ordering is a hard prerequisite. The seams are already reserved — a manifest may declare{" "}
+        <code>entry</code>, and every row in the Installed tab already publishes the{" "}
+        <code>source</code> a downloaded plugin would arrive under.
+      </p>
+      <p className="plugin-manager-browse-meanwhile">
+        Until that wave lands, the Installed tab is the whole list: what this workspace composed,
+        and every door you can open on it.
+      </p>
+    </Stack>
+  );
+}
+
 export function PluginManagerSection({ host }: SectionProps): ReactElement {
-  const roster = host.assembly.roster();
+  const assembly = host.assembly;
+  const roster = assembly.roster();
   const caps = host.client.selfCaps();
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
+  const { sidebarOpen } = useWorkspaceShell();
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<ManagerTab>("installed");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<PluginFilter>("all");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   /**
@@ -92,6 +202,25 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
    * behind to read cannot be audited.
    */
   const [removed, setRemoved] = useState<PluginPurgeResult | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    if (dialog !== null && !dialog.open) dialog.showModal();
+  }, [open]);
+
+  /**
+   * Closing DISARMS. An armed destructive control that survives the dialog it was armed in
+   * would be waiting behind a closed door for the next press — the same trap `onBlur`
+   * disarming prevents inside the row, one level up.
+   */
+  const close = (): void => {
+    setOpen(false);
+    setArmedId(null);
+    window.requestAnimationFrame(() => buttonRef.current?.focus());
+  };
 
   const toggle = async (id: string, enabled: boolean): Promise<void> => {
     setPendingId(id);
@@ -137,8 +266,35 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     }
   };
 
-  return (
-    <Stack className="plugin-manager" gap="0.2rem" data-testid="plugin-manager">
+  const categories = pluginCatalog(roster, query, filter);
+
+  const installed = (
+    <Stack className="plugin-manager" gap="0.35rem" data-testid="plugin-manager">
+      <Cluster className="plugin-manager-controls" justify="space-between" gap="0.5rem">
+        <input
+          className="plugin-manager-search"
+          type="search"
+          value={query}
+          placeholder="Search plugins"
+          aria-label="Search plugins by name, id or description"
+          data-testid="plugin-manager-search"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <div className="plugin-manager-filters" role="group" aria-label="Show">
+          {PLUGIN_FILTERS.map((value) => (
+            <button
+              key={value}
+              className="plugin-manager-filter"
+              type="button"
+              aria-pressed={filter === value}
+              data-testid={`plugin-manager-filter-${value}`}
+              onClick={() => setFilter(value)}
+            >
+              {PLUGIN_FILTER_LABELS[value]}
+            </button>
+          ))}
+        </div>
+      </Cluster>
       {!canManage ? (
         <p className="sidebar-muted">
           Read-only: turning plugins on and off needs the <code>plugins:manage</code> capability.
@@ -157,115 +313,227 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
           ).join(", ")}
         </p>
       )}
+      {/*
+        Two different emptinesses, said differently. "No plugins composed" is a claim about the
+        WORKSPACE; "nothing matches" is a claim about what the reader just typed, and a single
+        message for both would tell someone whose search missed that their workspace is empty.
+       */}
       {roster.length === 0 ? (
         <span className="sidebar-section-empty">No plugins composed</span>
+      ) : categories.length === 0 ? (
+        <span className="sidebar-section-empty">Nothing matches this search</span>
       ) : null}
-      {roster.map((entry) => {
-        const { manifest } = entry;
-        const hint = lockHint(entry);
-        const lifecycle = entry.lifecycle === undefined ? null : LIFECYCLE_LABELS[entry.lifecycle];
-        const attribution =
-          typeof entry.changedBy === "string" ? `Last changed by ${entry.changedBy}` : null;
-        /*
-          A purge is offered on a DISABLED row and nowhere else, because that is the door's own
-          rule rather than a second one written here: `engine.plugins.purge` is refused while
-          the plugin is enabled (class `still_enabled`), and an affordance that always fails is
-          exactly what §5's "never offer a lever the door refuses" forbids. Disable first,
-          purge second — and the first step is the reversible one.
-         */
-        const purgeable = canManage && !entry.enabled;
-        const armed = armedId === manifest.id;
-        return (
-          <div
-            className={`plugin-manager-row${entry.enabled ? "" : " is-disabled"}`}
-            data-plugin={manifest.id}
-            data-source={entry.source}
-            key={manifest.id}
-          >
-            <span className="plugin-manager-label">
-              <strong title={manifest.description}>{manifest.title}</strong>
-              <small>
-                {manifest.id} · {manifest.version}
-              </small>
-              {lifecycle === null ? null : (
-                <small className="plugin-manager-lifecycle" role="status">
-                  {lifecycle}
-                </small>
-              )}
-              {!purgeable ? null : (
-                <small className="plugin-manager-purges">{purgeDeclaration(entry)}</small>
-              )}
-            </span>
-            {hint === null ? (
-              <button
-                className="plugin-manager-toggle"
-                type="button"
-                role="switch"
-                aria-checked={entry.enabled}
-                aria-label={`${entry.enabled ? "Disable" : "Enable"} ${manifest.title}`}
-                title={
-                  canManage
-                    ? [
-                        `${entry.enabled ? "Disable" : "Enable"} ${manifest.title} for everyone`,
-                        attribution,
-                      ]
-                        .filter((line) => line !== null)
-                        .join(" · ")
-                    : "Requires plugins:manage"
-                }
-                data-action={ENGINE_SET_ENABLED_ACTION}
-                data-testid="plugin-manager-toggle"
-                disabled={!canManage || pendingId === manifest.id}
-                onClick={() => void toggle(manifest.id, !entry.enabled)}
+      {categories.map((category) => (
+        <section className="plugin-manager-category" key={category.kind}>
+          <h3 className="plugin-manager-category-title">
+            {category.title}
+            <span className="plugin-manager-category-count">{category.rows.length}</span>
+          </h3>
+          {category.rows.map((entry) => {
+            const { manifest } = entry;
+            const hint = lockHint(entry);
+            const lifecycle =
+              entry.lifecycle === undefined ? null : LIFECYCLE_LABELS[entry.lifecycle];
+            const attribution =
+              typeof entry.changedBy === "string" ? `Last changed by ${entry.changedBy}` : null;
+            const verb = entry.enabled ? "Disable" : "Enable";
+            /*
+              The toggle's tooltip says FOR EVERYONE, because that is what the door does:
+              enablement is workspace-global, so a reader hovering a switch in their own tab is
+              owed the fact that pressing it changes what every principal composes. The
+              attribution rides in the same string when the roster carries one — who last moved
+              this row is the other half of "is this safe to touch".
+             */
+            const toggleTitle = canManage
+              ? [`${verb} ${manifest.title} for everyone`, attribution]
+                  .filter((line) => line !== null)
+                  .join(" · ")
+              : "Requires plugins:manage";
+            /*
+              A purge is offered on a DISABLED row and nowhere else, because that is the door's
+              own rule rather than a second one written here: `engine.plugins.purge` is refused
+              while the plugin is enabled (class `still_enabled`), and an affordance that always
+              fails is exactly what §5's "never offer a lever the door refuses" forbids. Disable
+              first, purge second — and the first step is the reversible one.
+             */
+            const purgeable = canManage && !entry.enabled;
+            const armed = armedId === manifest.id;
+            return (
+              <div
+                className={`plugin-manager-row${entry.enabled ? "" : " is-disabled"}`}
+                data-plugin={manifest.id}
+                data-source={entry.source}
+                key={manifest.id}
               >
-                {entry.enabled ? "On" : "Off"}
-              </button>
-            ) : (
-              <span className="plugin-manager-lock" title={hint} aria-label={hint}>
-                <Lock className="mf-icon" size={13} strokeWidth={1.75} absoluteStrokeWidth />
-              </span>
-            )}
-            {!purgeable ? null : (
-              <button
-                className={`plugin-manager-purge${armed ? " is-confirming" : ""}`}
-                type="button"
-                aria-label={
-                  armed
-                    ? `Confirm purging ${manifest.title} — this cannot be undone`
-                    : `Purge ${manifest.title}`
-                }
-                title={`${purgeDeclaration(entry)}. ${
-                  armed ? "Press again to destroy it." : "Press to confirm."
-                }`}
-                data-action={ENGINE_PURGE_ACTION}
-                data-testid="plugin-manager-purge"
-                data-confirming={armed}
-                disabled={pendingId === manifest.id}
-                // Losing focus disarms: an armed destructive control that stays armed while
-                // the reader looks away is a trap, and Escape is the same retreat by keyboard.
-                onBlur={() => setArmedId(null)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") setArmedId(null);
-                }}
-                onClick={() => {
-                  if (armed) void purge(manifest.id);
-                  else {
-                    setArmedId(manifest.id);
-                    setFailure(null);
-                    setRemoved(null);
-                  }
-                }}
-              >
-                {armed ? (
-                  "Purge?"
-                ) : (
-                  <Trash2 className="mf-icon" size={13} strokeWidth={1.75} absoluteStrokeWidth />
-                )}
-              </button>
-            )}
-          </div>
-        );
-      })}
+                <div className="plugin-manager-row-main">
+                  <span className="plugin-manager-label">
+                    <strong title={manifest.description}>{manifest.title}</strong>
+                    <small>
+                      {manifest.id} · {manifest.version}
+                    </small>
+                    {lifecycle === null ? null : (
+                      <small className="plugin-manager-lifecycle" role="status">
+                        {lifecycle}
+                      </small>
+                    )}
+                    {!purgeable ? null : (
+                      <small className="plugin-manager-purges">{purgeDeclaration(entry)}</small>
+                    )}
+                  </span>
+                  {hint === null ? (
+                    <button
+                      className="plugin-manager-toggle"
+                      type="button"
+                      role="switch"
+                      aria-checked={entry.enabled}
+                      aria-label={`${verb} ${manifest.title}`}
+                      title={toggleTitle}
+                      data-action={ENGINE_SET_ENABLED_ACTION}
+                      data-testid="plugin-manager-toggle"
+                      disabled={!canManage || pendingId === manifest.id}
+                      onClick={() => void toggle(manifest.id, !entry.enabled)}
+                    >
+                      {entry.enabled ? "On" : "Off"}
+                    </button>
+                  ) : (
+                    <span className="plugin-manager-lock" title={hint} aria-label={hint}>
+                      <Lock className="mf-icon" size={13} strokeWidth={1.75} absoluteStrokeWidth />
+                    </span>
+                  )}
+                  {!purgeable ? null : (
+                    <button
+                      className={`plugin-manager-purge${armed ? " is-confirming" : ""}`}
+                      type="button"
+                      aria-label={
+                        armed
+                          ? `Confirm purging ${manifest.title} — this cannot be undone`
+                          : `Purge ${manifest.title}`
+                      }
+                      title={`${purgeDeclaration(entry)}. ${
+                        armed ? "Press again to destroy it." : "Press to confirm."
+                      }`}
+                      data-action={ENGINE_PURGE_ACTION}
+                      data-testid="plugin-manager-purge"
+                      data-confirming={armed}
+                      disabled={pendingId === manifest.id}
+                      // Losing focus disarms: an armed destructive control that stays armed
+                      // while the reader looks away is a trap, and Escape is the same retreat
+                      // by keyboard.
+                      onBlur={() => setArmedId(null)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setArmedId(null);
+                      }}
+                      onClick={() => {
+                        if (armed) void purge(manifest.id);
+                        else {
+                          setArmedId(manifest.id);
+                          setFailure(null);
+                          setRemoved(null);
+                        }
+                      }}
+                    >
+                      {armed ? (
+                        "Purge?"
+                      ) : (
+                        <Trash2
+                          className="mf-icon"
+                          size={13}
+                          strokeWidth={1.75}
+                          absoluteStrokeWidth
+                        />
+                      )}
+                    </button>
+                  )}
+                </div>
+                <DependencyBlock
+                  relations={pluginDependencies(roster, manifest.id)}
+                  pluginTitle={(id) => assembly.pluginTitle(id) ?? id}
+                />
+              </div>
+            );
+          })}
+        </section>
+      ))}
     </Stack>
+  );
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        className="sidebar-opener"
+        type="button"
+        title="Plugins: what this workspace composed, and what is on"
+        aria-label="Show the plugin manager"
+        data-testid="plugin-manager-open"
+        onClick={() => setOpen(true)}
+      >
+        <Blocks
+          className="mf-icon"
+          size={16}
+          strokeWidth={1.75}
+          absoluteStrokeWidth
+          aria-hidden="true"
+          focusable="false"
+        />
+        {sidebarOpen ? <span>Plugins</span> : null}
+      </button>
+      {typeof document !== "undefined" && open
+        ? createPortal(
+            <dialog
+              ref={dialogRef}
+              className="plugin-manager-dialog"
+              aria-labelledby="plugin-manager-title"
+              onCancel={(event) => {
+                event.preventDefault();
+                close();
+              }}
+              onPointerDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                close();
+              }}
+            >
+              <section className="plugin-manager-card" data-testid="plugin-manager-modal">
+                <header>
+                  <div>
+                    <span>Workspace</span>
+                    <h2 id="plugin-manager-title">Plugins</h2>
+                  </div>
+                  <button type="button" aria-label="Close the plugin manager" onClick={close}>
+                    <ControlIcon kind="close" />
+                  </button>
+                </header>
+                <div className="plugin-manager-tabs" role="tablist" aria-label="Plugin manager">
+                  {MANAGER_TABS.map((value) => (
+                    <button
+                      key={value}
+                      id={`plugin-manager-tab-${value}`}
+                      className="plugin-manager-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === value}
+                      aria-controls="plugin-manager-panel"
+                      data-testid={`plugin-manager-tab-${value}`}
+                      onClick={() => setTab(value)}
+                    >
+                      {TAB_LABELS[value]}
+                    </button>
+                  ))}
+                </div>
+                <ScrollRegion className="plugin-manager-body">
+                  <div
+                    id="plugin-manager-panel"
+                    role="tabpanel"
+                    aria-labelledby={`plugin-manager-tab-${tab}`}
+                  >
+                    {tab === "installed" ? installed : <BrowsePanel />}
+                  </div>
+                </ScrollRegion>
+              </section>
+            </dialog>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }

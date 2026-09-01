@@ -5,13 +5,20 @@ import { validateTileLayout, type Tile, type TileLayout } from "@manifold/protoc
 import {
   PANEL_ARRANGE_RULES,
   ROOT_ARRANGE_SCOPE,
+  addedSpacer,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
   panelsCanMove,
+  reseated,
   resolveArrangeScope,
+  rootEqualized,
+  rootStacked,
+  shelved,
+  shelvedPanels,
+  swappedSeats,
   type PanelArrangeOutcome,
-} from "./workspace-arrange.ts";
+} from "../src/arrange-logic.ts";
 
 const SIDEBAR = "core.shell.sidebar";
 const MAIN = "core.shell.container-view";
@@ -307,5 +314,105 @@ describe("the arrange scope a published ref means", () => {
     // inside it. The scope is resolved against the LIVE registry on every render for exactly
     // this reason.
     expect(resolveArrangeScope(panels, "some.plugin.gone")).toEqual(ROOT_ARRANGE_SCOPE);
+  });
+});
+
+/**
+ * THE TOOLBAR'S OWN VERBS, root-scoped and click-driven rather than pointer-driven — the
+ * same kernel, a different producer.
+ */
+describe("the toolbar's tools", () => {
+  test("Spacer appends a flat, inert leaf to the root's own row", () => {
+    const next = assertOk(addedSpacer(base()));
+    expect(next["root"]?.children).toHaveLength(3);
+    const spacerId = next["root"]?.children.at(-1);
+    expect(spacerId).toBeDefined();
+    expect(next[spacerId ?? ""]?.ref).toEqual({ kind: "spacer" });
+    expect(panelsInOrder(next).slice(0, 2)).toEqual([SIDEBAR, MAIN]);
+  });
+
+  test("Spacer wraps a single-leaf root into a fresh row instead of refusing", () => {
+    const alone: TileLayout = { root: leaf("root", SIDEBAR) };
+    const next = assertOk(addedSpacer(alone));
+    expect(next["root"]?.dir).toBe("row");
+    expect(next["root"]?.children).toHaveLength(2);
+  });
+
+  test("Stack column re-orients the root split; Stack row is then a no-op refusal", () => {
+    const stacked = assertOk(rootStacked(base(), "column"));
+    expect(stacked["root"]?.dir).toBe("column");
+    expect(stacked["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
+    expect(rootStacked(stacked, "column")).toEqual({ ok: false, rule: "aim_unchanged" });
+  });
+
+  test("a lone panel has no root split to re-orient", () => {
+    const alone: TileLayout = { root: leaf("root", SIDEBAR) };
+    expect(rootStacked(alone, "column")).toEqual({ ok: false, rule: "panel_alone" });
+  });
+
+  test("Equalize normalizes the root's ratios to one even share each", () => {
+    const layout: TileLayout = {
+      root: {
+        id: "root",
+        dir: "row",
+        ratios: [0.1, 0.6, 0.3],
+        children: ["a", "b", "c"],
+        ref: null,
+      },
+      a: leaf("a", SIDEBAR),
+      b: leaf("b", MAIN),
+      c: leaf("c", "core.notes"),
+    };
+    const next = assertOk(rootEqualized(layout));
+    expect(next["root"]?.ratios).toEqual([1 / 3, 1 / 3, 1 / 3]);
+  });
+
+  test("Swap trades exactly two selected seats", () => {
+    const layout = { ...base(), "ws-sidebar": leaf("ws-sidebar", SIDEBAR, ["index"]) };
+    const next = assertOk(swappedSeats(layout, ["ws-sidebar", "ws-main"]));
+    expect(panelsInOrder(next)).toEqual([MAIN, SIDEBAR]);
+    expect(next["ws-main"]?.sections).toEqual(["index"]);
+  });
+
+  test("Swap refuses without exactly two selected tiles", () => {
+    expect(swappedSeats(base(), [])).toEqual({ ok: false, rule: "nothing_selected" });
+    expect(swappedSeats(base(), ["ws-sidebar"])).toEqual({ ok: false, rule: "nothing_selected" });
+    expect(swappedSeats(base(), ["ws-sidebar", "ws-main", "root"])).toEqual({
+      ok: false,
+      rule: "nothing_selected",
+    });
+  });
+
+  test("Swap refuses a split among the two selected", () => {
+    expect(swappedSeats(base(), ["ws-sidebar", "root"])).toEqual({
+      ok: false,
+      rule: "tree_refused",
+    });
+  });
+
+  test("Shelf unseats a panel, and it is then listed among the shelved", () => {
+    const panels = new Map([
+      [SIDEBAR, { title: "Sidebar" }],
+      [MAIN, { title: "Container View" }],
+    ]);
+    expect(shelvedPanels(base(), panels)).toEqual([]);
+    const next = assertOk(shelved(base(), "ws-sidebar"));
+    expect(shelvedPanels(next, panels)).toEqual([{ panelId: SIDEBAR, title: "Sidebar" }]);
+  });
+
+  test("Shelf's re-seat appends the panel back to the workspace's own arrangement", () => {
+    const shelfLayout = assertOk(shelved(base(), "ws-sidebar"));
+    const reseatedLayout = assertOk(reseated(shelfLayout, SIDEBAR));
+    expect(panelsInOrder(reseatedLayout)).toEqual([MAIN, SIDEBAR]);
+  });
+
+  test("nothing vanishes: shelving every panel still leaves both listed, never dropped", () => {
+    const panels = new Map([
+      [SIDEBAR, { title: "Sidebar" }],
+      [MAIN, { title: "Container View" }],
+    ]);
+    const oneShelved = assertOk(shelved(base(), "ws-sidebar"));
+    expect(panelsCanMove(oneShelved)).toBe(false);
+    expect(shelvedPanels(oneShelved, panels)).toEqual([{ panelId: SIDEBAR, title: "Sidebar" }]);
   });
 });

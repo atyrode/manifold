@@ -240,6 +240,9 @@ export function refDisplayLabel(ref: TileRef | null, lookups: RefLabelLookups): 
       // cannot see: labelling reads DOCUMENTS, and a panel is not in one. The panel id is
       // fully qualified, so it is a truthful name rather than a placeholder.
       return ref.panelId;
+    case "spacer":
+      // A spacer carries no data to name itself with — it is the whole of its own label.
+      return "Spacer";
     case undefined:
       return null;
     default: {

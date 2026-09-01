@@ -50,14 +50,14 @@ type Outcome = { refused: string } | Record<string, never>;
 /**
  * Validation here is STRUCTURAL ONLY, and that is a decision rather than an omission.
  *
- * The tree must be a tree (`validateTileLayout`) and every occupied leaf must hold a PANEL
- * — a workspace shows panels, and a terminal or container ref at this level would be a
- * category error the renderer could not honour. But an UNKNOWN or DISABLED panel id is
- * accepted: panel ids come and go as plugins are enabled, and a layout write that failed
- * because one leaf named a plugin somebody just switched off would mean a disable could
- * lock a principal out of rearranging their own workspace. Those leaves render an inert
- * placeholder naming the plugin, with a remove control that commits the pruned tree back
- * through this same door (D4).
+ * The tree must be a tree (`validateTileLayout`) and every occupied leaf must hold a PANEL OR
+ * A SPACER — a workspace shows panels, plus the inert furniture `core.arrange`'s Spacer tool
+ * writes (issue #89), and a terminal or container ref at this level would be a category error
+ * the renderer could not honour. But an UNKNOWN or DISABLED panel id is accepted: panel ids
+ * come and go as plugins are enabled, and a layout write that failed because one leaf named a
+ * plugin somebody just switched off would mean a disable could lock a principal out of
+ * rearranging their own workspace. Those leaves render an inert placeholder naming the
+ * plugin, with a remove control that commits the pruned tree back through this same door (D4).
  */
 export const spaceHandlers = {
   async setLayout(ctx: LayoutCtx, args: { layout: TileLayout }): Promise<Outcome> {
@@ -65,7 +65,7 @@ export const spaceHandlers = {
       return { refused: "layout is not a valid tile tree" };
     }
     for (const node of Object.values(args.layout)) {
-      if (node.ref === null || node.ref.kind === "panel") continue;
+      if (node.ref === null || node.ref.kind === "panel" || node.ref.kind === "spacer") continue;
       return { refused: `workspace leaves hold panels, not "${node.ref.kind}"` };
     }
     ctx.store.setWorkspaceLayout(ctx.principal.id, args.layout);

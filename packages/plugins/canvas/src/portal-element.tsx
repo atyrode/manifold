@@ -518,7 +518,12 @@ function PortalLeaf({
   mono,
 }: PortalLeafProps): React.ReactElement {
   const ref = node.ref;
-  if (ref === null) return <Cover className="portal__empty">empty tile</Cover>;
+  // A spacer is inert workspace furniture (issue #89) — a portal preview never legitimately
+  // holds one, any more than it holds a panel, but unlike a stray panel it carries no
+  // capability worth naming: it reads exactly like the empty tile it is functionally equal to.
+  if (ref === null || ref.kind === "spacer") {
+    return <Cover className="portal__empty">empty tile</Cover>;
+  }
   switch (ref.kind) {
     case "terminal":
       return (

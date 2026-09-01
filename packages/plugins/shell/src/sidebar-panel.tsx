@@ -1,5 +1,6 @@
 import {
   arrangedSectionIds,
+  clusteredSections,
   crossedSectionId,
   movedSectionIds,
   panelRefId,
@@ -221,19 +222,26 @@ interface RowAttributes {
   readonly "data-section-id": string;
   readonly "data-plugin": string;
   readonly "data-presentation": string;
+  readonly "data-rail-unit": string;
 }
 
 /**
  * Which attributes EVERY row carries, whatever chrome it wears: its id (the stack's own
- * geometry query, the gate's, and the FLIP's key), its owner, and its resolved presentation.
- * The DOM says who owns a row and how it draws, so neither question needs a class name to be
- * inferred from.
+ * geometry query and the gate's), its owner, its resolved presentation, and the PAINTED UNIT it
+ * is. The DOM says who owns a row and how it draws, so neither question needs a class name to
+ * be inferred from.
+ *
+ * `data-rail-unit` is the FLIP's key, and it is a second attribute rather than a reuse of the
+ * id because a unit is not always a row: a declared cluster paints its members inside one
+ * wrapper, the wrapper is what the stack reflows, and the motion module only ever looks at its
+ * container's DIRECT children (`useFlipStack`). A lone row is its own unit and names itself.
  */
 function rowAttributes(section: ComposedSection): RowAttributes {
   return {
     "data-section-id": section.id,
     "data-plugin": section.plugin,
     "data-presentation": section.presentation,
+    "data-rail-unit": section.id,
   };
 }
 
@@ -404,6 +412,18 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   const rows = railRows(assembly.sections, liveIds, sidebarOpen);
 
   /**
+   * WHAT THE STACK ACTUALLY PAINTS: units, not rows. A row that declared a cluster paints beside
+   * whoever else declared that word, as one horizontal unit at the cluster's earliest member —
+   * which is how `core.keys` and `core.plugins` sit side by side at the rail's foot without this
+   * panel knowing either name (`clusteredSections`, the engine's tested policy). Rows that
+   * declared nothing come back as one-row units, so an unclustered rail paints exactly as it did.
+   */
+  const units = clusteredSections(rows, (row) => row.section.cluster);
+  /** The unit's own name in the DOM and in the FLIP: a row's id, or the cluster's word. */
+  const unitKey = (unit: (typeof units)[number]): string =>
+    unit.cluster === null ? (unit.rows[0]?.section.id ?? "") : `cluster:${unit.cluster}`;
+
+  /**
    * MOTION, because the order is DATA. The stack reflows for three reasons a reader did not
    * necessarily cause — their own arrange commit or nudge, and a roster change that adds or
    * removes somebody else's row — and a re-render teleports. FLIP plays the difference, keyed
@@ -420,8 +440,8 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * and the rows are exactly where the layout says they are; the release commits the order the
    * preview is already showing, so there is nothing left to play.
    */
-  const flipStack = useFlipStack(rows.map((row) => row.section.id).join(" "), {
-    attribute: "data-section-id",
+  const flipStack = useFlipStack(units.map(unitKey).join(" "), {
+    attribute: "data-rail-unit",
     paused: grab !== null,
   });
 
@@ -537,36 +557,60 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
       </div>
 
       <Stack className="sidebar-sections" gap="0.4rem" ref={flipStack}>
-        {rows.map(({ section, grow }) =>
-          section.presentation === "plain" ? (
-            <PlainRow
-              section={section}
-              host={host}
-              arranging={arrangingRows}
-              grabbed={grab?.moved === section.id}
-              gestures={gestures}
-              key={`${section.plugin}.${section.id}`}
-            />
-          ) : (
-            <SectionShell
-              section={section}
-              grow={grow}
-              collapsed={sidebarOpen && collapsedSections[section.id] === true}
-              onCollapsedChange={(id, collapsed) => {
-                // The icon rail force-opens its one body; that is layout, not a choice.
-                if (!sidebarOpen) return;
-                setCollapsedSections((current) =>
-                  current[id] === collapsed ? current : { ...current, [id]: collapsed },
-                );
-              }}
-              host={host}
-              arranging={arrangingRows}
-              grabbed={grab?.moved === section.id}
-              gestures={gestures}
-              key={`${section.plugin}.${section.id}`}
-            />
-          ),
-        )}
+        {units.map((unit) => {
+          const painted = unit.rows.map(({ section, grow }) =>
+            section.presentation === "plain" ? (
+              <PlainRow
+                section={section}
+                host={host}
+                arranging={arrangingRows}
+                grabbed={grab?.moved === section.id}
+                gestures={gestures}
+                key={`${section.plugin}.${section.id}`}
+              />
+            ) : (
+              <SectionShell
+                section={section}
+                grow={grow}
+                collapsed={sidebarOpen && collapsedSections[section.id] === true}
+                onCollapsedChange={(id, collapsed) => {
+                  // The icon rail force-opens its one body; that is layout, not a choice.
+                  if (!sidebarOpen) return;
+                  setCollapsedSections((current) =>
+                    current[id] === collapsed ? current : { ...current, [id]: collapsed },
+                  );
+                }}
+                host={host}
+                arranging={arrangingRows}
+                grabbed={grab?.moved === section.id}
+                gestures={gestures}
+                key={`${section.plugin}.${section.id}`}
+              />
+            ),
+          );
+          /*
+            A LONE ROW IS PAINTED BARE, and that is not an optimization: a wrapper around every
+            row would change the stack's DOM for every plugin in the tree to express something
+            only a cluster's members declared, and the FLIP measures direct children — so the
+            unwrapped row stays its own unit and keeps naming itself (`data-rail-unit`).
+
+            A CLUSTER gets the wrapper, which is the only thing that knows the word: the members
+            inside it are ordinary rows with ordinary attributes, and the rail's own stylesheet
+            decides what "side by side" looks like (`.sidebar-cluster`, the floor's row
+            vocabulary — two plugins' rows wear it, so it cannot live in either package).
+          */
+          if (unit.cluster === null) return painted[0];
+          return (
+            <div
+              className="sidebar-cluster"
+              data-rail-unit={unitKey(unit)}
+              data-section-cluster={unit.cluster}
+              key={unitKey(unit)}
+            >
+              {painted}
+            </div>
+          );
+        })}
       </Stack>
     </aside>
   );

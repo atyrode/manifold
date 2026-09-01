@@ -140,6 +140,14 @@
   display: contents;
 }
 
+/* The WORKSPACE's overlay slot: the same wrapper one level up, where the host is the
+   application frame rather than a container renderer (the inspector, the arrange
+   toolbar). `contents` for the identical reason — the slot carries
+   `data-workspace-overlay-slot` for the gates and adds no box to the frame. */
+.workspace-overlay-slot {
+  display: contents;
+}
+
 /* ── The one node titlebar ────────────────────────────────────────────────────
    Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
    editable title, a modular middle slot, and a right-justified control cluster.
