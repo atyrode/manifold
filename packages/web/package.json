@@ -13,6 +13,7 @@
     "@manifold-plugin/arrange": "workspace:*",
     "@manifold-plugin/brand": "workspace:*",
     "@manifold-plugin/canvas": "workspace:*",
+    "@manifold-plugin/commands": "workspace:*",
     "@manifold-plugin/compositions": "workspace:*",
     "@manifold-plugin/debug": "workspace:*",
     "@manifold-plugin/draw": "workspace:*",

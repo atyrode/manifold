@@ -226,17 +226,20 @@ export type OverlayRegistrations = Readonly<
  * The WORKSPACE's own overlay slots — the same kind as {@link OVERLAY_SLOTS}, hosted by the
  * application frame instead of by a container renderer, and closed for the identical reason.
  *
- * Two slots exist because two things genuinely have no container to hang on. An INSPECTOR
+ * Three slots exist because three things genuinely have no container to hang on. An INSPECTOR
  * chip follows the pointer across the sidebar, the workspace frame and whatever is mounted
  * inside it, so a chip painted into a container's slot could never name the sidebar row it is
  * hovering. An arrange TOOLBAR is chrome about the arrangement of the workspace, which is not
- * a node in any container either.
+ * a node in any container either. A COMMANDS surface is the same shape one step further out:
+ * it is opened by a keystroke rather than by anything on screen, so it must be mounted
+ * wherever the viewer is — including the workspace root, where no container is mounted at all
+ * and a container slot therefore does not exist.
  *
  * Hosted ABOVE the route switch (`packages/web/src/app.tsx`), for the reason the notice layer
  * is: a workspace overlay must outlive the shell it decorates and must sit outside the
  * sidebar's collapse subtree, which is what used to hide sidebar chrome on the icon rail.
  */
-export const WORKSPACE_OVERLAY_SLOTS = ["inspector", "toolbar"] as const;
+export const WORKSPACE_OVERLAY_SLOTS = ["commands", "inspector", "toolbar"] as const;
 
 /** One named overlay position over the workspace itself. */
 export type WorkspaceOverlaySlot = (typeof WORKSPACE_OVERLAY_SLOTS)[number];

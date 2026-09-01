@@ -996,6 +996,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "command",
+      "means": "one row of core.commands' surface: a composed ACTION, a composed BINDING or an index CONTAINER, projected into one addressable line a reader can filter and act on (issue #129). A command is a PROJECTION of a registry that already exists, never a fourth registry and never a contribution kind — nothing declares one, and nothing can be a command that is not already a door, a key or a node, which is what keeps the surface from becoming a second list of what a workspace can do. It is deliberately NOT called a palette: that word is taken, by core.arrange's row of carry sources, and one concept per word means the second claimant renames rather than the first blurring",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "door",
       "means": "the one authoritative entry point onto a concept, where authority is decided",
       "banned": [],
@@ -1413,7 +1419,17 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "keys",
       "owner": "packages/plugins/keys/src/styles.css",
-      "why": "core.keys' binding EDITOR: the modal, its rows, the one keycap in the product, the loud collision refusal and the reset controls. It left the floor sheet with the seat (issue #91) — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the discreet OPENER row the seat wears stays in the `sidebar` family, because core.plugins wears it too"
+      "why": "core.keys' binding EDITOR: the modal, its rows, the loud collision refusal, the armed slot a captured keystroke lands in, and the reset controls. It left the floor sheet with the seat (issue #91) — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the discreet OPENER row the seat wears stays in the `sidebar` family, because core.plugins wears it too, and the KEYCAP left one host further down (issue #129) the day a second surface began printing the same composed table"
+    },
+    {
+      "family": "keycap",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl — `keycap.tsx`. It was `.keys-cap` and its sheet called it \"the one keycap in the product\", which held exactly as long as one seat printed the composed key table; the table is the engine's read (`host.assembly.bindings`), so any plugin may print a row and the shape belongs to the stdlib rather than to whichever tenant drew it first (issue #129)"
+    },
+    {
+      "family": "commands",
+      "owner": "packages/plugins/commands/src/styles.css",
+      "why": "core.commands' surface (issue #129): the Mod+K card, its search line, its grouped rows and the verb hint the highlighted row wears. Every rule is anchored on a `commands-*` class for a second reason beyond A1 — `cmdk` marks its own parts with ATTRIBUTES (`[cmdk-item]`, `[cmdk-group-heading]`), which own no family and would otherwise fall to the floor's `*` row, so scoping each under this surface keeps the library's internals styled by the package that chose the library"
     },
     {
       "family": "workspace",
