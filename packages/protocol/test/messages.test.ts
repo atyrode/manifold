@@ -812,6 +812,30 @@ describe("json schema export", () => {
     expect(schema["session"]).toBeDefined();
     expect(schema["machine"]).toBeDefined();
   });
+
+  test("every wire and every vocabulary a stranger's agent needs is a SECTION of one document", () => {
+    /*
+      A3's onboarding surface, enumerated. `GET /api/protocol` is the one document an integrator
+      reads before it has read any source, so a domain that publishes nothing here is a domain a
+      stranger has to guess at — and the assertion is the whole key set rather than a spot check
+      because that is the only form a MISSING section fails.
+
+      The three wires (session, machine, instance) plus the four vocabularies: placement's
+      algebra, the plugin contract, the event plane and the authority model. `actions` and
+      `plugins` are absent on purpose — they are the LIVE assembly, handed in by a server that
+      composed one.
+    */
+    expect(Object.keys(buildProtocolJsonSchema()).sort()).toEqual([
+      "eventContract",
+      "grantContract",
+      "instance",
+      "machine",
+      "placement",
+      "pluginContract",
+      "protocolVersion",
+      "session",
+    ]);
+  });
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {

@@ -14,7 +14,6 @@ import {
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
-import { Blocks, Lock, Trash2 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -43,7 +42,10 @@ import {
  * reader wants a door rather than a drawer. The row clusters beside the key table's row
  * (`cluster: "utility"`), which is why the opener wears the shell's own `.sidebar-opener`
  * vocabulary instead of a skin of its own: two doors side by side must be identical by
- * construction, not by two stylesheets agreeing.
+ * construction, not by two stylesheets agreeing. Its MARKS come from the same door for the
+ * same reason — `ControlIcon kind="assembly" | "locked" | "discard"`, never a lucide import of
+ * its own. Three call sites here used to hand-import a drawing and retype the wrapper's four
+ * props, one of them re-drawing `discard`, a kind the vocabulary already mapped (#116).
  *
  * Which rows offer a lever is decided by the roster's own `refusal` class rather than by a
  * rule written twice. Every class below is a refusal the door would produce, so the UI names
@@ -461,7 +463,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                     </button>
                   ) : (
                     <span className="plugin-manager-lock" title={hint} aria-label={hint}>
-                      <Lock className="mf-icon" size={13} strokeWidth={1.75} absoluteStrokeWidth />
+                      <ControlIcon kind="locked" size={13} />
                     </span>
                   )}
                   {!purgeable ? null : (
@@ -496,16 +498,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                         }
                       }}
                     >
-                      {armed ? (
-                        "Purge?"
-                      ) : (
-                        <Trash2
-                          className="mf-icon"
-                          size={13}
-                          strokeWidth={1.75}
-                          absoluteStrokeWidth
-                        />
-                      )}
+                      {armed ? "Purge?" : <ControlIcon kind="discard" size={13} />}
                     </button>
                   )}
                 </div>
@@ -533,14 +526,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
         data-testid="plugin-manager-open"
         onClick={() => setOpen(true)}
       >
-        <Blocks
-          className="mf-icon"
-          size={16}
-          strokeWidth={1.75}
-          absoluteStrokeWidth
-          aria-hidden="true"
-          focusable="false"
-        />
+        <ControlIcon kind="assembly" />
         {sidebarOpen ? <span>Plugins</span> : null}
       </button>
       {typeof document !== "undefined" && open

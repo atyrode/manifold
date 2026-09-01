@@ -155,7 +155,6 @@
         "@headless-tree/core": "1.7.0",
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
-        "lucide-react": "1.37.0",
         "react": "19.2.8",
         "zod": "4.4.3",
       },
@@ -184,7 +183,6 @@
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
-        "lucide-react": "1.37.0",
         "react": "19.2.8",
         "zod": "4.4.3",
       },
@@ -212,7 +210,6 @@
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
-        "lucide-react": "1.37.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
       },

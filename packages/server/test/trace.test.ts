@@ -3,6 +3,7 @@ import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
   ContainerResponseSchema,
+  PlaceResponseSchema,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   TRACE_OUTCOMES,
@@ -10,6 +11,7 @@ import {
   UNTRACED_DENIAL_RULE,
   type Cap,
 } from "@manifold/protocol";
+import { tileIdForRef } from "@manifold/scene";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
@@ -273,6 +275,80 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(row.targets).toEqual(["manifold://plugin/core.index"]);
     expect(row.session).toBe("sock-7");
     expect(JSON.parse(row.payload)).toEqual({ name: "traced" });
+    base.store.close();
+  });
+
+  test("leaf removal — the door that used to commit untraced — leaves a settled `ok` row", async () => {
+    /*
+      THE A6 GAP, closed and pinned (issue #114). `DELETE /api/containers/:id/tiles/:tileId`
+      committed workspace state through the HTTP layer, so no rung of this ladder ever ran for
+      it: a mutation landed and the ledger stayed silent, which is the state A6 declares
+      unreachable. The T3 gate covers the door's ARGUMENT rung against a live server; what this
+      case pins is the half a refused knock cannot see — that the row for a removal which
+      actually HAPPENED says so.
+     */
+    const base = fixture();
+    const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
+      name: "traced composition",
+      discipline: "composition",
+    });
+    if (!created.ok) throw new Error(`the composition was refused: ${created.denial.message}`);
+    const composition = ContainerResponseSchema.parse(created.result).container;
+    /*
+      TWO occupants, and the removal takes the first — so the composition SURVIVES the write.
+      Retiring a container erases every event row attributed to it (`deleteContainer` clears
+      the container's `events`), which is a store-level property of the ledger shared by every
+      door that names a container it then removes (`core.index.deleteContainer` first among
+      them) and nothing this door introduced. This case is about the door, so it holds the
+      subject still.
+     */
+    const occupantIn = async (name: string, edge: string | null, target: string | null) => {
+      const guest = await base.host.dispatch(base.owner, "core.index.createContainer", { name });
+      if (!guest.ok) throw new Error(`the occupant was refused: ${guest.denial.message}`);
+      const occupant = ContainerResponseSchema.parse(guest.result).container;
+      const placed = await base.host.dispatch(base.owner, "core.space.place", {
+        ref: { kind: "container", containerId: occupant.id },
+        destination: { kind: "tile", containerId: composition.id, targetTileId: target, edge },
+      });
+      if (!placed.ok) throw new Error(`the leaf was refused: ${placed.denial.message}`);
+      const landed = PlaceResponseSchema.parse(placed.result);
+      if (landed.op !== "add_tile") throw new Error(`expected add_tile, got ${landed.op}`);
+      return { occupantId: occupant.id, tileId: landed.tileId };
+    };
+    const seed = await occupantIn("the first occupant", null, null);
+    await occupantIn("the second occupant", "right", seed.tileId);
+    /*
+      Resolved by IDENTITY rather than remembered: splitting a leaf moves the original's
+      content into a fresh one, so `seed.tileId` names the split by now — the same staleness
+      the executor resolves around.
+     */
+    const first = tileIdForRef(base.rooms.get(composition.id)?.tileLayout() ?? null, {
+      kind: "container",
+      containerId: seed.occupantId,
+    });
+    if (first === null) throw new Error("the composition holds no leaf for the first occupant");
+
+    const removed = await base.host.dispatch(base.owner, "core.space.removeTile", {
+      containerId: composition.id,
+      tileId: first,
+    });
+
+    expect(removed).toEqual({ ok: true, result: {} });
+    // The leaf is really gone, and the composition it left is still standing: a traced row
+    // about a write that did not happen would be worse than no row at all.
+    expect(base.rooms.get(composition.id)?.tileLayout()?.[first]).toBeUndefined();
+    expect(base.store.getContainer(composition.id)).not.toBeNull();
+    // By door rather than by recency: the fixture's clock does not tick, so the placement that
+    // seeded the leaf and the removal share a timestamp and their order is not the assertion.
+    const rows = traces(base).filter((candidate) => candidate.door === "core.space.removeTile");
+    expect(rows.length).toBe(1);
+    const row = rows[0]!;
+    expect(row.outcome).toBe("ok");
+    expect(row.principalId).toBe(base.owner.principal.id);
+    expect(row.authority).toBe(TRACE_AUTHORITY_ROOT);
+    // The node the door named at its commit point, which is the composition that lost the leaf.
+    expect(row.targets).toEqual([`manifold://container/${composition.id}`]);
+    expect(JSON.parse(row.payload)).toEqual({ containerId: composition.id, tileId: first });
     base.store.close();
   });
 

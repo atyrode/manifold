@@ -55,12 +55,25 @@ another plugin — fails the gate.
 
 `/ui` is a standard library rather than a component kit: you extend it by passing nodes into its
 slots (`icon`, `middle`, `extraActions`), never by growing a component's props, so re-drawing the
-whole icon set stays a change to one file and no call site. What is CLOSED there is the engine's
-own verbs — `ControlKind` is a fixed list because a control is one of manifold's own actions —
-while a vocabulary the ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed
-element types included, and draws a neutral element mark for a kind it holds no drawing for
-(#69 wave F). `@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no
-drawing and no notice mechanism of its own.
+whole icon set stays a change to one file and no call site. What is CLOSED there is
+`ControlKind`: a fixed list, closed to ADDITIONS and not to callers — you may not grow the
+union, and you are expected to call it, because a plugin's chrome should wear the same mark for
+the same verb the shell's chrome does. The rule that keeps the list honest is on the NAME: every
+kind is a neutral verb (or, for `bindings`/`assembly`, a neutral noun naming what pressing
+opens), so the list would read the same with every plugin in this build replaced. #116 deleted
+the two kinds that broke it (`endTerminal`, `terminalTree` — a plugin's object in the floor's
+vocabulary, and dead besides) and migrated the three plugins that broke it from the other side,
+by hand-importing lucide and re-implementing the one wrapper. Meanwhile a vocabulary the
+ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed element types
+included, and draws a neutral element mark for a kind it holds no drawing for (#69 wave F).
+`@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no drawing and
+no notice mechanism of its own.
+
+**Never import `lucide-react` in a plugin.** Ask for a kind
+(`<ControlIcon kind="discard" />`, `<ItemIcon kind={container.discipline} />`) and pass `size`
+when your rhythm is not 16px. A drawing you import yourself is a mark that stops moving when the
+set is re-drawn, and every wrapper prop you retype (`className="mf-icon"`, `strokeWidth`,
+`absoluteStrokeWidth`, `aria-hidden`) is a chance to retype one of them wrongly.
 
 ### Your skin ships with you
 
@@ -694,6 +707,13 @@ their work invisible without deleting it, which is the one outcome worse than a 
   rather than leaking into somebody else's strip.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
+- **`routes`** are the URL spaces you claim, one bare path segment each: `{ segment: "uri",
+title: "Deep links" }` is `core.uri` saying it answers on `/uri/<rest>`. There is ONE URL
+  space, so a segment is claimed globally and two manifests wanting one are refused with both
+  names (D5) — the claim is the vocabulary, and your web half only says who DRAWS it (§7).
+  A segment you declared and did not register renders the engine's named placeholder; a
+  component for a segment you never declared renders nothing at all, exactly as a smuggled
+  panel does. Absent ≡ you answer on no path of your own.
 - **`bindings`** are the keys you answer to. The one contribution kind with no manifest row: the
   declaration and its handler are the same object, registered by your WEB half, so §7 specifies
   it beside the other web channels.
@@ -1016,21 +1036,40 @@ Read the rows the other way round and each one names a squat it refuses:
 `GET /api/protocol` publishes both prefixes (`engineNamespace`, `coreNamespace`), so an author
 choosing an id learns which two are taken without reading this file.
 
-### The web registration channels (documented in full next wave)
+### The web registration channels
 
-A plugin's web half registers through six channels. Two are specified here — **bindings** and
-**workspace overlays**, below — and this guide does not yet specify the other four:
-**renderers** (a discipline's container renderer — the projection registry key this wave renamed
-from `padSurfaces` to `renderers`), **overlays** (chrome painted into a container renderer's
-named slot, like `attendance` and `spotlight`), **routes** (a browser path prefix, as `core.uri`
-claims `/uri/`), and the **terminal facet** (the viewer `core.terminals` publishes for other
-renderers to mount). They work, `packages/plugins/*` uses all four, and today they are
-registration-time conventions rather than manifest contributions: they have no `contributes`
-counterpart, so the roster cannot publish them, and one of them does not refuse a duplicate the
-way D5 requires. That is a defect, not a design — it is fixed in the **defect-fix wave (wave F)
-of this same change**, which gives each channel a manifest counterpart and a loud collision
-refusal, and writes them up in this section. Until then: read `packages/web/src/assembly.ts` and
-`packages/plugin/src/projection.ts` for the shapes, and do not rely on a duplicate being caught.
+A plugin's web half registers through six channels, and every one of them refuses a duplicate
+by name. Two get their own subsection below — **bindings** and **workspace overlays**; here is
+what all six are keyed by, and which of them the manifest declares:
+
+| Channel               | Keyed by                                                                  | Manifest row                         |
+| --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
+| **renderers**         | a container DISCIPLINE (`canvas`, `composition`)                          | no                                   |
+| **overlays**          | a container overlay SLOT (`container-roster`, `container-spotlight`)      | no                                   |
+| **workspaceOverlays** | a workspace overlay SLOT (`inspector`, `toolbar`)                         | no                                   |
+| **terminal facet**    | nothing: one viewer per workspace, published for other renderers to mount | no                                   |
+| **bindings**          | a KEY (`F6`), claimed globally                                            | no — declaration IS the registration |
+| **routes**            | a path SEGMENT you invent (`uri` serves `/uri/<rest>`)                    | **`contributes.routes`**             |
+
+**Only `routes` has a manifest counterpart, and the key column says why.** The first four are
+keyed by CLOSED vocabularies the engine owns, so there is nothing for a manifest to publish
+that `GET /api/protocol` does not already publish — and none of them is a ref the WORKSPACE
+composes, so no layout and no sidebar order can name one. A path segment is the opposite: a
+name its author invents in a space every plugin shares, which is why it is `contributes.routes`
+(§6) and why the browser's route table is keyed off the CLAIM rather than off whatever a web
+half exported. Declaring it is what lets the roster publish the paths a build answers on, and
+what makes a registration for an undeclared segment contribute nothing.
+
+**A duplicate on any of the six is a refusal naming both offenders** — the four projection
+channels and routes in `buildBrowserAssembly` (`packages/web/src/plugin-host.tsx`), bindings in
+`composeBindings` — in the same sentence assembly uses for a duplicate section or element type:
+`duplicate overlay "container-roster" claimed by: core.presence, acme.presence`.
+Claims are collected over the whole roster, disabled plugins included, so turning a plugin off
+can never mask a collision that turning it back on would resurrect. Until wave F the second
+registrant silently won by roster order, which made the owner of a discipline, a slot, a path or
+the terminal viewer a function of composition order (issue #112).
+
+Read `packages/web/src/assembly.ts` and `packages/plugin/src/projection.ts` for the shapes.
 
 **workspace overlays** — chrome with no container to hang on:
 
@@ -1061,6 +1100,33 @@ placeholder — because an inert box floating over somebody's workspace is worse
 decoration, which is also what makes disabling your plugin remove your chrome entirely. Paint
 `position: fixed` and keep the layer `pointer-events: none` unless your chrome is genuinely
 interactive: an overlay that swallows clicks is an overlay that changes what it decorates.
+
+**routes** — the URL space you claimed, drawn:
+
+```ts
+// src/index.ts — the CLAIM (see §6)
+contributes: {
+  routes: [{ segment: "notes", title: "Notes links" }];
+}
+
+// src/web.tsx — who draws it, keyed by the segment you claimed
+export const acmeWebPlugin = {
+  id: "acme.notes",
+  routes: { notes: NotesRoute },
+};
+
+function NotesRoute({ rest, host }: { rest: string; host: HostServices }) {
+  /* `rest` is the path after your segment, verbatim and undecoded: `/notes/a/b` gives "a/b".
+     The engine resolved nothing inside it — that space is yours. */
+}
+```
+
+Two halves, like a panel: the manifest says the path exists, the registration says who paints
+it. A claimed segment nobody registered paints the engine's `unavailable` placeholder naming
+your plugin, a disabled plugin's route paints the `disabled` one, and an unclaimed prefix paints
+`unknown` — three named answers instead of a 404 that reads like the workspace forgot the link.
+`core.uri` is the worked example: it claims `uri`, contributes nothing else, and exists as a
+plugin precisely so the deep-link path can be turned off, named and refused like anything else.
 
 **bindings** — the keys your plugin answers to:
 

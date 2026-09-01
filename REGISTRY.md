@@ -395,6 +395,16 @@ the litmus that puts a thing there rather than in whichever package used it firs
 reaches the host through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring
 guide.
 
+A plugin also imports NO DRAWING. `lucide-react` is named in
+`packages/plugin/src/ui/icons.tsx` and nowhere else in the tree (ADR 0009 and its #116
+addendum): a plugin asks `@manifold/plugin/ui` for a KIND — `<ControlIcon kind="discard" />`,
+`<ItemIcon kind={container.discipline} />` — so re-drawing the set stays a change to one file,
+and S2 checks it rather than remembering it. `ControlKind` is closed to ADDITIONS and not to
+callers: a plugin may not grow the union, and is expected to call it, because a plugin's chrome
+wearing a different mark for the same verb is the disagreement the vocabulary exists to end.
+Every kind is spelled neutrally — a verb, or a noun for what pressing opens — so the list reads
+the same with every plugin in this build replaced.
+
 ## Full-conversion inventory
 
 The ratified wave order is `AXIOMS.md` §Roadmap; this is wave 1's work list under it.
@@ -460,10 +470,14 @@ nothing about what is law. It answers one question the roadmap cannot: which pro
 currently waiting on the operator, and what a yes to it would oblige. A record leaves this table
 by having its `Status:` line changed in the same commit that acts on it.
 
-**Nothing is waiting as of 2026-09-01.** The table's two occupants were ratified that day, so both
-left it by the rule above, and the record below is where they went — kept here, in the one place
-that indexes proposed records, because "the table is empty" and "the table was never filled in"
-have to be distinguishable a month from now.
+| ADR                                                             | Status                | What it gates                                                                                     | Why it is here                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`0020-desktop-shell.md`](docs/decisions/0020-desktop-shell.md) | awaiting-ratification | every line of desktop shell code, by `AXIOMS.md` §Roadmap's App shells ordering (#82 is the gate) | It takes Electron as a **runtime** dependency under invariant 8 — an exact 44.x pin with a CVE duty and a named owner — and it needs one new floor mechanism to be legal at all: a host-composed plugin has nowhere to live today (`WEB_PLUGIN_DEFS` is a static literal S1 parses), so its §6.2 proposes an additive-optional session-join field and `source: "host"` roster rows. Its §Ratification asks R1–R8 are the questions; a yes authorizes no code, only the design. |
+
+**One record is waiting as of 2026-09-01: ADR 0020.** The table's first two occupants were
+ratified that same day, so both left it by the rule above, and the record below is where they
+went — kept here, in the one place that indexes proposed records, because "the table is empty"
+and "the table was never filled in" have to be distinguishable a month from now.
 
 | ADR                                                                   | Ratified                                  | What the yes obliged                                                                                                                                                                                                                                                                             |
 | --------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -648,7 +662,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "space",
-      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
+      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout), the placement verb (core.space.place) and leaf removal (core.space.removeTile)",
       "banned": [],
       "allow": []
     },
@@ -1235,7 +1249,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "route",
-      "means": "one HTTP or browser path",
+      "means": "one HTTP or browser path. As a CONTRIBUTION KIND it is a browser path segment a plugin claims in its manifest (contributes.routes: { segment, title }): one URL space, so the segment is claimed globally and two manifests wanting it refuse with both names, while the web half only registers who draws it",
       "banned": [],
       "allow": []
     }

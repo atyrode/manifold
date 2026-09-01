@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
 import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from "./instance.ts";
 import { eventVocabulary } from "./events.ts";
+import { grantVocabulary } from "./grants.ts";
 import {
   PlaceRequestSchema,
   PlaceResponseSchema,
@@ -42,6 +43,12 @@ export interface ProtocolExtras {
  * one socket may hold. WHICH kinds this server can emit is not repeated here — every roster
  * row already carries its own `contributes.events`, and a second copy of a live index is a
  * second thing to keep true.
+ *
+ * `grantContract` publishes the authority model (ADR 0011, axiom A5): what a grant row is, the
+ * two closed pairs — `effect` and `reach` — a row must decide with no default available, and
+ * what the three administration doors take and answer. WHICH rows a given workspace holds is
+ * not here for the same reason: a table an administrator can read at
+ * `core.access.listGrants` is one this document would only be able to hold stale.
  *
  * `extras` publishes the LIVE assembly — the ACTION vocabulary and the plugin roster
  * this server actually composed: a stranger's agent learns every door it may knock on, and
@@ -85,6 +92,7 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     },
     pluginContract: pluginVocabulary(),
     eventContract: eventVocabulary(),
+    grantContract: grantVocabulary(),
   };
   if (extras === undefined) return description;
   description["actions"] = extras.actions;

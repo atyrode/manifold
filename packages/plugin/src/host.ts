@@ -71,13 +71,15 @@ export interface SessionHandle {
   resolve(uri: string): Promise<ResolveResponse>;
   allTerminals(): Promise<readonly TerminalSummary[]>;
   /*
-    The workspace index's own writes. They are HTTP routes rather than actions this wave
-    (REGISTRY.md §Full-conversion inventory: "container/folder CRUD + tree moves →
-    workspace-index actions"), so the
-    plugin that renders the index reaches them through the same handle it reads with — one
-    door per concept, and the section that lists containers is also the one that renames
-    them. When those routes become actions these methods go away and `action()` carries
-    them; nothing else about the section changes.
+    The workspace index's own writes. Every one of them is a `core.index` ACTION — the bespoke
+    routes are gone and their callers are migrated (REGISTRY.md §Full-conversion inventory,
+    D13) — and these methods stayed anyway, as TYPED WRAPPERS over the same `action()` above:
+    the plugin that renders the index reaches its writes through the same handle it reads with,
+    so one door per concept holds, and the section that lists containers is also the one that
+    renames them. A method name is a contract with plugin authors while the door behind it is
+    ours to move, which is exactly what the conversion moved without touching this list. The
+    one behavioural difference is the shape of a refusal: `action()` answers a denial as DATA,
+    a wrapper throws its message, and a call site picks by whether it renders the rule.
    */
   renameContainer(containerId: string, name: string): Promise<Container>;
   deleteContainer(containerId: string): Promise<void>;
@@ -92,9 +94,9 @@ export interface SessionHandle {
   /** One container's record, for a reference the index has not answered yet. */
   getContainer(containerId: string): Promise<Container>;
   /**
-   * Removes one leaf from an assembly. Removal is the one tile gesture that is NOT a
-   * placement — nothing accepts "nowhere" for a LEAF — so it is its own verb here, while
-   * every MOVE of a leaf's occupant goes through `place`.
+   * Removes one leaf from an assembly (`core.space.removeTile`). Removal is the one tile
+   * gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so it is its own
+   * verb here, while every MOVE of a leaf's occupant goes through `place`.
    */
   removeContainerTile(containerId: string, tileId: string): Promise<void>;
   /**

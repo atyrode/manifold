@@ -34,7 +34,7 @@ function section(
 }
 
 /** The shipped rail, in its default (manifest) order. */
-const BRAND = section("brand", "core.shell", "plain", true, 1);
+const BRAND = section("brand", "core.brand", "plain", true, 1);
 const NEW_CANVAS = section("new-canvas", "core.canvas", "plain", true, 2);
 const NEW_COMPOSITION = section("new-composition", "core.compositions", "plain", true, 3);
 const NEW_FOLDER = section("new-folder", "core.index", "plain", true, 4);
@@ -42,7 +42,7 @@ const INDEX = section("index", "core.index", "disclosure", true, 10);
 const MACHINES = section("machines", "core.machines", "disclosure", true, 20);
 const PLUGINS = section("plugins", "core.plugins", "disclosure", true, 30);
 const STATUS = section("status", "core.shell", "plain", true, 40);
-const KEYS = section("keys", "core.shell", "plain", true, 50);
+const KEYS = section("keys", "core.keys", "plain", true, 50);
 const IDENTITY = section("identity", "core.shell", "plain", true, 60);
 
 const RAIL: readonly ComposedSection[] = [

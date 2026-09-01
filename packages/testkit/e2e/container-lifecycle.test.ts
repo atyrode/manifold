@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import {
   ActionOutcomeSchema,
   ContainersResponseSchema,
-  OkResponseSchema,
   ContainerCensusResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
@@ -604,16 +603,12 @@ test("removing a terminal's last home leaf reaps the PTY and retires the composi
     if (leaf === null) throw new Error("the newborn composition holds no terminal leaf");
 
     // Closing a terminal's only leaf closes the terminal: there is no pool to fall into, so
-    // the operator who removed its last representation removed the terminal.
-    const removed = await ownerFetch(
-      server,
-      `/api/containers/${terminal.containerId}/tiles/${leaf}`,
-      {
-        method: "DELETE",
-        responseSchema: OkResponseSchema,
-      },
-    );
-    expect(removed.ok).toBe(true);
+    // the operator who removed its last representation removed the terminal. The door is
+    // `core.space.removeTile` — a bespoke DELETE route until issue #114 put it on the ladder.
+    await invokeAction(server, "core.space.removeTile", {
+      containerId: terminal.containerId,
+      tileId: leaf,
+    });
 
     await waitFor(
       () =>

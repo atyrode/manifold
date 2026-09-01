@@ -10,7 +10,6 @@
   "dependencies": {
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
-    "lucide-react": "1.37.0",
     "react": "19.2.8",
     "zod": "4.4.3"
   },

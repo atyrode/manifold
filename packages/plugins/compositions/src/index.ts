@@ -18,8 +18,8 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * It declares no actions either, and the reason is the plane rule (D6) rather than
  * incompleteness: everything structural a composition does is already somebody's door.
- * Landing, moving and evicting an occupant is `core.space.place`; removing a leaf is the
- * engine's own tile door; a divider drag is a ratio write straight into the document, because
+ * Landing, moving and evicting an occupant is `core.space.place`; removing a leaf is
+ * `core.space.removeTile`; a divider drag is a ratio write straight into the document, because
  * its worst-case merge is a pane that ends up a few percent off. What is left for this plugin
  * is projection and gesture, which is precisely what a renderer is.
  *

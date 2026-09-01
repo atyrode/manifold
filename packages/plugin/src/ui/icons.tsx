@@ -2,6 +2,7 @@ import type { ItemKind } from "@manifold/protocol";
 import {
   ArrowDownToLine,
   ArrowLeftRight,
+  Blocks,
   Check,
   ChevronDown,
   ChevronRight,
@@ -14,13 +15,13 @@ import {
   Keyboard,
   LayoutDashboard,
   ListTree,
+  Lock,
   Maximize2,
   Minimize2,
   MousePointer2,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
-  Power,
   RotateCw,
   Server,
   Shapes,
@@ -55,10 +56,31 @@ import {
  *                                object — that repetition IS the affordance, so it can only
  *                                come from one table.
  *   CONTROLS ({@link ControlKind}) what a thing DOES. CLOSED, and the contrast is the point:
- *                                a control is one of the ENGINE'S OWN verbs (`park`,
- *                                `shrink`), a vocabulary no plugin adds to, named for the verb
- *                                and never for the picture — so the drawing can change without
- *                                a call site lying about its own semantics.
+ *                                a control is a NEUTRAL VERB (`park`, `shrink`, `restart`) in
+ *                                a vocabulary no plugin adds to, named for the verb and never
+ *                                for the picture — so the drawing can change without a call
+ *                                site lying about its own semantics.
+ *
+ *                                CLOSED TO ADDITIONS, NOT TO CALLERS, and #116 exists because
+ *                                the difference was left implicit. `ControlIcon` ships through
+ *                                `@manifold/plugin/ui` precisely so a plugin's chrome wears the
+ *                                same mark for the same verb the engine's chrome does; what a
+ *                                plugin may not do is grow this union. The litmus is therefore
+ *                                on the NAME, not on the consumer: zero domain nouns, so the
+ *                                list would read the same if every plugin were replaced. TWO
+ *                                kinds failed it and are gone: `endTerminal` and `terminalTree`
+ *                                named one plugin's object in the floor's vocabulary — the leak
+ *                                — and neither had a call site. `restart` is a terminal's verb
+ *                                today under a word that survives the test, so it stayed:
+ *                                relocating it would have bought neutrality by forcing the
+ *                                terminals plugin to hand-roll the wrapper this module exists
+ *                                to abolish, which is exactly what the OTHER direction of the
+ *                                same violation was doing. Three packages were importing
+ *                                lucide themselves at twenty call sites — `core.index`
+ *                                behind a local copy of `glyph()`, `core.pluginManager`
+ *                                re-drawing `discard`, a kind already mapped here — and
+ *                                `verify:axioms` S2 now refuses the import rather than
+ *                                trusting the sweep to be remembered.
  *
  * Status is deliberately NOT here. A running/exited dot and a machine's colour dot are
  * state, not identity or action; they stay CSS dots, which is what lets them carry a live
@@ -170,7 +192,10 @@ export function ItemIcon({
 
 /**
  * What a control DOES. Named for the verb, so `park` stays `park` if its drawing ever changes
- * from "stow it downward" to something else.
+ * from "stow it downward" to something else — and named NEUTRALLY, so that every entry here
+ * would still earn its place with every plugin in this build replaced. A few members
+ * (`bindings`, `assembly`) are nouns instead: those name the thing on the far side of
+ * pressing, which the verb alone cannot say, and the neutrality test is the same for them.
  */
 export type ControlKind =
   /** Take this representation out of the container; the object keeps running elsewhere. */
@@ -188,10 +213,36 @@ export type ControlKind =
   | "sidebarExpand"
   | "reveal"
   | "discard"
-  | "endTerminal"
+  /**
+   * PUT IT BACK TO ITS BEGINNING, whatever it is. The one caller today is a terminal's own
+   * chrome, and that is fine: the word carries no object, so the vocabulary reads the same
+   * with core.terminals removed. It replaced `endTerminal`, which named a plugin's noun
+   * (#116) and had no caller at all.
+   */
   | "restart"
-  | "terminalTree"
   | "grip"
+  /**
+   * THIS CONTROL IS NOT YOURS TO OPERATE — the one member of the vocabulary that names a
+   * refusal rather than a verb, drawn in the slot the control would have occupied. It is a
+   * control's shape and a control's place, so it belongs beside the verbs and not with the
+   * status dots: the reason is a sentence the caller supplies as a hint, never a picture.
+   */
+  | "locked"
+  /**
+   * THE ASSEMBLY, as a list a reader can open: the roster this workspace was composed from.
+   * `assembly` is the registered word for exactly that concept (`REGISTRY.md` §Lexicon), and
+   * it follows `bindings` rather than the verbs — a control named for the thing on the far
+   * side of pressing it. Neutral because the assembly is the ENGINE'S own noun: a workspace
+   * is assembled from a roster whichever plugins fill it, which is the litmus.
+   */
+  | "assembly"
+  /**
+   * REVEAL THE LEVEL NESTED INSIDE EVERY ROW, as one act on a whole list — the bulk sibling
+   * of `disclosed`/`collapsed`, which speak for a single row. Replaced `terminalTree`, whose
+   * name was a plugin's object and whose only caller was hand-importing this exact drawing
+   * behind the vocabulary's back (#116).
+   */
+  | "nesting"
   /**
    * GO INTO the arrangement this thing holds. Arrange mode is scoped — the workspace arranges
    * its panels, and a panel that declared an inner arrangement arranges its own parts — and
@@ -226,9 +277,10 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   sidebarExpand: PanelLeftOpen,
   reveal: Eye,
   discard: Trash2,
-  endTerminal: Power,
   restart: RotateCw,
-  terminalTree: ListTree,
+  locked: Lock,
+  assembly: Blocks,
+  nesting: ListTree,
   grip: GripVertical,
   scopeIn: CornerDownRight,
   bindings: Keyboard,

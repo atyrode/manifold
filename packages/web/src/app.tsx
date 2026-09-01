@@ -1,4 +1,5 @@
 import { WORKSPACE_OVERLAY_SLOTS, WorkspaceOverlayOutlet } from "@manifold/plugin/hooks";
+import { ROUTE_SEGMENT_PATTERN } from "@manifold/protocol";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WorkspaceHost } from "./workspace.tsx";
@@ -20,7 +21,14 @@ type Route =
   | { readonly kind: "plugin"; readonly prefix: string; readonly rest: string }
   | { readonly kind: "not_found" };
 
-const PLUGIN_ROUTE = /^\/([a-z][a-z0-9-]*)\/(.+)$/;
+/*
+  The segment is matched as "everything up to the next slash" and then tested against the
+  PROTOCOL's own claim pattern (`ROUTE_SEGMENT_PATTERN`, what a manifest's `contributes.routes`
+  may declare), rather than spelling the character class a second time here. Two spellings of
+  one rule is how a path a manifest may legally claim becomes a path the browser answers 404
+  for (invariant 14).
+ */
+const PLUGIN_ROUTE = /^\/([^/]+)\/(.+)$/;
 
 function currentRoute(): Route {
   if (window.location.pathname === "/") return { kind: "browser", containerId: null };
@@ -35,8 +43,9 @@ function currentRoute(): Route {
   // Everything else with a leading segment is offered to the composition; an unclaimed
   // prefix falls through to a named placeholder rather than a silent 404.
   const plugin = PLUGIN_ROUTE.exec(window.location.pathname);
-  if (plugin?.[1] !== undefined && plugin[2] !== undefined) {
-    return { kind: "plugin", prefix: plugin[1], rest: plugin[2] };
+  const segment = plugin?.[1];
+  if (segment !== undefined && plugin?.[2] !== undefined && ROUTE_SEGMENT_PATTERN.test(segment)) {
+    return { kind: "plugin", prefix: segment, rest: plugin[2] };
   }
   return { kind: "not_found" };
 }

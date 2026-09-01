@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { Container } from "@manifold/protocol";
 import {
   chooseInitialContainer,
-  forgetContainer,
   containerMemoryKey,
   rememberContainer,
   type ContainerMemoryStorage,
@@ -16,7 +15,6 @@ function storage(initial: Record<string, string> = {}): ContainerMemoryStorage &
     data,
     getItem: (key) => data.get(key) ?? null,
     setItem: (key, value) => data.set(key, value),
-    removeItem: (key) => void data.delete(key),
   };
 }
 
@@ -37,12 +35,9 @@ describe("container memory", () => {
     expect(chooseInitialContainer(memory, "p1", [])).toBeNull();
   });
 
-  test("forgets only the matching remembered container", () => {
+  test("remembers the last container a principal visited", () => {
     const memory = storage();
     rememberContainer(memory, "p1", "latest");
-    forgetContainer(memory, "p1", "first");
-    expect(memory.data.get(containerMemoryKey("p1"))).toBe("latest");
-    forgetContainer(memory, "p1", "latest");
-    expect(memory.data.has(containerMemoryKey("p1"))).toBe(false);
+    expect(chooseInitialContainer(memory, "p1", CONTAINERS)?.id).toBe("latest");
   });
 });

@@ -159,6 +159,9 @@ export const indexActions = [
     result: IndexResponseSchema,
   }),
   defineAction({
+    // CLEANUP for the same reason `deleteContainer` above is, and not root-only: a folder is
+    // presentation over containers nobody loses by removing, so `containers:write` is the
+    // whole bar. Children move up rather than dying with it, so this strands nothing either.
     cleanup: true,
     name: "deleteFolder",
     title: "Delete an index folder",
