@@ -24,11 +24,78 @@ import type { HostServices } from "./host.ts";
  */
 export type BindingScope = "always" | "canvas" | "composition";
 
+/**
+ * A KEYSTROKE, as this registry spells one: an optional `Mod+` prefix followed by the
+ * `KeyboardEvent.key` value, verbatim — `F8`, `?`, `ArrowUp`, `Mod+k`.
+ *
+ * `Mod` is the platform's primary modifier — Command on Apple hardware, Control everywhere
+ * else — and it is ONE token rather than two rows because a table that spelled both would let
+ * a plugin claim a key on one platform and leave it free on the other, which is a collision
+ * the composition could not see. It is deliberately the only modifier the grammar has: Alt
+ * decorates the character a layout produces (Alt+K is `˚` on a Mac), and Shift already lives
+ * inside `KeyboardEvent.key`, so a row can name `?` without naming a chord at all.
+ */
+export const KEYSTROKE_MOD = "Mod+";
+
+/** A keystroke, taken apart: does it want the primary modifier, and which key. */
+export interface Keystroke {
+  readonly mod: boolean;
+  readonly key: string;
+}
+
+/** The modifier state a keystroke is matched against — `KeyboardEvent`, structurally. */
+export interface KeystrokeEvent {
+  readonly key: string;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly altKey: boolean;
+}
+
+export function parseKeystroke(text: string): Keystroke {
+  return text.startsWith(KEYSTROKE_MOD)
+    ? { mod: true, key: text.slice(KEYSTROKE_MOD.length) }
+    : { mod: false, key: text };
+}
+
+export function formatKeystroke(stroke: Keystroke): string {
+  return stroke.mod ? `${KEYSTROKE_MOD}${stroke.key}` : stroke.key;
+}
+
+/**
+ * Does this event produce that keystroke? The one comparison, shared by the dispatcher that
+ * answers a key and the editor that captures one, so "what the table says" and "what fires"
+ * cannot drift (invariant 14).
+ *
+ * A single character compares case-insensitively because Shift is already in `event.key`:
+ * a reader holding Mod and pressing K sends `k` on one platform and `K` on another, and a
+ * table that answered only one of them would be a key that works on half the fleet.
+ */
+export function keystrokeMatches(text: string, event: KeystrokeEvent): boolean {
+  const stroke = parseKeystroke(text);
+  if (event.altKey) return false;
+  if (stroke.mod !== (event.ctrlKey || event.metaKey)) return false;
+  return stroke.key.length === 1
+    ? stroke.key.toLowerCase() === event.key.toLowerCase()
+    : stroke.key === event.key;
+}
+
+/**
+ * The keystroke as a reader reads it. `apple` decides which mark `Mod` wears, and it is an
+ * ARGUMENT rather than a platform sniff in here because this module is composed by the server
+ * too — the browser knows which keyboard is in front of it, and this function knows the
+ * grammar.
+ */
+export function keystrokeLabel(text: string, apple: boolean): string {
+  const stroke = parseKeystroke(text);
+  const key = stroke.key.length === 1 ? stroke.key.toUpperCase() : stroke.key;
+  return stroke.mod ? `${apple ? "⌘" : "Ctrl"} ${key}` : key;
+}
+
 /** The declaration half: what a help table, a collision report and a reader see. */
 export interface BindingDef {
   /** Plugin-namespaced (`core.shell.arrange`): the row names its owner as an action name does. */
   readonly id: string;
-  /** The `KeyboardEvent.key` value, verbatim (`F8`, `F9`). */
+  /** The keystroke this row answers to, in the grammar above (`F8`, `Mod+k`). */
   readonly key: string;
   /** Imperative and short, as a menu row reads: "Arrange mode", "Drop-zone probe". */
   readonly label: string;

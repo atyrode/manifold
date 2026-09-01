@@ -29,6 +29,7 @@ import {
   testEventHub,
   testPluginHost,
   testStore,
+  testTileTrees,
 } from "./helpers.ts";
 import type { EventHub } from "../src/event-hub.ts";
 
@@ -92,7 +93,7 @@ function planeFixture(): PlaneFixture {
   const other = newContainer(runtime, "unwatched canvas");
   store.createContainer(container);
   store.createContainer(other);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -101,6 +102,7 @@ function planeFixture(): PlaneFixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
@@ -757,6 +759,7 @@ describe("floor doors emit at their commit points", () => {
       fixture.clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     reloaded.setEvents(fixture.events);
 

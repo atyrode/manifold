@@ -13,7 +13,7 @@ import { LiveMachineChannel, MachineGateway } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
 
 class StatusSocket implements RawSocket {
   bufferedAmount = 0;
@@ -95,7 +95,7 @@ describe("machine hello reconciliation", () => {
       agentPrincipalId: sessionGrant.principal.id,
       createdAt: runtime.now(),
     });
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -104,6 +104,7 @@ describe("machine hello reconciliation", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
     rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
@@ -144,7 +145,7 @@ describe("machine hello reconciliation", () => {
     const auth = new AuthService(store, "d".repeat(64), runtime);
     const root = auth.authenticate("d".repeat(64));
     const enrollment = auth.enrollMachine("agent", root);
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -153,6 +154,7 @@ describe("machine hello reconciliation", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     const gateway = new MachineGateway(
       auth,
@@ -227,7 +229,7 @@ describe("machine hello reconciliation", () => {
       agentPrincipalId: sessionGrant.principal.id,
       createdAt: runtime.now(),
     });
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -236,6 +238,7 @@ describe("machine hello reconciliation", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
     rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
@@ -289,7 +292,7 @@ describe("machine hello reconciliation", () => {
     const auth = new AuthService(store, "a".repeat(64), runtime);
     const root = auth.authenticate("a".repeat(64));
     const enrollment = auth.enrollMachine("agent", root);
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -298,6 +301,7 @@ describe("machine hello reconciliation", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     const warned: Array<{ evt: string; fields: Record<string, unknown> | undefined }> = [];
     const logger: Logger = {
@@ -337,7 +341,7 @@ describe("machine hello reconciliation", () => {
     const auth = new AuthService(store, "e".repeat(64), runtime);
     const root = auth.authenticate("e".repeat(64));
     const enrollment = auth.enrollMachine("agent", root);
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -346,6 +350,7 @@ describe("machine hello reconciliation", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     const logger = new CaptureLogger();
     const gateway = new MachineGateway(auth, store, broker, clock, logger, "server-epoch", runtime);
@@ -410,7 +415,7 @@ describe("machine liveness heartbeat", () => {
     const auth = new AuthService(store, ownerKey, runtime);
     const root = auth.authenticate(ownerKey);
     const enrollment = auth.enrollMachine("agent", root);
-    const rooms = new RoomManager(store, runtime, clock, silentLogger);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
       store,
       auth,
@@ -419,6 +424,7 @@ describe("machine liveness heartbeat", () => {
       clock,
       silentLogger,
       () => "http://localhost:7777",
+      testTileTrees,
     );
     const gateway = new MachineGateway(
       auth,

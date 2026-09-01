@@ -37,12 +37,26 @@ export {
   type ControlKind,
   type IconProps,
 } from "./icons.tsx";
+/**
+ * THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl. Stdlib
+ * because the composed key table is the ENGINE's read, so more than one surface prints it.
+ */
+export { KeyCap, keyCapLabel, type KeyCapProps } from "./keycap.tsx";
 export {
   NodeTitleBar,
   TITLEBAR_ACTIONS_CLASS,
   type MaximizeControl,
   type NodeTitleBarProps,
 } from "./node-titlebar.tsx";
+/**
+ * The row vocabulary: THE chip (a bordered token that is a button exactly when it is
+ * handed an `onClick`, and an inert span otherwise — one box either way, so the two forms
+ * cannot drift apart the way hand-rolled rows already did) and THE key-value list (a
+ * labelled reading of one thing, as the definition list it is). The stdlib owns the boxes;
+ * an adopter tints them from its own family's sheet.
+ */
+export { Chip, type ChipProps } from "./chip.tsx";
+export { KeyValueList, KeyValueRow, type KeyValueListProps, type KeyValueRowProps } from "./kv.tsx";
 /**
  * THE LAYOUT ALGEBRA — six intrinsic boxes (Stack, Cluster, Sidebar, Switcher, Cover,
  * Frame) that answer "how do things sit together?" once, so no plugin body re-invents
@@ -73,6 +87,12 @@ export {
  * (docs/decisions/2026-08-31-radix-behavior-primitives.md).
  */
 export { Disclosure, type DisclosureProps } from "./disclosure.tsx";
+/**
+ * The anchored layer: THE popover (adopter-owned trigger element, portaled content wearing
+ * `popover__content`, standard dismissal). Its behavior engine is an internals decision —
+ * nothing Radix crosses its signature (docs/decisions/2026-09-01-radix-popover.md).
+ */
+export { Popover, type PopoverProps } from "./popover.tsx";
 export { ScrollRegion, type ScrollRegionProps } from "./scroll-region.tsx";
 /**
  * THE motion primitive: FLIP over a stack of rows whose ORDER is data (a per-principal
@@ -123,3 +143,14 @@ export {
   useVantage,
   type Vantage,
 } from "./vantage.ts";
+/**
+ * THE handoff between a surface that LISTS a key and the one that EDITS it. Same litmus as
+ * the store above and a different lifetime: a rebind request is consumed and gone, so it is
+ * device-local memory rather than published view state (`./rebind.ts`).
+ */
+export {
+  clearRebindRequest,
+  currentRebindRequest,
+  requestRebind,
+  useRebindRequest,
+} from "./rebind.ts";

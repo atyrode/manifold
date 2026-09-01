@@ -16,10 +16,12 @@ import {
   type PluginRoster,
   type PluginRosterEntry,
   type SectionPresentation,
+  type SettingDef,
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { AnyActionDef } from "./action.ts";
 import type { PluginLifecycle } from "./lifecycle.ts";
+import { settingRefId } from "./settings.ts";
 import {
   compareDataVersion,
   formatDataVersion,
@@ -114,6 +116,18 @@ export interface AssemblySection {
    * (issue #91) rather than of any registry, panel or floor file.
    */
   readonly cluster?: string;
+  /**
+   * WHICH SETTING gates this row, or undefined for "unconditional". One of the owning
+   * manifest's own `contributes.settings` ids — assembly refuses anything else, naming the
+   * plugin and the setting — carried verbatim, because the value it resolves to is a
+   * PRINCIPAL's and this registry is everybody's.
+   *
+   * The rule it feeds is `visibleSections` (`settings.ts`) and only that: a row whose setting
+   * reads false is dropped at the composition seam where the principal's delta is known. So
+   * this registry keeps every declared row, exactly as it keeps a disabled plugin's, and the
+   * per-principal answer stays a function of the seam rather than of the assembly.
+   */
+  readonly setting?: string;
 }
 
 export interface AssemblyElement {
@@ -146,6 +160,18 @@ export interface AssemblyElement {
 export interface AssemblyDiscipline {
   readonly plugin: string;
   readonly declaration: DisciplineDeclaration;
+}
+
+/**
+ * One contributed SETTING and who declares it, keyed in the registry by its full ref. The
+ * declaration is the manifest's verbatim; what a given principal reads is composed at the seam
+ * (`composeSettings`, `settings.ts`), because a registry is everybody's and a value is one
+ * principal's. This index is what makes a write refusable: a door can ask "does this
+ * declaration exist" without re-walking the roster.
+ */
+export interface AssemblySetting {
+  readonly plugin: string;
+  readonly declaration: SettingDef;
 }
 
 export interface AssemblyTool {
@@ -250,6 +276,14 @@ export interface Assembly {
    * and a disable decides who renders one, never whether it composes.
    */
   readonly disciplines: ReadonlyMap<string, AssemblyDiscipline>;
+  /**
+   * Keyed by SETTING ref (`core.canvas.new-canvas`) — a preference is a plugin's own
+   * vocabulary, so unlike a section it is named by the pair. Disabled plugins are in here for
+   * the reason every other registry holds them: a principal's stored preferences outlive a
+   * plugin being switched off, and the manager lists a disabled row's pane precisely while
+   * somebody is deciding whether to switch it back on.
+   */
+  readonly settings: ReadonlyMap<string, AssemblySetting>;
   readonly tools: readonly AssemblyTool[];
   /**
    * THE DECLARED-TOPICS INDEX: event kind → the plugin that may originate it. Keyed by kind
@@ -466,6 +500,7 @@ export function assembleRoster(
   const eventIds: Claims = new Map();
   const seatPanels: Claims = new Map();
   const routeSegments: Claims = new Map();
+  const settingRefs: Claims = new Map();
 
   const manifests = new Map<string, PluginManifest>();
   const summaries = new Map<string, ActionSummary[]>();
@@ -474,6 +509,7 @@ export function assembleRoster(
   const sections: AssemblySection[] = [];
   const elements = new Map<string, AssemblyElement>();
   const disciplines = new Map<string, AssemblyDiscipline>();
+  const settings = new Map<string, AssemblySetting>();
   const tools: AssemblyTool[] = [];
   const declaredEvents: [string, AssemblyEvent][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
@@ -589,12 +625,41 @@ export function assembleRoster(
       }
       claim(seatPanels, panelRefId(manifest.id, seat.panel), manifest.id);
     }
+    /*
+      SETTINGS are claimed under their FULL name, unlike a section and like a panel: a
+      preference is a plugin's own vocabulary rather than a slot in something shared, so two
+      plugins declaring `compact` is not a collision, and one plugin declaring it twice is.
+      The claim is what makes a stored value unambiguous — one declaration answers one ref.
+    */
+    for (const setting of manifest.contributes.settings ?? []) {
+      claim(settingRefs, settingRefId(manifest.id, setting.id), manifest.id);
+      settings.set(settingRefId(manifest.id, setting.id), {
+        plugin: manifest.id,
+        declaration: setting,
+      });
+    }
     // Sections, elements and tools are named GLOBALLY rather than per plugin: a section is a
     // slot in one sidebar, an element type is a wire kind a scene doc stores, and a tool id is
     // what presence publishes as the peer's current tool. Two plugins claiming one of those
     // would be two plugins claiming one thing, which is exactly what D5 refuses.
     for (const section of manifest.contributes.sections) {
       claim(sectionIds, section.id, manifest.id);
+      /*
+        A GATED ROW IS CHECKED AGAINST ITS OWN MANIFEST, for the reason a seat's panel is: the
+        settings registry above is global and half-built here, so a lookup there would make
+        legality depend on registration order AND would let one plugin gate its row on
+        somebody else's preference. The row still composes — a refused assembly names every
+        problem it found rather than the first — and the ungated row is what a reader sees if
+        this build somehow shipped.
+      */
+      if (
+        section.setting !== undefined &&
+        !(manifest.contributes.settings ?? []).some((setting) => setting.id === section.setting)
+      ) {
+        problems.push(
+          `plugin "${manifest.id}" gates section "${section.id}" on setting "${section.setting}", which it does not contribute`,
+        );
+      }
       sections.push({
         id: section.id,
         plugin: manifest.id,
@@ -603,6 +668,8 @@ export function assembleRoster(
         // Spread rather than assigned: absent means "its own unit", and under
         // `exactOptionalPropertyTypes` an explicit `undefined` is a different statement.
         ...(section.cluster === undefined ? {} : { cluster: section.cluster }),
+        // Spread for the same reason, and absent means "unconditional" (`visibleSections`).
+        ...(section.setting === undefined ? {} : { setting: section.setting }),
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
       });
     }
@@ -711,6 +778,7 @@ export function assembleRoster(
   reportDuplicates(sectionIds, "section", problems);
   reportDuplicates(elementTypes, "element type", problems);
   reportDuplicates(disciplineIds, "discipline", problems);
+  reportDuplicates(settingRefs, "setting", problems);
   reportDuplicates(toolIds, "tool", problems);
   reportDuplicates(eventIds, "event", problems);
   reportDuplicates(seatPanels, "seat", problems);
@@ -837,6 +905,7 @@ export function assembleRoster(
     sections,
     elements,
     disciplines,
+    settings,
     tools,
     events: new Map(declaredEvents),
     order,

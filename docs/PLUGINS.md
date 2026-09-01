@@ -703,6 +703,24 @@ their work invisible without deleting it, which is the one outcome worse than a 
   written before the field existed composes identically. The word is `cluster` and not `group`:
   `group` is the placement algebra's capability set, and one concept per word is the law
   (`REGISTRY.md` §Lexicon).
+  A row may also declare **`setting`**, naming one of your OWN
+  `contributes.settings` ids: while that value reads false for the reader, the row is DROPPED
+  from their sidebar. Assembly refuses a `setting` your manifest does not contribute, naming
+  both, and a row may never name another plugin's — a preference of theirs erasing a row of
+  yours is exactly the shadowing D5 refuses one level up. Absent ≡ unconditional.
+- **`settings`** are the preferences you declare and the reader decides:
+  `{ id, title, kind, default }`, `kind` a closed engine vocabulary whose one member today is
+  `boolean`. The VALUE is per principal and server-saved, so it follows a reader across every
+  device they sign in from, and the manager renders a GENERIC pane from your declarations — one
+  control per row, no component to register, and a named "declares no settings" for a plugin
+  with none. Write one through `engine.plugins.setSetting { plugin, setting, value }`
+  (`value: null` retracts, so the row reads your `default` again) and then call
+  `host.assembly.refreshSettings()`; READ them off `host.assembly.settings`, or with
+  `settingValue(host.assembly.settings, myId, "thing") !== false` when your row gates part of
+  ITSELF rather than the whole row — the engine drops rows, and what is inside one is yours.
+  Never spell your own default at the read: it lives in the manifest, and a second copy goes
+  stale the moment you change the first. Absent ≡ you declare no preferences, and your manifest
+  serializes exactly as it did before the field existed.
 - **`tools`** are buttons in a toolbar, and **`toolbar`** says WHICH one: `canvas` is the
   freeform discipline's tool strip, `arrange` is `core.arrange`'s floating F8 editor over the
   workspace itself. The vocabulary is the engine's and closed (`toolbars` in
@@ -1059,9 +1077,9 @@ what all six are keyed by, and which of them the manifest declares:
 | --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
 | **renderers**         | a container DISCIPLINE (`canvas`, `composition`)                          | no                                   |
 | **overlays**          | a container overlay SLOT (`container-roster`, `container-spotlight`)      | no                                   |
-| **workspaceOverlays** | a workspace overlay SLOT (`inspector`, `toolbar`)                         | no                                   |
+| **workspaceOverlays** | a workspace overlay SLOT (`commands`, `inspector`, `toolbar`)             | no                                   |
 | **terminal facet**    | nothing: one viewer per workspace, published for other renderers to mount | no                                   |
-| **bindings**          | a KEY (`F6`), claimed globally                                            | no — declaration IS the registration |
+| **bindings**          | a KEYSTROKE (`F6`, `Mod+k`), claimed globally                             | no — declaration IS the registration |
 | **routes**            | a path SEGMENT you invent (`uri` serves `/uri/<rest>`)                    | **`contributes.routes`**             |
 
 **Only `routes` has a manifest counterpart, and the key column says why.** The first four are
@@ -1103,9 +1121,11 @@ function MyChrome({ host }: WorkspaceOverlayProps) {
 
 The same kind as a container overlay, one host up. Use it when your chrome genuinely cannot be
 scoped to a container: `core.debug`'s inspector chip follows the pointer across the sidebar rail
-and the workspace frame alike, and `core.arrange`'s toolbar is about the arrangement of the
-workspace rather than about anything inside a room. Everything else belongs in a container's
-slot, a panel or a section.
+and the workspace frame alike, `core.arrange`'s toolbar is about the arrangement of the
+workspace rather than about anything inside a room, and `core.commands`' surface is opened by a
+keystroke rather than by anything on screen — including at the workspace root, where no
+container is mounted and a container slot therefore does not exist. Everything else belongs in
+a container's slot, a panel or a section.
 
 The outlets are mounted once, above the route switch, so your overlay outlives the routed shell
 and sits outside the subtree the sidebar's collapse can unmount. Absence paints NOTHING — no
@@ -1150,7 +1170,7 @@ import type { WebBinding } from "@manifold/plugin";
 export const MY_BINDINGS: readonly WebBinding[] = [
   {
     id: "acme.notes.focus", // namespaced by YOUR plugin id, or composition refuses the row
-    key: "F6", // a KeyboardEvent.key value, verbatim
+    key: "F6", // a KEYSTROKE: `KeyboardEvent.key` verbatim, optionally prefixed `Mod+`
     label: "Focus notes", // how the sidebar's key table reads it
     when: "always", // or "canvas" / "composition"; defaults to "always"
     run: (host) => {
@@ -1163,12 +1183,35 @@ export const MY_BINDINGS: readonly WebBinding[] = [
 A binding is a DECLARATION, and a key is claimed globally: two plugins that want `F6` fail
 composition naming both, exactly as two plugins claiming one tool id do. It carries no authority
 — dispatch calls your `run`, and anything that MUTATES fires a registered action from there, at
-the gesture's commit point. The host owns the listener, so it refuses chords (`Ctrl+F6` is a
-different key) and keystrokes going into a text field for every row at once. The composed table
-is published on the browser assembly and printed by the sidebar's key table, so a reader learns
-your key without reading your code — and a disabled plugin's rows drop out of both, because a
-key that still answered would be running a disabled plugin. `when` is declared for readers
-rather than enforced by the engine: your handler is the only thing that knows your surface.
+the gesture's commit point.
+
+**The key is a KEYSTROKE, and its grammar has exactly one modifier.** `F6`, `?` and `ArrowUp`
+are keys; `Mod+k` is a key too, and `Mod` is the platform's primary modifier — Command on Apple
+hardware, Control everywhere else. One token rather than two rows, because a table that spelled
+both would let you claim a chord on one platform and leave it free on the other, which is a
+collision composition could not see. There is no `Alt`: it changes the character the layout
+produces, so `event.key` under it differs per keyboard. There is no `Shift` either — it is
+already inside `KeyboardEvent.key`, so name `?` and be done. The grammar is
+`parseKeystroke`/`keystrokeMatches` in `@manifold/plugin`, and the same functions decide what
+fires, what the key table prints and what the editor captures.
+
+**A chord is a real claim on the browser's key.** `Mod+K` is "focus the address bar" in Chrome,
+Edge and Firefox — a preventable default, unlike `Mod+T` or `Mod+W`, which is why command
+surfaces on the web live there. Claiming one means the dispatcher calls `preventDefault()` on
+it, so claim deliberately, and know a reader can rebind your row.
+
+The host owns the listener, so keystrokes going into a text field are refused for every BARE
+row at once — a printable key belongs to the field it is typed into. A chord is exempt, because
+it is not a character any field is trying to receive. The composed table is published on the
+browser assembly and printed by the sidebar's key table, so a reader learns your key without
+reading your code — and a disabled plugin's rows drop out of both, because a key that still
+answered would be running a disabled plugin. `when` is declared for readers rather than
+enforced by the engine: your handler is the only thing that knows your surface.
+
+**Printing a key is not owning one.** Anything may print a row off `host.assembly.bindings`; if
+you do, draw it with `KeyCap` from `@manifold/plugin/ui` (the one keycap, and the one place
+`Mod` becomes ⌘ or Ctrl) and send a reader who wants to change it through `requestRebind(id)`,
+which the workspace's binding editor answers. Neither side names the other.
 
 ---
 

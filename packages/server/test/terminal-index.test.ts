@@ -40,6 +40,7 @@ import {
   placeTile,
   testPluginHost,
   testStore,
+  testTileTrees,
   unplaceTerminal,
 } from "./helpers.ts";
 
@@ -131,7 +132,7 @@ function indexFixture(): IndexFixture {
     discipline: "canvas",
   };
   store.createContainer(canvas);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -140,6 +141,7 @@ function indexFixture(): IndexFixture {
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));

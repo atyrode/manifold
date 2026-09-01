@@ -95,6 +95,45 @@ export type SectionPresentation = (typeof SECTION_PRESENTATIONS)[number];
 export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
 
 /**
+ * WHAT KIND OF VALUE a declared setting holds. A CLOSED vocabulary, and one member wide on
+ * purpose: booleans are the whole of what the first consumers need — a row is shown or it is
+ * not — and a kind nobody can store yet would be a manifest field that validates and then
+ * does nothing. A second kind is a protocol change reviewed as one, which is exactly the
+ * review a new value shape deserves.
+ */
+export const SETTING_KINDS = ["boolean"] as const;
+export const SettingKindSchema = z.enum(SETTING_KINDS);
+export type SettingKind = (typeof SETTING_KINDS)[number];
+
+/**
+ * ONE SETTING A PLUGIN DECLARES: a named preference a principal may hold an opinion about,
+ * published at `GET /api/plugins` with everything else the manifest contributes.
+ *
+ * DECLARATION IS THE WHOLE VOCABULARY, which is what makes the manager's pane generic: the
+ * engine renders a control per declared row and knows nothing about what any of them mean, so
+ * a stranger's plugin gets the same pane `core.canvas` does without registering a component,
+ * and a plugin that declares none is a NAMED absence rather than an empty box. A setting whose
+ * effect nobody declared is impossible to store, because a write names a declaration
+ * (`engine.plugins.setSetting`) and an undeclared name is refused.
+ *
+ * `default` is what the setting reads as when this principal has expressed no opinion —
+ * carried in the MANIFEST rather than in the store, so a value nobody has ever written is a
+ * fact about the plugin's shipped behaviour and the empty override map is the whole of
+ * "nothing customized" (the same delta discipline {@link BindingOverridesSchema} keeps).
+ *
+ * The id is LOCAL; the published name is the pair, `${manifest.id}.${id}`
+ * ({@link SettingRefSchema}), so a plugin can never declare a preference outside its own
+ * namespace and a stored value always says whose declaration it answers.
+ */
+export const SettingDefSchema = z.strictObject({
+  id: LocalNameSchema,
+  title: TitleSchema,
+  kind: SettingKindSchema,
+  default: z.boolean(),
+});
+export type SettingDef = z.infer<typeof SettingDefSchema>;
+
+/**
  * One contributed sidebar row. `title` is REQUIRED of both presentations: arrange mode labels
  * the row a reader has grabbed, and a disabled plugin's slot is named by the ENGINE's own
  * placeholder (D4′) — neither may ask a row's component for a name, least of all a plain row
@@ -122,6 +161,22 @@ export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
  *
  * Absent ≡ this row is its own cluster, which is what every manifest written before the field
  * existed says, and why a rail of unclustered rows is byte-identical to today's.
+ *
+ * `setting` is the row saying "I AM A PREFERENCE, AND THIS DECLARATION HOLDS IT": one of this
+ * manifest's OWN `contributes.settings` ids, resolved at composition, and a row whose setting
+ * reads false is DROPPED from the sidebar entirely (`visibleSections`,
+ * `packages/plugin/src/settings.ts`). Dropped, not marked: a preference is not a disable, so
+ * there is no tombstone, no placeholder and no seat kept warm — the difference from D4′ is the
+ * whole point, because a disabled plugin's row is an absence the workspace must explain and a
+ * row somebody turned off is one they already know about.
+ *
+ * The reference is LOCAL and stays local: a section may only name a setting its own manifest
+ * declares, and assembly refuses one that names anything else with both names in the sentence.
+ * A cross-plugin reference would let one plugin's preference erase another's row, which is the
+ * shadowing D5 refuses one level up.
+ *
+ * Absent ≡ this row is unconditional, which is what every manifest written before the field
+ * existed says.
  */
 export const SectionDefSchema = z.strictObject({
   id: LocalNameSchema,
@@ -129,6 +184,7 @@ export const SectionDefSchema = z.strictObject({
   order: z.number().int(),
   presentation: SectionPresentationSchema.optional(),
   cluster: LocalNameSchema.optional(),
+  setting: LocalNameSchema.optional(),
 });
 export type SectionDef = z.infer<typeof SectionDefSchema>;
 
@@ -336,6 +392,14 @@ const ContributesSchema = z.strictObject({
    * the sense it had, and the browser's route table stays the sum of what the roster claimed.
    */
   routes: z.array(RouteDefSchema).max(8).optional(),
+  /**
+   * THE PREFERENCES THIS PLUGIN DECLARES ({@link SettingDefSchema}). Optional rather than
+   * defaulted to `[]` for the reason `seats` and `routes` are, and here the absence carries
+   * one more consequence worth naming: a plugin that declares nothing serializes byte-for-byte
+   * as it did before this field existed, so adding the vocabulary moved no wire and the
+   * manager's pane for such a plugin is a named absence rather than an empty form.
+   */
+  settings: z.array(SettingDefSchema).max(8).optional(),
 });
 
 /**
@@ -713,10 +777,14 @@ export const BindingIdSchema = z.string().regex(BINDING_ID_PATTERN).max(96);
 export type BindingId = z.infer<typeof BindingIdSchema>;
 
 /**
- * ONE KEY, as `KeyboardEvent.key` reports it — `F9`, `a`, `ArrowUp`, `?`. Bounded and
- * otherwise unconstrained on purpose: the browser owns this vocabulary, an editor captures
- * the value from a real keystroke rather than composing it, and a server that tried to
- * enumerate legal keys would be a second, always-stale keyboard map.
+ * ONE KEYSTROKE — an optional `Mod+` prefix followed by the value `KeyboardEvent.key`
+ * reports: `F9`, `a`, `ArrowUp`, `?`, `Mod+k`. Bounded and otherwise unconstrained on
+ * purpose: the browser owns this vocabulary, an editor captures the value from a real
+ * keystroke rather than composing it, and a server that tried to enumerate legal keys would
+ * be a second, always-stale keyboard map. The GRAMMAR is the engine's
+ * (`@manifold/plugin`'s `parseKeystroke`), which is also why the bound has never moved: a
+ * prefixed stroke was already a string this schema accepted, so a stored override written by
+ * any build parses in every other.
  */
 export const BindingKeySchema = z.string().min(1).max(24);
 
@@ -743,6 +811,45 @@ export const BindingOverridesSchema = z
     message: `at most ${MAX_BINDING_OVERRIDES} binding overrides`,
   });
 export type BindingOverrides = z.infer<typeof BindingOverridesSchema>;
+
+/**
+ * A SETTING's published name: the declaring plugin's id followed by the local id its manifest
+ * gave it (`core.canvas.new-canvas`).
+ *
+ * Composed from the two schemas that already own those halves rather than spelled as a third
+ * regex — the pair rule is one rule, and a copy of it here would be a second answer to "what
+ * may a qualified name look like" that drifts the first time either half changes.
+ */
+export const SettingRefSchema = z.templateLiteral([PluginIdSchema, ".", LocalNameSchema]);
+export type SettingRef = z.infer<typeof SettingRefSchema>;
+
+/**
+ * ONE PRINCIPAL'S SETTING VALUES: the preferences they have expressed an opinion about, as
+ * setting ref → value. Server-saved for the reason a rebinding is (invariant 11): a principal
+ * is one actor across every device they sit at, so a preference held in one browser's storage
+ * would be a fact none of their other clients could read.
+ *
+ * A DELTA over the declarations, never a table — the same discipline
+ * {@link BindingOverridesSchema} keeps, and the reason a plugin may change its own default,
+ * be disabled, or be removed entirely without anybody rewriting stored values. A ref with no
+ * entry reads its manifest's `default`, which is why the empty map is the whole of "nothing
+ * customized", and a stored ref no declaration answers is DROPPED at composition rather than
+ * pruned from the store: a plugin turned off for a week must find its preferences intact.
+ *
+ * Values are booleans because {@link SETTING_KINDS} has one member. When it grows, this map
+ * grows with it, in the same protocol change.
+ *
+ * Bounded at 128 entries: a manifest may declare eight settings, so this is a ceiling on a
+ * principal's deltas over a roster of some size rather than a limit any real workspace meets,
+ * and an unbounded per-principal map is a write door with no ceiling.
+ */
+export const MAX_PLUGIN_SETTING_VALUES = 128;
+export const PluginSettingValuesSchema = z
+  .record(SettingRefSchema, z.boolean())
+  .refine((values) => Object.keys(values).length <= MAX_PLUGIN_SETTING_VALUES, {
+    message: `at most ${MAX_PLUGIN_SETTING_VALUES} plugin setting values`,
+  });
+export type PluginSettingValues = z.infer<typeof PluginSettingValuesSchema>;
 
 /**
  * The plugin vocabulary, published — the counterpart of `placementVocabulary()`. A
@@ -793,5 +900,14 @@ export function pluginVocabulary(): Record<string, unknown> {
     */
     maxBindingOverrides: MAX_BINDING_OVERRIDES,
     bindingOverrides: z.toJSONSchema(BindingOverridesSchema),
+    /*
+      The settings vocabulary, on the same terms: which value kinds a declaration may take,
+      and what shape a `GET /api/settings` answer and an `engine.plugins.setSetting` argument
+      take. The DECLARATIONS themselves ride in the manifest schema above — a setting is a
+      contribution, so an agent reading `manifest` already knows how one is spelled.
+    */
+    settingKinds: SETTING_KINDS,
+    maxPluginSettingValues: MAX_PLUGIN_SETTING_VALUES,
+    pluginSettingValues: z.toJSONSchema(PluginSettingValuesSchema),
   };
 }

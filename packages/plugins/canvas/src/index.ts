@@ -60,7 +60,27 @@ export const canvasManifest: PluginManifest = {
      * and not a collapsible block, and `order: 2` puts it where it has always been: under the
      * brand line, above the composition creator (`core.compositions`, `order: 3`).
      */
-    sections: [{ id: "new-canvas", title: "New canvas", order: 2, presentation: "plain" }],
+    sections: [
+      {
+        id: "new-canvas",
+        title: "New canvas",
+        order: 2,
+        presentation: "plain",
+        setting: "new-canvas",
+      },
+    ],
+    /**
+     * AND ONE PREFERENCE OVER IT (#133). A creator is an offer, and an offer a reader has
+     * stopped needing should be theirs to put away — so the row is gated on a declared
+     * boolean, dropped from the rail when it reads false and back when it does not, per
+     * principal. `true` because that is what shipped; the operator's defaults-design pass
+     * decides whether any row starts off.
+     *
+     * It is NOT a disable in miniature. Turning this off leaves `core.canvas` composed,
+     * enabled and rendering every canvas in the workspace: what goes away is one button in
+     * one rail, for one reader, and nothing else it contributes notices.
+     */
+    settings: [{ id: "new-canvas", title: "New canvas", kind: "boolean", default: true }],
     elements: [],
     /**
      * THE `canvas` DISCIPLINE, declared (#110, building the ruling ratified on #86). Until

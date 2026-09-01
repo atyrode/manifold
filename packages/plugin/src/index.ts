@@ -7,14 +7,21 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
+  KEYSTROKE_MOD,
   bindingRebindRefusal,
   composeBindings,
   effectiveBindings,
+  formatKeystroke,
+  keystrokeLabel,
+  keystrokeMatches,
+  parseKeystroke,
   type BindingDef,
   type BindingKeyRow,
   type BindingScope,
   type BindingSource,
   type ComposedBinding,
+  type Keystroke,
+  type KeystrokeEvent,
   type WebBinding,
 } from "./bindings.ts";
 export {
@@ -24,6 +31,7 @@ export {
   ENGINE_PURGED_EVENT,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  ENGINE_SET_SETTING_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
 } from "./builtin.ts";
@@ -43,12 +51,21 @@ export {
   type AssemblyEnv,
   type AssemblyPanel,
   type AssemblySection,
+  type AssemblySetting,
   type AssemblyTool,
   type Claims,
   type PluginAttribution,
   type PluginDef,
   type PluginStoredData,
 } from "./assemble.ts";
+export {
+  composeSettings,
+  settingRefId,
+  settingValue,
+  settingWriteRefusal,
+  visibleSections,
+  type ComposedSetting,
+} from "./settings.ts";
 export {
   FLOOR_ELEMENT_PAYLOADS,
   elementPayloadGuard,

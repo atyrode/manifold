@@ -26,7 +26,7 @@ import { silentLogger } from "../src/log.ts";
 import { Room, RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { ServerStore, type DocRecord } from "../src/stores.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
 
 interface CountRow {
   count: number;
@@ -125,11 +125,13 @@ function roomFixture(
   };
   const socket = new FakeSocket();
   const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
-  // The eighth argument is the element-payload boundary (ADR 0013 §16) and the ninth is the
-  // attendance announcement (ADR 0012). These fixtures compose no plugins, so nothing declares
-  // a payload schema and the honest stand-in accepts every record; the announcement writes
-  // straight to the durable trail, which is what an unwired production room does until the
-  // assembly and the event plane arrive.
+  // The eighth argument is the element-payload boundary (ADR 0013 §16), the ninth is the
+  // attendance announcement (ADR 0012) and the tenth is whether this container holds a tile
+  // tree (#125). These fixtures compose no plugins, so nothing declares a payload schema and
+  // the honest stand-in accepts every record; the announcement writes straight to the durable
+  // trail, which is what an unwired production room does until the assembly and the event
+  // plane arrive. The tree question is answered by the SHIPPED declarations, because a
+  // fixture that spelled it would seed roots the server does not.
   const room = new Room(
     container.id,
     store,
@@ -142,6 +144,7 @@ function roomFixture(
     (containerId, principalId, kind) => {
       store.addEvent(containerId, runtime.now(), principalId, kind, {});
     },
+    testTileTrees(discipline),
   );
   room.join(peer);
   socket.clear();
@@ -190,6 +193,7 @@ describe("Room Yjs document consistency", () => {
       (containerId, principalId, kind) => {
         store.addEvent(containerId, runtime.now(), principalId, kind, {});
       },
+      testTileTrees(container.discipline),
     );
     room.join(peer);
 
@@ -413,7 +417,7 @@ describe("Room document persistence", () => {
       color: "#2563eb",
     };
     store.createPrincipal(principal, 0);
-    const manager = new RoomManager(store, runtime, clock, silentLogger);
+    const manager = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const room = manager.get(container.id);
     if (room === null) throw new Error("missing room");
     const peer = new SessionChannel(
@@ -450,7 +454,7 @@ describe("Room document persistence", () => {
       color: "#2563eb",
     };
     store.createPrincipal(principal, 0);
-    const manager = new RoomManager(store, runtime, clock, silentLogger);
+    const manager = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const room = manager.get(container.id);
     if (room === null) throw new Error("missing room");
     const socket = new FakeSocket();
@@ -499,7 +503,7 @@ function containerPair() {
   };
   store.createContainer(home);
   store.createContainer(container);
-  const manager = new RoomManager(store, runtime, clock, silentLogger);
+  const manager = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const homeRoom = manager.get(home.id);
   const containerRoom = manager.get(container.id);
   if (homeRoom === null || containerRoom === null) throw new Error("missing room");

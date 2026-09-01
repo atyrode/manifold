@@ -28,6 +28,7 @@ import {
   testEventHub,
   testPluginHost,
   testStore,
+  testTileTrees,
 } from "./helpers.ts";
 
 /**
@@ -68,7 +69,7 @@ function fixture(): Fixture {
   const clock = new FakeClock(runtime);
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -77,6 +78,7 @@ function fixture(): Fixture {
     clock,
     silentLogger,
     () => TEST_ORIGIN,
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));

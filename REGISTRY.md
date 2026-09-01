@@ -480,14 +480,15 @@ nothing about what is law. It answers one question the roadmap cannot: which pro
 currently waiting on the operator, and what a yes to it would oblige. A record leaves this table
 by having its `Status:` line changed in the same commit that acts on it.
 
-| ADR                                                             | Status                | What it gates                                                                                     | Why it is here                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`0020-desktop-shell.md`](docs/decisions/0020-desktop-shell.md) | awaiting-ratification | every line of desktop shell code, by `AXIOMS.md` §Roadmap's App shells ordering (#82 is the gate) | It takes Electron as a **runtime** dependency under invariant 8 — an exact 44.x pin with a CVE duty and a named owner — and it needs one new floor mechanism to be legal at all: a host-composed plugin has nowhere to live today (`WEB_PLUGIN_DEFS` is a static literal S1 parses), so its §6.2 proposes an additive-optional session-join field and `source: "host"` roster rows. Its §Ratification asks R1–R8 are the questions; a yes authorizes no code, only the design. |
+| ADR                                                                         | Status                | What it gates                                                                                                                                          | Why it is here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`0020-desktop-shell.md`](docs/decisions/0020-desktop-shell.md)             | awaiting-ratification | every line of desktop shell code, by `AXIOMS.md` §Roadmap's App shells ordering (#82 is the gate)                                                      | It takes Electron as a **runtime** dependency under invariant 8 — an exact 44.x pin with a CVE duty and a named owner — and it needs one new floor mechanism to be legal at all: a host-composed plugin has nowhere to live today (`WEB_PLUGIN_DEFS` is a static literal S1 parses), so its §6.2 proposes an additive-optional session-join field and `source: "host"` roster rows. Its §Ratification asks R1–R8 are the questions; a yes authorizes no code, only the design.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| [`0021-dockview-evaluation.md`](docs/decisions/0021-dockview-evaluation.md) | awaiting-ratification | nothing, and that is the point: it authorizes NO code and adds NO dependency, and what a yes settles is that the tile RENDERER stays ours (issue #126) | It is the one shape of record this table did not yet hold — a **negative** verdict. Invariant 8 asks for a dated entry before a runtime dependency; #126 asked for a dated entry either way, so the "no" is written down with its measurements instead of being remembered as a mood. It is here because the reasons are falsifiable and someone will want to reopen them: a spike (`docs/spikes/s126-dockview/`, disposable) rendered our real tree through Dockview 8.2.0's grid and dock, and the kill criterion — collaborator drag previews surviving intact — failed for structural reasons its §5 measures. Its §8 names a four-condition trigger for the whole genre, so the next proposal is checked rather than re-argued, and its §Ratification asks R1–R5 are the questions, R5 being whether the spike directory is deleted now or held until the trigger is evaluated once. |
 
-**One record is waiting as of 2026-09-01: ADR 0020.** The table's first two occupants were
-ratified that same day, so both left it by the rule above, and the record below is where they
-went — kept here, in the one place that indexes proposed records, because "the table is empty"
-and "the table was never filled in" have to be distinguishable a month from now.
+**Two records are waiting as of 2026-09-01: ADR 0020 and ADR 0021.** The table's first two
+occupants were ratified that same day, so both left it by the rule above, and the record below
+is where they went — kept here, in the one place that indexes proposed records, because "the
+table is empty" and "the table was never filled in" have to be distinguishable a month from now.
 
 | ADR                                                                   | Ratified                                  | What the yes obliged                                                                                                                                                                                                                                                                             |
 | --------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -540,6 +541,17 @@ Four rules bind that table:
   `changedAt`, so a placeholder can say who turned this off, and `lifecycle` (`ok` /
   `enable_failed` / `disable_failed`), because a teardown that fails is a state every principal
   can see rather than an assertion. Disable always completes.
+
+**A settings drop is NOT on this table**, and the distinction is the reason to say so here.
+`contributes.settings` declares preferences whose values are per PRINCIPAL, and a section naming
+one of its own plugin's settings is dropped from the sidebar while that value reads false
+(`visibleSections`, `packages/plugin/src/settings.ts`). Every axis above is workspace-global and
+about a plugin's ACTIVE surface; this one is one reader's rail. So none of the four rules apply
+to it: nothing is retained, because there was nothing to retain — the plugin is enabled, its
+doors answer, its data is untouched, and its other contributions are exactly where they were.
+Nothing is marked, either: chrome renders absence when the workspace took something away, and a
+preference was taken away by the person looking at it. The one ledger of what a reader has
+turned off is the manager's own settings pane, which is where they turned it off.
 
 ## Lexicon
 
@@ -966,6 +978,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "setting",
+      "means": "contribution kind: one preference a manifest declares (contributes.settings — id, title, kind, default), whose VALUE is per principal, server-saved as a delta over the declaration and written only through engine.plugins.setSetting. A section may name one of its own plugin's settings (SectionDef.setting), and a row whose setting reads false is DROPPED at composition (visibleSections) — a preference, never a disable: nothing is retained, marked or tombstoned, because the reader who turned it off already knows where it went. It is the engine's noun rather than any plugin's: the engine composes the table, refuses a write no declaration answers, and has no favourite among the manifests that declare them",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "cluster",
       "means": "a set of sidebar rows that declared the same contributes.sections[].cluster word: they paint side by side as ONE unit of the rail's stack, placed where the cluster's earliest member sits in the live order (clusteredSections). Membership is declared, never positional, and no floor file, panel or registry holds a list of a cluster's members — core.keys and core.plugins sit together at the rail's foot because both manifests say \"utility\". NOT group: that word is the placement algebra's capability set, and one concept per word is the law. The Cluster box in @manifold/plugin/ui is a layout primitive that happens to paint one, exactly as the layout family's components are named for the shape they draw",
       "banned": [],
@@ -992,6 +1010,12 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "action",
       "means": "a registered, authority-checked, argument-validated mutation dispatched at POST /api/actions/:name",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "command",
+      "means": "one row of core.commands' surface: a composed ACTION, a composed BINDING or an index CONTAINER, projected into one addressable line a reader can filter and act on (issue #129). A command is a PROJECTION of a registry that already exists, never a fourth registry and never a contribution kind — nothing declares one, and nothing can be a command that is not already a door, a key or a node, which is what keeps the surface from becoming a second list of what a workspace can do. It is deliberately NOT called a palette: that word is taken, by core.arrange's row of carry sources, and one concept per word means the second claimant renames rather than the first blurring",
       "banned": [],
       "allow": []
     },
@@ -1413,7 +1437,17 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "keys",
       "owner": "packages/plugins/keys/src/styles.css",
-      "why": "core.keys' binding EDITOR: the modal, its rows, the one keycap in the product, the loud collision refusal and the reset controls. It left the floor sheet with the seat (issue #91) — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the discreet OPENER row the seat wears stays in the `sidebar` family, because core.plugins wears it too"
+      "why": "core.keys' binding EDITOR: the modal, its rows, the loud collision refusal, the armed slot a captured keystroke lands in, and the reset controls. It left the floor sheet with the seat (issue #91) — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the discreet OPENER row the seat wears stays in the `sidebar` family, because core.plugins wears it too, and the KEYCAP left one host further down (issue #129) the day a second surface began printing the same composed table"
+    },
+    {
+      "family": "keycap",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl — `keycap.tsx`. It was `.keys-cap` and its sheet called it \"the one keycap in the product\", which held exactly as long as one seat printed the composed key table; the table is the engine's read (`host.assembly.bindings`), so any plugin may print a row and the shape belongs to the stdlib rather than to whichever tenant drew it first (issue #129)"
+    },
+    {
+      "family": "commands",
+      "owner": "packages/plugins/commands/src/styles.css",
+      "why": "core.commands' surface (issue #129): the Mod+K card, its search line, its grouped rows and the verb hint the highlighted row wears. Every rule is anchored on a `commands-*` class for a second reason beyond A1 — `cmdk` marks its own parts with ATTRIBUTES (`[cmdk-item]`, `[cmdk-group-heading]`), which own no family and would otherwise fall to the floor's `*` row, so scoping each under this surface keeps the library's internals styled by the package that chose the library"
     },
     {
       "family": "workspace",
@@ -1466,6 +1500,21 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the one disclosure — a header button that folds the body under it (`disclosure.tsx`); its behavior engine is Radix Collapsible, an internals decision (docs/decisions/2026-08-31-radix-behavior-primitives.md)"
     },
     {
+      "family": "chip",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one chip — a small bordered token that is a button exactly when it acts and an inert span otherwise, one box for both forms (`chip.tsx`). The box (border, radius, padding, type size) is the stdlib's; the tint is the adopter's, written in its own family's sheet"
+    },
+    {
+      "family": "kv",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one key-value list — a labelled reading of one thing as the definition list it is (`kv.tsx`): the list's rhythm, the row's two columns, the wrap-not-scroll value contract, and the `--kv-label` width knob"
+    },
+    {
+      "family": "popover",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one popover's floating layer (`popover.tsx`), portaled to the body above every pointer-transparent overlay; its behavior engine is Radix Popover, an internals decision (docs/decisions/2026-09-01-radix-popover.md)"
+    },
+    {
       "family": "credential",
       "owner": "packages/plugins/access/src/styles.css",
       "why": "core.access' credential list (ADR 0019 §3): the principal row, its colour pip, the meta line under the name, the two-press withdraw control and the refusal it renders in place. It is this plugin's sheet rather than a block in the shell's for `keys`' reason — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the row VOCABULARY the section fills (`.sidebar-section-content`, `.sidebar-section-count`, `.sidebar-section-empty`) stays in the `sidebar` family, because a class more than one tenant fills belongs to whoever owns the rail"
@@ -1504,6 +1553,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "family": "inspector",
       "owner": "packages/plugins/debug/src/styles.css",
       "why": "core.debug's F10 inspector: the chip that follows the pointer, the card a press pins, and the row vocabulary both are built from. One family, because the two are one reading at two levels of detail"
+    },
+    {
+      "family": "door-form",
+      "owner": "packages/plugins/debug/src/door-form.css",
+      "why": "the generated door-invocation form a pinned inspector card opens (#128): the popover layer's width, the generated fields' rhythm (element-scoped on purpose — rjsf's emitted class vocabulary is engine internals no sheet may anchor on, docs/decisions/2026-09-01-rjsf-door-forms.md), the dispatch control and the outcome/refusal rows. Its own sheet beside the module so the skin loads with the lazy chunk it dresses"
     },
     {
       "family": "mf-icon",

@@ -1,8 +1,13 @@
+import { settingValue, type SectionProps } from "@manifold/plugin";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import { ControlIcon } from "@manifold/plugin/ui";
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
+import { brandManifest } from "./index.ts";
+
+/** This row's own plugin id, read off the manifest so the two can never disagree. */
+const BRAND_ID = brandManifest.id;
 
 /**
  * `core.brand.brand` — the mark, the wordmark, the running build's version, and the history
@@ -47,7 +52,7 @@ function renderChangelogChange(change: string): ReactNode {
   );
 }
 
-export function BrandRow(): ReactElement {
+export function BrandRow({ host }: SectionProps): ReactElement {
   /*
     The rail's own collapsed/open state and the build's identity are the HOST's facts, read
     off the one context the workspace host publishes above the tree (`WorkspaceShell`). A row
@@ -55,6 +60,14 @@ export function BrandRow(): ReactElement {
     channel for "is the sidebar collapsed" would be a second answer to it (invariant 14).
   */
   const { sidebarOpen, webChangelog, webVersionLabel } = useWorkspaceShell();
+  /*
+    THE ONE PART OF THIS ROW A READER MAY PUT AWAY (#133). The engine drops whole rows whose
+    setting reads false; the rev line is not a row, so this row reads its own declared value
+    off the composed table and draws accordingly. `!== false` rather than a default spelled
+    here: the shipped answer lives in the manifest, and absence means nothing declares it,
+    which is not a preference.
+  */
+  const showVersion = settingValue(host.assembly.settings, BRAND_ID, "changelog") !== false;
   const [changelogOpen, setChangelogOpen] = useState(false);
   const versionButtonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -80,19 +93,21 @@ export function BrandRow(): ReactElement {
         {sidebarOpen ? (
           <span className="sidebar-brand-copy">
             <strong>manifold</strong>
-            <button
-              ref={versionButtonRef}
-              className="sidebar-version"
-              type="button"
-              aria-label={`Open web changelog for ${webVersionLabel}`}
-              onClick={() => setChangelogOpen(true)}
-            >
-              {webVersionLabel}
-            </button>
+            {!showVersion ? null : (
+              <button
+                ref={versionButtonRef}
+                className="sidebar-version"
+                type="button"
+                aria-label={`Open web changelog for ${webVersionLabel}`}
+                onClick={() => setChangelogOpen(true)}
+              >
+                {webVersionLabel}
+              </button>
+            )}
           </span>
         ) : null}
       </span>
-      {typeof document !== "undefined" && changelogOpen
+      {typeof document !== "undefined" && showVersion && changelogOpen
         ? createPortal(
             <dialog
               ref={dialogRef}

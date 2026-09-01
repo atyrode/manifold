@@ -1,18 +1,28 @@
 import { WORKSPACE_OVERLAY_SLOTS, WorkspaceOverlayOutlet } from "@manifold/plugin/hooks";
-import { ROUTE_SEGMENT_PATTERN } from "@manifold/protocol";
+import { parseManifoldUri, ROUTE_SEGMENT_PATTERN, type ManifoldRef } from "@manifold/protocol";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WorkspaceHost } from "./workspace.tsx";
 import {
   HostServicesGate,
   PluginPlaceholder,
+  REQUESTED_REF_PARAM,
   useAssembly,
   useHostServices,
 } from "./plugin-host.tsx";
 import { NoticeProvider } from "./notice.tsx";
 
 type Route =
-  | { readonly kind: "browser"; readonly containerId: string | null }
+  | {
+      readonly kind: "browser";
+      readonly containerId: string | null;
+      /**
+       * The address this route was asked to open ALONGSIDE the container it names, when the
+       * query carries one — a plugin, shown by a surface inside the workspace rather than by
+       * a route of its own. Null for every ordinary navigation, which is nearly all of them.
+       */
+      readonly requestedRef: ManifoldRef | null;
+    }
   /**
    * A route a PLUGIN owns, addressed by its first path segment (`/uri/<rest>`). The engine
    * resolves the segment against the composition and hands the rest over verbatim: which
@@ -30,12 +40,30 @@ type Route =
  */
 const PLUGIN_ROUTE = /^\/([^/]+)\/(.+)$/;
 
+/**
+ * The requested address, parsed off the query — or null, which covers "no parameter", "not a
+ * legal reference" and "not a form anything answers" alike. A malformed one is DROPPED rather
+ * than reported: the route it rides on is a real place and the reader is already there, so the
+ * honest outcome is the workspace without the extra thing, not an error page over a page that
+ * loaded fine.
+ */
+function requestedRef(): ManifoldRef | null {
+  const raw = new URLSearchParams(window.location.search).get(REQUESTED_REF_PARAM);
+  return raw === null ? null : parseManifoldUri(raw);
+}
+
 function currentRoute(): Route {
-  if (window.location.pathname === "/") return { kind: "browser", containerId: null };
+  if (window.location.pathname === "/") {
+    return { kind: "browser", containerId: null, requestedRef: requestedRef() };
+  }
   const match = /^\/p\/([^/]+)$/.exec(window.location.pathname);
   if (match?.[1] !== undefined) {
     try {
-      return { kind: "browser", containerId: decodeURIComponent(match[1]) };
+      return {
+        kind: "browser",
+        containerId: decodeURIComponent(match[1]),
+        requestedRef: requestedRef(),
+      };
     } catch {
       return { kind: "not_found" };
     }
@@ -83,6 +111,22 @@ export function App({ identity }: AppProps) {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  /*
+    THE REQUESTED ADDRESS IS CONSUMED ONCE. It stays in React state — the gate publishes it and
+    a surface answers it — while the address bar goes back to naming the PLACE. Two reasons, and
+    both are about the link working the second time: a reader who closes what opened must not
+    have it reopen on the next render, and following the same link again has to be a fresh
+    request rather than a no-op against an unchanged URL.
+
+    `replaceState` rather than `navigate`: this is not a navigation, it is the same route with
+    its request answered, and pushing a history entry would make Back reopen it.
+  */
+  useEffect(() => {
+    if (route.kind !== "browser" || route.requestedRef === null) return;
+    if (window.location.search === "") return;
+    window.history.replaceState(null, "", window.location.pathname);
+  }, [route]);
+
   const navigate = useCallback((path: string, options?: { readonly replace?: boolean }): void => {
     if (`${window.location.pathname}${window.location.search}` === path) return;
     window.history[options?.replace === true ? "replaceState" : "pushState"](null, "", path);
@@ -95,6 +139,7 @@ export function App({ identity }: AppProps) {
         identity={identity}
         navigate={navigate}
         containerId={route.kind === "browser" ? route.containerId : null}
+        requestedRef={route.kind === "browser" ? route.requestedRef : null}
       >
         {renderRoute(route, identity, navigate)}
         <WorkspaceOverlays />

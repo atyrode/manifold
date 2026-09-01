@@ -13,7 +13,7 @@ import type { AuthService } from "./auth.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor, TerminalPlacementPort } from "./placement.ts";
-import type { RoomManager, RoomTimers } from "./room.ts";
+import type { RoomManager, RoomTimers, TileTreeDisciplines } from "./room.ts";
 import {
   serializeServerMessage,
   type SerializedServerMessage,
@@ -126,6 +126,14 @@ export class TerminalBroker implements TerminalPlacementPort {
     private readonly timers: RoomTimers,
     private readonly logger: Logger,
     private readonly publicUrl: () => string,
+    /**
+     * The declared tile-tree question (`TileTreeDisciplines`), which is what decides who
+     * authors a terminal's placement: a container with a tree is placed into server-side by
+     * naming a leaf, a container without one is placed into by the opener authoring an
+     * element. A constructor dependency for the reason `RoomManager`'s is — the roster
+     * arrives as a thunk, and there is no honest default for "does this hold a tile tree".
+     */
+    private readonly holdsTileTree: TileTreeDisciplines,
   ) {
     for (const row of store.listTerminals()) {
       const info: TerminalInfo = {
@@ -441,19 +449,24 @@ export class TerminalBroker implements TerminalPlacementPort {
    * selection, and the create round trip.
    */
   open(channel: SessionChannel, message: TerminalOpen): void {
-    // Discipline decides who authors the placement, so a mismatch is refused instead of
-    // spawning a PTY nothing would ever render: a canvas opener that forgot to author an
-    // element, or a composition opener that thinks it can.
+    /*
+      Discipline decides who authors the placement, and it decides it from its DECLARATION
+      (#125): a container that holds a tile tree is placed into server-side by naming a leaf,
+      any other container by the opener authoring an element. A mismatch is refused rather
+      than spawning a PTY nothing would ever render — an opener that forgot its element, or a
+      tile-tree opener that thinks it authors one.
+    */
     const container = this.store.getContainer(channel.containerId);
     const placement = message.placement ?? "element";
-    if ((container?.discipline === "composition") !== (placement === "tile")) {
+    const tileTree = container !== null && this.holdsTileTree(container.discipline);
+    if (tileTree !== (placement === "tile")) {
       channel.send({
         type: "error",
         code: "conflict",
         message:
           placement === "tile"
-            ? 'placement "tile" requires a composition'
-            : 'a composition places terminals server-side: send placement "tile"',
+            ? 'placement "tile" requires a container that holds a tile tree'
+            : 'this container places terminals server-side: send placement "tile"',
         ref: message.elementId,
       });
       return;

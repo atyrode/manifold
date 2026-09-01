@@ -1,4 +1,4 @@
-import type { Assembly } from "@manifold/plugin";
+import { assembleRoster, type Assembly, type PluginDef } from "@manifold/plugin";
 import {
   ServerMessageBodySchema,
   ServerMessageSchema,
@@ -20,10 +20,11 @@ import {
   PlaceExecutor,
   assemblyPlacementVocabulary,
   assemblyItemNouns,
+  assemblyTileTrees,
   type PlaceOutcome,
 } from "../src/placement.ts";
 import { PluginHost, type MachineLiveness } from "../src/plugin-host.ts";
-import type { RoomManager, RoomTimers } from "../src/room.ts";
+import type { RoomManager, RoomTimers, TileTreeDisciplines } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
 import type { TerminalBroker } from "../src/terminal-broker.ts";
@@ -279,6 +280,25 @@ export class FakeSocket implements RawSocket {
 export function testStore(): ServerStore {
   return new ServerStore(openDatabase(":memory:"));
 }
+
+/**
+ * THE SHIPPED DISCIPLINES' TILE-TREE ANSWER (`TileTreeDisciplines`), which every fixture
+ * that builds a room or a broker needs before it has a host to ask — the host is assembled
+ * OVER both, so there is no live roster at that point in any of these files.
+ *
+ * It composes the same defs production composes, for the reason `testPluginHost` does: a
+ * hand-written declaration would let a fixture seed a tile tree the server would not, or
+ * refuse a placement the server accepts. Static rather than a host thunk because a room
+ * asks this question once, at construction, and no fixture toggles a discipline off.
+ */
+const SHIPPED_ROSTER = assembleRoster(
+  SERVER_PLUGIN_DEFS.map((def): PluginDef => ({ manifest: def.manifest, actions: def.actions })),
+  new Set(),
+  { distribution: SHIPPED_PLUGIN_IDS },
+).roster;
+export const testTileTrees: TileTreeDisciplines = assemblyTileTrees(
+  assemblyPlacementVocabulary(() => SHIPPED_ROSTER),
+);
 
 /**
  * The real event plane, in a test — for the same reason `testPluginHost` assembles the real

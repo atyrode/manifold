@@ -454,7 +454,22 @@ try {
     `B's parent ${wrapper} is a column of [B, C] and the root still has two children (defect 3)`,
   );
 
-  const paneC = await elementRect(browser, `[data-tile-id="${leafC}"]`);
+  /*
+    C's leaf is measured only after it HAS a box: the commit lands in state a frame or two
+    before layout paints the pane, and a rect read in that gap measured 0x0 (the recorded
+    "drift Infinity" flake — it fired on clean trees and passed on re-run). Bounded settle,
+    then one measurement; a still-boxless pane after 10s is a real failure, not a race.
+  */
+  const drv = browser;
+  let landedBox: Rect | null = null;
+  await settles(async () => {
+    const rect = drv === null ? null : await elementRect(drv, `[data-tile-id="${leafC}"]`);
+    if (rect === null || rect.width <= 0 || rect.height <= 0) return false;
+    landedBox = rect;
+    return true;
+  }, 10_000);
+  // The assignment happens inside the settles callback, which TS's flow analysis cannot see.
+  const paneC = landedBox as Rect | null;
   const slotDrift =
     hover1?.rect == null || paneC === null
       ? Number.POSITIVE_INFINITY
@@ -467,7 +482,9 @@ try {
   check(
     "highlight equals outcome",
     slotDrift <= 4,
-    `slot rect vs C's landed leaf drift ${slotDrift.toFixed(1)}px (≤4; defect 1)`,
+    `slot rect vs C's landed leaf drift ${slotDrift.toFixed(1)}px (≤4; defect 1)` +
+      (hover1?.rect == null ? " — no hover sample captured" : "") +
+      (paneC === null ? " — C's leaf never presented a box" : ""),
   );
 
   const extras1 = (hover1?.extra ?? null) as {

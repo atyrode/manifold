@@ -24,13 +24,18 @@ import {
   AssemblyError,
   claim,
   composeBindings,
+  composeSettings,
+  keystrokeMatches,
+  parseKeystroke,
   reportDuplicates,
+  visibleSections,
   ENGINE_SET_ENABLED_ACTION,
   type BindingSource,
   type Claims,
   type ComposedBinding,
   type ComposedPanel,
   type ComposedSection,
+  type ComposedSetting,
   type WebBinding,
   type HostServices,
   type AuthoringHandle,
@@ -46,6 +51,8 @@ import {
   MANIFOLD_URI_SCHEME,
   parseManifoldUri,
   PluginsResponseSchema,
+  SettingsResponseSchema,
+  type ManifoldRef,
   type PluginRoster,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
@@ -265,21 +272,37 @@ export interface BrowserAssembly {
    * lost a contested key.
    */
   readonly bindingOverrides: Readonly<Record<string, string>>;
+  /**
+   * The composed settings table, sorted by ref, carrying EFFECTIVE values: every declared
+   * preference in the roster with this principal's delta applied and the shipped default
+   * beside it. A disabled plugin's rows are PRESENT — a preference answers nobody while its
+   * plugin is off, and the manager lists its pane precisely while somebody is deciding whether
+   * to turn it back on (`composeSettings`).
+   */
+  readonly settings: readonly ComposedSetting[];
+  /**
+   * The delta the table above was composed with, as setting ref → value: this principal's
+   * stored preferences, fetched from `GET /api/settings` at boot and re-read whenever the door
+   * writes one.
+   */
+  readonly settingValues: Readonly<Record<string, boolean>>;
 }
 
 /**
  * Joins the server's vocabulary with the browser's registrations. Pure, and exported so the
  * join is testable without a provider or a socket.
  *
- * `overrides` is this principal's stored rebindings, handed in rather than fetched here for the
- * reason the roster is: this function is a JOIN over data somebody else owns the lifetime of.
- * It reaches exactly one consumer — `composeBindings`, the one seam effective keys exist at.
+ * `overrides` and `values` are this principal's two stored deltas, handed in rather than
+ * fetched here for the reason the roster is: this function is a JOIN over data somebody else
+ * owns the lifetime of. Each reaches exactly one consumer — the one seam its meaning exists at
+ * (`composeBindings`, `composeSettings`).
  */
 export function buildBrowserAssembly(
   roster: PluginRoster,
   revision: number,
   defs: readonly WebPluginDef[],
   overrides: Readonly<Record<string, string>> = {},
+  values: Readonly<Record<string, boolean>> = {},
 ): BrowserAssembly {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const titles = new Map<string, string>();
@@ -333,6 +356,9 @@ export function buildBrowserAssembly(
         // Carried verbatim, and spread because absence is a MEANING here: a row with no word is
         // its own painted unit (`clusteredSections`).
         ...(section.cluster === undefined ? {} : { cluster: section.cluster }),
+        // Carried verbatim for the same reason, and absent means "unconditional": the rule it
+        // feeds is applied once, below, where this principal's values are known.
+        ...(section.setting === undefined ? {} : { setting: section.setting }),
         /*
           RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
           declares nothing yields the default, so no reader downstream has to know what the
@@ -465,13 +491,22 @@ export function buildBrowserAssembly(
   // the engine's `assembleRoster` applies server-side.
   sections.sort((left, right) => left.order - right.order);
 
+  /*
+    THE ROW RULE, applied ONCE, here — the seam this principal's preferences exist at, exactly
+    as `composeBindings` is the seam their rebindings exist at. Every reader downstream sees one
+    list of rows and never learns that a row was declared: the sidebar draws it, arrange mode
+    orders it, the DOM names its owner, and none of them holds a second opinion about whether a
+    row is there. Dropped, not marked — a preference is not a disable (`visibleSections`).
+   */
+  const settings = composeSettings(roster, values);
+
   return {
     roster,
     revision,
     enabled: (id) => enabledIds.has(id),
     pluginTitle: (id) => titles.get(id) ?? null,
     panels,
-    sections,
+    sections: visibleSections(sections, settings),
     elements,
     routes,
     tools,
@@ -480,6 +515,8 @@ export function buildBrowserAssembly(
     workspaceOverlays,
     bindings: composeBindings(bindingSources, overrides),
     bindingOverrides: overrides,
+    settings,
+    settingValues: values,
     terminals,
   };
 }
@@ -499,6 +536,13 @@ const PluginsAttachContext = createContext<((client: SessionClient) => () => voi
  * either side importing the other.
  */
 const BindingsRefreshContext = createContext<(() => void) | null>(null);
+/**
+ * The same channel for the OTHER per-principal delta. Two contexts rather than one object with
+ * two members, because they are two independent re-reads: a door that wrote a rebinding has
+ * nothing to say about settings, and a component subscribing to one must not be re-rendered by
+ * the other.
+ */
+const SettingsRefreshContext = createContext<(() => void) | null>(null);
 
 /** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
 export function useAssembly(): BrowserAssembly {
@@ -528,6 +572,15 @@ export function useRefreshBindings(): () => void {
   const refresh = useContext(BindingsRefreshContext);
   if (refresh === null) {
     throw new Error("useRefreshBindings requires a <AssemblyProvider> ancestor");
+  }
+  return refresh;
+}
+
+/** Throws for the reason `useRefreshBindings` does: a silent no-op would look like a saved value. */
+function useRefreshSettings(): () => void {
+  const refresh = useContext(SettingsRefreshContext);
+  if (refresh === null) {
+    throw new Error("useRefreshSettings requires a <AssemblyProvider> ancestor");
   }
   return refresh;
 }
@@ -671,6 +724,9 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   const [overrides, setOverrides] = useState<Readonly<Record<string, string>>>({});
   /** Bumped to ask for a fresh read; the effect below is keyed on it. */
   const [overridesEpoch, setOverridesEpoch] = useState(0);
+  const [values, setValues] = useState<Readonly<Record<string, boolean>>>({});
+  /** Bumped to ask for a fresh read of the OTHER delta; its effect is keyed on it. */
+  const [valuesEpoch, setValuesEpoch] = useState(0);
 
   const publish = useCallback((roster: PluginRoster): void => {
     const digest = JSON.stringify(roster);
@@ -724,6 +780,31 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     return () => controller.abort();
   }, [identity.token, overridesEpoch]);
 
+  /*
+    THE SETTINGS DELTA, on the same terms and for a sharper version of the same reason: a
+    sidebar row whose setting reads false is dropped at composition, so these values decide what
+    the FIRST paint contains. Reading them through some plugin's door would make the shell's own
+    row list depend on a plugin having drawn first. A failed read composes the DECLARED
+    defaults, which is the honest degradation — every row is there, exactly as shipped.
+  */
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async (): Promise<void> => {
+      try {
+        const response = await fetch(instanceUrl("/api/settings"), {
+          headers: { Authorization: `Bearer ${identity.token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`plugin settings fetch failed (${response.status})`);
+        setValues(SettingsResponseSchema.parse(await response.json()).values);
+      } catch (reason) {
+        if (controller.signal.aborted) return;
+        console.error("evt=plugin_settings_fetch_failed", reason);
+      }
+    })();
+    return () => controller.abort();
+  }, [identity.token, valuesEpoch]);
+
   const attachPluginsClient = useCallback(
     (client: SessionClient): (() => void) => client.onPlugins(publish),
     [publish],
@@ -733,19 +814,25 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     setOverridesEpoch((epoch) => epoch + 1);
   }, []);
 
+  const refreshSettings = useCallback((): void => {
+    setValuesEpoch((epoch) => epoch + 1);
+  }, []);
+
   const assembly = useMemo(
-    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS, overrides),
-    [state, overrides],
+    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS, overrides, values),
+    [state, overrides, values],
   );
 
   return (
     <PluginsAttachContext.Provider value={attachPluginsClient}>
       <BindingsRefreshContext.Provider value={refreshBindings}>
-        <AssemblyContext.Provider value={assembly}>
-          <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
-            {children}
-          </EssentialRecovery>
-        </AssemblyContext.Provider>
+        <SettingsRefreshContext.Provider value={refreshSettings}>
+          <AssemblyContext.Provider value={assembly}>
+            <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
+              {children}
+            </EssentialRecovery>
+          </AssemblyContext.Provider>
+        </SettingsRefreshContext.Provider>
       </BindingsRefreshContext.Provider>
     </PluginsAttachContext.Provider>
   );
@@ -830,10 +917,21 @@ function typingInto(target: EventTarget | null): boolean {
  *
  * It is the whole of what the floor decides about a key: the composed table says which row owns
  * it, and the row's own handler does the work (`@manifold/plugin`'s `BindingDef` — a binding
- * carries no authority, so anything that mutates goes through a registered action). Two things
- * are refused here rather than in every handler, because both are properties of the KEY and not
- * of any plugin's behavior: a chord is a different key than the one it decorates, and typing is
- * not dispatching.
+ * carries no authority, so anything that mutates goes through a registered action). What is
+ * decided here rather than in every handler is what belongs to the KEY and not to any plugin's
+ * behavior: WHICH event produces a row's keystroke, and whether typing counts as dispatching.
+ *
+ * A CHORD IS A ROW NOW, and the matcher is the registry's own (`keystrokeMatches`), so "what
+ * the key table prints" and "what fires" are one answer (invariant 14). `Mod+k` answers to
+ * Control on a PC and Command on a Mac, and a bare row still refuses every modifier — the
+ * rule the old blanket `if (ctrlKey || metaKey || altKey) return` enforced, kept exactly, now
+ * as a property of the row instead of of the listener.
+ *
+ * TYPING GUARDS BARE ROWS ONLY, and that is the honest reading of the guard rather than a
+ * loosening: a printable key going into a rename field is typing, which is why a row may not
+ * eat it — but a chord is not a character any field is trying to receive, so a surface reached
+ * by `Mod+k` must be reachable from inside one. The field keeps every keystroke it could
+ * plausibly have meant.
  *
  * Undeclared listeners on `window` are what this replaces. One of them (F9's) shipped in the
  * engine's own standard library, where nothing could collide with it, list it, or turn it off.
@@ -842,10 +940,9 @@ function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServ
   useEffect(() => {
     if (bindings.length === 0) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (typingInto(event.target)) return;
-      const binding = bindings.find((row) => row.key === event.key);
+      const binding = bindings.find((row) => keystrokeMatches(row.key, event));
       if (binding === undefined) return;
+      if (!parseKeystroke(binding.key).mod && typingInto(event.target)) return;
       event.preventDefault();
       binding.run(host);
     };
@@ -853,6 +950,14 @@ function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServ
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [bindings, host]);
 }
+
+/**
+ * THE QUERY PARAMETER a requested address rides in. One constant, written by the navigation
+ * door and read by the router, so the browser's grammar for "and open this while you are
+ * there" is stated once. The VALUE is a `manifold://` reference and nothing else — the address
+ * system is not forked into a second one just because a URL is carrying it (invariant 13).
+ */
+export const REQUESTED_REF_PARAM = "ref";
 
 export interface HostServicesGateProps {
   readonly identity: StoredIdentity;
@@ -864,6 +969,12 @@ export interface HostServicesGateProps {
    * live. Every HTTP door works either way.
    */
   readonly containerId?: string | null;
+  /**
+   * The address this route was asked to open, when it carries one. Parsed by the router and
+   * handed down rather than re-read from the URL here, because there is one place that knows
+   * what the browser's address bar means and it is not this file.
+   */
+  readonly requestedRef?: ManifoldRef | null;
   readonly children: ReactNode;
 }
 
@@ -883,6 +994,7 @@ export function HostServicesGate({
   identity,
   navigate,
   containerId = null,
+  requestedRef = null,
   children,
 }: HostServicesGateProps): ReactElement {
   const assembly = useAssembly();
@@ -892,6 +1004,8 @@ export function HostServicesGate({
     `host.assembly.refreshBindings`: the write is somebody's door, the read is the engine's.
   */
   const refreshBindings = useRefreshBindings();
+  /* And of their preferences, handed to plugin code as `host.assembly.refreshSettings`. */
+  const refreshSettings = useRefreshSettings();
   const [viewport, setViewport] = useState<ViewportHandle | null>(null);
   const [authoring, setAuthoring] = useState<AuthoringHandle | null>(null);
   const [tileGeometry, setTileGeometry] = useState<TileGeometryHandle | null>(null);
@@ -924,8 +1038,17 @@ export function HostServicesGate({
   /**
    * One navigation door for plugin code, addressed the way the axioms address everything:
    * a `manifold://` reference, or a plain application path for the routes the browser owns.
-   * A reference this shell cannot show as a route (a principal, a plugin, an action) is not
-   * silently swallowed — it goes to the deep-link route, whose job is exactly that.
+   *
+   * THREE ANSWERS, and the middle one is the deep-link mechanism's inbound half:
+   *
+   * - a CONTAINER, or something inside one, is a browser path — go there;
+   * - a PLUGIN is shown by a surface INSIDE the workspace rather than by a route of its own,
+   *   so the shell stays exactly where it is and republishes the reference in the address
+   *   (`?ref=`) for whichever composed surface answers that form. The current path is kept
+   *   deliberately: following a link to a plugin must not evict a reader from the room they
+   *   are standing in;
+   * - anything else goes to the deep-link route, whose job is to resolve or to name what it
+   *   could not — a reference this shell cannot show is never silently swallowed.
    */
   const navigateUri = useCallback(
     (uri: string): void => {
@@ -935,13 +1058,18 @@ export function HostServicesGate({
       }
       const ref = parseManifoldUri(uri);
       if (ref === null) return;
-      navigate(
-        ref.kind === "container" || ref.kind === "element" || ref.kind === "tile"
-          ? `/p/${encodeURIComponent(ref.containerId)}`
-          : `/uri/${encodeURIComponent(uri)}`,
-      );
+      if (ref.kind === "container" || ref.kind === "element" || ref.kind === "tile") {
+        navigate(`/p/${encodeURIComponent(ref.containerId)}`);
+        return;
+      }
+      if (ref.kind === "plugin") {
+        const here = containerId === null ? "/" : `/p/${encodeURIComponent(containerId)}`;
+        navigate(`${here}?${REQUESTED_REF_PARAM}=${encodeURIComponent(uri)}`);
+        return;
+      }
+      navigate(`/uri/${encodeURIComponent(uri)}`);
     },
-    [navigate],
+    [containerId, navigate],
   );
 
   /**
@@ -955,17 +1083,23 @@ export function HostServicesGate({
    */
   const composedSections = useMemo<readonly ComposedSection[]>(
     () =>
-      assembly.sections.map(({ id, plugin, title, order, presentation, cluster, enabled }) => ({
-        id,
-        plugin,
-        title,
-        order,
-        presentation,
-        // Absence is a meaning (a row is its own painted unit), so it is spread rather than
-        // assigned an explicit `undefined`.
-        ...(cluster === undefined ? {} : { cluster }),
-        enabled,
-      })),
+      assembly.sections.map(
+        ({ id, plugin, title, order, presentation, cluster, setting, enabled }) => ({
+          id,
+          plugin,
+          title,
+          order,
+          presentation,
+          // Absence is a meaning (a row is its own painted unit), so it is spread rather than
+          // assigned an explicit `undefined`.
+          ...(cluster === undefined ? {} : { cluster }),
+          // Absence is a meaning here too (the row is unconditional). Every row that reaches
+          // this projection SURVIVED the rule; carrying the reference lets chrome say why one
+          // is a preference without asking a second registry.
+          ...(setting === undefined ? {} : { setting }),
+          enabled,
+        }),
+      ),
     [assembly],
   );
 
@@ -994,6 +1128,7 @@ export function HostServicesGate({
       token: identity.token,
       containerId,
       navigate: navigateUri,
+      requestedRef,
       viewport,
       authoring,
       tileGeometry,
@@ -1012,6 +1147,9 @@ export function HostServicesGate({
         bindings: assembly.bindings,
         bindingOverrides: assembly.bindingOverrides,
         refreshBindings,
+        settings: assembly.settings,
+        settingValues: assembly.settingValues,
+        refreshSettings,
       },
       /*
         The four collection nodes the shared feeds subscribe to, handed down from the one
@@ -1027,6 +1165,8 @@ export function HostServicesGate({
       composedPanels,
       composedSections,
       refreshBindings,
+      refreshSettings,
+      requestedRef,
       identity,
       navigateUri,
       containerId,

@@ -3,6 +3,7 @@ import { accessHandlers } from "@manifold-plugin/access/server";
 import { arrangeManifest } from "@manifold-plugin/arrange";
 import { brandManifest } from "@manifold-plugin/brand";
 import { canvasManifest } from "@manifold-plugin/canvas";
+import { commandsManifest } from "@manifold-plugin/commands";
 import { compositionsManifest } from "@manifold-plugin/compositions";
 import { drawElements, drawManifest } from "@manifold-plugin/draw";
 import { eventsActions, eventsManifest } from "@manifold-plugin/events";
@@ -140,6 +141,14 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
     is what makes it nameable, toggleable, and its F8 row visible in the key table.
   */
   { manifest: arrangeManifest, actions: [], handlers: {} },
+  /*
+    The command surface (issue #129): browser-only and door-less by construction — it OPENS
+    other plugins' doors and declares none of its own — and registered here for the reason
+    every browser-only plugin is. It matters more than usual for this one: the roster is what
+    publishes the actions it lists, so a seat that reads the composition has to be IN the
+    composition to be turned off with everything else.
+  */
+  { manifest: commandsManifest, actions: [], handlers: {} },
   // The two container renderers are browser-only for the same reason: what they draw is a
   // projection, and every write they make is somebody else's declared door.
   { manifest: canvasManifest, actions: [], handlers: {} },

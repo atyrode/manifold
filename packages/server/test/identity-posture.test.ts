@@ -12,7 +12,7 @@ import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 
 /**
  * THE IDENTITY POSTURE'S NOW ITEMS (ADR 0019 §2-§4), at the boundary that decides them.
@@ -44,7 +44,7 @@ function fixture(options: { readonly online?: ReadonlySet<string> } = {}): Fixtu
   const clock = new FakeClock(runtime);
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
     auth,
@@ -53,6 +53,7 @@ function fixture(options: { readonly online?: ReadonlySet<string> } = {}): Fixtu
     clock,
     silentLogger,
     () => "http://localhost:7777",
+    testTileTrees,
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));

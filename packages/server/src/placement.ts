@@ -22,7 +22,7 @@ import {
   type TileRef,
 } from "@manifold/protocol";
 import { tileIdForRef, tileLeafIds } from "@manifold/scene";
-import type { Room, RoomManager } from "./room.ts";
+import type { Room, RoomManager, TileTreeDisciplines } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 
 /**
@@ -67,6 +67,21 @@ export function assemblyPlacementVocabulary(
       return disciplines.get(id) ?? null;
     },
   };
+}
+
+/**
+ * The tile-tree question, answered from the declarations (#125): a discipline whose
+ * `destinations` include `tile` is one whose containers are addressed by naming a LEAF, and
+ * a container addressed that way is a container with a tree. So `destinations` IS the fact,
+ * and `"composition"` never has to be spelled by the pillars that need it — a room seeding
+ * its root, the manager decoding an idle document, the broker refusing a placement the
+ * discipline does not author.
+ *
+ * Built over the same cached vocabulary the executor reads, because it is the same
+ * question asked one column over: one derivation per assembly, one map lookup per ask.
+ */
+export function assemblyTileTrees(vocabulary: AssemblyPlacementVocabulary): TileTreeDisciplines {
+  return (discipline) => vocabulary.discipline(discipline)?.destinations.includes("tile") ?? false;
 }
 
 /**

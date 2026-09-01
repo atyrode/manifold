@@ -4,13 +4,23 @@ import {
   CONTAINER_KINDS,
   DESTINATION_KINDS,
   ITEM_KINDS,
+  ROOT_TILE_ID,
   buildProtocolJsonSchema,
   rosterDisciplines,
   type DisciplineDeclaration,
   type PlacementTraits,
+  type PluginRoster,
 } from "@manifold/protocol";
 import { assembleRoster, type PluginDef } from "@manifold/plugin";
 import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
+import { AuthService } from "../src/auth.ts";
+import { silentLogger } from "../src/log.ts";
+import { assemblyPlacementVocabulary, assemblyTileTrees } from "../src/placement.ts";
+import { RoomManager } from "../src/room.ts";
+import { SessionChannel } from "../src/session-channel.ts";
+import type { ServerStore } from "../src/stores.ts";
+import { TerminalBroker } from "../src/terminal-broker.ts";
+import { FakeClock, FakeRuntime, FakeSocket, testStore } from "./helpers.ts";
 
 /**
  * THE DISCIPLINE ROSTER, COMPOSED (#110, building the ruling ratified on #86).
@@ -174,5 +184,147 @@ describe("the published roster", () => {
     // A title travels with the declaration because that is the discipline's display noun
     // (S12): the floor's label table holds floor kinds, a contributed kind takes its title.
     expect(declaration("composition").title).toBe("Composition");
+  });
+});
+
+/**
+ * A THIRD-PARTY TILE-TREE DISCIPLINE, seeded and gated by its DECLARATION ALONE (#125).
+ *
+ * `acme.sheets` declares `destinations: ["tile"]` and `acme.paper` declares
+ * `destinations: ["canvas"]`; neither id is spelled anywhere in the server. That is the whole
+ * argument: the floor's two remaining "is this a tile tree" decisions — the root a room seeds
+ * before the first channel joins, and who authors a terminal's placement — used to read the
+ * literal `"composition"`, so a contributed tile-tree discipline rendered a tree that was
+ * never seeded and refused the only placement its own declaration permits.
+ */
+function contributedDiscipline(
+  pluginId: string,
+  id: string,
+  destinations: readonly ["tile"] | readonly ["canvas"],
+): PluginRoster[number] {
+  return {
+    manifest: {
+      id: pluginId,
+      version: "1.0.0",
+      title: id,
+      description: id,
+      capabilities: [],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        disciplines: [
+          {
+            id,
+            title: id,
+            item: {
+              groups: [...COMPOSITION_AT_V20.groups],
+              guards: [...COMPOSITION_AT_V20.guards],
+              homed: COMPOSITION_AT_V20.homed,
+            },
+            accepts: [...declaration("composition").accepts],
+            guards: [...declaration("composition").guards],
+            destinations: [...destinations],
+          },
+        ],
+        tools: [],
+        events: [],
+      },
+    },
+    enabled: true,
+    source: "builtin",
+    actions: [],
+  };
+}
+
+const OPEN_ROSTER: PluginRoster = [
+  ...assembly.roster,
+  contributedDiscipline("acme.sheets", "sheets", ["tile"]),
+  contributedDiscipline("acme.paper", "paper", ["canvas"]),
+];
+/** The production derivation, over a roster that composed a stranger's discipline. */
+const tileTrees = assemblyTileTrees(assemblyPlacementVocabulary(() => OPEN_ROSTER));
+
+function contributedContainers(store: ServerStore): void {
+  for (const discipline of ["sheets", "paper"]) {
+    store.createContainer({ id: discipline, name: discipline, createdAt: 0, discipline });
+  }
+}
+
+describe("a contributed tile-tree discipline reaches the floor", () => {
+  test("a room of one is seeded with a root; a discipline declaring no tile form is not", () => {
+    const runtime = new FakeRuntime();
+    const store = testStore();
+    const manager = new RoomManager(
+      store,
+      runtime,
+      new FakeClock(runtime),
+      silentLogger,
+      tileTrees,
+    );
+    contributedContainers(store);
+
+    const seeded = manager.get("sheets")?.tileLayout() ?? null;
+    expect(Object.keys(seeded ?? {})).toEqual([ROOT_TILE_ID]);
+    expect(seeded?.[ROOT_TILE_ID]?.ref).toBeNull();
+    // A discipline whose declaration names no `tile` form holds no tree — the same answer
+    // `canvas` gets, reached by reading the same field rather than by matching an id.
+    expect(manager.get("paper")?.tileLayout()).toBeNull();
+    store.close();
+  });
+
+  test("the broker's placement gate reads the same field", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "e".repeat(64), runtime);
+    const root = auth.authenticate("e".repeat(64));
+    contributedContainers(store);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, tileTrees);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      tileTrees,
+    );
+    // `placement` is `"tile"` or ABSENT on the wire: absent means the opener authors its own
+    // canvas element, which is the pre-flag default every client kept.
+    const openIn = (containerId: string, placement?: "tile"): FakeSocket => {
+      const socket = new FakeSocket();
+      broker.open(new SessionChannel(runtime.newId(), socket, root, containerId, "c1"), {
+        type: "terminal_open",
+        elementId: "terminal-1",
+        cols: 80,
+        rows: 24,
+        ...(placement === undefined ? {} : { placement }),
+      });
+      return socket;
+    };
+
+    /*
+      No machine is enrolled, so `no_machine` is the refusal a container that PASSED the
+      discipline gate gets — which is the assertion: a stranger's tile tree is placed into
+      server-side, exactly like a composition, and the old literal would have refused it with
+      `conflict` before any machine was ever looked for.
+    */
+    expect(openIn("sheets", "tile").messages().at(-1)).toMatchObject({
+      type: "error",
+      code: "no_machine",
+    });
+    expect(openIn("paper", "tile").messages().at(-1)).toMatchObject({
+      type: "error",
+      code: "conflict",
+    });
+    // And the mirror: a tile-tree container places terminals server-side, so an opener
+    // authoring its own element is refused there too.
+    expect(openIn("sheets").messages().at(-1)).toMatchObject({
+      type: "error",
+      code: "conflict",
+    });
+    store.close();
   });
 });
