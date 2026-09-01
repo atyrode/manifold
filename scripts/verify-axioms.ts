@@ -41,7 +41,7 @@ import {
   assembleRoster,
   FLOOR_ELEMENT_PAYLOADS,
   ITEM_NOUNS,
-  workspaceLayout,
+  composeDefaultLayout,
   ENGINE_PLUGINS_ID,
   ENGINE_SET_ENABLED_ACTION,
   enginePluginsActions,
@@ -64,12 +64,13 @@ import {
   SceneElementSchema,
   TokenGrantSchema,
   formatManifoldUri,
+  validateTileLayout,
   type LogEvent,
   type ManifoldRef,
   type ServerEvent,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
-import { SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "../packages/server/src/assembly.ts";
+import { SERVER_PLUGIN_DEFS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, sleep, until } from "./cdp.ts";
@@ -541,24 +542,30 @@ const webRegistrations: WebRegistration[] = [];
 
 {
   /*
-    The default is no longer a constant: `workspaceLayout()` owns the ARRANGEMENT and
-    `assembly.ts` owns the two panel NAMES, which is the point of the split. So the check
-    builds the tree the server actually serves — the floor's function applied to the
-    registration's own pair — and asserts every leaf of THAT resolves. Reading a constant
-    would now prove nothing about what `GET /api/layout` answers.
+    The default is COMPOSED, not a constant and no longer a floor arrangement filled with two
+    names either: the enabled roster's own declared seats are the whole input (ADR 0017 S17-B).
+    So the check composes the tree the server actually serves from the roster this script
+    already built, and asserts every leaf of THAT resolves — plus that the composition
+    is a tree the layout door may serve at all, since an invalid default would be a 500 on
+    `GET /api/layout` for every principal who has never arranged a workspace.
   */
+  const seeded = composeDefaultLayout(composed.roster);
   const missing: string[] = [];
-  for (const node of Object.values(workspaceLayout(WORKSPACE_PANELS))) {
+  for (const node of Object.values(seeded.layout)) {
     const ref = node.ref;
     if (ref === null || ref.kind !== "panel") continue;
     if (!composed.panels.has(ref.panelId)) missing.push(ref.panelId);
   }
+  const seatedOk =
+    missing.length === 0 && seeded.condition === "seated" && validateTileLayout(seeded.layout);
   check(
     "S1 default workspace",
-    missing.length === 0,
-    missing.length === 0
-      ? "every default panel leaf resolves in the composition"
-      : `default layout names panels nothing composed: ${list(missing)}`,
+    seatedOk,
+    seatedOk
+      ? `the roster's declared seats compose a valid default tree whose ${String(Object.keys(seeded.layout).length - 1)} panel leaves all resolve`
+      : missing.length > 0
+        ? `default layout names panels nothing composed: ${list(missing)}`
+        : `composition is ${seeded.condition} and ${validateTileLayout(seeded.layout) ? "valid" : "INVALID"}`,
   );
 }
 
@@ -2675,7 +2682,7 @@ try {
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
     const untouched =
       JSON.stringify(bystander["root"]?.ratios) ===
-      JSON.stringify(workspaceLayout(WORKSPACE_PANELS)["root"]?.ratios);
+      JSON.stringify(composeDefaultLayout(composed.roster).layout["root"]?.ratios);
     check(
       "R4 layouts are per principal",
       untouched,
@@ -2836,12 +2843,23 @@ try {
       })()`,
     );
     const on = await setEnabled("core.machines", true);
+    /*
+      "In its manifest-ordered place" is asserted among the rows of its OWN presentation, and
+      that scoping is forced by the rail being fully composed now: the stack holds the brand
+      line, three creators, the status line, the key-table door and the identity footer beside
+      the three bodies, all carrying `data-section-id`, so an absolute index in the whole stack
+      says nothing about ordering and everything about how much chrome happens to be
+      contributed. `data-presentation` is the row's resolved presentation, published in the DOM
+      beside its owner, so the assertion reads: among the sections WITH bodies, Machines is
+      back between Index and Plugins.
+    */
     const back = await settles(
       () =>
         browser!.evaluate<boolean>(
           `(() => {
-            const stack = [...document.querySelectorAll('[data-section-id]')].map((el) => el.getAttribute('data-section-id'));
-            return stack.includes('machines') && stack.indexOf('machines') === 1;
+            const bodies = [...document.querySelectorAll('[data-presentation="disclosure"][data-section-id]')]
+              .map((el) => el.getAttribute('data-section-id'));
+            return bodies.includes('machines') && bodies.indexOf('machines') === 1;
           })()`,
         ),
       10_000,

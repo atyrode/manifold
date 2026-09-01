@@ -142,6 +142,7 @@ export {
   ContainerRenderer,
   ProjectionProvider,
   TerminalRenderer,
+  SectionOutlet,
   ViewportRegistrationProvider,
   useProjection,
   useTerminalFacet,
@@ -153,6 +154,7 @@ export {
   type OverlaySlot,
   type ContainerRendererOutletProps,
   type ContainerRendererProps,
+  type SectionOutletProps,
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
   type ProjectionState,
@@ -190,6 +192,18 @@ export {
   type ContainerRoute,
   type WorkspaceSidebarState,
 } from "./container-route.ts";
+
+/**
+ * THE SHELL'S OWN HALF, as the workspace host publishes it to the plugin occupying its sidebar
+ * panel. Its own module for the same reason the route above is: the producer is floor, the
+ * consumer is a plugin, and neither may import the other (`./workspace-shell.ts`).
+ */
+export {
+  WorkspaceShellProvider,
+  useWorkspaceShell,
+  type WebChangelogRelease,
+  type WorkspaceShell,
+} from "./workspace-shell.ts";
 
 /**
  * THE workspace poll. It lives in its own module because it is no longer a hook over local

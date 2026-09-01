@@ -7,35 +7,42 @@ import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
 import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
-import { IndexSection } from "@manifold-plugin/index/web";
+import { IndexSection, NewFolderRow } from "@manifold-plugin/index/web";
 import { indexManifest } from "@manifold-plugin/index";
 import { machinesManifest } from "@manifold-plugin/machines";
 import { presenceManifest } from "@manifold-plugin/presence";
 import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
-import { SHELL_BINDINGS } from "@manifold-plugin/shell/web";
+import {
+  SHELL_BINDINGS,
+  BrandRow,
+  ContainerViewPanel,
+  IdentityRow,
+  KeysRow,
+  SidebarPanel,
+  StatusRow,
+} from "@manifold-plugin/shell/web";
 import { terminalsManifest } from "@manifold-plugin/terminals";
-import { panelRefId, type FeedTopics, type WorkspacePanels } from "@manifold/plugin";
-import { ContainerViewPanel } from "./container-view-panel.tsx";
-import { SidebarPanel } from "./sidebar-panel.tsx";
+import { panelRefId, type FeedTopics } from "@manifold/plugin";
 import type { WebPluginDef } from "./plugin-host.tsx";
 
 /**
- * WHICH panels a default workspace tree is built from, for the browser's own boot fallback —
- * the one datum the floor's `workspaceLayout()` cannot know and must be handed.
+ * WHICH panel a reader's SECTION ARRANGEMENT is committed to — the one datum `workspace.tsx`
+ * may not spell for itself.
  *
  * It lives here because this is the only file in `packages/web/src` allowed to name a plugin,
  * and a panel id IS a plugin's name: `core.shell.sidebar` is `core.shell`'s, spelled in the
  * same `<pluginId>.<panelId>` join the assembly claims panels under (`panelRefId`, so the
  * rule has one implementation). `workspace.tsx` reads it from here and is a sibling floor file
- * consuming exported data, which is the sanctioned direction; `workspace.tsx` spelling the
- * ids itself would make the shell's boot path name a favorite plugin, which is the neutrality
- * criterion of AXIOMS.md §Foundation law. The server's `assembly.ts` holds the matching pair
- * for the stored-layout default, and `verify:axioms` (S1) asserts both resolve.
+ * consuming exported data, which is the sanctioned direction; `workspace.tsx` spelling the id
+ * itself would make the shell's arrangement path name a favorite plugin, which is the
+ * neutrality criterion of AXIOMS.md §Foundation law.
+ *
+ * What is NO LONGER here is the panel PAIR a default workspace tree used to be built from.
+ * The default is composed from the enabled roster's own declared seats
+ * (`composeDefaultLayout`), so the arrangement and the names come from one place — the
+ * manifests — and no `assembly.ts` keeps a favourite pair for the boot fallback.
  */
-export const WORKSPACE_PANELS: WorkspacePanels = {
-  sidebar: panelRefId(shellManifest.id, "sidebar"),
-  main: panelRefId(shellManifest.id, "container-view"),
-};
+export const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
 
 /**
  * WHICH NODES each shared feed subscribes to (ADR 0012). Every entry is a COLLECTION — a
@@ -55,7 +62,7 @@ export const WORKSPACE_PANELS: WorkspacePanels = {
  * why a node-addressed event never reaches them and the server delivers every emission to its
  * door's collection as well (`EventHub.fanOut`).
  *
- * It lives here for the same reason `WORKSPACE_PANELS` does, and it is the browser's exact
+ * It lives here for the same reason `SIDEBAR_PANEL` does, and it is the browser's exact
  * counterpart of the server's `FLOOR_EVENT_OWNERS`: a topic is `manifold://plugin/<owner>`,
  * so writing one is naming a plugin, and this is the only file in `packages/web/src` allowed
  * to (`verify:axioms` S2). The floor shell reads it from here as a sibling floor file; the
@@ -93,9 +100,10 @@ export const FEED_TOPICS: FeedTopics = {
  * are plugins now, plugins may not import each other, and so every one of those reaches
  * matches a row below:
  *
- *   `core.canvas` / `core.compositions` register CONTAINER REFS, keyed by container discipline.
- *     Neither declares a panel: a renderer is reached by layout, and the routed shell and a
- *     tile leaf embedding a canvas ask for it identically.
+ *   `core.canvas` / `core.compositions` register CONTAINER REFS, keyed by container discipline,
+ *     and one SECTION each — their own creator in the rail. Neither declares a panel: a
+ *     renderer is reached by layout, and the routed shell and a tile leaf embedding a canvas
+ *     ask for it identically.
  *   `core.terminals` registers the TERMINAL FACET — the viewer plus the machine-choice policy
  *     a ref needs in order to offer "new terminal" — instead of exporting a component two
  *     renderers imported.
@@ -103,20 +111,39 @@ export const FEED_TOPICS: FeedTopics = {
  *     ref paints in its own coordinate space (cursors, carry ghosts, selection outlines)
  *     it paints from engine plane mechanism, which is invariant 11 rather than a registration.
  *
- * The shell's own two panels stay FLOOR components (`sidebar-panel.tsx`, `container-view-panel.tsx`)
- * attached to `core.shell`'s declared ids, and that is not a loophole: the sidebar chrome reads
- * the composition to know which sections exist, and the container view resolves a route to a
- * discipline and asks the registry for it. Neither knows how anything is drawn. Its KEYS come
- * from the plugin package instead (`SHELL_BINDINGS`), because a binding row spells its own
- * plugin-namespaced id and a handler is behavior — neither is chrome the floor can hold.
+ * `core.shell` REGISTERS ITS OWN TWO PANELS NOW, and that row is the last carve-out closing.
+ * Both components were floor until this wave, on the argument that the sidebar's chrome has to
+ * read the live composition to know which sections exist and no plugin had a door for that read.
+ * `host.assembly` is that door — declared, read-only, neutral — so the exception expired and
+ * both components moved into `@manifold-plugin/shell`, beside the manifest that declared their
+ * ids and beside the KEYS the package already owned (`SHELL_BINDINGS`). What stayed floor is
+ * what a shell genuinely owns: the tile layout, the workspace index, and the two contexts it
+ * publishes above the tree for its panels to read.
+ *
+ * AND IT REGISTERS ITS OWN FOUR ROWS, which is the same sentence one level down. The rail's
+ * brand line, status line, key-table door and identity footer were hand-written inside that
+ * panel until this wave — chrome nobody could read off the assembly, nothing could order, and
+ * arrange mode could not move. They are contributions now, and so are the three creators
+ * (`core.canvas`, `core.compositions`, `core.index`) that used to be a hard-coded strip above
+ * the stack. The panel imports none of them: it reads the composed section list and asks the
+ * projection registry who draws each id, which is what makes the shell's own rows arrive by
+ * exactly the route a stranger's do.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   {
     id: "core.shell",
     panels: { sidebar: SidebarPanel, "container-view": ContainerViewPanel },
+    /*
+      The rail's OWN chrome, attached exactly like anybody else's row. The sidebar panel does
+      not import these four: it reads `host.assembly.sections` and asks the projection registry
+      for whoever registered each id, so `core.shell` reaches its own sidebar by the same route
+      a stranger's plugin does — which is the only way "the rail is composed" can be checked
+      rather than asserted.
+    */
+    sections: { brand: BrandRow, status: StatusRow, keys: KeysRow, identity: IdentityRow },
     bindings: SHELL_BINDINGS,
   },
-  { id: "core.index", sections: { index: IndexSection } },
+  { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },
   canvasWebPlugin,

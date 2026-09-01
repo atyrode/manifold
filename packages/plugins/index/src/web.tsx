@@ -155,6 +155,14 @@ function IndexSkeleton(): ReactElement {
   );
 }
 
+/**
+ * The rail's top-level folder creator, re-exported from the plugin's one browser entry so a
+ * registration names one module per plugin. It is a separate FILE because it is a separate
+ * ROW — a `plain` contribution beside this `disclosure` one — and it shares nothing with the
+ * tree below but the door they both go through.
+ */
+export { NewFolderRow } from "./new-folder-row.tsx";
+
 export function IndexSection({ host }: SectionProps): ReactElement {
   const client = host.client;
   const activeContainerId = host.containerId;

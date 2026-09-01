@@ -29,8 +29,7 @@ import {
   type ServerToAgentMessage,
   type TileRef,
 } from "@manifold/protocol";
-import { rosterElementTraits, workspaceLayout } from "@manifold/plugin";
-import { WORKSPACE_PANELS } from "../src/assembly.ts";
+import { rosterElementTraits } from "@manifold/plugin";
 import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
@@ -233,7 +232,6 @@ function placementFixture(): PlacementFixture {
     machines,
     plugins,
     silentLogger,
-    workspaceLayout(WORKSPACE_PANELS),
   );
   const partial = {
     runtime,

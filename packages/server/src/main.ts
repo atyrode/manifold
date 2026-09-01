@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { elementPayloadGuard, workspaceLayout } from "@manifold/plugin";
+import { elementPayloadGuard } from "@manifold/plugin";
 import {
   defaultRuntime,
   INSTANCE_CHANNEL_PATH,
@@ -8,7 +8,7 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
-import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, WORKSPACE_PANELS } from "./assembly.ts";
+import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
@@ -205,13 +205,6 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     machines,
     plugins,
     logger,
-    /*
-      The default workspace tree, built HERE because this is the only place that has both
-      halves: the neutral arrangement from the floor, and the panel names from `assembly.ts`.
-      `http.ts` may not import a plugin at all, so serving `GET /api/layout` its fallback is
-      an injection rather than an import — the door answers with a tree it never spelled.
-    */
-    workspaceLayout(WORKSPACE_PANELS),
   );
 
   const server = Bun.serve<WebSocketData>({

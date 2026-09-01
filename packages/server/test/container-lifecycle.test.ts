@@ -27,8 +27,6 @@ import {
   tileLeafIds,
   writeElement,
 } from "@manifold/scene";
-import { workspaceLayout } from "@manifold/plugin";
-import { WORKSPACE_PANELS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
@@ -216,7 +214,6 @@ function lifecycleFixture(): LifecycleFixture {
     machines,
     plugins,
     silentLogger,
-    workspaceLayout(WORKSPACE_PANELS),
   );
   const fixture: LifecycleFixture = {
     runtime,

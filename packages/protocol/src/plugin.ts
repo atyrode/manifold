@@ -51,23 +51,98 @@ export type LocalName = z.infer<typeof LocalNameSchema>;
 const TitleSchema = z.string().min(1).max(64);
 
 /**
+ * HOW a contributed sidebar row draws itself. `disclosure` is the titled, collapsible block
+ * the stack has always been; `plain` is a row that draws its own content end to end — no
+ * disclosure header, no collapse.
+ *
+ * The second member exists for NEUTRALITY, not for looks. A sidebar whose only contributable
+ * shape is a collapsible block forces everything that is not one — the create buttons, the
+ * brand line, the status line, the identity row — to stay hand-written floor JSX, and then
+ * the shell is honest about ownership for the blocks and silent about the rest. With `plain`
+ * those rows are ordinary contributions: one registry, one per-principal order, two
+ * presentations. `presentation` says how a row draws and never whether it is one, which is
+ * why arrange mode, the owner-naming DOM and the D4′ placeholder all stay indifferent to it.
+ *
+ * Absent ≡ {@link DEFAULT_SECTION_PRESENTATION} — every manifest written before this field
+ * existed composes, orders and renders exactly as it did.
+ */
+export const SECTION_PRESENTATIONS = ["disclosure", "plain"] as const;
+export const SectionPresentationSchema = z.enum(SECTION_PRESENTATIONS);
+export type SectionPresentation = (typeof SECTION_PRESENTATIONS)[number];
+export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
+
+/**
+ * One contributed sidebar row. `title` is REQUIRED of both presentations: arrange mode labels
+ * the row a reader has grabbed, and a disabled plugin's slot is named by the ENGINE's own
+ * placeholder (D4′) — neither may ask a row's component for a name, least of all a plain row
+ * whose code may not be loaded.
+ */
+export const SectionDefSchema = z.strictObject({
+  id: LocalNameSchema,
+  title: TitleSchema,
+  order: z.number().int(),
+  presentation: SectionPresentationSchema.optional(),
+});
+export type SectionDef = z.infer<typeof SectionDefSchema>;
+
+/**
+ * The weight a seat's leaf carries in its split when the manifest declares none. Ratios are
+ * RELATIVE: the tile renderer normalizes a split's `ratios` before it paints (flex-grow on a
+ * zero basis), so a declaration is a weight against its siblings rather than a promised
+ * fraction of a screen nobody has measured yet.
+ */
+export const DEFAULT_SEAT_RATIO = 1;
+
+/**
+ * ONE SEAT A PLUGIN ASKS FOR in a workspace nobody has arranged yet (ADR 0017 §3, stage
+ * S17-B): `panel` is one of this manifest's OWN contributed panels, `order` places the seat
+ * among every other plugin's, and `ratio` weights its leaf against its siblings.
+ *
+ * An INTENT, not an arrangement. The engine composes the default workspace tree out of the
+ * ENABLED roster's seats, so a first-boot tree is a function of which plugins are on rather
+ * than of a constant some floor file kept beside a favourite pair of panel names. A principal
+ * who has arranged a workspace is untouched by it: their tree is stored, and this composes
+ * only the default for the ones who never did.
+ *
+ * DUMB AND TOTAL on purpose. A seat names a panel and a place in one row; it cannot express
+ * nesting, and it deliberately carries no address — seats holding a `manifold://` referent are
+ * stage S17-C and a version-bumped protocol change (ADR 0017 R3), which this field must not
+ * pre-empt by shipping half of that wire early.
+ *
+ * Absent ≡ the plugin seats nothing, which is exactly what every manifest written before this
+ * field existed says, and why one manifest line is the whole cost of keeping today's tree.
+ */
+export const SeatDefSchema = z.strictObject({
+  panel: LocalNameSchema,
+  order: z.number().int(),
+  ratio: z.number().positive().optional(),
+});
+export type SeatDef = z.infer<typeof SeatDefSchema>;
+
+/**
  * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
  *
- * `panels` are tile-ref leaves (the workspace shell is itself a composition of them),
- * `sections` are sidebar sections ordered by their declared `order`, `elements` are canvas
- * element renderers keyed by wire type, `tools` are toolbar tools.
+ * `panels` are tile-ref leaves (the workspace shell is itself a composition of them), `seats`
+ * are where those panels ask to sit in a workspace nobody has arranged (see
+ * {@link SeatDefSchema}), `sections` are sidebar rows ordered by their declared `order` (see
+ * {@link SectionDefSchema}), `elements` are canvas element renderers keyed by wire type,
+ * `tools` are toolbar tools.
  */
 const ContributesSchema = z.strictObject({
   panels: z
     .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
     .max(8)
     .default([]),
-  sections: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema, order: z.number().int() }))
-    .max(8)
-    .default([]),
+  /**
+   * WHERE THIS PLUGIN'S PANELS ASK TO SIT in the default workspace ({@link SeatDefSchema}).
+   * Optional rather than defaulted to `[]`: absence is a MEANING here — the plugin seats
+   * nothing — so every manifest written before the field existed keeps exactly the sense it
+   * had, and a build's default tree stays the sum of what its roster asked for.
+   */
+  seats: z.array(SeatDefSchema).max(8).optional(),
+  sections: z.array(SectionDefSchema).max(8).default([]),
   /**
    * A contributed element kind: `type` is the wire type stored in scene documents, and
    * `placement` is how the algebra must treat it (G1). Traits are DATA here for the same
@@ -461,6 +536,10 @@ export function pluginVocabulary(): Record<string, unknown> {
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+    sectionPresentations: SECTION_PRESENTATIONS,
+    defaultSectionPresentation: DEFAULT_SECTION_PRESENTATION,
+    defaultSeatRatio: DEFAULT_SEAT_RATIO,
+    seat: z.toJSONSchema(SeatDefSchema),
     manifest: z.toJSONSchema(PluginManifestSchema),
     action: z.toJSONSchema(ActionSummarySchema),
     outcome: z.toJSONSchema(ActionOutcomeSchema),

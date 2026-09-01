@@ -18,35 +18,15 @@ import { terminalsHandlers } from "@manifold-plugin/terminals/server";
 import { uriManifest } from "@manifold-plugin/uri";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
-import { panelRefId, type WorkspacePanels } from "@manifold/plugin";
 import type { FloorEventOwners } from "./event-hub.ts";
 import type { ServerPluginDef } from "./plugin-host.ts";
-
-/**
- * WHICH panels a default workspace tree is built from — the one datum the floor's
- * `workspaceLayout()` cannot know and must be handed.
- *
- * It lives here because this is the only server file allowed to name a plugin at all, and a
- * panel id IS a plugin's name: `core.shell.sidebar` is `core.shell`'s, spelled in the same
- * `<pluginId>.<panelId>` join the assembly claims panels under (`panelRefId`, so the rule has
- * one implementation). Putting this in `layout.ts`, or in `http.ts` where the fallback is
- * served, would make a floor file name a favorite plugin — the neutrality criterion of
- * AXIOMS.md §Foundation law, failing in the one file that must be replaceable wholesale.
- * `main.ts` reads it from here and injects the built tree into the HTTP app; the browser half
- * has its own copy in `packages/web/src/assembly.ts` for the same reason, and `verify:axioms`
- * (S1) asserts both resolve against their own assembly.
- */
-export const WORKSPACE_PANELS: WorkspacePanels = {
-  sidebar: panelRefId(shellManifest.id, "sidebar"),
-  main: panelRefId(shellManifest.id, "container-view"),
-};
 
 /**
  * WHICH plugin declares the vocabulary for each concept the FLOOR emits about (ADR 0012 §1:
  * the engine emits at the doors it owns, the plugin declares the kinds).
  *
- * It lives here for exactly the reason `WORKSPACE_PANELS` above does, and it is the same shape
- * of datum: the terminal broker owns a PTY's whole lifecycle, the room owns its attendance
+ * It lives here because this is the only server file allowed to name a plugin at all: the
+ * terminal broker owns a PTY's whole lifecycle, the room owns its attendance
  * roster, and the machine registry owns liveness — but none of the three may name a plugin,
  * because a floor file naming a favorite plugin is the neutrality criterion of
  * `AXIOMS.md` §Foundation law failing in the one layer that must be replaceable wholesale.

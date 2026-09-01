@@ -1,19 +1,7 @@
-import {
-  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
-  TileLayoutSchema,
-  validateTileLayout,
-  type PluginManifest,
-} from "@manifold/protocol";
+import { DEFAULT_ELEMENT_PLACEMENT_TRAITS, type PluginManifest } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import {
-  AssemblyError,
-  assembleRoster,
-  defineAction,
-  panelRefId,
-  workspaceLayout,
-  type PluginDef,
-} from "../src/index.ts";
+import { AssemblyError, assembleRoster, defineAction, type PluginDef } from "../src/index.ts";
 
 const NONE = new Set<string>();
 
@@ -115,8 +103,16 @@ describe("assembleRoster", () => {
       plugin: "core.shell",
       title: "Sidebar",
     });
+    // `presentation` is RESOLVED like `placement` below: this manifest declared none, so the
+    // registry publishes `disclosure` and no consumer has to know the default.
     expect(assembly.sections).toEqual([
-      { id: "machines", plugin: "core.shell", title: "Machines", order: 20 },
+      {
+        id: "machines",
+        plugin: "core.shell",
+        title: "Machines",
+        order: 20,
+        presentation: "disclosure",
+      },
     ]);
     // The manifest declared no placement traits, so the registry resolves the default (G1):
     // a reader sees traits, never an absence it would have to know the default for. The
@@ -143,8 +139,51 @@ describe("assembleRoster", () => {
       }),
       actions: [],
     };
-    const assembly = assembleRoster([shell, late], NONE);
-    expect(assembly.sections.map((section) => section.id)).toEqual(["views", "machines"]);
+    // A plain row is a row of the SAME stack: one registry, one order. It interleaves by its
+    // declared `order` alone, so nothing about presentation can promote or demote a row —
+    // which is what makes chrome (a create strip, a status line) contributable at all.
+    const plain: PluginDef = {
+      manifest: manifest({
+        id: "core.brand",
+        contributes: {
+          sections: [{ id: "brand", title: "Manifold", order: 15, presentation: "plain" }],
+        },
+      }),
+      actions: [],
+    };
+    const assembly = assembleRoster([shell, late, plain], NONE);
+    expect(assembly.sections.map((section) => [section.id, section.presentation])).toEqual([
+      ["views", "disclosure"],
+      ["brand", "plain"],
+      ["machines", "disclosure"],
+    ]);
+  });
+
+  test("a presentation nobody declared is refused with the manifest, not resolved away", () => {
+    const rogue: PluginDef = {
+      manifest: manifest({
+        id: "core.rogue",
+        contributes: {
+          sections: [
+            // The set is CLOSED: a stranger inventing a third way to draw a row would be
+            // asking the shell for a renderer it has not got, so the manifest rung refuses.
+            { id: "rogue", title: "Rogue", order: 1, presentation: "banner" } as never,
+          ],
+        },
+      }),
+      actions: [],
+    };
+    let thrown: unknown = null;
+    try {
+      assembleRoster([rogue], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect(thrown).toBeInstanceOf(AssemblyError);
+    const problems = (thrown as AssemblyError).problems;
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('invalid manifest "core.rogue"');
+    expect(problems[0]).toContain("sections.0.presentation");
   });
 
   test("collisions refuse the whole composition and name every offender", () => {
@@ -498,51 +537,69 @@ describe("assembleRoster", () => {
   });
 });
 
-describe("workspaceLayout", () => {
+describe("seat legality", () => {
   /*
-    THE default workspace tree, now a function of the panel ids rather than a constant that
-    named two of them. So there are two claims to keep apart, and the third case below is why
-    the split exists: the ARRANGEMENT is the floor's and is asserted against the real shell,
-    while the NAMES are the caller's and the floor must carry any pair of them through
-    untouched. A regression that reintroduced a hardcoded id would pass the first two cases
-    and fail the third.
+    Composition does not BUILD the default workspace — `composeDefaultLayout` does, from the
+    published roster, and its own cases live beside it. What composition owns is the pair of
+    claims the composer cannot check for itself: a plugin may only seat a panel it contributes,
+    and one panel may be seated once. Both refuse by name at build time.
   */
-  const panels = {
-    sidebar: panelRefId("core.shell", "sidebar"),
-    main: panelRefId("core.shell", "container-view"),
-  };
-
-  test("is a valid tile layout whose leaves are the shell's two panels", () => {
-    const parsed = TileLayoutSchema.parse(workspaceLayout(panels));
-    expect(validateTileLayout(parsed)).toBe(true);
-
-    // Every leaf ref, so a non-panel leaf sneaking into the default would show up here.
-    const panelIds = Object.values(parsed).flatMap((node) =>
-      node.ref === null ? [] : [node.ref.kind === "panel" ? node.ref.panelId : "?"],
-    );
-    expect(panelIds).toEqual(["core.shell.sidebar", "core.shell.container-view"]);
+  const seater = (id: string, seats: PluginManifest["contributes"]["seats"]): PluginDef => ({
+    manifest: manifest({
+      id,
+      contributes: { panels: [{ id: "rail", title: "Rail" }], seats },
+    }),
+    actions: [],
   });
 
-  test("every panel it names is one the shell composes", () => {
-    const assembly = assembleRoster([shell], NONE);
-    for (const node of Object.values(workspaceLayout(panels))) {
-      if (node.ref === null || node.ref.kind !== "panel") continue;
-      expect(assembly.panels.has(node.ref.panelId)).toBe(true);
+  test("a seat rides through on the manifest, and a manifest may declare none", () => {
+    const assembly = assembleRoster(
+      [seater("vendor.dock", [{ panel: "rail", order: 10 }]), shell],
+      NONE,
+    );
+
+    // Published as declared, on the roster row every client reads: the roster IS the seat
+    // registry, so composition adds no second copy for the composer to disagree with.
+    expect(assembly.roster[0]?.manifest.contributes.seats).toEqual([{ panel: "rail", order: 10 }]);
+    // Absence is a meaning, not a hole: the field is simply not there on a manifest with none.
+    expect(assembly.roster[1]?.manifest.contributes.seats).toBeUndefined();
+  });
+
+  test("a plugin may only seat a panel it contributes itself", () => {
+    let thrown: unknown;
+    try {
+      assembleRoster([shell, seater("vendor.squatter", [{ panel: "sidebar", order: 1 }])], NONE);
+    } catch (error) {
+      thrown = error;
     }
+    expect(thrown).toBeInstanceOf(AssemblyError);
+    // Named with the panel it asked for, NOT resolved against core.shell's registered
+    // `sidebar`: a seat is checked against its own manifest, so legality cannot depend on
+    // which plugins happen to be composed beside it.
+    expect((thrown as AssemblyError).problems).toEqual([
+      'plugin "vendor.squatter" seats panel "sidebar", which it does not contribute',
+    ]);
   });
 
-  test("carries STRANGER panel ids through, knowing nothing about core.shell", () => {
-    const layout = workspaceLayout({ sidebar: "vendor.dock.rail", main: "vendor.atlas.map" });
-    expect(validateTileLayout(TileLayoutSchema.parse(layout))).toBe(true);
-
-    const leaves = Object.values(layout).flatMap((node) =>
-      node.ref === null || node.ref.kind !== "panel" ? [] : [node.ref.panelId],
-    );
-    expect(leaves).toEqual(["vendor.dock.rail", "vendor.atlas.map"]);
-    // The arrangement is unchanged by the swap, which is the neutrality claim stated as data:
-    // a floor default is the same tree whichever plugins fill it.
-    expect(layout["root"]?.ratios).toEqual([0.22, 0.78]);
-    expect(layout["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
+  test("two seats for one panel refuse, like every other claimed name", () => {
+    let thrown: unknown;
+    try {
+      assembleRoster(
+        [
+          seater("vendor.twice", [
+            { panel: "rail", order: 1 },
+            { panel: "rail", order: 2 },
+          ]),
+        ],
+        NONE,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AssemblyError);
+    expect((thrown as AssemblyError).problems).toEqual([
+      'duplicate seat "vendor.twice.rail" claimed by: vendor.twice, vendor.twice',
+    ]);
   });
 });
 

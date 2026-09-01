@@ -19,6 +19,7 @@ import {
   composeBindings,
   type BindingSource,
   type ComposedBinding,
+  type ComposedSection,
   type WebBinding,
   type HostServices,
   type AuthoringHandle,
@@ -27,6 +28,7 @@ import {
   type SectionProps,
 } from "@manifold/plugin";
 import {
+  DEFAULT_SECTION_PRESENTATION,
   MANIFOLD_URI_SCHEME,
   parseManifoldUri,
   PluginsResponseSchema,
@@ -46,6 +48,7 @@ import {
 } from "react";
 import { Cover, Stack } from "@manifold/plugin/ui";
 import type { StoredIdentity } from "./api.ts";
+import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { FEED_TOPICS, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
@@ -137,14 +140,17 @@ export interface WebPanel {
   readonly enabled: boolean;
 }
 
-/** A declared sidebar section. Section ids are global (one sidebar, one slot per name). */
-export interface WebSection {
-  readonly id: string;
-  readonly plugin: string;
-  readonly title: string;
-  readonly order: number;
+/**
+ * A declared sidebar section, with its browser attachment. Section ids are global (one
+ * sidebar, one slot per name).
+ *
+ * It EXTENDS the row `host.assembly` publishes rather than restating those fields: the rows a
+ * plugin reads and the rows this file resolves components for are one registry seen twice
+ * (invariant 14), and only the extra member — who draws it — is the browser's own.
+ */
+export interface WebSection extends ComposedSection {
+  /** Null when the plugin declared the section and registered no component. */
   readonly Component: ComponentType<SectionProps> | null;
-  readonly enabled: boolean;
 }
 
 /**
@@ -249,6 +255,12 @@ export function buildBrowserAssembly(
         plugin: manifest.id,
         title: section.title,
         order: section.order,
+        /*
+          RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
+          declares nothing yields the default, so no reader downstream has to know what the
+          default is (`AssemblySection.presentation`).
+        */
+        presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
         Component: def?.sections?.[section.id] ?? null,
         enabled,
       });
@@ -601,6 +613,28 @@ export function HostServicesGate({
     [navigate],
   );
 
+  /**
+   * THE SECTION ROWS AS PLUGIN CODE SEES THEM: the composition's rows with the browser's own
+   * attachment PROJECTED OFF, so `host.assembly` carries no component reference at all.
+   *
+   * A cast would have satisfied the type and left the components reachable at runtime, which
+   * is the kind of read surface that erodes: reaching a registered component belongs to
+   * `SectionOutlet` and nowhere else. Once per roster change rather than per render, which is
+   * what the memo key buys.
+   */
+  const composedSections = useMemo<readonly ComposedSection[]>(
+    () =>
+      assembly.sections.map(({ id, plugin, title, order, presentation, enabled }) => ({
+        id,
+        plugin,
+        title,
+        order,
+        presentation,
+        enabled,
+      })),
+    [assembly],
+  );
+
   const host = useMemo<HostServices>(
     () => ({
       client,
@@ -610,9 +644,18 @@ export function HostServicesGate({
       navigate: navigateUri,
       viewport,
       authoring,
+      /*
+        THE READ SURFACE onto the live composition (`AssemblyFacet`). Every member is a
+        question keyed by an id the caller already holds and none of them is a lever: the
+        shell's own sidebar panel reads the section rows and the key table through here, and
+        so would a stranger's replacement for it.
+       */
       assembly: {
         roster: () => assembly.roster,
         enabled: (id) => assembly.enabled(id),
+        pluginTitle: (id) => assembly.pluginTitle(id),
+        sections: composedSections,
+        bindings: assembly.bindings,
       },
       /*
         The four collection nodes the shared feeds subscribe to, handed down from the one
@@ -621,7 +664,7 @@ export function HostServicesGate({
        */
       topics: FEED_TOPICS,
     }),
-    [authoring, client, assembly, identity, navigateUri, containerId, viewport],
+    [authoring, client, assembly, composedSections, identity, navigateUri, containerId, viewport],
   );
 
   /*
@@ -632,24 +675,43 @@ export function HostServicesGate({
 
   /**
    * THE PROJECTION REGISTRY, as plugin code sees it: the composition's registries plus this
-   * file's own placeholder, so every mount site in the product resolves an occupant the same
-   * way and paints the same named absence. Memoized on the composition alone — the registry
-   * carries no per-render state, so a roster change is the only reason it may move (a fresh
-   * object here would rebuild React Flow's node-type map and remount every live PTY).
+   * file's own placeholder and error boundary, so every mount site in the product resolves an
+   * occupant the same way, paints the same named absence, and contains a fault the same way.
+   * Memoized on the composition alone — the registry carries no per-render state, so a roster
+   * change is the only reason it may move (a fresh object here would rebuild React Flow's
+   * node-type map and remount every live PTY).
    */
-  const projection = useMemo<ProjectionRegistry>(
-    () => ({
+  const projection = useMemo<ProjectionRegistry>(() => {
+    /*
+      The section rows, INDEXED for the outlet that resolves them. Derived from the one
+      `sections` array rather than joined a second time (invariant 14), and `title` is the
+      OWNING PLUGIN's — a missing section component has no title of its own to borrow, which
+      is the same rule the renderer and overlay channels above already follow.
+     */
+    const sections = new Map<string, RegisteredRenderer<SectionProps>>(
+      assembly.sections.map((section) => [
+        section.id,
+        {
+          plugin: section.plugin,
+          title: assembly.pluginTitle(section.plugin) ?? section.plugin,
+          enabled: section.enabled,
+          Component: section.Component,
+        },
+      ]),
+    );
+    return {
       revision: assembly.revision,
       Placeholder: PluginPlaceholder,
+      ErrorBoundary: ContainerErrorBoundary,
       terminals: assembly.terminals,
       renderer: (layout) => assembly.renderers.get(layout) ?? null,
       overlay: (slot) => assembly.overlays.get(slot) ?? null,
       element: (type) => assembly.elements.get(type) ?? null,
+      section: (id) => sections.get(id) ?? null,
       elements: assembly.elements,
       tools: assembly.tools,
-    }),
-    [assembly],
-  );
+    };
+  }, [assembly]);
 
   return (
     <ViewportRegistrationProvider value={setViewport}>

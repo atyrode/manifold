@@ -52,7 +52,15 @@ export const canvasManifest: PluginManifest = {
   capabilities: ["scenes:write"],
   contributes: {
     panels: [],
-    sections: [],
+    /**
+     * ONE ROW: the rail's "New canvas". A creator is an opinion about a DISCIPLINE, so it
+     * belongs to the discipline's plugin rather than to whoever draws the rail — disable this
+     * plugin and the offer to make a canvas goes with it (D4′), which is the reading the
+     * shell's hand-written button could never give. `plain`, because a creator is a control
+     * and not a collapsible block, and `order: 2` puts it where it has always been: under the
+     * brand line, above the composition creator (`core.compositions`, `order: 3`).
+     */
+    sections: [{ id: "new-canvas", title: "New canvas", order: 2, presentation: "plain" }],
     elements: [],
     tools: [
       { id: "select", title: "Select" },

@@ -78,13 +78,13 @@ export {
   type PluginStorageAdmin,
 } from "./storage.ts";
 export {
-  arrangedSectionIds,
-  movedSectionIds,
-  panelSections,
-  withPanelSections,
-  workspaceLayout,
-  type WorkspacePanels,
-} from "./layout.ts";
+  DEFAULT_LAYOUT_CONDITIONS,
+  DEFAULT_LAYOUT_NOTICES,
+  composeDefaultLayout,
+  type DefaultLayout,
+  type DefaultLayoutCondition,
+} from "./default-layout.ts";
+export { arrangedSectionIds, movedSectionIds, panelSections, withPanelSections } from "./layout.ts";
 export {
   buildIndexTree,
   projectIndexMove,
@@ -97,6 +97,7 @@ export {
   lastSpotlight,
   recordSpotlight,
   type AssemblyFacet,
+  type ComposedSection,
   type ElementDocument,
   type ElementHost,
   type ElementProps,

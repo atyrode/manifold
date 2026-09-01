@@ -36,7 +36,18 @@ export const indexManifest: PluginManifest = {
   capabilities: ["*", "containers:read", "containers:write"],
   contributes: {
     panels: [],
-    sections: [{ id: "index", title: "Index", order: 10 }],
+    /*
+      TWO ROWS OF THE RAIL, and the pairing is the point: this plugin owns folders, so it owns
+      both the offer to create a top-level one and the tree that lists it. `new-folder` is
+      `plain` (a creator plus the form it opens — a control, not a collapsible block) and takes
+      `order: 4`, the last of the three creators; `index` keeps `order: 10` and its default
+      `disclosure`, and it is the row the rail's leftover height goes to, because it is the
+      first row in the order with a body (`railRows`).
+     */
+    sections: [
+      { id: "new-folder", title: "New folder", order: 4, presentation: "plain" },
+      { id: "index", title: "Index", order: 10 },
+    ],
     elements: [],
     tools: [],
     /*

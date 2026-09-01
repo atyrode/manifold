@@ -39,11 +39,14 @@ alike and which therefore carry no floor row.
 **The unmatched set is now empty, and S9 is wired** (wave 2, 2026-08-31). The rows that fell
 outside every pillar when this section was written were the web files whose `why` ended
 "awaiting `<plugin>`" — all gone, converted with their consumers — plus the shell's own two panel
-files, `sidebar-panel.tsx` and `container-view-panel.tsx`. Those two did not move: they are floor
-because they pass the litmus, and what was missing was a pillar answering for them, so
-`web-plugin-host` claims them by name with the reasoning in its verdict. That is the ONLY way the
-set empties — a file moves into its plugin, or a pillar states the litmus finding that owns it.
-§Foundation law admits no third state, so S9 has no exception list and must never be taught one.
+files, `sidebar-panel.tsx` and `container-view-panel.tsx`. Those two are gone the other way now
+(2026-09-01): they moved into `packages/plugins/shell/src`, because the one thing that made them
+floor — the sidebar's need to read the live composition, which no plugin had a door for — became
+`host.assembly`, a declared read-only surface any plugin may open. That is the ONLY way the set
+empties — a file moves into its plugin, or a pillar states the litmus finding that owns it — and
+the shell taking the first route rather than the second is the honest outcome the second was
+always standing in for. §Foundation law admits no third state, so S9 has no exception list and
+must never be taught one.
 
 ```json
 {
@@ -138,18 +141,16 @@ set empties — a file moves into its plugin, or a pillar states the litmus find
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
         "packages/web/src/workspace.tsx",
-        "packages/web/src/sidebar-panel.tsx",
-        "packages/web/src/container-view-panel.tsx",
+        "packages/web/src/workspace-arrange.ts",
         "packages/web/src/notice.tsx",
         "packages/web/src/styles.css",
         "packages/web/src/shell.css",
         "packages/web/src/container-memory.ts",
         "packages/web/src/web-version.ts",
-        "packages/web/src/generated-changelog.ts",
-        "packages/web/src/changelog-references.ts"
+        "packages/web/src/generated-changelog.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — INCLUDING the shell's own two panel components, which are floor for the same reason the placeholder is: the sidebar chrome reads the composition to learn which sections exist, and the container view resolves a route to a discipline and asks the projection registry for that discipline's renderer. Neither names a plugin and neither knows how anything is drawn (the reasoning is written where they are attached, packages/web/src/assembly.ts).",
+      "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — and as of 2026-09-01 that is literally true of the shell's own two panels as well: they moved into @manifold-plugin/shell once `host.assembly` gave every plugin the composition read the sidebar chrome needed, so this pillar claims no component it also renders. What is left is the frame — the tile layout and its one committed write per gesture, the workspace index, the two contexts the host publishes above the tree for its panels to read, and the shell's skin, which stays here because the `sidebar` row vocabulary is filled by core.index, core.machines and core.plugins and a plugin may not own three other plugins' appearance.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -341,12 +342,8 @@ enforcement machinery itself, not a test of somebody else's subject.
       "why": "the workspace host: fetches the per-principal layout and renders its panel leaves through TileTree"
     },
     {
-      "glob": "packages/web/src/sidebar-panel.tsx",
-      "why": "the core.shell.sidebar panel: sidebar chrome and the section stack, which must read the assembly to know which sections exist"
-    },
-    {
-      "glob": "packages/web/src/container-view-panel.tsx",
-      "why": "the core.shell.container-view panel: resolves the route to a container discipline and asks the projection registry for that discipline's renderer — it holds no renderer of its own"
+      "glob": "packages/web/src/workspace-arrange.ts",
+      "why": "the panel-arrange policy: given a workspace tree, the grabbed panel leaf and a resolved seam/zone aim, the next TileLayout or a named refusal — pure, so the F8 panel leg's legality is unit-testable without a DOM"
     },
     {
       "glob": "packages/web/src/notice.tsx",
@@ -358,7 +355,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/shell.css",
-      "why": "the shell's skin — the sidebar, the workspace frame and the routed container view. A separate OWNER from the floor stylesheet, in the same package because it has nowhere else to go: the components that paint it are floor, and a floor file may not import `@manifold-plugin/*` (§Lexicon cssFamilies)"
+      "why": "the shell's skin — the workspace frame, the sidebar rail and the ROW VOCABULARY every contributed section is filled into. A separate OWNER from the floor stylesheet, and it stays floor even though @manifold-plugin/shell now paints the two panels: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-count` and `.sidebar-section-action` are painted by core.index, core.machines and core.plugins, so moving the family into one plugin's package would make three plugins depend on a fourth's stylesheet. Same reason `plugin-placeholder` and `notice` are the floor's: the layer's skin is the layer owner's (§Lexicon cssFamilies)"
     },
     {
       "glob": "packages/web/src/container-memory.ts",
@@ -366,15 +363,11 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/web-version.ts",
-      "why": "release metadata read by the shell — floor-neutral"
+      "why": "release metadata — the running build's own identity, injected by packages/web/vite.config.ts and frozen by the release path, handed to the shell's panel through the WorkspaceShell context. Floor-neutral"
     },
     {
       "glob": "packages/web/src/generated-changelog.ts",
       "why": "generated from CHANGELOG.md's released sections by the release path; never hand-edited, which is why §Lexicon allows its frozen vocabulary"
-    },
-    {
-      "glob": "packages/web/src/changelog-references.ts",
-      "why": "issue/PR reference parsing for the in-app history — floor-neutral"
     }
   ]
 }
@@ -640,8 +633,14 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "seat",
+      "means": "a place in an arranged tree whose content is something else's address, rendered by rendering its referent (ADR 0017 §3): a tile leaf is one, and a manifest's contributes.seats is its declared intent to occupy one in the default workspace",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "space",
-      "means": "the workspace's own arrangement: the core.space seat that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
+      "means": "the workspace's own arrangement: the core.space plugin that owns the layout writer (core.space.setLayout) and the placement verb (core.space.place)",
       "banned": [],
       "allow": []
     },
@@ -671,7 +670,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "arrange mode",
-      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
+      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder inside the sidebar and panels move inside the workspace tree, by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
       "banned": [],
       "allow": []
     },
@@ -886,7 +885,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "section",
-      "means": "contribution kind: a collapsible block in the sidebar stack, ordered by its manifest unless the reader has arranged it (see arrange mode)",
+      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode)",
       "banned": [],
       "allow": []
     },
@@ -1073,6 +1072,12 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "drop",
       "means": "the commit point of a carry",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "flip",
+      "means": "the ONE way a stack whose order is DATA animates a reflow: measure the rows' boxes, let the new order commit, measure again, invert each row with a transform and play it out (First-Last-Invert-Play). The engine's `@manifold/plugin/ui` owns the arithmetic (`flipShifts`, `useFlipStack`); `prefers-reduced-motion: reduce` disables it entirely rather than shortening it. Named because the sidebar's row stack reflows for three unrelated reasons — an arrange commit, a keyboard nudge, a plugin being enabled or disabled — and a re-render teleports: motion is what says which row went where",
       "banned": [],
       "allow": []
     },
@@ -1280,12 +1285,12 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its sections, rows and inline actions — painted by `sidebar-panel.tsx`. Plugins fill these rows; the shell owns the row"
+      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, and the chrome each presentation wears, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand`, `.sidebar-status`, `.sidebar-bindings`, `.sidebar-identity` by core.shell's own four contributed rows. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make five plugins depend on a sixth's stylesheet"
     },
     {
       "family": "workspace",
       "owner": "packages/web/src/shell.css",
-      "why": "the workspace frame and its empty state, painted by `workspace.tsx` and `container-view-panel.tsx`"
+      "why": "the workspace frame, its empty state and the arrange-mode affordances the frame itself owns (`workspace-arrange-*`, `workspace-panel-grip*`) — painted by the floor host `workspace.tsx` and by @manifold-plugin/shell's `container-view-panel.tsx`. The frame's own family stays the floor's: a rule scoped by `.workspace` reaches whatever the HOST drew, which is S13's 'ownership follows the scope', and the panel grips are the host's own chrome over leaves it does not own"
     },
     {
       "family": "status",
@@ -1609,8 +1614,8 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-state",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
-      "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else"
+      "renderer": "packages/plugins/shell/src/status-row.tsx",
+      "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else. It moved out of the sidebar panel with the rest of the rail's chrome (2026-09-01): the status line is a CONTRIBUTED plain row (`core.shell.status`) now, so the renderer that owes this attribute is the row, not the panel that stacks it"
     },
     {
       "testid": "sidebar-list",
@@ -1619,12 +1624,12 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-status",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
-      "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence"
+      "renderer": "packages/plugins/shell/src/status-row.tsx",
+      "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence. Same move as the row above: the block is the `core.shell.status` row's own"
     },
     {
       "testid": "machines-section",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
       "why": "templated `${section.id}-section`, so this row is the join between a PLUGIN MANIFEST section id (core.machines) and three gates that open that section — the rename this register exists to make loud"
     },
     {
@@ -1784,7 +1789,7 @@ against the source tree, its browser half against a real server and a real brows
 
 | Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree (`workspaceLayout(WORKSPACE_PANELS)` — the floor's arrangement applied to the registration's own pair) exists in the assembly. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree — `composeDefaultLayout(roster)`, composed from the enabled roster's declared `contributes.seats` rather than from a constant — exists in the assembly, and the composition is `validateTileLayout`-clean. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` (the two `assembly.ts` files excepted); plugin packages import only protocol/scene/sdk/plugin.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | S4    | Every `data-action` literal in the source names an action the assembly actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
