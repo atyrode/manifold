@@ -14,8 +14,7 @@ import {
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
-import { Blocks, Lock, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import {
   PLUGIN_FILTERS,
@@ -43,7 +42,10 @@ import {
  * reader wants a door rather than a drawer. The row clusters beside the key table's row
  * (`cluster: "utility"`), which is why the opener wears the shell's own `.sidebar-opener`
  * vocabulary instead of a skin of its own: two doors side by side must be identical by
- * construction, not by two stylesheets agreeing.
+ * construction, not by two stylesheets agreeing. Its MARKS come from the same door for the
+ * same reason — `ControlIcon kind="assembly" | "locked" | "discard"`, never a lucide import of
+ * its own. Three call sites here used to hand-import a drawing and retype the wrapper's four
+ * props, one of them re-drawing `discard`, a kind the vocabulary already mapped (#116).
  *
  * Which rows offer a lever is decided by the roster's own `refusal` class rather than by a
  * rule written twice. Every class below is a refusal the door would produce, so the UI names
@@ -103,35 +105,72 @@ const TAB_LABELS: Readonly<Record<ManagerTab, string>> = {
 /**
  * WHAT DEPENDS ON WHAT, in both directions and in words rather than a graph.
  *
- * Both sentences are always printed, including their empty forms. "Needs nothing" and
- * "Nothing needs it" are the two facts a reader is actually after before pressing a toggle,
- * and a block that renders only when it has something to say makes their absence
- * indistinguishable from a UI that forgot to ask — the reader cannot tell "safe to turn off"
- * from "not computed", which is the one thing this block exists to answer.
+ * A sentence renders only when it has members (operator-ratified, #105): "Needs nothing"
+ * in every row was noise that buried the rows where the answer matters, and the block's
+ * absence now MEANS independence — the roster computes relations for every row, so an
+ * absent block is a computed empty, never a UI that forgot to ask. Both rows empty, the
+ * block is gone entirely.
+ *
+ * Every named plugin is a JUMP, not prose: pressing it clears the search and filter (the
+ * target may be hidden by either) and scrolls to that plugin's own row, because the reason
+ * a reader looks at a dependency is to go look at the dependency.
  *
  * Titles come from the ASSEMBLY (`host.assembly.pluginTitle`), the one name table for
  * plugins, and fall back to the id: a `required` dependency that was never composed has no
  * title anywhere, and printing its id is exactly the information a `missing_dependency`
  * refusal is about.
  */
+function DependencyNames({
+  ids,
+  pluginTitle,
+  onJump,
+}: {
+  readonly ids: readonly string[];
+  readonly pluginTitle: (id: string) => string;
+  readonly onJump: (id: string) => void;
+}): ReactElement {
+  return (
+    <>
+      {ids.map((id, index) => (
+        <Fragment key={id}>
+          {index === 0 ? null : ", "}
+          <button
+            className="plugin-manager-dep-link"
+            type="button"
+            aria-label={`Go to ${pluginTitle(id)}`}
+            onClick={() => onJump(id)}
+          >
+            {pluginTitle(id)}
+          </button>
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function DependencyBlock({
   relations,
   pluginTitle,
+  onJump,
 }: {
   readonly relations: PluginRelations;
   readonly pluginTitle: (id: string) => string;
-}): ReactElement {
+  readonly onJump: (id: string) => void;
+}): ReactElement | null {
   const { needs, neededBy } = relations;
+  if (needs.length === 0 && neededBy.length === 0) return null;
   return (
     <p className="plugin-manager-deps">
-      <span className="plugin-manager-dep">
-        {needs.length === 0 ? "Needs nothing" : `Needs ${needs.map(pluginTitle).join(", ")}`}
-      </span>
-      <span className="plugin-manager-dep">
-        {neededBy.length === 0
-          ? "Nothing needs it"
-          : `Needed by ${neededBy.map(pluginTitle).join(", ")}`}
-      </span>
+      {needs.length === 0 ? null : (
+        <span className="plugin-manager-dep">
+          Needs <DependencyNames ids={needs} pluginTitle={pluginTitle} onJump={onJump} />
+        </span>
+      )}
+      {neededBy.length === 0 ? null : (
+        <span className="plugin-manager-dep">
+          Needed by <DependencyNames ids={neededBy} pluginTitle={pluginTitle} onJump={onJump} />
+        </span>
+      )}
     </p>
   );
 }
@@ -204,6 +243,33 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const [removed, setRemoved] = useState<PluginPurgeResult | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  /**
+   * The row a dependency link is jumping to. Set together with clearing the search and
+   * filter (either may be hiding the target); the effect below scrolls once the unfiltered
+   * list has painted, and the highlight retires itself. State rather than a classList poke,
+   * so the flash cannot outlive the row it describes.
+   */
+  const [jumpId, setJumpId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (jumpId === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>(`[data-plugin="${CSS.escape(jumpId)}"]`)
+        ?.scrollIntoView({ block: "center" });
+    });
+    const timer = window.setTimeout(() => setJumpId(null), 1400);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [jumpId]);
+
+  const jumpTo = (id: string): void => {
+    setQuery("");
+    setFilter("all");
+    setJumpId(id);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -360,7 +426,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
             const armed = armedId === manifest.id;
             return (
               <div
-                className={`plugin-manager-row${entry.enabled ? "" : " is-disabled"}`}
+                className={`plugin-manager-row${entry.enabled ? "" : " is-disabled"}${jumpId === manifest.id ? " is-jump-target" : ""}`}
                 data-plugin={manifest.id}
                 data-source={entry.source}
                 key={manifest.id}
@@ -397,7 +463,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                     </button>
                   ) : (
                     <span className="plugin-manager-lock" title={hint} aria-label={hint}>
-                      <Lock className="mf-icon" size={13} strokeWidth={1.75} absoluteStrokeWidth />
+                      <ControlIcon kind="locked" size={13} />
                     </span>
                   )}
                   {!purgeable ? null : (
@@ -432,22 +498,14 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                         }
                       }}
                     >
-                      {armed ? (
-                        "Purge?"
-                      ) : (
-                        <Trash2
-                          className="mf-icon"
-                          size={13}
-                          strokeWidth={1.75}
-                          absoluteStrokeWidth
-                        />
-                      )}
+                      {armed ? "Purge?" : <ControlIcon kind="discard" size={13} />}
                     </button>
                   )}
                 </div>
                 <DependencyBlock
                   relations={pluginDependencies(roster, manifest.id)}
                   pluginTitle={(id) => assembly.pluginTitle(id) ?? id}
+                  onJump={jumpTo}
                 />
               </div>
             );
@@ -468,14 +526,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
         data-testid="plugin-manager-open"
         onClick={() => setOpen(true)}
       >
-        <Blocks
-          className="mf-icon"
-          size={16}
-          strokeWidth={1.75}
-          absoluteStrokeWidth
-          aria-hidden="true"
-          focusable="false"
-        />
+        <ControlIcon kind="assembly" />
         {sidebarOpen ? <span>Plugins</span> : null}
       </button>
       {typeof document !== "undefined" && open

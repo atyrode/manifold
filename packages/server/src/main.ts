@@ -201,17 +201,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     runtime,
     events,
   );
-  const http = new HttpApp(
-    config,
-    store,
-    auth,
-    rooms,
-    broker,
-    placement,
-    machines,
-    plugins,
-    logger,
-  );
+  const http = new HttpApp(config, store, auth, rooms, broker, machines, plugins, logger);
 
   const server = Bun.serve<WebSocketData>({
     port: config.port,

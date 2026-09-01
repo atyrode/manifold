@@ -446,7 +446,9 @@ export class SessionClient {
             this.setStatus("reconnecting");
             return;
           }
-          this.forgetSubscriptions();
+          // Only this ROOM died; the CONNECTION the refcounts live on is alive and still
+          // carrying the tab's other rooms, so the holds are withdrawn rather than dropped.
+          this.releaseSubscriptions();
           this.channel = null;
           this.closeError = new Error(
             reason.trim() === ""
@@ -471,10 +473,28 @@ export class SessionClient {
   }
 
   /**
+   * Withdraws this handle's refcounts ON THE WIRE and then drops them. The per-channel
+   * terminal close is exactly the case where the release closures still address something:
+   * the socket survives, other rooms keep using it, and this room's increments are the only
+   * thing standing between their topics and the 1→0 that emits `unsubscribe`. Discarding the
+   * closures here would strand those increments forever — a multiplexed socket permanently
+   * over-subscribed, with no later `off()` able to reach the withdrawal it was promised.
+   *
+   * The subscriptions themselves survive: `attach` re-declares them on the next channel.
+   */
+  private releaseSubscriptions(): void {
+    for (const record of this.subscriptions) {
+      record.release?.();
+      record.release = null;
+    }
+  }
+
+  /**
    * Drops this handle's refcounts WITHOUT withdrawing them on the wire: the connection they
-   * were counted on is gone, so there is nothing to tell and nobody to tell it. The
-   * subscriptions themselves survive — `attach` re-declares them on the next socket, which is
-   * what makes a subscription outlive a transport it never knew about.
+   * were counted on is gone, so there is nothing to tell and nobody to tell it. That premise
+   * holds for the TRANSPORT close alone, which is why the per-channel terminal path releases
+   * instead. The subscriptions themselves survive — `attach` re-declares them on the next
+   * socket, which is what makes a subscription outlive a transport it never knew about.
    */
   private forgetSubscriptions(): void {
     for (const record of this.subscriptions) record.release = null;
@@ -858,24 +878,6 @@ export class SessionClient {
     );
   }
 
-  /**
-   * One authed write to a route that is NOT an action. Exactly one door needs it — leaf
-   * removal — and the comment there says why that door is a route.
-   */
-  private async sendJson(method: string, path: string): Promise<void> {
-    const response = await fetch(`${this.apiOrigin()}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.opts.token}` },
-    });
-    if (response.ok) return;
-    const failure = HttpErrorSchema.safeParse(await response.json().catch(() => null));
-    throw new Error(
-      failure.success
-        ? failure.data.error.message
-        : `${method} ${path} failed (${String(response.status)})`,
-    );
-  }
-
   /** The enrolled machines with live online state (`core.machines.list`). */
   async machines(): Promise<readonly MachineSummary[]> {
     return MachinesResponseSchema.parse(await this.invoke("core.machines.list", {})).machines;
@@ -964,15 +966,15 @@ export class SessionClient {
   }
 
   /**
-   * Removes one leaf from a composition (`DELETE /api/containers/:id/tiles/:tileId`). Removal is
-   * the one tile gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so
-   * it keeps its own route while every MOVE of a leaf's occupant goes through `place`.
+   * Removes one leaf from a composition (`core.space.removeTile`). Removal is the one tile
+   * gesture that is NOT a placement — nothing accepts "nowhere" for a LEAF — so it is its own
+   * door while every MOVE of a leaf's occupant goes through `place`. It was its own ROUTE until
+   * issue #114: a bespoke `DELETE` that committed workspace state outside the dispatch ladder
+   * and therefore left no trace row. Same wrapper, same signature, same throw-on-refusal shape
+   * every caller was already written around — only the door underneath moved.
    */
   async removeContainerTile(containerId: string, tileId: string): Promise<void> {
-    await this.sendJson(
-      "DELETE",
-      `/api/containers/${encodeURIComponent(containerId)}/tiles/${encodeURIComponent(tileId)}`,
-    );
+    await this.invoke("core.space.removeTile", { containerId, tileId });
   }
 
   /** Creates an index folder (`core.index.createFolder`); answers the whole new index. */

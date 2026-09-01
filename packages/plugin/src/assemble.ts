@@ -289,9 +289,10 @@ export class AssemblyError extends Error {
 
 /**
  * Every claimant of a name, so a duplicate can be reported with all of its offenders.
- * Exported inside this package for the one other registry that composes claimed names — the
- * binding table (`bindings.ts`) — because "two plugins claimed one thing" must read the same
- * way whichever vocabulary it happened in.
+ * Exported from this package for the two other registries that compose claimed names — the
+ * binding table (`bindings.ts`) and the browser's four registration-time channels
+ * (`buildBrowserAssembly`, `packages/web/src/plugin-host.tsx`) — because "two plugins claimed
+ * one thing" must read the same way whichever vocabulary it happened in.
  */
 export type Claims = Map<string, string[]>;
 
@@ -443,6 +444,7 @@ export function assembleRoster(
   const toolIds: Claims = new Map();
   const eventIds: Claims = new Map();
   const seatPanels: Claims = new Map();
+  const routeSegments: Claims = new Map();
 
   const manifests = new Map<string, PluginManifest>();
   const summaries = new Map<string, ActionSummary[]>();
@@ -605,6 +607,13 @@ export function assembleRoster(
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });
     }
+    // A ROUTE SEGMENT is claimed GLOBALLY too, and for the plainest reason of the lot: there
+    // is ONE URL space, so `/uri/` is one plugin's or nobody's. The browser resolves a path
+    // by looking its first segment up in this vocabulary, which is why the claim has to be
+    // refused HERE rather than settled by whichever web half registered last.
+    for (const route of manifest.contributes.routes ?? []) {
+      claim(routeSegments, route.segment, manifest.id);
+    }
     // THE EVENT PLANE's vocabulary (ADR 0012). An event kind is claimed GLOBALLY, exactly as a
     // section slot and an element type are: `terminal_exited` names one concept, and a second
     // plugin claiming it would make a subscriber's match depend on which of the two emitted.
@@ -660,6 +669,7 @@ export function assembleRoster(
   reportDuplicates(toolIds, "tool", problems);
   reportDuplicates(eventIds, "event", problems);
   reportDuplicates(seatPanels, "seat", problems);
+  reportDuplicates(routeSegments, "route", problems);
 
   /*
     DEPENDENCIES. Two axes, deliberately separate (NeoForge's and Home Assistant's shape):

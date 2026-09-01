@@ -92,6 +92,13 @@ function sentTypes(socket: FakeSocket): string[] {
   return socket.sent.map((f) => SentFrameSchema.parse(JSON.parse(f)).type);
 }
 
+/** Every frame of one type the socket carried, parsed — the wire, as the server would read it. */
+function framesOfType(socket: FakeSocket, type: string): Record<string, unknown>[] {
+  return socket.sent
+    .map((raw) => SentFrameSchema.parse(JSON.parse(raw)))
+    .filter((frame) => frame.type === type);
+}
+
 type DocUpdateFrame = z.infer<typeof DocUpdateFrameSchema>;
 
 function docUpdateFrames(socket: FakeSocket): DocUpdateFrame[] {
@@ -436,6 +443,50 @@ describe("shared transport", () => {
       by: "peer",
     });
     expect(second.elements.has("still-live")).toBe(true);
+
+    second.close();
+  });
+
+  test("a room's terminal close withdraws its topic holds from the socket that survives", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    // One node, watched from both rooms: the refcount is the SOCKET's, so the pair costs
+    // one declaration and needs both holders gone before anything is withdrawn.
+    const WATCHED: ManifoldRef = { kind: "container", containerId: "watched" };
+    const offFirst = first.subscribe([WATCHED], () => undefined);
+    const offSecond = second.subscribe([WATCHED], () => undefined);
+    expect(framesOfType(socket, "subscribe")).toEqual([{ type: "subscribe", topics: [WATCHED] }]);
+
+    // The first room's container is deleted. That is terminal for the ROOM and for nothing
+    // else: the connection its hold was counted on keeps carrying the second room.
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "container deleted",
+    });
+    expect(first.status).toBe("closed");
+    expect(second.status).toBe("open");
+    expect(socket.closedWith).toBeNull();
+    // Nothing withdrawn yet — the surviving room still wants the topic.
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+
+    // The dead room's subscriber letting go is a no-op: its hold left with its channel, and
+    // releasing twice must never withdraw somebody else's subscription.
+    offFirst();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+
+    // The promise the refcount makes: the LAST holder's release reaches the wire. It only
+    // can if the terminal close decremented instead of discarding — a dropped hold would
+    // strand this topic at count 1 on a live socket, permanently over-subscribed.
+    offSecond();
+    expect(framesOfType(socket, "unsubscribe")).toEqual([
+      { type: "unsubscribe", topics: [WATCHED] },
+    ]);
 
     second.close();
   });
@@ -1253,11 +1304,6 @@ describe("the event plane", () => {
 
   const event = (topic: ManifoldRef, kind: string) =>
     JSON.stringify({ type: "event", topic, kind, at: 1, actor: "p1", payload: {} });
-
-  const framesOfType = (socket: FakeSocket, type: string): Record<string, unknown>[] =>
-    socket.sent
-      .map((raw) => SentFrameSchema.parse(JSON.parse(raw)))
-      .filter((frame) => frame.type === type);
 
   test("subscribe declares structured topics on the SOCKET, with no channel", () => {
     const { client, socket } = connected();

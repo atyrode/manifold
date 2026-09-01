@@ -207,6 +207,39 @@ export type Toolbar = (typeof TOOLBARS)[number];
 export const DEFAULT_TOOLBAR: Toolbar = "canvas";
 
 /**
+ * A BROWSER PATH SEGMENT, as a claim: lowercase, digits and dashes, which is exactly the
+ * shape the browser's own router matches (`PLUGIN_ROUTE`, `packages/web/src/app.tsx`, which
+ * tests captured segments against this pattern rather than spelling the class a second time).
+ * A segment carries no slash, so `/uri/<rest>` splits unambiguously into the claim and the
+ * rest nobody but the claimant reads.
+ */
+export const ROUTE_SEGMENT_PATTERN = /^[a-z][a-z0-9-]*$/;
+export const RouteSegmentSchema = z.string().regex(ROUTE_SEGMENT_PATTERN).max(32);
+
+/**
+ * ONE CONTRIBUTED ROUTE: the URL space a plugin owns, named by its first path segment
+ * (`core.uri` claims `uri` and serves `/uri/<rest>`).
+ *
+ * The manifest counterpart the web channel went without: a route was a registration-time
+ * convention, so the roster could not publish the paths a build answers on and two plugins
+ * claiming one segment shadowed each other by registration order. Declaring it makes the
+ * claim DATA — published at `GET /api/plugins`, refused with both offenders named when two
+ * manifests want one segment (D5), and the reason a registration for an undeclared segment
+ * contributes nothing, exactly as a smuggled panel does.
+ *
+ * A segment is claimed GLOBALLY, unlike a panel: there is one URL space, and `/uri/` means
+ * one plugin's route or nobody's.
+ *
+ * Absent ≡ this plugin claims no path, which is what every manifest written before the field
+ * existed says.
+ */
+export const RouteDefSchema = z.strictObject({
+  segment: RouteSegmentSchema,
+  title: TitleSchema,
+});
+export type RouteDef = z.infer<typeof RouteDefSchema>;
+
+/**
  * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
@@ -216,7 +249,8 @@ export const DEFAULT_TOOLBAR: Toolbar = "canvas";
  * are where those panels ask to sit in a workspace nobody has arranged (see
  * {@link SeatDefSchema}), `sections` are sidebar rows ordered by their declared `order` (see
  * {@link SectionDefSchema}), `elements` are canvas element renderers keyed by wire type,
- * `tools` are toolbar tools.
+ * `tools` are toolbar tools, and `routes` are the URL spaces it claims (see
+ * {@link RouteDefSchema}).
  */
 const ContributesSchema = z.strictObject({
   panels: z.array(PanelDefSchema).max(8).default([]),
@@ -271,6 +305,13 @@ const ContributesSchema = z.strictObject({
     .array(z.strictObject({ id: EventKindSchema, title: TitleSchema }))
     .max(16)
     .default([]),
+  /**
+   * THE URL SPACES THIS PLUGIN CLAIMS ({@link RouteDefSchema}). Optional rather than
+   * defaulted to `[]` for the reason `seats` is: absence is a MEANING — this plugin answers
+   * on no path of its own — so every manifest written before the field existed keeps exactly
+   * the sense it had, and the browser's route table stays the sum of what the roster claimed.
+   */
+  routes: z.array(RouteDefSchema).max(8).optional(),
 });
 
 /**

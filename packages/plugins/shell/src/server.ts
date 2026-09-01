@@ -45,6 +45,19 @@ interface PlaceCtx {
   readonly emit: EmitEvent;
 }
 
+/**
+ * Leaf removal's slice. The executor answers `"ok"` or names the state that stopped it — the
+ * same two failures `place` reports — and nothing else about the algebra is reachable from
+ * here: removing a leaf is one call, and which occupant that leaf held (and therefore whether
+ * a terminal was reaped or a composition retired) is the floor's rule, not this plugin's.
+ */
+interface RemoveTileCtx {
+  readonly placement: {
+    removeTile(containerId: string, tileId: string): "ok" | "not_found" | "conflict";
+  };
+  readonly emit: EmitEvent;
+}
+
 /** Either the empty result the action publishes, or a refusal the door turns into a denial. */
 type Outcome = { refused: string } | Record<string, never>;
 
@@ -148,5 +161,32 @@ export const spaceHandlers = {
       });
     }
     return outcome.result;
+  },
+
+  /**
+   * One leaf, removed (issue #114). This was a bespoke DELETE route that mutated a
+   * composition's tree without passing the ladder — the single untraced door in the tree —
+   * and the conversion is behaviour-preserving on every rung: the same capability, the same
+   * container-scope refusal (now the declared scope rather than a hand-written throw), and the
+   * same two state answers.
+   *
+   * The two failures become the `refused` rung, for `place`'s reason: the route raised HTTP
+   * 404/409 for "no such leaf" and "that leaf is not removable", and both are ANSWERS ABOUT
+   * STATE rather than transport faults. The ladder's rule is that a refusal is data.
+   *
+   * The announcement is `item_placed`'s mirror — the container that held the leaf, once, after
+   * the write — and it is staged, so a refusal above publishes nothing.
+   */
+  async removeTile(
+    ctx: RemoveTileCtx,
+    args: { containerId: string; tileId: string },
+  ): Promise<Outcome> {
+    const removed = ctx.placement.removeTile(args.containerId, args.tileId);
+    if (removed === "not_found") return { refused: "not_found: tile not found" };
+    if (removed === "conflict") return { refused: "conflict: tile is not removable" };
+    ctx.emit({ kind: "container", containerId: args.containerId }, "tile_removed", {
+      tileId: args.tileId,
+    });
+    return {};
   },
 };

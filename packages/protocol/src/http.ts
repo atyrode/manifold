@@ -122,8 +122,6 @@ export const HealthResponseSchema = z.strictObject({
   build: z.string().min(1).optional(),
 });
 
-export const OkResponseSchema = z.strictObject({ ok: z.literal(true) });
-
 export const ContainerResponseSchema = z.strictObject({ container: ContainerSchema });
 export const ContainersResponseSchema = z.strictObject({ containers: z.array(ContainerSchema) });
 /** Who is in one container's room right now — the attendance of that room. */
@@ -229,9 +227,14 @@ export function censusSolo(census: ContainerCensus): CensusItem | null {
  * declarations rather than from a schema per gesture. Expand had nothing left to do once
  * every terminal already lived in a
  * composition: entering one is navigation to something that exists. Pin had nothing left to
- * claim once no container dissolved under anybody. Only leaf REMOVAL kept its own route
- * (`DELETE /api/containers/:id/tiles/:tileId`), because removal is not a placement: it
- * addresses the leaf rather than moving its occupant anywhere.
+ * claim once no container dissolved under anybody. Leaf REMOVAL is not a placement — nothing
+ * accepts "nowhere" for a LEAF, so it addresses the leaf rather than moving its occupant
+ * anywhere — and it kept its own route (`DELETE /api/containers/:id/tiles/:tileId`) for
+ * exactly that long. Being a different verb never made it a different KIND of thing: it is a
+ * discrete authority-bearing mutation, so it is now `core.space.removeTile`, the second door
+ * on the plugin that owns the tree, dispatched through the same ladder and traced by it
+ * (issue #114). No route here mutates a container any more, and none carried a `{ ok: true }`
+ * envelope out of this file, so `OkResponseSchema` went with the last one that did.
  */
 /**
  * A machine as `core.machines.list` publishes it. `color` is DERIVED, not stored: the

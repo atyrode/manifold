@@ -32,7 +32,9 @@ export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";
 export {
   AssemblyError,
   assembleRoster,
+  claim,
   panelRefId,
+  reportDuplicates,
   rosterElementTraits,
   type Assembly,
   type AssemblyAction,
@@ -42,6 +44,7 @@ export {
   type AssemblyPanel,
   type AssemblySection,
   type AssemblyTool,
+  type Claims,
   type PluginAttribution,
   type PluginDef,
   type PluginStoredData,

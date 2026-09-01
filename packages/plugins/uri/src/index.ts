@@ -8,9 +8,11 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * It contributes no panels, sections, elements or tools, and declares no capabilities:
  * following a link reads nothing the viewer could not already read and mutates nothing at all.
- * Its only contribution is a ROUTE, which the manifest has no vocabulary for this wave —
- * routes are attached by the web half alone, so the manifest exists to make the plugin
- * disableable and nameable (a disabled `core.uri` renders a placeholder at that route).
+ * Its one contribution is the ROUTE below — the path segment it claims in the URL space every
+ * plugin shares, so the roster publishes the paths this build answers on and a second plugin
+ * wanting `uri` is refused with both names rather than shadowing this one (D5). The web half
+ * says who draws it; the manifest says it exists, which is also what makes a disabled
+ * `core.uri` render a named placeholder at that route.
  */
 export const uriManifest: PluginManifest = {
   id: "core.uri",
@@ -18,5 +20,12 @@ export const uriManifest: PluginManifest = {
   title: "Links",
   description: "Resolves manifold:// deep links into the workspace.",
   capabilities: [],
-  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  contributes: {
+    panels: [],
+    sections: [],
+    elements: [],
+    tools: [],
+    events: [],
+    routes: [{ segment: "uri", title: "Deep links" }],
+  },
 };

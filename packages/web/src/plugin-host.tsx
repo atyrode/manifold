@@ -20,9 +20,13 @@ import {
   type TerminalFacet,
 } from "@manifold/plugin/hooks";
 import {
+  AssemblyError,
+  claim,
   composeBindings,
+  reportDuplicates,
   ENGINE_SET_ENABLED_ACTION,
   type BindingSource,
+  type Claims,
   type ComposedBinding,
   type ComposedPanel,
   type ComposedSection,
@@ -90,14 +94,21 @@ import { FEED_TOPICS, WEB_PLUGIN_DEFS } from "./assembly.ts";
  * props on a canvas, a plain render in a tile leaf. Keeping the registry opaque is what stops
  * one frame's props from becoming the contract.
  *
- * FOUR of these channels have no manifest counterpart — `routes`, `renderers`, `overlays`
- * and `terminals` — and they share one rationale: none of them is a ref the WORKSPACE
- * composes, so there is nothing for a principal's layout or the sidebar order to name. A path
- * is an entry point the browser hands over; a container ref, an overlay and the terminal viewer
- * are projections one renderer asks another plugin for (`@manifold/plugin/hooks`'
- * {@link ProjectionRegistry}). The roster still decides whether the registering plugin is
- * ENABLED, which is what keeps every one of them painting the engine's named placeholder
- * instead of disappearing.
+ * THREE of these channels have no manifest counterpart — `renderers`, the two `overlays`
+ * kinds and `terminals` — and they share one rationale: none of them is a ref the WORKSPACE
+ * composes, so there is nothing for a principal's layout or the sidebar order to name. A
+ * container ref, an overlay and the terminal viewer are projections one renderer asks another
+ * plugin for (`@manifold/plugin/hooks`' {@link ProjectionRegistry}), keyed by a CLOSED
+ * vocabulary the engine owns — a discipline, a slot — rather than by a word an author picks.
+ * `routes` is the exception and always was one: a path segment is a name its author invents
+ * in a space every plugin shares, so it is DECLARED (`RouteDefSchema`) and this channel only
+ * says who draws it, exactly as `panels` and `elements` do.
+ *
+ * What every one of them now shares is the refusal: a duplicate key names both offenders
+ * (`buildBrowserAssembly`), because a channel whose second registrant silently wins is a
+ * channel where the winner is whoever the roster happened to order last. The roster still
+ * decides whether the registering plugin is ENABLED, which is what keeps every one of them
+ * painting the engine's named placeholder instead of disappearing.
  */
 export interface WebPluginDef {
   readonly id: string;
@@ -105,7 +116,10 @@ export interface WebPluginDef {
   readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
   /**
-   * URL space a plugin owns, keyed by FIRST PATH SEGMENT (`uri` serves `/uri/<rest>`).
+   * Who draws a URL space this plugin's manifest CLAIMED, keyed by that claim's first path
+   * segment (`uri` serves `/uri/<rest>`). A key the manifest's `contributes.routes` does not
+   * declare contributes nothing, and a declared segment with no key here renders the engine's
+   * placeholder — the same two answers `panels` gets.
    */
   readonly routes?: Readonly<Record<string, ComponentType<{ rest: string; host: HostServices }>>>;
   /**
@@ -139,10 +153,10 @@ export interface WebPluginDef {
    */
   readonly terminals?: TerminalFacet;
   /**
-   * The keys this plugin claims, declaration and handler together. No manifest counterpart, and
-   * for a fifth distinct reason: a key is not a ref the WORKSPACE composes, so no layout and no
-   * sidebar order can name one — but unlike the four channels above it is claimed GLOBALLY, so
-   * the composition refuses two plugins that want one key naming both (D5). See
+   * The keys this plugin claims, declaration and handler together. No manifest counterpart,
+   * and for a distinct reason: a key is not a ref the WORKSPACE composes and not a closed
+   * vocabulary either — it is a name claimed GLOBALLY out of a space the whole keyboard
+   * shares, and the composition refuses two plugins that want one key naming both (D5). See
    * `@manifold/plugin`'s `BindingDef`.
    */
   readonly bindings?: readonly WebBinding[];
@@ -179,13 +193,14 @@ export interface WebSection extends ComposedSection {
 }
 
 /**
- * A registered URL space, keyed in the composition by its first path segment. It has no
- * manifest row (see `WebPluginDef.routes`), so `plugin` is the registering plugin and
- * `enabled` is that plugin's roster state.
+ * A declared URL space, keyed in the composition by the first path segment its manifest
+ * claimed (`RouteDefSchema`). `plugin` is the claimant and `enabled` is that plugin's roster
+ * state, so a disabled deep link is a named placeholder rather than a dead end.
  */
 export interface WebRoute {
   readonly plugin: string;
-  readonly Component: ComponentType<{ rest: string; host: HostServices }>;
+  /** Null when the manifest claimed the segment and the web half registered no component. */
+  readonly Component: ComponentType<{ rest: string; host: HostServices }> | null;
   readonly enabled: boolean;
 }
 
@@ -220,7 +235,7 @@ export interface BrowserAssembly {
   /** Sorted by declared `order`; ties keep roster order. */
   readonly sections: readonly WebSection[];
   readonly elements: ReadonlyMap<string, RegisteredElement>;
-  /** Keyed by first path segment; a route the roster does not know is simply absent. */
+  /** Keyed by the claimed first path segment; a segment no manifest claimed is absent. */
   readonly routes: ReadonlyMap<string, WebRoute>;
   readonly tools: readonly RegisteredTool[];
   /** Keyed by container discipline (`canvas`, `composition`). */
@@ -281,6 +296,17 @@ export function buildBrowserAssembly(
   >();
   let terminals: WebTerminals | null = null;
   const bindingSources: BindingSource[] = [];
+  /*
+    WHO CLAIMED WHAT, for the channels this join owns the vocabulary of. The engine's own
+    `Claims` type and reporter, deliberately, rather than a browser-local check: "two plugins
+    claimed one thing" is one sentence in this system, wherever it is raised (`reportDuplicates`,
+    `@manifold/plugin`).
+   */
+  const routeSegments: Claims = new Map();
+  const rendererDisciplines: Claims = new Map();
+  const overlaySlots: Claims = new Map();
+  const workspaceOverlaySlots: Claims = new Map();
+  const terminalFacets: Claims = new Map();
 
   for (const entry of roster) {
     const { manifest, enabled } = entry;
@@ -333,21 +359,36 @@ export function buildBrowserAssembly(
         enabled,
       });
     }
-    // Routes have no manifest row to iterate, so they come from the REGISTRATION and take
-    // the registering plugin's roster state — which is what keeps a disabled plugin's deep
-    // link rendering a named placeholder instead of a dead end.
-    for (const [segment, Component] of Object.entries(def?.routes ?? {})) {
-      routes.set(segment, { plugin: manifest.id, Component, enabled });
+    /*
+      ROUTES are the one of these channels with a manifest row (`RouteDefSchema`), so they
+      read exactly as panels and elements do: the DECLARATION is the vocabulary, the
+      registration only says who draws it, and a component for a segment this manifest never
+      claimed contributes nothing. `enabled` is the registering plugin's own, which is what
+      keeps a disabled plugin's deep link rendering a named placeholder instead of a dead end.
+     */
+    for (const route of manifest.contributes.routes ?? []) {
+      claim(routeSegments, route.segment, manifest.id);
+      routes.set(route.segment, {
+        plugin: manifest.id,
+        Component: def?.routes?.[route.segment] ?? null,
+        enabled,
+      });
     }
     /*
-      The three PROJECTION channels, and the reason they read the same way as `routes`: a
+      The PROJECTION channels, and the reason they read differently from `routes`: a
       registration with no manifest row still belongs to a plugin, so it inherits that
       plugin's roster state and paints the engine's placeholder (or, for an overlay, nothing)
       the moment the plugin is disabled. `title` is the plugin's own, because that is what a
       placeholder must name — the missing renderer has no title of its own to borrow.
+
+      Every key is CLAIMED as it is registered, and the claims are ruled on after the roster
+      (`reportDuplicates`, below): a registration-time channel with no manifest row still owes
+      D5 its refusal, and until this loop collected claims the second registrant of a
+      discipline or a slot silently won by roster order.
      */
-    for (const [layout, Component] of Object.entries(def?.renderers ?? {})) {
-      renderers.set(layout, {
+    for (const [discipline, Component] of Object.entries(def?.renderers ?? {})) {
+      claim(rendererDisciplines, discipline, manifest.id);
+      renderers.set(discipline, {
         plugin: manifest.id,
         title: manifest.title,
         Component,
@@ -362,11 +403,13 @@ export function buildBrowserAssembly(
     for (const slot of OVERLAY_SLOTS) {
       const Component = def?.overlays?.[slot];
       if (Component === undefined) continue;
+      claim(overlaySlots, slot, manifest.id);
       overlays.set(slot, { plugin: manifest.id, title: manifest.title, Component, enabled });
     }
     for (const slot of WORKSPACE_OVERLAY_SLOTS) {
       const Component = def?.workspaceOverlays?.[slot];
       if (Component === undefined) continue;
+      claim(workspaceOverlaySlots, slot, manifest.id);
       workspaceOverlays.set(slot, {
         plugin: manifest.id,
         title: manifest.title,
@@ -375,6 +418,10 @@ export function buildBrowserAssembly(
       });
     }
     if (def?.terminals !== undefined) {
+      // The facet is ONE registration for the whole workspace, so it is claimed under the
+      // projection key every mount site asks for it by: two plugins publishing a terminal
+      // viewer is the same event as two claiming an overlay slot, not a silent handover.
+      claim(terminalFacets, "terminals", manifest.id);
       terminals = {
         plugin: manifest.id,
         title: manifest.title,
@@ -392,6 +439,26 @@ export function buildBrowserAssembly(
       bindingSources.push({ plugin: manifest.id, enabled, bindings: def.bindings });
     }
   }
+
+  /*
+    THE REFUSAL, in the engine's own words and for the engine's own reason: a name two plugins
+    claimed is an authoring bug, and the answer is both offenders rather than a winner whose
+    identity depends on registration order (`AssemblyError`). These five channels are checked
+    HERE because the server never sees them — a renderer, an overlay slot and the terminal
+    facet are browser registrations, and a route's manifest row is re-checked for the reason
+    `assembleRoster` is re-runnable at all: the browser composes a roster too.
+
+    Claims come from the WHOLE roster, disabled entries included, exactly as `assembleRoster`
+    checks names: turning a plugin off may never mask a collision that turning it back on
+    would resurrect.
+   */
+  const problems: string[] = [];
+  reportDuplicates(routeSegments, "route", problems);
+  reportDuplicates(rendererDisciplines, "renderer", problems);
+  reportDuplicates(overlaySlots, "overlay", problems);
+  reportDuplicates(workspaceOverlaySlots, "workspace overlay", problems);
+  reportDuplicates(terminalFacets, "facet", problems);
+  if (problems.length > 0) throw new AssemblyError(problems);
 
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
   // the engine's `assembleRoster` applies server-side.

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { InstanceOriginSchema } from "./origin.ts";
-import { containmentPath } from "./uri.ts";
+import { MANIFOLD_URI_SCHEME, containmentPath } from "./uri.ts";
 
 /**
  * AUTHORITY AS DATA (ADR 0011). A grant names _who_, _where_, _what_, allow or deny, and how
@@ -118,8 +118,14 @@ export const CreateGrantRequestSchema = z.strictObject({
 });
 export type CreateGrantRequest = z.infer<typeof CreateGrantRequestSchema>;
 
+/**
+ * Naming a row to delete, bounded at the width the ROW's id has rather than the 128 every other
+ * id gets: a revoke argument is an id `GrantSchema` produced, so a narrower bound here is a row
+ * that can be written and never withdrawn — and migration 13's derived ids
+ * (`grant-token-<tokenId>`) are exactly the ones that overflow 128.
+ */
 export const RevokeGrantRequestSchema = z.strictObject({
-  grantId: z.string().min(1).max(128),
+  grantId: z.string().min(1).max(MAX_GRANT_ID_LENGTH),
 });
 export type RevokeGrantRequest = z.infer<typeof RevokeGrantRequestSchema>;
 
@@ -139,3 +145,42 @@ export const GrantsSchema = z.strictObject({
   grants: z.array(GrantSchema),
 });
 export type Grants = z.infer<typeof GrantsSchema>;
+
+/**
+ * The grant vocabulary, published — the counterpart of `pluginVocabulary()`,
+ * `eventVocabulary()` and `instanceVocabulary()`. A stranger's agent reading
+ * `GET /api/protocol` learns the shapes behind `core.access.grant`,
+ * `core.access.revokeGrant` and `core.access.listGrants` from the declarations themselves:
+ * what a row IS, the two closed pairs a row must decide, and what each of the three doors
+ * takes and answers.
+ *
+ * A3 is why it is here rather than only in prose. The three doors already publish their
+ * argument schemas through the live action roster, but a roster row describes ONE door; the
+ * authority model it opens — that `effect` and `reach` are closed pairs with no default, that
+ * WHERE is a `manifold://` URI and not an id — is a shape all three share, and a shape shared
+ * by three doors that lives in none of them is a shape a stranger reconstructs by guessing.
+ *
+ * `nodeScheme` is published beside the node schema because the generated JSON Schema cannot
+ * carry the refinement that matters: a bounded string is all `z.toJSONSchema` can say about a
+ * value whose real constraint is the containment walk, so the scheme is stated as data rather
+ * than left for a reader to infer from a `maxLength`.
+ *
+ * What is NOT here is which rows a given workspace holds. That is `core.access.listGrants`'s
+ * answer, and this package describes shapes, never their inhabitants.
+ */
+export function grantVocabulary(): Record<string, unknown> {
+  return {
+    effects: GRANT_EFFECTS,
+    reaches: GRANT_REACHES,
+    nodeScheme: MANIFOLD_URI_SCHEME,
+    maxNodeLength: MAX_GRANT_NODE_LENGTH,
+    maxIdLength: MAX_GRANT_ID_LENGTH,
+    principal: z.toJSONSchema(GrantPrincipalSchema),
+    node: z.toJSONSchema(GrantNodeSchema),
+    grant: z.toJSONSchema(GrantSchema),
+    createRequest: z.toJSONSchema(CreateGrantRequestSchema),
+    revokeRequest: z.toJSONSchema(RevokeGrantRequestSchema),
+    listRequest: z.toJSONSchema(ListGrantsRequestSchema),
+    listResult: z.toJSONSchema(GrantsSchema),
+  };
+}

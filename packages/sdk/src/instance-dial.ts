@@ -4,7 +4,6 @@ import {
   HostToGuestMessageSchema,
   MAX_ADVERTISED_TICKETS,
   PROTOCOL_VERSION,
-  reconnectDelayMs,
   type Cap,
   type DialStatus,
   type GuestMessage,
@@ -13,6 +12,12 @@ import {
   type Principal,
   type TicketRefusal,
 } from "@manifold/protocol";
+import {
+  LivenessWatchdog,
+  MALFORMED_FRAME_CLOSE_CODE,
+  ReconnectBackoff,
+  classifyEnvelope,
+} from "./dial-loop.ts";
 
 /**
  * THE guest half of the instance channel (ADR 0014): one long-lived control link from this
@@ -54,22 +59,14 @@ type ClassifiedFrame =
  * Frame policy, identical to the agent's and the pool's: an unknown `type` is ignored for
  * forward compatibility (a newer host may say things this guest has no opinion about), while a
  * malformed frame of a KNOWN type means the two ends disagree about a shape they both claim to
- * speak — close and heal through the reconnect path.
+ * speak — close and heal through the reconnect path. The envelope half is the dial skeleton's
+ * (`./dial-loop.ts`); what a valid host frame IS stays here, with the schema that says so.
  */
 function classifyHostFrame(data: unknown): ClassifiedFrame {
-  if (typeof data !== "string") return { kind: "malformed" };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return { kind: "malformed" };
-  }
-  if (raw === null || typeof raw !== "object" || typeof Reflect.get(raw, "type") !== "string") {
-    return { kind: "malformed" };
-  }
-  if (KNOWN_HOST_TYPES[Reflect.get(raw, "type") as string] !== true)
-    return { kind: "unknown_type" };
-  const parsed = HostToGuestMessageSchema.safeParse(raw);
+  const envelope = classifyEnvelope(data, (type) => KNOWN_HOST_TYPES[type] === true);
+  if (envelope.kind === "unknown_type") return envelope;
+  if (envelope.kind === "malformed") return { kind: "malformed" };
+  const parsed = HostToGuestMessageSchema.safeParse(envelope.raw);
   return parsed.success ? { kind: "message", message: parsed.data } : { kind: "malformed" };
 }
 
@@ -120,15 +117,12 @@ export class InstanceDial {
   private readonly token: string;
   private readonly selfOrigin: string;
   private readonly shouldReconnect: boolean;
-  private readonly backoffCapMs: number;
   private readonly ticketTimeoutMs: number;
-  private readonly livenessTimeoutMs: number;
   private readonly createSocket: (url: string) => WebSocket;
 
   private socket: WebSocket | null = null;
-  private attempts = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private livenessTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly backoff: ReconnectBackoff;
+  private readonly liveness: LivenessWatchdog;
   private closed = false;
   private statusValue: DialStatus = "offline";
   private hostOriginValue: string | null = null;
@@ -152,10 +146,18 @@ export class InstanceDial {
     this.token = options.token;
     this.selfOrigin = options.origin;
     this.shouldReconnect = options.reconnect ?? true;
-    this.backoffCapMs = options.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
     this.ticketTimeoutMs = options.ticketTimeoutMs ?? DEFAULT_TICKET_TIMEOUT_MS;
-    this.livenessTimeoutMs = options.livenessTimeoutMs ?? DIAL_LIVENESS_TIMEOUT_MS;
     this.createSocket = options.webSocketFactory ?? ((url: string) => new WebSocket(url));
+    this.liveness = new LivenessWatchdog({
+      timeoutMs: options.livenessTimeoutMs ?? DIAL_LIVENESS_TIMEOUT_MS,
+      reason: "host silent past deadline",
+      current: () => this.socket,
+    });
+    this.backoff = new ReconnectBackoff({
+      baseMs: DEFAULT_BACKOFF_BASE_MS,
+      capMs: options.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS,
+      dial: () => this.dial(),
+    });
     this.dial();
   }
 
@@ -252,7 +254,7 @@ export class InstanceDial {
     this.socket = socket;
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.armLiveness(socket);
+      this.liveness.arm(socket);
       this.send(socket, {
         type: "hello",
         protocolVersion: PROTOCOL_VERSION,
@@ -264,7 +266,7 @@ export class InstanceDial {
     };
     socket.onmessage = (event: MessageEvent) => {
       if (this.socket !== socket) return;
-      this.armLiveness(socket);
+      this.liveness.arm(socket);
       this.onFrame(socket, event.data);
     };
     socket.onerror = () => this.onDisconnect(socket);
@@ -277,7 +279,7 @@ export class InstanceDial {
       case "unknown_type":
         return;
       case "malformed":
-        socket.close(4002, "malformed frame");
+        socket.close(MALFORMED_FRAME_CLOSE_CODE, "malformed frame");
         return;
       case "message":
         this.handle(socket, classified.message);
@@ -292,7 +294,7 @@ export class InstanceDial {
   private handle(socket: WebSocket, message: HostToGuestMessage): void {
     switch (message.type) {
       case "welcome": {
-        this.attempts = 0;
+        this.backoff.reset();
         this.hostOriginValue = message.origin;
         this.serverEpochValue = message.serverEpoch;
         this.shareValue = {
@@ -341,26 +343,11 @@ export class InstanceDial {
     socket.send(JSON.stringify(message));
   }
 
-  /**
-   * Phantom-transport watchdog, the dialing side of the one liveness scheme: a healthy link
-   * carries host pings every `DIAL_PING_INTERVAL_MS` even when idle, so silence past the
-   * deadline means dead TCP nobody RST. Close locally and heal through reconnect.
-   */
-  private armLiveness(socket: WebSocket): void {
-    clearTimeout(this.livenessTimer ?? undefined);
-    this.livenessTimer = setTimeout(() => {
-      this.livenessTimer = null;
-      if (this.socket !== socket) return;
-      socket.close(4008, "host silent past deadline");
-    }, this.livenessTimeoutMs);
-  }
-
   private onDisconnect(socket: WebSocket, code?: number): void {
     if (this.socket !== socket) return;
     this.socket = null;
     this.serverEpochValue = null;
-    clearTimeout(this.livenessTimer ?? undefined);
-    this.livenessTimer = null;
+    this.liveness.clear();
     this.failPending();
     if (code === REVOKED_CLOSE_CODE) {
       /*
@@ -374,12 +361,7 @@ export class InstanceDial {
     }
     this.setStatus("offline");
     if (this.closed || !this.shouldReconnect) return;
-    const delay = reconnectDelayMs(this.attempts, DEFAULT_BACKOFF_BASE_MS, this.backoffCapMs);
-    this.attempts += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.dial();
-    }, delay);
+    this.backoff.schedule();
   }
 
   private failPending(): void {
@@ -389,10 +371,8 @@ export class InstanceDial {
   }
 
   private clearTimers(): void {
-    clearTimeout(this.reconnectTimer ?? undefined);
-    clearTimeout(this.livenessTimer ?? undefined);
-    this.reconnectTimer = null;
-    this.livenessTimer = null;
+    this.backoff.cancel();
+    this.liveness.clear();
   }
 
   private setStatus(status: DialStatus): void {

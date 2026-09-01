@@ -222,17 +222,7 @@ function placementFixture(): PlacementFixture {
   const machine = new FakeMachine(auth.enrollMachine("placement machine", root).machine.id);
   broker.setMachineOnline(machine);
   const opener = new SessionChannel(runtime.newId(), new FakeSocket(), root, canvas.id, "c1");
-  const app = new HttpApp(
-    config,
-    store,
-    auth,
-    rooms,
-    broker,
-    placement,
-    machines,
-    plugins,
-    silentLogger,
-  );
+  const app = new HttpApp(config, store, auth, rooms, broker, machines, plugins, silentLogger);
   const partial = {
     runtime,
     store,

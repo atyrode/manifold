@@ -334,7 +334,7 @@
   letter-spacing: 0;
 }
 
-/* Both dependency sentences always print, so this block has a fixed shape whatever it says. */
+/* Dependency sentences render only when they have members (#105): absence means independence. */
 .plugin-manager-deps {
   display: grid;
   gap: 0.02rem;
@@ -348,6 +348,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A named dependency is a JUMP to its own row, so it reads as a link, not prose. */
+.plugin-manager-dep-link {
+  display: inline;
+  border: 0;
+  padding: 0;
+  color: #8ea4e8;
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.plugin-manager-dep-link:hover,
+.plugin-manager-dep-link:focus-visible {
+  color: #b6c6f5;
+}
+
+/* The row a dependency link just landed on; retires itself with the jump state. */
+.plugin-manager-row.is-jump-target {
+  background: rgb(76 110 245 / 16%);
+  transition: background 0.5s ease;
 }
 
 /* The named deferral. Prose, so it WRAPS, and quiet enough that it never reads as an error. */

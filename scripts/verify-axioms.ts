@@ -700,6 +700,17 @@ for (const row of registries.floor) {
     "@manifold/plugin/hooks": true,
     "@manifold/plugin/ui": true,
   };
+  /**
+   * A DRAWING IS NOT A DEPENDENCY A PLUGIN MAY NAME. `@manifold/plugin/ui` is THE icon
+   * vocabulary's one door (`ControlIcon`, `ItemIcon`), and the whole value of that door is
+   * that re-drawing the set is a change to one file: a plugin that imports `lucide-react`
+   * itself owns a mark that stops moving when the set moves, and re-types the wrapper's four
+   * props for the privilege. #116 found three packages doing it — `core.pluginManager` even
+   * re-drew `discard`, a kind the vocabulary already maps — so the sweep is a check rather
+   * than a memory. The floor's `packages/plugin/src/ui/icons.tsx` is not scanned here and is
+   * the one place the name may appear.
+   */
+  const DRAWINGS = "lucide-react";
   const offenders: string[] = [];
   let scanned = 0;
   for (const owner of PLUGIN_PACKAGES) {
@@ -714,6 +725,11 @@ for (const row of registries.floor) {
         if (text.startsWith("@manifold/") && ENGINE[text] !== true) {
           offenders.push(`${path}:${String(specifier.line)} imports ${text}`);
         }
+        if (text === DRAWINGS || text.startsWith(`${DRAWINGS}/`)) {
+          offenders.push(
+            `${path}:${String(specifier.line)} imports ${text}; ask @manifold/plugin/ui for a kind`,
+          );
+        }
       }
     }
   }
@@ -721,7 +737,7 @@ for (const row of registries.floor) {
     "S2 plugins import only the engine",
     offenders.length === 0,
     offenders.length === 0
-      ? `${String(scanned)} plugin sources import only protocol/scene/sdk/plugin`
+      ? `${String(scanned)} plugin sources import only protocol/scene/sdk/plugin, and no drawing`
       : list(offenders),
   );
 }
@@ -919,7 +935,6 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/layout",
   "/api/bindings",
   "/api/attendance",
-  "/api/containers/:id/tiles/:id",
   "/api/plugins",
   "/api/protocol",
   "/api/resolve",
