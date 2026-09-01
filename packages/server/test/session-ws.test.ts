@@ -776,6 +776,135 @@ describe("SessionGateway gesture cadence", () => {
     fixture.gateway.shutdown();
     fixture.store.close();
   });
+
+  /*
+    THE CROSS-ROOM HALF (issue #66, audit 4.2). A carry over a portal streams through the
+    CANVAS's room while the split it previews lands in the portal's container, so a
+    collaborator sitting in that container's own view is in a room the frames never reach.
+    These assert the routing, its authorization bar and its retraction — the three things a
+    client cannot do for itself.
+  */
+  const carryFrame = (
+    aimContainerId: string | null,
+    phase: "active" | "end" = "active",
+  ): Record<string, unknown> => ({
+    type: "gesture",
+    kind: "carry",
+    phase,
+    elementId: "element",
+    x: 1,
+    y: 1,
+    carry: {
+      ref: { kind: "element", containerId: "canvas", elementId: "element" },
+      item: { kind: "terminal", containerId: null },
+      ...(aimContainerId === null
+        ? {}
+        : {
+            aim: {
+              containerId: aimContainerId,
+              tileId: "root",
+              edge: "right",
+              action: "place",
+            },
+          }),
+    },
+  });
+
+  test("a carry aimed at another container reaches that container's own room", () => {
+    const fixture = gatewayFixture();
+    const aimed = fixture.secondContainer("the aimed composition");
+    const dragger = new FakeSocket();
+    const watcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    // The viewer is in the AIMED room and nowhere near the dragger's.
+    join(fixture.gateway, "watcher", watcher, aimed.id, fixture.ownerKey);
+    watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, carryFrame(aimed.id));
+    /*
+      Stamped `aimOnly`, which is the whole of what makes the frame safe to deliver here:
+      its geometry is in the sending room's space, so a receiver that painted a ghost from
+      it would put a chip at another canvas's coordinates.
+    */
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({
+        type: "gesture",
+        kind: "carry",
+        aimOnly: true,
+        carry: expect.objectContaining({ aim: expect.objectContaining({ containerId: aimed.id }) }),
+      }),
+    ]);
+
+    // The release retires the projection at once. An end frame carries no aim at all, so
+    // only the server's memory of where it last projected can route it — without that the
+    // viewer's preview would hang until the aim TTL swept it.
+    watcher.clear();
+    send(fixture.gateway, "dragger", CH, carryFrame(null, "end"));
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({ type: "gesture", phase: "end", aimOnly: true }),
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("an aim moving to a third container retracts from the one it left", () => {
+    const fixture = gatewayFixture();
+    const first = fixture.secondContainer("first aimed");
+    const second = fixture.secondContainer("second aimed");
+    const dragger = new FakeSocket();
+    const leftBehind = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "left", leftBehind, first.id, fixture.ownerKey);
+
+    send(fixture.gateway, "dragger", CH, carryFrame(first.id));
+    leftBehind.clear();
+    // The cadence gate is per channel, so let the throttle window pass before the next frame.
+    fixture.clock.advance(30);
+    send(fixture.gateway, "dragger", CH, carryFrame(second.id));
+    // The room it left still hears the frame — now aiming elsewhere — so its preview drops
+    // immediately instead of sitting until the aim TTL.
+    expect(leftBehind.messages()).toEqual([
+      expect.objectContaining({
+        aimOnly: true,
+        carry: expect.objectContaining({
+          aim: expect.objectContaining({ containerId: second.id }),
+        }),
+      }),
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("read authority on the aimed container is the bar, so a forged aim reaches nobody", () => {
+    const fixture = gatewayFixture();
+    const aimed = fixture.secondContainer("a container the dragger cannot read");
+    /*
+      A credential scoped to the dragger's OWN room only. Projecting an aim into a room is
+      exactly as visible as joining it, so it costs exactly what joining costs — and a
+      `containerId` a peer simply invented reaches nothing at all.
+    */
+    const scoped = fixture.auth.mintToken(
+      {
+        principal: { name: "scoped dragger", kind: "human" },
+        caps: ["containers:read", "scenes:write"],
+        containerId: fixture.container.id,
+      },
+      fixture.auth.authenticate(fixture.ownerKey),
+    ).token;
+    const dragger = new FakeSocket();
+    const watcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, scoped);
+    join(fixture.gateway, "watcher", watcher, aimed.id, fixture.ownerKey);
+    watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, carryFrame(aimed.id));
+    expect(watcher.messages()).toEqual([]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
 });
 
 describe("SessionGateway spectator sockets", () => {

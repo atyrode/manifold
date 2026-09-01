@@ -12,8 +12,9 @@ import {
 
 import type { RemoteTileCarry } from "../src/carry.ts";
 import type { ItemDropAssessment } from "../src/item-drop.ts";
+import { AIM_TTL_MS } from "../src/presence/remote-gestures.ts";
 import { createTileDropStore } from "../src/tile-drop-store.ts";
-import { tileProspect, type TileAim } from "../src/tile-geometry.ts";
+import { layoutRevision, tileProspect, type TileAim } from "../src/tile-geometry.ts";
 import { asTileTree } from "../src/tile-snap.ts";
 import { previewFor, sameAim, wireCarryAim, type TileDropContext } from "../src/use-tile-drop.ts";
 
@@ -51,6 +52,7 @@ const ALLOW = (): ItemDropAssessment | null => null;
 function context(overrides: Partial<TileDropContext> = {}): TileDropContext {
   return {
     layout: ROW,
+    revision: layoutRevision(ROW),
     containerId: "view",
     portal: null,
     units: UNITS,
@@ -96,7 +98,7 @@ describe("the one state constructor", () => {
   */
   test("normalising a local kernel aim yields the state a peer builds from the same bytes", () => {
     const kernel: TileAim = { tileId: "b", edge: "bottom", action: "place", depth: 1 };
-    const wire = wireCarryAim("view", kernel);
+    const wire = wireCarryAim("view", kernel, layoutRevision(ROW));
     const producer = previewFor(context(), wire, SIDEBAR_TERMINAL, "build");
     const viewer = previewFor(context(), { ...wire }, SIDEBAR_TERMINAL, "build");
     expect(producer).not.toBeNull();
@@ -111,7 +113,7 @@ describe("the one state constructor", () => {
       depth: 3,
       between: true,
     };
-    expect(wireCarryAim("view", kernel)).toEqual({
+    expect(wireCarryAim("view", kernel, null)).toEqual({
       containerId: "view",
       tileId: "a",
       edge: "right",
@@ -120,8 +122,12 @@ describe("the one state constructor", () => {
     });
     // `between: false` is absence, on the wire and in every comparison.
     expect(
-      wireCarryAim("view", { tileId: "a", edge: "right", action: "place", depth: 0 }),
+      wireCarryAim("view", { tileId: "a", edge: "right", action: "place", depth: 0 }, null),
     ).not.toHaveProperty("between");
+    // A host with no tree to hash ships no stamp: absent is "unverifiable", not "stale".
+    expect(
+      wireCarryAim("view", { tileId: "a", edge: "right", action: "place", depth: 0 }, null),
+    ).not.toHaveProperty("revision");
   });
 
   test("an aim for another container is refused: a state names one area only", () => {
@@ -137,6 +143,50 @@ describe("the one state constructor", () => {
   test("an aim naming a tile this tree no longer holds paints nothing", () => {
     const wire: CarryAim = { containerId: "view", tileId: "gone", edge: "top", action: "place" };
     expect(previewFor(context(), wire, SIDEBAR_TERMINAL, "build")).toBeNull();
+  });
+
+  test("a skewed layout revision withholds the preview rather than guessing", () => {
+    /*
+      Audit 3.3. An aim names a `tileId` and nothing else, so a viewer one Yjs update
+      behind re-derives a DIFFERENT prospect from the same bytes: a VANISHED tile already
+      degrades to nothing (above), but a RESHAPED tree yields a confidently wrong preview
+      with nothing to notice it by. The stamp is what makes the skew visible.
+    */
+    const wire: CarryAim = {
+      containerId: "view",
+      tileId: "b",
+      edge: "top",
+      action: "place",
+      revision: layoutRevision(ROW),
+    };
+    expect(previewFor(context(), wire, SIDEBAR_TERMINAL, "build")).not.toBeNull();
+    // The same tile id, in a tree that is no longer the tree the producer resolved against.
+    const reshaped: TileLayout = { ...ROW, b: leaf("b", terminal("s-other")) };
+    expect(
+      previewFor(
+        context({ layout: reshaped, revision: layoutRevision(reshaped) }),
+        wire,
+        SIDEBAR_TERMINAL,
+        "build",
+      ),
+    ).toBeNull();
+
+    /*
+      Either side missing a stamp is UNVERIFIABLE, not mismatched, and is trusted exactly
+      as it was before the stamp existed: a portal whose socket has not delivered a tree
+      has nothing to hash, and refusing every such preview would be a regression dressed
+      as caution.
+    */
+    const unstamped: CarryAim = { containerId: "view", tileId: "b", edge: "top", action: "place" };
+    expect(
+      previewFor(
+        context({ layout: reshaped, revision: layoutRevision(reshaped) }),
+        unstamped,
+        SIDEBAR_TERMINAL,
+        "build",
+      ),
+    ).not.toBeNull();
+    expect(previewFor(context({ revision: null }), wire, SIDEBAR_TERMINAL, "build")).not.toBeNull();
   });
 
   test("the chip's fallback chain ends in the species name for both producers", () => {
@@ -334,6 +384,10 @@ describe("aim equality", () => {
     expect(sameAim(base, { ...base, action: "swap" })).toBe(false);
     // Absent and false are the same absence.
     expect(sameAim({ ...base, between: false }, base)).toBe(true);
+    // The layout revision is a wire field like any other: same target, different claim.
+    expect(sameAim(base, { ...base, revision: 7 })).toBe(false);
+    expect(sameAim({ ...base, revision: 7 }, { ...base, revision: 8 })).toBe(false);
+    expect(sameAim({ ...base, revision: 7 }, { ...base, revision: 7 })).toBe(true);
   });
 });
 
@@ -396,5 +450,49 @@ describe("the drop signal", () => {
     store.set({ pointer: { clientX: 3, clientY: 4 }, armedElementId: null, aim: null });
     expect(store.get().pointer).toEqual({ clientX: 3, clientY: 4 });
     expect(store.get().remote.get("view")?.connId).toBe("peer");
+  });
+
+  test("the pointer stays believable exactly as long as a peer's aim, and no longer", () => {
+    /*
+      The staleness backstop (audit 4.7). Three paths clear the pointer and none of them is
+      a guarantee; a pointer left behind by a missed clear used to keep an overlay armed
+      indefinitely, holding FLIP transforms on real panes for a gesture that had ended.
+
+      ONE bound for both producers: `AIM_TTL_MS` is already how long a viewer believes a
+      peer's aim with no frame behind it, and a dragger who believed their own pointer
+      longer would keep a preview their collaborators had already dropped — precisely the
+      divergence invariant 11 forbids.
+
+      The stamp is kept OUT of the signal on purpose, and the middle of this test is the
+      case that proves it has to be: a stationary pointer under a live drag republishes the
+      same coordinates, which is value-equal and must not notify — but it is also the frame
+      that says the gesture is alive, so the stamp moves while the snapshot does not.
+    */
+    let now = 1_000;
+    const store = createTileDropStore(() => now);
+    let notices = 0;
+    store.subscribe(() => {
+      notices += 1;
+    });
+    expect(store.pointerFreshness()).toBeNull();
+
+    const pointer = { pointer: { clientX: 3, clientY: 4 }, armedElementId: null, aim: null };
+    store.set(pointer);
+    expect(store.pointerFreshness()).toBe(AIM_TTL_MS);
+    expect(notices).toBe(1);
+
+    now = 1_000 + AIM_TTL_MS;
+    expect(store.pointerFreshness()).toBe(0);
+    now = 1_000 + AIM_TTL_MS + 1;
+    expect(store.pointerFreshness()).toBeLessThan(0);
+
+    // A repeated coordinate is value-equal — no notify — and still refreshes the stamp.
+    store.set(pointer);
+    expect(store.pointerFreshness()).toBe(AIM_TTL_MS);
+    expect(notices).toBe(1);
+
+    // Clearing the pointer clears the stamp: there is no gesture to be fresh about.
+    store.set({ pointer: null, armedElementId: null, aim: null });
+    expect(store.pointerFreshness()).toBeNull();
   });
 });

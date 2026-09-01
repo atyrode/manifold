@@ -55,6 +55,7 @@ export {
   AIM_TTL_MS,
   applyGestureFrame,
   expireGestures,
+  gestureKey,
   stepGestures,
   type GestureGeometry,
   type GestureOverride,

@@ -864,13 +864,15 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
       session channel's liveness pair, reoriented so the SERVER pings and the browser
       answers), v19 -> v20 (credential expiry and the credential list, whose one exemption
       is precisely the machine token) and v20 -> v21 (the container-discipline roster
-      opening from a wire enum into a manifest contribution) are all the other case. Every
-      one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining, losing and
-      renaming nothing; an agent never sees a principal, a session frame, a container row, a
-      manifest or a browser's throttled timers, and no credential an enrolled spoke holds
-      changed meaning at v20. So the invariant's first clause applies verbatim — a bump that
-      leaves the agent wire identical ADDS — and a v16 agent keeps its terminals across this
-      deploy instead of being locked out by a version check for a change it cannot see.
+      opening into a manifest contribution, plus the carry aim's layout revision and the
+      server's aim-only gesture fan — session frames an agent never sees) are all the other
+      case. Every one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining,
+      losing and renaming nothing; an agent never sees a principal, a session frame, a
+      container row, a manifest or a browser's throttled timers, and no credential an
+      enrolled spoke holds changed meaning at v20. So the invariant's first clause applies
+      verbatim — a bump that leaves the agent wire identical ADDS — and a v16 agent keeps
+      its terminals across this deploy instead of being locked out by a version check for a
+      change it cannot see.
 
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a

@@ -220,9 +220,9 @@ describe("the instance channel handshake", () => {
       wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
       one. The set GROWS by the same first clause the machine set grows by — v19 moved a
       session frame pair, v20 bounded a token row's life and v21 opened the container
-      discipline roster, none of which a guest instance sees (a share secret is not a token
-      row, carries no expiry, and names no container) — so a v18 dial survives all three
-      deploys.
+      discipline roster and added two optional fields to a gesture frame, none of which a
+      guest instance sees (a share secret is not a token row, carries no expiry, and names
+      no container) — so a v18 dial survives all three deploys.
     */
     expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect([...INSTANCE_PROTOCOL_COMPAT_VERSIONS]).toEqual([

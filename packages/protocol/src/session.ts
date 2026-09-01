@@ -364,6 +364,19 @@ const SERVER_BODIES = {
     type: z.literal("gesture"),
     principalId: z.string().min(1),
     connId: z.string().min(1),
+    /**
+     * Set ONLY on the copy the server fans into the room a carry's aim ADDRESSES, which is
+     * not the room the gesture is happening in: a tile dragged over a portal streams in the
+     * CANVAS's room while the split it previews lands in the portal's container, and a
+     * collaborator sitting in that container's own view is in neither the sender's room nor
+     * reach of its frames.
+     *
+     * Its geometry is in the ORIGIN room's space and means nothing here, so a receiver reads
+     * the aim and paints no ghost from it. Server-stamped and server-only: the client body
+     * above has no such field, so a peer cannot forge one. Absent — every ordinary frame — is
+     * a gesture happening in this room, unchanged.
+     */
+    aimOnly: z.literal(true).optional(),
     ...GestureFields,
   }),
   /** One principal joined or left this room: the attendance delta. */

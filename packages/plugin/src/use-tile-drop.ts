@@ -16,6 +16,7 @@ import { carriedItem, carriedPlacement, type ItemEnvelope } from "./item-envelop
 import type { ItemDropAssessment } from "./item-drop.ts";
 import {
   ROOT_RING_PX,
+  layoutRevision,
   resolveTileAim,
   tileDestinationFor,
   tileProspect,
@@ -98,6 +99,12 @@ export function areaUnits(area: HTMLElement, dividerPx: number): AreaFractions |
 /** What a HOST knows: its tree, its identity, its measurement, its placement lookup. */
 export interface TileDropContext {
   readonly layout: TileLayout | null;
+  /**
+   * `layoutRevision(layout)`, or null when there is no tree to hash. Held on the context
+   * rather than derived per call because the producer stamps one on every pointer frame
+   * and the tree only changes on a document update.
+   */
+  readonly revision: number | null;
   readonly containerId: string;
   /** Non-null when this area is a canvas portal: which canvas, which element. */
   readonly portal: { readonly containerId: string; readonly elementId: string } | null;
@@ -172,6 +179,10 @@ export interface TileDropState {
  * only because a `tile` destination happens to carry both — a `compose` destination
  * drops `between`, so the omission made two different aims compare equal and the
  * overlay skip a repaint. One function, used by every consumer.
+ *
+ * `revision` counts too, and for the same reason: two aims identical but for the tree
+ * they were resolved against are the same TARGET and a different CLAIM, and it is the
+ * claim a viewer either believes or withholds.
  */
 export function sameAim(a: CarryAim, b: CarryAim): boolean {
   return (
@@ -179,7 +190,8 @@ export function sameAim(a: CarryAim, b: CarryAim): boolean {
     a.tileId === b.tileId &&
     a.edge === b.edge &&
     a.action === b.action &&
-    (a.between === true) === (b.between === true)
+    (a.between === true) === (b.between === true) &&
+    a.revision === b.revision
   );
 }
 
@@ -189,14 +201,20 @@ export function sameAim(a: CarryAim, b: CarryAim): boolean {
  * so the producer paints from the same bytes it sends. `depth` does not survive: the
  * wire has no field for it, and a state that carried it would be a value only one
  * producer could ever fill honestly.
+ *
+ * `revision` is the opposite case and is why it IS on the wire: it is the one thing a
+ * receiver cannot derive, because deriving it from its OWN tree is exactly the question
+ * being asked. Null when this host has no tree to hash (a portal still opening), which
+ * ships no stamp and means "unverifiable" rather than "mismatched".
  */
-export function wireCarryAim(containerId: string, aim: TileAim): CarryAim {
+export function wireCarryAim(containerId: string, aim: TileAim, revision: number | null): CarryAim {
   return {
     containerId,
     tileId: aim.tileId,
     edge: aim.edge,
     action: aim.action,
     ...(aim.between === true ? { between: true } : {}),
+    ...(revision === null ? {} : { revision }),
   };
 }
 
@@ -237,6 +255,14 @@ function tileDepth(layout: TileLayout, tileId: string): number | null {
  * delivered yet) is modelled as the one-leaf tree it visibly is — a single pane showing
  * that container — via `asTileTree`, so the canvas door previews the real root split
  * the server will author rather than a bare painted half.
+ *
+ * SKEW IS REFUSED, NOT PAPERED OVER. When the aim carries the producer's layout revision
+ * and this renderer has a tree of its own to compare it against, a mismatch means the two
+ * trees are not the same tree and the tile id means something else here: no preview, the
+ * same nothing a vanished tile already yields. One Yjs update later the stamps agree and
+ * the preview appears. Either side missing a stamp — a portal still opening, a producer
+ * that resolved through the canvas door with no tree — is UNVERIFIABLE rather than
+ * mismatched, and is trusted exactly as it was before the stamp existed.
  */
 export function previewFor(
   context: TileDropContext,
@@ -245,6 +271,13 @@ export function previewFor(
   label: string | null,
 ): TileDropState | null {
   if (wire.containerId !== context.containerId) return null;
+  if (
+    wire.revision !== undefined &&
+    context.revision !== null &&
+    wire.revision !== context.revision
+  ) {
+    return null;
+  }
   const layout =
     context.layout ?? asTileTree({ kind: "container", containerId: context.containerId });
   const depth = tileDepth(layout, wire.tileId);
@@ -335,9 +368,23 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
   const { areaRef, layout, containerId, portal, dividerPx, assess, elementSeat, describeCarry } =
     host;
 
+  /**
+   * The tree's content hash, recomputed only when the tree object changes. Every pointer
+   * frame stamps it onto the wire aim, so a per-frame walk of the layout would be the one
+   * allocation in this path that scales with the composition's size.
+   */
+  const revision = useMemo(() => (layout === null ? null : layoutRevision(layout)), [layout]);
+
   const contextFor = useCallback(
-    (units: AreaFractions): TileDropContext => ({ layout, containerId, portal, units, assess }),
-    [assess, containerId, layout, portal],
+    (units: AreaFractions): TileDropContext => ({
+      layout,
+      revision,
+      containerId,
+      portal,
+      units,
+      assess,
+    }),
+    [assess, containerId, layout, portal, revision],
   );
 
   const aimAt = useCallback(
@@ -372,14 +419,27 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       let aim: TileAim | null = null;
       if (canvasDoor && portal !== null) {
         /*
-          A canvas-hosted SOLO container — and a portal whose layout this canvas cannot
-          see (a nested card, or one still opening) — keeps the canvas door's center
-          semantics: element↔element geometry swap, and dissolve-to-nearest-edge for a
-          seatless carry. Resolving through `resolveSnapTarget` here is what guarantees
-          no `replace` cue is ever painted where the server would answer with the old
-          element behavior. The ZONE and the ACTION are producer-only knowledge and are
-          shipped as the decision; the PROSPECT they imply is computed by the shared
-          builder from the tree, so a viewer paints this door's outcome, not a bare half.
+          A canvas-hosted SOLO container keeps the canvas door's center semantics:
+          element↔element geometry swap, and dissolve-to-nearest-edge for a seatless
+          carry. Resolving through `resolveSnapTarget` here is what guarantees no
+          `replace` cue is ever painted where the server would answer with the old element
+          behavior. The ZONE and the ACTION are producer-only knowledge and are shipped as
+          the decision; the PROSPECT they imply is computed by the shared builder from the
+          tree, so a viewer paints this door's outcome, not a bare half.
+
+          A LAYOUT-LESS PORTAL TAKES THIS DOOR TOO, RATIFIED (audit 4.6). `rootIsLeaf` is
+          true when the tree is merely absent — a portal whose socket has not delivered
+          yet, or a depth-3 card the canvas does not open — and the operator-visible
+          consequence is real and worth naming: if that container is in fact MULTI-tile,
+          `assess` answers `not_solo` and the target paints DENIED for the width of one
+          socket round trip, then silently becomes legal when the tree lands. That is the
+          better of the two available refusals. The alternative the audit proposed —
+          answering null while the tree is unknown — makes the portal claim nothing, so
+          `preventDefault` never fires and the release falls through to the CANVAS
+          underneath: the item lands as a new element beside the portal instead of inside
+          it, which is silent, wrong, and does not self-correct. A denial that resolves
+          itself in one round trip is a worse cue and a better outcome, and only a
+          renderer that could resolve the real tree could do better than either.
         */
         const snap = resolveSnapTarget({ x: 0, y: 0, width: 1, height: 1 }, point, {
           occupied: true,
@@ -423,7 +483,7 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       }
 
       // Normalised the moment it exists: everything downstream reads the wire form.
-      const wire = wireCarryAim(containerId, aim);
+      const wire = wireCarryAim(containerId, aim, revision);
       // A pointer sliding inside one zone allocates nothing: same aim, same state.
       if (held !== null && cached !== null && sameAim(held, wire)) return cached.state;
 
@@ -440,7 +500,17 @@ export function useTileDrop(host: TileDropHost): TileDropPipeline {
       localRef.current = { layout, envelope, state };
       return state;
     },
-    [areaRef, containerId, contextFor, describeCarry, dividerPx, elementSeat, layout, portal],
+    [
+      areaRef,
+      containerId,
+      contextFor,
+      describeCarry,
+      dividerPx,
+      elementSeat,
+      layout,
+      portal,
+      revision,
+    ],
   );
 
   const previewOf = useCallback(

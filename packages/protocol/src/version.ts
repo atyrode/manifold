@@ -192,11 +192,22 @@ export const PROTOCOL_VERSION = 21;
  * client switching on those tables to predict legality would predict wrongly, and being
  * refused at the join with 4409 is the honest outcome.
  *
- * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
- * lost and renamed nothing; `machine.ts` mentions no container, no placement and no
- * manifest, and an agent never sees a session frame, a scene document or a roster. So
- * invariant 10's first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and
- * NO fleet restart is owed — an enrolled v16 spoke keeps its terminals across this deploy.
+ * THE SAME BUMP also carries the carry aim's two missing fields (issue #66),
+ * additive-optional on the session channel and nowhere else: `CarryAim` gained an
+ * OPTIONAL `revision` — a content hash of the tile tree the producer resolved against,
+ * so a viewer whose layout has skewed withholds a confidently wrong preview instead of
+ * painting one — and the SERVER's gesture frame gained an OPTIONAL `aimOnly`, stamped on
+ * the copy the server fans into the room a carry's aim addresses so that room reads the
+ * aim without painting a ghost from another room's coordinates. Absent reproduces v20
+ * exactly: at v20 no aim carried a revision (so every remote preview was unverifiable,
+ * which is what absence still means) and no frame was ever fanned across rooms (so no
+ * frame could be aim-only).
+ *
+ * The machine wire is BYTE-IDENTICAL under both halves of the bump. `AgentMessage` and
+ * `ServerToAgentMessage` gained, lost and renamed nothing; `machine.ts` mentions no
+ * container, no placement, no manifest, no gesture frame and no carry. So invariant 10's
+ * first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and NO fleet
+ * restart is owed — an enrolled v16 spoke keeps its terminals across this deploy.
  *
  * The hub-ahead-of-fleet coupling still holds and is stated rather than assumed: the
  * compat set only makes a hub tolerant of OLDER agents, so the release carrying this bump
@@ -224,9 +235,10 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
  * v20: session/HTTP only — credential expiry and the credential list (ADR 0019). A guest
  * instance holds a SHARE secret, which is not a token row and carries no expiry, so the
  * instance wire is byte-identical again and the version is ADDED.
- * v21: session/HTTP and manifest only — the discipline roster opens (#110). `instance.ts`
- * mentions no container, no placement and no manifest, and a guest holds a share secret
- * rather than a scene, so the instance wire is byte-identical a third time and the
+ * v21: session/HTTP and manifest only — the discipline roster opens (#110) and the carry
+ * aim gains its revision stamp + server aim-only fan (issue #66). `instance.ts` mentions
+ * no container, no placement, no manifest and no gesture frame, and a guest holds a share
+ * secret rather than a scene, so the instance wire is byte-identical a third time and the
  * version is ADDED.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21]);
