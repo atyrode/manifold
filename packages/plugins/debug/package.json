@@ -13,7 +13,8 @@
     "@rjsf/utils": "6.8.0",
     "@rjsf/validator-ajv8": "6.8.0",
     "ajv": "8.20.0",
-    "react": "19.2.8"
+    "react": "19.2.8",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.3.2",
