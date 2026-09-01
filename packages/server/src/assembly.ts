@@ -145,3 +145,24 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: canvasManifest, actions: [], handlers: {} },
   { manifest: compositionsManifest, actions: [], handlers: {} },
 ];
+
+/**
+ * THE SHIPPED DISTRIBUTION, as a set of ids — derived from the table above by reading it, not
+ * by restating it. This is what defends the `core.` namespace: `assembleRoster` refuses a
+ * manifest under `core.` that is not in here (`AssemblyEnv.distribution`,
+ * `CORE_NAMESPACE_PREFIX`), so a third-party plugin named `core.anything` fails composition by
+ * name instead of publishing a row that reads as official on every roster.
+ *
+ * DERIVED IS THE WHOLE DESIGN. A hand-kept list of "our" plugins would be a second statement
+ * of the same fact and would go stale the first time somebody adds a row twenty lines up
+ * (invariant 14) — and a stale one fails in the worst direction, refusing a plugin the
+ * distribution genuinely ships. Adding a row above is therefore the entire diff, exactly as
+ * "builtin" is derived from what the ENGINE registers rather than claimed by a manifest.
+ *
+ * The web half needs no second set: `packages/web/src/assembly.ts` only ATTACHES components to
+ * ids this table already published, and `verify:axioms` S1 refuses a web registration whose id
+ * nothing composed — so every `core.` id the browser knows is one of these by construction.
+ */
+export const SHIPPED_PLUGIN_IDS: ReadonlySet<string> = new Set(
+  SERVER_PLUGIN_DEFS.map((def) => def.manifest.id),
+);

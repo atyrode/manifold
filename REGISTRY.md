@@ -873,6 +873,24 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "builtin",
+      "means": "a roster row the ENGINE registered rather than an assembly file: published as source \"builtin\", carrying no toggle (setEnabled against it is refused/builtin). A fact about who registered a row, DERIVED from the engine's own definitions and never claimable by a manifest — engine.plugins is the only one, and engine. is a reserved namespace",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "essential",
+      "means": "a manifest's declared claim that the workspace does not function without it: an enforced tier with its own refusal class, so setEnabled(false) is refused/essential while everything else about the row — dispatch, dependencies, dormancy, purge — is ordinary. Independent of source and of namespace; core.shell is the one claimant",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "core",
+      "means": "the authorship namespace of the plugins manifold itself ships (core.shell, core.index, …), and NOTHING more: it confers no privilege anywhere in the engine, which is the checkable half of \"core is not privileged\". Reserved all the same — assembly refuses a manifest under core. that the shipped distribution did not register, the permitted set being derived from the two assembly files rather than listed a second time",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "manifest",
       "means": "a plugin's inert declaration: id, capability ceiling, dependencies, data version, dormancy, contributions",
       "banned": [],

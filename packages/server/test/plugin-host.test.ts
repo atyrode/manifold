@@ -17,7 +17,7 @@ import type {
 } from "@manifold/protocol";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
-import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
+import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
@@ -700,7 +700,10 @@ function recorder(
 function customHost(
   fixture: HostFixture,
   defs: readonly ServerPluginDef[],
-  options: { readonly lifecycleTimeoutMs?: number } = {},
+  options: {
+    readonly lifecycleTimeoutMs?: number;
+    readonly distribution?: ReadonlySet<string>;
+  } = {},
 ): PluginHost {
   // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
   let host: PluginHost | null = null;
@@ -730,6 +733,44 @@ function customHost(
   );
   return host;
 }
+
+/**
+ * THE `core.` RESERVATION, at the host rather than in the engine's unit tests.
+ *
+ * `assembleRoster` refuses the squat wherever it is handed a distribution; what this case
+ * defends is the WIRING — that the production host is actually handed one (`main.ts` passes
+ * `SHIPPED_PLUGIN_IDS`, derived from the registration table), because an unwired reservation
+ * reads identically to a defended one until a stranger's `core.` plugin composes cleanly.
+ */
+describe("PluginHost core namespace", () => {
+  test("a manifest under core. that the distribution never registered is refused by name", () => {
+    const fixture = hostFixture();
+    const log: HookLog = { calls: [] };
+
+    expect(() =>
+      customHost(fixture, [recorder("core.impostor", log)], { distribution: SHIPPED_PLUGIN_IDS }),
+    ).toThrow(/claims the reserved "core\." namespace/);
+
+    // A stranger's own namespace is their business: the reservation defends authorship, not
+    // membership of the roster.
+    expect(() =>
+      customHost(fixture, [recorder("vendor.impostor", log)], { distribution: SHIPPED_PLUGIN_IDS }),
+    ).not.toThrow();
+    fixture.store.close();
+  });
+
+  test("the distribution's own seats compose through the real wiring", () => {
+    const fixture = hostFixture();
+    // `testPluginHost` is the production wiring verbatim — `SERVER_PLUGIN_DEFS` plus the
+    // derived distribution — so this asserts the reservation costs the shipped roster nothing.
+    const ids = fixture.host.roster().map((entry) => entry.manifest.id);
+    for (const shipped of SHIPPED_PLUGIN_IDS) expect(ids).toContain(shipped);
+    for (const id of ids.filter((candidate) => candidate.startsWith("core."))) {
+      expect(SHIPPED_PLUGIN_IDS.has(id)).toBe(true);
+    }
+    fixture.store.close();
+  });
+});
 
 describe("PluginHost lifecycle", () => {
   test("hooks fire on TRANSITIONS only, never at boot", async () => {

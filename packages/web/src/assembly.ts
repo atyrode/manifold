@@ -129,6 +129,16 @@ export const FEED_TOPICS: FeedTopics = {
  * the stack. The panel imports none of them: it reads the composed section list and asks the
  * projection registry who draws each id, which is what makes the shell's own rows arrive by
  * exactly the route a stranger's do.
+ *
+ * `core.` IS RESERVED, and this file is one of the two halves of that reservation. The shipped
+ * distribution's ids are derived from `packages/server/src/assembly.ts` (`SHIPPED_PLUGIN_IDS`)
+ * and handed to `assembleRoster`, which refuses any manifest under `core.` that is not in the
+ * set — so a stranger's plugin cannot publish an official-looking row. This file keeps no
+ * second copy of that set, deliberately: a registration here only attaches components to an id
+ * the server's roster already published, so every `core.` id below is one the server table
+ * shipped, and `verify:axioms` S1 fails a registration whose id nothing composed rather than
+ * letting the two files disagree. Registering a web half for `core.something` the server never
+ * registered is therefore a gate failure, not a silently inert row.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   {

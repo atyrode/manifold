@@ -1,5 +1,5 @@
 export { PROTOCOL_VERSION } from "@manifold/protocol";
-export { SERVER_PLUGIN_DEFS } from "./assembly.ts";
+export { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "./assembly.ts";
 export { AuthService, ServiceError, type AuthContext } from "./auth.ts";
 export { loadConfig, finalizePublicUrl, type ServerConfig } from "./config.ts";
 export { openDatabase, SCHEMA_VERSION } from "./db.ts";

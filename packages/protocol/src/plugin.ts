@@ -32,6 +32,24 @@ export type PluginId = z.infer<typeof PluginIdSchema>;
 export const ENGINE_NAMESPACE_PREFIX = "engine.";
 
 /**
+ * The namespace manifold's own shipped plugins are authored under, and NOTHING ELSE. It
+ * confers no privilege whatsoever: a `core.` row is dispatched, authorized, disabled and
+ * purged by exactly the rules a stranger's row is, and the engine has no branch anywhere that
+ * reads this prefix to decide what something may do. That is the point of publishing it —
+ * "core is not privileged" is checkable when the prefix means AUTHORSHIP and nothing more.
+ *
+ * Authorship is still worth defending, so the prefix is also a RESERVATION, symmetric with
+ * `ENGINE_NAMESPACE_PREFIX`: assembly refuses a manifest under `core.` that the shipped
+ * distribution did not register, because a stranger's plugin publishing `core.anything`
+ * composes cleanly and reads as official to every principal and agent looking at the roster.
+ * The permitted set is DERIVED from the distribution's own registration files and handed to
+ * `assembleRoster` (`AssemblyEnv.distribution`), never written out a second time here — a
+ * hand-kept list of "our" plugins in this package is exactly the second door invariant 14
+ * forbids, and it would be the thing that goes stale the first time a plugin is added.
+ */
+export const CORE_NAMESPACE_PREFIX = "core.";
+
+/**
  * A contribution's name INSIDE its plugin. Every published name is the pair — an action is
  * `${manifest.id}.${local}` on the wire — so a plugin can never name anything outside its
  * own namespace and a full name always says who owns it.
@@ -636,6 +654,13 @@ export type BindingOverrides = z.infer<typeof BindingOverridesSchema>;
 export function pluginVocabulary(): Record<string, unknown> {
   return {
     engineNamespace: ENGINE_NAMESPACE_PREFIX,
+    /*
+      Published beside it because the reservation is a rule an AUTHOR has to know before
+      choosing an id: `core.` is taken, and a manifest under it fails assembly unless the
+      distribution registered it. What is NOT published is who inhabits the namespace — that is
+      the live roster's answer, and this package describes shapes, never their inhabitants.
+    */
+    coreNamespace: CORE_NAMESPACE_PREFIX,
     sources: PLUGIN_SOURCES,
     dependencyTypes: PLUGIN_DEPENDENCY_TYPES,
     dormantModes: PLUGIN_DORMANT_MODES,

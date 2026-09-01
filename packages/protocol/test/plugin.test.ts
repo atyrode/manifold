@@ -5,6 +5,7 @@ import {
   ActionSummarySchema,
   CONNECTION_BODIES,
   CONNECTION_LEVEL_MESSAGE_TYPES,
+  CORE_NAMESPACE_PREFIX,
   DEFAULT_DORMANT_MODE,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DEFAULT_SEAT_RATIO,
@@ -823,6 +824,15 @@ describe("the published plugin vocabulary", () => {
     expect(vocabulary["denialRules"]).toEqual(ACTION_DENIAL_RULES);
     expect(vocabulary["defaultElementPlacement"]).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
     expect(vocabulary["engineNamespace"]).toBe(ENGINE_NAMESPACE_PREFIX);
+    /*
+      Published for the same reason: an author choosing an id has to learn which prefixes are
+      taken from the wire rather than from a source tree they may not have. `core.` reads as
+      official on a roster, which is the whole of what it means and the whole of what the
+      assembly's reservation defends.
+    */
+    expect(vocabulary["coreNamespace"]).toBe(CORE_NAMESPACE_PREFIX);
+    expect(CORE_NAMESPACE_PREFIX).toBe("core.");
+    expect(PLUGIN_ID_PATTERN.test("core.shell")).toBe(true);
   });
 
   test("the manifest SHAPE is published, so the new fields are discoverable without source", () => {

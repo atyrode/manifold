@@ -1,4 +1,5 @@
 import {
+  CORE_NAMESPACE_PREFIX,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DEFAULT_SECTION_PRESENTATION,
   ENGINE_NAMESPACE_PREFIX,
@@ -172,6 +173,19 @@ export interface PluginAttribution {
 export interface AssemblyEnv {
   /** Ids the ENGINE registered itself; they publish as `source: "builtin"`. */
   readonly builtins?: ReadonlySet<string>;
+  /**
+   * The ids the SHIPPED DISTRIBUTION registers — the permitted inhabitants of the `core.`
+   * namespace, derived by the composition root from its own registration file
+   * (`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts`) and never written out as a
+   * second list anybody could let drift (invariant 14).
+   *
+   * ABSENT MEANS UNKNOWN, not empty: a caller that declares no distribution is not the shipped
+   * distribution — a unit test assembling two manifests, or a browser rebuilding a roster the
+   * server already ruled on — and refusing every `core.` id against a set nobody supplied
+   * would be the engine inventing a verdict from missing information. The production wiring is
+   * what makes the reservation real, and `verify:axioms` composes through it.
+   */
+  readonly distribution?: ReadonlySet<string>;
   /**
    * Element-type reservations: wire type → the plugin that first claimed it. A reservation
    * OUTLIVES the plugin's presence in the build, which is the point — a canvas full of
@@ -405,10 +419,11 @@ export function panelRefId(pluginId: string, panelId: string): string {
  *
  * `env` carries the durable and runtime facts (below). What assembly refuses on is
  * deliberately narrow: STRUCTURAL truths that no toggle can fix — a required dependency that
- * is not in the build, a dependency cycle, a squatted `engine.` id, a squatted element type,
- * and stored data an enabled plugin's code cannot safely read. Everything a toggle CAN fix —
- * a dependency that is merely disabled, an incompatible pair, an unknown id — refuses at the
- * door instead, where an actor is present to be told what is in the way (ADR 0013 §5).
+ * is not in the build, a dependency cycle, a squatted `engine.` or `core.` id, a squatted
+ * element type, and stored data an enabled plugin's code cannot safely read. Everything a
+ * toggle CAN fix — a dependency that is merely disabled, an incompatible pair, an unknown id
+ * — refuses at the door instead, where an actor is present to be told what is in the way
+ * (ADR 0013 §5).
  * Assembly never disables a plugin nobody named: a cascade in workspace-global state is
  * other principals' refs vanishing without their consent.
  */
@@ -418,6 +433,7 @@ export function assembleRoster(
   env: AssemblyEnv = {},
 ): Assembly {
   const builtins = env.builtins ?? new Set<string>();
+  const distribution = env.distribution ?? null;
   const problems: string[] = [];
   const pluginIds: Claims = new Map();
   const actionNames: Claims = new Map();
@@ -462,6 +478,25 @@ export function assembleRoster(
     if (manifest.id.startsWith(ENGINE_NAMESPACE_PREFIX) && !builtins.has(manifest.id)) {
       problems.push(
         `plugin "${manifest.id}" claims the reserved "${ENGINE_NAMESPACE_PREFIX}" namespace, which only the engine's own builtin doors may use`,
+      );
+    }
+
+    /*
+      The `core.` namespace is AUTHORSHIP, and this is the one thing it buys: a manifest under
+      it that the shipped distribution never registered is refused by name. The prefix confers
+      no privilege at dispatch — that is the point of it — but an id is what a principal reads
+      on the roster and what an agent reads over `GET /api/plugins`, so a stranger publishing
+      `core.anything` would look official to both, and looking official is authority in the
+      only place that matters here. Unknown distribution means unenforced rather than
+      all-refused (`AssemblyEnv.distribution`).
+    */
+    if (
+      distribution !== null &&
+      manifest.id.startsWith(CORE_NAMESPACE_PREFIX) &&
+      !distribution.has(manifest.id)
+    ) {
+      problems.push(
+        `plugin "${manifest.id}" claims the reserved "${CORE_NAMESPACE_PREFIX}" namespace, which only the shipped distribution's own plugins may use`,
       );
     }
 

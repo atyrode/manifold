@@ -555,15 +555,29 @@ reserved namespace (`ENGINE_NAMESPACE_PREFIX`): a plugin claiming it fails assem
 **UI only** — an ordinary, disableable plugin with no actions and no `essential`. `core.shell`
 remains the one `essential` plugin; attempting to disable it is `refused`/`essential`.
 
+**`core.` is reserved too, and it is the OTHER kind of reservation.** `CORE_NAMESPACE_PREFIX`
+(published at `GET /api/protocol` as `coreNamespace`) marks AUTHORSHIP and confers no privilege:
+no engine branch anywhere reads it, and a `core.` row is dispatched, authorized, disabled and
+purged by the rules a stranger's row is — which is what makes "core is not privileged" a checkable
+claim rather than a promise. What the prefix buys is a name: assembly refuses a manifest under
+`core.` that the shipped distribution did not register, because an id is what a principal reads on
+the roster and what an agent reads over `GET /api/plugins`, so a third party publishing
+`core.anything` would read as official to both. The permitted set is DERIVED from the
+distribution's registration table (`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts`) and
+handed to assembly as `AssemblyEnv.distribution`; there is deliberately no second list of "our"
+plugins anywhere, and a caller that declares no distribution — a unit test, the browser rebuilding
+a roster the server already ruled on — has the reservation unenforced rather than inverted.
+
 Assembly KEEPS a disabled plugin's contributions in its registries and reflects the disabled set
 only in `roster[].enabled` and `assembly.enabled(id)` (false for unknown ids too): that is what
 lets the ladder tell `plugin_disabled` from `unknown_action`, and lets a placeholder NAME the plugin
 it is standing in for. Manifest, capability-subset and uniqueness validation runs across every
 registered plugin whether enabled or not, so disabling can never mask a collision. Assembly
 refuses only STRUCTURAL truths — a missing or disabled `required` dependency, a cycle, a
-self-dependency, an `engine.*` squat, an element-type squat, and (for ENABLED plugins only) a
-stored-data downgrade or a missing major migration — so one dormant plugin's stale rows can never
-stop the server booting; its data is re-judged at the enablement door instead.
+self-dependency, an `engine.*` squat, an unshipped `core.*` squat, an element-type squat, and (for
+ENABLED plugins only) a stored-data downgrade or a missing major migration — so one dormant
+plugin's stale rows can never stop the server booting; its data is re-judged at the enablement
+door instead.
 
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and
