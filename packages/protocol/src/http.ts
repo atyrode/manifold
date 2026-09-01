@@ -92,8 +92,84 @@ export const TokenGrantSchema = z.strictObject({
   principal: PrincipalSchema,
   caps: z.array(CapSchema).min(1),
   containerId: z.string().nullable(),
+  /**
+   * When this credential stops authenticating (ADR 0019 §2). ABSENT means never, which is
+   * both the v19 semantics of every minted token and the standing answer for a
+   * non-interactive credential — so a v19 client that ignores this field sees exactly the
+   * server it saw before, and one that reads it learns when to come back.
+   */
+  expiresAt: z.number().int().positive().optional(),
 });
 export type TokenGrant = z.infer<typeof TokenGrantSchema>;
+
+/**
+ * WHY A CREDENTIAL WAS REFUSED, as a closed set of CLASSES rather than prose.
+ *
+ * `authenticate` has two refusals a holder can act on, and both were sentences before
+ * ADR 0019 §2: a socket read `error.message === "revoked"` to decide whether to re-dial,
+ * and nothing distinguished "this credential is finished" from "this credential is wrong".
+ * A lens meeting `expired` re-bootstraps; a lens meeting `revoked` stops. Prose cannot
+ * carry that difference, so the words are vocabulary — the same ruling `TICKET_REFUSALS`
+ * makes for the ticket exchange, applied to the credential itself.
+ *
+ * They travel as the WebSocket close reason (4403) and as the `forbidden` message on the
+ * HTTP door, both verbatim. A client that never switches on them observes exactly the v19
+ * behaviour: `revoked` is the word it already read, and `expired` could not previously
+ * happen.
+ */
+export const AUTH_REFUSALS = ["revoked", "expired"] as const;
+export const AuthRefusalSchema = z.enum(AUTH_REFUSALS);
+export type AuthRefusal = (typeof AUTH_REFUSALS)[number];
+
+/**
+ * ONE LIVE CREDENTIAL of one principal — a session, in the sense "which browsers hold my
+ * key" asks about (ADR 0019 §3).
+ *
+ * A session here is a token ROW, not a socket, and that is a decision rather than a
+ * convenience: whether somebody is CONNECTED right now is presence's question, answered by
+ * `core.presence` and `GET /api/attendance` with a per-principal connection count, and a
+ * second answer to it here would be invariant 14 with the seams showing. What this row
+ * carries is the credential's own life — when it was issued, who issued it, what it is
+ * confined to, and when it stops working — which is exactly what a revoke decision needs
+ * and exactly what presence cannot say.
+ *
+ * No hash, no prefix, no fragment of the secret: the raw token existed once, in the mint
+ * response, and nothing here may hand a reader a way to recognize it.
+ */
+export const CredentialSchema = z.strictObject({
+  id: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  /** The principal that minted it; absent when the mint had no actor (boot recovery). */
+  mintedBy: z.string().min(1).optional(),
+  /** The container this credential is confined to; absent for a workspace-grade one. */
+  containerId: z.string().min(1).optional(),
+  caps: z.array(CapSchema),
+  /** When it stops authenticating; absent means never, exactly as on {@link TokenGrantSchema}. */
+  expiresAt: z.number().int().positive().optional(),
+});
+export type Credential = z.infer<typeof CredentialSchema>;
+
+/**
+ * One principal and the credentials it holds — what `core.access.listCredentials`
+ * publishes, one row per principal.
+ *
+ * `createdAt` rides HERE rather than on {@link PrincipalSchema}, because a principal is an
+ * identity the whole product passes around (attendance, presence, the session hello) and
+ * when it was created is a fact only administration asks for. Putting it on the principal
+ * would mean every frame carrying one grew a field nobody reads.
+ */
+export const PrincipalCredentialsSchema = z.strictObject({
+  principal: PrincipalSchema,
+  createdAt: z.number().int().nonnegative(),
+  /** Live credentials only: neither revoked nor past its expiry. Empty is a real answer. */
+  sessions: z.array(CredentialSchema),
+});
+export type PrincipalCredentials = z.infer<typeof PrincipalCredentialsSchema>;
+
+export const CredentialsResponseSchema = z.strictObject({
+  principals: z.array(PrincipalCredentialsSchema),
+});
+export type CredentialsResponse = z.infer<typeof CredentialsResponseSchema>;
 
 export const RevokeRequestSchema = z.strictObject({
   principalId: z.string().min(1),
@@ -248,11 +324,34 @@ export const MachineSummarySchema = z.strictObject({
   name: z.string().min(1),
   online: z.boolean(),
   color: z.string().regex(HEX_COLOR).optional(),
+  /**
+   * Whether this machine's credential has been WITHDRAWN (`core.machines.revoke`,
+   * ADR 0019 §3). ABSENT means it has not, which is every v19 row and every live machine,
+   * so a v19 reader sees the roster it always saw.
+   *
+   * The row survives its credential deliberately: revoking a machine revokes that machine's
+   * credential, and a fleet inventory that forgot the box it just cut off would be an
+   * inventory an operator cannot audit. A revoked machine is `online: false` within one
+   * liveness interval, because its socket is severed by the same fence a principal's is.
+   */
+  revoked: z.boolean().optional(),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({
   machines: z.array(MachineSummarySchema),
 });
+
+/**
+ * `core.machines.revoke` — withdrawal as an ACT, which is the door ADR 0019 §3 names as
+ * missing. The mechanism existed one level down (`rotateMachineToken` revokes and re-mints);
+ * what nothing could ask for was revocation WITHOUT a re-mint. One door, one concept: there
+ * is no second spelling of "revoke this machine's credential" (invariant 14).
+ */
+export const RevokeMachineRequestSchema = z.strictObject({
+  machineId: z.string().min(1),
+});
+export type RevokeMachineRequest = z.infer<typeof RevokeMachineRequestSchema>;
+
 export const EnrollMachineRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
   /** Revoke and re-mint the token when the name is already enrolled (recovers a lost token file). */

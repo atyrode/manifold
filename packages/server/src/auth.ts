@@ -21,6 +21,7 @@ import {
   type RuntimeDeps,
   type Share,
   type ShareGrant,
+  type PrincipalCredentials,
   type TokenGrant,
 } from "@manifold/protocol";
 import type {
@@ -40,6 +41,76 @@ const COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#db2777"
 const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
   (cap): cap is Exclude<Cap, "*"> => cap !== "*",
 );
+
+/**
+ * HOW LONG AN INTERACTIVELY MINTED CREDENTIAL LIVES — fourteen days (ADR 0019 §2).
+ *
+ * The number is a judgement and therefore has to be argued rather than picked. Two failure
+ * modes bound it from opposite sides:
+ *
+ *   TOO LONG is the hole this closes. There was no expiry at all, so a key pasted into a
+ *   browser two months ago still authenticated — and the browser it was pasted into may be a
+ *   synced profile on a laptop somebody sold.
+ *
+ *   TOO SHORT is worse than no expiry, and this is the half a security review usually
+ *   misses. Re-bootstrapping means pasting the OWNER KEY into an address bar again. A bound
+ *   that fires while somebody is still working therefore trains the one habit invariant 6
+ *   and issue #56 both exist to discourage, and it trains it on the credential that is root
+ *   everywhere. An expiry that makes the root secret travel more often has made the posture
+ *   worse while looking like it improved it.
+ *
+ * Fourteen days sits between them: longer than any plausible gap in a single operator's week
+ * (a holiday is the boundary case, and meeting it once a year is a re-bootstrap nobody
+ * resents), and short enough that a forgotten browser stops authenticating inside a
+ * fortnight rather than never. It is deliberately NOT an idle bound — an idle timer would
+ * fire hardest on exactly the careful operator who keeps one tab open and touches it rarely.
+ */
+export const INTERACTIVE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * HOW OFTEN THE OWNER PATH LEAVES A ROW — once an hour, at most (ADR 0019 §4).
+ *
+ * `authenticate` runs on EVERY request carrying the key, and a browser painting a workspace
+ * makes dozens: a row per authentication would be a denial of service on the reader of the
+ * journal the row exists for, which is the failure ADR 0019 §4 names explicitly.
+ *
+ * The window is the DE-DUPLICATION RULE, and it is a window rather than a session because
+ * nothing that reaches this function knows what a session is. `authenticate` takes a raw
+ * secret and nothing else — no socket, no request, no connection id — and threading a
+ * transport fact into the one function that must stay transport-agnostic to serve HTTP, the
+ * session channel and the instance channel alike would buy a sharper row at the cost of the
+ * seam. So the row means "at least one owner-key authentication happened in the hour
+ * beginning here", and it says so on the row itself (`window` in the payload) rather than
+ * letting a reader infer one-row-one-login.
+ */
+export const OWNER_AUDIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * WHETHER A MINTED CREDENTIAL EXPIRES, decided at the mint and written down (ADR 0019 §2).
+ *
+ * `never` is the EXEMPTION, and it is a parameter rather than a branch inside `persistToken`
+ * so that every mint site states its own answer where a reader of that site can see it. It
+ * is deliberately not reachable from any door: `core.access.mint` cannot ask for an
+ * unexpiring credential, because an exemption a caller can select is not an exemption, it is
+ * an opt-out.
+ */
+type TokenExpiry = "interactive" | "never";
+
+/**
+ * ADR 0019 §2's exemption as code rather than as a comment.
+ *
+ * A HUMAN's credential is a session: it was obtained interactively and can be obtained
+ * interactively again, so it expires. An AGENT's is long-lived by design — A2 makes agents
+ * first-class principals precisely because they cannot re-authenticate through a browser,
+ * and shortening their credentials is a fleet outage wearing a security hat.
+ *
+ * An enrolled MACHINE's token never reaches this function: `persistMachine` passes `never`
+ * at the call site and `authenticateMachine` has no expiry rung at all, so the same ruling
+ * is made twice, structurally, on the path where it matters most.
+ */
+function expiryFor(kind: Principal["kind"]): TokenExpiry {
+  return kind === "human" ? "interactive" : "never";
+}
 
 /**
  * Principal and attenuated authority computed once when a request/socket authenticates.
@@ -269,6 +340,17 @@ export class AuthService {
   private readonly authority = new WeakMap<AuthContext, ContextAuthority>();
   /** Bumped by every grant write; a cached verdict from an older epoch is discarded unread. */
   private grantsEpoch = 0;
+  /**
+   * When the owner path last left a row in the journal, or null before it ever has.
+   *
+   * IN MEMORY, deliberately, and the consequence is stated rather than hidden: a restart
+   * writes one extra row on the next owner-key request. That is the right trade — the
+   * alternative is a durable read on the hottest path in the server to save one row per
+   * process lifetime — and the row it produces is true, which is the only thing the audit
+   * promises. What it must never do is write one row per REQUEST, and that is a property of
+   * the window rather than of where the window is kept.
+   */
+  private ownerAuditedAt: number | null = null;
 
   constructor(
     private readonly store: ServerStore,
@@ -293,9 +375,18 @@ export class AuthService {
     store.setMeta(OWNER_PRINCIPAL_META, id);
   }
 
-  /** Authenticates an owner key or hashed bearer token and rejects durable revocations. */
+  /**
+   * Authenticates an owner key or hashed bearer token and refuses durable revocations,
+   * expiries, and — since ADR 0019 — leaves a row behind when the owner path is taken.
+   *
+   * THE OWNER KEY DOES NOT EXPIRE, and that is a ruling rather than an omission
+   * (ADR 0019 §Alternatives rejected): it is the break-glass path, and a break-glass
+   * credential that can lock you out is not one. Its refusals are therefore the two it has
+   * always had — the secret matches, or it does not.
+   */
   authenticate(raw: string): AuthContext {
     if (secretsEqual(raw, this.ownerKey)) {
+      this.auditOwnerPath();
       return {
         principal: this.ownerPrincipal,
         caps: ["*"],
@@ -309,6 +400,19 @@ export class AuthService {
     const token = this.store.getTokenByHash(sha256Hex(raw));
     if (token === null) throw new ServiceError("unauthorized", "invalid bearer token");
     if (token.revokedAt !== null) throw new ServiceError("forbidden", "revoked");
+    /*
+      THE EXPIRY RUNG, beside the revocation refusal and after it on purpose: a credential
+      that was both revoked and expired was revoked, which is the answer a holder can act on
+      (stop asking) rather than the one that invites a retry.
+
+      `forbidden` rather than `unauthorized`, matching `revoked`: the secret PRESENTED is
+      genuine and the server recognized it, which is what separates both of these from an
+      unknown token. The message is a member of `AUTH_REFUSALS` verbatim, because the
+      boundaries relay it as the refusal CLASS a lens switches on (`session-ws`, `http`).
+     */
+    if (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) {
+      throw new ServiceError("forbidden", "expired");
+    }
     const principal = this.store.getPrincipal(token.principalId);
     if (principal === null) throw new ServiceError("unauthorized", "invalid bearer token");
     return {
@@ -319,6 +423,36 @@ export class AuthService {
       tokenId: token.id,
       grantId: token.grantId,
     };
+  }
+
+  /**
+   * ADR 0019 §4's bootstrap audit: the owner path leaves a durable row, at most one per
+   * {@link OWNER_AUDIT_WINDOW_MS}.
+   *
+   * AN EVENT ROW, NOT A TRACE ROW, and the ADR rejects the alternative explicitly. A trace
+   * row's `door` is "the full action name — the door, as the roster publishes it"
+   * (`TraceAttribution`), and an authentication has no door: synthesizing one would put a
+   * name in that column the roster does not publish, which is the lie `verify:trace` T3
+   * exists to catch. Widening ADR 0018's one-writer rule instead — `appendTrace` and
+   * `settleTrace` are called from the store that defines them and the dispatch ladder that
+   * uses them and nowhere else, mechanized by T1 — was rejected for the same reason: a
+   * checkable invariant is worth more than a column that does not fit. So the audit rides
+   * the journal and its one reader (`core.events.list`), never its writer.
+   *
+   * THE ROW CARRIES NO SECRET AND NO FRAGMENT OF ONE. What is auditable is that the owner
+   * path was taken and when; the key itself is not a fact about the workspace, it is the
+   * thing the workspace must never write down (invariant 6). `window` is on the row so a
+   * reader knows what the row means: at least one owner-key authentication in the window
+   * beginning at `ts`, not exactly one.
+   */
+  private auditOwnerPath(): void {
+    const now = this.runtime.now();
+    const last = this.ownerAuditedAt;
+    if (last !== null && now - last < OWNER_AUDIT_WINDOW_MS) return;
+    this.ownerAuditedAt = now;
+    this.store.addEvent(null, now, this.ownerPrincipal.id, "owner_authenticated", {
+      window: OWNER_AUDIT_WINDOW_MS,
+    });
   }
 
   /** Authenticates a machine secret without interpreting it as a principal bearer. */
@@ -490,10 +624,17 @@ export class AuthService {
     caps: readonly Cap[],
     containerId: string | null,
     actorId: string | null,
+    expiry: TokenExpiry,
   ): { raw: string; record: TokenRecord } {
     const raw = randomSecret();
     const createdAt = this.runtime.now();
     const tokenId = this.runtime.newId();
+    /*
+      The bound is computed from the SAME `createdAt` the row carries rather than from a
+      second clock read, so a token's life is exactly the declared span and not the span plus
+      whatever happened between two calls to `now()`.
+    */
+    const expiresAt = expiry === "never" ? null : createdAt + INTERACTIVE_TOKEN_TTL_MS;
     const grant: Grant | null =
       caps.length === 0
         ? null
@@ -520,6 +661,7 @@ export class AuthService {
       createdAt,
       revokedAt: null,
       grantId: grant?.id ?? null,
+      expiresAt,
     };
     return this.store.transaction(() => {
       if (grant !== null) this.store.createGrant(grant);
@@ -534,12 +676,38 @@ export class AuthService {
     });
   }
 
-  /** Bootstraps a principal with a root token; callers must already enforce root authority. */
+  /**
+   * Bootstraps a principal with a root token; callers must already enforce root authority.
+   *
+   * THE BOOTSTRAP PATH, and therefore the second thing ADR 0019 §4 makes auditable: this is
+   * how a browser holding the owner key turns it into an identity of its own, so a row here
+   * answers "who was let in, and by what" for the one credential that could let anybody in.
+   * `token_minted` records the credential; this records the ACT — and the two are not the
+   * same row because `mintToken` also mints and is not a bootstrap.
+   */
   bootstrapPrincipal(input: BootstrapPrincipalRequest, actor: AuthContext): TokenGrant {
     if (!actor.isRoot) throw new ServiceError("forbidden", "root capability required");
     const principal = this.createPrincipal(input);
-    const minted = this.persistToken(principal.id, ["*"], null, actor.principal.id);
-    return { token: minted.raw, principal, caps: ["*"], containerId: null };
+    const minted = this.persistToken(
+      principal.id,
+      ["*"],
+      null,
+      actor.principal.id,
+      expiryFor(principal.kind),
+    );
+    this.store.addEvent(null, this.runtime.now(), actor.principal.id, "principal_bootstrapped", {
+      subjectPrincipalId: principal.id,
+      kind: principal.kind,
+      /* WHETHER the owner key itself opened this door, which is the fact the audit is for. */
+      byOwnerKey: actor.tokenId === null,
+    });
+    return {
+      token: minted.raw,
+      principal,
+      caps: ["*"],
+      containerId: null,
+      ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
+    };
   }
 
   /** Mints only authority no broader than the minter's caps and optional container scope. */
@@ -589,11 +757,31 @@ export class AuthService {
       throw new ServiceError("conflict", "token principal is missing");
     }
 
-    const minted = this.persistToken(principal.id, parsed.caps, containerId, minter.principal.id);
-    return { token: minted.raw, principal, caps: [...parsed.caps], containerId };
+    const minted = this.persistToken(
+      principal.id,
+      parsed.caps,
+      containerId,
+      minter.principal.id,
+      expiryFor(principal.kind),
+    );
+    return {
+      token: minted.raw,
+      principal,
+      caps: [...parsed.caps],
+      containerId,
+      ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
+    };
   }
 
-  /** Mints the container-scoped agent identity injected into a newly created terminal. */
+  /**
+   * Mints the container-scoped agent identity injected into a newly created terminal.
+   *
+   * `expiryFor` answers `never` here, and that is the exemption doing its job rather than an
+   * oversight: the holder is an agent inside a PTY with no way to re-authenticate, and a
+   * credential that died under it mid-task would be a fleet outage wearing a security hat
+   * (ADR 0019 §2). Its life is bounded by the terminal's instead — killing the terminal
+   * revokes the identity.
+   */
   mintSessionAgentToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
     const id = this.runtime.newId();
     const principal: Principal = {
@@ -604,14 +792,27 @@ export class AuthService {
     };
     this.store.createPrincipal(principal, this.runtime.now());
     const caps: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
-    const minted = this.persistToken(principal.id, caps, containerId, actorId);
+    const minted = this.persistToken(
+      principal.id,
+      caps,
+      containerId,
+      actorId,
+      expiryFor(principal.kind),
+    );
     return { token: minted.raw, principal, caps, containerId };
   }
 
   private persistMachine(name: string, actorId: string): MachineEnrollment {
     return this.store.transaction(() => {
       const machineId = this.runtime.newId();
-      const minted = this.persistToken(machineId, [], null, actorId);
+      /*
+        `never`, and this is ADR 0019 §2's exemption at the site that most needs it: the
+        holder is a daemon on another box that provisioned itself once and has no browser to
+        re-bootstrap through. A machine token also never reaches `authenticate` — it is
+        looked up by `authenticateMachine`, which has no expiry rung — so the exemption is
+        made twice and cannot be undone by one of them changing.
+      */
+      const minted = this.persistToken(machineId, [], null, actorId, "never");
       const machine: MachineRecord = {
         id: machineId,
         name,
@@ -652,7 +853,7 @@ export class AuthService {
           count: 1,
         });
       }
-      const minted = this.persistToken(machine.id, [], null, actor);
+      const minted = this.persistToken(machine.id, [], null, actor, "never");
       const lastSeen = this.runtime.now();
       this.store.updateMachineToken(machine.id, minted.record.id, lastSeen);
       return {
@@ -667,6 +868,113 @@ export class AuthService {
       for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
     return result.enrollment;
+  }
+
+  /**
+   * WITHDRAWAL AS AN ACT — the mechanism half of the door ADR 0019 §3 names as missing.
+   *
+   * Everything here already existed one level down: `rotateMachineToken` revokes a machine's
+   * token, writes `token_revoked` and fires the fence. What did not exist was revocation
+   * WITHOUT a re-mint, so a credential minted for "a process nobody in this workspace can
+   * see" could be replaced but never taken away. This is that, and it is deliberately not a
+   * rotation with the mint elided: rotation ANSWERS with a fresh secret, and a door whose
+   * job is to withdraw authority must not hand one out.
+   *
+   * THE ROW SURVIVES ITS CREDENTIAL. Revoking a machine is revoking that machine's
+   * credential (invariant 14: one concept, one spelling) — the inventory keeps the row, so an
+   * operator can still see the box they just cut off, and re-enrolling by name with
+   * `rotateToken: true` is how it comes back. Deleting the row would make withdrawal and
+   * forgetting the same verb, which they are not.
+   *
+   * The same ladder `enrollMachine` runs, and for the same reason: minting and withdrawing a
+   * machine credential are the same authority, so `machines:mint` answers both and a
+   * container-scoped caller reaches neither. Inventing a `machines:revoke` would be a second
+   * answer to "who administers the fleet".
+   */
+  revokeMachine(machineId: string, actor: AuthContext): number {
+    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
+      throw new ServiceError("forbidden", "machines:mint capability required");
+    }
+    const machine = this.store.getMachine(machineId);
+    if (machine === null) throw new ServiceError("not_found", "machine not found");
+    const revoked = this.store.transaction(() => {
+      const at = this.runtime.now();
+      const gone = this.store.revokeToken(machine.tokenId, at);
+      if (gone) {
+        this.store.addEvent(null, at, actor.principal.id, "token_revoked", {
+          subjectPrincipalId: machine.id,
+          count: 1,
+        });
+      }
+      return gone;
+    });
+    /*
+      THE SAME FENCE a principal's revocation rides, and it reaches the machine socket
+      because `MachineGateway` registered on it with the machine id in the principal slot
+      (`machine-ws.ts`). Two revocation paths would have meant two fences to keep in step.
+    */
+    if (revoked) {
+      for (const listener of [...this.revokedListeners]) listener(machine.id, null);
+    }
+    return revoked ? 1 : 0;
+  }
+
+  /**
+   * THE CREDENTIAL LIST (ADR 0019 §3): every principal this caller may administer, when it
+   * was created, and the credentials of it that are still alive.
+   *
+   * AUTHORITY, decided explicitly and recorded here because the ADR leaves it open and it is
+   * the one design question in this door. `tokens:mint`, NOT root — and that is a departure
+   * from `listGrants`, which ADR 0011 §8 settled as root-only. The two reads are neighbours
+   * and are not the same question:
+   *
+   *   A GRANT ROW is the map of who may do what over this workspace, which is the
+   *   reconnaissance a caller performs before deciding whom to impersonate. Root-only.
+   *
+   *   A CREDENTIAL ROW says an identity exists and holds a live secret. It carries no
+   *   authority information a `tokens:mint` holder could not obtain by minting, no secret,
+   *   and no hash. Grading it stricter than the WRITE it feeds — `core.access.revoke` is
+   *   `tokens:mint` — would publish a revoke door nobody who can open it can aim, which is
+   *   how an administrator ends up revoking by guesswork.
+   *
+   * NARROWED THE WAY THE WRITE IS NARROWED, which is the other half of that argument: a
+   * non-root caller sees itself and the principals it minted, which is exactly the set
+   * `revokePrincipal` lets it revoke. Root sees everybody, which is what `/api/introspect`
+   * already published to root and nothing else. So this door widens the READER of a fact
+   * only root could see, without widening what anybody may do about it.
+   */
+  listCredentials(actor: AuthContext): PrincipalCredentials[] {
+    if (!this.allows(actor, "tokens:mint")) {
+      throw new ServiceError("forbidden", "tokens:mint capability required");
+    }
+    const now = this.runtime.now();
+    const rows: PrincipalCredentials[] = [];
+    for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
+      const mine =
+        actor.isRoot ||
+        principal.id === actor.principal.id ||
+        this.store.principalMintedBy(principal.id, actor.principal.id);
+      if (!mine) continue;
+      const sessions = this.store
+        .listTokensByPrincipal(principal.id)
+        /*
+          LIVE means "would authenticate right now", which is `authenticate`'s two refusals
+          read as a predicate. Stating it here rather than in the store is deliberate: the
+          rule belongs beside the function that enforces it, so a third answer cannot appear
+          in a query somebody writes later.
+        */
+        .filter((token) => token.revokedAt === null && (token.expiresAt ?? Infinity) > now)
+        .map((token) => ({
+          id: token.id,
+          createdAt: token.createdAt,
+          caps: [...token.caps],
+          ...(token.mintedBy === null ? {} : { mintedBy: token.mintedBy }),
+          ...(token.containerId === null ? {} : { containerId: token.containerId }),
+          ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
+        }));
+      rows.push({ principal, createdAt, sessions });
+    }
+    return rows;
   }
 
   /** Revokes a server-issued short-lived identity after a failed terminal create. */
@@ -841,12 +1149,25 @@ export class AuthService {
       };
       this.store.createPrincipal(principal, this.runtime.now());
     }
-    const minted = this.persistToken(principal.id, share.caps, share.containerId, share.mintedBy);
+    /*
+      A ticket is an ORDINARY credential, so it takes the ordinary expiry rule: the guest
+      side re-opens the dial to get another one (`core.access.openDial`), which is exactly
+      the "can be obtained interactively again" test `expiryFor` encodes. A human guest's
+      ticket expires; an agent guest's does not, for the reason every other agent's does not.
+    */
+    const minted = this.persistToken(
+      principal.id,
+      share.caps,
+      share.containerId,
+      share.mintedBy,
+      expiryFor(principal.kind),
+    );
     return {
       token: minted.raw,
       principal,
       caps: [...share.caps],
       containerId: share.containerId,
+      ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
     };
   }
 

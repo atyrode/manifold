@@ -39,6 +39,7 @@ import type {
   PluginRefusalReason,
   PluginRoster,
   Principal,
+  PrincipalCredentials,
   RuntimeDeps,
   Share,
   ShareGrant,
@@ -103,6 +104,20 @@ export interface IdentityDoor {
   enrollMachine(name: string): IdentityResult<MachineEnrollment>;
   /** Re-mints an enrolled machine's secret, revoking the previous one. */
   rotateMachineToken(machine: MachineRecord): IdentityResult<MachineEnrollment>;
+  /**
+   * WITHDRAWS an enrolled machine's credential, keeping the inventory row. The door ADR 0019
+   * §3 names as missing: `rotateMachineToken` above replaces a secret, and nothing could ask
+   * for one to simply stop working. Answers how many credentials died — 0 when it was already
+   * withdrawn, which is a success and not a refusal.
+   */
+  revokeMachine(machineId: string): IdentityResult<number>;
+  /**
+   * Every principal this caller may administer, when it was created, and its live
+   * credentials (ADR 0019 §3). `tokens:mint`, narrowed to what this caller could revoke —
+   * the read and the write it feeds are graded together, and the reasoning is at the
+   * mechanism (`AuthService.listCredentials`).
+   */
+  listCredentials(): IdentityResult<readonly PrincipalCredentials[]>;
   /**
    * Mints a share: a token bound to a node, for a named guest instance. Same ladder as
    * `mintToken` — a share IS a token (A5), so it is attenuated by the same rules and
@@ -1077,6 +1092,9 @@ export class PluginHost {
         grant: (input) => identityCall(() => this.authService.grant(input, auth)),
         revokeGrant: (grantId) => identityCall(() => this.authService.revokeGrant(grantId, auth)),
         listGrants: (filter) => identityCall(() => this.authService.listGrants(filter, auth)),
+        revokeMachine: (machineId) =>
+          identityCall(() => this.authService.revokeMachine(machineId, auth)),
+        listCredentials: () => identityCall(() => this.authService.listCredentials(auth)),
       },
       /*
         The guest door is bound to the CALLING PRINCIPAL the same way the identity door is,

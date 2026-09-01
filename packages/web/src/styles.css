@@ -302,6 +302,80 @@ input:focus {
   }
 }
 
+/* ── The lens's own conditions ────────────────────────────────────────────────
+   What this WINDOW is doing — offline, a newer build waiting, a foreign instance
+   (`lens.tsx`). Top-centre and above the notice layer on purpose: a notice is about
+   something that just happened inside the workspace, while these are standing facts
+   about the app around it, and the one thing worse than not saying "offline" is
+   saying it where a burst of notices can bury it. Same card vocabulary as a notice,
+   because it is the same kind of quiet, and the layer is pointer-transparent so a
+   banner over a canvas never eats a drag. */
+.lens-layer {
+  position: fixed;
+  z-index: 210;
+  top: 0.6rem;
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 1rem;
+  pointer-events: none;
+}
+
+.lens-note {
+  display: flex;
+  max-width: min(40rem, 100%);
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid #3b4048;
+  border-radius: 0.55rem;
+  padding: 0.4rem 0.45rem 0.4rem 0.7rem;
+  color: #e9ecef;
+  background: #202329;
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 45%);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+
+/* Disconnected is the one condition that is a FAILURE rather than an offer. */
+.lens-note--alarmed {
+  border-color: #7a3b3b;
+  color: #ffc9c9;
+  background: #2a2023;
+}
+
+.lens-note-body {
+  overflow-wrap: anywhere;
+}
+
+.lens-note-detail {
+  color: #adb5bd;
+}
+
+.lens-note--alarmed .lens-note-detail {
+  color: #ffa8a8;
+}
+
+.lens-note-action {
+  flex: 0 0 auto;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  color: #dbe4ff;
+  background: #2b3450;
+  font: inherit;
+  cursor: pointer;
+}
+
+.lens-note-action:hover,
+.lens-note-action:focus-visible {
+  color: #f1f3f5;
+  background: #364fc7;
+}
+
 /* ── Placement legality cues ──────────────────────────────────────────────────
    Uniform across every drop target, because the pipeline behind them is uniform:
    a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its

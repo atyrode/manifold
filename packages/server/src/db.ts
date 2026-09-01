@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -384,6 +384,27 @@ ALTER TABLE events ADD COLUMN targets TEXT;
 ALTER TABLE events ADD COLUMN outcome TEXT;
 ALTER TABLE events ADD COLUMN session TEXT;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '14');
+`,
+  /**
+   * Credential expiry (#108, ADR 0019 §2). ONE nullable column on `tokens`, and the
+   * nullability is the whole migration: NULL means "does not expire", which is exactly what
+   * every row written before this schema meant, so no existing credential's answer to
+   * `authenticate` moves by a millisecond.
+   *
+   * Plain SQL and NO pre-migration snapshot, the house rule rather than an exception to it:
+   * nothing here rewrites a byte, and the move is reversible by a later migration that drops
+   * one column. Backfilling an expiry onto existing tokens was considered and REJECTED — it
+   * would log every browser holding a two-month-old credential out at the deploy, which is
+   * the fleet outage ADR 0019 §2 refuses to dress as a security fix. Existing credentials
+   * live out their unbounded lives; the bound applies to what is minted from here.
+   *
+   * No index. `authenticate` reads the column off the row it already fetched by hash, and
+   * nothing queries BY expiry: the credential list filters in the reader, over a table whose
+   * size is the number of credentials a workspace has ever issued.
+   */
+  15: `
+ALTER TABLE tokens ADD COLUMN expires_at INTEGER;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '15');
 `,
 };
 

@@ -155,6 +155,7 @@ try {
         () => run("verify:terminal-mirror", ["bun", "scripts/verify-terminal-mirror.ts"]),
         () => run("verify:tile-drop", ["bun", "scripts/verify-tile-drop.ts"]),
         () => run("verify:budgets", ["bun", "scripts/verify-budgets.ts"]),
+        () => run("verify:pwa", ["bun", "scripts/verify-pwa.ts"]),
         () => run("verify:axioms", ["bun", "scripts/verify-axioms.ts"]),
       ])
     : [];

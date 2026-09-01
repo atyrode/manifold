@@ -3,6 +3,8 @@ import {
   EnrollMachineRequestSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
+  RevokeMachineRequestSchema,
+  RevokeResultSchema,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -20,9 +22,10 @@ import { z } from "zod";
  */
 export const machinesManifest: PluginManifest = {
   id: "core.machines",
-  version: "1.0.0",
+  version: "1.1.0",
   title: "Machines",
-  description: "Enrolls machines, lists them with live online state, and births terminals.",
+  description:
+    "Enrolls machines, lists them with live online state, withdraws a machine's credential, and births terminals.",
   capabilities: ["machines:mint", "containers:read"],
   contributes: {
     panels: [],
@@ -47,6 +50,13 @@ export const machinesManifest: PluginManifest = {
     ],
   },
 };
+
+/**
+ * The withdrawal door's full name, built from the manifest id rather than spelled: the chrome
+ * that dispatches it and the `data-action` attribute that names it in the DOM (invariant 12)
+ * cannot drift from the declaration below. `core.keys` set this precedent.
+ */
+export const MACHINES_REVOKE_ACTION = `${machinesManifest.id}.revoke`;
 
 /**
  * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
@@ -78,5 +88,47 @@ export const machinesActions = [
     caps: ["machines:mint"],
     input: EnrollMachineRequestSchema,
     result: MachineEnrollResponseSchema,
+  }),
+  defineAction({
+    /*
+      WITHDRAWAL AS AN ACT — the door ADR 0019 §3 names as the one thing missing from this
+      plugin. `list` and `enroll` were the whole vocabulary, so a credential minted for "a
+      process nobody in this workspace can see" (this manifest's own words for why
+      `machines:mint` is load-bearing) could be REPLACED through `enroll { rotateToken: true }`
+      and never taken away. The mechanism was always there — `rotateMachineToken` revokes and
+      re-mints — and what did not exist was the act.
+
+      ONE DOOR, ONE CONCEPT (invariant 14): revoking a machine IS revoking that machine's
+      credential, and there is no second spelling of it. The inventory row survives, because
+      withdrawing a credential and forgetting a box are different verbs and an operator needs
+      to see the machine they just cut off.
+
+      `machines:mint`, the same cap `enroll` declares, because minting and withdrawing a
+      machine credential are one authority. A `machines:revoke` would be a second answer to
+      "who administers the fleet", and grading withdrawal LOWER than enrolment would mean the
+      cheaper capability could undo the dearer one.
+
+      `scope: "workspace"` — the default, and the same reasoning `enroll` carries: a machine
+      is a workspace-global fact with no container to be inside, so a container-scoped token is
+      scoped to something the answer does not describe. That is why `list` declares
+      `scope: "container"` and this does not: reading the roster is a viewer's business,
+      administering it is not.
+
+      `cleanup: true`, for `core.access.revoke`'s reason exactly: withdrawal is what somebody
+      reaches for when a secret has leaked, and an administrator's toggle must never be what
+      keeps a compromised machine credential alive.
+    */
+    cleanup: true,
+    name: "revoke",
+    title: "Withdraw a machine's credential",
+    caps: ["machines:mint"],
+    input: RevokeMachineRequestSchema,
+    /*
+      The same count every other revocation publishes, meaning the same thing: how many
+      credentials actually died. `0` is a success — asking twice about a machine already cut
+      off is what a careful operator does — and inventing a `{ ok: true }` here would be a
+      second shape for one answer.
+    */
+    result: RevokeResultSchema,
   }),
 ];

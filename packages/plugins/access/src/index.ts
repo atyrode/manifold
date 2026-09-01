@@ -2,6 +2,7 @@ import { defineAction } from "@manifold/plugin";
 import {
   BootstrapPrincipalRequestSchema,
   CreateGrantRequestSchema,
+  CredentialsResponseSchema,
   DialSchema,
   DialShareRequestSchema,
   DialTicketSchema,
@@ -47,9 +48,19 @@ import { z } from "zod";
  * interface that had already promised its shape. What the ADR added ABOVE the door is the grant
  * administration trio below, which it named as this plugin's work and left otherwise unspecified.
  *
- * Contributes no UI this wave. Administration screens are a later plugin; the door is what
- * makes them possible, and it is reachable identically by a human, a remote client and an
- * agent (A2) the moment it is composed.
+ * CONTRIBUTES ONE SECTION as of ADR 0019 §3 — `sessions`, the credential list. This plugin
+ * shipped door-only for two waves on the stated grounds that "administration screens are a
+ * later plugin"; the credential list is the first of them, and it lands here rather than in
+ * a new god panel because the concept is this plugin's: principals and the credentials they
+ * hold are what `core.access` mints and revokes. The FLEET's half of the same question —
+ * which machines are enrolled, and withdrawing one — stays in `core.machines`'s existing
+ * Machines section, for the same reason inverted (ADR 0019 §3: "rendered by the plugin that
+ * owns each concept"). Two sections, two concepts, no panel that knows about both.
+ *
+ * The `admin UI: deferred, door-only` marker is therefore GONE from the description below,
+ * deleted in the commit that discharges it. The share and grant markers stay: those screens
+ * are still owed, and a marker that outlived its deferral is the lie the convention exists
+ * to prevent — as is one deleted before its deferral ended.
  *
  * IN-PRODUCT DEFERRAL MARKER — the convention this manifest introduces, and it applies
  * wherever a plugin ships a door without the screen that drives it. A deferral a principal
@@ -71,10 +82,10 @@ import { z } from "zod";
  */
 export const accessManifest: PluginManifest = {
   id: "core.access",
-  version: "1.2.0",
+  version: "1.3.0",
   title: "Access",
   description:
-    "Creates principals, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, and revokes them — admin UI: deferred, door-only; share UI: deferred, door-only; grant UI: deferred, door-only",
+    "Creates principals, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, revokes them, and lists who holds a live credential — share UI: deferred, door-only; grant UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
@@ -90,7 +101,17 @@ export const accessManifest: PluginManifest = {
   capabilities: ["*", "tokens:mint", "containers:read", "containers:write"],
   contributes: {
     panels: [],
-    sections: [],
+    /*
+      THE CREDENTIAL LIST'S HOME (ADR 0019 §3). `order: 30` puts it after Machines (20),
+      which is the order the two answers belong in: the fleet is what an operator looks at
+      daily, and who holds a credential is what they look at when something is wrong.
+
+      Named `sessions` rather than `credentials` or `access` because a section id is what a
+      HUMAN sees in the rail, and "which browsers hold my key" is a question about sessions.
+      The word carries no second meaning here: a session in this product is a client
+      connection, and a live credential is precisely what makes one possible.
+    */
+    sections: [{ id: "sessions", title: "Sessions", order: 30 }],
     elements: [],
     tools: [],
     /*
@@ -111,6 +132,15 @@ export const accessManifest: PluginManifest = {
     ],
   },
 };
+
+/**
+ * The two door names this plugin's own section dispatches, built from the manifest id rather
+ * than spelled: a full action name is the pair `${manifest.id}.${local}`, so the chrome that
+ * calls one and the `data-action` attribute that names it in the DOM (invariant 12) cannot
+ * drift from the declaration below. `core.keys` set this precedent.
+ */
+export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
+export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
 
 /**
  * Authority mirrors the deleted routes exactly, rung for rung.
@@ -171,6 +201,40 @@ export const accessActions = [
       result and every client's parse of it are the same object.
     */
     result: RevokeResultSchema,
+  }),
+  defineAction({
+    name: "listCredentials",
+    title: "List who holds a live credential",
+    /*
+      `tokens:mint`, NOT `*`, and this door is where that decision is published rather than
+      only reasoned about (ADR 0019 §3 leaves the authority to the implementing change).
+
+      It is DELIBERATELY graded differently from `listGrants` below, which ADR 0011 §8 settled
+      as root-only. The two are neighbours and are not the same question: a grant row is the
+      map of who may do what over this workspace — the reconnaissance a caller performs before
+      deciding whom to impersonate — while a credential row says an identity exists and holds
+      a live secret, carries no secret and no hash, and tells a reader nothing a `tokens:mint`
+      holder could not learn by minting.
+
+      The load-bearing half of the argument is the WRITE it aims. `revoke` above is
+      `tokens:mint`; grading its list stricter would publish a revoke door that nobody who can
+      open it can see the targets of, which is how an administrator ends up revoking by
+      guesswork. Read and write are graded together, and the mechanism narrows the answer to
+      exactly the principals this caller could revoke (`AuthService.listCredentials`) — so a
+      non-root caller learns nothing it could not already act on.
+    */
+    caps: ["tokens:mint"],
+    /*
+      `scope: "workspace"`, and FORCED rather than chosen. A credential is not addressed by
+      container: a token may be confined to one, but the principal holding it is a workspace
+      fact, and a container-scoped caller asking "who holds a credential here" is asking about
+      something its scope cannot describe. `revoke`'s `scope: "container"` is a different
+      question — it names one principal and the mechanism confines the effect — and preserving
+      that is not the same as admitting a scoped caller to a workspace-wide roster.
+    */
+    scope: "workspace",
+    input: z.strictObject({}),
+    result: CredentialsResponseSchema,
   }),
 
   /*

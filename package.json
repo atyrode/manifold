@@ -19,6 +19,7 @@
     "verify:terminal-mirror": "bun scripts/verify-terminal-mirror.ts",
     "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
     "verify:budgets": "bun scripts/verify-budgets.ts",
+    "verify:pwa": "bun scripts/verify-pwa.ts",
     "verify:axioms": "bun scripts/verify-axioms.ts",
     "verify:trace": "bun scripts/verify-trace.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",

@@ -359,6 +359,12 @@ export {
   RevokeRequestSchema,
   RevokeResultSchema,
   TokenGrantSchema,
+  AUTH_REFUSALS,
+  AuthRefusalSchema,
+  CredentialSchema,
+  CredentialsResponseSchema,
+  PrincipalCredentialsSchema,
+  RevokeMachineRequestSchema,
   TreeParentIdSchema,
   type BootstrapPrincipalRequest,
   type HttpError,
@@ -369,6 +375,11 @@ export {
   type ContainerTerminalSummary,
   type RevokeResult,
   type TokenGrant,
+  type AuthRefusal,
+  type Credential,
+  type CredentialsResponse,
+  type PrincipalCredentials,
+  type RevokeMachineRequest,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { LOG_EVENTS, type LogEvent } from "./log.ts";

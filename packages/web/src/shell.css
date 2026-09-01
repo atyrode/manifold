@@ -1512,7 +1512,10 @@ button.sidebar-terminal.is-summary > small {
 .sidebar-machine-row {
   display: grid;
   min-height: 2.1rem;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  /* Six slots: pip, mark, name, state, and the two trailing controls core.machines fills —
+     "new terminal" and, since ADR 0019 §3, "withdraw this machine's credential". Both are
+     conditional, and an `auto` track with no child in it collapses to nothing. */
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, auto) auto auto;
   align-items: center;
   gap: 0.45rem;
   padding-inline: 0.5rem;

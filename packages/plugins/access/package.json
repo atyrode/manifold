@@ -4,14 +4,17 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./web": "./src/web.tsx"
   },
   "dependencies": {
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
+    "react": "19.2.8",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.2"
+    "@types/bun": "^1.3.2",
+    "@types/react": "^19.2.0"
   }
 }

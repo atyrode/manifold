@@ -820,14 +820,15 @@ describe("json schema export", () => {
       stranger has to guess at — and the assertion is the whole key set rather than a spot check
       because that is the only form a MISSING section fails.
 
-      The three wires (session, machine, instance) plus the four vocabularies: placement's
-      algebra, the plugin contract, the event plane and the authority model. `actions` and
-      `plugins` are absent on purpose — they are the LIVE assembly, handed in by a server that
-      composed one.
+      The three wires (session, machine, instance) plus the five vocabularies: placement's
+      algebra, the plugin contract, the event plane, the authority model and the credential
+      vocabulary (ADR 0019). `actions` and `plugins` are absent on purpose — they are the LIVE
+      assembly, handed in by a server that composed one.
     */
     expect(Object.keys(buildProtocolJsonSchema()).sort()).toEqual([
       "eventContract",
       "grantContract",
+      "identity",
       "instance",
       "machine",
       "placement",
@@ -839,18 +840,20 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v19 ADDS to the acceptance set, because the agent wire still did not move", () => {
+  test("v20 ADDS to the acceptance set, because the agent wire still did not move", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
       `hello.sessions` became `hello.terminals` — so a v15 agent could neither be understood
       nor understand this server, and the upgrade was a coordinated fleet restart.
 
-      v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing) and v18 -> v19 (the
+      v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing), v18 -> v19 (the
       session channel's liveness pair, reoriented so the SERVER pings and the browser
-      answers) are all the other case. Every one of them leaves `AgentMessage` and
-      `ServerToAgentMessage` gaining, losing and renaming nothing; an agent never sees a
-      principal, a session frame or a browser's throttled timers. So the invariant's first
+      answers) and v19 -> v20 (credential expiry and the credential list, whose one exemption
+      is precisely the machine token) are all the other case. Every one of them leaves
+      `AgentMessage` and `ServerToAgentMessage` gaining, losing and renaming nothing; an agent
+      never sees a principal, a session frame or a browser's throttled timers, and no
+      credential an enrolled spoke holds changed meaning at v20. So the invariant's first
       clause applies verbatim — a bump that leaves the agent wire identical ADDS — and a v16
       agent keeps its terminals across this deploy instead of being locked out by a version
       check for a change it cannot see.
@@ -862,6 +865,7 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
     expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 4,
       PROTOCOL_VERSION - 3,
       PROTOCOL_VERSION - 2,
       PROTOCOL_VERSION - 1,

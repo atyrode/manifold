@@ -27,6 +27,13 @@ interface MachinesCtx {
   readonly store: {
     listMachines(): readonly MachineRow[];
     getMachineByName(name: string): MachineRow | null;
+    /**
+     * Which machines hold a WITHDRAWN credential. One store read for the whole roster
+     * rather than a question per row, and the definition lives there because it is a join
+     * between a machine and the token it references — not something a plugin should
+     * reconstruct (ADR 0019 §3).
+     */
+    revokedMachineIds(): ReadonlySet<string>;
   };
   readonly machines: {
     isOnline(machineId: string): boolean;
@@ -34,6 +41,8 @@ interface MachinesCtx {
   readonly identity: {
     enrollMachine(name: string): IdentityResult<Enrollment>;
     rotateMachineToken(machine: MachineRow): IdentityResult<Enrollment>;
+    /** Withdraws a machine's credential and answers how many died; 0 is a success. */
+    revokeMachine(machineId: string): IdentityResult<number>;
   };
   /**
    * The fleet's news, staged on the engine and published only if this dispatch commits. Only
@@ -52,6 +61,12 @@ interface MachineDot {
 
 interface MachineSummary extends MachineDot {
   readonly online: boolean;
+  /**
+   * OMITTED when the credential is live, which is the wire's rule rather than this file's
+   * (`MachineSummarySchema`): absent reproduces the pre-v20 row exactly, so a v19 reader
+   * sees the roster it always saw.
+   */
+  readonly revoked?: boolean;
 }
 
 /** Either a published result, or a refusal the door turns into a `refused` denial. */
@@ -96,10 +111,21 @@ export const machinesHandlers = {
     ctx: MachinesCtx,
     _args: Record<string, never>,
   ): Promise<{ machines: readonly MachineSummary[] }> {
+    /*
+      One read for the whole roster, hoisted out of the map for the reason the map exists:
+      the alternative is a query per machine, which is the N+1 a list door must not ship.
+    */
+    const withdrawn = ctx.store.revokedMachineIds();
     return {
-      machines: ctx.store
-        .listMachines()
-        .map((machine) => ({ ...dot(machine), online: ctx.machines.isOnline(machine.id) })),
+      machines: ctx.store.listMachines().map((machine) => ({
+        ...dot(machine),
+        online: ctx.machines.isOnline(machine.id),
+        /*
+          OMITTED when live rather than `false`, because the wire says absent ≡ not revoked
+          and one representation of "normal" is what keeps a v19 reader's parse exact.
+        */
+        ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
+      })),
     };
   },
 
@@ -129,5 +155,29 @@ export const machinesHandlers = {
       });
     }
     return { machine: dot(outcome.value.machine), machineToken: outcome.value.machineToken };
+  },
+
+  /**
+   * WITHDRAWAL, relayed (ADR 0019 §3). The whole ladder is above and beneath this line —
+   * `machines:mint` at the door, the unscoped-caller and capability re-check plus the
+   * live-socket fence in the mechanism — so this handler exists to turn a count into the
+   * result the door declares and a refusal into a denial.
+   *
+   * NO EVENT EMITTED, and that is the plane rule rather than an omission. `token_revoked`
+   * already lands in the journal at the mechanism, which is where every other revocation
+   * records itself; an event-plane emission here would be a SECOND announcement of one act,
+   * and the fleet's declared vocabulary (`machine_enrolled`, `machine_online`,
+   * `machine_offline`) already tells a watching client what it needs — a withdrawn machine
+   * goes offline within one liveness interval because its socket is severed.
+   *
+   * A count of ZERO is a success: a machine already cut off is exactly what a careful
+   * operator asks about twice.
+   */
+  async revoke(
+    ctx: MachinesCtx,
+    args: { machineId: string },
+  ): Promise<Refusable<{ revoked: number }>> {
+    const outcome = ctx.identity.revokeMachine(args.machineId);
+    return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
   },
 };

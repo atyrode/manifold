@@ -2,6 +2,7 @@ import {
   ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
+  CredentialsResponseSchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
   MachinesResponseSchema,
@@ -13,6 +14,7 @@ import {
   IndexResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
+  RevokeMachineRequestSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
   ResolveResponseSchema,
@@ -26,6 +28,7 @@ import {
   type BootstrapPrincipalRequest,
   type Cap,
   type ClientMessageBody,
+  type CredentialsResponse,
   type Gesture,
   type MachineSummary,
   type MintTokenRequest,
@@ -1054,6 +1057,36 @@ export class SessionClient {
   async revokeToken(principalId: string): Promise<AccessOutcome<RevokeResult>> {
     const request = RevokeRequestSchema.parse({ principalId });
     return this.accessDoor("core.access.revoke", request, (result) =>
+      RevokeResultSchema.parse(result),
+    );
+  }
+
+  /**
+   * WHO HOLDS A LIVE CREDENTIAL HERE (`core.access.listCredentials`, ADR 0019 §3): every
+   * principal this caller may administer, when it was created, and its credentials that
+   * would still authenticate right now.
+   *
+   * `tokens:mint`, narrowed by the server to exactly the principals this caller could
+   * revoke — so the answer and {@link revokeToken} are graded together and an agent can
+   * audit its own delegations without being root.
+   */
+  async credentials(): Promise<AccessOutcome<CredentialsResponse>> {
+    return this.accessDoor("core.access.listCredentials", {}, (result) =>
+      CredentialsResponseSchema.parse(result),
+    );
+  }
+
+  /**
+   * Withdraws an enrolled machine's credential (`core.machines.revoke`, ADR 0019 §3) and
+   * answers HOW MANY died — zero is a success, exactly as it is for {@link revokeToken}.
+   *
+   * The inventory row survives: withdrawing a credential and forgetting a box are different
+   * verbs, and re-enrolling the same name with `rotateToken: true` is how a machine comes
+   * back. The machine's live socket is severed by the same fence a principal's is.
+   */
+  async revokeMachine(machineId: string): Promise<AccessOutcome<RevokeResult>> {
+    const request = RevokeMachineRequestSchema.parse({ machineId });
+    return this.accessDoor("core.machines.revoke", request, (result) =>
       RevokeResultSchema.parse(result),
     );
   }

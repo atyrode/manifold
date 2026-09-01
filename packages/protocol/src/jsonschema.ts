@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AUTH_REFUSALS, CredentialSchema } from "./http.ts";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
 import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from "./instance.ts";
 import { eventVocabulary } from "./events.ts";
@@ -93,6 +94,19 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     pluginContract: pluginVocabulary(),
     eventContract: eventVocabulary(),
     grantContract: grantVocabulary(),
+    /**
+     * The CREDENTIAL vocabulary (ADR 0019): the closed set of words a refused credential
+     * can be refused with, and what one live credential looks like when the list door
+     * publishes it. Published for the same reason `instance.ticketRefusals` is — a
+     * stranger's agent has to learn "come back with a fresh credential" from a document
+     * rather than by pattern-matching prose — and it is the whole of what this file has to
+     * say about identity: WHO may open which door is the roster's `actions`, and the
+     * mechanism that decides it is deliberately not on the wire at all.
+     */
+    identity: {
+      authRefusals: [...AUTH_REFUSALS],
+      credential: z.toJSONSchema(CredentialSchema),
+    },
   };
   if (extras === undefined) return description;
   description["actions"] = extras.actions;

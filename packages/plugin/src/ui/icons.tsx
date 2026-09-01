@@ -2,6 +2,7 @@ import type { ItemKind } from "@manifold/protocol";
 import {
   ArrowDownToLine,
   ArrowLeftRight,
+  Ban,
   Blocks,
   Check,
   ChevronDown,
@@ -220,6 +221,15 @@ export type ControlKind =
   | "reveal"
   | "discard"
   /**
+   * WITHDRAW an authority: what was granted no longer works, and the thing it was granted to
+   * is still there. Distinct from `discard` on purpose — pressing this destroys nothing, it
+   * stops a credential from authenticating, and the row it sits on survives — and distinct
+   * from `locked`, which is a control's own refusal rather than a verb a reader presses.
+   * A neutral verb with no domain noun in it, so it stays sayable by whatever the next
+   * revocable thing turns out to be; `core.access` and `core.machines` are today's callers.
+   */
+  | "revoke"
+  /**
    * PUT IT BACK TO ITS BEGINNING, whatever it is. The one caller today is a terminal's own
    * chrome, and that is fine: the word carries no object, so the vocabulary reads the same
    * with core.terminals removed. It replaced `endTerminal`, which named a plugin's noun
@@ -283,6 +293,12 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   sidebarExpand: PanelLeftOpen,
   reveal: Eye,
   discard: Trash2,
+  /**
+   * A circle-slash: "this no longer works", not "this is gone". Chosen over `XCircle` and
+   * `ShieldOff` because the silhouette has to stay distinguishable from `close`'s bare X and
+   * `discard`'s bin at 13-14px, which is the size every control in this app is drawn at.
+   */
+  revoke: Ban,
   restart: RotateCw,
   locked: Lock,
   assembly: Blocks,
