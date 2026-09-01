@@ -1466,6 +1466,21 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the one disclosure — a header button that folds the body under it (`disclosure.tsx`); its behavior engine is Radix Collapsible, an internals decision (docs/decisions/2026-08-31-radix-behavior-primitives.md)"
     },
     {
+      "family": "chip",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one chip — a small bordered token that is a button exactly when it acts and an inert span otherwise, one box for both forms (`chip.tsx`). The box (border, radius, padding, type size) is the stdlib's; the tint is the adopter's, written in its own family's sheet"
+    },
+    {
+      "family": "kv",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one key-value list — a labelled reading of one thing as the definition list it is (`kv.tsx`): the list's rhythm, the row's two columns, the wrap-not-scroll value contract, and the `--kv-label` width knob"
+    },
+    {
+      "family": "popover",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the one popover's floating layer (`popover.tsx`), portaled to the body above every pointer-transparent overlay; its behavior engine is Radix Popover, an internals decision (docs/decisions/2026-09-01-radix-popover.md)"
+    },
+    {
       "family": "credential",
       "owner": "packages/plugins/access/src/styles.css",
       "why": "core.access' credential list (ADR 0019 §3): the principal row, its colour pip, the meta line under the name, the two-press withdraw control and the refusal it renders in place. It is this plugin's sheet rather than a block in the shell's for `keys`' reason — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the row VOCABULARY the section fills (`.sidebar-section-content`, `.sidebar-section-count`, `.sidebar-section-empty`) stays in the `sidebar` family, because a class more than one tenant fills belongs to whoever owns the rail"
