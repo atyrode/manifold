@@ -922,6 +922,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/introspect",
   "/api/layout",
   "/api/bindings",
+  "/api/settings",
   "/api/attendance",
   "/api/plugins",
   "/api/protocol",
@@ -2135,9 +2136,21 @@ function scanTree(dir: string, out: string[]): void {
  * before it starts (A3), whatever each individual file's litmus verdict said. Raising either
  * threshold is a change to this file, which means it is a change somebody has to defend in a
  * diff; that is the whole enforcement mechanism.
+ *
+ * RED RAISED 12,000 → 12,500 on 2026-09-01 (issue #133), and this is the defence. What crossed
+ * the line was `settings.ts`: per-principal preference composition, which passes the litmus on
+ * all three criteria — the sidebar drops a row before any plugin draws (bootstrap
+ * circularity), the module names no plugin and no preference (neutrality), and it refuses a
+ * write the assembly does not declare (arbitration). The alternative to the raise was to put
+ * that composition inside `core.plugins`, which is the exact trap `setEnabled` was moved out of
+ * a plugin to escape. So the engine grew by ONE module and 51 lines past the ceiling, on
+ * purpose, and the number moves by the smallest amount that admits it rather than to a round
+ * new headroom: the next module to cross this line gets the same argument or it does not land.
+ * The WARN line does NOT move — it has been a live signal since well before this wave, and
+ * silencing it would trade the review this budget exists to provoke for a green run.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_000;
+const PLUGIN_SRC_MAX_LINES = 12_500;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");

@@ -2,6 +2,8 @@ import "./styles.css";
 import {
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  ENGINE_SET_SETTING_ACTION,
+  type ComposedSetting,
   type SectionProps,
 } from "@manifold/plugin";
 import {
@@ -10,11 +12,12 @@ import {
   type PluginPurgeResult,
   type PluginPurgeTarget,
   type PluginRefusalReason,
+  type ManifoldRef,
   type PluginRosterEntry,
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
-import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import {
   PLUGIN_FILTERS,
@@ -176,6 +179,76 @@ function DependencyBlock({
 }
 
 /**
+ * THE GENERIC SETTINGS PANE (#133): one control per DECLARED setting, and a named absence for
+ * a plugin that declares none.
+ *
+ * Generic is the whole point, and it is what makes this a mechanism rather than a screen. The
+ * pane is rendered from `host.assembly.settings` — the composed table, effective values already
+ * applied — so this component knows nothing about what any setting means, no plugin registers
+ * a form, and a stranger's plugin gets the pane `core.canvas` gets by declaring one line of
+ * manifest. When a second `kind` lands (`SETTING_KINDS`), this is the one place a second
+ * control appears, which is the same shape the purge-target table keeps: the closed protocol
+ * set is switched on here and nowhere else.
+ *
+ * "Declares no settings" is a NAMED absence, not an empty box: a reader who opened this pane
+ * asked a question, and the honest answer is that this plugin has nothing to offer rather than
+ * a blank rectangle they will read as a failure to load.
+ *
+ * WRITES GO TO THE ENGINE'S DOOR and the table is then RE-READ (`refreshSettings`), never
+ * flipped locally: the value is stored per principal on the server, so the switch showing "off"
+ * and the sidebar dropping a row are the same fact arriving from the same place. A row's
+ * `declared` sits beside its `value` so the pane can say which ones the reader has moved.
+ */
+function SettingsPane({
+  settings,
+  pluginTitle,
+  pending,
+  onSet,
+}: {
+  readonly settings: readonly ComposedSetting[];
+  readonly pluginTitle: string;
+  readonly pending: string | null;
+  readonly onSet: (setting: ComposedSetting, value: boolean) => void;
+}): ReactElement {
+  if (settings.length === 0) {
+    return (
+      <p className="plugin-manager-settings-empty" data-testid="plugin-manager-settings-empty">
+        {pluginTitle} declares no settings.
+      </p>
+    );
+  }
+  return (
+    <div className="plugin-manager-settings" data-testid="plugin-manager-settings">
+      {settings.map((setting) => (
+        <div className="plugin-manager-setting" key={setting.ref}>
+          <span className="plugin-manager-setting-label">
+            <strong>{setting.title}</strong>
+            {setting.value === setting.declared ? null : (
+              <small className="plugin-manager-setting-moved">Changed from default</small>
+            )}
+          </span>
+          <button
+            className="plugin-manager-setting-toggle"
+            type="button"
+            role="switch"
+            aria-checked={setting.value}
+            aria-label={`${setting.value ? "Turn off" : "Turn on"} ${setting.title}`}
+            title={`${setting.title} — your own preference, on every device you sign in from`}
+            data-action={ENGINE_SET_SETTING_ACTION}
+            data-testid="plugin-manager-setting-toggle"
+            data-setting={setting.ref}
+            disabled={pending === setting.ref}
+            onClick={() => onSet(setting, !setting.value)}
+          >
+            {setting.value ? "On" : "Off"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * THE BROWSE TAB, which is a named absence rather than an empty panel.
  *
  * Installing a plugin that is not compiled into this build is a RATIFIED roadmap wave —
@@ -220,6 +293,13 @@ function BrowsePanel(): ReactElement {
 export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const assembly = host.assembly;
   const roster = assembly.roster();
+  /*
+    THE COMPOSED SETTINGS TABLE, read exactly as the roster is: the engine's own join of every
+    manifest's declarations with this principal's stored values. The panes below are a view of
+    it and nothing more — this section holds no settings state of its own, so a switch and the
+    sidebar row it governs can never disagree.
+  */
+  const settings = assembly.settings;
   const caps = host.client.selfCaps();
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
   const { sidebarOpen } = useWorkspaceShell();
@@ -250,6 +330,13 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
    * so the flash cannot outlive the row it describes.
    */
   const [jumpId, setJumpId] = useState<string | null>(null);
+  /**
+   * WHICH ROW'S SETTINGS PANE IS OPEN, by plugin id. One slot rather than a flag per row: a
+   * pane is a place a reader is looking, and two places at once is not one.
+   */
+  const [settingsId, setSettingsId] = useState<string | null>(null);
+  /** The setting ref a write is in flight for, so exactly that switch goes inert. */
+  const [pendingSetting, setPendingSetting] = useState<string | null>(null);
 
   useEffect(() => {
     if (jumpId === null) return;
@@ -265,11 +352,47 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     };
   }, [jumpId]);
 
-  const jumpTo = (id: string): void => {
+  const jumpTo = useCallback((id: string): void => {
     setQuery("");
     setFilter("all");
     setJumpId(id);
-  };
+  }, []);
+
+  /**
+   * THE DEEP-LINK ANSWER (#133). `manifold://plugin/<id>` is an address like any other, and
+   * this is the surface that shows a plugin — so when the shell publishes such a request
+   * (`host.requestedRef`), the manager opens on that row with its settings pane out.
+   *
+   * A ROUTE ANSWER, not a modal bus. Nothing calls into this component: the shell puts an
+   * address on the route, this reads it, and a build where `core.plugins` is disabled simply
+   * leaves the address unanswered — exactly as an unregistered panel leaves a leaf empty.
+   * The address is consumed once by the shell, so closing the dialog does not fight a request
+   * that keeps arriving, and following the same link again opens it again.
+   *
+   * ANSWERED DURING RENDER, not in an effect, and the difference is visible: an effect would
+   * paint the workspace once with the manager shut and then open it, so a deep link would
+   * flash. React re-runs this component immediately on a set-during-render, before anything
+   * reaches the screen, which is exactly the "adjust state when the input changes" shape. The
+   * guard is the LAST ANSWERED address rather than a boolean, so a second link to a second
+   * plugin is answered while a re-render for any other reason is not.
+   *
+   * It reuses `jumpTo` verbatim, because "clear the filters that may be hiding the row, scroll
+   * to it, flash it" is already this component's answer to "go look at that plugin" and a
+   * second implementation of it would drift from the first.
+   */
+  const requested = host.requestedRef;
+  // Starts NULL rather than at the current request: a cold load straight onto a link mounts
+  // this section with the address already published, and that is the case the link exists for.
+  const [answered, setAnswered] = useState<ManifoldRef | null>(null);
+  if (requested !== answered) {
+    setAnswered(requested);
+    if (requested !== null && requested.kind === "plugin") {
+      setOpen(true);
+      setTab("installed");
+      jumpTo(requested.pluginId);
+      setSettingsId(requested.pluginId);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -329,6 +452,37 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     } finally {
       setPendingId(null);
       setArmedId(null);
+    }
+  };
+
+  /**
+   * THE PREFERENCE DOOR. Unlike the two above it changes nothing about the workspace: the value
+   * is stored against this principal, so nobody else's composition moves and no capability is
+   * asked for.
+   *
+   * NO LOCAL FLIP, for the reason the toggle above has none — and here it also buys the proof
+   * that matters: the switch changes when the engine re-reads the stored map
+   * (`assembly.refreshSettings`), which is the same read the sidebar composes its rows from. A
+   * switch that flipped itself could show "off" beside a row that was still there.
+   */
+  const setSetting = async (setting: ComposedSetting, value: boolean): Promise<void> => {
+    setPendingSetting(setting.ref);
+    setFailure(null);
+    try {
+      const outcome = await host.client.action(ENGINE_SET_SETTING_ACTION, {
+        plugin: setting.plugin,
+        setting: setting.id,
+        value,
+      });
+      if (!outcome.ok) {
+        setFailure(outcome.denial.message);
+        return;
+      }
+      assembly.refreshSettings();
+    } catch (reason: unknown) {
+      setFailure(reason instanceof Error ? reason.message : "Could not change the setting");
+    } finally {
+      setPendingSetting(null);
     }
   };
 
@@ -423,6 +577,19 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
               first, purge second — and the first step is the reversible one.
              */
             const purgeable = canManage && !entry.enabled;
+            const settingsOpen = settingsId === manifest.id;
+            /*
+              THE GEAR IS OFFERED ON EVERY ROW, declared settings or not (#133) — the one
+              affordance here that is not conditional on what the row can do. "This plugin has
+              nothing to configure" is an ANSWER a reader can only get by asking, and hiding the
+              question on the rows with no answer means the absence of a gear has to be read as
+              two different things at once. The pane says which it is, by name.
+
+              It needs no capability either: a preference is written against the caller's own
+              principal, so a read-only visitor who may not touch the enablement switch may
+              still decide what their own rail holds.
+             */
+            const declared = settings.filter((setting) => setting.plugin === manifest.id);
             const armed = armedId === manifest.id;
             return (
               <div
@@ -466,6 +633,17 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                       <ControlIcon kind="locked" size={13} />
                     </span>
                   )}
+                  <button
+                    className={`plugin-manager-settings-open${settingsOpen ? " is-open" : ""}`}
+                    type="button"
+                    aria-expanded={settingsOpen}
+                    aria-label={`${settingsOpen ? "Hide" : "Show"} ${manifest.title} settings`}
+                    title={`${manifest.title} settings — yours, on every device you sign in from`}
+                    data-testid="plugin-manager-settings-open"
+                    onClick={() => setSettingsId(settingsOpen ? null : manifest.id)}
+                  >
+                    <ControlIcon kind="settings" size={13} />
+                  </button>
                   {!purgeable ? null : (
                     <button
                       className={`plugin-manager-purge${armed ? " is-confirming" : ""}`}
@@ -507,6 +685,14 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                   pluginTitle={(id) => assembly.pluginTitle(id) ?? id}
                   onJump={jumpTo}
                 />
+                {!settingsOpen ? null : (
+                  <SettingsPane
+                    settings={declared}
+                    pluginTitle={manifest.title}
+                    pending={pendingSetting}
+                    onSet={(setting, value) => void setSetting(setting, value)}
+                  />
+                )}
               </div>
             );
           })}

@@ -542,6 +542,17 @@ Four rules bind that table:
   `enable_failed` / `disable_failed`), because a teardown that fails is a state every principal
   can see rather than an assertion. Disable always completes.
 
+**A settings drop is NOT on this table**, and the distinction is the reason to say so here.
+`contributes.settings` declares preferences whose values are per PRINCIPAL, and a section naming
+one of its own plugin's settings is dropped from the sidebar while that value reads false
+(`visibleSections`, `packages/plugin/src/settings.ts`). Every axis above is workspace-global and
+about a plugin's ACTIVE surface; this one is one reader's rail. So none of the four rules apply
+to it: nothing is retained, because there was nothing to retain — the plugin is enabled, its
+doors answer, its data is untouched, and its other contributions are exactly where they were.
+Nothing is marked, either: chrome renders absence when the workspace took something away, and a
+preference was taken away by the person looking at it. The one ledger of what a reader has
+turned off is the manager's own settings pane, which is where they turned it off.
+
 ## Lexicon
 
 The law is `AXIOMS.md` §Lexicon law — one word per concept, one concept per word, and the
@@ -963,6 +974,12 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "section",
       "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode), and painted beside its cluster's other members when it declares one. A reader's arrangement of them is a TREE, not a flat order: a row sits somewhere in the rail's stack, and a stack dropped between two rows holds its own rows along the other axis",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "setting",
+      "means": "contribution kind: one preference a manifest declares (contributes.settings — id, title, kind, default), whose VALUE is per principal, server-saved as a delta over the declaration and written only through engine.plugins.setSetting. A section may name one of its own plugin's settings (SectionDef.setting), and a row whose setting reads false is DROPPED at composition (visibleSections) — a preference, never a disable: nothing is retained, marked or tombstoned, because the reader who turned it off already knows where it went. It is the engine's noun rather than any plugin's: the engine composes the table, refuses a write no declaration answers, and has no favourite among the manifests that declare them",
       "banned": [],
       "allow": []
     },

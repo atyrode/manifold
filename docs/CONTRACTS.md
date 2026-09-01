@@ -246,18 +246,19 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path             | Auth cap              | Req → Res                                                                                                                                                 |
-| ----------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz            | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                 |
-| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                   |
-| GET /api/attendance     | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                 |
-| POST /api/actions/:name | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door            |
-| GET /api/plugins        | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                           |
-| GET /api/layout         | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction             |
-| GET /api/bindings       | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer |
-| GET /api/resolve?uri=   | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                 |
-| GET /api/containers     | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input               |
-| GET /api/introspect     | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                       |
+| Method+Path             | Auth cap              | Req → Res                                                                                                                                                                 |
+| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz            | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                                 |
+| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                                   |
+| GET /api/attendance     | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                 |
+| POST /api/actions/:name | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                            |
+| GET /api/plugins        | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                                           |
+| GET /api/layout         | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                             |
+| GET /api/bindings       | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                 |
+| GET /api/settings       | containers:read       | → `{ values }` — the CALLER's plugin setting values as setting ref → boolean, self-scoped exactly as the bindings read is. `engine.plugins.setSetting` is the only writer |
+| GET /api/resolve?uri=   | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                 |
+| GET /api/containers     | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input                               |
+| GET /api/introspect     | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                                       |
 
 `IndexEntry` is either `{ kind:"container", container:{ id, name, createdAt, discipline },
 parentId: string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name,
@@ -605,6 +606,41 @@ reserved namespace (`ENGINE_NAMESPACE_PREFIX`): a plugin claiming it fails assem
 mechanism. Seven shipped seats are `essential` and answer `refused`/`essential`: the rail's
 non-negotiables `core.shell`, `core.brand`, `core.keys` and `core.plugins` (issue #91), and the
 three the floor itself dispatches — `core.space`, `core.index` and `core.access` (issue #113).
+
+**Plugin settings are per PRINCIPAL, declared by manifests, and written at one engine door**
+(issue #133). A manifest may declare `contributes.settings` — bounded rows of
+`{ id, title, kind, default }`, `kind` a closed set whose one member today is `boolean` — and the
+declarations ride in the roster at `GET /api/plugins` like every other contribution. Absent means
+the plugin declares none, so a manifest written before the field existed serializes byte-for-byte
+as it did. VALUES are the caller's own: read at `GET /api/settings` (`{ values }`, setting ref →
+boolean, self-scoped exactly as `/api/bindings` is), stored as one `meta` row per principal
+(`settings:<principalId>`), and written ONLY by `engine.plugins.setSetting { plugin, setting,
+value }` — `value: null` retracts the opinion so the row reads its manifest's default again.
+
+That door is the engine's for the reason `setEnabled` is, not by analogy with `core.keys`: the
+sidebar composes before any plugin draws, so a plugin owning the write could be disabled and
+freeze every OTHER plugin's preferences (bootstrap circularity); the door names no plugin and no
+preference (neutrality); and it refuses a write the ASSEMBLY does not declare (arbitration), with
+both the plugin and the setting in the sentence. Unlike its two siblings it carries NO capability
+and emits NO event — a preference is stored against the caller's own principal, so there is no
+authority to grade and nothing for the workspace to hear. A key binding, by contrast, is
+`core.keys`' OWN concept and its own door; a setting is every other plugin's concept, and the
+engine is the only party with no favourite among them.
+
+The FIRST consumer is the sidebar. A `SectionDef` may carry `setting`, naming one of its own
+manifest's declarations — assembly refuses anything else, naming both — and a row whose setting
+reads false is DROPPED at composition (`visibleSections`), everywhere at once, for that principal.
+Dropped is not disabled: nothing is retained, marked or tombstoned (`REGISTRY.md` §Disable
+semantics), the plugin stays enabled and every other thing it contributes is untouched. A stored
+value no declaration answers is ignored at composition rather than pruned, so a plugin switched
+off for a week finds its reader's preferences intact.
+
+`manifold://plugin/<id>` is a place to open, and the manager is what shows it. The shell's
+navigation door routes a `plugin` reference to the workspace it is already in, carrying the
+address in a `?ref=` query it CONSUMES on arrival (`HostServices.requestedRef`); the composed
+manager answers that form by opening focused on the row with its settings pane out. A route
+answer, not a modal bus: nothing calls into the manager, and a build with `core.plugins` disabled
+leaves the address unanswered exactly as an unregistered panel leaves a leaf empty.
 
 **`core.` is reserved too, and it is the OTHER kind of reservation.** `CORE_NAMESPACE_PREFIX`
 (published at `GET /api/protocol` as `coreNamespace`) marks AUTHORSHIP and confers no privilege:

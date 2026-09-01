@@ -1,5 +1,6 @@
 import {
   ENGINE_NAMESPACE_PREFIX,
+  LocalNameSchema,
   PluginIdSchema,
   PluginPurgeResultSchema,
   type PluginManifest,
@@ -40,6 +41,7 @@ export const ENGINE_PLUGINS_ID = `${ENGINE_NAMESPACE_PREFIX}plugins`;
 
 export const ENGINE_SET_ENABLED_ACTION = `${ENGINE_PLUGINS_ID}.setEnabled`;
 export const ENGINE_PURGE_ACTION = `${ENGINE_PLUGINS_ID}.purge`;
+export const ENGINE_SET_SETTING_ACTION = `${ENGINE_PLUGINS_ID}.setSetting`;
 
 /**
  * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
@@ -88,6 +90,38 @@ export const enginePluginsManifest: PluginManifest = {
  * because erasing the data of code that is currently running is not a state anyone asked
  * for. The refusal is `still_enabled`, and the remedy is one visible step: disable, then
  * purge.
+ *
+ * `setSetting` is the odd one out on this row, and deliberately so. THE OTHER TWO CHANGE THE
+ * WORKSPACE; this one changes the CALLER — a value stored against their principal, over a
+ * declaration some other plugin made. It is the engine's for the reason enablement is, applied
+ * to the litmus a pillar is admitted by (AXIOMS.md §Foundation law):
+ *
+ *   BOOTSTRAP CIRCULARITY. The sidebar drops a row whose setting reads false before any plugin
+ *     has drawn, so the values are composition input. A plugin owning the write door could be
+ *     disabled, and then every OTHER plugin's preferences would be frozen — including the one
+ *     that hid a row the reader now wants back. That is exactly the trap `setEnabled` was
+ *     moved out of `core.plugins` to escape (ADR 0013 §11).
+ *   NEUTRALITY. The door names no plugin and no preference: it takes a declaration's address
+ *     and a value, over a vocabulary every manifest may extend. `core.plugins` renders the
+ *     panes, and rendering them is precisely why it must not own the writes — a manager is one
+ *     UI for a mechanism, and a stranger's manager gets the same door.
+ *   ARBITRATION. The write is refused unless the assembly says that declaration exists
+ *     (`settingWriteRefusal`), which is state no single plugin can see and the caller cannot be
+ *     trusted to have read.
+ *
+ * So it is NOT the `core.keys` precedent, and the difference is worth naming: a key binding is
+ * registration data `core.keys` itself composes and publishes — its own concept, its own door.
+ * A setting is every OTHER plugin's concept, and the engine is the only party with no favourite
+ * among them.
+ *
+ * `value: null` RETRACTS the opinion — the ref leaves the map and the row reads its manifest's
+ * default again. One door rather than a `resetSetting` sibling, because "I have no opinion" is
+ * a value this map can express and a second door would be a second way to write one map.
+ *
+ * It carries NO capability and emits NO event, and those are the same fact twice: nothing here
+ * is anybody else's business. A preference is stored against the caller's own principal, so
+ * there is no authority to grade beyond being someone, and broadcasting it would tell every
+ * peer in the workspace which rows a reader keeps in their rail.
  */
 export const enginePluginsActions: readonly AnyActionDef[] = [
   defineAction({
@@ -103,5 +137,16 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
     caps: ["plugins:manage"],
     input: z.strictObject({ id: PluginIdSchema }),
     result: PluginPurgeResultSchema,
+  }),
+  defineAction({
+    name: "setSetting",
+    title: "Set one of your plugin settings",
+    caps: [],
+    input: z.strictObject({
+      plugin: PluginIdSchema,
+      setting: LocalNameSchema,
+      value: z.boolean().nullable(),
+    }),
+    result: z.strictObject({}),
   }),
 ];

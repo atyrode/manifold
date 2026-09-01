@@ -27,6 +27,7 @@ import {
   Plus,
   RotateCw,
   Server,
+  Settings,
   Shapes,
   SquareDashed,
   SquareTerminal,
@@ -285,7 +286,14 @@ export type ControlKind =
    * Two placements exchange seats. Worn by the drop preview when releasing on the exact
    * spot of something already there, which trades the two rather than splitting the target.
    */
-  | "swap";
+  | "swap"
+  /**
+   * THE PREFERENCES a thing declares, as a pane a reader can open (#133). Neutral by the same
+   * litmus `assembly` passes: a setting is the ENGINE's own noun now — every manifest may
+   * declare one and the engine composes them — so the word carries no plugin's object, and the
+   * vocabulary reads the same with any particular plugin removed.
+   */
+  | "settings";
 
 const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   /**
@@ -322,6 +330,7 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   scopeIn: CornerDownRight,
   bindings: Keyboard,
   swap: ArrowLeftRight,
+  settings: Settings,
 };
 
 export function ControlIcon({

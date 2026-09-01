@@ -6,6 +6,8 @@ import {
   enginePluginsManifest,
   planDataMigration,
   runHook,
+  settingRefId,
+  settingWriteRefusal,
   type Assembly,
   type AssemblyDelta,
   type AssemblyEnv,
@@ -367,10 +369,15 @@ export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
 };
 
-/** The slice the engine's own doors touch: identity, and the assembly they administer. */
+/**
+ * The slice the engine's own doors touch: identity, the assembly they administer, and — for
+ * the one door that writes the CALLER rather than the workspace — the principal-keyed store its
+ * value lands in.
+ */
 interface EngineDoorCtx {
   readonly principal: Principal;
   readonly host: HostControl;
+  readonly store: Pick<ServerStore, "pluginSettings" | "setPluginSettings">;
 }
 
 /**
@@ -401,6 +408,39 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         args: { id: string },
       ): Promise<ActionRefused | PluginPurgeResult> {
         return ctx.host.purge(args.id, ctx.principal.id);
+      },
+      /**
+       * A PREFERENCE, written against the caller's own principal. Two rungs and no more:
+       *
+       *  1. the declaration must exist, which is the assembly's answer and not the caller's
+       *     (`settingWriteRefusal`) — a value nothing declares is a delta nothing would ever
+       *     read, and storing it would grow an unbounded map of dead refs;
+       *  2. `null` RETRACTS, so the ref leaves the map and the row reads its manifest's
+       *     default. Writing the default explicitly is deliberately NOT retraction: "I chose
+       *     this" and "I have no opinion" are different sentences, and only the second one
+       *     should follow a plugin when it changes what it ships.
+       *
+       * The whole map is read and rewritten because that is what one meta row means; the store
+       * validates and key-sorts it on the way down.
+       */
+      async setSetting(
+        ctx: EngineDoorCtx,
+        args: { plugin: string; setting: string; value: boolean | null },
+      ): Promise<ActionRefused | Record<string, never>> {
+        const refusal = settingWriteRefusal(ctx.host.roster(), args.plugin, args.setting);
+        if (refusal !== null) return { refused: refusal };
+        const ref = settingRefId(args.plugin, args.setting);
+        const current = ctx.store.pluginSettings(ctx.principal.id);
+        const next = { ...current };
+        if (args.value === null) {
+          if (current[ref] === undefined) return {};
+          delete next[ref];
+        } else {
+          if (current[ref] === args.value) return {};
+          next[ref] = args.value;
+        }
+        ctx.store.setPluginSettings(ctx.principal.id, next);
+        return {};
       },
     },
   },

@@ -29,7 +29,17 @@ export const machinesManifest: PluginManifest = {
   capabilities: ["machines:mint", "containers:read"],
   contributes: {
     panels: [],
-    sections: [{ id: "machines", title: "Machines", order: 20 }],
+    sections: [{ id: "machines", title: "Machines", order: 20, setting: "machines" }],
+    /*
+      ONE PREFERENCE OVER THE ROW (#133). A fleet list is worth its rail height on a machine
+      you administer and worth none on one you only draw in, so whether the row is there is
+      this reader's call rather than the distribution's. Shipped `true`.
+
+      It gates the SECTION and nothing else: the doors below stay dispatchable, the fleet's
+      news keeps arriving, and a terminal born on a machine works exactly as it did — the row
+      is one way to reach this plugin, never the plugin.
+     */
+    settings: [{ id: "machines", title: "Machines", kind: "boolean", default: true }],
     elements: [],
     tools: [],
     /*
