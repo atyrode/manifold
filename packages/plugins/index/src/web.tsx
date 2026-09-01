@@ -42,22 +42,7 @@ import type {
   SceneElement,
   TerminalSummary,
 } from "@manifold/protocol";
-import { Cluster, Stack } from "@manifold/plugin/ui";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Ellipsis,
-  Folder,
-  FolderOpen,
-  LayoutDashboard,
-  ListTree,
-  Plus,
-  SquareDashed,
-  SquareTerminal,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Cluster, ControlIcon, ItemIcon, Stack } from "@manifold/plugin/ui";
 import {
   useCallback,
   useEffect,
@@ -116,12 +101,13 @@ const SIDEBAR_ROOT_ITEM: IndexEntry = {
   sortOrder: -1,
 };
 
-/** One stroke weight, one rhythm — the same the floor's icon vocabulary paints with. */
-const ICON = { strokeWidth: 1.75, absoluteStrokeWidth: true, focusable: "false" } as const;
-
-function Glyph({ icon: Icon, size = 14 }: { icon: LucideIcon; size?: number }): ReactElement {
-  return <Icon className="mf-icon" size={size} {...ICON} />;
-}
+/**
+ * 14px rather than the vocabulary's 16px default: the sidebar's rows are tighter than a
+ * titlebar's cluster. It is a SIZE and nothing else — the stroke weight, the `currentColor`
+ * fill and the `aria-hidden` come from `ItemIcon`/`ControlIcon`, which is the whole point of
+ * asking them for a mark instead of hand-importing a drawing (#116).
+ */
+const ROW_ICON = 14;
 
 function initials(name: string): string {
   return [...name][0]?.toUpperCase() ?? "?";
@@ -634,13 +620,13 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           className={`sidebar-item-mark terminal-state ${terminal.status === "running" ? "is-running" : ""}`}
           aria-hidden="true"
         >
-          <Glyph icon={SquareTerminal} />
+          <ItemIcon kind="terminal" size={ROW_ICON} />
         </span>
       );
     }
     return (
       <span className="sidebar-item-mark" aria-hidden="true">
-        <Glyph icon={container.discipline === "composition" ? LayoutDashboard : SquareDashed} />
+        <ItemIcon kind={container.discipline} size={ROW_ICON} />
       </span>
     );
   };
@@ -811,7 +797,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           disabled={renaming || renameName.trim() === "" || renameName.trim() === label}
           onClick={() => void submitRename(container)}
         >
-          <Glyph icon={Check} />
+          <ControlIcon kind="confirm" size={ROW_ICON} />
         </button>
         <button
           className="sidebar-inline-action"
@@ -821,7 +807,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           disabled={renaming}
           onClick={() => setRenameTargetId(null)}
         >
-          <Glyph icon={X} />
+          <ControlIcon kind="cancel" size={ROW_ICON} />
         </button>
       </div>
     );
@@ -845,7 +831,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             setActionContainerId((current) => (current === container.id ? null : container.id))
           }
         >
-          <Glyph icon={Ellipsis} />
+          <ControlIcon kind="more" size={ROW_ICON} />
         </button>
         {actionContainerId === container.id ? (
           <div className="sidebar-action-menu" role="menu">
@@ -966,7 +952,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                   className={`terminal-state ${terminal.status === "running" ? "is-running" : ""}`}
                   aria-hidden="true"
                 >
-                  <Glyph icon={SquareTerminal} size={13} />
+                  <ItemIcon kind="terminal" size={13} />
                 </span>
                 <span>{terminal.machineId}</span>
                 <small>{terminal.status}</small>
@@ -988,7 +974,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                         .catch((reason: unknown) => report(reason, "Could not kill the terminal"));
                     }}
                   >
-                    <Glyph icon={X} size={12} />
+                    <ControlIcon kind="close" size={12} />
                   </button>
                 ) : null}
               </div>
@@ -1043,7 +1029,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       return (
         <div className="sidebar-row is-editing">
           <span className="sidebar-folder-icon" aria-hidden="true">
-            <Glyph icon={Folder} />
+            <ItemIcon kind="folder" size={ROW_ICON} />
           </span>
           <input
             className="sidebar-rename-input"
@@ -1066,7 +1052,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             disabled={folderRenameName.trim() === ""}
             onClick={() => void submitFolderRename(folder)}
           >
-            <Glyph icon={Check} />
+            <ControlIcon kind="confirm" size={ROW_ICON} />
           </button>
           <button
             className="sidebar-inline-action"
@@ -1074,7 +1060,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             aria-label={`Cancel renaming ${folder.name}`}
             onClick={() => setRenamingFolderId(null)}
           >
-            <Glyph icon={X} />
+            <ControlIcon kind="cancel" size={ROW_ICON} />
           </button>
         </div>
       );
@@ -1096,10 +1082,10 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             }}
           >
             <span className="sidebar-folder-chevron" aria-hidden="true">
-              <Glyph icon={item.isExpanded() ? ChevronDown : ChevronRight} size={12} />
+              <ControlIcon kind={item.isExpanded() ? "disclosed" : "collapsed"} size={12} />
             </span>
             <span className="sidebar-folder-icon" aria-hidden="true">
-              <Glyph icon={item.isExpanded() ? FolderOpen : Folder} />
+              <ItemIcon kind={item.isExpanded() ? "folderOpen" : "folder"} size={ROW_ICON} />
             </span>
             <strong>{folder.name}</strong>
           </button>
@@ -1114,7 +1100,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                 setFolderCreateParentId(folder.id);
               }}
             >
-              <Glyph icon={Plus} size={12} />
+              <ControlIcon kind="add" size={12} />
             </button>
             <button
               className="sidebar-delete"
@@ -1126,7 +1112,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                 setActionContainerId((current) => (current === actionId ? null : actionId))
               }
             >
-              <Glyph icon={Ellipsis} />
+              <ControlIcon kind="more" size={ROW_ICON} />
             </button>
             {actionContainerId === actionId ? (
               <div className="sidebar-action-menu" role="menu">
@@ -1188,7 +1174,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             });
           }}
         >
-          <Glyph icon={ListTree} />
+          <ControlIcon kind="nesting" size={ROW_ICON} />
         </button>
       </Cluster>
       {failure === null ? null : (

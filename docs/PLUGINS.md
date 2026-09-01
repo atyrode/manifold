@@ -55,12 +55,25 @@ another plugin — fails the gate.
 
 `/ui` is a standard library rather than a component kit: you extend it by passing nodes into its
 slots (`icon`, `middle`, `extraActions`), never by growing a component's props, so re-drawing the
-whole icon set stays a change to one file and no call site. What is CLOSED there is the engine's
-own verbs — `ControlKind` is a fixed list because a control is one of manifold's own actions —
-while a vocabulary the ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed
-element types included, and draws a neutral element mark for a kind it holds no drawing for
-(#69 wave F). `@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no
-drawing and no notice mechanism of its own.
+whole icon set stays a change to one file and no call site. What is CLOSED there is
+`ControlKind`: a fixed list, closed to ADDITIONS and not to callers — you may not grow the
+union, and you are expected to call it, because a plugin's chrome should wear the same mark for
+the same verb the shell's chrome does. The rule that keeps the list honest is on the NAME: every
+kind is a neutral verb (or, for `bindings`/`assembly`, a neutral noun naming what pressing
+opens), so the list would read the same with every plugin in this build replaced. #116 deleted
+the two kinds that broke it (`endTerminal`, `terminalTree` — a plugin's object in the floor's
+vocabulary, and dead besides) and migrated the three plugins that broke it from the other side,
+by hand-importing lucide and re-implementing the one wrapper. Meanwhile a vocabulary the
+ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed element types
+included, and draws a neutral element mark for a kind it holds no drawing for (#69 wave F).
+`@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no drawing and
+no notice mechanism of its own.
+
+**Never import `lucide-react` in a plugin.** Ask for a kind
+(`<ControlIcon kind="discard" />`, `<ItemIcon kind={container.discipline} />`) and pass `size`
+when your rhythm is not 16px. A drawing you import yourself is a mark that stops moving when the
+set is re-drawn, and every wrapper prop you retype (`className="mf-icon"`, `strokeWidth`,
+`absoluteStrokeWidth`, `aria-hidden`) is a chance to retype one of them wrongly.
 
 ### Your skin ships with you
 

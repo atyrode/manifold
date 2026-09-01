@@ -24,8 +24,10 @@
  * set stays a change to one file and no call site. Where the VOCABULARY a slot names is itself
  * open the type is open with it: item kinds are the floor's five plus every element type a
  * manifest contributes, so `ItemIcon` takes a plain kind string, because a closed union at this
- * edge was the floor claiming to know a set only the assembly knows. The engine's own verbs
- * (`ControlKind`) stay closed, and that contrast is the rule rather than an exception to it.
+ * edge was the floor claiming to know a set only the assembly knows. `ControlKind` stays
+ * closed — closed to ADDITIONS, not to callers, since a plugin is expected to name the engine's
+ * verbs and forbidden to grow the union — and that contrast is the rule rather than an
+ * exception to it.
  */
 import "./styles.css";
 export {
