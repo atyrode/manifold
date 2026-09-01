@@ -328,7 +328,10 @@
   flex: 1 1 auto;
 }
 
-/* The landing slot: percent-positioned in the area, gliding between zones. */
+/* The landing slot: percent-positioned in the area, gliding between zones. Its motion —
+   and the panes' below — reads the floor's `--preview-*` tokens rather than repeating a
+   number, for the same reason `--carry-fade-*` is a token: the slot, its fade and the
+   pane glide are one gesture with one owner for its timing. */
 .tile-preview {
   position: absolute;
   z-index: 45;
@@ -336,11 +339,11 @@
   background: rgb(92 124 250 / 22%);
   pointer-events: none;
   transition:
-    left 90ms ease,
-    top 90ms ease,
-    width 90ms ease,
-    height 90ms ease,
-    opacity 80ms ease;
+    left var(--preview-slot-transition),
+    top var(--preview-slot-transition),
+    width var(--preview-slot-transition),
+    height var(--preview-slot-transition),
+    opacity var(--preview-cue-transition);
 }
 
 /* Armed with nothing to say (a divider, the carry's own leaf): the slot stays
@@ -399,10 +402,11 @@
   background: rgb(255 107 107 / 10%);
 }
 
-/* The FLIP: panes glide as transforms the overlay writes imperatively. 120ms for
-   the larger pane travel; the slot's own rect moves at 90ms above. */
+/* The FLIP: panes glide as transforms the overlay writes imperatively. Longer than the
+   slot's own rect above because a pane travels further and carries live content — both
+   numbers are named together in the floor's `--preview-*` block. */
 .tile-area.is-previewing [data-tile-id] {
-  transition: transform 120ms ease;
+  transition: transform var(--preview-pane-transition);
 }
 
 /* The stable seat a pane's content rides in between structural edits (see

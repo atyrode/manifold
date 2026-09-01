@@ -121,12 +121,29 @@ export interface ProjectedNode {
   readonly data: SceneElementPayload;
 }
 
+/**
+ * `overrides` is keyed by GESTURE — `(kind, elementId)` — because one element can be
+ * under two at once, so the live geometry for an element is chosen here rather than
+ * looked up. One pass builds the element-addressed index (the map is peers-currently-
+ * gesturing, never the scene, so it is tiny); the freshest frame wins when two kinds
+ * genuinely name one element, which is the same rule every other override contest uses.
+ *
+ * An AIM-ONLY frame is skipped outright: it is in this room for its aim and its
+ * coordinates belong to another one, so projecting geometry from it would teleport a node.
+ */
 export function projectElements(
   elements: ReadonlyMap<string, SceneElement>,
   overrides: ReadonlyMap<string, GestureOverride>,
 ): readonly ProjectedNode[] {
+  const live = new Map<string, GestureOverride>();
+  for (const override of overrides.values()) {
+    if (override.aimOnly === true) continue;
+    const held = live.get(override.elementId);
+    if (held !== undefined && override.updatedAt <= held.updatedAt) continue;
+    live.set(override.elementId, override);
+  }
   return [...elements.values()].sort(compareElements).map((element) => {
-    const override = overrides.get(element.id)?.current;
+    const override = live.get(element.id)?.current;
     return {
       id: element.id,
       type: element.type,

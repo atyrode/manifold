@@ -504,13 +504,21 @@ export class Room {
    * Relays high-rate gesture motion with droppable delivery under socket pressure. The
    * outbound frame names its fields rather than spreading the inbound one: the client
    * frame arrives with routing attached, and a broadcast body must carry none.
+   *
+   * `aimOnly` marks the copy delivered to a room the gesture is NOT happening in — the
+   * container a carry's aim addresses, which is frequently somebody else's room (issue
+   * #66). The receiving room reads the aim and nothing else, because the geometry is in
+   * the sending room's coordinate space. Same frame, one flag, one builder: a second
+   * method here would be a second definition of what a gesture broadcast looks like, and
+   * the two would drift the first time a field is added.
    */
-  relayGesture(peer: SessionChannel, gesture: GestureUpdate): void {
+  relayGesture(peer: SessionChannel, gesture: GestureUpdate, aimOnly = false): void {
     this.broadcast(
       {
         type: "gesture",
         principalId: peer.auth.principal.id,
         connId: peer.id,
+        ...(aimOnly ? { aimOnly: true as const } : {}),
         kind: gesture.kind,
         phase: gesture.phase,
         elementId: gesture.elementId,

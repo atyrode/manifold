@@ -282,17 +282,26 @@ function withinHeldZone(rect: UnitRect, point: UnitPoint, edge: TileEdge): boole
   seam's end is how an inner split like `(C | D)` in `A | (B / (C | D))` grows `E`
   across its whole width: `B / (C | D) / E`.
 
+  ONE UNIT DERIVATION, BOTH AXES. A seam is a piece of on-screen furniture, so every
+  distance it is measured by comes out of `seamBand`: a constant device-px reach (the
+  ring's, already a fraction of the AREA on that axis) capped at `SNAP_EDGE_BAND` of the
+  local extent it is carved out of. Across the seam that yields the band's half-thickness
+  inside each flank; along it, the end stretches. They used to disagree — the band across
+  was px-derived while the ends cut at a flat 25 % of the split's perpendicular extent, so
+  the "split the GROUP across" target was ~6 px thin and, on a 2000 px seam, 500 px long:
+  an aspect ratio no pointer gesture matches, and two unit spaces for one object.
+
   HYSTERESIS runs on both axes of the band, always biased toward the aim already being
   painted. ACROSS: when the held aim names THIS seam the membership threshold grows by
   the margin; when it names anything else it shrinks by the same margin, so a flip must
-  be earned in either direction. The margin is `ZONE_HYSTERESIS` of the point-side
-  child's extent BOUNDED BY HALF THE BAND (`heldMargin`) — unbounded it is many times
-  the px-derived band, which made the seam unreachable by approach from a flank and
-  ~6× sticky once held. ALONG: a held middle pulls both end stretches in by
-  `ZONE_HYSTERESIS`, and a held end pushes that one end out by it; those boundaries cut
-  at `SNAP_EDGE_BAND` of the same extent the margin is a fraction of, so they need no
-  bound. Competing seams are ranked by PENETRATION rather than by raw distance, so the
-  widened threshold also wins the held seam a contested pixel.
+  be earned in either direction. ALONG: a held middle pulls both end stretches in, and a
+  held end pushes that one end out. The margin is `ZONE_HYSTERESIS` of the extent the
+  measurement is taken against, BOUNDED BY HALF THE BOUNDARY IT MOVES (`heldMargin`) —
+  unbounded it is many times a px-derived reach, which made the seam unreachable by
+  approach from a flank and ~6× sticky once held. Both axes need that bound now that both
+  are px-derived; only the along axis ever escaped it, and only because it was the axis
+  still measured in leaf fractions. Competing seams are ranked by PENETRATION rather than
+  by raw distance, so the widened threshold also wins the held seam a contested pixel.
 */
 
 /** Which meaning of one seam a held aim names. */
@@ -313,13 +322,50 @@ interface Seam {
 }
 
 /**
- * Half-thickness of the seam band inside one flank, in unit space, so the band's total
- * on-screen thickness tracks the ring's (`ROOT_RING_PX`) and stays constant at any
- * zoom. Capped at half the snap band so a flank always keeps an outer stretch that
- * means "split this pane".
+ * The two parameterisations of the ONE seam measurement below — how far it reaches in
+ * ring-widths, and the fraction of the local extent that caps it. Every difference
+ * between the seam's two axes is these four numbers; the derivation itself is shared.
+ *
+ * ACROSS: half a ring per flank, so the band is exactly one ring thick in total — the
+ * same on-screen weight as the root ring beside it — and never more than half the
+ * flank's own `SNAP_EDGE_BAND`, so a flank always keeps an outer stretch meaning "split
+ * this pane".
+ *
+ * ALONG: THREE rings from each end, because what an end stretch competes with is the ROOT
+ * RING. A group's seam frequently terminates ON the area border (in `A | (B / (C|D))` the
+ * inner row's bottom end IS the frame's bottom edge), the ring resolves first and is up to
+ * one ring deep there, so an end only one ring long would sit entirely inside it and the
+ * group's "split across, below" — the one geometry issue #60 exists to make reachable —
+ * would have no pixels at all.
+ *
+ * TWO is not enough either, and the reason is 2.1's latch in a new place: the hysteresis
+ * margin is bounded by half the stretch, so a held MIDDLE pulls the end boundary in to at
+ * worst half of it. At two rings that lands exactly on the ring's lip, and a pointer
+ * travelling out of the middle — which is every approach — could never reach the end at
+ * all. At three, half the stretch is a ring and a half, so at least half a ring of the end
+ * stays live in every hysteresis state. The result is a square-ish target rather than the
+ * 6 px × 500 px sliver the old fraction produced.
+ *
+ * Capped at `SNAP_EDGE_BAND` of the split, which is where the old flat cut sat, so the
+ * middle always keeps at least half the seam. In real geometry the cap never binds — three
+ * 20 px rings is 60 px against a quarter of the axis — so it only governs a group thinner
+ * than about twelve ring-widths, where the ring legitimately owns the whole end anyway.
  */
-function seamHalf(ringAxis: number, childExtent: number): number {
-  return Math.min(ringAxis / 2, 0.5 * SNAP_EDGE_BAND * childExtent);
+const SEAM_ACROSS = { reach: 0.5, cap: 0.5 * SNAP_EDGE_BAND } as const;
+const SEAM_END = { reach: 3, cap: SNAP_EDGE_BAND } as const;
+
+/**
+ * THE seam measurement, in unit space and in one place (see the block above). `ringAxis`
+ * is a constant on-screen reach already expressed as a fraction of the AREA on this axis
+ * (`ROOT_RING_PX`), so the result tracks device px and stays constant at any zoom, while
+ * the cap keeps it from swallowing the stretch it is carved out of.
+ */
+function seamBand(
+  ringAxis: number,
+  extent: number,
+  of: { readonly reach: number; readonly cap: number },
+): number {
+  return Math.min(of.reach * ringAxis, of.cap * extent);
 }
 
 /** Which meaning of this seam the held aim names — the bias every boundary takes. */
@@ -368,7 +414,8 @@ function seamAt(
     pointSideExtent ??
     Math.min(row ? previous.width : previous.height, row ? next.width : next.height);
   const meaning = seamHeld(held, split, previousChildId);
-  const band = seamHalf(row ? ring.x : ring.y, extent);
+  // Half the ring per flank, so the band spans one ring across the gap in total.
+  const band = seamBand(row ? ring.x : ring.y, extent, SEAM_ACROSS);
   // Bounded, so band membership always lives in [0.5, 1.5] × the band at ANY scale.
   const margin = held === null ? 0 : heldMargin(band, ZONE_HYSTERESIS * (extent > 0 ? extent : 1));
   const threshold = meaning !== null ? band + margin : band - margin;
@@ -459,6 +506,7 @@ function seamAim(
   rects: ReadonlyMap<string, UnitRect>,
   seam: Seam,
   point: UnitPoint,
+  ring: { readonly x: number; readonly y: number },
   carry: TileAimCarry,
 ): TileAim | null {
   const row = seam.split.dir === "row";
@@ -475,23 +523,25 @@ function seamAim(
   */
   if (carriesMember && seam.split.children.length === 2) return null;
   const own = rects.get(seam.split.id);
-  if (own !== undefined) {
-    // Position ALONG the seam, as a fraction of the split's perpendicular extent.
-    const along = row
-      ? (point.y - own.y) / (own.height > 0 ? own.height : 1)
-      : (point.x - own.x) / (own.width > 0 ? own.width : 1);
-    let low = SNAP_EDGE_BAND;
-    let high = SNAP_EDGE_BAND;
+  const extent = own === undefined ? 0 : row ? own.height : own.width;
+  if (own !== undefined && extent > 0) {
+    // Position ALONG the seam, in the SAME units the band ACROSS it is measured in: a
+    // distance from the split's low end, against a px-derived stretch out of each end.
+    const along = (row ? point.y : point.x) - (row ? own.y : own.x);
+    const stretch = seamBand(row ? ring.y : ring.x, extent, SEAM_END);
+    const margin = seam.held === null ? 0 : heldMargin(stretch, ZONE_HYSTERESIS * extent);
+    let low = stretch;
+    let high = stretch;
     switch (seam.held) {
       case "middle":
-        low -= ZONE_HYSTERESIS;
-        high -= ZONE_HYSTERESIS;
+        low -= margin;
+        high -= margin;
         break;
       case "low-end":
-        low += ZONE_HYSTERESIS;
+        low += margin;
         break;
       case "high-end":
-        high += ZONE_HYSTERESIS;
+        high += margin;
         break;
       case null:
         break;
@@ -508,7 +558,7 @@ function seamAim(
         depth: seam.depth,
       };
     }
-    if (along > 1 - high) {
+    if (along > extent - high) {
       return {
         tileId: seam.split.id,
         edge: row ? "bottom" : "right",
@@ -610,7 +660,7 @@ export function resolveTileAim(
   }
 
   const seam = bestSeamAt(layout, rects, chain, point, ring, held);
-  if (seam !== null) return seamAim(rects, seam, point, carry);
+  if (seam !== null) return seamAim(rects, seam, point, ring, carry);
 
   const leafId = chain[chain.length - 1] ?? ROOT_TILE_ID;
   const node = layout[leafId];
@@ -677,6 +727,52 @@ export function refKey(ref: TileRef | null): string | null {
       return exhaustive;
     }
   }
+}
+
+/**
+ * THE layout revision: a content hash of one tile tree, walked from the root in child
+ * order so two peers holding the same tree agree on it whatever order their maps
+ * enumerate in.
+ *
+ * It exists because a `CarryAim` names a `tileId` and nothing else, so a viewer whose Yjs
+ * layout is one update behind the producer's re-derives a DIFFERENT prospect from the same
+ * aim with no way to notice. Derived rather than counted on purpose: a document revision
+ * moves when a note is dragged three rooms away, and a preview suppressed by that would be
+ * a lie in the other direction.
+ *
+ * STRUCTURE AND OCCUPANCY, NOT PROPORTIONS. Ids, direction, child order and what each leaf
+ * shows are what make an aim mean something else — a reshaped tree is the confidently wrong
+ * preview this guards. Ratios are deliberately out: a divider drag moves them continuously
+ * and would suppress every peer's preview for the duration, to save a slot rect that is a
+ * few percent off and self-corrects on the next update.
+ */
+export function layoutRevision(layout: TileLayout): number {
+  const parts: string[] = [];
+  const walked = new Set<string>();
+  const walk = (tileId: string): void => {
+    const node = layout[tileId];
+    // A dangling child id is itself a difference worth hashing, and a repeat visit is how
+    // a cyclic table — which `validateTileLayout` refuses on read — stops spinning here.
+    if (node === undefined || walked.has(tileId)) {
+      parts.push(`?${tileId}`);
+      return;
+    }
+    walked.add(tileId);
+    const shows = node.ref === null ? "-" : (refKey(node.ref) ?? "spacer");
+    parts.push(`${tileId}|${node.dir ?? "leaf"}|${shows}`);
+    for (const childId of node.children) walk(childId);
+    parts.push(")");
+  };
+  walk(ROOT_TILE_ID);
+  const canonical = parts.join("");
+  // FNV-1a, 32 bit: a stamp is only ever compared for equality, and `>>> 0` keeps it a
+  // non-negative integer so the wire schema can say so.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < canonical.length; index += 1) {
+    hash ^= canonical.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 }
 
 /** One pane's travel between the live layout and a prospective one. */

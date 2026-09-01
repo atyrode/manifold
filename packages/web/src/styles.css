@@ -30,6 +30,23 @@
      fade by the SAME amount, and a duplicated number is how that stops being true. */
   --carry-fade-opacity: 0.15;
   --carry-fade-transition: opacity 160ms ease;
+
+  /* THE DROP PREVIEW'S MOTION, in one place (issue #66). Three durations used to live in
+     three unrelated blocks with nothing saying they were one system, so the slot, its cue
+     and the panes gliding under them could be retuned apart. They are one gesture and they
+     read as one: the slot leads, its fade is a touch quicker so a zone change reads as a
+     move rather than a cross-dissolve, and the real panes take longer because they travel
+     further and carry live content.
+
+     ONE DURATION FOR BOTH PRODUCERS, deliberately. The alternative considered — easing a
+     REMOTE slot differently so it pairs with the sender's eased ghost — is exactly the
+     "second remote flavor" invariant 11 forbids: the ghost is a peer's POINTER, resampled
+     at the send cadence and smoothed by `GESTURE_HALF_LIFE_MS` because it arrives as
+     samples, while a slot is a resolved ZONE that snaps to tile boundaries for everyone.
+     Different objects, different jobs; the pairing was never the missing thing. */
+  --preview-slot-transition: 90ms ease;
+  --preview-cue-transition: 80ms ease;
+  --preview-pane-transition: 120ms ease;
 }
 
 * {

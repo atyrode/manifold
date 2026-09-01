@@ -102,6 +102,7 @@ export {
   RING_LEAF_CAP,
   ROOT_RING_PX,
   ZONE_HYSTERESIS,
+  layoutRevision,
   paneShifts,
   resolveTileAim,
   ringFraction,

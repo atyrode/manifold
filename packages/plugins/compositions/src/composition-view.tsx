@@ -852,9 +852,30 @@ export function CompositionView({
     },
     onDrop: (event: ReactDragEvent<HTMLDivElement>): void => {
       if (!carriesItem(event.dataTransfer)) return;
-      // The drop's own pointer decides the destination, re-resolved against the live
-      // layout. Reading the painted state instead would race the render that drew it.
-      const state = tileDrop.aimAt(event.clientX, event.clientY);
+      /*
+        ONE RELEASE POLICY, AND IT IS THE PAINTED AIM (audit 1.3).
+
+        This used to re-resolve from the drop's own pointer on the argument that reading the
+        painted state races the render that drew it. Two answers to "is the paint
+        authoritative at release?" is one too many, and this is the one that goes:
+
+        - A preview is a PROMISE. Re-resolving commits an answer computed at a moment the
+          eye was never shown, which is the one outcome a live preview exists to rule out.
+        - The painted aim is the WIRE aim (`store.aim` is the single producer of both), so
+          committing it is committing what every collaborator watched. A second resolution
+          lands a placement nobody — including the dragger — ever saw.
+        - It is the only policy BOTH renderers can state. A canvas transport does not own
+          the portal's pipeline: one instance per host is the rule, because the memo is the
+          hysteresis state. "Re-resolve on both" would mean reaching into a child's
+          resolver, i.e. exactly the second machine that rule exists to forbid.
+
+        The race is not real: `dragover` writes the pointer synchronously and React flushes
+        the overlay's publish before the next discrete event, so the aim read here is the
+        one the last frame painted. The verdict is taken BEFORE `carry.end`, which empties
+        the register `assess` judges from — the same ordering the canvas pane documents.
+      */
+      const aim = dropStore.get().aim;
+      const verdict = aim === null ? null : drop.assess(aim.destination);
       const at = bodyFraction(event.clientX, event.clientY);
       // The ghost is retired before the write: the payload is in the transfer, so
       // ending the carry here cannot cost the drop its envelope.
@@ -867,10 +888,10 @@ export function CompositionView({
         release keeps bubbling to whatever weaker claimant is behind it. Nothing behind it
         either, and it is the documented escape — abort with no mutation and no notice.
       */
-      if (state === null || state.assessment?.denial != null) return;
+      if (aim === null || verdict?.denial != null) return;
       event.preventDefault();
       event.stopPropagation();
-      drop.commit(event.dataTransfer, state.destination);
+      drop.commit(event.dataTransfer, aim.destination);
     },
   };
 

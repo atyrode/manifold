@@ -11,6 +11,8 @@ import { withVacantLeaf } from "@manifold/scene";
 import {
   RING_AXIS_CAP,
   RING_LEAF_CAP,
+  ROOT_RING_PX,
+  layoutRevision,
   paneShifts,
   resolveTileAim,
   ringFraction,
@@ -411,16 +413,21 @@ describe("resolveTileAim", () => {
     // Past every margin the flip is real, held or not.
     expect(over(0.4, 0.5, heldSeam)?.between).toBe(false);
     /*
-      ALONG the seam: the end stretches begin at 0.25, and the held meaning drags that
-      boundary its own way by the same margin.
+      ALONG the seam, now measured in the SAME px-derived units as the band across it: the
+      end stretch is three ring-widths (0.12 here) out of a root row spanning the whole
+      height, its margin is bounded by half of that (0.06, not `ZONE_HYSTERESIS` × 1), and
+      the ROOT RING owns the outer ring-width (y < 0.04) as it always has. So the end is
+      live in y 0.04..0.12, a held middle pulls it back to 0.06, and a held end pushes it
+      out to 0.18 — the outer half survives every hysteresis state, which is what keeps a
+      pointer travelling out of the middle able to reach the end at all.
     */
     const rootTop: TileAim = { tileId: ROOT_TILE_ID, edge: "top", action: "place", depth: 0 };
-    expect(over(0.5, 0.22, null)).toEqual(rootTop);
-    expect(over(0.5, 0.22, { tileId: "t1", edge: "right", between: true })?.between).toBe(true);
-    expect(over(0.5, 0.28, null)?.between).toBe(true);
-    expect(over(0.5, 0.28, rootTop)).toEqual(rootTop);
+    expect(over(0.5, 0.1, null)).toEqual(rootTop);
+    expect(over(0.5, 0.1, { tileId: "t1", edge: "right", between: true })?.between).toBe(true);
+    expect(over(0.5, 0.14, null)?.between).toBe(true);
+    expect(over(0.5, 0.14, rootTop)).toEqual(rootTop);
     // Far past the margin the along boundary flips whatever is held.
-    expect(over(0.5, 0.1, { tileId: "t1", edge: "right", between: true })).toEqual(rootTop);
+    expect(over(0.5, 0.05, { tileId: "t1", edge: "right", between: true })).toEqual(rootTop);
   });
 
   test("a seam band answers by position ALONG the seam, never by perpendicular offset", () => {
@@ -437,9 +444,10 @@ describe("resolveTileAim", () => {
     const cases: readonly (readonly [number, TileAim])[] = [
       // The middle of the seam: wedge in after t1, canonically addressed ONCE.
       [0.5, { tileId: "t1", edge: "right", action: "place", depth: 1, between: true }],
-      // Both outer stretches: split the GROUP the seam belongs to, across.
-      [0.85, { tileId: ROOT_TILE_ID, edge: "bottom", action: "place", depth: 0 }],
-      [0.92, { tileId: ROOT_TILE_ID, edge: "bottom", action: "place", depth: 0 }],
+      // Both outer stretches: split the GROUP the seam belongs to, across. Three ring-widths
+      // deep (0.88..0.96 here), the outer ring-width of which is the root ring's.
+      [0.9, { tileId: ROOT_TILE_ID, edge: "bottom", action: "place", depth: 0 }],
+      [0.94, { tileId: ROOT_TILE_ID, edge: "bottom", action: "place", depth: 0 }],
     ];
     for (const [along, expected] of cases) {
       const answers = ACROSS_THE_BAND.map((x) =>
@@ -588,12 +596,18 @@ describe("resolveTileAim", () => {
       OVERLAP (a T-junction) the deeper seam legitimately governs the side it exists
       on, so each sweep skips the positions its crossing seam claims, and that crossing
       seam is then swept in its own right.
+
+      `endFraction` is the end stretch expressed in the split's own extent, and it is a
+      COMPUTED number now rather than the flat 0.25 it used to be: the stretch is three
+      ring-widths of the perpendicular axis, capped at `SNAP_EDGE_BAND`, so it tracks
+      device px exactly as the band across the seam does.
     */
     const uniform = (
       layout: TileLayout,
       alongs: readonly number[],
       at: (across: number, along: number) => UnitPoint,
       fraction: (along: number) => number,
+      endFraction: number,
     ): void => {
       for (const along of alongs) {
         const answers = ACROSS_THE_BAND.map((across) =>
@@ -604,19 +618,22 @@ describe("resolveTileAim", () => {
           expect(answer, `across=${ACROSS_THE_BAND[index] ?? 0} along=${along}`).toEqual(first);
         }
         const atFraction = fraction(along);
-        if (atFraction < 0.25 || atFraction > 0.75) {
+        if (atFraction < endFraction || atFraction > 1 - endFraction) {
           expect(first?.between, `end stretch at along=${along}`).not.toBe(true);
         }
       }
     };
     const alongs = Array.from({ length: 50 }, (_, index) => (index + 0.5) / 50);
     const unitFraction = (along: number): number => along;
+    // Three ring-widths out of a full-height root row: the ends are y < 0.12 and y > 0.88.
+    const rootEnd = 3 * SEAM_RING.y;
     // `A | B`: one seam, with nothing crossing it anywhere.
     uniform(
       rowLayout([0.5, 0.5]),
       alongs,
       (across, along) => ({ x: across, y: along }),
       unitFraction,
+      rootEnd,
     );
     // `A | (B/C)`: the root seam, minus the positions the inner column's seam claims…
     const nested = nestedLayout();
@@ -625,14 +642,79 @@ describe("resolveTileAim", () => {
       alongs.filter((along) => along < 0.46 || along > 0.54),
       (across, along) => ({ x: across, y: along }),
       unitFraction,
+      rootEnd,
     );
-    // …and that inner seam swept in turn, along t3's own rect (x 0.51..1).
+    // …and that inner seam swept in turn, along t3's own rect (x 0.51..1), where the same
+    // three ring-widths are a LARGER fraction because the split it ends on is narrower.
     uniform(
       nested,
       alongs.filter((along) => along > 0.54),
       (across, along) => ({ x: along, y: across }),
       (along) => (along - 0.51) / 0.49,
+      (3 * SEAM_RING.x) / 0.49,
     );
+  });
+
+  test("a seam's ends are a constant on-screen length, not a fraction of the seam", () => {
+    /*
+      Audit 2.6, and the whole of what "one unit derivation" buys. The band ACROSS a seam
+      has always been px-derived (`ROOT_RING_PX` converted against the area), while the end
+      stretches ALONG it cut at a flat `SNAP_EDGE_BAND` of the split's perpendicular extent
+      — so on a 1600 px composition the "split this group across" target was 400 px long
+      and 20 px thin, and on a 400 px one it was 100 px long: two unit spaces on one object,
+      and an aspect ratio no pointer gesture matches. Measured in px it is now the same
+      target at any size, which is the assertion.
+    */
+    const layout = rowLayout([0.5, 0.5]);
+    const endBoundaryPx = (areaPx: number): number => {
+      const ring = { x: ROOT_RING_PX / areaPx, y: ROOT_RING_PX / areaPx } as const;
+      for (let px = 1; px < areaPx / 2; px += 1) {
+        const aim = resolveTileAim(
+          layout,
+          { x: 0.5, y: px / areaPx },
+          NO_CARRY,
+          SEAM_DIVIDERS,
+          ring,
+        );
+        // Walking inward from the seam's low end: the first pixel that means "wedge
+        // between these two" is where the end stretch stops.
+        if (aim?.between === true) return px;
+      }
+      return -1;
+    };
+    /*
+      Three ring-widths, to within the pixel that float wobble in the unit conversion can
+      move a boundary, on two areas a factor of four apart. The old rule answered 400 px
+      on the wide one and 100 px on the narrow one.
+    */
+    const wide = endBoundaryPx(1600);
+    const narrow = endBoundaryPx(400);
+    for (const measured of [wide, narrow]) {
+      expect(measured).toBeGreaterThanOrEqual(3 * ROOT_RING_PX);
+      expect(measured).toBeLessThan(3 * ROOT_RING_PX + 2);
+    }
+    expect(Math.abs(wide - narrow)).toBeLessThanOrEqual(1);
+  });
+
+  test("the layout revision follows structure and occupancy, never proportions", () => {
+    /*
+      Audit 3.3's input. The stamp exists so a viewer can tell a tree it can re-derive an
+      aim against from one it cannot, and it is DERIVED rather than counted because a
+      document revision moves when a note is dragged three rooms away.
+    */
+    expect(layoutRevision(rowLayout())).toBe(layoutRevision(rowLayout()));
+    // Ratios move continuously under a divider drag and change no aim's meaning, so
+    // suppressing every peer's preview for the duration would be the wrong trade.
+    expect(layoutRevision(rowLayout([1, 3]))).toBe(layoutRevision(rowLayout()));
+    // Structure, order and what a leaf shows all change what an aim's tile id means.
+    expect(layoutRevision(nestedLayout())).not.toBe(layoutRevision(rowLayout()));
+    const swapped: TileLayout = {
+      ...rowLayout(),
+      [ROOT_TILE_ID]: split(ROOT_TILE_ID, "row", ["t2", "t1"], [1, 1]),
+    };
+    expect(layoutRevision(swapped)).not.toBe(layoutRevision(rowLayout()));
+    const reoccupied: TileLayout = { ...rowLayout(), t2: leaf("t2", terminal("other")) };
+    expect(layoutRevision(reoccupied)).not.toBe(layoutRevision(rowLayout()));
   });
 
   test("a seam band stays enterable at a real on-screen ring width", () => {
@@ -727,7 +809,9 @@ describe("resolveTileAim", () => {
       too, and only for a PAIR: a wider split survives its member leaving.
     */
     const dividers = { x: 0.02, y: 0 } as const;
-    const ring = { x: 0.04, y: 0 } as const;
+    // Both axes carry a ring now: the ALONG axis is what the end stretch is derived from,
+    // so a zero there would leave the seam with no ends to refuse in the first place.
+    const ring = { x: 0.04, y: 0.04 } as const;
     const pair = rowLayout();
     const overPair = (y: number, carriedTileId: string | null): TileAim | null =>
       resolveTileAim(pair, { x: 0.5, y }, { carriedTileId, holdsTileSeat: true }, dividers, ring);
