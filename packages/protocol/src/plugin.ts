@@ -51,23 +51,56 @@ export type LocalName = z.infer<typeof LocalNameSchema>;
 const TitleSchema = z.string().min(1).max(64);
 
 /**
+ * HOW a contributed sidebar row draws itself. `disclosure` is the titled, collapsible block
+ * the stack has always been; `plain` is a row that draws its own content end to end — no
+ * disclosure header, no collapse.
+ *
+ * The second member exists for NEUTRALITY, not for looks. A sidebar whose only contributable
+ * shape is a collapsible block forces everything that is not one — the create buttons, the
+ * brand line, the status line, the identity row — to stay hand-written floor JSX, and then
+ * the shell is honest about ownership for the blocks and silent about the rest. With `plain`
+ * those rows are ordinary contributions: one registry, one per-principal order, two
+ * presentations. `presentation` says how a row draws and never whether it is one, which is
+ * why arrange mode, the owner-naming DOM and the D4′ placeholder all stay indifferent to it.
+ *
+ * Absent ≡ {@link DEFAULT_SECTION_PRESENTATION} — every manifest written before this field
+ * existed composes, orders and renders exactly as it did.
+ */
+export const SECTION_PRESENTATIONS = ["disclosure", "plain"] as const;
+export const SectionPresentationSchema = z.enum(SECTION_PRESENTATIONS);
+export type SectionPresentation = (typeof SECTION_PRESENTATIONS)[number];
+export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
+
+/**
+ * One contributed sidebar row. `title` is REQUIRED of both presentations: arrange mode labels
+ * the row a reader has grabbed, and a disabled plugin's slot is named by the ENGINE's own
+ * placeholder (D4′) — neither may ask a row's component for a name, least of all a plain row
+ * whose code may not be loaded.
+ */
+export const SectionDefSchema = z.strictObject({
+  id: LocalNameSchema,
+  title: TitleSchema,
+  order: z.number().int(),
+  presentation: SectionPresentationSchema.optional(),
+});
+export type SectionDef = z.infer<typeof SectionDefSchema>;
+
+/**
  * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
  * is a plugin that should be several.
  *
  * `panels` are tile-ref leaves (the workspace shell is itself a composition of them),
- * `sections` are sidebar sections ordered by their declared `order`, `elements` are canvas
- * element renderers keyed by wire type, `tools` are toolbar tools.
+ * `sections` are sidebar rows ordered by their declared `order` (see
+ * {@link SectionDefSchema}), `elements` are canvas element renderers keyed by wire type,
+ * `tools` are toolbar tools.
  */
 const ContributesSchema = z.strictObject({
   panels: z
     .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema }))
     .max(8)
     .default([]),
-  sections: z
-    .array(z.strictObject({ id: LocalNameSchema, title: TitleSchema, order: z.number().int() }))
-    .max(8)
-    .default([]),
+  sections: z.array(SectionDefSchema).max(8).default([]),
   /**
    * A contributed element kind: `type` is the wire type stored in scene documents, and
    * `placement` is how the algebra must treat it (G1). Traits are DATA here for the same
@@ -461,6 +494,8 @@ export function pluginVocabulary(): Record<string, unknown> {
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+    sectionPresentations: SECTION_PRESENTATIONS,
+    defaultSectionPresentation: DEFAULT_SECTION_PRESENTATION,
     manifest: z.toJSONSchema(PluginManifestSchema),
     action: z.toJSONSchema(ActionSummarySchema),
     outcome: z.toJSONSchema(ActionOutcomeSchema),

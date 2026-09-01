@@ -151,6 +151,7 @@ export {
   ActionScopeSchema,
   ActionSummarySchema,
   DEFAULT_DORMANT_MODE,
+  DEFAULT_SECTION_PRESENTATION,
   ENGINE_NAMESPACE_PREFIX,
   LOCAL_NAME_PATTERN,
   LocalNameSchema,
@@ -175,6 +176,9 @@ export {
   PluginRosterEntrySchema,
   PluginRosterSchema,
   PluginSourceSchema,
+  SECTION_PRESENTATIONS,
+  SectionDefSchema,
+  SectionPresentationSchema,
   pluginVocabulary,
   type ActionDenial,
   type ActionDenialRule,
@@ -198,6 +202,8 @@ export {
   type PluginRoster,
   type PluginRosterEntry,
   type PluginSource,
+  type SectionDef,
+  type SectionPresentation,
 } from "./plugin.ts";
 export {
   MANIFOLD_ROOT_URI,
