@@ -1,0 +1,202 @@
+/*
+ * THE INSPECTOR'S SKIN — the chip that follows the pointer, the card a press pins, and the rows
+ * both are built from.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
+ * §Lexicon names this file as the owner of the `inspector` family, and any of it painted from
+ * another stylesheet is gate RED.
+ *
+ * ONE FAMILY, deliberately: the chip and the card are one reading at two levels of detail, so
+ * they share their row vocabulary rather than each declaring a private one. Nothing here paints
+ * outside `.inspector*`, and nothing in the product paints inside it.
+ */
+
+/* The layer. Above everything, and transparent to the pointer: a mode whose chrome could be
+   clicked would be a mode that changes what it is describing. The card opts back in. */
+.inspector {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  pointer-events: none;
+}
+
+.inspector-chip,
+.inspector-card {
+  position: fixed;
+  max-width: 26rem;
+  border: 1px solid #343a40;
+  border-radius: 0.4rem;
+  background: #14161a;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 55%);
+  color: #dee2e6;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.inspector-chip {
+  width: 20rem;
+  padding: 0.4rem 0.5rem;
+}
+
+/* The pinned card takes the pointer back: its hops navigate and its copy control copies. */
+.inspector-card {
+  display: grid;
+  width: 25rem;
+  max-height: 28rem;
+  gap: 0.35rem;
+  padding: 0 0.5rem 0.5rem;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.inspector-card__bar {
+  display: flex;
+  position: sticky;
+  top: 0;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 -0.5rem;
+  border-bottom: 1px solid #343a40;
+  background: #14161a;
+  padding: 0.35rem 0.5rem;
+}
+
+.inspector-card__title {
+  color: #adb5bd;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.inspector-close {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: #868e96;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.inspector-close:hover {
+  color: #dee2e6;
+}
+
+/* The row vocabulary: a definition list, because a reading of one thing IS one. */
+.inspector-rows {
+  display: grid;
+  margin: 0;
+  gap: 0.15rem;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: 4.6rem 1fr;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.inspector-label {
+  color: #868e96;
+  text-align: right;
+}
+
+.inspector-value {
+  margin: 0;
+  min-width: 0;
+  /* Every value wraps rather than earning a scrollbar: an address is long by nature. */
+  overflow-wrap: anywhere;
+}
+
+.inspector-noun {
+  color: #f8f9fa;
+}
+
+.inspector-declared,
+.inspector-muted {
+  color: #868e96;
+}
+
+.inspector-declared {
+  margin-left: 0.3rem;
+}
+
+.inspector-absent {
+  color: #ffa8a8;
+}
+
+.inspector-uri {
+  color: #8ce99a;
+  font-size: 0.7rem;
+}
+
+.inspector-copy {
+  margin-left: 0.3rem;
+  border: 1px solid #343a40;
+  border-radius: 0.25rem;
+  background: #1f2226;
+  cursor: pointer;
+  color: #dee2e6;
+  font-size: 0.65rem;
+}
+
+.inspector-copy:hover {
+  border-color: #4c6ef5;
+}
+
+.inspector-hops,
+.inspector-doors,
+.inspector-occupants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+/* A hop is a button when it has an address to go to, and prose when it has none. Both read
+   the same width so the path does not jitter as the pointer moves. */
+.inspector-hop {
+  border: 1px solid #343a40;
+  border-radius: 0.25rem;
+  background: #1f2226;
+  cursor: pointer;
+  color: #a5d8ff;
+  font-size: 0.65rem;
+}
+
+.inspector-hop:hover {
+  border-color: #4c6ef5;
+}
+
+.inspector-hop.is-inert {
+  cursor: default;
+  color: #868e96;
+}
+
+.inspector-door {
+  border-radius: 0.25rem;
+  background: #1f2226;
+  padding: 0 0.2rem;
+  color: #ffd8a8;
+  font-size: 0.65rem;
+}
+
+.inspector-occupant {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.inspector-occupant__dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex: none;
+}
+
+.inspector-hint {
+  margin: 0;
+  border-top: 1px solid #343a40;
+  padding-top: 0.3rem;
+  color: #868e96;
+  font-size: 0.65rem;
+}

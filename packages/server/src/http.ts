@@ -5,6 +5,7 @@ import {
   AttendanceResponseSchema,
   ContainerCensusResponseSchema,
   HealthResponseSchema,
+  BindingsResponseSchema,
   HttpErrorSchema,
   LayoutResponseSchema,
   OkResponseSchema,
@@ -266,6 +267,24 @@ export class HttpApp {
         this.store.workspaceLayout(context.principal.id) ??
         composeDefaultLayout(this.plugins.roster()).layout;
       return jsonResponse(LayoutResponseSchema.parse({ layout }));
+    }
+
+    if (request.method === "GET" && pathname === "/api/bindings") {
+      /*
+        The CALLER's key overrides, and self-scoped for the same reason the layout is: a
+        rebinding belongs to one principal, so the door takes no id.
+
+        A FLOOR read of state a plugin's door writes, which is the shape `/api/layout` already
+        has. The browser engine composes the key table at boot — before a single plugin has
+        drawn anything — so it needs the delta from a neutral route rather than by dispatching
+        somebody's read door, which is a floor file naming a favourite plugin (REGISTRY.md
+        §Foundation, gate S2). `core.keys.setBinding` remains the only way one is WRITTEN.
+      */
+      const context = this.authenticate(request);
+      this.requireCap(context, "containers:read");
+      return jsonResponse(
+        BindingsResponseSchema.parse({ overrides: this.store.bindingOverrides(context.principal.id) }),
+      );
     }
 
     if (request.method === "GET" && pathname === "/api/resolve") {

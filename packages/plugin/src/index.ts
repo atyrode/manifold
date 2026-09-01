@@ -7,8 +7,11 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {
+  bindingRebindRefusal,
   composeBindings,
+  effectiveBindings,
   type BindingDef,
+  type BindingKeyRow,
   type BindingScope,
   type BindingSource,
   type ComposedBinding,
@@ -87,11 +90,13 @@ export {
 export {
   SECTION_CROSS_MARGIN,
   arrangedSectionIds,
+  clusteredSections,
   crossedSectionId,
   movedSectionIds,
   panelSections,
   withPanelSections,
   type SectionBox,
+  type SectionCluster,
 } from "./layout.ts";
 export {
   buildIndexTree,
@@ -105,6 +110,7 @@ export {
   lastSpotlight,
   recordSpotlight,
   type AssemblyFacet,
+  type ComposedPanel,
   type ComposedSection,
   type ElementDocument,
   type ElementHost,
@@ -113,6 +119,7 @@ export {
   type FeedTopics,
   type HostServices,
   type AuthoringHandle,
+  type TileGeometryHandle,
   type ViewportHandle,
   type PanelProps,
   type PlaceOutcome,

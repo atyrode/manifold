@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  WORKSPACE_OVERLAY_SLOTS,
+  WorkspaceOverlayOutlet,
+} from "@manifold/plugin/hooks";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { StoredIdentity } from "./api.ts";
 import { WorkspaceHost } from "./workspace.tsx";
 import {
@@ -55,6 +59,14 @@ interface AppProps {
  * `HostServicesGate` sits above the route switch for the same reason: a plugin route is
  * plugin code, so it needs the one host ref (`client`, `navigate`, `viewport`) exactly
  * like a panel or a section does.
+ *
+ * THE WORKSPACE OVERLAY SLOTS are mounted here for the notice layer's exact two reasons.
+ * A workspace overlay is chrome with no container to hang on — an inspector chip that
+ * follows the pointer across the sidebar and the frame alike, the arrange toolbar — so it
+ * must outlive the routed shell and must not sit inside a subtree the sidebar's collapse can
+ * unmount. Both slots paint NOTHING when nobody registers them or the registrant is
+ * disabled, which is what makes turning a diagnostic plugin off remove its chrome entirely
+ * rather than leave an inert box floating over the workspace.
  */
 export function App({ identity }: AppProps) {
   const [route, setRoute] = useState<Route>(() => currentRoute());
@@ -79,8 +91,29 @@ export function App({ identity }: AppProps) {
         containerId={route.kind === "browser" ? route.containerId : null}
       >
         {renderRoute(route, identity, navigate)}
+        <WorkspaceOverlays />
       </HostServicesGate>
     </NoticeProvider>
+  );
+}
+
+/**
+ * Every declared workspace overlay slot, in one place. It is its own component because it
+ * needs the host ref the gate publishes, and a component below the gate is how floor chrome
+ * reads a context the gate provides — the same shape `PluginRoute` uses one level down.
+ *
+ * The slot list is the CLOSED vocabulary, walked rather than spelled: adding a slot is a
+ * one-line append in `@manifold/plugin` and this outlet mounts it without an edit, which is
+ * what keeps the registrant and the mount site from drifting.
+ */
+function WorkspaceOverlays(): ReactElement {
+  const host = useHostServices();
+  return (
+    <>
+      {WORKSPACE_OVERLAY_SLOTS.map((slot) => (
+        <WorkspaceOverlayOutlet key={slot} slot={slot} host={host} />
+      ))}
+    </>
   );
 }
 

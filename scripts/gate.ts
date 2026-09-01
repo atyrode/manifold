@@ -66,8 +66,12 @@ const packages = [
   "plugins/uri",
   "plugins/access",
   "plugins/events",
+  "plugins/debug",
+  "plugins/brand",
+  "plugins/keys",
   "plugins/canvas",
   "plugins/compositions",
+  "plugins/arrange",
 ];
 
 /**

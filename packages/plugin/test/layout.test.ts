@@ -3,6 +3,7 @@ import { MAX_PANEL_SECTIONS, validateTileLayout, type TileLayout } from "@manifo
 import {
   SECTION_CROSS_MARGIN,
   arrangedSectionIds,
+  clusteredSections,
   crossedSectionId,
   movedSectionIds,
   panelSections,
@@ -293,5 +294,78 @@ describe("the commit shape", () => {
       "index",
       "machines",
     ]);
+  });
+});
+
+/**
+ * THE CLUSTER POLICY.
+ *
+ * The contract is two sentences of the manifest field's meaning, and both are about a cluster
+ * being DECLARED rather than positional: members paint as one unit wherever the earliest of
+ * them sits, and a stack cannot half-honour membership. The cases worth pinning are the ones an
+ * arrangement or a roster change walks into — a member dragged away from its neighbour, a
+ * member whose plugin is off and never reaches the stack, a word with one live member.
+ */
+describe("section clusters", () => {
+  interface Row {
+    readonly id: string;
+    readonly cluster?: string;
+  }
+  const row = (id: string, cluster?: string): Row =>
+    cluster === undefined ? { id } : { id, cluster };
+  const units = (rows: readonly Row[]): readonly (readonly string[])[] =>
+    clusteredSections(rows, (candidate) => candidate.cluster).map((unit) =>
+      unit.rows.map((member) => member.id),
+    );
+
+  test("an unclustered stack comes back one unit per row, in order", () => {
+    expect(units([row("brand"), row("index"), row("identity")])).toEqual([
+      ["brand"],
+      ["index"],
+      ["identity"],
+    ]);
+  });
+
+  test("members of one word paint as one unit where the earliest of them sits", () => {
+    expect(
+      units([
+        row("status"),
+        row("keys", "utility"),
+        row("plugins", "utility"),
+        row("identity"),
+      ]),
+    ).toEqual([["status"], ["keys", "plugins"], ["identity"]]);
+  });
+
+  test("a member arranged away from its neighbour is pulled back beside it", () => {
+    // The reader dragged `plugins` to the top of the rail: the whole cluster moves with it,
+    // because the cluster sits where its earliest member does.
+    expect(
+      units([row("plugins", "utility"), row("status"), row("keys", "utility"), row("identity")]),
+    ).toEqual([["plugins", "keys"], ["status"], ["identity"]]);
+  });
+
+  test("two words interleave without merging, each at its own earliest member", () => {
+    expect(
+      units([
+        row("a", "left"),
+        row("b", "right"),
+        row("c", "left"),
+        row("d", "right"),
+      ]),
+    ).toEqual([
+      ["a", "c"],
+      ["b", "d"],
+    ]);
+  });
+
+  test("a word with one live member is a one-row unit, exactly like an unclustered row", () => {
+    // What a disabled plugin's cluster partner leaves behind: the caller filtered it out
+    // upstream (`railRows`), so the policy sees one member and must not draw an empty cluster.
+    expect(units([row("keys", "utility"), row("identity")])).toEqual([["keys"], ["identity"]]);
+  });
+
+  test("an empty stack has no units", () => {
+    expect(units([])).toEqual([]);
   });
 });

@@ -114,7 +114,7 @@ describe("buildBrowserAssembly", () => {
     // the toolbar switches on, so there is no registration to attach and nothing a web half
     // could use to rename what the roster declared.
     expect(assembly.tools).toEqual([
-      { id: "draw", plugin: "core.draw", title: "Draw", enabled: true },
+      { id: "draw", plugin: "core.draw", title: "Draw", toolbar: "canvas", enabled: true },
     ]);
     expect(assembly.revision).toBe(3);
     expect(assembly.roster).toHaveLength(3);
@@ -285,12 +285,12 @@ describe("buildBrowserAssembly", () => {
 
 /**
  * THE KEY TABLE, joined: bindings are the one registry with no manifest half — the declaration
- * IS the registration — so this is where "who owns F8" gets decided for the browser, and where
- * the shell's real rows are checked against the composition the app actually builds.
+ * IS the registration — so this is where "who owns F9" gets decided for the browser, and where
+ * the real rows are checked against the composition the app actually builds.
  */
 describe("buildBrowserAssembly bindings", () => {
   const zoneProbe = {
-    id: "core.shell.zone-probe",
+    id: "core.debug.zone-probe",
     key: "F9",
     label: "Drop-zone probe",
     run: (): void => undefined,
@@ -304,41 +304,56 @@ describe("buildBrowserAssembly bindings", () => {
   } as const;
 
   test("registered rows compose into the table with their owner", () => {
-    const assembly = buildBrowserAssembly([entry(SHELL), entry({ id: "core.canvas" })], 1, [
-      { id: "core.shell", bindings: [zoneProbe] },
+    const assembly = buildBrowserAssembly([entry({ id: "core.debug" }), entry({ id: "core.canvas" })], 1, [
+      { id: "core.debug", bindings: [zoneProbe] },
       { id: "core.canvas", bindings: [grid] },
     ]);
 
     expect(assembly.bindings.map((binding) => [binding.key, binding.plugin])).toEqual([
       ["F7", "core.canvas"],
-      ["F9", "core.shell"],
+      ["F9", "core.debug"],
     ]);
     expect(assembly.bindings[1]?.run).toBe(zoneProbe.run);
   });
 
   test("a disabled plugin's keys DROP, unlike its panels and elements", () => {
-    const assembly = buildBrowserAssembly([entry(SHELL), entry({ id: "core.canvas" }, false)], 1, [
-      { id: "core.shell", bindings: [zoneProbe] },
-      { id: "core.canvas", bindings: [grid] },
-    ]);
+    const assembly = buildBrowserAssembly(
+      [entry(SHELL), entry({ id: "core.debug" }), entry({ id: "core.canvas" }, false)],
+      1,
+      [
+        { id: "core.shell", panels: { sidebar: Sidebar } },
+        { id: "core.debug", bindings: [zoneProbe] },
+        { id: "core.canvas", bindings: [grid] },
+      ],
+    );
 
     // A panel stays, tagged, so an outlet can name what it waits for; a key has no surface to
     // paint an absence on, so the row is gone and nothing answers F7.
-    expect(assembly.bindings.map((binding) => binding.id)).toEqual(["core.shell.zone-probe"]);
+    expect(assembly.bindings.map((binding) => binding.id)).toEqual(["core.debug.zone-probe"]);
     expect(assembly.panels.get("core.shell.sidebar")?.enabled).toBe(true);
   });
 
-  test("the composition the app builds carries the shell's two real keys, once each", () => {
+  test("the composition the app builds carries the diagnostics' two keys, and the shell none", () => {
     const roster: PluginRoster = WEB_PLUGIN_DEFS.map((def) => entry({ id: def.id }));
     const assembly = buildBrowserAssembly(roster, 1, WEB_PLUGIN_DEFS);
 
-    const rows = assembly.bindings.filter((binding) => binding.plugin === "core.shell");
+    /*
+      THE RELOCATION, asserted where it can actually be observed: F9 answered to `core.shell`
+      until the diagnostic seat existed (issue #90), and a probe was never the shell's to own.
+      Both of `core.debug`'s keys are here, once each, and the shell claims nothing.
+
+      F10 comes FIRST because the table is sorted by key as a STRING, and "F10" sorts before
+      "F9". That is the composition's own order, so it is the order asserted rather than the
+      order the rows were declared in.
+    */
+    const rows = assembly.bindings.filter((binding) => binding.plugin === "core.debug");
     expect(rows.map((binding) => [binding.id, binding.key, binding.when])).toEqual([
-      ["core.shell.arrange", "F8", "always"],
-      ["core.shell.zone-probe", "F9", "always"],
+      ["core.debug.inspect", "F10", "always"],
+      ["core.debug.zone-probe", "F9", "always"],
     ]);
+    expect(assembly.bindings.filter((binding) => binding.plugin === "core.shell")).toEqual([]);
     // Every registered plugin's rows go through one refusal-checking composition, so a second
-    // plugin claiming F8 or F9 would fail this build rather than shadow the shell.
-    expect(assembly.bindings.filter((binding) => binding.key === "F8")).toHaveLength(1);
+    // plugin claiming F9 or F10 would fail this build rather than shadow the diagnostics.
+    expect(assembly.bindings.filter((binding) => binding.key === "F10")).toHaveLength(1);
   });
 });

@@ -13,20 +13,27 @@ import { z } from "zod";
  * panel ids, rendered by the same component every composition uses — which is why the shell
  * is a composition rather than a frame with plugin holes cut in it (D2).
  *
- * THE FOUR SECTIONS ARE THE RAIL'S OWN CHROME, declared instead of hand-written. Each was
- * floor JSX inside the sidebar panel until this wave, which made "the shell owns the brand
- * line" a fact about a file rather than about the assembly: no reader of `GET /api/plugins`
- * could see it, nothing ordered it against the rows below it, and arrange mode could not move
- * it. All four are `plain` — they draw themselves end to end, with no disclosure header and
- * nothing to fold — and they inhabit the ONE section registry in the ONE order beside every
- * other plugin's rows (ADR 0017 §S17-A/B; `SectionPresentationSchema`).
+ * THE SECTIONS ARE THE RAIL'S OWN CHROME, declared instead of hand-written. Each was floor JSX
+ * inside the sidebar panel until this wave, which made "the shell owns the brand line" a fact
+ * about a file rather than about the assembly: no reader of `GET /api/plugins` could see it,
+ * nothing ordered it against the rows below it, and arrange mode could not move it. Both are
+ * `plain` — they draw themselves end to end, with no disclosure header and nothing to fold —
+ * and they inhabit the ONE section registry in the ONE order beside every other plugin's rows
+ * (ADR 0017 §S17-A/B; `SectionPresentationSchema`).
  *
- * THE ORDER NUMBERS ARE THE RAIL, TOP TO BOTTOM. `1` is the brand line; the creators the two
- * container disciplines and the index contribute take `2`–`4`; the bodies (`index` 10,
- * `machines` 20, `plugins` 30) sit in the middle where they always have; and the rail's foot
- * is `status` 40, `keys` 50, `identity` 60. The default interleave therefore paints exactly
- * the rail this file used to hard-code, and a principal's stored arrangement overrides all of
- * it (`arrangedSectionIds`).
+ * TWO OF THE FOUR LEFT, and that is ownership matching the mental map rather than a shrunken
+ * seat (issue #91). The brand line is `core.brand` and the key table is `core.keys`: both are
+ * rail NON-NEGOTIABLES, so each is now an essential seat a reader can find by name in the
+ * roster, and each declares its own section id at its own order — `brand` at `1`, `keys` at
+ * `50` — so a principal's stored arrangement keeps the seat it already chose. What stayed is
+ * what the shell itself answers for: whether its socket is up, and who this device is.
+ *
+ * THE ORDER NUMBERS ARE THE RAIL, TOP TO BOTTOM. `1` is `core.brand`'s line; the creators the
+ * two container disciplines and the index contribute take `2`–`4`; the bodies (`index` 10,
+ * `machines` 20) sit in the middle where they always have; and the rail's foot is `status` 40,
+ * then the `utility` cluster `core.keys` and `core.plugins` declare (50, 51 — painted side by
+ * side), then `identity` 60. A principal's stored arrangement overrides all of it
+ * (`arrangedSectionIds`).
  *
  * ESSENTIAL: nothing else can draw the workspace, so disabling it is refused rather than
  * obeyed. It declares no actions and no capabilities — chrome is not authority, and every one
@@ -73,9 +80,7 @@ export const shellManifest: PluginManifest = {
       { panel: "container-view", order: 200, ratio: 0.78 },
     ],
     sections: [
-      { id: "brand", title: "Manifold", order: 1, presentation: "plain" },
       { id: "status", title: "Connection", order: 40, presentation: "plain" },
-      { id: "keys", title: "Keys", order: 50, presentation: "plain" },
       { id: "identity", title: "Identity", order: 60, presentation: "plain" },
     ],
     elements: [],

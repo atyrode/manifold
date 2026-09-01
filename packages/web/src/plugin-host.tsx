@@ -1,11 +1,15 @@
 import {
   OVERLAY_SLOTS,
+  WORKSPACE_OVERLAY_SLOTS,
   ProjectionProvider,
   ViewportRegistrationProvider,
   sessionUrl,
   type ContainerOverlayProps,
   type OverlayRegistrations,
   type OverlaySlot,
+  type WorkspaceOverlayProps,
+  type WorkspaceOverlayRegistrations,
+  type WorkspaceOverlaySlot,
   type ContainerRendererProps,
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
@@ -17,18 +21,23 @@ import {
 } from "@manifold/plugin/hooks";
 import {
   composeBindings,
+  ENGINE_SET_ENABLED_ACTION,
   type BindingSource,
   type ComposedBinding,
+  type ComposedPanel,
   type ComposedSection,
   type WebBinding,
   type HostServices,
   type AuthoringHandle,
+  type TileGeometryHandle,
   type ViewportHandle,
   type PanelProps,
   type SectionProps,
 } from "@manifold/plugin";
 import {
+  BindingsResponseSchema,
   DEFAULT_SECTION_PRESENTATION,
+  DEFAULT_TOOLBAR,
   MANIFOLD_URI_SCHEME,
   parseManifoldUri,
   PluginsResponseSchema,
@@ -47,7 +56,7 @@ import {
   type ReactNode,
 } from "react";
 import { Cover, Stack } from "@manifold/plugin/ui";
-import type { StoredIdentity } from "./api.ts";
+import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { FEED_TOPICS, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
@@ -115,6 +124,14 @@ export interface WebPluginDef {
    * someone's canvas is worse than the missing decoration — but now only for declared slots.
    */
   readonly overlays?: OverlayRegistrations;
+  /**
+   * Decoration painted over the WORKSPACE, keyed by slot — the same kind one host up, on the
+   * same closed-vocabulary and paint-nothing-when-absent policy (`WorkspaceOverlayOutlet`).
+   * What lands here is chrome with no container to hang on: a pointer-following inspector
+   * chip that has to name the sidebar row under it, and the arrange toolbar, which is about
+   * the arrangement of the workspace rather than about anything inside a room.
+   */
+  readonly workspaceOverlays?: WorkspaceOverlayRegistrations;
   /**
    * Terminals, as every ref that paints one sees them: the viewer plus the machine
    * choice a new terminal is born on. One registration, because both belong to whichever
@@ -210,25 +227,43 @@ export interface BrowserAssembly {
   readonly renderers: ReadonlyMap<string, RegisteredRenderer<ContainerRendererProps>>;
   /** Keyed by overlay slot; only declared slots can appear. */
   readonly overlays: ReadonlyMap<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>;
+  /** Keyed by workspace overlay slot; only declared slots can appear. */
+  readonly workspaceOverlays: ReadonlyMap<
+    WorkspaceOverlaySlot,
+    RegisteredRenderer<WorkspaceOverlayProps>
+  >;
   /** Null until some enabled-or-disabled plugin registers the terminal facet. */
   readonly terminals: WebTerminals | null;
   /**
-   * The composed key table, sorted by key: the vocabulary the host dispatches and the help
-   * modal prints. A DISABLED plugin's rows are absent rather than tagged — the one registry
-   * here that drops instead of marking, because a keystroke has no surface to paint an absence
-   * on (`composeBindings`).
+   * The composed key table, sorted by key, carrying EFFECTIVE keys: the vocabulary the host
+   * dispatches and the editor prints, with this principal's rebindings already applied and each
+   * row's declared key beside it. A DISABLED plugin's rows are absent rather than tagged — the
+   * one registry here that drops instead of marking, because a keystroke has no place to paint
+   * an absence on (`composeBindings`).
    */
   readonly bindings: readonly ComposedBinding[];
+  /**
+   * The delta the table above was composed with, as binding id → key: this principal's stored
+   * rebindings, fetched from `GET /api/bindings` at boot and re-read whenever a door writes one.
+   * Published so an editor can tell a rebound row from a declared one, and see an override that
+   * lost a contested key.
+   */
+  readonly bindingOverrides: Readonly<Record<string, string>>;
 }
 
 /**
  * Joins the server's vocabulary with the browser's registrations. Pure, and exported so the
  * join is testable without a provider or a socket.
+ *
+ * `overrides` is this principal's stored rebindings, handed in rather than fetched here for the
+ * reason the roster is: this function is a JOIN over data somebody else owns the lifetime of.
+ * It reaches exactly one consumer — `composeBindings`, the one seam effective keys exist at.
  */
 export function buildBrowserAssembly(
   roster: PluginRoster,
   revision: number,
   defs: readonly WebPluginDef[],
+  overrides: Readonly<Record<string, string>> = {},
 ): BrowserAssembly {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const titles = new Map<string, string>();
@@ -240,6 +275,10 @@ export function buildBrowserAssembly(
   const routes = new Map<string, WebRoute>();
   const renderers = new Map<string, RegisteredRenderer<ContainerRendererProps>>();
   const overlays = new Map<OverlaySlot, RegisteredRenderer<ContainerOverlayProps>>();
+  const workspaceOverlays = new Map<
+    WorkspaceOverlaySlot,
+    RegisteredRenderer<WorkspaceOverlayProps>
+  >();
   let terminals: WebTerminals | null = null;
   const bindingSources: BindingSource[] = [];
 
@@ -264,6 +303,9 @@ export function buildBrowserAssembly(
         plugin: manifest.id,
         title: section.title,
         order: section.order,
+        // Carried verbatim, and spread because absence is a MEANING here: a row with no word is
+        // its own painted unit (`clusteredSections`).
+        ...(section.cluster === undefined ? {} : { cluster: section.cluster }),
         /*
           RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
           declares nothing yields the default, so no reader downstream has to know what the
@@ -283,7 +325,13 @@ export function buildBrowserAssembly(
       });
     }
     for (const tool of manifest.contributes.tools) {
-      tools.push({ id: tool.id, plugin: manifest.id, title: tool.title, enabled });
+      tools.push({
+        id: tool.id,
+        plugin: manifest.id,
+        title: tool.title,
+        toolbar: tool.toolbar ?? DEFAULT_TOOLBAR,
+        enabled,
+      });
     }
     // Routes have no manifest row to iterate, so they come from the REGISTRATION and take
     // the registering plugin's roster state — which is what keeps a disabled plugin's deep
@@ -315,6 +363,16 @@ export function buildBrowserAssembly(
       const Component = def?.overlays?.[slot];
       if (Component === undefined) continue;
       overlays.set(slot, { plugin: manifest.id, title: manifest.title, Component, enabled });
+    }
+    for (const slot of WORKSPACE_OVERLAY_SLOTS) {
+      const Component = def?.workspaceOverlays?.[slot];
+      if (Component === undefined) continue;
+      workspaceOverlays.set(slot, {
+        plugin: manifest.id,
+        title: manifest.title,
+        Component,
+        enabled,
+      });
     }
     if (def?.terminals !== undefined) {
       terminals = {
@@ -351,7 +409,9 @@ export function buildBrowserAssembly(
     tools,
     renderers,
     overlays,
-    bindings: composeBindings(bindingSources),
+    workspaceOverlays,
+    bindings: composeBindings(bindingSources, overrides),
+    bindingOverrides: overrides,
     terminals,
   };
 }
@@ -363,6 +423,15 @@ const AssemblyContext = createContext<BrowserAssembly | null>(null);
  * socket must not re-subscribe just because a plugin was toggled.
  */
 const PluginsAttachContext = createContext<((client: SessionClient) => () => void) | null>(null);
+/**
+ * The engine's own re-read of this principal's key overrides, in its own context for the same
+ * reason the attach channel is in one: it is stable for the provider's lifetime while the
+ * composition changes with every roster. A plugin whose door just wrote a rebinding calls it
+ * through `host.assembly.refreshBindings`, so the writer says "your copy is stale" without
+ * either side importing the other.
+ */
+const BindingsRefreshContext = createContext<(() => void) | null>(null);
+
 
 /** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
 export function useAssembly(): BrowserAssembly {
@@ -387,6 +456,15 @@ export function useAttachPluginsClient(): (client: SessionClient) => () => void 
   return attach;
 }
 
+/** Throws for the reason `useAssembly` does: a silent no-op would look like a saved rebinding. */
+export function useRefreshBindings(): () => void {
+  const refresh = useContext(BindingsRefreshContext);
+  if (refresh === null) {
+    throw new Error("useRefreshBindings requires a <AssemblyProvider> ancestor");
+  }
+  return refresh;
+}
+
 interface AssemblyProviderProps {
   readonly identity: StoredIdentity;
   readonly children: ReactNode;
@@ -403,12 +481,127 @@ interface RosterState {
 const INITIAL_ROSTER: RosterState = { roster: [], revision: 0, digest: "" };
 
 /**
- * Owns the roster for the authenticated terminal: fetched once at boot (this is why the
- * provider needs the token, and why it mounts inside `IdentityGate`), then kept current by
- * whoever attaches a session client.
+ * THE BOOT RECOVERY: an assembly with essential seats switched off, and the one-click offer to
+ * put them back.
+ *
+ * WHY IT IS FLOOR, and why it is here rather than in a plugin, is the bootstrap-circularity
+ * criterion of AXIOMS.md §Foundation law applied literally. The state this screen exists for is
+ * a workspace whose non-negotiable seats are off — no brand line, no key table, no plugin
+ * ledger — so a plugin-hosted recovery would be a recovery key riding the broken system: the
+ * seat holding it could be the seat that is off. The engine composed the assembly, so the engine
+ * makes the offer, and it makes it before the workspace paints.
+ *
+ * IT IS ALSO UNREACHABLE BY DESIGN. The engine's own door refuses to disable an essential
+ * plugin (`refusal: "essential"`), so this state cannot be produced through the product at all —
+ * only out of band, by editing the disabled set in SQLite or by a shipped seat losing its
+ * `essential` flag between releases. That is exactly why it needs a WAY OUT rather than a
+ * warning: an operator who reached it has no in-product lever left.
+ *
+ * RESTORE MEANS THE DEFAULT COMPOSITION, and the default is "every shipped seat on" — the
+ * disabled set starts empty, so restoring it is enabling every `builtin`-sourced row that is
+ * off. It goes through `engine.plugins.setEnabled`, one dispatch per row, so every re-enable is
+ * traced by the ladder like any other exercise of authority (axiom A6) instead of being a
+ * privileged bulk write with no record.
+ */
+function EssentialRecovery({
+  identity,
+  roster,
+  onRestored,
+  children,
+}: {
+  readonly identity: StoredIdentity;
+  readonly roster: PluginRoster;
+  readonly onRestored: (roster: PluginRoster) => void;
+  readonly children: ReactNode;
+}): ReactElement {
+  const [restoring, setRestoring] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const missing = roster.filter((entry) => entry.manifest.essential === true && !entry.enabled);
+  if (missing.length === 0) return <>{children}</>;
+
+  const restore = async (): Promise<void> => {
+    setRestoring(true);
+    setFailure(null);
+    try {
+      /*
+        EVERY ROW THAT IS OFF, because the default composition is "nothing disabled" — the
+        disabled set starts empty and this puts it back. Filtering by `source` was the first
+        shape of this and it was wrong twice over: `builtin` is the ENGINE's own published
+        doors, not the shipped seats, so the pass enabled nothing at all and re-rendered the
+        same screen. The roster IS the distribution today (plugin code that manifold did not
+        compile in is the marketplace wave, AXIOMS.md §Roadmap), so "every row" and "every
+        shipped row" name the same set; when that stops being true this needs the shipped set,
+        not a guess about `source`.
+
+        Sequential rather than fanned out: enablement is workspace-global and each transition
+        runs the roster's lifecycle hooks, so two in flight would race the composition they both
+        change. A handful of rows is a handful of round trips.
+      */
+      for (const entry of roster) {
+        if (entry.enabled) continue;
+        await dispatchAction(identity.token, ENGINE_SET_ENABLED_ACTION, {
+          id: entry.manifest.id,
+          enabled: true,
+        });
+      }
+      const response = await fetch("/api/plugins", {
+        headers: { Authorization: `Bearer ${identity.token}` },
+      });
+      if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
+      onRestored(PluginsResponseSchema.parse(await response.json()).plugins);
+    } catch (reason: unknown) {
+      setFailure(reason instanceof Error ? reason.message : "Could not restore the default plugins");
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <main className="gate-screen">
+      <Cover className="gate-cover">
+        <section className="gate-card" aria-labelledby="essential-recovery-title">
+          <p className="eyebrow">manifold</p>
+          <h1 id="essential-recovery-title">This workspace is missing essential plugins</h1>
+          <p>
+            {missing.map((entry) => entry.manifest.title).join(", ")}{" "}
+            {missing.length === 1 ? "is" : "are"} switched off. The workspace cannot draw itself
+            without them, and nothing in the product can turn them off — so this assembly was
+            changed outside it.
+          </p>
+          {failure === null ? null : <p className="form-error">{failure}</p>}
+          <button
+            className="primary-button"
+            data-action={ENGINE_SET_ENABLED_ACTION}
+            data-testid="essential-restore"
+            type="button"
+            disabled={restoring}
+            onClick={() => void restore()}
+          >
+            {restoring ? "Restoring default plugins…" : "Restore default plugins"}
+          </button>
+        </section>
+      </Cover>
+    </main>
+  );
+}
+
+/**
+ * Owns the roster and this principal's key overrides for the authenticated terminal: both
+ * fetched once at boot (this is why the provider needs the token, and why it mounts inside
+ * `IdentityGate`), the roster then kept current by whoever attaches a session client and the
+ * overrides re-read on demand when a door writes one.
+ *
+ * IT ALSO OWNS THE BOOT RECOVERY, and that is the bootstrap-circularity criterion rather than a
+ * convenience: an assembly with essential seats switched off cannot host the affordance that
+ * turns them back on, so the offer has to come from the floor that composed it, before the
+ * workspace paints (see {@link EssentialRecovery}).
  */
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
+  const [overrides, setOverrides] = useState<Readonly<Record<string, string>>>({});
+  /** Bumped to ask for a fresh read; the effect below is keyed on it. */
+  const [overridesEpoch, setOverridesEpoch] = useState(0);
 
   const publish = useCallback((roster: PluginRoster): void => {
     const digest = JSON.stringify(roster);
@@ -437,19 +630,54 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     return () => controller.abort();
   }, [identity.token, publish]);
 
+  /*
+    THE KEY DELTA, read from the neutral route (`GET /api/bindings`) rather than by dispatching
+    the door that writes it: the engine composes the key table before any plugin has drawn
+    anything, and a floor file that fetched it through `core.keys` would be the floor naming a
+    favourite plugin. A failed read composes the DECLARED keys, which is the honest degradation —
+    every key answers what its plugin shipped.
+  */
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async (): Promise<void> => {
+      try {
+        const response = await fetch("/api/bindings", {
+          headers: { Authorization: `Bearer ${identity.token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`binding override fetch failed (${response.status})`);
+        setOverrides(BindingsResponseSchema.parse(await response.json()).overrides);
+      } catch (reason) {
+        if (controller.signal.aborted) return;
+        console.error("evt=binding_overrides_fetch_failed", reason);
+      }
+    })();
+    return () => controller.abort();
+  }, [identity.token, overridesEpoch]);
+
   const attachPluginsClient = useCallback(
     (client: SessionClient): (() => void) => client.onPlugins(publish),
     [publish],
   );
 
+  const refreshBindings = useCallback((): void => {
+    setOverridesEpoch((epoch) => epoch + 1);
+  }, []);
+
   const assembly = useMemo(
-    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS),
-    [state],
+    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS, overrides),
+    [state, overrides],
   );
 
   return (
     <PluginsAttachContext.Provider value={attachPluginsClient}>
-      <AssemblyContext.Provider value={assembly}>{children}</AssemblyContext.Provider>
+      <BindingsRefreshContext.Provider value={refreshBindings}>
+        <AssemblyContext.Provider value={assembly}>
+          <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
+            {children}
+          </EssentialRecovery>
+        </AssemblyContext.Provider>
+      </BindingsRefreshContext.Provider>
     </PluginsAttachContext.Provider>
   );
 }
@@ -494,6 +722,25 @@ export function useAuthoringRegistration(): (handle: AuthoringHandle | null) => 
   const register = useContext(AuthoringRegisterContext);
   if (register === null) {
     throw new Error("useAuthoringRegistration requires a <HostServicesGate> ancestor");
+  }
+  return register;
+}
+
+/**
+ * The registration channel for {@link TileGeometryHandle} — the workspace tree's own read
+ * surface, published by `workspace.tsx` the same way the authoring door is: floor state,
+ * a floor renderer registers it, a plugin only ever reads it through `host.tileGeometry`.
+ * `core.arrange` (issue #89) is the one consumer today.
+ */
+const TileGeometryRegisterContext = createContext<
+  ((handle: TileGeometryHandle | null) => void) | null
+>(null);
+
+/** The same channel for the workspace tree — see {@link TileGeometryHandle}. */
+export function useTileGeometryRegistration(): (handle: TileGeometryHandle | null) => void {
+  const register = useContext(TileGeometryRegisterContext);
+  if (register === null) {
+    throw new Error("useTileGeometryRegistration requires a <HostServicesGate> ancestor");
   }
   return register;
 }
@@ -571,8 +818,14 @@ export function HostServicesGate({
 }: HostServicesGateProps): ReactElement {
   const assembly = useAssembly();
   const attachPluginsClient = useAttachPluginsClient();
+  /*
+    The engine's re-read of this principal's rebindings, handed to plugin code as
+    `host.assembly.refreshBindings`: the write is somebody's door, the read is the engine's.
+  */
+  const refreshBindings = useRefreshBindings();
   const [viewport, setViewport] = useState<ViewportHandle | null>(null);
   const [authoring, setAuthoring] = useState<AuthoringHandle | null>(null);
+  const [tileGeometry, setTileGeometry] = useState<TileGeometryHandle | null>(null);
 
   const client = useMemo(
     () =>
@@ -633,14 +886,35 @@ export function HostServicesGate({
    */
   const composedSections = useMemo<readonly ComposedSection[]>(
     () =>
-      assembly.sections.map(({ id, plugin, title, order, presentation, enabled }) => ({
+      assembly.sections.map(({ id, plugin, title, order, presentation, cluster, enabled }) => ({
         id,
         plugin,
         title,
         order,
         presentation,
+        // Absence is a meaning (a row is its own painted unit), so it is spread rather than
+        // assigned an explicit `undefined`.
+        ...(cluster === undefined ? {} : { cluster }),
         enabled,
       })),
+    [assembly],
+  );
+
+  /**
+   * THE PANELS AS PLUGIN CODE SEES THEM, the same projection `composedSections` performs one
+   * member up: `WebPanel`'s browser-only `Component` dropped, the manifest facts and the
+   * roster fact kept. `core.arrange` (issue #89) is this projection's reason to exist —
+   * resolving a scope and naming a grip needs a panel's title and its `arranges` declaration,
+   * never the component that renders it.
+   */
+  const composedPanels = useMemo<ReadonlyMap<string, ComposedPanel>>(
+    () =>
+      new Map(
+        [...assembly.panels].map(([id, { plugin, title, arranges, enabled }]) => [
+          id,
+          { plugin, title, ...(arranges === undefined ? {} : { arranges }), enabled },
+        ]),
+      ),
     [assembly],
   );
 
@@ -653,6 +927,7 @@ export function HostServicesGate({
       navigate: navigateUri,
       viewport,
       authoring,
+      tileGeometry,
       /*
         THE READ SURFACE onto the live composition (`AssemblyFacet`). Every member is a
         question keyed by an id the caller already holds and none of them is a lever: the
@@ -664,7 +939,10 @@ export function HostServicesGate({
         enabled: (id) => assembly.enabled(id),
         pluginTitle: (id) => assembly.pluginTitle(id),
         sections: composedSections,
+        panels: composedPanels,
         bindings: assembly.bindings,
+        bindingOverrides: assembly.bindingOverrides,
+        refreshBindings,
       },
       /*
         The four collection nodes the shared feeds subscribe to, handed down from the one
@@ -673,7 +951,19 @@ export function HostServicesGate({
        */
       topics: FEED_TOPICS,
     }),
-    [authoring, client, assembly, composedSections, identity, navigateUri, containerId, viewport],
+    [
+      authoring,
+      client,
+      assembly,
+      composedPanels,
+      composedSections,
+      refreshBindings,
+      identity,
+      navigateUri,
+      containerId,
+      tileGeometry,
+      viewport,
+    ],
   );
 
   /*
@@ -715,6 +1005,7 @@ export function HostServicesGate({
       terminals: assembly.terminals,
       renderer: (layout) => assembly.renderers.get(layout) ?? null,
       overlay: (slot) => assembly.overlays.get(slot) ?? null,
+      workspaceOverlay: (slot) => assembly.workspaceOverlays.get(slot) ?? null,
       element: (type) => assembly.elements.get(type) ?? null,
       section: (id) => sections.get(id) ?? null,
       elements: assembly.elements,
@@ -725,9 +1016,11 @@ export function HostServicesGate({
   return (
     <ViewportRegistrationProvider value={setViewport}>
       <AuthoringRegisterContext.Provider value={setAuthoring}>
-        <ProjectionProvider value={projection}>
-          <HostServicesProvider value={host}>{children}</HostServicesProvider>
-        </ProjectionProvider>
+        <TileGeometryRegisterContext.Provider value={setTileGeometry}>
+          <ProjectionProvider value={projection}>
+            <HostServicesProvider value={host}>{children}</HostServicesProvider>
+          </ProjectionProvider>
+        </TileGeometryRegisterContext.Provider>
       </AuthoringRegisterContext.Provider>
     </ViewportRegistrationProvider>
   );

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { HEX_COLOR } from "./elements.ts";
 import { ContainerDisciplineSchema, TileLayoutSchema } from "./layout.ts";
-import { PluginRosterSchema } from "./plugin.ts";
+import { BindingOverridesSchema, PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 
@@ -302,3 +302,18 @@ export type PluginsResponse = z.infer<typeof PluginsResponseSchema>;
  */
 export const LayoutResponseSchema = z.strictObject({ layout: TileLayoutSchema });
 export type LayoutResponse = z.infer<typeof LayoutResponseSchema>;
+
+/**
+ * `GET /api/bindings` — the CALLER's key overrides. Self-scoped exactly as the layout door is:
+ * a rebinding is per principal, so the door takes no id, and `core.keys.setBinding` writes only
+ * the caller's own.
+ *
+ * It is a FLOOR read of PLUGIN-written state, which is the same shape `/api/layout` has and for
+ * the same reason: the engine composes the key table, so the engine needs the delta at boot
+ * before any plugin has drawn anything, and a floor route that fetched it by dispatching a
+ * plugin's read door would make the browser engine name a favourite plugin (AXIOMS.md
+ * §Foundation law, neutrality). The WRITE stays a declared door somebody owns; only the read is
+ * the engine's.
+ */
+export const BindingsResponseSchema = z.strictObject({ overrides: BindingOverridesSchema });
+export type BindingsResponse = z.infer<typeof BindingsResponseSchema>;

@@ -66,6 +66,62 @@ export function movedSectionIds(
   return next;
 }
 
+/** One painted unit of a section stack: a lone row, or the members of one declared cluster. */
+export interface SectionCluster<T> {
+  /** The declared word, or null for a row that declared none — its own unit by definition. */
+  readonly cluster: string | null;
+  readonly rows: readonly T[];
+}
+
+/**
+ * THE CLUSTER POLICY: an ordered stack of rows becomes an ordered stack of PAINTED UNITS, where
+ * rows declaring the same word are one unit.
+ *
+ * Two rules, and both follow from a cluster being DECLARED rather than positional:
+ *
+ *   A cluster sits where its EARLIEST member sits. The rail's foot is "status, then the utility
+ *   cluster, then identity" because `core.keys` is the first utility row in the live order — so
+ *   a reader who arranges one member to the top moves the whole cluster there, which is the
+ *   only answer that keeps one order for one stack.
+ *
+ *   Members keep the stack's own order INSIDE the unit, and a member that drifted away from its
+ *   neighbour in the arrangement is pulled back beside it. Membership is a manifest fact; a
+ *   stack cannot half-honour it, and an arrangement that could break a cluster apart would make
+ *   two rows that declared they belong together depend on where a pointer let go.
+ *
+ * Generic over the row, with the word read through `clusterOf`, because the caller paints
+ * whatever it already resolved — a composed section, or a section wrapped in the rail's own
+ * visibility decision — and a policy that demanded one shape would push the panel into
+ * re-deriving the other (`railRows`, `@manifold-plugin/shell`).
+ *
+ * A row with no word, and a word with one live member, both yield a one-row unit: an unclustered
+ * stack comes back out of here as it went in, one unit per row, which is what makes the field's
+ * absence byte-identical to the rail before it existed.
+ */
+export function clusteredSections<T>(
+  rows: readonly T[],
+  clusterOf: (row: T) => string | undefined,
+): readonly SectionCluster<T>[] {
+  const units: { cluster: string | null; rows: T[] }[] = [];
+  const byCluster = new Map<string, { cluster: string | null; rows: T[] }>();
+  for (const row of rows) {
+    const cluster = clusterOf(row);
+    if (cluster === undefined) {
+      units.push({ cluster: null, rows: [row] });
+      continue;
+    }
+    const existing = byCluster.get(cluster);
+    if (existing !== undefined) {
+      existing.rows.push(row);
+      continue;
+    }
+    const unit = { cluster, rows: [row] };
+    byCluster.set(cluster, unit);
+    units.push(unit);
+  }
+  return units;
+}
+
 /** One row's vertical extent, in whatever coordinate space the pointer is reported in. */
 export interface SectionBox {
   readonly id: string;

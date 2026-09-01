@@ -1490,6 +1490,9 @@ export class PlaceExecutor {
     // refuses panels by group containment — and refused here too, before the leaf is
     // removed, so a hand-written tree holding one cannot be emptied by a failed extract.
     if (occupant.kind === "panel") return { status: "failed", failure: "conflict" };
+    // A spacer (issue #89) is inert workspace furniture with nothing to author either, and
+    // for the identical reason: unreachable through the door, refused here all the same.
+    if (occupant.kind === "spacer") return { status: "failed", failure: "conflict" };
 
     if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
     if (occupant.kind === "text") {

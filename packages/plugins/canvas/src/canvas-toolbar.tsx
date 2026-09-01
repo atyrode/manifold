@@ -27,7 +27,9 @@ interface ToolbarItem {
 export function CanvasToolbar({ tool, onChange }: CanvasToolbarProps): React.ReactElement {
   const projection = useProjection();
   const items = useMemo<readonly ToolbarItem[]>(() => {
-    const enabled = projection.tools.filter((candidate) => candidate.enabled);
+    const enabled = projection.tools.filter(
+      (candidate) => candidate.enabled && candidate.toolbar === "canvas",
+    );
     const rank = (id: string): number => {
       const own = CANVAS_TOOLS.indexOf(id);
       return own === -1 ? CANVAS_TOOLS.length : own;

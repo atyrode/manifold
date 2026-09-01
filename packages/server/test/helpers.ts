@@ -157,6 +157,10 @@ function tileRefAsPlacement(ref: TileRef, containerId: string): PlacementRef {
       // `core.space.setLayout`, never by the placement door, so a panel leaf cannot be the
       // subject of a drag this helper translates.
       throw new Error(`panels are not placement refs: ${ref.panelId}`);
+    case "spacer":
+      // Same reasoning: a spacer (issue #89) is workspace-tree furniture, never a placement
+      // door's subject.
+      throw new Error("spacers are not placement refs");
     default: {
       const exhaustive: never = ref;
       return exhaustive;

@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
 
 /**
- * `core.shell.brand` — the mark, the wordmark, the running build's version, and the history
+ * `core.brand.brand` — the mark, the wordmark, the running build's version, and the history
  * behind it. A PLAIN row: it draws itself end to end, so there is no disclosure header over
  * it and nothing to fold.
  *
@@ -21,6 +21,12 @@ import { parseChangelogReferences } from "./changelog-references.ts";
  * that owns the version button owns the history it shows, and it reaches `document.body`
  * through the same portal the panel used — the rail is a narrow, clipping, scrolling box, and
  * a dialog inside it would be laid out by it.
+ *
+ * THIS FILE MOVED HERE FROM `core.shell` in the essential-seats wave: the row's ownership now
+ * matches its seat, `core.brand`, rather than living inside the shell package that happened to
+ * draw it first. Nothing about how it draws changed — the component, its props, and its DOM
+ * are byte-identical to the row `core.shell` used to carry — only which package's name is on
+ * the door.
  */
 
 function renderChangelogChange(change: string): ReactNode {

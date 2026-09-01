@@ -141,7 +141,6 @@ must never be taught one.
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
         "packages/web/src/workspace.tsx",
-        "packages/web/src/workspace-arrange.ts",
         "packages/web/src/notice.tsx",
         "packages/web/src/styles.css",
         "packages/web/src/shell.css",
@@ -345,11 +344,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/workspace.tsx",
-      "why": "the workspace host: fetches the per-principal layout and renders its panel leaves through TileTree"
-    },
-    {
-      "glob": "packages/web/src/workspace-arrange.ts",
-      "why": "the panel-arrange policy: given a workspace tree, the grabbed panel leaf and a resolved seam/zone aim, the next TileLayout or a named refusal — pure, so the F8 panel leg's legality is unit-testable without a DOM"
+      "why": "the workspace host: fetches the per-principal layout, renders its panel leaves through TileTree, and publishes the live tree (its layout plus its own DOM root) as the tile-geometry read surface core.arrange reads (issue #89) — the frame owns no grip, no gesture and no arrange chrome beyond the `.is-arranging` state class that blanks its own tile content hosts while the plugin's overlay is armed"
     },
     {
       "glob": "packages/web/src/notice.tsx",
@@ -764,6 +759,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "inspector",
+      "means": "the operator-facing probe (core.debug, F10): point at any painted thing and be told its display noun, its manifold:// address, its owning plugin, which registered component paints it, the doors reachable under it and who occupies it. A probe read by a PERSON rather than by a gate or an agent, which is why it has its own word, and read-only like every probe — its only writes are vantage.tool while armed, the clipboard, and the host's own navigation",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "terminal",
       "means": "one PTY: its lifecycle, its controller lease and its home container",
       "banned": [],
@@ -897,13 +898,25 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "section",
-      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode)",
+      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode), and painted beside its cluster's other members when it declares one",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "cluster",
+      "means": "a set of sidebar rows that declared the same contributes.sections[].cluster word: they paint side by side as ONE unit of the rail's stack, placed where the cluster's earliest member sits in the live order (clusteredSections). Membership is declared, never positional, and no floor file, panel or registry holds a list of a cluster's members — core.keys and core.plugins sit together at the rail's foot because both manifests say \"utility\". NOT group: that word is the placement algebra's capability set, and one concept per word is the law. The Cluster box in @manifold/plugin/ui is a layout primitive that happens to paint one, exactly as the layout family's components are named for the shape they draw",
       "banned": [],
       "allow": []
     },
     {
       "term": "tool",
-      "means": "contribution kind: a canvas toolbar mode",
+      "means": "contribution kind: a toolbar mode, on whichever toolbar its contributes.tools row names",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "toolbar",
+      "means": "the closed vocabulary a tool's toolbar field names: canvas (core.canvas's tool strip) or arrange (core.arrange's floating F8 editor toolbar). Absent \u2261 canvas",
       "banned": [],
       "allow": []
     },
@@ -1315,12 +1328,17 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, and the chrome each presentation wears, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand`, `.sidebar-status`, `.sidebar-bindings`, `.sidebar-identity` by core.shell's own four contributed rows. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make five plugins depend on a sixth's stylesheet"
+      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrapper a declared CLUSTER paints in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's two remaining rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
+    },
+    {
+      "family": "keys",
+      "owner": "packages/plugins/keys/src/styles.css",
+      "why": "core.keys' binding EDITOR: the modal, its rows, the one keycap in the product, the loud collision refusal and the reset controls. It left the floor sheet with the seat (issue #91) — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the discreet OPENER row the seat wears stays in the `sidebar` family, because core.plugins wears it too"
     },
     {
       "family": "workspace",
       "owner": "packages/web/src/shell.css",
-      "why": "the workspace frame, its empty state and the arrange-mode affordances the frame itself owns (`workspace-arrange-*`, `workspace-panel-grip*`) — painted by the floor host `workspace.tsx` and by @manifold-plugin/shell's `container-view-panel.tsx`. The frame's own family stays the floor's: a rule scoped by `.workspace` reaches whatever the HOST drew, which is S13's 'ownership follows the scope', and the panel grips are the host's own chrome over leaves it does not own"
+      "why": "the workspace frame and its empty state \u2014 painted by the floor host `workspace.tsx` and by @manifold-plugin/shell's `container-view-panel.tsx`. The arrange-mode affordances that used to live in this family (`workspace-arrange-*`, `workspace-panel-grip*`) moved out with the grips themselves to `core.arrange` (issue #89, `arrange` family below); what stays is the frame `workspace.tsx` still draws on its own account \u2014 the `.is-arranging` state class that blanks its own tile content hosts while the plugin's overlay is armed, and nothing that used to be chrome over a leaf it does not own"
     },
     {
       "family": "status",
@@ -1391,6 +1409,16 @@ prefix, never a scope root, and belongs to no stylesheet.
       "family": "container-overlay-slot",
       "owner": "packages/plugin/src/ui/styles.css",
       "why": "where one plugin's renderer paints another plugin's occupant — `projection.ts`"
+    },
+    {
+      "family": "workspace-overlay-slot",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "the same slot one host up: where a plugin paints chrome over the WORKSPACE rather than over a container — the inspector chip, the arrange toolbar — `projection.ts`"
+    },
+    {
+      "family": "inspector",
+      "owner": "packages/plugins/debug/src/styles.css",
+      "why": "core.debug's F10 inspector: the chip that follows the pointer, the card a press pins, and the row vocabulary both are built from. One family, because the two are one reading at two levels of detail"
     },
     {
       "family": "mf-icon",
@@ -1538,6 +1566,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the note element and its in-place editor. The prefix says where a note is painted; the owner is the plugin whose element it is, so disabling notes takes this with it"
     },
     {
+      "family": "arrange",
+      "owner": "packages/plugins/arrange/src/styles.css",
+      "why": "core.arrange's own chrome: the floating F8 toolbar, its drag handle and tool buttons, the panel grip overlay and its scope-in pill, the live move preview slot, the mode bar and its scope crumbs, and the wireframe delimitation painted over stack/split containers while armed. Extracted from the `workspace` family (issue #89) when the grips and the mode bar left `workspace.tsx` for the plugin that now owns arrange mode's affordances"
+    },
+    {
       "family": "is",
       "owner": "shared",
       "why": "the state-modifier prefix. `is-*` is never a family and never a definition: it only ever qualifies the class it is written beside, so it belongs to no stylesheet and is legal in all of them"
@@ -1599,6 +1632,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold:sidebar-collapsed-mirror",
       "why": "device mirror of presence vantage.sidebarCollapsed so the first paint matches the last session before the socket opens; presence remains the authority"
+    },
+    {
+      "key": "manifold:arrange-toolbar-position",
+      "why": "where THIS device parked core.arrange's floating toolbar (an {dx,dy} offset from its bottom-centre default). A toolbar's parking spot is about this screen's size and this hand's reach — it names nothing in the workspace, and publishing it would move a collaborator's toolbar out from under them. Optional by construction: a write that throws leaves the toolbar at its default, which is why the drag never surfaces a storage failure"
     }
   ]
 }
@@ -1675,12 +1712,62 @@ string" is the question a broken gate actually asks.
     {
       "testid": "plugin-manager",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
-      "why": "R3's enablement rung scopes its toggle selector to the plugin-manager section root, so a row is picked out by plugin id inside the section that owns it"
+      "why": "R3's enablement rung scopes its toggle selector to the plugin-manager listing root, so a row is picked out by plugin id inside the list that owns it. Since 2026-09-01 that list lives inside the manager's MODAL (issue #91), which is why the two rows below exist"
     },
     {
       "testid": "plugin-manager-toggle",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
       "why": "R3 presses the REAL enablement affordance instead of dispatching the door twice; row identity comes from the sibling data-plugin attribute, never from button copy"
+    },
+    {
+      "testid": "plugin-manager-open",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "the rail row is only the OPENER now, so R3 and R9 press it before reading any plugin row (`openPluginManager`). A gate keyed off the row's copy would break the moment the collapsed rail hides the label"
+    },
+    {
+      "testid": "plugin-manager-modal",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "the modal's card, and the handle the gate reads OPENNESS through: a closed <dialog> keeps its subtree in the DOM, so 'the listing exists' is not 'a reader can see it'. R9 also closes the modal through it, by the backdrop press a reader would use"
+    },
+    {
+      "testid": "toolbar-stack-row",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`, on the OTHER toolbar: `core.arrange`'s floating bar renders the same shape the canvas bar does, so the same attribute answers for a second contributor's tools. R4 presses this one to prove re-orienting the root split commits exactly one core.space.setLayout"
+    },
+    {
+      "testid": "toolbar-stack-column",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; the reorientation R4 runs FIRST, because a default tree is already a row and a tool that refuses (`aim_unchanged`) commits nothing — the pair proves both directions carry"
+    },
+    {
+      "testid": "toolbar-spacer",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; the tool that adds a `{kind:'spacer'}` leaf, so R4 can prove the new tile grammar survives the round trip through core.space.setLayout and comes back as a painted gap"
+    },
+    {
+      "testid": "toolbar-equalize",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; R4 presses it after a divider drag has skewed the root ratios, which is what makes 'normalizes to one even share' an observable change rather than a no-op"
+    },
+    {
+      "testid": "toolbar-swap",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; the one tool with a SELECTION precondition, so R4 taps two grips first — which is also how the tap-versus-drag threshold gets exercised by a real pointer instead of asserted in prose"
+    },
+    {
+      "testid": "toolbar-shelf",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; unseats the one selected panel, which is the only way a row appears on the shelf below — R4 presses it and then re-seats through the row it produced"
+    },
+    {
+      "testid": "toolbar-reset",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; the least state-dependent tool, which is why R4 also uses its mere PRESENCE as the proof that F8 painted a toolbar and that leaving the mode took it away again"
+    },
+    {
+      "testid": "arrange-shelf-item",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "the shelved panel's own row, and the second half of Shelf: R4 presses it to put the panel back, so 'nothing vanishes' is proved by re-seating rather than by reading the tree the tool left behind"
     }
   ]
 }

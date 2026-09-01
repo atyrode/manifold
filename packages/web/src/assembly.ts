@@ -1,6 +1,10 @@
+import { ArrangeOverlay, ARRANGE_BINDINGS } from "@manifold-plugin/arrange/web";
+import { BrandRow } from "@manifold-plugin/brand/web";
 import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
 import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
+import { debugWebPlugin } from "@manifold-plugin/debug/web";
 import { drawWebPlugin } from "@manifold-plugin/draw/web";
+import { KeysRow } from "@manifold-plugin/keys/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
 import { notesWebPlugin } from "@manifold-plugin/notes/web";
 import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
@@ -13,11 +17,8 @@ import { machinesManifest } from "@manifold-plugin/machines";
 import { presenceManifest } from "@manifold-plugin/presence";
 import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
 import {
-  SHELL_BINDINGS,
-  BrandRow,
   ContainerViewPanel,
   IdentityRow,
-  KeysRow,
   SidebarPanel,
   StatusRow,
 } from "@manifold-plugin/shell/web";
@@ -134,18 +135,38 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
     id: "core.shell",
     panels: { sidebar: SidebarPanel, "container-view": ContainerViewPanel },
     /*
-      The rail's OWN chrome, attached exactly like anybody else's row. The sidebar panel does
-      not import these four: it reads `host.assembly.sections` and asks the projection registry
-      for whoever registered each id, so `core.shell` reaches its own sidebar by the same route
-      a stranger's plugin does — which is the only way "the rail is composed" can be checked
-      rather than asserted.
+      The rail chrome the shell still owns, attached exactly like anybody else's row. The
+      sidebar panel does not import these two: it reads `host.assembly.sections` and asks the
+      projection registry for whoever registered each id, so `core.shell` reaches its own
+      sidebar by the same route a stranger's plugin does — which is the only way "the rail is
+      composed" can be checked rather than asserted.
     */
-    sections: { brand: BrandRow, status: StatusRow, keys: KeysRow, identity: IdentityRow },
-    bindings: SHELL_BINDINGS,
+    sections: { status: StatusRow, identity: IdentityRow },
+    /*
+      No `bindings` row: the shell claims no keys at all now. Arrange mode's F8 went to
+      `core.arrange` and the drop-zone probe's F9 to `core.debug`, each beside the behaviour it
+      reaches — so the key table's owner column names the plugin that implements the key.
+    */
   },
   { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },
+  /*
+    THE RAIL'S NON-NEGOTIABLES, as seats of their own (issue #91). The brand line and the key
+    table were `core.shell` rows and the plugin ledger was an ordinary body in the middle of the
+    stack; all three are `essential: true` now, because a rail with no name on it, no way to
+    read its keys, or no ledger of what is on is not a degraded workspace but a broken one. Each
+    is an ordinary row here — an essential seat gets no privileged registration, only a refusal
+    at the engine's enablement door.
+  */
+  { id: "core.brand", sections: { brand: BrandRow } },
+  { id: "core.keys", sections: { keys: KeysRow } },
+  /*
+    The F8 scene editor (issue #89): its own key row, and its one workspace overlay — the
+    floating toolbar, the panel grips and their live preview, and the wireframe delimitation,
+    all painted through the SAME slot channel a container overlay uses one host up.
+  */
+  { id: "core.arrange", bindings: ARRANGE_BINDINGS, workspaceOverlays: { toolbar: ArrangeOverlay } },
   canvasWebPlugin,
   compositionsWebPlugin,
   drawWebPlugin,
@@ -153,4 +174,5 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   presenceWebPlugin,
   terminalsWebPlugin,
   uriWebPlugin,
+  debugWebPlugin,
 ];

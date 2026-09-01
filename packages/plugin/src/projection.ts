@@ -6,7 +6,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import type { MachineSummary, Container, Attendance, PlacementItem } from "@manifold/protocol";
+import type { MachineSummary, Container, Attendance, PlacementItem, Toolbar } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";
@@ -37,8 +37,10 @@ import type {
  *   containers        a container renderer, keyed by the container's DISCIPLINE (`canvas`, `composition`) —
  *               which is how a composition leaf embeds a canvas and a canvas node embeds a
  *               composition without either plugin knowing the other exists
- *   overlays    decoration painted OVER somebody else's ref, keyed by slot (the presence
- *               island, the spotlight chip)
+ *   overlays    decoration painted OVER somebody else's ref, keyed by slot — over a mounted
+ *               container (the presence island, the spotlight chip) or over the WHOLE
+ *               workspace (the inspector, the arrange toolbar), which are the same kind with
+ *               two hosts and therefore two slot vocabularies
  *   elements    a scene record's renderer, keyed by wire element type
  *   sections    a sidebar row's own body, keyed by the global section id its manifest declared
  *               — the one kind whose mount site is itself a plugin, since the shell's panel
@@ -86,11 +88,16 @@ export interface RegisteredElement {
  * owns the toolbar switches on — so the registry publishes the vocabulary and nothing else.
  * A disabled tool stays in the list, `enabled: false`, so the strip that draws it can leave
  * it out while the composition still explains why (ADR 0013 §4: chrome hides, data never).
+ *
+ * `toolbar` is which strip this tool belongs to (`Toolbar`, `@manifold/protocol`) — the
+ * composed, defaulted form of the manifest row's optional field, so every reader filters on
+ * one closed value instead of re-applying the "absent means canvas" rule itself.
  */
 export interface RegisteredTool {
   readonly id: string;
   readonly plugin: string;
   readonly title: string;
+  readonly toolbar: Toolbar;
   readonly enabled: boolean;
 }
 
@@ -210,6 +217,39 @@ export type OverlayRegistrations = Readonly<
 >;
 
 /**
+ * The WORKSPACE's own overlay slots — the same kind as {@link OVERLAY_SLOTS}, hosted by the
+ * application frame instead of by a container renderer, and closed for the identical reason.
+ *
+ * Two slots exist because two things genuinely have no container to hang on. An INSPECTOR
+ * chip follows the pointer across the sidebar, the workspace frame and whatever is mounted
+ * inside it, so a chip painted into a container's slot could never name the sidebar row it is
+ * hovering. An arrange TOOLBAR is chrome about the arrangement of the workspace, which is not
+ * a node in any container either.
+ *
+ * Hosted ABOVE the route switch (`packages/web/src/app.tsx`), for the reason the notice layer
+ * is: a workspace overlay must outlive the shell it decorates and must sit outside the
+ * sidebar's collapse subtree, which is what used to hide sidebar chrome on the icon rail.
+ */
+export const WORKSPACE_OVERLAY_SLOTS = ["inspector", "toolbar"] as const;
+
+/** One named overlay position over the workspace itself. */
+export type WorkspaceOverlaySlot = (typeof WORKSPACE_OVERLAY_SLOTS)[number];
+
+/**
+ * What a workspace overlay is handed, and the whole of it: the one host ref. There is no
+ * `containerId` and no room pipe — an overlay over the WORKSPACE has no container to be about,
+ * and the routed one is already `host.containerId`.
+ */
+export interface WorkspaceOverlayProps {
+  readonly host: HostServices;
+}
+
+/** What a plugin's browser half puts in the workspace overlay channel: the slots it fills. */
+export type WorkspaceOverlayRegistrations = Readonly<
+  Partial<Record<WorkspaceOverlaySlot, ComponentType<WorkspaceOverlayProps>>>
+>;
+
+/**
  * The resolved registry. Built by the engine's browser half from the composition; `revision`
  * moves with the roster, so a consumer that memoizes on the vocabulary has a cheap key.
  */
@@ -232,6 +272,8 @@ export interface ProjectionRegistry {
   /** Keyed by container discipline — `Container["discipline"]`. */
   renderer(layout: string): RegisteredRenderer<ContainerRendererProps> | null;
   overlay(slot: OverlaySlot): RegisteredRenderer<ContainerOverlayProps> | null;
+  /** Keyed by workspace overlay slot; only declared slots can appear. */
+  workspaceOverlay(slot: WorkspaceOverlaySlot): RegisteredRenderer<WorkspaceOverlayProps> | null;
   element(type: string): RegisteredElement | null;
   /** Keyed by the GLOBAL section id a manifest declared — one sidebar, one slot per name. */
   section(id: string): RegisteredRenderer<SectionProps> | null;
@@ -402,6 +444,38 @@ export function ContainerOverlayOutlet({
   return createElement(
     "div",
     { className: "container-overlay-slot", "data-overlay-slot": slot },
+    painted,
+  );
+}
+
+export interface WorkspaceOverlayOutletProps extends WorkspaceOverlayProps {
+  readonly slot: WorkspaceOverlaySlot;
+}
+
+/**
+ * A slot of decoration over the WORKSPACE, on exactly the policy
+ * {@link ContainerOverlayOutlet} follows: absence paints NOTHING — no placeholder — because an
+ * inert box floating over somebody's workspace is worse than the missing decoration, and the
+ * wrapper still carries `data-workspace-overlay-slot` so a gate can assert the slot exists and
+ * is empty.
+ *
+ * A disabled plugin's overlay disappears with everything else it contributes, which is what
+ * makes "turning core.debug off removes the inspector chrome entirely" a property of the
+ * registry rather than a promise the plugin has to keep.
+ */
+export function WorkspaceOverlayOutlet({
+  slot,
+  ...overlay
+}: WorkspaceOverlayOutletProps): ReactElement {
+  const registry = useProjection();
+  const registered = registry.workspaceOverlay(slot);
+  const painted =
+    registered === null || !registered.enabled || registered.Component === null
+      ? null
+      : createElement(registered.Component, overlay);
+  return createElement(
+    "div",
+    { className: "workspace-overlay-slot", "data-workspace-overlay-slot": slot },
     painted,
   );
 }
