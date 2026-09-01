@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  GrantNodeSchema,
+  MANIFOLD_ROOT_URI,
   MANIFOLD_URI_SCHEME,
+  MAX_GRANT_NODE_LENGTH,
   ManifoldRefSchema,
+  containmentPath,
   formatManifoldUri,
   parseManifoldUri,
   type ManifoldRef,
@@ -176,5 +180,85 @@ describe("manifold:// addressing", () => {
     expect(
       ManifoldRefSchema.safeParse({ kind: "container", containerId: escapeHeavy }).success,
     ).toBe(true);
+  });
+});
+
+/**
+ * CONTAINMENT — the operation A5's authority walk rides on. The address algebra already encodes
+ * which node holds which, so these cases are about the encoding being read faithfully rather
+ * than about anything a store knows.
+ */
+describe("manifold:// containment", () => {
+  test("the root is one entry, and it is the bare scheme", () => {
+    expect(MANIFOLD_ROOT_URI).toBe(MANIFOLD_URI_SCHEME);
+    expect(containmentPath(MANIFOLD_ROOT_URI)).toEqual([MANIFOLD_ROOT_URI]);
+  });
+
+  test("an element and a tile hang under their container, everything else under the root", () => {
+    expect(containmentPath("manifold://container/p1")).toEqual([
+      "manifold://",
+      "manifold://container/p1",
+    ]);
+    expect(containmentPath("manifold://container/p1/element/el-1")).toEqual([
+      "manifold://",
+      "manifold://container/p1",
+      "manifold://container/p1/element/el-1",
+    ]);
+    expect(containmentPath("manifold://container/p1/tile/root")).toEqual([
+      "manifold://",
+      "manifold://container/p1",
+      "manifold://container/p1/tile/root",
+    ]);
+    /*
+      A terminal, a principal, a plugin and an action are each sovereign in the algebra — one
+      owner, one home, one address, and none of them addressed THROUGH a container — so there is
+      no intermediate node between them and the workspace for a grant to name.
+    */
+    for (const uri of [
+      "manifold://terminal/s1",
+      "manifold://principal/pr-1",
+      "manifold://plugin/core.terminals",
+      "manifold://action/core.terminals.rename",
+    ]) {
+      expect(containmentPath(uri)).toEqual(["manifold://", uri]);
+    }
+  });
+
+  test("the path is spelled canonically, whatever escaping the caller used", () => {
+    /*
+      The property the authority walk depends on: a grant stored under an equivalently-escaped
+      URI must still be found by a walk that formats its own path. `%70` is `p`, so both spellings
+      name the same container and both must produce the same path.
+    */
+    expect(containmentPath("manifold://container/%70%31/element/el-1")).toEqual([
+      "manifold://",
+      "manifold://container/p1",
+      "manifold://container/p1/element/el-1",
+    ]);
+  });
+
+  test("an unaddressable node has no path at all, rather than a guessed one", () => {
+    for (const uri of [
+      "",
+      "http://example.com",
+      "manifold:/",
+      "manifold://container/",
+      "manifold://nothing/x",
+      "manifold://container/p1/surface/s1",
+      "manifold://container/%zz",
+    ]) {
+      expect(containmentPath(uri)).toBeNull();
+    }
+  });
+
+  test("GrantNodeSchema admits exactly what the walk can reach", () => {
+    // The schema's check IS the walk, which is the strongest one available: a node it accepted
+    // that the walk refused would be a stored row nothing could ever fire.
+    expect(GrantNodeSchema.safeParse(MANIFOLD_ROOT_URI).success).toBe(true);
+    expect(GrantNodeSchema.safeParse("manifold://container/p1").success).toBe(true);
+    expect(GrantNodeSchema.safeParse("manifold://container/p1/element/el-1").success).toBe(true);
+    expect(GrantNodeSchema.safeParse("manifold://nothing/x").success).toBe(false);
+    expect(GrantNodeSchema.safeParse("not-a-uri").success).toBe(false);
+    expect(GrantNodeSchema.safeParse("x".repeat(MAX_GRANT_NODE_LENGTH + 1)).success).toBe(false);
   });
 });

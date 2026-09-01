@@ -21,11 +21,14 @@ import type {
   ActionOutcome,
   BootstrapPrincipalRequest,
   Cap,
+  CreateGrantRequest,
   Dial,
   DialShareRequest,
   DialTicket,
   EventKind,
   EventPayload,
+  Grant,
+  ListGrantsRequest,
   ManifoldRef,
   MintShareRequest,
   MintTokenRequest,
@@ -107,6 +110,16 @@ export interface IdentityDoor {
   revokeShare(shareId: string): IdentityResult<number>;
   /** Every share the caller is entitled to see. Never a secret, only its record. */
   listShares(): IdentityResult<readonly Share[]>;
+  /**
+   * Writes one authority row (ADR 0011). Root-only in the mechanism, which is where the
+   * refusal that no deny row may name the workspace owner lives too — a door and a mechanism
+   * that disagreed about who may write authority would be two answers to one question.
+   */
+  grant(input: CreateGrantRequest): IdentityResult<Grant>;
+  /** Removes one authority row; answers 1 if a row went and 0 if there was nothing to remove. */
+  revokeGrant(grantId: string): IdentityResult<number>;
+  /** The rows themselves, optionally narrowed to one node or one principal. */
+  listGrants(filter: ListGrantsRequest): IdentityResult<readonly Grant[]>;
 }
 
 /**
@@ -917,6 +930,9 @@ export class PluginHost {
         mintShare: (input) => identityCall(() => this.authService.mintShare(input, auth)),
         revokeShare: (shareId) => identityCall(() => this.authService.revokeShare(shareId, auth)),
         listShares: () => identityCall(() => this.authService.listShares(auth)),
+        grant: (input) => identityCall(() => this.authService.grant(input, auth)),
+        revokeGrant: (grantId) => identityCall(() => this.authService.revokeGrant(grantId, auth)),
+        listGrants: (filter) => identityCall(() => this.authService.listGrants(filter, auth)),
       },
       /*
         The guest door is bound to the CALLING PRINCIPAL the same way the identity door is,

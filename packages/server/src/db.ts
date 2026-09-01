@@ -1,10 +1,11 @@
 import { renameSync, rmSync } from "node:fs";
 import { Database } from "bun:sqlite";
+import { migrateToGrantRows } from "./migrate-grants.ts";
 import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -335,6 +336,20 @@ CREATE UNIQUE INDEX dials_origin_secret_unique ON dials(origin, secret);
 ALTER TABLE principals ADD COLUMN origin TEXT;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '12');
 `,
+  /**
+   * The permission waterfall's substrate (#77, ADR 0011). Authority stops being a field on a
+   * credential and becomes a row on the node tree: `grants` holds ADR 0011's row verbatim, and
+   * `tokens.grant_id` / `shares.grant_id` are how a credential references the authority it was
+   * issued. Every existing token and every live share is materialized into a row, so no
+   * credential's answer to any authority question moves by so much as one refusal.
+   *
+   * Code, and backed up, for reasons written where its body is (migrate-grants.ts): the node
+   * column is a percent-encoded `manifold://` URI that only one formatter may produce, and a
+   * mistake in materializing authority does not look like corrupt data — it looks like a
+   * workspace that refuses everything, which is the one failure an operator cannot read off
+   * the rows.
+   */
+  13: { backup: true, apply: migrateToGrantRows },
 };
 
 interface TableRow {

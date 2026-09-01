@@ -110,25 +110,80 @@ and produces negative geometry that the commit path then rejects.
   presence come with `containers:read`. `terminals:write` covers input+resize+kill+take on
   terminals in scope. `plugins:manage` authorizes plugin administration only — the engine
   doors `engine.plugins.setEnabled` and `engine.plugins.purge`.
-- Token scope: optional `containerId` restricts everything to one container.
+- Token scope: optional `containerId` restricts everything to one container. It is a subtree
+  grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
 
-### Authority (planned)
+### Authority is a waterfall of grants (ADR 0011, shipped)
 
-Today's model is flat and stays flat this wave: a token carries a `Cap[]` plus an optional
-`containerScope`, and `AuthContext.allows(cap, containerId)` answers every authority question.
-That is
-deliberately the DEGENERATE case of the ratified design in
-`docs/decisions/0011-permission-waterfall.md`, where authority is a waterfall of grants on
-the node tree — `{ principal | class, node: "manifold://…", caps, effect, reach }` evaluated
-root→node, deeper beating shallower, `deny` beating `allow` at equal specificity. Today's cap
-array is a synthesized root grant; today's `containerScope` is a subtree grant at
-`manifold://container/<id>`; a share will be a minted token bound to a subtree grant.
-`packages/server/src/auth.ts` is the tagged evaluator call surface (`REGISTRY.md` floor
-registry): the
-evaluator replaces ONE call surface and the action door's declared-capability intersection
-sits unchanged on top of it.
+**Authority is rows, not fields.** A **grant** is
+`{ id, principal, node, caps, effect, reach, createdBy, createdAt }`, persisted in `grants`
+(migration 13). `principal` is `{ kind: "principal", id }`, `{ kind: "any-human" }`,
+`{ kind: "any-agent" }` or `{ kind: "instance", origin }`. `node` is a `manifold://` URI
+STRING — the root is the bare scheme `manifold://` (`MANIFOLD_ROOT_URI`), and
+`ManifoldRefSchema`'s seven forms are UNCHANGED, so nothing on a wire grew a node kind.
+`effect` is `allow` or `deny`; `reach` is `node` (that node alone) or `subtree` (that node and
+everything under it). A grant never names an action: actions declare capabilities, grants grant
+capabilities, and the two meet at the door.
+
+**Tokens reference grants; they do not carry authority.** `TokenRecord.grant_id` and
+`ShareRecord.grant_id` point at the row the credential was minted from — the referrer holds the
+reference, so `authenticate()` gains no query and the published `Cap[]` on a `TokenGrant` is
+unchanged. Migration 13 turned every existing token's flat caps into exactly one referenced row
+(root `manifold://` for an unscoped token, `manifold://container/<id>` for a scoped one, both
+`reach: "subtree"`, both `effect: "allow"`), which is why **every pre-migration token answers
+every authority question identically after it** — parity is a fixture, not a claim.
+
+**Evaluation.** `AuthService.effectiveCaps(context, node)` walks `containmentPath(node)` —
+`manifold://` → `manifold://container/<id>` → `…/element/<id>` or `…/tile/<id>` — collecting the
+rows that match the caller's principal or one of its classes, and resolves each capability
+independently. The path is SYNTACTIC: containment is read off the URI, so evaluation touches no
+store beyond the grant rows themselves.
+
+| #   | Rule                        | Reading                                                                                             |
+| --- | --------------------------- | --------------------------------------------------------------------------------------------------- |
+| 1   | Deeper node beats shallower | An element row beats a container row, which beats a root row. This is what makes a denial local.    |
+| 2   | Principal beats class       | `{ kind: "principal" }` beats `any-human` / `any-agent`, which beats `{ kind: "instance" }`.        |
+| 3   | `deny` beats `allow`        | At equal depth AND equal specificity only — a named principal's `allow` still beats a class `deny`. |
+| 4   | Newer `createdAt` wins      | Ties only, so the relation is total and no answer depends on row insertion order.                   |
+
+Rule 3 sits BELOW rule 2 deliberately: "everyone except this person" is expressed as a class deny
+plus a principal allow, and a `deny` that outranked specificity would make that unsayable. `*`
+expands to the concrete cap set before comparison, so a deny at depth bites through a wildcard
+allow at the root.
+
+**The ceiling rule** (implementation deviation, recorded in ADR 0011's landed addendum): a row
+REFERENCED by a token applies only to the credential that references it; an UNREFERENCED row —
+everything `core.access.grant` writes, plus a share's row — applies to every credential of the
+matching principal or class. Without it, a principal holding both a broad and a narrow token
+would see the narrow one inherit the broad one's row: a parity break and a live attenuation hole.
+With it, a node-scoped grant genuinely widens or narrows a LIVE credential — observable through
+ordinary dispatch, with no re-authentication, because authority is a per-request question and
+never cached into a session.
+
+**The owner key is synthesized, never stored.** A context with no token (`tokenId`/`grantId`
+`null`) is evaluated against a synthesized root grant (`manifold://`, `["*"]`, allow, subtree),
+so no `revokeGrant` can lock the owner out of their own workspace. Symmetrically,
+`AuthService.grant` refuses any `deny` row that would match the workspace owner at any node
+(`cannot deny the workspace owner`).
+
+**Nothing above the seam moved.** `AuthContext.allows(cap, containerId)` keeps its signature and
+all 27 call sites; it maps `containerId` to `manifold://container/<id>` and asks the evaluator.
+An ABSENT `containerId` means the credential's own anchor — the root for an unscoped token,
+`manifold://container/<containerScope>` for a scoped one — not the root unconditionally, because
+`auth.ts` asks `allows(minter, "tokens:mint")` with no node and a container-scoped agent's row
+lives at its container: a root walk would refuse the delegated mint that
+`packages/testkit/e2e/auth.test.ts` proves. The plugin engine's declared-capability intersection
+(ADR 0010) sits unchanged on top of the evaluated set — a manifest's `capabilities` is still a
+ceiling on what a plugin's ACTIONS may declare, which is the other side of the intersection
+entirely. `packages/server/src/auth.ts` remains the one tagged evaluator call surface
+(`REGISTRY.md` floor registry).
+
+**No protocol bump.** `PROTOCOL_VERSION` stays 18 and all three compatibility sets are untouched:
+no session, machine or instance frame changed shape. The grant vocabulary reaches clients solely
+through the live action roster and `GET /api/protocol`'s `actions` block, both discovered at
+runtime rather than negotiated, so a client that never learned the new doors behaves identically.
 
 **Principal origin (ADR 0014, shipped in v18).** `Principal.origin` says WHICH INSTANCE a
 principal belongs to, as one normalized absolute `http(s)` base URL
@@ -716,6 +771,51 @@ principal gets the share's full caps this wave; narrowing per remote principal i
 question (ADR 0011). Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
 declared by this plugin and emitted by the floor on `manifold://plugin/core.access`, which is
 `machine_online`'s split: a socket coming up is nobody's commit point.
+
+A share's caps become a GRANT ROW on the shared node at mint (ADR 0011 §Tokens become grant
+references): `{ principal: { kind: "instance", origin }, node: "manifold://container/<id>",
+caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Ticket
+attenuation is then grant subsetting by construction — a ticket is an ordinary token minted with
+the share's caps at the share's node, so it can never exceed the row its share stands on.
+`revokeShare` DELETES that row in the same transaction that marks the share revoked (and nulls
+`grant_id`; the share stays listable and auditable), so a revoked share confers nothing even
+before its tickets are severed. A grant presents no credential, so absence of the row IS its
+revocation — `revoked_at` exists on tokens and shares only because a bearer secret already
+handed over has to keep being refused. This is the field ADR 0011 left inert until wave 3:
+`principal.kind === "instance"` has a real value now.
+
+**Grant administration (`core.access`, ADR 0011).** The rows themselves, through the plugin the
+ADR named. No new capability — `*` and `tokens:mint` already answer "who may hand authority
+out", and a `grants:manage` would be a second answer to one question.
+
+| Action                    | Caps | Scope     | Args → Result                                                                       |
+| ------------------------- | ---- | --------- | ----------------------------------------------------------------------------------- |
+| `core.access.grant`       | `*`  | workspace | `{ principal, node, caps, effect, reach }` → `Grant` (the whole row, `id` included) |
+| `core.access.revokeGrant` | `*`  | workspace | `{ grantId }` → `{ revoked: 0 \| 1 }` — **`cleanup: true`**                         |
+| `core.access.listGrants`  | `*`  | workspace | `{ node?, principalId? }` → `{ grants: Grant[] }`                                   |
+
+All three are ROOT-ONLY, which is stricter than `mint`, and the reason is `deny`. Minting
+attenuates monotonically — a minter hands out a subset of what it holds — but a deny row takes
+authority away from somebody else, and by precedence rule 1 a deny at a container beats an allow
+at the root. A container-scoped `tokens:mint` holder could otherwise deny the owner inside the
+owner's own container. ADR 0011 defines attenuation for minting and says nothing about
+attenuating a denial, so the unwritten rule is read narrowly until the operator rules; grading
+these `tokens:mint` later widens the door without moving it, since no argument, result or
+refusal changes shape. The mechanism closes the same hole independently
+(`cannot deny the workspace owner`), because a door and a mechanism disagreeing about who may
+write authority is invariant 14 failing.
+
+`scope: "workspace"` is FORCED, exactly as it is for the two guest doors: the argument is a
+`manifold://` node URI that may be the root itself, and a container-scoped token is scoped to a
+local container id the root is not inside. `revokeGrant` is `cleanup: true` for `revoke`'s
+reason — a grant that should not exist is the administrative analogue of a leaked token, and an
+administrative toggle must never be what keeps it alive; `0` is a success, meaning the row was
+already gone. It refuses a TOKEN-REFERENCED row (`a token's grant is revoked by revoking the
+token`): a credential's own row is that credential, and deleting it out from under a live token
+would leave a bearer whose authority came from nowhere. `listGrants` is `core.access`'s first
+read door and converts nothing: a grant row had no other door onto it, so this is the only way
+to see what decides every other answer. The floor records `grant_created` and `grant_revoked` in
+the `events` table, `token_minted`'s precedent — audit rows, not manifest-declared event kinds.
 
 **The audit trail (`core.events`).** The server has recorded events since the first migration —
 `principal_joined`, `principal_left`, `terminal_opened`/`renamed`/`bound`/`exited`,

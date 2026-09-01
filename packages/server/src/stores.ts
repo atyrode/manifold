@@ -14,12 +14,14 @@ import {
 import {
   CapSchema,
   ContainerSchema,
+  GrantSchema,
   IndexEntrySchema,
   PrincipalSchema,
   TileLayoutSchema,
   validateTileLayout,
   type Cap,
   type Container,
+  type Grant,
   type IndexEntry,
   type Principal,
   type TileLayout,
@@ -105,6 +107,7 @@ interface ShareRow {
   minted_by: string;
   created_at: number;
   revoked_at: number | null;
+  grant_id: string | null;
   tickets: number;
 }
 
@@ -132,6 +135,20 @@ interface TokenRow {
   container_id: string | null;
   created_at: number;
   revoked_at: number | null;
+  grant_id: string | null;
+}
+
+interface GrantRow {
+  id: string;
+  principal_kind: string;
+  principal_id: string | null;
+  node: string;
+  caps: string;
+  effect: string;
+  reach: string;
+  created_by: string;
+  created_at: number;
+  bound: number;
 }
 
 interface DocRow {
@@ -185,7 +202,15 @@ interface ExistsRow {
   found: number;
 }
 
-/** Durable token metadata. The raw bearer secret deliberately has no field here. */
+/**
+ * Durable token metadata. The raw bearer secret deliberately has no field here.
+ *
+ * `grantId` is the token's REFERENCE to the grant row carrying its authority (ADR 0011: "a
+ * token's caps array is a set of synthesized root grants"). `caps` and `containerId` stay
+ * beside it, and that is not duplication: they are what the minter CHOSE, which the mint
+ * ladder keeps checking, while the grant row is where the evaluator reads authority from.
+ * A token with no caps to express (an enrolled machine's) references nothing.
+ */
 export interface TokenRecord {
   id: string;
   hash: string;
@@ -195,6 +220,22 @@ export interface TokenRecord {
   containerId: string | null;
   createdAt: number;
   revokedAt: number | null;
+  grantId: string | null;
+}
+
+/**
+ * A stored grant, plus the one fact the protocol row cannot carry: whether some TOKEN
+ * references it.
+ *
+ * That flag is the whole attenuation rule of the evaluator. A token-referenced row is the
+ * synthesized authority of ONE credential and applies only to the credential that holds it —
+ * otherwise a principal's narrow token would inherit its own broad token's row, which is both
+ * a parity break against the flat model and a live attenuation hole. An UNREFERENCED row is
+ * administered authority: it applies to every credential of the principal or class it names,
+ * which is what makes a grant door's allow widen and its deny bite.
+ */
+export interface GrantRecord extends Grant {
+  readonly tokenBound: boolean;
 }
 
 /** Latest canonical Yjs document loaded into a room. */
@@ -228,10 +269,15 @@ export interface MachineAuthRecord extends MachineRecord {
 }
 
 /**
- * A grant this instance HANDS OUT: one container, one capability set, one guest origin.
+ * A SHARE this instance hands out: one container, one capability set, one guest origin.
  * Like `TokenRecord`, the raw secret deliberately has no field here — only its hash — and
  * `tickets` is the count of guest identities minted under it, computed by the read rather
  * than kept as a denormalized counter that could drift from the rows it claims to count.
+ *
+ * `grantId` references the grant row this share's caps became at mint (ADR 0011: "a share is
+ * a token minted against a subtree grant at the shared node"). The row names the guest
+ * INSTANCE, not any one of its principals, which is why a ticket needs no grant of its own to
+ * inherit the share's authority — its principal carries the origin the row names.
  */
 export interface ShareRecord {
   id: string;
@@ -242,6 +288,7 @@ export interface ShareRecord {
   mintedBy: string;
   createdAt: number;
   revokedAt: number | null;
+  grantId: string | null;
   tickets: number;
 }
 
@@ -329,6 +376,7 @@ function toToken(row: TokenRow): TokenRecord {
     containerId: row.container_id,
     createdAt: row.created_at,
     revokedAt: row.revoked_at,
+    grantId: row.grant_id,
   };
 }
 
@@ -361,9 +409,47 @@ function toShare(row: ShareRow): ShareRecord {
     mintedBy: row.minted_by,
     createdAt: row.created_at,
     revokedAt: row.revoked_at,
+    grantId: row.grant_id,
     tickets: row.tickets,
   };
 }
+
+/**
+ * The three-column principal — kind, plus an id whose meaning the kind selects — read back as
+ * the discriminated union the protocol defines. A class row carries no id at all, and a bad
+ * combination is a THROW rather than a silent narrowing: an authority row this reader could not
+ * classify would otherwise be dropped from a walk, which is a denial nobody wrote.
+ */
+function toGrant(row: GrantRow): GrantRecord {
+  const principal =
+    row.principal_kind === "instance"
+      ? { kind: "instance", origin: row.principal_id }
+      : row.principal_kind === "principal"
+        ? { kind: "principal", id: row.principal_id }
+        : { kind: row.principal_kind };
+  return {
+    ...GrantSchema.parse({
+      id: row.id,
+      principal,
+      node: row.node,
+      caps: JSON.parse(row.caps),
+      effect: row.effect,
+      reach: row.reach,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    }),
+    tokenBound: row.bound === 1,
+  };
+}
+
+/**
+ * `bound` is the token reference seen from the grant's side, and it is an EXISTS rather than a
+ * join so a row can never be duplicated by the credentials that hold it.
+ */
+const GRANT_SELECT = `SELECT g.id, g.principal_kind, g.principal_id, g.node, g.caps, g.effect,
+          g.reach, g.created_by, g.created_at,
+          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound
+   FROM grants g`;
 
 function toDial(row: DialRow): DialRecord {
   return {
@@ -379,7 +465,7 @@ function toDial(row: DialRow): DialRecord {
 }
 
 const SHARE_SELECT = `SELECT s.id, s.hash, s.container_id, s.caps, s.origin, s.minted_by,
-          s.created_at, s.revoked_at,
+          s.created_at, s.revoked_at, s.grant_id,
           (SELECT COUNT(*) FROM share_tickets t WHERE t.share_id = s.id) AS tickets
    FROM shares s`;
 
@@ -973,11 +1059,22 @@ export class ServerStore {
     this.db
       .query<
         void,
-        [string, string, string, string | null, string, string | null, number, number | null]
+        [
+          string,
+          string,
+          string,
+          string | null,
+          string,
+          string | null,
+          number,
+          number | null,
+          string | null,
+        ]
       >(
         `INSERT INTO tokens(
-           id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
+           grant_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -988,13 +1085,15 @@ export class ServerStore {
         record.containerId,
         record.createdAt,
         record.revokedAt,
+        record.grantId,
       );
   }
 
   getTokenByHash(hash: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
+                grant_id
          FROM tokens WHERE hash = ?`,
       )
       .get(hash);
@@ -1004,7 +1103,8 @@ export class ServerStore {
   getToken(id: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
-        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at
+        `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
+                grant_id
          FROM tokens WHERE id = ?`,
       )
       .get(id);
@@ -1049,6 +1149,120 @@ export class ServerStore {
   }
 
   /*
+    GRANTS — authority as rows (ADR 0011). Nothing here is hashed and nothing is a secret: a
+    grant is bookkeeping ABOUT authority, so the discipline that governs the tokens table
+    ("the raw bearer secret deliberately has no field here") has nothing to say about it. What
+    governs this table instead is the shape of the one query the evaluator runs on every
+    authority question, which is why every read below goes through `GRANT_SELECT`.
+  */
+
+  /** Writes one row. The caller owns the transaction, because a grant rarely lands alone. */
+  createGrant(grant: Grant): void {
+    GrantSchema.parse(grant);
+    const principalId =
+      grant.principal.kind === "principal"
+        ? grant.principal.id
+        : grant.principal.kind === "instance"
+          ? grant.principal.origin
+          : null;
+    this.db
+      .query<void, [string, string, string | null, string, string, string, string, string, number]>(
+        `INSERT INTO grants(
+           id, principal_kind, principal_id, node, caps, effect, reach, created_by, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        grant.id,
+        grant.principal.kind,
+        principalId,
+        grant.node,
+        JSON.stringify(grant.caps),
+        grant.effect,
+        grant.reach,
+        grant.createdBy,
+        grant.createdAt,
+      );
+  }
+
+  getGrant(id: string): GrantRecord | null {
+    const row = this.db.query<GrantRow, [string]>(`${GRANT_SELECT} WHERE g.id = ?`).get(id);
+    return row === null ? null : toGrant(row);
+  }
+
+  /**
+   * Removes a row, and with it the authority it carried — immediately and completely.
+   *
+   * A DELETE rather than a `revoked_at` tombstone, and the asymmetry with tokens and shares is
+   * deliberate. Those two are BEARER SECRETS: a secret already handed over cannot be taken
+   * back, so the row has to survive to keep refusing what still presents it. A grant presents
+   * nothing. There is no holder to refuse, so the absence of the row IS the revocation, and a
+   * tombstone would only add a second state the evaluator has to remember to skip.
+   *
+   * A share that referenced this row loses its reference rather than its own existence: the
+   * share row stays exactly as revocable, listable and auditable as it was.
+   */
+  deleteGrant(id: string): boolean {
+    return this.transaction(() => {
+      this.db.query<void, [string]>("UPDATE shares SET grant_id = NULL WHERE grant_id = ?").run(id);
+      return this.db.query<void, [string]>("DELETE FROM grants WHERE id = ?").run(id).changes > 0;
+    });
+  }
+
+  /**
+   * Every row, or the rows one node or one principal answers for. A read, and the filters narrow
+   * it for an administrator's convenience rather than for secrecy — there is no secret here.
+   */
+  listGrants(
+    filter: { node?: string | undefined; principalId?: string | undefined } = {},
+  ): GrantRecord[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (filter.node !== undefined) {
+      clauses.push("g.node = ?");
+      params.push(filter.node);
+    }
+    if (filter.principalId !== undefined) {
+      clauses.push("g.principal_kind = 'principal' AND g.principal_id = ?");
+      params.push(filter.principalId);
+    }
+    const where =
+      clauses.length === 0 ? "" : ` WHERE ${clauses.map((one) => `(${one})`).join(" AND ")}`;
+    return this.db
+      .query<GrantRow, string[]>(`${GRANT_SELECT}${where} ORDER BY g.created_at, g.id`)
+      .all(...params)
+      .map(toGrant);
+  }
+
+  /**
+   * THE EVALUATOR'S ONE QUERY: every row on a containment path that could answer for this
+   * principal, by id or by class. Called on every authority question, so the narrowing happens
+   * in SQL rather than in the walk — a workspace where every token has a root grant would
+   * otherwise hand the evaluator the whole table on every request.
+   *
+   * A principal with no `origin` belongs to this instance, and `principal_id = NULL` matches
+   * nothing in SQL, so instance rows sit out a local principal's walk without a branch here.
+   */
+  grantsFor(principal: Principal, path: readonly string[]): GrantRecord[] {
+    if (path.length === 0) return [];
+    const placeholders = path.map(() => "?").join(", ");
+    return this.db
+      .query<GrantRow, (string | null)[]>(
+        `${GRANT_SELECT}
+         WHERE g.node IN (${placeholders})
+           AND ( (g.principal_kind = 'principal' AND g.principal_id = ?)
+              OR g.principal_kind = ?
+              OR (g.principal_kind = 'instance' AND g.principal_id = ?) )`,
+      )
+      .all(
+        ...path,
+        principal.id,
+        principal.kind === "human" ? "any-human" : "any-agent",
+        principal.origin ?? null,
+      )
+      .map(toGrant);
+  }
+
+  /*
     SHARES — what this instance hands out. Every read below counts its own tickets with a
     correlated subquery rather than keeping a column, because a stale counter beside the
     rows it counts is the kind of lie that only shows up in an audit.
@@ -1056,10 +1270,13 @@ export class ServerStore {
 
   createShare(record: Omit<ShareRecord, "tickets">): void {
     this.db
-      .query<void, [string, string, string, string, string, string, number, number | null]>(
+      .query<
+        void,
+        [string, string, string, string, string, string, number, number | null, string | null]
+      >(
         `INSERT INTO shares(
-           id, hash, container_id, caps, origin, minted_by, created_at, revoked_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           id, hash, container_id, caps, origin, minted_by, created_at, revoked_at, grant_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -1070,6 +1287,7 @@ export class ServerStore {
         record.mintedBy,
         record.createdAt,
         record.revokedAt,
+        record.grantId,
       );
   }
 

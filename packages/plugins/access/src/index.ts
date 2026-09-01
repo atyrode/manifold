@@ -1,12 +1,17 @@
 import { defineAction } from "@manifold/plugin";
 import {
   BootstrapPrincipalRequestSchema,
+  CreateGrantRequestSchema,
   DialSchema,
   DialShareRequestSchema,
   DialTicketSchema,
+  GrantSchema,
+  GrantsSchema,
+  ListGrantsRequestSchema,
   MintShareRequestSchema,
   MintTokenRequestSchema,
   OpenDialRequestSchema,
+  RevokeGrantRequestSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
   RevokeShareRequestSchema,
@@ -35,11 +40,12 @@ import { z } from "zod";
  * authority; it does not cost the ability to administer, and the owner can always turn it
  * back on. `essential` is reserved for plugins the workspace cannot draw itself without.
  *
- * ADR 0011 will redesign what happens BENEATH this door — flat caps plus a container scope become
- * grants on the node tree, and a token becomes a reference to a grant. That is why the door
- * is worth having now: the vocabulary a caller sees (`core.access.mint` with a cap set
- * and an optional scope) is exactly the vocabulary the waterfall keeps, so the evaluator
- * swap happens under an interface that already published its shape.
+ * ADR 0011 LANDED beneath this door. Flat caps plus a container scope are grant rows on the node
+ * tree now, and a token references the grant it was minted from. The vocabulary a caller sees —
+ * `core.access.mint` with a cap set and an optional scope — did not move, which is the whole
+ * point of having published the door before the evaluator changed: the swap happened under an
+ * interface that had already promised its shape. What the ADR added ABOVE the door is the grant
+ * administration trio below, which it named as this plugin's work and left otherwise unspecified.
  *
  * Contributes no UI this wave. Administration screens are a later plugin; the door is what
  * makes them possible, and it is reachable identically by a human, a remote client and an
@@ -57,24 +63,29 @@ import { z } from "zod";
  * DELETED in the same commit as the UI that discharges it; a marker outliving its deferral
  * is a lie the roster tells every principal who reads it.
  *
- * Declares NO read action, because there is no access read to move: nothing today publishes
- * principals or tokens except `GET /api/introspect`, which is the engine's own root-only
- * introspection door over rooms, terminals, machines and principals together. Inventing
- * `core.access.list` would be inventing a read, not converting one.
+ * Declared no read action until ADR 0011, because there was no access read to move: nothing
+ * published principals or tokens except `GET /api/introspect`, the engine's own root-only
+ * introspection door. `listGrants` is not a conversion of that — a grant row has no other door
+ * onto it in the tree, so the only way to see what decides every other answer is the one this
+ * plugin publishes.
  */
 export const accessManifest: PluginManifest = {
   id: "core.access",
-  version: "1.1.0",
+  version: "1.2.0",
   title: "Access",
   description:
-    "Creates principals, mints delegated tokens, shares nodes with other instances, and revokes them — admin UI: deferred, door-only; share UI: deferred, door-only",
+    "Creates principals, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, and revokes them — admin UI: deferred, door-only; share UI: deferred, door-only; grant UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
     one of these doors is root-only. The share doors add no capability — a share IS a token
     bound to a node (A5), so the cap that already means "hands authority out" is the one they
     declare, and `containers:read`/`containers:write` are what accepting and using a foreign
-    node costs on the guest side.
+    node costs on the guest side. The grant doors add none either, and the ceiling is
+    UNCHANGED by ADR 0011 for a reason worth stating: a manifest bounds what a plugin's actions
+    may DECLARE, and the waterfall changed the other side of the intersection — what the CALLER
+    is evaluated to hold. A ceiling that had to grow because authority became node-relative
+    would have meant the two were never orthogonal.
   */
   capabilities: ["*", "tokens:mint", "containers:read", "containers:write"],
   contributes: {
@@ -258,5 +269,90 @@ export const accessActions = [
       per remote principal is a grant question, and grants are ADR 0011.
     */
     result: DialTicketSchema,
+  }),
+
+  /*
+    THE GRANT DOORS (ADR 0011). Authority administration, which the ADR names as this plugin's
+    (§Non-goals: "Grant administration is a later plugin — `core.access`") and specifies nothing
+    else about. Everything below is therefore a derivation, and each derivation is written down
+    rather than assumed.
+
+    ROOT-ONLY (`*`), which is stricter than `mint`. A grant is not a token: `mint` may only hand
+    out a subset of the minter's own authority, and that subset shrinks monotonically down a
+    delegation chain. A DENY row does the opposite — it takes authority away from somebody else,
+    and by the waterfall's deeper-beats-shallower rule a deny at a container beats an allow at
+    the root. A `tokens:mint` holder scoped to one container could therefore write "deny
+    scenes:write for the owner at manifold://container/<its own>" and lock the owner out of a
+    container the owner owns. ADR 0011 defines attenuation for MINTING and says nothing about
+    attenuating a denial, so the conservative reading of an unwritten rule is the narrow one:
+    root writes grants until the operator rules otherwise. The mechanism closes the same hole a
+    second time — `AuthService.grant` refuses any deny row matching the workspace owner at any
+    node — because a door and a mechanism disagreeing about who may do this is exactly the
+    failure mode invariant 14 is about. Grading these `tokens:mint` later widens the door
+    without moving it: no argument, result or refusal changes shape.
+
+    `scope: "workspace"` is FORCED, not chosen, and it is `dialShare`/`openDial`'s reasoning
+    verbatim: the argument is a `manifold://` node URI that may be the workspace root itself, and
+    a container-scoped token is scoped to a local container id that the root is not inside.
+    Admitting a scoped caller would be admitting it to something its scope cannot describe. The
+    scope rung answers before the caps rung, so a scoped caller learns nothing about what it
+    lacks.
+
+    NO NEW CAPABILITY, for the reason the share doors give: `*` and `tokens:mint` already answer
+    "who may hand authority out", and a `grants:manage` would be a second answer to one question.
+  */
+  defineAction({
+    name: "grant",
+    title: "Grant or deny capabilities at a node",
+    caps: ["*"],
+    input: CreateGrantRequestSchema,
+    /*
+      The whole ROW, not an id: a grant is data (ADR 0011 §The grant row), and the caller needs
+      the `id` to revoke it, the `createdAt` the precedence rule breaks ties by, and the
+      `createdBy` that makes it auditable. Publishing less would force a `listGrants` round trip
+      to learn what you just wrote.
+    */
+    result: GrantSchema,
+  }),
+  defineAction({
+    /*
+      CLEANUP (D12), and the reason is `revoke`'s exactly: a grant that should not exist is the
+      administrative analogue of a leaked token — somebody holds authority they should not — and
+      an administrator's toggle must never be what keeps it alive. The carve-out is narrow here
+      by construction: the door is root-only, so the only principal who can reach it while
+      `core.access` is off is the one who could turn it back on anyway.
+    */
+    cleanup: true,
+    name: "revokeGrant",
+    title: "Revoke a grant",
+    caps: ["*"],
+    input: RevokeGrantRequestSchema,
+    /*
+      `RevokeResult`, the same count `revoke` and `revokeShare` publish, meaning the same thing:
+      how many rows actually died. `0` is a success — asking twice about a grant already gone is
+      what a careful administrator does — and inventing a `{ ok: true }` here would be a second
+      shape for one answer.
+    */
+    result: RevokeResultSchema,
+  }),
+  defineAction({
+    name: "listGrants",
+    title: "List grants",
+    caps: ["*"],
+    input: ListGrantsRequestSchema,
+    /*
+      A read, and root-only for the same reason the write is: the answer is the map of who holds
+      what over this workspace, which is the reconnaissance a caller performs before deciding
+      whom to impersonate. The filter narrows by node or by principal because an unfiltered
+      answer over a real workspace is a page nobody reads; it never widens anything, so a
+      filtered call and an unfiltered one differ only in size.
+
+      This is `core.access`'s first read door, and it does not contradict the manifest note that
+      the plugin "declares NO read action": that note recorded that there was no EXISTING read to
+      convert. A grant has no other door onto it at all — no route, no introspection field — so
+      publishing one is converting nothing and inventing the only way to see the rows that decide
+      everything else.
+    */
+    result: GrantsSchema,
   }),
 ];

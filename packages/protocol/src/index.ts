@@ -198,12 +198,36 @@ export {
   type PluginSource,
 } from "./plugin.ts";
 export {
+  MANIFOLD_ROOT_URI,
   MANIFOLD_URI_SCHEME,
   ManifoldRefSchema,
+  containmentPath,
   formatManifoldUri,
   parseManifoldUri,
   type ManifoldRef,
 } from "./uri.ts";
+export {
+  CreateGrantRequestSchema,
+  GRANT_EFFECTS,
+  GRANT_REACHES,
+  GrantEffectSchema,
+  GrantNodeSchema,
+  GrantPrincipalSchema,
+  GrantReachSchema,
+  GrantSchema,
+  GrantsSchema,
+  ListGrantsRequestSchema,
+  MAX_GRANT_NODE_LENGTH,
+  RevokeGrantRequestSchema,
+  type CreateGrantRequest,
+  type Grant,
+  type GrantEffect,
+  type GrantPrincipal,
+  type GrantReach,
+  type Grants,
+  type ListGrantsRequest,
+  type RevokeGrantRequest,
+} from "./grants.ts";
 export {
   CHANNEL_ID_PATTERN,
   CHANNEL_LIMIT_CLOSE_CODE,

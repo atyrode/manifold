@@ -33,6 +33,7 @@ function peerFor(socket: RawSocket): SessionChannel {
     containerScope: null,
     isRoot: true,
     tokenId: null,
+    grantId: null,
   };
   return new SessionChannel("peer", socket, auth, "container", "c1");
 }
@@ -164,6 +165,7 @@ describe("SessionChannel channel scope", () => {
       containerScope: null,
       isRoot: true,
       tokenId: null,
+      grantId: null,
     };
     const retired: string[] = [];
     const peer = new SessionChannel("peer", socket, auth, "container", "c1", false, (closing) => {

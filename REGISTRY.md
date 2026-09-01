@@ -90,7 +90,8 @@ set empties — a file moves into its plugin, or a pillar states the litmus find
         "packages/server/src/db.ts",
         "packages/server/src/stores.ts",
         "packages/server/src/migrate-solo.ts",
-        "packages/server/src/migrate-lexicon.ts"
+        "packages/server/src/migrate-lexicon.ts",
+        "packages/server/src/migrate-grants.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers). Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
@@ -302,6 +303,10 @@ enforcement machinery itself, not a test of somebody else's subject.
     {
       "glob": "packages/server/src/migrate-lexicon.ts",
       "why": "migration 11: the lexicon cut's one-way move — the schema renames plus the document rewrite that retitles every stored tile leaf's old `surface` key to `ref` and every container reference to the `container` kind, SQL and documents in one transaction behind a backup"
+    },
+    {
+      "glob": "packages/server/src/migrate-grants.ts",
+      "why": "a code migration that materializes the authority substrate — persistence. Every token's flat caps become the grant row its token references, and every share's caps become the instance grant on its shared node"
     },
     {
       "glob": "packages/web/src/main.tsx",
@@ -953,7 +958,25 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "grant",
-      "means": "an authority row: principal or class, node, capabilities, effect, reach",
+      "means": "an authority row: principal or class, node, capabilities, effect, reach. The only thing that confers authority — a token references grants, it does not carry any",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "waterfall",
+      "means": "the evaluation of grants down a node's containment path: root to node, deeper beating shallower, principal beating class, deny beating allow at equal specificity. The one answer to \"what may this principal do here\" (effectiveCaps)",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "effect",
+      "means": "which way a grant row points: allow or deny. A denial is a row, never an expression",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "reach",
+      "means": "how far down a grant row applies from the node it names: node (that node alone) or subtree (that node and everything under it)",
       "banned": [],
       "allow": []
     },
