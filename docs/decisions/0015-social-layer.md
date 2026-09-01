@@ -1,8 +1,20 @@
 # 0015 — The social layer: identity, contacts, invitations and chat
 
 Date: 2026-08-31
-Status: **PROPOSED — awaiting operator ratification.** Nothing here is normative until the
-§Ratification asks are answered. No code depends on this file.
+Status: **ACCEPTED — ratified as written by the operator, 2026-09-01.** §Decision (§1–§6) is
+normative from this date. The §Ratification asks are answered by the sections that raise them:
+**R1 yes** (Matrix, XMPP and ActivityPub rejected as the substrate), **R2 yes** — the
+`AXIOMS.md` §Roadmap Social-layer amendment lands in the same commit as this line, which is what
+discharges T1, T2 and T4 — **R3 yes** (no `core.social` seat; the roadmap row's five nouns
+redistribute exactly as §2's table says), **R4 yes** (the contacts ledger as §3 scopes it, the
+three door names and the `tokens:mint` grading included), **R5 = B** (§5's default-deny origin
+accept-list on the host; it is owed by the wave that next touches cross-origin admission, and
+nothing wave 3 shipped is revoked by ratifying it), **R9 yes** (chat, if ever wanted, waits for
+the Notifications wave and is built as §4 describes). **R6, R7 and R8 stay open by this file's own
+construction** — §5 declines keyed instance identity and the cross-origin spotlight consent gate,
+and T3 is flagged rather than resolved — so all three ride the waterfall wave that implements
+`kind: "instance"` grants, exactly as §Revisit when says. Ratification schedules no work: there is
+no `core.social` seat to build, which is the substance of the decision rather than an omission.
 
 ## Context
 

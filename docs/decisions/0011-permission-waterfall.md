@@ -461,45 +461,56 @@ The practical consequence is the one A4 wanted: a guest instance's reach over th
 now a row an owner can READ, alongside every other row, in one `listGrants` answer — not a
 property of a credential nobody can enumerate.
 
-### 8. Decisions left for the operator
+### 8. Settled by the operator, 2026-09-01 (#83)
 
-Recorded here because the wave shipped while the operator was asleep, and a conservative call
-nobody wrote down is indistinguishable from an oversight.
+The wave shipped while the operator was asleep and made several deliberately conservative calls
+where this file was silent. They were collected as answerable questions in #83 and answered on
+2026-09-01; that issue is closed and this is the settled record. Every answer below either keeps
+what shipped or confirms it, so nothing in the tree changed to write this section.
 
-1. **Should the grant doors be `tokens:mint` rather than root-only?** They ship root-only because
-   this file defines no attenuation for `deny` rows (§2). Deciding a deny-attenuation rule — the
-   obvious candidate being "a deny may only name capabilities the writer holds at that node, and
-   may not name a principal whose effective set at that node exceeds the writer's" — would let
-   them be graded down without touching a schema, an argument or a refusal.
-2. **Should `listGrants` be readable below root?** It is root-only for symmetry with the write
-   doors, not because reading is dangerous in the same way. The answer is the map of who holds
-   what over this workspace, which is reconnaissance; the counter-argument is that a delegate
-   cannot currently see the authority it holds.
-3. **`revokeGrant` is `cleanup: true`, so it outlives a disable.** Removing an ALLOW row while
-   `core.access` is off is unambiguously the D12 case. Removing a DENY row while it is off
-   RESTORES authority, which is administration rather than tidying. The carve-out is narrow today
-   because the door is root-only — the only principal who can reach it could re-enable the plugin
-   anyway — but if item 1 grades the doors down, this needs re-deciding with it.
-4. **The epoch counter is in-process — and it is not the first thing that would break.** Two
-   server processes against one database would each cache authority the other invalidates, and
-   casbin's `Watcher` (§1) is the shape of that answer. But the honest framing is that grant
-   caching JOINS a queue rather than starting one: `AuthContext` already froze a credential's
-   caps and scope per authentication before this wave, and the revocation fence
-   (`AuthService.onRevoked`, which closes live sockets) has always been a set of in-process
-   listeners. A second process would miss a REVOCATION, which is strictly worse than missing a
-   widened allow. So the item to decide is not "make the epoch distributed" but "what
-   cross-process invalidation does this workspace want", with revocation as its first customer
-   and grants as its second. Single-process is the shipped topology and this wave did not move
-   that line.
-5. **`reach: "node"` is expressible and unreachable through `allows()`.** Element- and tile-level
-   rows evaluate correctly in `effectiveCaps`, but the seam's only node argument is a container,
-   so nothing above it can ask an element-grade question yet. That is a door question, not an
-   evaluator question, and it stays open deliberately: inventing a call site to justify the
-   feature would be the tail wagging the dog.
-6. **No UI, still — and the deferral says so where a principal can see it.** `core.access`'s
-   manifest description now ends `grant UI: deferred, door-only`, beside the two markers already
-   there, which is the in-product form AXIOMS.md §Change control requires: a deferral only a
-   reader of the tree can discover is indistinguishable from a bug.
+**The stance: stay conservative until identity lands.** `core.access.grant`, `revokeGrant` and
+`listGrants` **remain root-only** (`caps: ["*"]`, `scope: "workspace"`), and the deny-attenuation
+rule is **deferred to the identity milestone** (#58, and the posture ratified in
+[`0019-identity-posture.md`](0019-identity-posture.md)). The reason is the one the candidate rule
+exposes: "a deny may only name capabilities the writer holds at that node, and may not name a
+principal whose effective set there exceeds the writer's" is built out of two identity predicates —
+_the writer_, and _a principal whose effective set exceeds the writer's_ — so the rule cannot be
+stated more tightly than the identity model allows, and grading a door down on a rule that loose is
+how escalation by denial arrives. Reading grants stays root-only with the writes for the same
+reason rather than a separate one: the answer is the map of who holds what over this workspace, and
+the delegate that cannot see its own authority is a cost accepted until there is an identity to
+scope the read to. **Revisit trigger: ADR 0019's NOW items landing** — session expiry, the
+principal/device list with revoke, and bootstrap audit — at which point the doors, the rule and the
+`listGrants` shape are decided together in one change.
+
+**`revokeGrant` keeps `cleanup: true`.** Removing an allow row while `core.access` is off is the
+D12 case; removing a deny row restores authority, which is administration. The carve-out is
+defensible only because the door is root-only — the one principal who can reach it could re-enable
+the plugin anyway — so it is settled for exactly as long as the paragraph above holds, and it is
+re-decided in the same change that ever grades the doors down.
+
+**Confirmed as shipped, lower stakes.** Migration 13 keeps its pre-migration `backup: true`,
+because a mistake in materializing authority does not look like corrupt data — it looks like a
+workspace that refuses every request. `revokeGrant` stays a hard DELETE with no tombstone: a grant
+presents nothing, so absence of the row IS the revocation, and the audit lives in the
+`grant_created` / `grant_revoked` trail. `revokeGrant` keeps refusing a token-referenced row, so
+"revoke a credential" has one door (invariant 14). `MAX_GRANT_ID_LENGTH` stays 160 rather than
+narrowing the derivation. **No grant UI: door-only is the answer for now**, with the deferral
+published in `core.access`'s manifest description (`grant UI: deferred, door-only`) where a
+principal can read it, as AXIOMS.md §Change control requires. And the class-denial reversal is
+acknowledged and its shipped split confirmed: the write refuses only a **principal-specific** deny
+naming the owner, and the evaluator drops deny rows for the owner **subject** — so the one sentence
+class principals exist for ("any human may read but not write") survives owner protection.
+
+**Open, and not gated on identity.** Three items were not answered on 2026-09-01 and stay open
+with what shipped: **cross-process invalidation** (single-process is the shipped topology; the
+question is what invalidation this workspace wants, with revocation as its first customer and
+grants as its second, since a second process would miss a REVOCATION before it missed a widened
+allow); **mint-time grant awareness** (`mintToken`'s ladder is still flat caps and container scope,
+so administered rows widen at evaluation and not at mint); and **element-grade `allows()` call
+sites** (`reach: "node"` and element/tile rows evaluate correctly and are unreachable through the
+seam, whose only node argument is a container — inventing a call site to justify the feature would
+be the tail wagging the dog). Each belongs to the wave that first needs it.
 
 ## Alternatives rejected
 
