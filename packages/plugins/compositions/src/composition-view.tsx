@@ -4,7 +4,6 @@ import {
   elementPayload,
   placementItemFor,
   type MachineSummary,
-  type Container,
   type PlacementItem,
   type TileLayout,
   type Tile,
@@ -354,14 +353,21 @@ export function CompositionView({
     [containerNameFor],
   );
   /**
-   * WHOSE renderer draws an embedded container: its discipline decides, and the index is the
-   * only party that knows it. `canvas` for an id the index has not answered yet, because that
-   * is what a leaf's container ref always is — the algebra merges compositions rather than
-   * nesting them, so a composition never becomes a leaf of another one.
+   * WHOSE renderer draws an embedded container: its discipline decides, and the index is
+   * the only party that knows it.
+   *
+   * An id the index has not answered yet resolves to NOTHING rather than to `canvas`
+   * (#110). The discipline roster is open, so guessing is no longer a harmless shortcut
+   * between the only two possibilities — it is the silent downgrade #86's ratification
+   * forbade, and it would paint a stranger's container with a canvas renderer that cannot
+   * read it. The empty string is a layout key nothing can register (a discipline id must
+   * match {@link DISCIPLINE_ID_PATTERN}), so `ContainerRenderer` answers with the
+   * engine-owned placeholder in its `unknown` state, which is the honest reading of "the
+   * index has not told me yet".
    */
   const disciplineFor = useCallback(
-    (embeddedContainerId: string): Container["discipline"] =>
-      containers.find((candidate) => candidate.id === embeddedContainerId)?.discipline ?? "canvas",
+    (embeddedContainerId: string): string =>
+      containers.find((candidate) => candidate.id === embeddedContainerId)?.discipline ?? "",
     [containers],
   );
 
@@ -949,8 +955,9 @@ export function CompositionView({
                 PROJECTED, not imported: the leaf holds a container belonging to whichever
                 plugin renders that container's discipline, and this renderer may not name it
                 (A4 — resolve the reference, open a pipe, project it). The index answers which
-                discipline; an id the index has not answered yet reads as a canvas, which is
-                what the algebra refuses to put here anyway if it is wrong.
+                discipline; an id it has not answered yet, or one whose discipline nothing in
+                this build declares, reads as the engine's named placeholder rather than as a
+                guess (#110).
               */}
               <ContainerRenderer
                 key={ref.containerId}
