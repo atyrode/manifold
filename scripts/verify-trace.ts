@@ -22,7 +22,7 @@
  * Self-contained: spawns its own server on an ephemeral port with its own data dir, reads the
  * roster it is about to exercise from that server, and cleans up. No browser, no bundle.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
@@ -36,14 +36,12 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { EventsListResponseSchema, type EventRow } from "../packages/plugins/events/src/index.ts";
 import { TRACE_ROW_TYPE } from "../packages/server/src/stores.ts";
+import { checkInto, ownerKeyOf, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const failures: string[] = [];
 
-function check(name: string, ok: boolean, detail: string): void {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-  if (!ok) failures.push(`${name}: ${detail}`);
-}
+const check = checkInto(failures);
 
 const list = (values: readonly string[]): string => values.slice().sort().join(", ");
 
@@ -251,25 +249,6 @@ async function consumeServerLog(): Promise<void> {
   }
 }
 
-async function until(condition: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    if (await condition()) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(100);
-  }
-}
-
-async function stopServer(): Promise<void> {
-  if (server.exitCode === null) server.kill("SIGTERM");
-  const stopped = await Promise.race([
-    server.exited.then(() => true),
-    Bun.sleep(5_000).then(() => false),
-  ]);
-  if (!stopped && server.exitCode === null) server.kill("SIGKILL");
-  await server.exited;
-}
-
 /**
  * READ VERBS, so the report can say how many of the doors it exercised were mutating ones.
  *
@@ -284,16 +263,20 @@ try {
   void consumeServerLog().catch(() => {
     // The stream ends when the server does; a torn read is not a gate result.
   });
-  await until(() => origin !== "", "the server's ready line");
-  await until(async () => {
-    try {
-      return (await fetch(`${origin}/healthz`)).ok;
-    } catch {
-      return false;
-    }
-  }, "the server's healthz");
+  await until(() => origin !== "", 30_000, "the server's ready line");
+  await until(
+    async () => {
+      try {
+        return (await fetch(`${origin}/healthz`)).ok;
+      } catch {
+        return false;
+      }
+    },
+    30_000,
+    "the server's healthz",
+  );
 
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const dispatch = async (name: string, args: unknown, token = ownerKey): Promise<unknown> =>
     await (
       await fetch(`${origin}/api/actions/${encodeURIComponent(name)}`, {
@@ -431,6 +414,7 @@ try {
   const leaked = afterUnknown.filter((row) => row.door === unknownName);
   await until(
     () => actionLog.some((line) => line.name === unknownName),
+    30_000,
     "the unknown action's log line",
   );
   const logged = actionLog.find((line) => line.name === unknownName);
@@ -465,8 +449,7 @@ try {
 } catch (error) {
   check("trace gate", false, error instanceof Error ? error.message : String(error));
 } finally {
-  await stopServer();
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
 }
 
 console.log(

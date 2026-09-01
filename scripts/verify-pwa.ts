@@ -31,7 +31,8 @@ import {
   PROTOCOL_VERSION,
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-pwa-");
@@ -80,10 +81,6 @@ function assert(what: string, ok: boolean, detail = ""): void {
   }
   failures.push(detail === "" ? what : `${what} — ${detail}`);
   console.log(`  FAIL ${what}${detail === "" ? "" : ` — ${detail}`}`);
-}
-
-async function ownerKeyOf(dataDir: string): Promise<string> {
-  return (await Bun.file(join(dataDir, "owner.key")).text()).trim();
 }
 
 async function createContainer(origin: string, ownerKey: string, name: string): Promise<string> {
@@ -395,12 +392,9 @@ try {
   }
 } finally {
   await browser?.close();
-  serverA.kill();
-  serverB.kill();
+  await Promise.all([teardownServer(serverA, dataDirA), teardownServer(serverB, dataDirB)]);
   cleanupDist();
   rmSync(join(serveDir, ".."), { recursive: true, force: true });
-  rmSync(dataDirA, { recursive: true, force: true });
-  rmSync(dataDirB, { recursive: true, force: true });
 }
 
 console.log(

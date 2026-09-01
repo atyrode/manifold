@@ -20,7 +20,8 @@ import {
   type TerminalSummary,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, until } from "./gate-lib.ts";
 
 const originInput = process.argv[2] ?? process.env["MANIFOLD_ORIGIN"] ?? "";
 if (originInput === "") {
@@ -31,8 +32,7 @@ const wsOrigin = origin.replace(/^http/, "ws");
 // Optional: another vhost on the same host/proxy that a manifold deploy must
 // not take down. Deployment-specific, so never defaulted.
 const peerOrigin = process.env["MANIFOLD_PEER_ORIGIN"] ?? "";
-const ownerKey =
-  process.env["MANIFOLD_OWNER_KEY"] ?? (await Bun.file("data/owner.key").text()).trim();
+const ownerKey = process.env["MANIFOLD_OWNER_KEY"] ?? (await ownerKeyOf("data"));
 if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error("owner key missing or malformed");
 
 const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };

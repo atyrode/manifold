@@ -1,27 +1,11 @@
 /**
- * Minimal Chrome DevTools Protocol driver shared by the verification gates
- * (verify-public.ts, verify-convergence.ts). System chromium, no extra dependency.
+ * Minimal Chrome DevTools Protocol driver, shared by every verify-*.ts gate that drives a
+ * real browser and by bench-sync.ts. System chromium, no extra dependency.
+ *
+ * Timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is the driver
+ * and nothing else.
  */
-
-export const sleep = (ms: number): Promise<void> => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-};
-
-/** Polls an async predicate until it returns true, or throws after ms. */
-export async function until(
-  probe: () => Promise<boolean> | boolean,
-  ms: number,
-  what: string,
-): Promise<void> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await probe()) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await sleep(150);
-  }
-}
+import { sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
   id?: number;

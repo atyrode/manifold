@@ -15,12 +15,13 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-sel-");
@@ -58,7 +59,7 @@ try {
     20_000,
     "local server healthz",
   );
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
   const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
@@ -235,9 +236,8 @@ try {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
   await browser?.close();
-  server.kill();
+  await teardownServer(server, dataDir);
   cleanupDist();
-  rmSync(dataDir, { recursive: true, force: true });
 }
 
 console.log(
