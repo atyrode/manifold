@@ -1521,6 +1521,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "core.debug's F10 inspector: the chip that follows the pointer, the card a press pins, and the row vocabulary both are built from. One family, because the two are one reading at two levels of detail"
     },
     {
+      "family": "door-form",
+      "owner": "packages/plugins/debug/src/door-form.css",
+      "why": "the generated door-invocation form a pinned inspector card opens (#128): the popover layer's width, the generated fields' rhythm (element-scoped on purpose — rjsf's emitted class vocabulary is engine internals no sheet may anchor on, docs/decisions/2026-09-01-rjsf-door-forms.md), the dispatch control and the outcome/refusal rows. Its own sheet beside the module so the skin loads with the lazy chunk it dresses"
+    },
+    {
       "family": "mf-icon",
       "owner": "packages/plugin/src/ui/styles.css",
       "why": "the glyph vocabulary, `icons.tsx`"
