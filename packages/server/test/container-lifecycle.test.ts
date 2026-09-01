@@ -32,7 +32,7 @@ import { loadConfig } from "../src/config.ts";
 import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
-import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
+import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -187,7 +187,7 @@ function lifecycleFixture(): LifecycleFixture {
     rooms,
     broker,
     runtime,
-    assemblyElementTraits(() => plugins.roster()),
+    assemblyPlacementVocabulary(() => plugins.roster()),
     assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);

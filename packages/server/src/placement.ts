@@ -4,7 +4,9 @@ import {
   elementString,
   itemTraitsFor,
   resolvePlacement,
+  rosterDisciplines,
   type ContainerDiscipline,
+  type DisciplineDeclaration,
   type PlaceRequest,
   type PlaceResponse,
   type PlacementDenial,
@@ -24,28 +26,46 @@ import type { Room, RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 
 /**
- * The contributed half of the placement vocabulary, as the executor asks for it: element
- * type → the traits its manifest declared (ADR 0013 §12).
+ * THE CONTRIBUTED HALF of the placement vocabulary, as the executor asks for it: the
+ * element traits and the DISCIPLINE declarations a manifest carries (ADR 0013 §12, #110).
+ * Both halves are one object because they are one question — what did the roster declare
+ * about the kinds in play — and because they are derived from the same array on the same
+ * cache line.
  *
  * The roster arrives as a THUNK because the two objects are mutually dependent — the
  * executor resolves legality against the assembly, and an action handler in the assembly
  * drives the executor — and because enablement is hot: a re-assembly replaces the roster,
  * and a table captured once would answer for a vocabulary that no longer exists. The
- * derived table is cached on roster IDENTITY, which is stable per assembly, so a placement
- * costs one map lookup and a re-assembly costs one rebuild.
+ * derived tables are cached on roster IDENTITY, which is stable per assembly, so a
+ * placement costs two map lookups and a re-assembly costs one rebuild.
  */
-export function assemblyElementTraits(
+export interface AssemblyPlacementVocabulary {
+  itemTraits(kind: string): PlacementTraits | null;
+  discipline(id: string): DisciplineDeclaration | null;
+}
+
+export function assemblyPlacementVocabulary(
   roster: () => PluginRoster,
-): (kind: string) => PlacementTraits | null {
+): AssemblyPlacementVocabulary {
   let assembled: PluginRoster | null = null;
   let traits: ReadonlyMap<string, PlacementTraits> = new Map();
-  return (kind) => {
+  let disciplines: ReadonlyMap<string, DisciplineDeclaration> = new Map();
+  const refresh = (): void => {
     const current = roster();
-    if (current !== assembled) {
-      assembled = current;
-      traits = rosterElementTraits(current);
-    }
-    return traits.get(kind) ?? null;
+    if (current === assembled) return;
+    assembled = current;
+    traits = rosterElementTraits(current);
+    disciplines = rosterDisciplines(current);
+  };
+  return {
+    itemTraits: (kind) => {
+      refresh();
+      return traits.get(kind) ?? null;
+    },
+    discipline: (id) => {
+      refresh();
+      return disciplines.get(id) ?? null;
+    },
   };
 }
 
@@ -181,12 +201,13 @@ export class PlaceExecutor {
     private readonly terminals: TerminalPlacementPort,
     private readonly runtime: RuntimeDeps,
     /**
-     * The assembly's contributed element traits (`assemblyElementTraits`). It is a
-     * constructor dependency rather than a lookup the executor builds, because the algebra's
-     * vocabulary is half floor and half plugin: the rules engine is this module's business,
-     * the kinds are the roster's.
+     * The assembly's contributed placement vocabulary
+     * ({@link assemblyPlacementVocabulary}) — element traits and the discipline roster. It
+     * is a constructor dependency rather than a lookup the executor builds, because the
+     * algebra's vocabulary is half floor and half plugin: the rules engine is this module's
+     * business, the kinds are the roster's.
      */
-    private readonly elementTraits: (kind: string) => PlacementTraits | null,
+    private readonly vocabulary: AssemblyPlacementVocabulary,
     /**
      * The assembly's label vocabulary (`assemblyItemNouns`), for the same reason and on the
      * same terms: two rules below turn on a declared TRAIT and then have to name the species
@@ -271,7 +292,8 @@ export class PlaceExecutor {
         return { kind: element.type, containerId: null };
       },
       soloOccupant: (containerId) => this.soloOccupant(containerId)?.item ?? null,
-      itemTraits: (kind) => this.elementTraits(kind),
+      discipline: (id) => this.vocabulary.discipline(id),
+      itemTraits: (kind) => this.vocabulary.itemTraits(kind),
     };
   }
 

@@ -14,6 +14,7 @@ import {
 import {
   BindingOverridesSchema,
   CapSchema,
+  ContainerDisciplineSchema,
   ContainerSchema,
   GrantSchema,
   IndexEntrySchema,
@@ -569,9 +570,17 @@ function toMachine(row: MachineRow): MachineRecord {
 }
 
 /**
- * A container row is the whole object: `discipline` selects which of its two disciplines the
- * container wears. There is no lifecycle flag beside it any more — nothing dissolves under
- * anybody, so there is nothing to mark as provisional and no return address to remember.
+ * A container row is the whole object: `discipline` names which renderer it asks for.
+ * There is no lifecycle flag beside it any more — nothing dissolves under anybody, so
+ * there is nothing to mark as provisional and no return address to remember.
+ *
+ * The discipline is validated for SHAPE and never for membership (#110). It used to be
+ * checked against the two-value enum, which meant a row written by a plugin this build no
+ * longer composes could not be READ AT ALL — the index throwing rather than the container
+ * rendering a placeholder, which is exactly the crash the open roster ruled out. Whether a
+ * discipline is one anybody here can render is the live roster's question, answered by a
+ * named refusal or an engine-owned placeholder at the surfaces that ask it; the store's
+ * question is only whether the row is a legible discipline id.
  */
 function toContainer(row: {
   readonly id: string;
@@ -579,10 +588,11 @@ function toContainer(row: {
   readonly created_at: number;
   readonly discipline: string;
 }): Container {
-  if (row.discipline !== "canvas" && row.discipline !== "composition") {
+  const discipline = ContainerDisciplineSchema.safeParse(row.discipline);
+  if (!discipline.success) {
     throw new Error(`invalid persisted container discipline: ${row.discipline}`);
   }
-  return { id: row.id, name: row.name, createdAt: row.created_at, discipline: row.discipline };
+  return { id: row.id, name: row.name, createdAt: row.created_at, discipline: discipline.data };
 }
 
 function toTerminal(row: TerminalDbRow): StoredTerminal {

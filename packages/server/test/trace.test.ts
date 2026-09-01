@@ -16,7 +16,7 @@ import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
-import { PlaceExecutor, assemblyElementTraits, assemblyItemNouns } from "../src/placement.ts";
+import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
@@ -236,7 +236,7 @@ function probeHost(base: Fixture): PluginHost {
       base.rooms,
       base.broker,
       base.runtime,
-      assemblyElementTraits(() => []),
+      assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
     ),
     { isOnline: () => false },

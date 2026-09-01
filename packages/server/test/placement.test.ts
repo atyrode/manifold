@@ -15,6 +15,7 @@ import {
   placementItemFor,
   placementRefusalRule,
   resolvePlacement,
+  rosterDisciplines,
   type ActionOutcome,
   type Container,
   type ContainerDiscipline,
@@ -45,7 +46,7 @@ import { HttpApp } from "../src/http.ts";
 import { silentLogger } from "../src/log.ts";
 import { MachineGateway } from "../src/machine-ws.ts";
 import {
-  assemblyElementTraits,
+  assemblyPlacementVocabulary,
   assemblyItemNouns,
   PlaceExecutor,
   type PlaceOutcome,
@@ -206,7 +207,7 @@ function placementFixture(): PlacementFixture {
     rooms,
     broker,
     runtime,
-    assemblyElementTraits(() => plugins.roster()),
+    assemblyPlacementVocabulary(() => plugins.roster()),
     assemblyItemNouns(() => plugins.roster()),
   );
   broker.setPlacement(placement);
@@ -398,6 +399,7 @@ function lookupFor(fixture: PlacementFixture): PlacementLookup {
         containerId: solo.kind === "terminal" ? containerId : solo.containerId,
       };
     },
+    discipline: (id) => rosterDisciplines(fixture.plugins.roster()).get(id) ?? null,
     itemTraits: (kind) => rosterElementTraits(fixture.plugins.roster()).get(kind) ?? null,
   };
 }
@@ -491,8 +493,17 @@ describe("the placement algebra, executed", () => {
       than listing them is what keeps this matrix exhaustive as plugins take ownership of
       kinds — a contributed kind with no ref above fails here.
      */
-    const contributed = [...rosterElementTraits(placementFixture().plugins.roster()).keys()];
-    const itemKinds = [...Object.keys(ITEM_KINDS), ...contributed];
+    const composed = placementFixture().plugins.roster();
+    const contributed = [...rosterElementTraits(composed).keys()];
+    /*
+      The DISCIPLINES the assembly composed, on the same footing as the element kinds it
+      composed (#110): `canvas` and `composition` left `ITEM_KINDS` when the roster opened,
+      so the matrix reads them off the roster exactly as it reads `text` and `draw`. That is
+      the assertion, not an accommodation — if `core.canvas` stopped declaring `canvas`, the
+      eight golden rows below would go missing and this test would say so.
+    */
+    const disciplines = [...rosterDisciplines(composed).keys()];
+    const itemKinds = [...Object.keys(ITEM_KINDS), ...disciplines, ...contributed];
     const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
     const answers: string[] = [];
     for (const itemKind of itemKinds) {
@@ -1909,7 +1920,15 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
       fixture.rooms,
       fixture.broker,
       fixture.runtime,
-      (kind) => (kind === "text" ? traits : null),
+      {
+        itemTraits: (kind) => (kind === "text" ? traits : null),
+        /*
+          The disciplines still come from the real assembly: this fixture overrides the
+          ELEMENT half of the vocabulary to drive one rule, and a container that could not
+          be resolved would refuse before that rule was ever reached (#110).
+        */
+        discipline: (id) => rosterDisciplines(fixture.plugins.roster()).get(id) ?? null,
+      },
       (kind) => (kind === "text" ? noun : "item"),
     );
   }

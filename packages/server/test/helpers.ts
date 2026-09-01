@@ -18,7 +18,7 @@ import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import {
   PlaceExecutor,
-  assemblyElementTraits,
+  assemblyPlacementVocabulary,
   assemblyItemNouns,
   type PlaceOutcome,
 } from "../src/placement.ts";
@@ -346,7 +346,7 @@ export function testPluginHost(
     rooms,
     broker,
     runtime,
-    assemblyElementTraits(() => host?.roster() ?? []),
+    assemblyPlacementVocabulary(() => host?.roster() ?? []),
     assemblyItemNouns(() => host?.roster() ?? []),
   );
   const events =

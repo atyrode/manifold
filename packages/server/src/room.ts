@@ -227,9 +227,19 @@ export class Room {
       this.scheduleSnapshot();
     });
 
-    // A composition renders its layout tree, so the tree must exist before the first
-    // channel joins. The discipline lives on the container row, and seeding is
-    // idempotent, so a container loaded from a snapshot keeps its stored tree.
+    /*
+      A composition renders its layout tree, so the tree must exist before the first channel
+      joins. The discipline lives on the container row, and seeding is idempotent, so a
+      container loaded from a snapshot keeps its stored tree.
+
+      THE ONE PLACE THE DISCIPLINE ROSTER DID NOT REACH (#110). "Does this container hold a
+      tile tree?" is declared data now — it is `destinations: ["tile"]` on the discipline —
+      but a `Room` is built from a store row and a clock, with no reach into the assembly,
+      and the roster is bound after the room manager exists. So a THIRD-PARTY tile-tree
+      discipline gets no seeded root here, and behaves like a canvas until this asks the
+      declaration instead of the literal. The two shipped disciplines are unaffected; the
+      remainder is named rather than left to be discovered.
+    */
     if (store.getContainer(containerId)?.discipline === "composition") {
       initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
     }
