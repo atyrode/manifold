@@ -198,6 +198,7 @@ being looked at, and `?instance=` with no value points it home again. Credential
 instance, so pointing a device elsewhere never disturbs the grant it holds here — each instance
 still needs its own `#key=` bootstrap the first time. The API doors accept cross-origin requests
 for exactly this reason; a bearer token remains the only authority on them.
+
 ## Upgrade
 
 ```sh

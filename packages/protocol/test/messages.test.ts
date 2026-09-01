@@ -820,14 +820,15 @@ describe("json schema export", () => {
       stranger has to guess at — and the assertion is the whole key set rather than a spot check
       because that is the only form a MISSING section fails.
 
-      The three wires (session, machine, instance) plus the four vocabularies: placement's
-      algebra, the plugin contract, the event plane and the authority model. `actions` and
-      `plugins` are absent on purpose — they are the LIVE assembly, handed in by a server that
-      composed one.
+      The three wires (session, machine, instance) plus the five vocabularies: placement's
+      algebra, the plugin contract, the event plane, the authority model and the credential
+      vocabulary (ADR 0019). `actions` and `plugins` are absent on purpose — they are the LIVE
+      assembly, handed in by a server that composed one.
     */
     expect(Object.keys(buildProtocolJsonSchema()).sort()).toEqual([
       "eventContract",
       "grantContract",
+      "identity",
       "instance",
       "machine",
       "placement",
