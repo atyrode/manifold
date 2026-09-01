@@ -50,6 +50,7 @@ export {
 } from "./elements.ts";
 export {
   ContainerDisciplineSchema,
+  MAX_PANEL_SECTIONS,
   MAX_TILE_CHILDREN,
   ROOT_TILE_ID,
   TileDirSchema,
@@ -122,6 +123,7 @@ export {
 } from "./placement.ts";
 export {
   CURSOR_MIN_INTERVAL_MS,
+  CURSOR_TTL_MS,
   GESTURE_KINDS,
   GESTURE_MIN_INTERVAL_MS,
   GESTURE_TTL_MS,

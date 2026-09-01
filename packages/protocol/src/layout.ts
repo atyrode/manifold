@@ -16,6 +16,13 @@ export const ROOT_TILE_ID = "root";
 export const MAX_TILE_CHILDREN = 16;
 
 /**
+ * Bound on one panel leaf's stored section arrangement. A sidebar holds one slot per
+ * declared section, so this bounds the payload by the number of sections a roster can
+ * contribute rather than by anything a client chooses.
+ */
+export const MAX_PANEL_SECTIONS = 64;
+
+/**
  * Container discipline: the one field that separates the two renderers of the same
  * object. Every placement rule that mentions a canvas or a composition resolves through
  * this, and each value IS the last segment of the plugin that renders it (`core.canvas`,
@@ -76,6 +83,20 @@ export const TileSchema = z.strictObject({
   ratios: z.array(z.number().positive()).max(MAX_TILE_CHILDREN),
   children: z.array(z.string().min(1)).max(MAX_TILE_CHILDREN),
   ref: TileRefSchema.nullable(),
+  /**
+   * How the principal ARRANGED the sections this panel leaf hosts: their ids, in the
+   * order this reader wants them. Absent means the manifests decide — manifest order is
+   * the default and stays the default, so an untouched workspace has no row here at all.
+   *
+   * It sits on the TILE rather than beside the tree because a workspace tree is already
+   * the one per-principal arrangement document (`core.space.setLayout` is its only door),
+   * and "which panel" is the leaf itself. A second per-principal store for the same
+   * question would be a second door onto one concept (AGENTS.md invariant 14).
+   *
+   * Legal on a leaf holding a PANEL ref and nowhere else, and free of duplicates —
+   * neither is expressible here, so {@link validateTileLayout} enforces both.
+   */
+  sections: z.array(z.string().min(1).max(128)).max(MAX_PANEL_SECTIONS).optional(),
 });
 export type Tile = z.infer<typeof TileSchema>;
 
@@ -86,8 +107,9 @@ export type TileLayout = z.infer<typeof TileLayoutSchema>;
 /**
  * Structural validation the schema cannot express: the root exists, every child
  * reference resolves, nothing is reachable twice (no cycles, no shared subtrees),
- * ratios stay parallel to children, refs sit on leaves only, and a container
- * never tiles itself. Pass `containerId` to enforce the self-reference rule.
+ * ratios stay parallel to children, refs sit on leaves only, a section arrangement
+ * sits on a panel leaf and names each section once, and a container never tiles
+ * itself. Pass `containerId` to enforce the self-reference rule.
  *
  * Unreachable tiles are tolerated: they are inert garbage that the next
  * structural write prunes, and rejecting them would strand a live room.
@@ -105,6 +127,16 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
       if (tile.children.length === 0) return false;
       if (tile.children.length !== tile.ratios.length) return false;
       if (tile.ref !== null) return false;
+    }
+    /*
+      A section arrangement describes what a PANEL hosts, so it is meaningless on a split
+      and on a leaf showing a container, a terminal or nothing — and a duplicated id would
+      make "the order" ambiguous, which is the one thing an order may not be. Refused
+      rather than normalized: a writer that cannot say what it wants gets told so.
+    */
+    if (tile.sections !== undefined) {
+      if (tile.ref === null || tile.ref.kind !== "panel") return false;
+      if (new Set(tile.sections).size !== tile.sections.length) return false;
     }
     if (
       containerId !== undefined &&

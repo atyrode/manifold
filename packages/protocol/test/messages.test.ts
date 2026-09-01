@@ -80,11 +80,15 @@ describe("session channel schemas", () => {
       ch: "c2",
     });
     expect(ClientMessageSchema.safeParse({ type: "leave" }).success).toBe(false);
-    // Liveness belongs to the socket: a channel id on ping/pong would be a lie.
-    expect(ClientMessageSchema.parse({ type: "ping" })).toEqual({ type: "ping" });
-    expect(ServerMessageSchema.parse({ type: "pong" })).toEqual({ type: "pong" });
-    expect(ClientMessageSchema.safeParse({ type: "ping", ch: "c1" }).success).toBe(false);
-    expect(ServerMessageSchema.safeParse({ type: "pong", ch: "c1" }).success).toBe(false);
+    // Liveness belongs to the socket: a channel id on ping/pong would be a lie. The SERVER
+    // asks and the client answers, the orientation every dialed pipe uses.
+    expect(ServerMessageSchema.parse({ type: "ping" })).toEqual({ type: "ping" });
+    expect(ClientMessageSchema.parse({ type: "pong" })).toEqual({ type: "pong" });
+    expect(ServerMessageSchema.safeParse({ type: "ping", ch: "c1" }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({ type: "pong", ch: "c1" }).success).toBe(false);
+    // The retired direction is gone, not merely unused: a v18 client's keepalive is refused.
+    expect(ClientMessageSchema.safeParse({ type: "ping" }).success).toBe(false);
+    expect(ServerMessageSchema.safeParse({ type: "pong" }).success).toBe(false);
   });
 
   test("channel_closed carries the close vocabulary a socket close used to carry", () => {
@@ -682,6 +686,39 @@ describe("tile layout schemas", () => {
     ).toBe(true);
   });
 
+  test("a section arrangement is legal on a panel leaf, once per section", () => {
+    const panel = (id: string, sections?: readonly string[]): Tile => ({
+      ...leaf(id, { kind: "panel", panelId: "core.shell.sidebar" }),
+      ...(sections === undefined ? {} : { sections: [...sections] }),
+    });
+
+    expect(TileSchema.parse(panel("t1", ["a", "b"]))).toEqual(panel("t1", ["a", "b"]));
+    expect(validateTileLayout({ root: panel(ROOT_TILE_ID, ["index", "machines"]) })).toBe(true);
+    // Absent is the DEFAULT — manifest order — and stays a legal tree.
+    expect(validateTileLayout({ root: panel(ROOT_TILE_ID) })).toBe(true);
+    // An empty arrangement is the same state as none, and the writer omits the field; a
+    // client that stores it anyway is describing manifest order, which is legal and inert.
+    expect(validateTileLayout({ root: panel(ROOT_TILE_ID, []) })).toBe(true);
+
+    // A duplicated id makes "the order" ambiguous, which is the one thing an order may not be.
+    expect(validateTileLayout({ root: panel(ROOT_TILE_ID, ["index", "index"]) })).toBe(false);
+    // Sections describe what a PANEL hosts: meaningless on a terminal leaf, a vacant leaf
+    // or a split, and refused there rather than silently carried.
+    expect(
+      validateTileLayout({ root: { ...leaf(ROOT_TILE_ID, terminal("s1")), sections: ["index"] } }),
+    ).toBe(false);
+    expect(validateTileLayout({ root: { ...leaf(ROOT_TILE_ID), sections: ["index"] } })).toBe(
+      false,
+    );
+    expect(
+      validateTileLayout({
+        root: { ...split(ROOT_TILE_ID, ["t1", "t2"]), sections: ["index"] },
+        t1: leaf("t1"),
+        t2: leaf("t2"),
+      }),
+    ).toBe(false);
+  });
+
   test("validate rejects every structural break", () => {
     expect(validateTileLayout({ t1: leaf("t1") })).toBe(false);
     expect(validateTileLayout({ root: split(ROOT_TILE_ID, ["t1", "gone"]), t1: leaf("t1") })).toBe(
@@ -744,21 +781,21 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v18 ADDS to the acceptance set, because the agent wire still did not move", () => {
+  test("v19 ADDS to the acceptance set, because the agent wire still did not move", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
       `hello.sessions` became `hello.terminals` — so a v15 agent could neither be understood
       nor understand this server, and the upgrade was a coordinated fleet restart.
 
-      v16 -> v17 (the event plane) and v17 -> v18 (cross-instance sharing) are both the other
-      case. v18 adds an OPTIONAL `Principal.origin` to the session wire and a whole new WIRE
-      beside the machine one (the instance channel), and it renamed the shared liveness
-      constants; `AgentMessage` and `ServerToAgentMessage` gained, lost and renamed nothing,
-      an agent never sees a principal, and a renamed constant changes two identifiers and zero
-      bytes. So the invariant's first clause applies verbatim — a bump that leaves the agent
-      wire identical ADDS — and a v16 agent keeps its terminals across this deploy instead of
-      being locked out by a version check for a change it cannot see.
+      v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing) and v18 -> v19 (the
+      session channel's liveness pair, reoriented so the SERVER pings and the browser
+      answers) are all the other case. Every one of them leaves `AgentMessage` and
+      `ServerToAgentMessage` gaining, losing and renaming nothing; an agent never sees a
+      principal, a session frame or a browser's throttled timers. So the invariant's first
+      clause applies verbatim — a bump that leaves the agent wire identical ADDS — and a v16
+      agent keeps its terminals across this deploy instead of being locked out by a version
+      check for a change it cannot see.
 
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a
@@ -767,6 +804,7 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
     expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 3,
       PROTOCOL_VERSION - 2,
       PROTOCOL_VERSION - 1,
       PROTOCOL_VERSION,
