@@ -159,7 +159,7 @@ across a rotation.
 3. Deal with the tokens already minted. They are not derived from the owner key, so
    they keep working until they expire or are revoked. If you are rotating because
    the old key is believed leaked, that is not good enough — revoke them explicitly
-   through the workspace's Access section (`core.access.revoke`), which severs their
+   through the workspace's Sessions section (`core.access.revoke`), which severs their
    live sockets immediately.
 
 4. Retire the old backups, or treat them as live secrets. Every archive from
