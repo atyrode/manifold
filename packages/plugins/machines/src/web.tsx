@@ -1,5 +1,5 @@
 import "./styles.css";
-import { MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
 import type { SectionProps } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
 import { ControlIcon, ItemIcon, Stack } from "@manifold/plugin/ui";
@@ -19,13 +19,6 @@ import { useCallback, type ReactElement } from "react";
  * traffic this wave, and a `data-action` naming nothing would be a lie the gate would catch.
  */
 
-/**
- * The FALLBACK cadence (ADR 0012, wave 2). Machine liveness is a subscription on the fleet's
- * collection node; this is what the section falls back to while there is no session channel
- * to carry one, and a live workspace never pays it.
- */
-const MACHINE_POLL_MS = 5_000;
-
 /** 14px to match the sidebar's row rhythm; the stroke weight is the vocabulary's own. */
 const ROW_ICON_SIZE = 14;
 
@@ -33,7 +26,7 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
   const fetchMachines = useCallback(() => host.client.machines(), [host.client]);
   const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
     fetchMachines,
-    MACHINE_POLL_MS,
+    FALLBACK_POLL_MS,
     {
       key: MACHINES_RESOURCE,
       initial: null,

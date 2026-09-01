@@ -620,6 +620,20 @@ export class SessionGateway {
     return false;
   }
 
+  /**
+   * THE scene-write gate, asked in one place for both frames that carry a scene write.
+   * `doc_update` and `gesture` are the same authorization question — may this principal change
+   * what this container looks like — and they carried the same refusal twice, which is one edit
+   * away from two different answers to one question. Resolves to whether the caller may
+   * PROCEED, exactly as {@link dispatchPolicy} does, and refuses in the vocabulary the client
+   * already handles.
+   */
+  private mayWriteScene(peer: SessionChannel): boolean {
+    if (this.auth.allows(peer.auth, "scenes:write", peer.containerId)) return true;
+    peer.send({ type: "error", code: "forbidden", message: "scenes:write capability required" });
+    return false;
+  }
+
   private dispatch(
     connection: SessionConnection,
     channel: ChannelState,
@@ -647,25 +661,11 @@ export class SessionGateway {
         this.releaseChannel(connection, message.ch);
         return;
       case "doc_update":
-        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
-          peer.send({
-            type: "error",
-            code: "forbidden",
-            message: "scenes:write capability required",
-          });
-          return;
-        }
+        if (!this.mayWriteScene(peer)) return;
         room.applyDocUpdate(peer, message.update);
         return;
       case "gesture":
-        if (!this.auth.allows(peer.auth, "scenes:write", peer.containerId)) {
-          peer.send({
-            type: "error",
-            code: "forbidden",
-            message: "scenes:write capability required",
-          });
-          return;
-        }
+        if (!this.mayWriteScene(peer)) return;
         this.relayGesture(connection, channel, message);
         return;
       case "presence":

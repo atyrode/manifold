@@ -5,13 +5,18 @@ import {
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   formatManifoldUri,
-  reconnectDelayMs,
   type CONNECTION_LEVEL_MESSAGE_TYPES,
   type ClientMessageBody,
   type ManifoldRef,
   type ServerMessage,
   type ServerMessageBody,
 } from "@manifold/protocol";
+import {
+  LivenessWatchdog,
+  MALFORMED_FRAME_CLOSE_CODE,
+  ReconnectBackoff,
+  classifyEnvelope,
+} from "./dial-loop.ts";
 
 /**
  * ONE socket per tab, ever. A room used to be a socket; now a room is a CHANNEL on a
@@ -130,11 +135,16 @@ export interface PooledChannel {
 
 const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
 
-const MALFORMED_FRAME_CLOSE_CODE = 4002;
-const LIVENESS_CLOSE_CODE = 4008;
 const TERMINAL_CLOSE_CODE_MIN = 4400;
 const TERMINAL_CLOSE_CODE_MAX = 4499;
 const PONG_FRAME = JSON.stringify({ type: "pong" });
+
+/**
+ * First-attempt reconnect ceiling for a session socket. Tighter than the instance dial's,
+ * because this is the socket a viewer is watching a workspace through: the cap the caller
+ * chooses is what bounds a long outage, and the base is what makes a blip invisible.
+ */
+const RECONNECT_BASE_MS = 250;
 
 type ClassifiedFrame =
   | { kind: "message"; message: ServerMessage }
@@ -146,7 +156,9 @@ type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "ter
 /**
  * Frame policy (CONTRACTS.md): unknown `type` values are ignored for forward
  * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors — the
- * connection closes (4002) and heals via reconnect → fresh init on every channel.
+ * connection closes (4002) and heals via reconnect → fresh init on every channel. The envelope
+ * half is the dial skeleton's (`./dial-loop.ts`); what a valid server frame IS stays here, in
+ * the schema and in the one hand-written predicate below.
  */
 function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
   const type = Reflect.get(raw, "type");
@@ -169,18 +181,9 @@ function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
 }
 
 function classifyServerFrame(data: unknown): ClassifiedFrame {
-  if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return { kind: "malformed", detail: "invalid JSON" };
-  }
-  if (raw === null || typeof raw !== "object" || typeof Reflect.get(raw, "type") !== "string") {
-    return { kind: "malformed", detail: "missing type discriminator" };
-  }
-  const type = Reflect.get(raw, "type") as string;
-  if (!KNOWN_SERVER_TYPES.has(type)) return { kind: "unknown_type" };
+  const envelope = classifyEnvelope(data, (type) => KNOWN_SERVER_TYPES.has(type));
+  if (envelope.kind !== "envelope") return envelope;
+  const { type, raw } = envelope;
   if (type === "terminal_output" || type === "terminal_snapshot") {
     return isTerminalDataFrame(raw)
       ? { kind: "message", message: raw }
@@ -198,9 +201,12 @@ interface ChannelRecord {
   readonly prefix: string;
   /** Whether the server has this channel: joined on the wire, awaiting or holding init. */
   sent: boolean;
-  /** Rejoin backoff for a channel the server dropped for a healable reason. */
-  attempts: number;
-  cancelRejoin: (() => void) | null;
+  /**
+   * Rejoin backoff for a channel the server dropped for a healable reason — the SAME skeleton
+   * the socket itself reconnects on, per channel, because one dropped room heals while every
+   * other room on the socket keeps streaming.
+   */
+  readonly rejoin: ReconnectBackoff;
 }
 
 /**
@@ -226,9 +232,12 @@ class PooledConnection {
   /** Live subscriptions, keyed by the ONE joined form of their address. */
   private readonly topics = new Map<string, TopicRecord>();
   private nextChannelSeq = 0;
-  private attempts = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private livenessTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly backoff: ReconnectBackoff;
+  private readonly liveness = new LivenessWatchdog({
+    timeoutMs: DIAL_LIVENESS_TIMEOUT_MS,
+    reason: "server silent past deadline",
+    current: () => this.socket,
+  });
   private dead = false;
 
   constructor(
@@ -238,7 +247,17 @@ class PooledConnection {
     private readonly reconnect: boolean,
     private readonly backoffCapMs: number,
     private readonly onDead: (connection: PooledConnection) => void,
-  ) {}
+  ) {
+    this.backoff = new ReconnectBackoff({
+      baseMs: RECONNECT_BASE_MS,
+      capMs: backoffCapMs,
+      // The redial's own preconditions: a torn-down connection never dials again, and a
+      // socket that came back another way (a manual `redial`) has nothing owed to it.
+      dial: () => {
+        if (!this.dead && this.socket === null) this.dial();
+      },
+    });
+  }
 
   /** Registers one room on this socket, joining it as soon as the wire allows. */
   attach(sink: ChannelSink): PooledChannel {
@@ -249,8 +268,14 @@ class PooledConnection {
       sink,
       prefix: `{"ch":"${id}",`,
       sent: false,
-      attempts: 0,
-      cancelRejoin: null,
+      rejoin: new ReconnectBackoff({
+        baseMs: RECONNECT_BASE_MS,
+        capMs: this.backoffCapMs,
+        dial: () => {
+          if (this.dead || this.channels.get(id) !== record) return;
+          if (this.socket?.readyState === 1) this.sendJoin(record);
+        },
+      }),
     };
     this.channels.set(id, record);
     // Caught up before its first join: the roster is workspace state a late channel needs.
@@ -261,8 +286,8 @@ class PooledConnection {
       sink.transportPhase("connecting");
       this.sendJoin(record);
     } else {
-      sink.transportPhase(this.attempts === 0 ? "connecting" : "reconnecting");
-      if (this.socket === null && this.reconnectTimer === null) this.dial();
+      sink.transportPhase(this.backoff.attempts === 0 ? "connecting" : "reconnecting");
+      if (this.socket === null && !this.backoff.pending) this.dial();
     }
     return {
       id,
@@ -361,8 +386,7 @@ class PooledConnection {
   private release(record: ChannelRecord): void {
     if (this.channels.get(record.id) !== record) return;
     this.channels.delete(record.id);
-    record.cancelRejoin?.();
-    record.cancelRejoin = null;
+    record.rejoin.cancel();
     if (this.channels.size === 0) {
       // The last room left: closing the socket IS leaving everything, so a `leave` frame
       // here would be pure ceremony on a connection about to disappear.
@@ -375,11 +399,8 @@ class PooledConnection {
   /** Opens a fresh socket, fencing every callback of the one it replaces. */
   private dial(): void {
     if (this.dead) return;
-    this.clearLiveness();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.liveness.clear();
+    this.backoff.cancel();
 
     // Fence every callback from the prior socket before asking it to close. Native close
     // events may arrive after the replacement has already opened.
@@ -387,7 +408,7 @@ class PooledConnection {
     this.socket = null;
     previousSocket?.close(1000);
 
-    const phase: TransportPhase = this.attempts === 0 ? "connecting" : "reconnecting";
+    const phase: TransportPhase = this.backoff.attempts === 0 ? "connecting" : "reconnecting";
     for (const record of this.channels.values()) {
       record.sent = false;
       record.sink.transportPhase(phase);
@@ -412,14 +433,14 @@ class PooledConnection {
         "subscribe",
         [...this.topics.values()].map((held) => held.ref),
       );
-      this.armLiveness(socket);
+      this.liveness.arm(socket);
     };
 
     socket.onmessage = (event: MessageEvent) => {
       if (this.socket !== socket) return;
       // ANY inbound frame is proof of life, a server ping included — so the deadline is
       // reset here rather than where the pong is written.
-      this.armLiveness(socket);
+      this.liveness.arm(socket);
       const classified = classifyServerFrame(event.data);
       switch (classified.kind) {
         case "message":
@@ -440,7 +461,7 @@ class PooledConnection {
     socket.onclose = (event: CloseEvent) => {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
-      this.clearLiveness();
+      this.liveness.clear();
       for (const record of this.channels.values()) record.sent = false;
 
       // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
@@ -466,16 +487,7 @@ class PooledConnection {
         return;
       }
 
-      const delay = reconnectDelayMs(this.attempts, 250, this.backoffCapMs);
-      this.attempts += 1;
-      const timer = setTimeout(() => {
-        // clearTimeout cannot retract a callback already queued by the event loop. The
-        // identity check fences such stale callbacks after teardown or a manual redial.
-        if (this.reconnectTimer !== timer) return;
-        this.reconnectTimer = null;
-        if (!this.dead && this.socket === null) this.dial();
-      }, delay);
-      this.reconnectTimer = timer;
+      this.backoff.schedule();
       for (const record of this.channels.values()) record.sink.transportPhase("reconnecting");
     };
   }
@@ -505,8 +517,8 @@ class PooledConnection {
     const record = this.channels.get(frame.ch);
     if (record === undefined) return; // a frame for a room this tab already released
     if (frame.type === "init" || frame.type === "resync") {
-      this.attempts = 0;
-      record.attempts = 0;
+      this.backoff.reset();
+      record.rejoin.reset();
     }
     if (frame.type === "channel_closed") {
       this.channelClosed(record, frame.code, frame.reason);
@@ -550,51 +562,14 @@ class PooledConnection {
     record.sent = false;
     if (terminal) {
       this.channels.delete(record.id);
-      record.cancelRejoin?.();
-      record.cancelRejoin = null;
+      record.rejoin.cancel();
       record.sink.channelClosed(code, reason, true);
       if (this.channels.size === 0) this.teardown(1000, null);
       return;
     }
     record.sink.channelClosed(code, reason, false);
-    if (record.cancelRejoin !== null) return;
-    const delay = reconnectDelayMs(record.attempts, 250, this.backoffCapMs);
-    record.attempts += 1;
-    const timer = setTimeout(() => {
-      if (record.cancelRejoin === null) return;
-      record.cancelRejoin = null;
-      if (this.dead || this.channels.get(record.id) !== record) return;
-      if (this.socket?.readyState === 1) this.sendJoin(record);
-    }, delay);
-    record.cancelRejoin = () => {
-      clearTimeout(timer);
-    };
-  }
-
-  /**
-   * Phantom-transport watchdog, the dialing side of the one liveness scheme (CONTRACTS.md):
-   * a healthy link carries server pings every `DIAL_PING_INTERVAL_MS` even when idle, so
-   * silence past the deadline means dead TCP nobody RST rather than a quiet server. Close
-   * locally, which is what puts this connection on its own reconnect path — waiting for the
-   * OS to notice a half-open socket can take the rest of the process's life.
-   */
-  private armLiveness(socket: WebSocket): void {
-    this.clearLiveness();
-    const timer = setTimeout(() => {
-      // clearTimeout cannot retract a callback already queued by the event loop; the
-      // identity check fences a stale one, exactly as the reconnect timer's does.
-      if (this.livenessTimer !== timer) return;
-      this.livenessTimer = null;
-      if (this.socket !== socket) return;
-      socket.close(LIVENESS_CLOSE_CODE, "server silent past deadline");
-    }, DIAL_LIVENESS_TIMEOUT_MS);
-    this.livenessTimer = timer;
-  }
-
-  private clearLiveness(): void {
-    if (this.livenessTimer === null) return;
-    clearTimeout(this.livenessTimer);
-    this.livenessTimer = null;
+    if (record.rejoin.pending) return;
+    record.rejoin.schedule();
   }
 
   /**
@@ -605,11 +580,8 @@ class PooledConnection {
   private teardown(closeCode: number | null, error: Error | null): void {
     if (this.dead) return;
     this.dead = true;
-    this.clearLiveness();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.liveness.clear();
+    this.backoff.cancel();
     const socket = this.socket;
     this.socket = null;
     if (closeCode !== null) socket?.close(closeCode);
@@ -617,7 +589,7 @@ class PooledConnection {
     this.channels.clear();
     this.onDead(this);
     for (const record of orphans) {
-      record.cancelRejoin?.();
+      record.rejoin.cancel();
       record.sink.transportClosed(error);
     }
   }

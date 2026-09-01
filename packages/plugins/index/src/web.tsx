@@ -27,6 +27,7 @@ import {
   usePolledResource,
   ATTENDANCE_RESOURCE,
   CONTAINER_TERMINALS_RESOURCE,
+  FALLBACK_POLL_MS,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
   type ItemDropAssessment,
@@ -68,9 +69,6 @@ import { useHeadlessTree } from "./use-headless-tree.ts";
  * moved. The topics arrive on `host.topics` because a `manifold://plugin/<id>` topic names a
  * plugin, and a plugin may not name another one.
  */
-
-/** The fallback cadence, paid only while there is no session channel to carry an event. */
-const INDEX_POLL_MS = 2_000;
 
 /** Device-local presentation memory. Both keys are listed in the REGISTRY.md register. */
 const TERMINAL_TREE_KEY = "manifold:show-container-terminals";
@@ -211,7 +209,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     value: treeItems,
     setValue: setTreeItems,
     refresh: refreshTree,
-  } = usePolledResource<readonly IndexEntry[] | null>(fetchTree, INDEX_POLL_MS, {
+  } = usePolledResource<readonly IndexEntry[] | null>(fetchTree, FALLBACK_POLL_MS, {
     key: INDEX_RESOURCE,
     initial: null,
     topics: host.topics.index,
@@ -221,14 +219,14 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
     onError: (reason) => report(reason, "Could not load the index"),
   });
-  const { value: terminalsByContainer } = usePolledResource(fetchByContainer, INDEX_POLL_MS, {
+  const { value: terminalsByContainer } = usePolledResource(fetchByContainer, FALLBACK_POLL_MS, {
     key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,
     topics: host.topics.terminals,
     events: client,
     hold: treeOwnsDrag,
   });
-  const { value: presence } = usePolledResource(fetchPresence, INDEX_POLL_MS, {
+  const { value: presence } = usePolledResource(fetchPresence, FALLBACK_POLL_MS, {
     key: ATTENDANCE_RESOURCE,
     initial: NO_PRESENCE,
     topics: host.topics.attendance,
@@ -238,7 +236,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   });
   const { value: terminals, refresh: refreshTerminals } = usePolledResource(
     fetchTerminals,
-    INDEX_POLL_MS,
+    FALLBACK_POLL_MS,
     {
       key: TERMINALS_RESOURCE,
       initial: NO_TERMINALS,

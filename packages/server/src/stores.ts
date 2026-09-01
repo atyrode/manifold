@@ -1925,16 +1925,6 @@ export class ServerStore {
       .all(machineId)
       .map(toTerminal);
   }
-  listRunningTerminals(): StoredTerminal[] {
-    return this.db
-      .query<TerminalDbRow, []>(
-        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name
-         FROM terminals WHERE status = 'running' ORDER BY created_at, id`,
-      )
-      .all()
-      .map(toTerminal);
-  }
 
   deleteTerminal(id: string): boolean {
     return this.db.query<void, [string]>("DELETE FROM terminals WHERE id = ?").run(id).changes > 0;

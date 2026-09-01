@@ -61,6 +61,22 @@ export const ATTENDANCE_RESOURCE = "attendance";
 export const MACHINES_RESOURCE = "core.machines.list";
 
 /**
+ * THE fallback cadence, and the only reason a number like this still exists (ADR 0012, wave 2).
+ *
+ * Every feed names the collection nodes its answer is news about and refreshes on an event;
+ * this is what happens while there is no session channel to carry one — a dropped socket, or
+ * the workspace root of a brand-new workspace, which has no room and therefore nothing to
+ * subscribe through. It is never a rate a live workspace pays.
+ *
+ * ONE default, deliberately, and one place to read it: a per-section constant is a per-section
+ * chance to pick a different number for the same fallback, which is exactly what happened
+ * before the shared feed (the attendance roster ran at 1.5s in the shell and 2s in the index —
+ * two rates for one resource, chosen by nobody). A feed with a genuine reason to differ still
+ * passes its own interval; nothing has one yet.
+ */
+export const FALLBACK_POLL_MS = 2_000;
+
+/**
  * How long a burst of commits is allowed to coalesce into ONE read. Long enough that the
  * five events a multi-step gesture commits (create, place, rename) cost one request; short
  * enough that nobody watching two windows side by side can see the lag — the round trip it
