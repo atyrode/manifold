@@ -83,8 +83,9 @@ are grant references: today's flat capability array is a synthesized root grant 
 a different model. A share is a minted token bound to a subtree grant, portable because it is
 data. The full evaluator design is normative in
 [`docs/decisions/0011-permission-waterfall.md`](docs/decisions/0011-permission-waterfall.md);
-it is designed now and implemented in a later wave, and `packages/server/src/auth.ts` is
-registry-tagged as the one call surface it replaces.
+it **landed 2026-09-01** (wave 4, #77 / PR #78) beneath `packages/server/src/auth.ts`, which the
+registry tags as the one call surface it replaced — one seam, unchanged signature, and the
+evaluator behind it.
 
 **A6 — Every exercise of authority leaves a trace.** Authority that cannot be audited is
 indistinguishable from authority nobody has. So every dispatch at a door — granted, refused, or
@@ -197,6 +198,22 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   reserved room was exactly right: the SDK pool keys connections by (factory, url, token), which
   IS the `(origin, containerId)` keying, so pointing a lens at a second instance needed no
   re-keying and no new client (§The portable lens).
+- **Wave 4 — the permission waterfall** (A5, ADR 0011, #77 / PR #78). Landed: authority is grant
+  ROWS on the node tree — `principal | class`, node by `manifold://` URI, capability set, effect,
+  reach — walked root-to-node with deeper beating shallower, evaluated entirely beneath
+  `AuthService.allows`, whose signature and all 27 call sites are unchanged. `effectiveCaps` is
+  the whole evaluator and `allows` is one question asked of it; verdicts are memoized per
+  `AuthContext` and discarded by a `grantsEpoch` bumped on every grant write, so an administered
+  row widens or narrows a live socket on its next dispatch with no reconnect. `PROTOCOL_VERSION`
+  stayed 18 — this wave moved no wire — and migration 13 materialized every existing token's caps
+  into one subtree allow, so parity with the flat model is exact by construction. `AuthContext`
+  gained exactly one field, `grantId`, which answers what a credential may do and never who
+  presented it. The dependency duty was discharged before a line of evaluator code: `casbin` and
+  `CASL` were installed, read at source and run under this repo's Bun, and **neither was taken**,
+  with the verdict recorded in the ADR. Shares became grant rows in the same act, so
+  `principal.kind === "instance"` is no longer inert (wave 3's one reserved field). Authentication
+  did NOT move and is not in this wave's scope — that is #58, and its posture is
+  [`docs/decisions/0019-identity-posture.md`](docs/decisions/0019-identity-posture.md).
 - **The trace ledger — traceability made constitutional** (A6, ADR 0018, #93). Landed with the
   axiom: the ledger is a row family in the ONE journal (schema 14 widens `events` with `door`,
   `authority`, `targets`, `outcome`, `session`), appended by the dispatch ladder at the choke
@@ -209,9 +226,10 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   (2026-09-01); A6's WORDING is presented for approval with this change**, which is the one
   thing the ADR does not decide (§Change control: axiom text changes by ratification only).
 - **Later waves, each gated on its own dated ADR:**
-  - **Permission waterfall implementation** (ADR 0011): the evaluator, the `grants` table, and
-    the one call-surface swap in `auth.ts`. Its dependency duty (evaluate `casbin` and `CASL`
-    by name before hand-building) is recorded in that ADR.
+  - **Permission waterfall follow-ups** (ADR 0011 §8, settled 2026-09-01, #83): the doors stay
+    root-only and the deny-attenuation rule waits for the identity milestone, because both halves
+    of the candidate rule are identity predicates. Cross-process invalidation, mint-time grant
+    awareness and element-grade call sites stay open there too.
   - **Social layer — there is no `core.social` seat** (ADR 0015, ratified by the operator
     2026-09-01, which is the amendment this bullet carries). Matrix, XMPP and ActivityPub are
     rejected as the SUBSTRATE and not only as foundation, on the evidence in that file: **Matrix

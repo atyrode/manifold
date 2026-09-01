@@ -232,7 +232,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/auth.ts",
-      "why": "identity and authority at the boundary; tagged as the future A5 evaluator's one call surface — what effectiveCaps() replaces"
+      "why": "identity and authority at the boundary; the A5 evaluator's one call surface — what effectiveCaps() replaced when the waterfall landed (ADR 0011, wave 4, #77)"
     },
     {
       "glob": "packages/server/src/db.ts",
@@ -434,9 +434,10 @@ presentation and no renderer names the package.
 [`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md)
 §14: `POST /api/place` is superseded by `core.space.place` rather than left as a permanent
 exception (invariant 14 admits no second door onto "place a thing"), and `core.access` takes the
-token and principal administration verbs now, while the A5 evaluator (ADR 0011, grant rows,
-`effectiveCaps`) remains a later wave — "identity mechanism is floor" never made
-`POST /api/tokens` mechanism.
+token and principal administration verbs now. The A5 evaluator (ADR 0011, grant rows,
+`effectiveCaps`) landed in wave 4 (#77) beneath that same seam — "identity mechanism is floor"
+never made `POST /api/tokens` mechanism, and the evaluator arriving did not change which of the
+two is which.
 
 **The `until` tag is gone, and the registry now says so.** The floor registry once carried an
 `"until": "<plugin>"` field on rows that were floor today and plugin territory tomorrow, and this
@@ -1976,7 +1977,7 @@ Per-axiom round table — which checks would fail first if an axiom stopped hold
 | A2 multiplayer by design                      | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                                               |
 | A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12, R9 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn)                     |
 | A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                                                                                     |
-| A5 waterfall authority                        | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                                                                                      |
+| A5 waterfall authority                        | R8 guards the flat degenerate case; the evaluator LANDED in wave 4 (ADR 0011, #77) and its parity is proven by that wave's own suites rather than by a gate row, so a dedicated row is still owed        |
 | A6 every exercise of authority is traced      | T1, T2, T3, T4, T5 (T2 is the one that holds without a dispatch: a rung that refuses without recording fails in the parser, never in a scenario somebody has to think of)                                |
 | Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                                                                                 |
 | Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                                        |
