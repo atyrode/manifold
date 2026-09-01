@@ -324,11 +324,11 @@ describe("the arrange scope a published ref means", () => {
  */
 describe("the palette's drop", () => {
   test("a dropped split arrives with two seats, so the drop is immediately two places", () => {
-    const next = assertOk(droppedStructure(base(), { kind: "split", dir: "column" }, aimAt("ws-main", "right")));
-    // The container view keeps its own seat; the split is a NEW sibling beside it.
-    const split = Object.values(next).find(
-      (tile) => tile.dir === "column" && tile.id !== "root",
+    const next = assertOk(
+      droppedStructure(base(), { kind: "split", dir: "column" }, aimAt("ws-main", "right")),
     );
+    // The container view keeps its own seat; the split is a NEW sibling beside it.
+    const split = Object.values(next).find((tile) => tile.dir === "column" && tile.id !== "root");
     expect(split).toBeDefined();
     expect(split?.children).toHaveLength(2);
     for (const childId of split?.children ?? []) expect(next[childId]?.ref).toBeNull();
@@ -337,7 +337,9 @@ describe("the palette's drop", () => {
   });
 
   test("a dropped spacer is an inert leaf exactly where the pointer put it", () => {
-    const next = assertOk(droppedStructure(base(), { kind: "spacer" }, aimAt("ws-sidebar", "left")));
+    const next = assertOk(
+      droppedStructure(base(), { kind: "spacer" }, aimAt("ws-sidebar", "left")),
+    );
     const spacerId = next["root"]?.children[0];
     expect(next[spacerId ?? ""]?.ref).toEqual({ kind: "spacer" });
     expect(panelsInOrder(next).filter((id) => id !== null)).toEqual([SIDEBAR, MAIN]);

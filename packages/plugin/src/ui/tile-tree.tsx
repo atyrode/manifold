@@ -393,9 +393,7 @@ function TileSplit({
             <div
               className={`${classes.pane}${mark}`}
               data-tile-id={childId}
-              {...(empty
-                ? { "data-vacant": "true" }
-                : { style: { flexGrow: growFor(index) } })}
+              {...(empty ? { "data-vacant": "true" } : { style: { flexGrow: growFor(index) } })}
             >
               {renderChild(childId)}
             </div>

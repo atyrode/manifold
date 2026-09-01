@@ -118,7 +118,6 @@
   pointer-events: auto;
 }
 
-
 /*
  * A SPACER LEAF: inert first-class arrangeable emptiness (issue #89's Spacer tool). Painted
  * by the floor host directly — a spacer ref carries no plugin to project — so its one rule

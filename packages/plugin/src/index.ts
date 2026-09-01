@@ -103,11 +103,7 @@ export {
   type SectionProjection,
   type SectionRelease,
 } from "./layout.ts";
-export {
-  releasedTileLayout,
-  tradedSeats,
-  type TileRelease,
-} from "./tile-release.ts";
+export { releasedTileLayout, tradedSeats, type TileRelease } from "./tile-release.ts";
 export {
   buildIndexTree,
   projectIndexMove,

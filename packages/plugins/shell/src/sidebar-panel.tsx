@@ -455,8 +455,7 @@ function nudgeAim(
       const node = list[index];
       if (node === undefined || (typeof node === "string" && !paints(node))) continue;
       const path = `${prefix}${String(index)}`;
-      const edge =
-        dir === "column" ? (delta < 0 ? "top" : "bottom") : delta < 0 ? "left" : "right";
+      const edge = dir === "column" ? (delta < 0 ? "top" : "bottom") : delta < 0 ? "left" : "right";
       return { tileId: path, edge, action: "place", depth: path.split(".").length };
     }
     return null;
@@ -1013,9 +1012,12 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
         would be a row that renders nothing and can never be filled.
       */
       holdRail(null);
-      notify("A spacer has nothing to hold open in the sidebar: the rail's rows take the width they are given.", {
-        key: "sidebar-structure-refused",
-      });
+      notify(
+        "A spacer has nothing to hold open in the sidebar: the rail's rows take the width they are given.",
+        {
+          key: "sidebar-structure-refused",
+        },
+      );
       return;
     }
     const open = structureHold(event.currentTarget, structure);

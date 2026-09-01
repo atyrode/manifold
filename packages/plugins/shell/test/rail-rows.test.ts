@@ -293,10 +293,7 @@ describe("railTree", () => {
     // `railRows` names the absorber off the flattened arrangement, so nesting cannot change
     // which row gets the rail's leftover height — only where it is painted.
     expect(
-      tree(
-        [BRAND, INDEX, MACHINES],
-        ["brand", { dir: "row", sections: ["index", "machines"] }],
-      ),
+      tree([BRAND, INDEX, MACHINES], ["brand", { dir: "row", sections: ["index", "machines"] }]),
     ).toBe("n0:brand n1[row n1.0:index* n1.1:machines]");
   });
 

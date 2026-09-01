@@ -137,10 +137,7 @@ export const ITEM_GUARD_NAMES = [
   "no_self_embed",
   "solo_only",
   "tree_only",
-] as const satisfies readonly [
-  ItemGuard,
-  ...ItemGuard[],
-];
+] as const satisfies readonly [ItemGuard, ...ItemGuard[]];
 type MissingItemGuard = Exclude<ItemGuard, (typeof ITEM_GUARD_NAMES)[number]>;
 const itemGuardsComplete: MissingItemGuard extends never ? true : never = true;
 void itemGuardsComplete;

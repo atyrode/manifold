@@ -361,10 +361,10 @@ export function CanvasView({
           return (
             containers.find((candidate) => candidate.id === envelope.containerId)?.name ?? null
           );
-        case "tile":
-        case "element":
         // A palette carry names itself out of the label vocabulary (`ITEM_NOUNS.structure`):
         // a canvas has no better word for a shape that does not exist yet.
+        case "tile":
+        case "element":
         case "structure":
           return null;
         default: {
