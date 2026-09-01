@@ -102,3 +102,34 @@
   color: #ffa8a8;
   font-size: 0.7rem;
 }
+
+/* THE FOLD (#145): history under the living. The header is a QUIET control, deliberately
+   quieter than the identity names above it — the rows it opens are the noise it exists to
+   end, so a header shouting louder than the living would defeat its own purpose. The
+   chevron is drawn as a pseudo-element so the affordance survives with zero markup. */
+.credential-inactive {
+  margin-top: 0.15rem;
+}
+
+.credential-inactive-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.3rem;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.68rem;
+}
+
+.credential-inactive-header::before {
+  content: "›";
+  transition: transform 0.12s ease;
+  transform: none;
+}
+
+.credential-inactive[data-state="open"] .credential-inactive-header::before {
+  transform: rotate(90deg);
+}
+
+.credential-inactive .disclosure__header:hover .credential-inactive-header {
+  color: var(--text-primary-color, #dee2e6);
+}
