@@ -17,7 +17,9 @@ import {
   type PluginStorageAdmin,
   type PluginStoredData,
 } from "@manifold/plugin";
+import { formatManifoldUri, TRACE_AUTHORITY_OPEN, TRACE_AUTHORITY_ROOT } from "@manifold/protocol";
 import type {
+  ActionDenialRule,
   ActionOutcome,
   BootstrapPrincipalRequest,
   Cap,
@@ -41,15 +43,16 @@ import type {
   Share,
   ShareGrant,
   TokenGrant,
+  UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { ServiceError } from "./auth.ts";
 import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
-import type { Logger } from "./log.ts";
+import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, ServerStore } from "./stores.ts";
+import type { MachineRecord, ServerStore, TraceAttribution } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 /**
@@ -387,6 +390,91 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
     },
   },
 ];
+
+/**
+ * THE TRACE LEDGER, as the ladder needs it (axiom A6, ADR 0018). Three derivations and a
+ * bound, module-level because none of them touches host state and all four are the record's
+ * definition rather than the host's behaviour.
+ */
+
+/**
+ * How much of a door's arguments the ledger keeps. Arguments are CALLER-CONTROLLED, so an
+ * unbounded copy of every dispatch's body is a door onto the disk: the bound is what keeps a
+ * ledger row the size of a record rather than the size of a request. Over the bound the row
+ * keeps the shape — how many bytes, and which keys — because "somebody called this door with
+ * something enormous" is the auditable fact, and the bytes themselves were never it.
+ */
+const TRACE_PAYLOAD_MAX_CHARS = 4_096;
+
+/**
+ * The authority the ladder discharged, in one string an auditor can read.
+ *
+ * `root` when the caller's authority is the wildcard, because that IS what was satisfied — a
+ * root caller passes every rung by being root, and recording the door's demand instead would
+ * claim a grant that was never consulted. Otherwise the door's declared caps, all of which the
+ * rung below discharged against the credential's grants, joined so a multi-cap door reads as
+ * one authority rather than as an arbitrary first choice.
+ *
+ * When ADR 0011's evaluator can answer WHICH grant row decided, this becomes that row's id and
+ * the cap list becomes its detail; today `allows` answers a boolean, so the cap name is the
+ * most precise honest answer available (ADR 0018 §6).
+ */
+function traceAuthority(auth: AuthContext, caps: readonly Cap[]): string {
+  if (auth.isRoot) return TRACE_AUTHORITY_ROOT;
+  if (caps.length === 0) return TRACE_AUTHORITY_OPEN;
+  return caps.join("+");
+}
+
+/**
+ * The container an exercise belongs to, decided from what is knowable BEFORE arguments parse:
+ * the token's own scope, then the container the caller named. Both can be wrong in the same
+ * way — a scoped token is confined to the container it names, and a bogus `containerId`
+ * argument is about to be refused — and neither can be a lie about attribution, because the
+ * row records what the caller asked for rather than what the door found.
+ *
+ * NULL is the honest answer for a workspace-grade exercise, and it puts the row where a
+ * workspace-wide read finds it (`core.events.list` with no `containerId`).
+ */
+function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
+  if (auth.containerScope !== null) return auth.containerScope;
+  if (rawArgs === null || typeof rawArgs !== "object") return null;
+  const named: unknown = Reflect.get(rawArgs, "containerId");
+  return typeof named === "string" && named.length > 0 && named.length <= 128 ? named : null;
+}
+
+/**
+ * The arguments as the ledger keeps them: redacted by the one field rule the log already
+ * applies (`redactFields`), then bounded.
+ *
+ * A body that is not an object records as empty rather than as itself. Every door's input is a
+ * `z.strictObject`, so a non-object body is a malformed request the `invalid_args` rung is
+ * about to name — and the ledger's payload column is a map of a door's named arguments, not a
+ * place to keep whatever JSON a stranger posted.
+ */
+function tracePayload(rawArgs: unknown): Readonly<Record<string, unknown>> {
+  if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
+  const redacted = redactFields(rawArgs as Record<string, unknown>);
+  const text = JSON.stringify(redacted);
+  if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
+  return { oversize: text.length, keys: Object.keys(redacted) };
+}
+
+/**
+ * The nodes the door NAMED, which is exactly the set of nodes it addressed emissions to.
+ *
+ * Deriving targets from the staging buffer rather than from a new per-handler declaration is
+ * the whole reason this weave needs no plugin cooperation: a door that changes a node already
+ * has to say which node at its commit point (ADR 0012 §2), so the ledger reads the same
+ * statement instead of asking for a second one. A door that names nothing has no targets, and
+ * that is a true row rather than a gap — its subject is the workspace, or its answer was a
+ * refusal.
+ */
+function traceTargets(staged: readonly { readonly ref: ManifoldRef }[]): readonly string[] {
+  if (staged.length === 0) return [];
+  const uris = new Set<string>();
+  for (const event of staged) uris.add(formatManifoldUri(event.ref));
+  return [...uris];
+}
 
 /**
  * The action door's engine: it owns the live assembly, answers dispatches, and is the
@@ -796,14 +884,25 @@ export class PluginHost {
   }
 
   /**
-   * One dispatch, one log line — whether it succeeded, was denied, or threw. A denial is
-   * an ANSWER, so it logs at info with the rung that refused; only a broken handler or a
-   * result that fails its own schema is an error.
+   * One dispatch, one log line, one ledger row — whether it succeeded, was denied, or threw. A
+   * denial is an ANSWER, so it logs at info with the rung that refused; only a broken handler
+   * or a result that fails its own schema is an error.
+   *
+   * `session` is the socket the dispatch arrived on, and null means it came through the HTTP
+   * action door — a distinction the ledger keeps rather than infers (axiom A6, ADR 0018 §2).
+   * It is a parameter rather than a field on `AuthContext` because a credential is not a
+   * connection: the same token dispatches over HTTP and over a socket, and only the caller
+   * knows which door it walked through.
    */
-  async dispatch(auth: AuthContext, fullName: string, rawArgs: unknown): Promise<ActionOutcome> {
+  async dispatch(
+    auth: AuthContext,
+    fullName: string,
+    rawArgs: unknown,
+    session: string | null = null,
+  ): Promise<ActionOutcome> {
     let outcome: ActionOutcome;
     try {
-      outcome = await this.run(auth, fullName, rawArgs);
+      outcome = await this.run(auth, fullName, rawArgs, session);
     } catch (error) {
       this.logger.error("action", {
         name: fullName,
@@ -821,22 +920,64 @@ export class PluginHost {
     return outcome;
   }
 
-  private async run(auth: AuthContext, fullName: string, rawArgs: unknown): Promise<ActionOutcome> {
+  private async run(
+    auth: AuthContext,
+    fullName: string,
+    rawArgs: unknown,
+    session: string | null,
+  ): Promise<ActionOutcome> {
     const entry = this.assembled.actions.get(fullName);
     if (entry === undefined) {
+      /*
+        THE ONE UNTRACED RUNG, and it is a ruling rather than an oversight (ADR 0018 §4).
+        There is no door here: nothing was registered under this name, no capability was
+        declared, nothing was exercised and there is nothing to attribute. The name is also
+        CALLER-CHOSEN and unbounded, so tracing it would hand every client a writer into the
+        ledger, with a `door` column full of words no roster ever published. It stays
+        observable exactly where every dispatch already is — the structured `action` log line
+        above, at `outcome: "unknown_action"`.
+      */
       return {
         ok: false,
         denial: { rule: "unknown_action", message: `unknown action "${fullName}"` },
       };
     }
+    /*
+      THE ATTRIBUTION, decided once, here — after the door is known and before any rung can
+      answer. Everything in it is a fact about the CALLER and the DOOR, so nothing a handler
+      does can change it, which is what lets the row be written before the handler runs.
+    */
+    const attribution: TraceAttribution = {
+      ts: this.runtime.now(),
+      actor: auth.principal.id,
+      authority: traceAuthority(auth, entry.def.caps),
+      door: fullName,
+      containerId: traceContainer(auth, rawArgs),
+      payload: tracePayload(rawArgs),
+      session,
+    };
+    /*
+      EVERY REFUSAL BELOW THIS LINE GOES THROUGH HERE — one constructor for the traced rungs,
+      which is what makes "a mutating door cannot be added without a trace" a property of this
+      function rather than of a reviewer's attention. A rung that returned its own
+      `{ ok: false }` literal would be an untraced denial, and `verify:trace` counts the
+      literals in this method for exactly that reason.
+
+      The rungs above the handler know their outcome already, so their row is written settled:
+      one INSERT, atomic on its own, durable before the caller is told anything.
+    */
+    const refuse = (
+      rule: Exclude<ActionDenialRule, typeof UNTRACED_DENIAL_RULE>,
+      message: string,
+    ): ActionOutcome => {
+      this.store.appendTrace({ ...attribution, outcome: rule, targets: [] });
+      return { ok: false, denial: { rule, message } };
+    };
     const pluginId = entry.plugin.id;
     if (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true) {
       // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
       // creation and administration, never the ability to remove what already exists.
-      return {
-        ok: false,
-        denial: { rule: "plugin_disabled", message: `plugin "${pluginId}" is disabled` },
-      };
+      return refuse("plugin_disabled", `plugin "${pluginId}" is disabled`);
     }
     /*
       RUNG 3 — SCOPE. A token scoped to one container cannot authorize a WORKSPACE-grade
@@ -855,13 +996,7 @@ export class PluginHost {
     */
     const scope = entry.def.scope ?? "workspace";
     if (auth.containerScope !== null && scope !== "container") {
-      return {
-        ok: false,
-        denial: {
-          rule: "forbidden",
-          message: "scoped tokens cannot invoke workspace actions",
-        },
-      };
+      return refuse("forbidden", "scoped tokens cannot invoke workspace actions");
     }
     for (const cap of entry.def.caps) {
       const held =
@@ -869,17 +1004,14 @@ export class PluginHost {
           ? auth.isRoot
           : this.authService.allows(auth, cap, auth.containerScope ?? undefined);
       if (held) continue;
-      return {
-        ok: false,
-        denial: { rule: "forbidden", message: `${cap} capability required` },
-      };
+      return refuse("forbidden", `${cap} capability required`);
     }
     const parsed = entry.def.input.safeParse(rawArgs);
     if (!parsed.success) {
       const detail = parsed.error.issues
         .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
         .join("; ");
-      return { ok: false, denial: { rule: "invalid_args", message: detail } };
+      return refuse("invalid_args", detail);
     }
     const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
@@ -952,11 +1084,37 @@ export class PluginHost {
         staged.push({ ref, kind, payload: payload ?? {} });
       },
     };
+    /*
+      THE WRITE-AHEAD (ADR 0018 §3). The attribution commits BEFORE the handler is invoked, so
+      by the time a handler can reach the store its own trace is already durable: a committed
+      mutation with no trace is not a race this ladder can lose, because the trace does not
+      wait on the mutation. The outcome is the one thing that cannot be known yet, so it is
+      the one thing the settle writes.
+
+      This is deliberately NOT one transaction with the handler's mutation, and the reason is
+      A6's own text rather than a limitation: a trace that rolled back with the mutation would
+      lose exactly the rows the axiom insists on — the refusal, and the door that mutated and
+      then threw. Wrapping an awaited handler in a SQLite transaction would also mean holding
+      the connection's write lock across a machine round-trip, which stalls every other
+      writer in the workspace behind one slow door. Ordering, not atomicity, is what makes the
+      ledger complete; §7 of the ADR carries the per-door-class table.
+     */
+    const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
-    const produced = await invoke(ctx, parsed.data);
+    let produced: unknown;
+    try {
+      produced = await invoke(ctx, parsed.data);
+    } catch (error) {
+      // A broken door is still an exercise of authority: somebody opened it and it failed
+      // half-way. The row settles `failed` and the throw continues to `dispatch`, which logs
+      // it with the same word.
+      this.store.settleTrace(traceId, "failed", traceTargets(staged));
+      throw error;
+    }
     if (produced !== null && typeof produced === "object") {
       const denial = Reflect.get(produced, "refused");
       if (typeof denial === "string") {
+        this.store.settleTrace(traceId, "refused", traceTargets(staged));
         return { ok: false, denial: { rule: "refused", message: denial } };
       }
     }
@@ -964,7 +1122,19 @@ export class PluginHost {
     // the roster promised this shape to every reader, so the failure belongs in the logs.
     // It runs BEFORE the flush for the same reason the flush exists: a door that cannot
     // publish its own answer has not committed anything worth announcing.
-    const result = entry.def.result.parse(produced);
+    let result: unknown;
+    try {
+      result = entry.def.result.parse(produced);
+    } catch (error) {
+      this.store.settleTrace(traceId, "failed", traceTargets(staged));
+      throw error;
+    }
+    /*
+      THE LEDGER SETTLES BEFORE ANYBODY IS TOLD. The outcome is durable first, then the staged
+      emissions go out: no subscriber can observe news of a commit whose trace is still
+      unsettled, and the flush cannot un-write what the ledger already says.
+     */
+    this.store.settleTrace(traceId, "ok", traceTargets(staged));
     for (const event of staged) {
       this.events.emit(pluginId, event.ref, event.kind, auth.principal.id, event.payload);
     }

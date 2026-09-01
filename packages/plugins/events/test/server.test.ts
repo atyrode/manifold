@@ -89,7 +89,15 @@ function seed(where: Fixture): void {
   where.store.addEvent(null, 3_000, "p-1", "token_revoked", { count: 2 });
 }
 
-/** The published result, parsed by the action's OWN schema — the shape a client would get. */
+/**
+ * The published result, parsed by the action's OWN schema — the shape a client would get —
+ * narrowed to the EVENT family.
+ *
+ * The narrowing is the point rather than a convenience. Since axiom A6 the journal carries two
+ * row families and this door reads both: every dispatch in these cases, including the read
+ * itself, appends a trace row (`type: "trace"`). Cases about event rows therefore say so, and
+ * the family boundary gets a case of its own below instead of leaking into all of them.
+ */
 async function list(
   where: Fixture,
   caller: AuthContext,
@@ -97,7 +105,7 @@ async function list(
 ): Promise<readonly { ts: number; type: string; containerId: string | null }[]> {
   const outcome = await where.host.dispatch(caller, "core.events.list", args);
   if (!outcome.ok) throw new Error(`expected rows, got ${outcome.denial.rule}`);
-  return EventsListResponseSchema.parse(outcome.result).events;
+  return EventsListResponseSchema.parse(outcome.result).events.filter((row) => row.door === null);
 }
 
 describe("core.events.list authority", () => {
@@ -262,13 +270,14 @@ describe("core.events.list rows", () => {
     const outcome = await where.host.dispatch(where.owner, "core.events.list", {});
     if (!outcome.ok) throw new Error("expected rows");
     const rows = EventsListResponseSchema.parse(outcome.result).events;
+    const event = rows.find((row) => row.type === "token_revoked");
 
     /*
       Verbatim, because no schema anywhere declares what a given event type's payload holds.
       Publishing the text keeps the door honest about that — a reader decides what to parse,
       and a malformed row stays readable as a row instead of poisoning the page.
     */
-    expect(rows[0]?.payload).toBe('{"count":2}');
+    expect(event?.payload).toBe('{"count":2}');
     where.store.close();
   });
 
@@ -280,6 +289,29 @@ describe("core.events.list rows", () => {
     // "Nothing happened yet" is an answer. A read that refused when it found nothing would make
     // a fresh workspace indistinguishable from one the caller may not see.
     expect(rows).toEqual([]);
+    where.store.close();
+  });
+
+  test("ONE door reads both families: the ledger comes back through this action", async () => {
+    const where = fixture();
+    seed(where);
+
+    const outcome = await where.host.dispatch(where.owner, "core.events.list", { kind: "trace" });
+    if (!outcome.ok) throw new Error("expected rows");
+    const rows = EventsListResponseSchema.parse(outcome.result).events;
+
+    /*
+      A6's read path is this door and no other. `kind: "trace"` selects the ledger — the reading
+      dispatch's own row is in it, unsettled, because the ladder commits the attribution before
+      the handler runs — and an event row seeded beside it carries none of the trace columns, so
+      the two families are distinguishable without a second table or a second door.
+     */
+    const own = rows.find((row) => row.door === "core.events.list");
+    expect(own).toBeDefined();
+    expect(own?.principalId).toBe(where.owner.principal.id);
+    expect(own?.authority).toBe("root");
+    expect(own?.outcome).toBeNull();
+    expect(rows.every((row) => row.type === "trace")).toBe(true);
     where.store.close();
   });
 });

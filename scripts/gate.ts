@@ -110,6 +110,13 @@ try {
     ...packages.map((name) => () => run(`tsc ${name}`, ["bunx", "tsc", "-p", `packages/${name}`])),
     () => run("tsc scripts", ["bunx", "tsc", "-p", "tsconfig.scripts.json"]),
     () => run("changelog:check", ["bun", "scripts/generate-web-changelog.ts", "--check"]),
+    /*
+      The trace gate rides the STATIC pool rather than the browser one: it spawns a server of
+      its own on an ephemeral port and dispatches over HTTP, so it costs a process rather than
+      a Chromium, and it is a claim about the dispatch ladder rather than about a rendered
+      surface (axiom A6, ADR 0018).
+     */
+    () => run("verify:trace", ["bun", "scripts/verify-trace.ts"]),
     () => run("lint", ["bunx", "eslint", "."]),
     () => run("format:check", ["bunx", "prettier", "--check", "."]),
     () =>

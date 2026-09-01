@@ -347,6 +347,15 @@ export {
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { LOG_EVENTS, type LogEvent } from "./log.ts";
+export {
+  TRACE_AUTHORITY_OPEN,
+  TRACE_AUTHORITY_ROOT,
+  TRACE_OUTCOMES,
+  TRACED_DENIAL_RULES,
+  TraceOutcomeSchema,
+  UNTRACED_DENIAL_RULE,
+  type TraceOutcome,
+} from "./trace.ts";
 export { buildProtocolJsonSchema, type ProtocolExtras } from "./jsonschema.ts";
 export {
   HealthResponseSchema,

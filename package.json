@@ -20,6 +20,7 @@
     "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
     "verify:budgets": "bun scripts/verify-budgets.ts",
     "verify:axioms": "bun scripts/verify-axioms.ts",
+    "verify:trace": "bun scripts/verify-trace.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",

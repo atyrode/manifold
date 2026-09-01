@@ -74,6 +74,27 @@ export const EVENTS_LIST_DEFAULT = 100;
  * no schema anywhere declares them, so parsing here would publish a contract the writers never
  * signed and would make one malformed row poison a whole page. The text is exactly what
  * happened; deciding what it means is the reader's.
+ *
+ * THE FIVE TRACE FIELDS (axiom A6, ADR 0018) are the same row wearing its other family's
+ * clothes. A trace is an event row whose `type` is `trace`, carrying the attribution of one
+ * exercise of authority at a door: `door` names the action, `authority` the capability set
+ * discharged (or `root`, or `open` for a door that demands nothing), `targets` the
+ * `manifold://` nodes the door named, `outcome` how it ended (`TRACE_OUTCOMES`), and `session`
+ * the socket it arrived on — null meaning the HTTP action door. They are published nullable
+ * and always present, exactly as `containerId` is, because a reader that has to distinguish
+ * "absent key" from "null value" is a reader doing the row's job for it. On any event row all
+ * five are null and `targets` is empty; `door` is the discriminator.
+ *
+ * `targets` is the one column published PARSED, and the asymmetry with `payload` is the
+ * producer: `payload` has as many shapes as there are writers, while `targets` has exactly one
+ * writer — the dispatch ladder, serializing formatted URIs — so an array is the honest type
+ * rather than a promise nobody made.
+ *
+ * `outcome` is published as TEXT for the same reason `type` is — the column's vocabulary has
+ * one writer and many readers, and a row from a newer server carrying a word this build has
+ * never heard of must still read as a row rather than poison the page. The vocabulary itself
+ * is not folklore: `TRACE_OUTCOMES` in `@manifold/protocol` is the closed set the ladder
+ * writes from, so the join is typed where it is produced and published where it is consumed.
  */
 export const EventRowSchema = z.strictObject({
   id: z.number().int(),
@@ -82,6 +103,11 @@ export const EventRowSchema = z.strictObject({
   principalId: z.string().nullable(),
   type: z.string(),
   payload: z.string(),
+  door: z.string().nullable(),
+  authority: z.string().nullable(),
+  targets: z.array(z.string()).readonly(),
+  outcome: z.string().nullable(),
+  session: z.string().nullable(),
 });
 
 export const EventsListResponseSchema = z.strictObject({ events: z.array(EventRowSchema) });

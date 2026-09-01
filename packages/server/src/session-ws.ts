@@ -591,8 +591,13 @@ export class SessionGateway {
    *
    * A dispatch that THREW is a broken door rather than a denial: the host has already logged
    * it, and the socket is told the request failed instead of being left waiting forever.
+   *
+   * The CONNECTION comes in beside the channel so the ledger can say where the exercise
+   * arrived: a trace's `session` is the socket, not the room membership, because one socket
+   * is one session and its channels are memberships within it (axiom A6, ADR 0018 §2).
    */
   private async dispatchPolicy(
+    connection: SessionConnection,
     peer: SessionChannel,
     action: string,
     ref: string,
@@ -600,7 +605,7 @@ export class SessionGateway {
   ): Promise<boolean> {
     let outcome: ActionOutcome;
     try {
-      outcome = await this.plugins.dispatch(peer.auth, action, args);
+      outcome = await this.plugins.dispatch(peer.auth, action, args, connection.id);
     } catch {
       peer.send({ type: "error", code: "conflict", message: `${action} failed`, ref });
       return false;
@@ -686,7 +691,7 @@ export class SessionGateway {
           plugin refuses it at rung 2, while `kill` is declared `cleanup` and outlives the
           disable — nobody is locked out of removing what already exists (D12).
          */
-        void this.dispatchPolicy(peer, "core.terminals.open", message.elementId, {
+        void this.dispatchPolicy(connection, peer, "core.terminals.open", message.elementId, {
           containerId: peer.containerId,
           elementId: message.elementId,
           cols: message.cols,
@@ -715,7 +720,7 @@ export class SessionGateway {
         // the terminal, and the broker moves the lease and announces it afterwards, because a
         // lease belongs to a connection and the `controller_changed` broadcast goes to the room
         // that connection is joined to. The broker no longer decides anything about authority.
-        void this.dispatchPolicy(peer, "core.terminals.take", message.terminalId, {
+        void this.dispatchPolicy(connection, peer, "core.terminals.take", message.terminalId, {
           terminalId: message.terminalId,
         }).then((allowed) => {
           if (allowed) this.broker.take(peer, message);
@@ -725,7 +730,7 @@ export class SessionGateway {
         // The kill is the ACTION's, whole: authority, the lease rule and the destruction all
         // live behind one door, so this frame and the workspace index cannot answer
         // differently about the same terminal (invariant 14).
-        void this.dispatchPolicy(peer, "core.terminals.kill", message.terminalId, {
+        void this.dispatchPolicy(connection, peer, "core.terminals.kill", message.terminalId, {
           terminalId: message.terminalId,
         });
         return;

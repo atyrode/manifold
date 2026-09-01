@@ -17,24 +17,40 @@ export interface Logger {
   error(evt: LogEvent, fields?: Readonly<Record<string, unknown>>): void;
 }
 
+/**
+ * THE ONE REDACTION RULE, by field name.
+ *
+ * It was written for the JSONL stream and is now also what the trace ledger writes an
+ * argument object through (axiom A6, ADR 0018 §5): both are durable records of what a
+ * principal did, and "which fields may never leave the process" is one question with one
+ * answer (invariant 14). `SECRET_FIELD` is AGENTS invariant 6 — no owner key, no token, no
+ * bearer secret, anywhere — and `TERMINAL_FIELD` is invariant 5: terminal bytes are never
+ * persisted, so an argument carrying them cannot be persisted either.
+ *
+ * Matching by NAME rather than by declaration is deliberate. A per-action `redact` list would
+ * be a second vocabulary a door author must remember to fill in, and the failure mode of
+ * forgetting is a secret in the ledger; a name rule fails the other way — an innocent field
+ * called `key` is dropped from a record — which costs an auditor one field and costs nobody a
+ * credential.
+ */
 const SECRET_FIELD = /(token|key|authorization|secret)/i;
 const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
 
-function safeFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
+export function redactFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(fields)) {
     if (SECRET_FIELD.test(name) || TERMINAL_FIELD.test(name)) continue;
     if (Array.isArray(value)) {
       safe[name] = value.map((entry) => {
         if (entry !== null && typeof entry === "object") {
-          return safeFields(Object.fromEntries(Object.entries(entry)));
+          return redactFields(Object.fromEntries(Object.entries(entry)));
         }
         return entry;
       });
       continue;
     }
     if (value !== null && typeof value === "object") {
-      safe[name] = safeFields(Object.fromEntries(Object.entries(value)));
+      safe[name] = redactFields(Object.fromEntries(Object.entries(value)));
       continue;
     }
     safe[name] = value;
@@ -54,7 +70,7 @@ class JsonLogger implements Logger {
       ts: this.runtime.now(),
       level,
       evt,
-      ...(fields === undefined ? {} : safeFields(fields)),
+      ...(fields === undefined ? {} : redactFields(fields)),
     };
     process.stdout.write(`${JSON.stringify(record)}\n`);
   }

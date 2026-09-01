@@ -25,12 +25,19 @@ import {
   type IndexEntry,
   type Principal,
   type TileLayout,
+  type TraceOutcome,
 } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
 import { z } from "zod";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_CONTAINER = 10_000;
+/**
+ * The container-less bucket's ceiling. It exists because axiom A6 made a rare row family
+ * common: a workspace-grade dispatch's trace belongs to no container, and those arrive as fast
+ * as a door can be called, so the 30-day window alone stopped being a bound (ADR 0018).
+ */
+export const EVENTS_MAX_WORKSPACE = 100_000;
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 
@@ -192,6 +199,12 @@ interface EventDbRow {
   principal_id: string | null;
   type: string;
   payload: string;
+  /** NULL on every row that is not a trace, which is every row written before schema 14. */
+  door: string | null;
+  authority: string | null;
+  targets: string | null;
+  outcome: string | null;
+  session: string | null;
 }
 
 interface MetaRow {
@@ -336,13 +349,23 @@ export interface NewStoredTerminal {
 }
 
 /**
- * One row of the audit trail, camelCased for the wire.
+ * One row of the journal, camelCased for the wire — an event, a trace, or (before schema 14)
+ * an event that predates the distinction.
  *
  * `containerId` and `principalId` are both nullable because both are genuinely optional facts:
  * a token revocation is workspace-wide and belongs to no container, and a system-initiated
- * record belongs to no principal. `payload` is the JSON text exactly as `addEvent` stored it —
+ * record belongs to no principal. `payload` is the JSON text exactly as the writer stored it —
  * parsing it is the reader's decision, and a row whose payload cannot be parsed must still be
  * readable as a row.
+ *
+ * The five trace fields are NULL together or set together: `door` is the discriminator, and a
+ * row carrying one carries all (`TraceRecord`). They are on THIS interface rather than on a
+ * second row type because a trace is a row in the same journal read back through the same
+ * door — one shape, one reader, one retention (axiom A6, ADR 0018).
+ *
+ * `targets` is the one machine-written, machine-read list here, so unlike `payload` it is
+ * published PARSED. A row whose targets text is unreadable still reads as a row with no
+ * targets: the reader's contract is that a corrupt column costs the column, never the row.
  */
 export interface StoredEvent {
   id: number;
@@ -351,6 +374,46 @@ export interface StoredEvent {
   principalId: string | null;
   type: string;
   payload: string;
+  door: string | null;
+  authority: string | null;
+  targets: readonly string[];
+  outcome: string | null;
+  session: string | null;
+}
+
+/**
+ * THE `type` EVERY TRACE ROW CARRIES, so `core.events.list({ kind: "trace" })` is the ledger
+ * and nothing else has to be inferred from a NULL check. The door is a column of its own
+ * because a reader filtering the ledger asks for the family first and the door second.
+ */
+export const TRACE_ROW_TYPE = "trace";
+
+/**
+ * What the dispatch ladder knows BEFORE it invokes a handler: the whole attribution of an
+ * exercise of authority. Everything here is decided by the door and the credential, so none of
+ * it can be changed by what the handler then does — which is exactly why it is written first
+ * (ADR 0018 §3, write-ahead).
+ */
+export interface TraceAttribution {
+  readonly ts: number;
+  /** The acting principal. Never null: a dispatch always has an authenticated actor. */
+  readonly actor: string;
+  /** The capability set discharged, `root`, or `open` (`TRACE_AUTHORITY_*`). */
+  readonly authority: string;
+  /** The full action name — the door, as the roster publishes it. */
+  readonly door: string;
+  /** The container the exercise belongs to, when one is knowable before arguments parse. */
+  readonly containerId: string | null;
+  /** The arguments as received, redacted and bounded; never a secret, never terminal bytes. */
+  readonly payload: Readonly<Record<string, unknown>>;
+  /** The session channel the dispatch arrived on; null means the HTTP action door. */
+  readonly session: string | null;
+}
+
+/** An attribution plus how it ended: the settled row a reader sees. */
+export interface TraceRecord extends TraceAttribution {
+  readonly outcome: TraceOutcome | null;
+  readonly targets: readonly string[];
 }
 
 /** What a caller may narrow the audit trail by. Omitting a field asks for everything. */
@@ -358,6 +421,23 @@ export interface EventFilter {
   readonly containerId?: string;
   readonly type?: string;
   readonly limit: number;
+}
+
+/**
+ * A trace's targets, read defensively. The column has exactly ONE producer — the dispatch
+ * ladder, serializing formatted `manifold://` URIs — so unlike `payload` it is published
+ * parsed; and because the trail's contract is that a row always reads as a row, a column that
+ * cannot be read costs the targets rather than the record of what happened.
+ */
+function parseTargets(raw: string | null): readonly string[] {
+  if (raw === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === "string");
+  } catch {
+    return [];
+  }
 }
 
 /** SHA-256 hex encoding used for bearer secrets and document integrity hashes. */
@@ -518,6 +598,8 @@ function toTerminal(row: TerminalDbRow): StoredTerminal {
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
   private readonly eventCountByContainer = new Map<string, number>();
+  /** Null until first counted; the container-less bucket's size, cached like the others. */
+  private workspaceEventCount: number | null = null;
 
   constructor(readonly db: Database) {
     db.exec(`
@@ -1430,6 +1512,134 @@ export class ServerStore {
     return this.db.query<void, [string]>("DELETE FROM dials WHERE id = ?").run(id).changes > 0;
   }
 
+  /**
+   * ONE JOURNAL, ONE INSERT. Both row families land here — an event through `addEvent`, a
+   * trace through `appendTrace` — because retention, the per-container cap and the count cache
+   * are properties of the TABLE and a second copy of them would drift the first time either
+   * policy changed (invariant 14).
+   *
+   * Returns the row's id, which the trace ledger needs and the event path ignores: a trace is
+   * written before its outcome is known and settled afterwards by id (ADR 0018 §3).
+   */
+  private insertJournalRow(
+    containerId: string | null,
+    ts: number,
+    principalId: string | null,
+    type: string,
+    payload: Readonly<Record<string, unknown>>,
+    trace: {
+      readonly door: string;
+      readonly authority: string;
+      readonly targets: readonly string[];
+      readonly outcome: TraceOutcome | null;
+      readonly session: string | null;
+    } | null,
+  ): number {
+    const inserted = this.transaction(
+      (): {
+        readonly id: number;
+        readonly retained: number | null;
+        readonly workspace?: number;
+      } => {
+        const id = Number(
+          this.db
+            .query<
+              void,
+              [
+                string | null,
+                number,
+                string | null,
+                string,
+                string,
+                string | null,
+                string | null,
+                string | null,
+                string | null,
+                string | null,
+              ]
+            >(
+              `INSERT INTO events(container_id, ts, principal_id, type, payload,
+                                door, authority, targets, outcome, session)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              containerId,
+              ts,
+              principalId,
+              type,
+              JSON.stringify(payload),
+              trace === null ? null : trace.door,
+              trace === null ? null : trace.authority,
+              trace === null ? null : JSON.stringify(trace.targets),
+              trace === null ? null : trace.outcome,
+              trace === null ? null : trace.session,
+            ).lastInsertRowid,
+        );
+        this.db
+          .query<void, [number]>("DELETE FROM events WHERE ts < ?")
+          .run(ts - EVENTS_RETENTION_DAYS * MILLISECONDS_PER_DAY);
+        if (containerId !== null) {
+          const cachedCount = this.eventCountByContainer.get(containerId);
+          let count =
+            cachedCount === undefined
+              ? this.db
+                  .query<{ count: number }, [string]>(
+                    "SELECT COUNT(*) AS count FROM events WHERE container_id = ?",
+                  )
+                  .get(containerId)!.count
+              : cachedCount + 1;
+          if (count <= EVENTS_MAX_PER_CONTAINER) return { id, retained: count };
+          this.db
+            .query<void, [string, number]>(
+              `DELETE FROM events
+             WHERE id IN (
+               SELECT id FROM events WHERE container_id = ?
+               ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
+             )`,
+            )
+            .run(containerId, EVENTS_MAX_PER_CONTAINER);
+          count = EVENTS_MAX_PER_CONTAINER;
+          return { id, retained: count };
+        }
+        /*
+          THE WORKSPACE BUCKET, capped the same way and for a reason axiom A6 created. A row
+          belonging to no container used to be rare — a token minted, a grant revoked — so the
+          30-day window was bound enough. A trace of a workspace-grade dispatch lands here too,
+          and those arrive as fast as somebody (or some agent, in a loop) can call a door. The
+          per-container cap's own mechanism answers it: keep the newest N by the same recency
+          order, counted through the same cache so the common insert costs no COUNT.
+         */
+        const cachedWorkspace = this.workspaceEventCount;
+        let workspace =
+          cachedWorkspace === null
+            ? this.db
+                .query<{ count: number }, []>(
+                  "SELECT COUNT(*) AS count FROM events WHERE container_id IS NULL",
+                )
+                .get()!.count
+            : cachedWorkspace + 1;
+        if (workspace > EVENTS_MAX_WORKSPACE) {
+          this.db
+            .query<void, [number]>(
+              `DELETE FROM events
+             WHERE id IN (
+               SELECT id FROM events WHERE container_id IS NULL
+               ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
+             )`,
+            )
+            .run(EVENTS_MAX_WORKSPACE);
+          workspace = EVENTS_MAX_WORKSPACE;
+        }
+        return { id, retained: null, workspace };
+      },
+    );
+    if (containerId !== null && inserted.retained !== null) {
+      this.eventCountByContainer.set(containerId, inserted.retained);
+    }
+    if (inserted.workspace !== undefined) this.workspaceEventCount = inserted.workspace;
+    return inserted.id;
+  }
+
   addEvent(
     containerId: string | null,
     ts: number,
@@ -1437,50 +1647,62 @@ export class ServerStore {
     type: string,
     payload: Readonly<Record<string, unknown>>,
   ): void {
-    const retainedCount = this.transaction((): number | null => {
-      this.db
-        .query<void, [string | null, number, string | null, string, string]>(
-          `INSERT INTO events(container_id, ts, principal_id, type, payload)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(containerId, ts, principalId, type, JSON.stringify(payload));
-      this.db
-        .query<void, [number]>("DELETE FROM events WHERE ts < ?")
-        .run(ts - EVENTS_RETENTION_DAYS * MILLISECONDS_PER_DAY);
-      if (containerId === null) return null;
+    this.insertJournalRow(containerId, ts, principalId, type, payload, null);
+  }
 
-      const cachedCount = this.eventCountByContainer.get(containerId);
-      let count =
-        cachedCount === undefined
-          ? this.db
-              .query<{ count: number }, [string]>(
-                "SELECT COUNT(*) AS count FROM events WHERE container_id = ?",
-              )
-              .get(containerId)!.count
-          : cachedCount + 1;
-      if (count <= EVENTS_MAX_PER_CONTAINER) return count;
+  /**
+   * THE TRACE LEDGER'S WRITE-AHEAD (axiom A6, ADR 0018). One row, carrying the whole
+   * attribution of an exercise of authority, and its id back so the outcome can settle onto
+   * it.
+   *
+   * `outcome` is null when the ladder is about to invoke a handler and final when the rung
+   * refusing already knows the answer. Writing the attribution BEFORE the handler runs is what
+   * makes "no mutation without a trace" a property of the ordering rather than of a hope: by
+   * the time a handler can reach this store, its trace is already committed.
+   */
+  appendTrace(record: TraceRecord): number {
+    return this.insertJournalRow(
+      record.containerId,
+      record.ts,
+      record.actor,
+      TRACE_ROW_TYPE,
+      record.payload,
+      {
+        door: record.door,
+        authority: record.authority,
+        targets: record.targets,
+        outcome: record.outcome,
+        session: record.session,
+      },
+    );
+  }
+
+  /**
+   * THE SETTLE: the outcome, plus the nodes the door named, written onto a trace exactly once.
+   *
+   * `WHERE outcome IS NULL` is the whole enforcement of "exactly once" — a second settle
+   * changes nothing and reports false, so no rung and no retry can rewrite a recorded answer.
+   * It is the only UPDATE the journal accepts, and it is a transition from unsettled to final
+   * rather than a rewrite of history: a row left unsettled by a crash says truthfully that the
+   * dispatch was in flight when the process died.
+   */
+  settleTrace(id: number, outcome: TraceOutcome, targets: readonly string[]): boolean {
+    return (
       this.db
-        .query<void, [string, number]>(
-          `DELETE FROM events
-           WHERE id IN (
-             SELECT id FROM events WHERE container_id = ?
-             ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
-           )`,
+        .query<void, [string, string, number]>(
+          "UPDATE events SET outcome = ?, targets = ? WHERE id = ? AND outcome IS NULL",
         )
-        .run(containerId, EVENTS_MAX_PER_CONTAINER);
-      count = EVENTS_MAX_PER_CONTAINER;
-      return count;
-    });
-    if (containerId !== null && retainedCount !== null) {
-      this.eventCountByContainer.set(containerId, retainedCount);
-    }
+        .run(outcome, JSON.stringify(targets), id).changes > 0
+    );
   }
 
   /**
    * THE audit trail, read back. Newest first, and index-backed in both shapes.
    *
-   * `addEvent` is the only writer and it has always been append-only; this is the read that
-   * makes the rows reachable by something other than a SQL prompt (`core.events.list`). Two
+   * `insertJournalRow` is the only writer and it has always been append-only — a trace's
+   * settle is the one sanctioned exception, and it moves one row's outcome from unsettled to
+   * final and nothing else. This is the read that makes the rows reachable by something other
+   * than a SQL prompt (`core.events.list`). Two
    * queries rather than one, and the split is the index rather than taste: narrowing by
    * container hits `events_by_container_recency (container_id, ts DESC, id DESC)` — the exact
    * shape of the filter and the ordering together — while the unfiltered read walks
@@ -1503,11 +1725,13 @@ export class ServerStore {
    */
   listEvents(filter: EventFilter): readonly StoredEvent[] {
     const type = filter.type ?? null;
+    const columns = `id, container_id, ts, principal_id, type, payload,
+                     door, authority, targets, outcome, session`;
     const rows =
       filter.containerId === undefined
         ? this.db
             .query<EventDbRow, [string | null, number]>(
-              `SELECT id, container_id, ts, principal_id, type, payload
+              `SELECT ${columns}
                  FROM events
                 WHERE (?1 IS NULL OR type = ?1)
                 ORDER BY ts DESC, id DESC
@@ -1516,7 +1740,7 @@ export class ServerStore {
             .all(type, filter.limit)
         : this.db
             .query<EventDbRow, [string, string | null, number]>(
-              `SELECT id, container_id, ts, principal_id, type, payload
+              `SELECT ${columns}
                  FROM events
                 WHERE container_id = ?1 AND (?2 IS NULL OR type = ?2)
                 ORDER BY ts DESC, id DESC
@@ -1530,6 +1754,11 @@ export class ServerStore {
       principalId: row.principal_id,
       type: row.type,
       payload: row.payload,
+      door: row.door,
+      authority: row.authority,
+      targets: parseTargets(row.targets),
+      outcome: row.outcome,
+      session: row.session,
     }));
   }
 

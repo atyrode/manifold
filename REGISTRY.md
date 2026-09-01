@@ -162,9 +162,15 @@ must never be taught one.
     },
     {
       "id": "gate-and-registries",
-      "globs": ["AXIOMS.md", "REGISTRY.md", "scripts/verify-axioms.ts", "scripts/gate.ts"],
+      "globs": [
+        "AXIOMS.md",
+        "REGISTRY.md",
+        "scripts/verify-axioms.ts",
+        "scripts/verify-trace.ts",
+        "scripts/gate.ts"
+      ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the axioms' own enforcement machinery: the constitution, the registries in this file and the script that parses them in both directions. It is the pillar that makes every other pillar falsifiable, and it is the one place a boundary crossing cannot be silent.",
+      "verdict": "the axioms' own enforcement machinery: the constitution, the registries in this file and the scripts that parse them in both directions — including the trace gate, which holds axiom A6's ledger to every registered door. It is the pillar that makes every other pillar falsifiable, and it is the one place a boundary crossing cannot be silent.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     }
   ]
@@ -190,9 +196,9 @@ consumers move, the row's `why` ends "awaiting `<plugin>`" — prose a reviewer 
 list of rows to delete alongside their files (§Full-conversion inventory).
 
 Test files (`*.test.ts`), `packages/testkit`, and `scripts/` are neither floor nor plugin
-territory: they exercise both and are governed by their subject. The two exceptions are named in
-the `gate-and-registries` pillar — `scripts/verify-axioms.ts` and `scripts/gate.ts` are the
-enforcement machinery itself, not a test of somebody else's subject.
+territory: they exercise both and are governed by their subject. The three exceptions are named in
+the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify-trace.ts` and
+`scripts/gate.ts` are the enforcement machinery itself, not a test of somebody else's subject.
 
 ```json
 {
@@ -922,6 +928,24 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "event",
       "means": "a notification emitted at a mutation's commit point — one node, one kind, once. It never mutates, is delivered only to the sockets subscribed at that instant, and is never replayed; the durable audit row of the same name is the same word for the same thing, read as a table",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "trace",
+      "means": "the durable record of ONE exercise of authority at a door: actor, authority satisfied, door, targets, payload, outcome, origin — appended by the dispatch ladder, never by a handler, and a row family in the same journal an event row lands in (axiom A6). A refusal is a trace; an unregistered name is not, because nothing was exercised",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "journal",
+      "means": "the workspace's one durable append-only table of what happened — the `events` table, holding both row families: event rows (a notification's durable half) and trace rows (an exercise of authority). One retention, one read door",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "door",
+      "means": "one registered action, addressed by its full name, through which a mutation's authority is decided exactly once; also the column naming it on a trace row",
       "banned": [],
       "allow": []
     },
@@ -1793,6 +1817,12 @@ are its instances, each written after the join it guards had already broken once
 `bun run verify:axioms` (in `bun run gate`) is the axioms made falsifiable. Its static half runs
 against the source tree, its browser half against a real server and a real browser.
 
+The **T rows belong to `bun run verify:trace`** (also in `bun run gate`), which is axiom A6's
+completeness check and is a sibling script rather than a section of the one above for a reason
+that is about cost rather than taste: it needs a real composed SERVER and no browser at all, so
+it rides the gate's static pool and finishes in seconds. Its static half is the TypeScript
+parser over the dispatch ladder; its live half dispatches every registered door.
+
 | Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree — `composeDefaultLayout(roster)`, composed from the enabled roster's declared `contributes.seats` rather than from a constant — exists in the assembly, and the composition is `validateTileLayout`-clean. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -1821,25 +1851,32 @@ against the source tree, its browser half against a real server and a real brows
 | R8    | The denial ladder end to end, including a container-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "container"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R9    | Layout resilience: under adversarial content (unbroken 60+ character names, eight containers, a three-deep folder chain, a long terminal name) and a bounded sweep of sidebar widths (≥6), the sidebar, the plugin manager and a canvas terminal node's chrome hold four invariant classes — no VISIBLE horizontal overflow where overflow is `visible`, no visible content cut by `overflow: hidden` without a declared ellipsis, no visible descendant escaping the audited root's box, no two statically-flowing siblings painting over each other. Grounded in what an observer sees: effective opacity 0 paints nothing, and a negative-margin stack is a declared overlap.                                                                                                                                                                                                                                                                    |
 | R10   | **The plane is live** (ADR 0012). Three real connections: a browser whose feeds hold subscriptions, an SDK peer subscribed to the same collection node, and a THIRD principal mutating through the action door — so `actor` names somebody neither observer could mistake for itself. The frame must arrive with the right topic, kind and actor; the browser's sidebar must reflect the change inside ONE SECOND measured from the dispatch, not from the frame; and the feed's own report must show `reads.event` moving while `reads.timer` stands still, because no DOM assertion can tell a subscription from a poll that happened to be fast. The negative rung is the admission half: a container-scoped token subscribing to a foreign collection is refused SILENTLY — no frame, no socket close — and the refusal is read in the structured log, since "received nothing" would also be true of a subscription that merely never matched. |
+| T1    | **One ledger writer** (A6, ADR 0018; `verify:trace`). `appendTrace`/`settleTrace` are called from the store that defines them and the dispatch ladder that uses them, and from nowhere else — walked with the TypeScript parser, because a trace written from a third place is an attribution no dispatch stands behind.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| T2    | **Every rung, by construction.** Every `{ ok: false }` denial literal inside `PluginHost.run` writes the ledger in its OWN statement block; exactly one may not, and its rule must be `unknown_action` — the exemption ADR 0018 §4 rules out by argument. This is the half that survives nobody remembering to dispatch a new rung. Beside it, the vocabulary join: every denial rung except that one is a member of `TRACE_OUTCOMES`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| T3    | **Every registered door traces, live.** Against the REAL composed server (its own process, its own data dir, ephemeral port), every action in `GET /api/plugins` is dispatched and the ledger must hold a row naming it; a door without a trace is RED. The sentinel argument refuses at the argument rung — every input is a `z.strictObject` — so every door is knocked on and nothing is created or destroyed. It also asserts the WRITE-AHEAD in production: the only unsettled row is the reading door's own in-flight dispatch, which is the attribution being durable before its handler runs.                                                                                                                                                                                                                                                                                                                                               |
+| T4    | **A commit and a refusal are attributed.** A real `core.index.createContainer` leaves an `ok` row carrying actor, authority and the `manifold://` targets the door named; an attenuated token on the same door leaves a `forbidden` row naming the authority that failed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| T5    | **The one exemption, both halves.** An unregistered name leaves NO ledger row — the `door` column is never caller-chosen — and is still observable as one `action` log line at `outcome: "unknown_action"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 
-| Axiom / rule                                  | Checks                                                                                                                                                                               |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A1 everything above the floor is a plugin     | S1, S2, S5, S8, S13, R1, R3                                                                                                                                                          |
-| A2 multiplayer by design                      | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                           |
-| A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12, R9 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn) |
-| A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                                                                 |
-| A5 waterfall authority                        | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                                                                  |
-| Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                                                             |
-| Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                    |
-| D4′ disable semantics (ADR 0013)              | R3, S10                                                                                                                                                                              |
-| One word per concept (invariant 16)           | S11, S12, S14                                                                                                                                                                        |
-| Plane rule and state discipline               | S3, S4, R7, R8, R10 (the event plane's own rule — a notification never mutates, and a subscription dies with its socket)                                                             |
-| Self-description (the structured log)         | S14, R10 (the subscribe refusal is SILENT on the wire by design, so the log is the only place it is observable)                                                                      |
-| Gates assert on declared contracts            | S15                                                                                                                                                                                  |
+| Axiom / rule                                  | Checks                                                                                                                                                                                                   |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1 everything above the floor is a plugin     | S1, S2, S5, S8, S13, R1, R3                                                                                                                                                                              |
+| A2 multiplayer by design                      | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                                               |
+| A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12, R9 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn)                     |
+| A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                                                                                     |
+| A5 waterfall authority                        | none yet — designed (ADR 0011), not implemented; R8 guards the flat degenerate case                                                                                                                      |
+| A6 every exercise of authority is traced      | T1, T2, T3, T4, T5 (T2 is the one that holds without a dispatch: a rung that refuses without recording fails in the parser, never in a scenario somebody has to think of)                                |
+| Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                                                                                 |
+| Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                                        |
+| D4′ disable semantics (ADR 0013)              | R3, S10                                                                                                                                                                                                  |
+| One word per concept (invariant 16)           | S11, S12, S14                                                                                                                                                                                            |
+| Plane rule and state discipline               | S3, S4, R7, R8, R10 (the event plane's own rule — a notification never mutates, and a subscription dies with its socket)                                                                                 |
+| Self-description (the structured log)         | S14, R10 (the subscribe refusal is SILENT on the wire by design, so the log is the only place it is observable), T1-T5 (the durable half: what an operator tails versus what the workspace can be asked) |
+| Gates assert on declared contracts            | S15                                                                                                                                                                                                      |
 
-Also standing, in `bun run gate`: `verify:convergence` (the document plane), `verify:tile-drop`
+Also standing, in `bun run gate`: `verify:trace` (axiom A6's completeness check — T1-T5 above,
+headless, its own server), `verify:convergence` (the document plane), `verify:tile-drop`
 (the placement algebra through real gestures), `verify:budgets` (§Budgets — what an idle
 workspace costs, which no boundary check can see), and the terminal e2e suites (the PTY
 plane). Those prove the planes the axioms ride on; `verify:axioms` proves the axioms
