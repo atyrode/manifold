@@ -1,11 +1,16 @@
 import type {
   BootstrapPrincipalRequest,
+  CreateGrantRequest,
   Dial,
   DialShareRequest,
   DialTicket,
+  Grant,
+  Grants,
+  ListGrantsRequest,
   MintShareRequest,
   MintTokenRequest,
   OpenDialRequest,
+  RevokeGrantRequest,
   RevokeResult,
   RevokeShareRequest,
   Share,
@@ -44,6 +49,15 @@ interface AccessCtx {
     mintShare(input: MintShareRequest): IdentityAnswer<ShareGrant>;
     revokeShare(shareId: string): IdentityAnswer<number>;
     listShares(): IdentityAnswer<readonly Share[]>;
+    /*
+      The grant trio sits here for the share trio's reason and one more: a grant is what a token
+      REFERENCES (ADR 0011), so writing one and minting one are the same act at different
+      granularities, and the attenuation the mechanism runs is the same ladder. A separate
+      `grants` surface beside `identity` would say the workspace has two authorities.
+    */
+    grant(input: CreateGrantRequest): IdentityAnswer<Grant>;
+    revokeGrant(grantId: string): IdentityAnswer<number>;
+    listGrants(filter: ListGrantsRequest): IdentityAnswer<readonly Grant[]>;
   };
   /*
     The GUEST half is not the identity mechanism — it is a store plus an outbound network
@@ -161,5 +175,30 @@ export const accessHandlers = {
     */
     const opened = await ctx.dials.open(args.dialId);
     return opened.ok ? opened.value : { refused: opened.message };
+  },
+
+  /*
+    THE GRANT HALF (ADR 0011). Relay, like everything above it, and for the reason that matters
+    most here: a handler that re-decided who may write a grant would be a SECOND evaluator, one
+    rung above the only one — which is the failure ADR 0011 exists to prevent ("authority must
+    not be re-derived per feature"). The mechanism owns the ladder: root, the node's shape, the
+    subset rule, and the refusal that no deny row may name the workspace owner.
+  */
+  async grant(ctx: AccessCtx, args: CreateGrantRequest): Promise<Outcome<Grant>> {
+    const written = ctx.identity.grant(args);
+    return written.ok ? written.value : { refused: written.message };
+  },
+
+  async revokeGrant(ctx: AccessCtx, args: RevokeGrantRequest): Promise<Outcome<RevokeResult>> {
+    // Zero is a SUCCESS, `revoke`'s ruling applied to a row instead of a token: revocation is
+    // idempotent, and "that grant is already gone" is the answer a careful administrator wants,
+    // not a refusal they have to distinguish from "you may not".
+    const revoked = ctx.identity.revokeGrant(args.grantId);
+    return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
+  },
+
+  async listGrants(ctx: AccessCtx, args: ListGrantsRequest): Promise<Outcome<Grants>> {
+    const grants = ctx.identity.listGrants(args);
+    return grants.ok ? { grants: [...grants.value] } : { refused: grants.message };
   },
 };

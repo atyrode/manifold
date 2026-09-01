@@ -145,7 +145,12 @@ Rules worth knowing before you write one:
   since before the plane existed and one concept gets one spelling.
 - **`capabilities` is a ceiling, not a request.** Every action's declared caps must be a subset
   of it; a violation refuses composition. It exists so a reader can see a plugin's maximum
-  authority without reading its actions.
+  authority without reading its actions. **The permission waterfall (ADR 0011) did not change
+  this.** A door intersects two sides: what the ACTION declares it needs, and what the CALLER is
+  evaluated to hold. Grants on the node tree replaced the second side only — a manifest still
+  bounds what your actions may DECLARE, in the same flat cap vocabulary, and you never write a
+  grant to raise your own ceiling. If a manifest had to grow a node or an effect to keep working,
+  the two sides were never orthogonal in the first place.
 - **`dependencies` are declared per plugin id** with a `type` of `required`, `optional` or
   `incompatible`, plus an optional `reason` that is shown to whoever hits the refusal. A missing or
   disabled `required` dependency, or a present `incompatible` one, refuses assembly naming both
@@ -314,13 +319,19 @@ argue an earlier denial back to allow:
 | 1   | `unknown_action`  | No assembled action by that full name.                                                                                                                                                                                                                  |
 | 2   | `plugin_disabled` | The owning plugin is disabled in this workspace. Skipped for actions declared `cleanup: true` (D12).                                                                                                                                                    |
 | 3   | `forbidden`       | The caller's token is **container-scoped** and your action's `scope` is `"workspace"` (the default). Message: `scoped tokens cannot invoke workspace actions`. Declare `scope: "container"` when the door you replaced was reachable by a scoped token. |
-| 4   | `forbidden`       | The caller lacks one of the action's declared caps.                                                                                                                                                                                                     |
+| 4   | `forbidden`       | The caller lacks one of the action's declared caps **at the node it is asking about** — its own container for a scoped token, the workspace root for an unscoped one (ADR 0011).                                                                        |
 | 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                                          |
 | 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                                      |
 
-Rule 3 is the same precedent as every workspace route. Finer per-node scoping arrives with the
-permission waterfall (`docs/decisions/0011-permission-waterfall.md`); until then, a scoped token
-can read and render, but cannot invoke.
+Rule 3 is the same precedent as every workspace route, and the permission waterfall
+(`docs/decisions/0011-permission-waterfall.md`) left it exactly where it was: a scoped token
+still cannot invoke a workspace-graded door, because the grade is a property of the ACTION and
+not of the caller's authority. What the waterfall changed is rule 4. Caps are no longer read off
+the token — they are evaluated from grant rows on the node tree, so an owner can widen or narrow
+one caller at one container without minting anything, and the change takes effect on the next
+dispatch with no reconnect. Your action declares the same caps it always did; the refusal wording
+is unchanged; and nothing about writing a plugin is different. A grant a caller does not hold at
+the node in question is rule 4, in the words it always used: `<cap> capability required`.
 
 **Reading a `refused` message.** The message is a refusal **class**, optionally followed by the
 offenders it names: the class verbatim when there is nothing to name, otherwise
@@ -913,6 +924,7 @@ are the checks that will fail _your_ plugin:
 - `docs/CONTRACTS.md` — the wire: routes, frames, capabilities, presence payloads.
 - `docs/decisions/0010-plugin-engine-and-action-plane.md` — the trust model and why the action
   envelope looks like this.
-- `docs/decisions/0011-permission-waterfall.md` — where per-node authority is going.
+- `docs/decisions/0011-permission-waterfall.md` — per-node authority: the grant row, the
+  precedence order, and the "Landed" section recording the shapes that shipped.
 - `docs/decisions/0012-event-plane.md` — the event plane: why `contributes.events` looks like
   this, and the "Landed" section recording the shapes that shipped.

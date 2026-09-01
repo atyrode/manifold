@@ -121,6 +121,7 @@ function roomFixture(
     containerScope: null,
     isRoot: true,
     tokenId: null,
+    grantId: null,
   };
   const socket = new FakeSocket();
   const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
@@ -172,7 +173,7 @@ describe("Room Yjs document consistency", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
       container.id,
       "c1",
     );
@@ -418,7 +419,7 @@ describe("Room document persistence", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
       container.id,
       "c1",
     );
@@ -456,7 +457,7 @@ describe("Room document persistence", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       socket,
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null },
+      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
       container.id,
       "c1",
     );

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ActionOutcome, Cap, TokenGrant } from "@manifold/protocol";
+import type { ActionOutcome, Cap, Grant, TokenGrant } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
@@ -594,6 +594,464 @@ describe("core.access share ladder", () => {
     // rather than assumed: the dispatch is logged by name, and the secret is nowhere in it.
     expect(log).toContain("core.access.mintShare");
     expect(log).not.toContain(token);
+    fix.store.close();
+  });
+});
+
+/**
+ * THE GRANT DOORS, and the waterfall UNDERNEATH the doors they do not move (ADR 0011).
+ *
+ * Two different things are pinned here, and keeping them apart is the point of the file.
+ *
+ * 1. THE DOORS themselves — `grant`, `revokeGrant`, `listGrants` — on the ladder every other
+ *    `core.access` door runs: root-only, workspace-graded, the schema, the mechanism's
+ *    refusals relayed verbatim, and `revokeGrant` outliving a disable (D12).
+ * 2. THE EVALUATOR, observed the only way that proves it is real: through ORDINARY dispatch of
+ *    a door that has nothing to do with grants. `core.index.renameContainer` is the subject
+ *    throughout — `containers:write`, `scope: "container"`, and entirely unaware that authority
+ *    stopped being a field on a token. If a grant row can widen and narrow that door for a live
+ *    caller, the seam held; if it can only be seen through `effectiveCaps`, it did not.
+ *
+ * Every case reuses ONE `AuthContext` across the grant write and the dispatch that follows it,
+ * with no re-authentication. That is deliberate: ADR 0011 rejects evaluating at mount time
+ * because "caching authority into a composition makes revocation a restart", so a verdict that
+ * survived a revocation would be the design failing quietly rather than a test failing loudly.
+ */
+describe("core.access grant ladder", () => {
+  const ROOT = "manifold://";
+
+  function containerNodeUri(containerId: string): string {
+    return `manifold://container/${containerId}`;
+  }
+
+  /** The subject door: `containers:write` at `scope: "container"`, and no idea grants exist. */
+  async function rename(fix: Fixture, actor: AuthContext, containerId: string) {
+    return await fix.host.dispatch(actor, "core.index.renameContainer", {
+      containerId,
+      name: "renamed by grant",
+    });
+  }
+
+  /** The owner writing one row, through the real door rather than into the store. */
+  async function write(fix: Fixture, input: Record<string, unknown>): Promise<Grant> {
+    const outcome = await fix.host.dispatch(fix.owner, "core.access.grant", input);
+    return result(outcome) as Grant;
+  }
+
+  test("the doors are root-only, and the scope rung answers a scoped caller first", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const minter = context(fix, ["tokens:mint"]);
+    const scoped = context(fix, ["tokens:mint"], container);
+
+    const byMinter = await fix.host.dispatch(minter, "core.access.grant", {
+      principal: { kind: "principal", id: minter.principal.id },
+      node: ROOT,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    const byScoped = await fix.host.dispatch(scoped, "core.access.listGrants", {});
+
+    /*
+      Stricter than `mint` on purpose, and the reason is `deny`: minting attenuates downward,
+      but a deny row at a container beats an allow at the root, so a `tokens:mint` holder who
+      could write one could lock the owner out of the owner's own container. ADR 0011 defines
+      attenuation for minting and nothing for denial, so the door stays narrow until that is
+      ruled on — and a drift to `tokens:mint` fails here rather than passing quietly.
+    */
+    expect(denial(byMinter)).toEqual({ rule: "forbidden", message: "* capability required" });
+    // Workspace-graded because the ARGUMENT may name the root, which no container scope
+    // describes — `dialShare`'s reasoning, and the scope rung answers before caps as always.
+    expect(denial(byScoped)).toEqual({
+      rule: "forbidden",
+      message: "scoped tokens cannot invoke workspace actions",
+    });
+    fix.store.close();
+  });
+
+  test("a node grant widens a LIVE container-scoped credential the token never carried", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+
+    const before = await rename(fix, reader, container);
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    const after = await rename(fix, reader, container);
+
+    /*
+      THE CASE THE WHOLE WAVE EXISTS FOR. Flat caps could say "this token may write containers"
+      or "may not", and nothing in between; there was no way to say "this one, here". The token
+      is untouched — same secret, same `Cap[]`, same `AuthContext` object — and the answer
+      changed because a row appeared at the node the door asks about.
+
+      Note the refusal before is rung 4 in its ORIGINAL wording. The vocabulary did not move:
+      what moved is where the caps came from.
+    */
+    expect(denial(before)).toEqual({
+      rule: "forbidden",
+      message: "containers:write capability required",
+    });
+    expect(result(after)).toMatchObject({ container: { id: container, name: "renamed by grant" } });
+    fix.store.close();
+  });
+
+  test("a deny at the container beats an allow at the root: deeper wins", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node: ROOT,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    const allowed = await rename(fix, reader, container);
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const denied = await rename(fix, reader, container);
+
+    // Precedence rule 1, and the reason it is rule 1: a denial that could be overruled by a
+    // shallower grant would be a suggestion. "Everywhere except this container" is the shape an
+    // owner actually reaches for, and it is sayable only if depth outranks the root.
+    expect(result(allowed)).toMatchObject({ container: { id: container } });
+    expect(denial(denied)).toEqual({
+      rule: "forbidden",
+      message: "containers:write capability required",
+    });
+    fix.store.close();
+  });
+
+  test("at equal depth and equal specificity, deny beats allow", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+    const node = containerNodeUri(container);
+
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node,
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+
+    // Precedence rule 3. Both rows are principal-specific at the same node, so rules 1 and 2
+    // are silent and the tie-break that decides is the safe one — and it must beat rule 4,
+    // which would otherwise hand the answer to whichever row was written last.
+    expect(denial(await rename(fix, reader, container))).toEqual({
+      rule: "forbidden",
+      message: "containers:write capability required",
+    });
+    fix.store.close();
+  });
+
+  test("a named principal's allow beats a class deny at the same node: specificity outranks effect", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+    const node = containerNodeUri(container);
+
+    await write(fix, {
+      principal: { kind: "any-human" },
+      node,
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+
+    /*
+      THE ORDERING CASE, and the one most likely to be got backwards, because "deny wins" reads
+      like a safety rule that should outrank everything. It must not. ADR 0011 puts specificity
+      at rule 2 and effect at rule 3, and that order is what makes "nobody but her" sayable: a
+      class deny plus a named allow. Invert them and the only way to express an exception is to
+      enumerate every principal who is NOT excepted, which the class forms exist to avoid.
+    */
+    expect(result(await rename(fix, reader, container))).toMatchObject({
+      container: { id: container },
+    });
+    fix.store.close();
+  });
+
+  test("revoking a grant takes effect on the next dispatch, with no reconnect", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+
+    const written = await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    const allowed = await rename(fix, reader, container);
+    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeGrant", {
+      grantId: written.id,
+    });
+    const again = await fix.host.dispatch(fix.owner, "core.access.revokeGrant", {
+      grantId: written.id,
+    });
+    const afterRevoke = await rename(fix, reader, container);
+
+    /*
+      ADR 0011 rejected mount-time evaluation because "caching authority into a composition makes
+      revocation a restart". This is that ruling with a stopwatch: the SAME `AuthContext` — never
+      re-authenticated, its socket conceptually still open — is refused the moment the row is
+      gone. A cache that survived here would not fail loudly anywhere else.
+
+      Zero is a success on the second call, `revoke`'s ruling applied to a row: revocation is
+      idempotent, and "already gone" is not a refusal.
+    */
+    expect(result(allowed)).toMatchObject({ container: { id: container } });
+    expect(result(revoked)).toEqual({ revoked: 1 });
+    expect(result(again)).toEqual({ revoked: 0 });
+    expect(denial(afterRevoke)).toEqual({
+      rule: "forbidden",
+      message: "containers:write capability required",
+    });
+    fix.store.close();
+  });
+
+  test("a token's own row is not revocable as a grant, and the owner cannot be denied", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+
+    const own = result(
+      await fix.host.dispatch(fix.owner, "core.access.listGrants", {
+        principalId: reader.principal.id,
+      }),
+    ) as { grants: Grant[] };
+    const tokenRow = own.grants[0];
+    if (tokenRow === undefined) throw new Error("a minted token has no grant row");
+    const revokeTokenRow = await fix.host.dispatch(fix.owner, "core.access.revokeGrant", {
+      grantId: tokenRow.id,
+    });
+    const denyOwner = await fix.host.dispatch(fix.owner, "core.access.grant", {
+      principal: { kind: "principal", id: fix.owner.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+
+    /*
+      TWO HOLES CLOSED BY THE MECHANISM, relayed as refusals rather than decided at the door —
+      a handler that re-decided either would be a second evaluator one rung above the only one.
+
+      A token's row IS that token: deleting it would leave a live bearer whose authority came
+      from nowhere, so the way to end it is to revoke the token. And no row may deny the
+      workspace owner anywhere: the owner key authenticates outside the token system precisely
+      so administration cannot lock its own administrator out, and a deny row at depth would
+      have been the one way to do it — reachable even from a bootstrapped `*` token, which is
+      why the mechanism refuses it rather than trusting the door's root-only grading alone.
+    */
+    expect(denial(revokeTokenRow)).toEqual({
+      rule: "refused",
+      message: "a token's own grant is revoked by revoking the token",
+    });
+    expect(denial(denyOwner)).toEqual({
+      rule: "refused",
+      message: "cannot deny the workspace owner",
+    });
+    fix.store.close();
+  });
+
+  test("listGrants narrows by node and by principal, and a malformed row never lands", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const elsewhere = accessContainer(fix);
+    const subject = context(fix, ["containers:read"]);
+
+    await write(fix, {
+      principal: { kind: "principal", id: subject.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "node",
+    });
+    const here = result(
+      await fix.host.dispatch(fix.owner, "core.access.listGrants", {
+        node: containerNodeUri(container),
+      }),
+    ) as { grants: Grant[] };
+    const there = result(
+      await fix.host.dispatch(fix.owner, "core.access.listGrants", {
+        node: containerNodeUri(elsewhere),
+      }),
+    ) as { grants: Grant[] };
+    const notAUri = await fix.host.dispatch(fix.owner, "core.access.grant", {
+      principal: { kind: "principal", id: subject.principal.id },
+      node: "container/whatever",
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "node",
+    });
+    const noEffect = await fix.host.dispatch(fix.owner, "core.access.grant", {
+      principal: { kind: "principal", id: subject.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      reach: "node",
+    });
+
+    expect(here.grants.map((row) => row.principal)).toContainEqual({
+      kind: "principal",
+      id: subject.principal.id,
+    });
+    expect(there.grants.some((row) => row.node === containerNodeUri(container))).toBe(false);
+    // A node that is not a `manifold://` address is invalid ARGUMENTS, not a refusal: invariant
+    // 13 says authority names nodes the one way everything else does, and a bare container id
+    // would be a second address system entering through the one door that decides everything.
+    expect(denial(notAUri).rule).toBe("invalid_args");
+    // Neither closed pair has a default. A row that meant `deny` and got `allow` by omission is
+    // the mistake a default makes silently, so the schema makes it impossible.
+    expect(denial(noEffect).rule).toBe("invalid_args");
+    fix.store.close();
+  });
+
+  test("revoking a grant outlives a disable; writing and listing do not", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const reader = context(fix, ["containers:read"], container);
+    const written = await write(fix, {
+      principal: { kind: "principal", id: reader.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({ ok: true });
+
+    const blocked = await fix.host.dispatch(fix.owner, "core.access.grant", {
+      principal: { kind: "any-agent" },
+      node: ROOT,
+      caps: ["containers:read"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    const listed = await fix.host.dispatch(fix.owner, "core.access.listGrants", {});
+    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeGrant", {
+      grantId: written.id,
+    });
+
+    /*
+      D12, on the sharpest new subject: a grant that should not exist is somebody holding
+      authority they should not, which is a leaked token by another name. If a disable suspended
+      this door, an administrative toggle — or a mistake — would keep that authority alive until
+      somebody noticed and switched the plugin back on. Creation and reading die; taking
+      authority back does not.
+    */
+    expect(denial(blocked).rule).toBe("plugin_disabled");
+    expect(denial(listed).rule).toBe("plugin_disabled");
+    expect(result(revoked)).toEqual({ revoked: 1 });
+    // And it was a real revocation, not a bookkeeping one: the caller it widened is refused.
+    expect(denial(await rename(fix, reader, container)).rule).toBe("forbidden");
+    fix.store.close();
+  });
+});
+
+/**
+ * SHARES ARE GRANTS NOW (ADR 0011 §Tokens become grant references, ADR 0014).
+ *
+ * ADR 0011 left exactly one field inert — `principal.kind === "instance"` — and said wave 3
+ * would supply real values for it. This is that join, and it is worth pinning at the DOOR rather
+ * than in the store because the claim is about vocabulary: a share is not a parallel authority
+ * system that happens to resemble grants, it IS a grant row plus a credential that references
+ * one, so the grant reader can see it and the grant precedence rules apply to it unchanged.
+ */
+describe("core.access shares are grant rows", () => {
+  const GUEST_ORIGIN = "http://guest.localhost:7778";
+
+  test("minting a share writes the instance grant on the shared node", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+
+    const minted = result(
+      await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+        node: { kind: "container", containerId: container },
+        caps: ["containers:read"],
+        origin: GUEST_ORIGIN,
+      }),
+    );
+    const listed = result(
+      await fix.host.dispatch(fix.owner, "core.access.listGrants", {
+        node: `manifold://container/${container}`,
+      }),
+    ) as { grants: Grant[] };
+
+    const row = listed.grants.find((grant) => grant.principal.kind === "instance");
+    expect(row).toMatchObject({
+      principal: { kind: "instance", origin: GUEST_ORIGIN },
+      node: `manifold://container/${container}`,
+      caps: ["containers:read"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    // The row is bookkeeping about authority, never a credential: the share's secret exists in
+    // the mint answer alone, and a grant has no field one fits in.
+    const token = Reflect.get(minted as object, "token");
+    expect(JSON.stringify(listed)).not.toContain(token as string);
+    fix.store.close();
+  });
+
+  test("revoking a share deletes its grant row, and the share stays auditable", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const node = `manifold://container/${container}`;
+    const minted = result(
+      await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+        node: { kind: "container", containerId: container },
+        caps: ["containers:read"],
+        origin: GUEST_ORIGIN,
+      }),
+    );
+    const shareId = Reflect.get(Reflect.get(minted as object, "share") as object, "id") as string;
+
+    await fix.host.dispatch(fix.owner, "core.access.revokeShare", { shareId });
+    const listed = result(
+      await fix.host.dispatch(fix.owner, "core.access.listGrants", { node }),
+    ) as { grants: Grant[] };
+    const inventory = result(await fix.host.dispatch(fix.owner, "core.access.listShares", {}));
+
+    /*
+      ABSENCE IS THE REVOCATION. A grant presents no credential, so there is no holder left to
+      refuse and a `revokedAt` on the row would be a second way to say "confers nothing" — the
+      asymmetry with tokens and shares is deliberate, and it is why those two keep their column:
+      a bearer secret already handed over has to keep being refused by name.
+
+      The share row itself survives, revoked: an owner who cut a pipe still needs to see that
+      they did, and the audit trail of who shared what with whom does not evaporate.
+    */
+    expect(listed.grants.some((grant) => grant.principal.kind === "instance")).toBe(false);
+    expect(Reflect.get(inventory as object, "shares")).toMatchObject([{ id: shareId }]);
     fix.store.close();
   });
 });

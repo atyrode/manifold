@@ -137,3 +137,50 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
 
   return null;
 }
+
+/**
+ * THE WORKSPACE ROOT, which is the one node with no form of its own. The seven forms above
+ * each name something the workspace HOLDS; this names the workspace itself, and it has no
+ * `ManifoldRef` because there is nothing to discriminate — no id, no owner, no second
+ * spelling. Adding an eighth union member to carry it would widen every wire schema that
+ * accepts a ref (`MintShareRequest.node`, `ResolveResponse.ref`, an event's topic) in order
+ * to express a value none of them has a use for.
+ *
+ * It exists because authority does need it: A5 grants at a node and flows downward, so the
+ * grant that reaches everything has to name the top of the tree, and ADR 0011 addresses a
+ * grant's node by URI STRING for exactly this reason.
+ */
+export const MANIFOLD_ROOT_URI = MANIFOLD_URI_SCHEME;
+
+/**
+ * The containment path from the workspace root down to `node`, inclusive at both ends, or
+ * null for anything this workspace cannot address. `manifold://container/c/element/e` yields
+ * three entries; the root yields one.
+ *
+ * PURELY SYNTACTIC, and that is a load-bearing property rather than an optimization. The
+ * address algebra already encodes containment — an element and a tile are addressed THROUGH
+ * their container precisely because neither has an identity outside it — so the path is read
+ * off the URI and no store is consulted. An authority walk that had to resolve rows would
+ * make every permission check a query, and would answer differently for a node whose row is
+ * missing than for one whose row is present, which is a denial that depends on bookkeeping.
+ *
+ * A terminal, a principal, a plugin and an action sit directly under the root. Each is
+ * sovereign in the address algebra (A4: one owner, one home, one address) and none is
+ * addressed through a container, so there is no intermediate node for a grant to name.
+ */
+export function containmentPath(node: string): readonly string[] | null {
+  if (node === MANIFOLD_ROOT_URI) return [MANIFOLD_ROOT_URI];
+  const ref = parseManifoldUri(node);
+  if (ref === null) return null;
+  // The canonical spelling, never the caller's: a grant stored under an equivalent but
+  // differently-escaped URI must still be found by a walk that formats its own path.
+  const self = formatManifoldUri(ref);
+  if (ref.kind === "element" || ref.kind === "tile") {
+    return [
+      MANIFOLD_ROOT_URI,
+      formatManifoldUri({ kind: "container", containerId: ref.containerId }),
+      self,
+    ];
+  }
+  return [MANIFOLD_ROOT_URI, self];
+}

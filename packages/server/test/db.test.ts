@@ -376,7 +376,7 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(12);
+      expect(SCHEMA_VERSION).toBe(13);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.
@@ -1043,14 +1043,19 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Two backed-up migrations replayed, two images, no third file: `VACUUM INTO` cannot
+      // Three backed-up migrations replayed, three images, no fourth file: `VACUUM INTO` cannot
       // overwrite, so the staging name has to be gone by the time the runner returns.
-      expect(backupsIn(dir)).toEqual(["manifold.db.pre-v11.bak", "manifold.db.pre-v9.bak"]);
+      expect(backupsIn(dir)).toEqual([
+        "manifold.db.pre-v11.bak",
+        "manifold.db.pre-v13.bak",
+        "manifold.db.pre-v9.bak",
+      ]);
 
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.
       expect(snapshotVersion(`${path}.pre-v9.bak`)).toBe("8");
       expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
+      expect(snapshotVersion(`${path}.pre-v13.bak`)).toBe("12");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1088,8 +1093,13 @@ describe("pre-migration snapshot retention", () => {
       db.close();
 
       // Still one image for version 11, not two: a retried version replaces its predecessor
-      // rather than leaving a full copy of the database per attempt.
-      expect(backupsIn(dir)).toEqual(["manifold.db.pre-v11.bak", "manifold.db.pre-v9.bak"]);
+      // rather than leaving a full copy of the database per attempt. The retry also carries on
+      // past the migration that failed, so 13's image is written by it and not by the attempt.
+      expect(backupsIn(dir)).toEqual([
+        "manifold.db.pre-v11.bak",
+        "manifold.db.pre-v13.bak",
+        "manifold.db.pre-v9.bak",
+      ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
       // first attempt tripped over is absent from it.
       expect(snapshotTables(`${path}.pre-v11.bak`)).not.toContain("containers");
