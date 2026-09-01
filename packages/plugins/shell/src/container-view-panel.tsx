@@ -1,11 +1,11 @@
 import type { PanelProps } from "@manifold/plugin";
-import { ContainerRenderer, useContainerRoute } from "@manifold/plugin/hooks";
+import { ContainerRenderer, useContainerRoute, useProjection } from "@manifold/plugin/hooks";
 import { Cover, Stack } from "@manifold/plugin/ui";
 import type { ReactElement } from "react";
-import { ContainerErrorBoundary } from "./error-boundary.tsx";
 
 /**
- * The `core.shell.container-view` panel — FLOOR, and now genuinely neutral.
+ * The `core.shell.container-view` panel — `core.shell`'s, and now it lives where its manifest
+ * always said it did.
  *
  * It holds no renderer. `core.canvas` and `core.compositions` own the two disciplines, and a
  * container renderer is reached by LAYOUT through the projection's container-ref registry: this
@@ -21,7 +21,10 @@ import { ContainerErrorBoundary } from "./error-boundary.tsx";
  *
  * A panel is reached through `PanelOutlet`, which knows nothing about containers, so the route
  * cannot arrive as props: it arrives as `ContainerRoute` context published above the tree by the
- * shell and read here and by both renderers through `@manifold/plugin`.
+ * floor workspace host and read here and by both renderers through `@manifold/plugin`. Fault
+ * containment arrives the same way — `useProjection().ErrorBoundary` is the engine's own
+ * full-screen refusal, injected rather than painted here, because a plugin does not own the
+ * chrome for the application's failure any more than it owns the chrome for its own absence.
  */
 
 /**
@@ -40,6 +43,7 @@ function CanvasSkeleton(): ReactElement {
 
 export function ContainerViewPanel({ host }: PanelProps): ReactElement {
   const route = useContainerRoute();
+  const ErrorBoundary = useProjection().ErrorBoundary;
   const { containers, requestedContainerId, routedDiscipline } = route;
 
   return (
@@ -72,7 +76,7 @@ export function ContainerViewPanel({ host }: PanelProps): ReactElement {
         // rather than guessing — guessing would mean tearing a live room back down.
         <CanvasSkeleton />
       ) : (
-        <ContainerErrorBoundary key={requestedContainerId}>
+        <ErrorBoundary key={requestedContainerId}>
           <ContainerRenderer
             layout={routedDiscipline}
             host={host}
@@ -82,7 +86,7 @@ export function ContainerViewPanel({ host }: PanelProps): ReactElement {
             soloOccupants={route.soloOccupants}
             navigate={route.navigate}
           />
-        </ContainerErrorBoundary>
+        </ErrorBoundary>
       )}
     </section>
   );

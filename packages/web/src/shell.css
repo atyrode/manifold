@@ -1,15 +1,23 @@
 /*
- * THE SHELL'S SKIN — the sidebar, the workspace frame, and the chrome the floor's own
- * shell components paint (`workspace.tsx`, `sidebar-panel.tsx`, `container-view-panel.tsx`).
+ * THE SHELL'S SKIN — the workspace frame, the sidebar rail, and the ROW VOCABULARY every
+ * sidebar section is filled into. Painted by the floor workspace host (`workspace.tsx`) and by
+ * `@manifold-plugin/shell`'s two panels (`sidebar-panel.tsx`, `container-view-panel.tsx`).
  *
- * This file is the one asymmetry in the split, and it is worth naming. Every other owner's
- * stylesheet lives in that owner's package; the shell's cannot, because the shell is not a
- * package. Its components are FLOOR — the workspace host, the `core.shell.sidebar` panel and
- * the `core.shell.container-view` panel are floor rows in REGISTRY.md §Foundation — and a floor
- * file may not import `@manifold-plugin/*`. So the shell's skin stays inside `packages/web`,
- * beside the components that paint it, and is registered as its own owner in the cssFamilies
- * registry rather than being folded back into the floor stylesheet. Separate owner, same
- * package: the check enforces the stylesheet, not the directory.
+ * This file is the one asymmetry in the split, and the reason it stays floor CHANGED in the
+ * wave that moved those two panels into their plugin. It is no longer "the shell is not a
+ * package" — `core.shell` is one, and its components live in it. It is that the `sidebar`
+ * family is a vocabulary the FLOOR PUBLISHES for every contributed section to fill:
+ * `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-count`
+ * and `.sidebar-section-action` are painted by `core.index`, `core.machines` and `core.plugins`,
+ * never by the shell's own panel. Moving the family into `packages/plugins/shell` would make
+ * three plugins depend on a fourth plugin's stylesheet for their own appearance — the exact
+ * neutrality the row vocabulary exists to provide, inverted. So it belongs beside the
+ * `plugin-placeholder` and `notice` families for the same stated reason those are the floor's:
+ * the layer's skin is the layer owner's, and the layer owner here is the engine.
+ *
+ * It is registered as its OWN owner in the cssFamilies registry rather than folded back into
+ * the floor stylesheet, so what is shell chrome stays legible as shell chrome. Separate owner,
+ * same package: the check enforces the stylesheet, not the directory.
  *
  * The tile-tree's `workspace-split` / `workspace-pane` / `workspace-divider` skin is NOT here.
  * Those three class names are declared in `packages/plugin/src/ui/tile-tree.tsx`
@@ -67,24 +75,93 @@
  * every pane's content rides in (`tile-tree.tsx`), because that is the single place that
  * covers every renderer at once — a terminal, a canvas, a plugin panel nobody has written
  * yet. Dividers are deliberately NOT suppressed: resizing IS arranging, and the seam already
- * commits through the layout door this mode's own release uses.
+ * commits through the layout door this mode's own releases use.
  *
- * THE PANES SAY WHAT THEY ARE. `not-allowed` on the pane is the panel leg's disabled state,
- * on the exact surface a grab would have started from; the bar above carries the named
- * refusal that explains it. The affordance that DOES work re-enables itself explicitly
- * (`.sidebar-section-grip`), so exactly one thing is grabbable and it is the thing that
- * moves.
+ * THE GRABBABLE THINGS RE-ENABLE THEMSELVES, and they are the only live targets in an inert
+ * workspace: a panel's grip over each pane, a section's grip inside the sidebar's stack. The
+ * host becomes a positioning ancestor for the pane's grip only while the mode lasts, so
+ * nothing about any renderer's containing blocks changes when nobody is arranging.
  */
 .workspace.is-arranging .tile-content-host {
+  position: relative;
   pointer-events: none;
 }
 
-.workspace.is-arranging .workspace-pane {
-  cursor: not-allowed;
+.workspace.is-arranging .sidebar-section-grip,
+.workspace-panel-grip {
+  pointer-events: auto;
 }
 
-.workspace.is-arranging .sidebar-section-grip {
-  pointer-events: auto;
+/*
+ * THE PANEL'S GRAB SURFACE. It covers the whole pane rather than a corner handle, for the
+ * two reasons the section's does: the PANEL is the thing in hand, and the pointer must never
+ * reach the renderer underneath — which here is somebody else's plugin. A real button, so
+ * the panel leg has a tab stop and an arrow-key route as well as a drag.
+ */
+.workspace-panel-grip {
+  position: absolute;
+  z-index: 26;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  border: 0;
+  padding: 0.5rem;
+  color: #adb5bd;
+  background: rgb(76 110 245 / 8%);
+  font: inherit;
+  cursor: grab;
+  touch-action: none;
+}
+
+.workspace-panel-grip:hover,
+.workspace-panel-grip:focus-visible {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 18%);
+}
+
+/* The panel IN HAND. It keeps its pane: the SLOT is the preview, so nothing floats. */
+.workspace-panel-grip.is-grabbed {
+  background: rgb(76 110 245 / 26%);
+  cursor: grabbing;
+}
+
+.workspace-panel-grip-label {
+  border: 1px solid #4c6ef5;
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.5rem;
+  background: #1f232b;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/*
+ * THE LANDING SLOT: where releasing puts the panel, drawn from the same `tileProspect` the
+ * composition's own drop preview reads. Positioned `fixed` in client px because the numbers
+ * arrive as fractions of the TREE's area, which is not this element's parent box.
+ *
+ * A skin, not a second preview: the geometry is the shared kernel's, and this is the third
+ * tile skin's version of it, exactly as `WORKSPACE_TREE_CLASSES` is the third tree skin.
+ */
+.workspace-arrange-slot {
+  position: fixed;
+  z-index: 38;
+  border: 2px solid #4c6ef5;
+  border-radius: 0.35rem;
+  background: rgb(76 110 245 / 18%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease;
+}
+
+/* A trade is two rects, because two panels move: the seat taken, and the seat vacated. */
+.workspace-arrange-slot.is-swap {
+  border-color: #f76707;
+  background: rgb(247 103 7 / 16%);
 }
 
 /* Floating, centred, above every pane: the mode's own chrome belongs to no pane. */
@@ -116,25 +193,6 @@
 .workspace-arrange-hint {
   min-width: 0;
   color: #adb5bd;
-}
-
-/* A refusal that can be pressed: aria-disabled, never `disabled`, because a control the
-   reader cannot ask about is a deferral they cannot see the shape of. */
-.workspace-arrange-refused {
-  flex: 0 0 auto;
-  border: 1px dashed #565f70;
-  border-radius: 0.4rem;
-  padding: 0.2rem 0.45rem;
-  color: #868e96;
-  background: transparent;
-  font: inherit;
-  cursor: help;
-}
-
-.workspace-arrange-refused:hover,
-.workspace-arrange-refused:focus-visible {
-  color: #ced4da;
-  border-color: #6c7684;
 }
 
 .sidebar-header {

@@ -115,8 +115,16 @@ describe("assembleRoster", () => {
       plugin: "core.shell",
       title: "Sidebar",
     });
+    // `presentation` is RESOLVED like `placement` below: this manifest declared none, so the
+    // registry publishes `disclosure` and no consumer has to know the default.
     expect(assembly.sections).toEqual([
-      { id: "machines", plugin: "core.shell", title: "Machines", order: 20 },
+      {
+        id: "machines",
+        plugin: "core.shell",
+        title: "Machines",
+        order: 20,
+        presentation: "disclosure",
+      },
     ]);
     // The manifest declared no placement traits, so the registry resolves the default (G1):
     // a reader sees traits, never an absence it would have to know the default for. The
@@ -143,8 +151,51 @@ describe("assembleRoster", () => {
       }),
       actions: [],
     };
-    const assembly = assembleRoster([shell, late], NONE);
-    expect(assembly.sections.map((section) => section.id)).toEqual(["views", "machines"]);
+    // A plain row is a row of the SAME stack: one registry, one order. It interleaves by its
+    // declared `order` alone, so nothing about presentation can promote or demote a row —
+    // which is what makes chrome (a create strip, a status line) contributable at all.
+    const plain: PluginDef = {
+      manifest: manifest({
+        id: "core.brand",
+        contributes: {
+          sections: [{ id: "brand", title: "Manifold", order: 15, presentation: "plain" }],
+        },
+      }),
+      actions: [],
+    };
+    const assembly = assembleRoster([shell, late, plain], NONE);
+    expect(assembly.sections.map((section) => [section.id, section.presentation])).toEqual([
+      ["views", "disclosure"],
+      ["brand", "plain"],
+      ["machines", "disclosure"],
+    ]);
+  });
+
+  test("a presentation nobody declared is refused with the manifest, not resolved away", () => {
+    const rogue: PluginDef = {
+      manifest: manifest({
+        id: "core.rogue",
+        contributes: {
+          sections: [
+            // The set is CLOSED: a stranger inventing a third way to draw a row would be
+            // asking the shell for a renderer it has not got, so the manifest rung refuses.
+            { id: "rogue", title: "Rogue", order: 1, presentation: "banner" } as never,
+          ],
+        },
+      }),
+      actions: [],
+    };
+    let thrown: unknown = null;
+    try {
+      assembleRoster([rogue], NONE);
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect(thrown).toBeInstanceOf(AssemblyError);
+    const problems = (thrown as AssemblyError).problems;
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('invalid manifest "core.rogue"');
+    expect(problems[0]).toContain("sections.0.presentation");
   });
 
   test("collisions refuse the whole composition and name every offender", () => {

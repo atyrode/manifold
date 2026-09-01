@@ -117,7 +117,9 @@ export const manifest: PluginManifest = {
   purges: ["storage", "elements", "ownership"], // audit visibility: what a purge would destroy
   contributes: {
     panels: [], // { id, title }        — a workspace tile leaf
-    sections: [], // { id, title, order } — a sidebar section
+    sections: [], // { id, title, order, presentation? } — a sidebar row; presentation is
+    //            "disclosure" (default: a titled block that folds) or "plain" (you draw the
+    //            whole row). One registry, one reader-arranged order, either shape.
     elements: [
       {
         type: "draw",
@@ -655,12 +657,44 @@ interface HostServices {
   navigate(uri: string): void; // a manifold:// URI, or an app path
   readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
   readonly authoring: AuthoringHandle | null; // null when nothing can be authored into
-  readonly assembly: AssemblyFacet; // read the roster: which plugins and contributions exist
+  readonly assembly: AssemblyFacet; // read the composition: see below
+}
+
+interface AssemblyFacet {
+  roster(): PluginRoster; // which plugins exist, and what each declares
+  enabled(id: string): boolean; // false for a disabled plugin AND for an unknown id
+  pluginTitle(id: string): string | null; // the owner's human title, for placeholders and tables
+  readonly sections: readonly ComposedSection[]; // every declared sidebar row, in declared order
+  readonly bindings: readonly ComposedBinding[]; // the composed key table, sorted by key
 }
 
 interface ViewportHandle {
   centerOn(uri: string): void;
   viewport(): { x: number; y: number; zoom: number } | null;
+}
+```
+
+`assembly` is READ-ONLY and it is the same surface for everybody — the plugin manager listing the
+roster and the shell's own sidebar panel drawing the section stack open the identical door. There
+are no setters on it: changing the assembly is an action (`engine.plugins.setEnabled`), like every
+other authority-bearing change. Nothing in it names a favourite plugin, which is what lets a
+stranger's replacement for the workspace shell read exactly what `core.shell` reads.
+
+`sections` is ONE registry in ONE order. A row carries `presentation` — `"disclosure"` for a
+collapsible section with a header, `"plain"` for a row that draws itself end to end — and both
+kinds interleave by declared `order`, so arrange mode, the per-principal arrangement and the
+owner-naming DOM never ask which kind a row is; only the component filling it does. A row whose
+owner is disabled is PRESENT with `enabled: false` rather than dropped, because a stored
+arrangement must not forget a seat while its plugin is off (D4′). What a row does NOT carry is a
+component: rendering somebody else's row goes through `SectionOutlet` from `@manifold/plugin/hooks`,
+which paints the engine's named placeholder when nothing is registered.
+
+```tsx
+import { SectionOutlet } from "@manifold/plugin/hooks";
+
+for (const row of host.assembly.sections.filter((row) => row.enabled)) {
+  // row.title, row.plugin, row.order, row.presentation are yours to lay out
+  <SectionOutlet id={row.id} host={host} />;
 }
 ```
 

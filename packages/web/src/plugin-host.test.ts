@@ -155,6 +155,9 @@ describe("buildBrowserAssembly", () => {
       plugin: "core.machines",
       title: "Machines",
       order: 20,
+      // Resolved at the join, exactly as the server's `assembleRoster` resolves it: a manifest
+      // that declares nothing gets the default, so no reader has to know what the default is.
+      presentation: "disclosure",
       Component: MachinesSection,
       enabled: false,
     });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseChangelogReferences } from "./changelog-references.ts";
+import { parseChangelogReferences } from "../src/changelog-references.ts";
 
 describe("changelog references", () => {
   test("links issue and pull-request references without changing surrounding copy", () => {

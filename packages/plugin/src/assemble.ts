@@ -1,5 +1,6 @@
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  DEFAULT_SECTION_PRESENTATION,
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
   PluginManifestSchema,
@@ -12,6 +13,7 @@ import {
   type PluginRefusalReason,
   type PluginRoster,
   type PluginRosterEntry,
+  type SectionPresentation,
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { AnyActionDef } from "./action.ts";
@@ -79,6 +81,17 @@ export interface AssemblySection {
   readonly plugin: string;
   readonly title: string;
   readonly order: number;
+  /**
+   * How this row draws: a collapsible disclosure, or a plain row that draws itself end to
+   * end. RESOLVED here rather than at every reader, exactly as `AssemblyElement.placement`
+   * is — a manifest that declares nothing yields `DEFAULT_SECTION_PRESENTATION`, so a
+   * consumer sees a presentation and never an absence it has to know the default for.
+   *
+   * It is a rendering fact and nothing else. Both kinds inhabit THIS one registry in THIS
+   * one order, so arrange mode, the per-principal order and the owner-naming DOM are
+   * indifferent to the value; only the component that fills the row reads it.
+   */
+  readonly presentation: SectionPresentation;
 }
 
 export interface AssemblyElement {
@@ -174,7 +187,12 @@ export interface Assembly {
   readonly actions: ReadonlyMap<string, AssemblyAction>;
   /** Keyed by FULL panel id (`core.shell.sidebar`), the id a `panel` tile ref names. */
   readonly panels: ReadonlyMap<string, AssemblyPanel>;
-  /** Sorted by declared `order`; ties keep registration order. */
+  /**
+   * THE section registry — the only one, holding every row of the sidebar whatever its
+   * `presentation`, in the only order. Sorted by declared `order`; ties keep registration
+   * order. A second list for plain rows would be a second answer to "what is in the sidebar,
+   * and in what sequence", which is the thing the per-principal arrangement reorders.
+   */
   readonly sections: readonly AssemblySection[];
   /** Keyed by wire element type (`draw`) — the same string a scene element carries. */
   readonly elements: ReadonlyMap<string, AssemblyElement>;
@@ -478,6 +496,7 @@ export function assembleRoster(
         plugin: manifest.id,
         title: section.title,
         order: section.order,
+        presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
       });
     }
     for (const element of manifest.contributes.elements) {

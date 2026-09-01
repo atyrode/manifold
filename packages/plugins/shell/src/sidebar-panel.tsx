@@ -2,6 +2,7 @@ import {
   arrangedSectionIds,
   movedSectionIds,
   type ComposedBinding,
+  type ComposedSection,
   type PanelProps,
   type SectionProps,
 } from "@manifold/plugin";
@@ -9,13 +10,16 @@ import {
   useEffect,
   useRef,
   useState,
-  type ComponentType,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { parseChangelogReferences } from "./changelog-references.ts";
+import {
+  SectionOutlet,
+  useWorkspaceShell,
+  type WorkspaceSidebarState,
+} from "@manifold/plugin/hooks";
 import {
   Cluster,
   ControlIcon,
@@ -25,25 +29,31 @@ import {
   Stack,
   useVantage,
 } from "@manifold/plugin/ui";
-import { PluginPlaceholder, useAssembly, type WebSection } from "./plugin-host.tsx";
-import { useWorkspaceShell } from "./workspace.tsx";
-import type { WorkspaceSidebarState } from "@manifold/plugin/hooks";
-import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
+import { parseChangelogReferences } from "./changelog-references.ts";
 
 /**
- * The `core.shell.sidebar` panel — FLOOR, and deliberately so.
+ * The `core.shell.sidebar` panel — `core.shell`'s own, and now it lives in `core.shell`.
  *
- * The sidebar's CHROME (branding, the create affordances, the collapse control, the section
- * stack itself) is the workspace shell, not a contribution: it has to read the composition to
- * know which sections exist, and `useAssembly` is engine state a plugin may not touch. The
- * manifest still owns the vocabulary — `core.shell` declares this panel, the roster publishes
- * it, and a disabled shell renders a named placeholder like any other panel — so what lives
- * here is the component, never the declaration. It is attached to the manifest's `sidebar`
- * id in `assembly.ts`, the one web file allowed to name plugin packages.
+ * It used to be floor, on the argument that the sidebar's CHROME has to read the composition to
+ * know which sections exist and `useAssembly` was engine state a plugin may not touch. That
+ * argument named a missing DOOR, not a floor component: the read is now `host.assembly`, a
+ * declared read-only surface every plugin may open, so the last thing keeping this file inside
+ * `packages/web/src` is gone and the carve-out with it (A1 — everything above the floor is a
+ * plugin). The manifest owned the vocabulary all along: `core.shell` declares this panel, the
+ * roster publishes it, and a disabled shell renders a named placeholder like any other panel.
+ * It is attached to the manifest's `sidebar` id in the web package's `assembly.ts`, the one
+ * file there allowed to name plugin packages.
  *
- * Everything BELOW the stack is a real plugin: each section is a `ComponentType<SectionProps>`
- * that fetches its own data through `host.client`. The stack knows only the order the
- * manifests declared and whether the owning plugin is enabled.
+ * Two contexts reach it, both published by the floor workspace host above the tree, both
+ * declared in `@manifold/plugin` because their two ends may not import each other:
+ * `useWorkspaceShell` for the facts that are genuinely the HOST's (rail width, this
+ * principal's stored arrangement, the creation doors, the running build's version) and
+ * `useVantage` for the arrange mode F8 arms.
+ *
+ * Everything BELOW the stack is somebody else's plugin: each row's body is reached by
+ * {@link SectionOutlet}, which resolves the id to whatever the composition registered and
+ * paints the engine's named placeholder when nothing did. The stack knows only the order the
+ * manifests declared and whether the owning plugin is enabled — never who fills a row.
  */
 
 /** Ambient connection and persistence state; intentionally compact and visually quiet. */
@@ -118,13 +128,12 @@ function sectionIdAt(clientY: number): string | null {
 }
 
 interface SectionShellProps {
-  readonly section: WebSection;
+  readonly section: ComposedSection;
   /** The stack's height absorber and its icon-rail occupant; see {@link SidebarPanel}. */
   readonly grow: boolean;
   readonly collapsed: boolean;
   readonly onCollapsedChange: (id: string, collapsed: boolean) => void;
   readonly host: SectionProps["host"];
-  readonly pluginTitle: string;
   /** Arrange mode is armed: this section is grabbable and nothing inside it is clickable. */
   readonly arranging: boolean;
   /** This is the section in hand right now. */
@@ -154,7 +163,6 @@ function SectionShell({
   collapsed,
   onCollapsedChange,
   host,
-  pluginTitle,
   arranging,
   grabbed,
   onGrab,
@@ -162,7 +170,6 @@ function SectionShell({
   onGrabEnd,
   onNudge,
 }: SectionShellProps): ReactElement {
-  const Component: ComponentType<SectionProps> | null = section.Component;
   return (
     <Disclosure
       className={`sidebar-section${grow ? " sidebar-section--grow" : ""}${
@@ -224,11 +231,7 @@ function SectionShell({
       }
     >
       <ScrollRegion className="sidebar-section-scroll">
-        {Component === null ? (
-          <PluginPlaceholder name={pluginTitle} state="unavailable" />
-        ) : (
-          <Component host={host} />
-        )}
+        <SectionOutlet id={section.id} host={host} />
       </ScrollRegion>
     </Disclosure>
   );
@@ -274,7 +277,7 @@ function BindingsTable({
 }
 
 export function SidebarPanel({ host }: PanelProps): ReactElement {
-  const assembly = useAssembly();
+  const assembly = host.assembly;
   /*
     Every field this panel reads is taken ONCE, here: `registerSidebarElement` is a ref
     callback, and reading further properties off the same object afterwards would be reading
@@ -286,11 +289,12 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     createContainer,
     createFolder,
     creating,
-    identity,
     registerSidebarElement,
     sectionOrder,
     setSidebarOpen,
     sidebarOpen,
+    webChangelog,
+    webVersionLabel,
     workspace,
   } = useWorkspaceShell();
   const { arranging } = useVantage();
@@ -397,7 +401,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * makes one. One rule for both, read off the live order rather than a hardcoded id, which
    * is what makes the rail survive a plugin being disabled, added, or rearranged.
    */
-  const sections: readonly WebSection[] = liveIds.flatMap((id) => {
+  const sections: readonly ComposedSection[] = liveIds.flatMap((id) => {
     const section = declared.get(id);
     /*
      * D4′ (ADR 0013): chrome renders ABSENCE. A disabled plugin's section VANISHES from the
@@ -473,10 +477,10 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
                   ref={versionButtonRef}
                   className="sidebar-version"
                   type="button"
-                  aria-label={`Open web changelog for ${WEB_VERSION_LABEL}`}
+                  aria-label={`Open web changelog for ${webVersionLabel}`}
                   onClick={() => setChangelogOpen(true)}
                 >
-                  {WEB_VERSION_LABEL}
+                  {webVersionLabel}
                 </button>
               </span>
             ) : null}
@@ -592,7 +596,6 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
                 );
               }}
               host={host}
-              pluginTitle={assembly.pluginTitle(section.plugin) ?? section.plugin}
               /*
                 The rail is one section and has nothing to reorder against, so arranging is
                 offered only while the sidebar is open. The MODE stays on either way — the
@@ -635,9 +638,9 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           {sidebarOpen ? <span>Keys</span> : null}
         </button>
 
-        <footer className="sidebar-identity" title={identity.principal.name}>
-          <span className="identity-dot" style={{ backgroundColor: identity.principal.color }} />
-          {sidebarOpen ? <span>{identity.principal.name}</span> : null}
+        <footer className="sidebar-identity" title={host.principal.name}>
+          <span className="identity-dot" style={{ backgroundColor: host.principal.color }} />
+          {sidebarOpen ? <span>{host.principal.name}</span> : null}
         </footer>
       </aside>
       {typeof document !== "undefined" && changelogOpen
@@ -660,14 +663,14 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
                   <div>
                     <span>Web application</span>
                     <h2 id="web-changelog-title">What’s new</h2>
-                    <code>{WEB_VERSION_LABEL}</code>
+                    <code>{webVersionLabel}</code>
                   </div>
                   <button type="button" aria-label="Close changelog" onClick={closeChangelog}>
                     <ControlIcon kind="close" />
                   </button>
                 </header>
                 <div className="web-changelog-releases">
-                  {WEB_CHANGELOG.map((release) => (
+                  {webChangelog.map((release) => (
                     <article key={release.version}>
                       <div>
                         <h3>Version {release.version}</h3>

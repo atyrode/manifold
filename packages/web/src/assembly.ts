@@ -12,11 +12,9 @@ import { indexManifest } from "@manifold-plugin/index";
 import { machinesManifest } from "@manifold-plugin/machines";
 import { presenceManifest } from "@manifold-plugin/presence";
 import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
-import { SHELL_BINDINGS } from "@manifold-plugin/shell/web";
+import { SHELL_BINDINGS, ContainerViewPanel, SidebarPanel } from "@manifold-plugin/shell/web";
 import { terminalsManifest } from "@manifold-plugin/terminals";
 import { panelRefId, type FeedTopics, type WorkspacePanels } from "@manifold/plugin";
-import { ContainerViewPanel } from "./container-view-panel.tsx";
-import { SidebarPanel } from "./sidebar-panel.tsx";
 import type { WebPluginDef } from "./plugin-host.tsx";
 
 /**
@@ -103,12 +101,14 @@ export const FEED_TOPICS: FeedTopics = {
  *     ref paints in its own coordinate space (cursors, carry ghosts, selection outlines)
  *     it paints from engine plane mechanism, which is invariant 11 rather than a registration.
  *
- * The shell's own two panels stay FLOOR components (`sidebar-panel.tsx`, `container-view-panel.tsx`)
- * attached to `core.shell`'s declared ids, and that is not a loophole: the sidebar chrome reads
- * the composition to know which sections exist, and the container view resolves a route to a
- * discipline and asks the registry for it. Neither knows how anything is drawn. Its KEYS come
- * from the plugin package instead (`SHELL_BINDINGS`), because a binding row spells its own
- * plugin-namespaced id and a handler is behavior — neither is chrome the floor can hold.
+ * `core.shell` REGISTERS ITS OWN TWO PANELS NOW, and that row is the last carve-out closing.
+ * Both components were floor until this wave, on the argument that the sidebar's chrome has to
+ * read the live composition to know which sections exist and no plugin had a door for that read.
+ * `host.assembly` is that door — declared, read-only, neutral — so the exception expired and
+ * both components moved into `@manifold-plugin/shell`, beside the manifest that declared their
+ * ids and beside the KEYS the package already owned (`SHELL_BINDINGS`). What stayed floor is
+ * what a shell genuinely owns: the tile layout, the workspace index, and the two contexts it
+ * publishes above the tree for its panels to read.
  */
 export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   {

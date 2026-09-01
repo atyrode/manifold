@@ -17,6 +17,8 @@ import type {
   TerminalSummary,
 } from "@manifold/protocol";
 import type { ScenePatch, Y } from "@manifold/scene";
+import type { AssemblySection } from "./assemble.ts";
+import type { ComposedBinding } from "./bindings.ts";
 
 /**
  * What `place()` answers: the placement it executed, or the declared RULE that refused it.
@@ -139,15 +141,57 @@ export interface AuthoringHandle {
 }
 
 /**
- * The assembly, as DATA. A plugin that administers plugins needs to read the roster it
- * is listing; it must not be able to assemble, register, or override anything — so this is
- * two questions, both answers, no levers. Mutating the assembly is an action
+ * ONE COMPOSED SIDEBAR ROW, as any plugin may read it: {@link AssemblySection} — the manifest
+ * facts the composition already resolved, `presentation` included — plus the one roster fact a
+ * reader needs beside them.
+ *
+ * It EXTENDS the compose-time row rather than restating it, because there is exactly one
+ * section registry and this is its published view (invariant 14). A reader hunting for a
+ * second list of sections will not find one: `plain` and `disclosure` rows inhabit this array
+ * together, in the one declared order, and only the component filling a row reads
+ * `presentation`.
+ */
+export interface ComposedSection extends AssemblySection {
+  /** False for a DISABLED owner and for an id the roster does not carry. */
+  readonly enabled: boolean;
+}
+
+/**
+ * The assembly, as DATA — the one read surface onto the live composition, for every plugin
+ * alike. A plugin that administers plugins needs to read the roster it is listing; the
+ * workspace shell needs the rows and the keys the composition composed in order to draw a
+ * sidebar it does not own the contents of. Both are the same question — "what did the
+ * composition decide" — so both are answered here, and neither gets a lever: no registration,
+ * no override, no assembling. Mutating the assembly is an action
  * (`engine.plugins.setEnabled`, the engine's own builtin door), like every other
  * authority-bearing change.
+ *
+ * It is NEUTRAL by construction: every member is keyed by an id the caller already holds, and
+ * nothing here names a favourite plugin (AXIOMS.md §Foundation law). A stranger's replacement
+ * for the workspace shell reads exactly what `core.shell` reads.
+ *
+ * What is deliberately ABSENT is a component. `presentation` says how a row draws; WHO draws
+ * it is a registration, reached through the projection registry's `SectionOutlet` like every
+ * other contributed component — which is also why this file stays React-free, since the
+ * SERVER composes through the same `@manifold/plugin` entry.
  */
 export interface AssemblyFacet {
   roster(): PluginRoster;
   enabled(id: string): boolean;
+  /** The plugin's human title, for placeholders, key tables and admin chrome; null when unknown. */
+  pluginTitle(id: string): string | null;
+  /**
+   * Every DECLARED section, sorted by declared `order` with ties in roster order — a disabled
+   * owner's row is present and marked, never dropped, because chrome renders absence (D4′,
+   * ADR 0013) and a stored arrangement must not forget a seat while its plugin is off.
+   */
+  readonly sections: readonly ComposedSection[];
+  /**
+   * The composed key table, sorted by key. A disabled plugin's rows are ABSENT rather than
+   * marked — the one registry here that drops instead of marking, because a keystroke has no
+   * surface to paint an absence on (`composeBindings`).
+   */
+  readonly bindings: readonly ComposedBinding[];
 }
 
 /**

@@ -1121,9 +1121,10 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   CLIENT through the same throttled presence writer as every other field and dies with the
   connection, so a peer can see which tool somebody holds, what they are editing, whether
   their sidebar is open, and whether they are in ARRANGE MODE (F8: the workspace's panes stop
-  taking pointer input and its sidebar sections become grabbable). It is descriptive, never
-  authoritative: nothing downstream branches on whose vantage it renders, and the arrangement
-  arrange mode produces commits through `core.space.setLayout` like any other layout write.
+  taking pointer input, and both its sidebar sections and its panels become grabbable). It is
+  descriptive, never authoritative: nothing downstream branches on whose vantage it renders,
+  and every arrangement arrange mode produces — a section order, a moved panel — commits
+  through `core.space.setLayout` like any other layout write.
 - **`spotlight { uri, from }` is SERVER-written only.** The server strips `spotlight` from any
   client payload; the sole writer is the action `core.presence.focus { targetPrincipalId, uri }`
   (cap `scenes:write`), which requires that the target shares a joined room with the caller and

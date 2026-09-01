@@ -39,11 +39,14 @@ alike and which therefore carry no floor row.
 **The unmatched set is now empty, and S9 is wired** (wave 2, 2026-08-31). The rows that fell
 outside every pillar when this section was written were the web files whose `why` ended
 "awaiting `<plugin>`" — all gone, converted with their consumers — plus the shell's own two panel
-files, `sidebar-panel.tsx` and `container-view-panel.tsx`. Those two did not move: they are floor
-because they pass the litmus, and what was missing was a pillar answering for them, so
-`web-plugin-host` claims them by name with the reasoning in its verdict. That is the ONLY way the
-set empties — a file moves into its plugin, or a pillar states the litmus finding that owns it.
-§Foundation law admits no third state, so S9 has no exception list and must never be taught one.
+files, `sidebar-panel.tsx` and `container-view-panel.tsx`. Those two are gone the other way now
+(2026-09-01): they moved into `packages/plugins/shell/src`, because the one thing that made them
+floor — the sidebar's need to read the live composition, which no plugin had a door for — became
+`host.assembly`, a declared read-only surface any plugin may open. That is the ONLY way the set
+empties — a file moves into its plugin, or a pillar states the litmus finding that owns it — and
+the shell taking the first route rather than the second is the honest outcome the second was
+always standing in for. §Foundation law admits no third state, so S9 has no exception list and
+must never be taught one.
 
 ```json
 {
@@ -138,18 +141,16 @@ set empties — a file moves into its plugin, or a pillar states the litmus find
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
         "packages/web/src/workspace.tsx",
-        "packages/web/src/sidebar-panel.tsx",
-        "packages/web/src/container-view-panel.tsx",
+        "packages/web/src/workspace-arrange.ts",
         "packages/web/src/notice.tsx",
         "packages/web/src/styles.css",
         "packages/web/src/shell.css",
         "packages/web/src/container-memory.ts",
         "packages/web/src/web-version.ts",
-        "packages/web/src/generated-changelog.ts",
-        "packages/web/src/changelog-references.ts"
+        "packages/web/src/generated-changelog.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — INCLUDING the shell's own two panel components, which are floor for the same reason the placeholder is: the sidebar chrome reads the composition to learn which sections exist, and the container view resolves a route to a discipline and asks the projection registry for that discipline's renderer. Neither names a plugin and neither knows how anything is drawn (the reasoning is written where they are attached, packages/web/src/assembly.ts).",
+      "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — and as of 2026-09-01 that is literally true of the shell's own two panels as well: they moved into @manifold-plugin/shell once `host.assembly` gave every plugin the composition read the sidebar chrome needed, so this pillar claims no component it also renders. What is left is the frame — the tile layout and its one committed write per gesture, the workspace index, the two contexts the host publishes above the tree for its panels to read, and the shell's skin, which stays here because the `sidebar` row vocabulary is filled by core.index, core.machines and core.plugins and a plugin may not own three other plugins' appearance.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -341,12 +342,8 @@ enforcement machinery itself, not a test of somebody else's subject.
       "why": "the workspace host: fetches the per-principal layout and renders its panel leaves through TileTree"
     },
     {
-      "glob": "packages/web/src/sidebar-panel.tsx",
-      "why": "the core.shell.sidebar panel: sidebar chrome and the section stack, which must read the assembly to know which sections exist"
-    },
-    {
-      "glob": "packages/web/src/container-view-panel.tsx",
-      "why": "the core.shell.container-view panel: resolves the route to a container discipline and asks the projection registry for that discipline's renderer — it holds no renderer of its own"
+      "glob": "packages/web/src/workspace-arrange.ts",
+      "why": "the panel-arrange policy: given a workspace tree, the grabbed panel leaf and a resolved seam/zone aim, the next TileLayout or a named refusal — pure, so the F8 panel leg's legality is unit-testable without a DOM"
     },
     {
       "glob": "packages/web/src/notice.tsx",
@@ -358,7 +355,7 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/shell.css",
-      "why": "the shell's skin — the sidebar, the workspace frame and the routed container view. A separate OWNER from the floor stylesheet, in the same package because it has nowhere else to go: the components that paint it are floor, and a floor file may not import `@manifold-plugin/*` (§Lexicon cssFamilies)"
+      "why": "the shell's skin — the workspace frame, the sidebar rail and the ROW VOCABULARY every contributed section is filled into. A separate OWNER from the floor stylesheet, and it stays floor even though @manifold-plugin/shell now paints the two panels: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-count` and `.sidebar-section-action` are painted by core.index, core.machines and core.plugins, so moving the family into one plugin's package would make three plugins depend on a fourth's stylesheet. Same reason `plugin-placeholder` and `notice` are the floor's: the layer's skin is the layer owner's (§Lexicon cssFamilies)"
     },
     {
       "glob": "packages/web/src/container-memory.ts",
@@ -366,15 +363,11 @@ enforcement machinery itself, not a test of somebody else's subject.
     },
     {
       "glob": "packages/web/src/web-version.ts",
-      "why": "release metadata read by the shell — floor-neutral"
+      "why": "release metadata — the running build's own identity, injected by packages/web/vite.config.ts and frozen by the release path, handed to the shell's panel through the WorkspaceShell context. Floor-neutral"
     },
     {
       "glob": "packages/web/src/generated-changelog.ts",
       "why": "generated from CHANGELOG.md's released sections by the release path; never hand-edited, which is why §Lexicon allows its frozen vocabulary"
-    },
-    {
-      "glob": "packages/web/src/changelog-references.ts",
-      "why": "issue/PR reference parsing for the in-app history — floor-neutral"
     }
   ]
 }
@@ -671,7 +664,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "arrange mode",
-      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
+      "means": "the published mode (F8, `vantage.arranging`) in which a workspace stops being interactive and its parts become grabbable within their parent composition: sidebar sections reorder inside the sidebar and panels move inside the workspace tree, by pointer over the same seam and zone vocabulary every composition's own drag uses or by arrow key, and the arrangement commits at release through `core.space.setLayout` as per-principal layout data. Manifest order remains the default; an untouched workspace stores no arrangement",
       "banned": [],
       "allow": []
     },
@@ -886,7 +879,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "section",
-      "means": "contribution kind: a collapsible block in the sidebar stack, ordered by its manifest unless the reader has arranged it (see arrange mode)",
+      "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode)",
       "banned": [],
       "allow": []
     },
@@ -1280,12 +1273,12 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its sections, rows and inline actions — painted by `sidebar-panel.tsx`. Plugins fill these rows; the shell owns the row"
+      "why": "the sidebar rail, its sections, rows and inline actions. The rail itself is painted by @manifold-plugin/shell's `sidebar-panel.tsx`, but the ROW vocabulary is filled by core.index, core.machines and core.plugins — so the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row"
     },
     {
       "family": "workspace",
       "owner": "packages/web/src/shell.css",
-      "why": "the workspace frame and its empty state, painted by `workspace.tsx` and `container-view-panel.tsx`"
+      "why": "the workspace frame, its empty state and the arrange-mode affordances the frame itself owns (`workspace-arrange-*`, `workspace-panel-grip*`) — painted by the floor host `workspace.tsx` and by @manifold-plugin/shell's `container-view-panel.tsx`. The frame's own family stays the floor's: a rule scoped by `.workspace` reaches whatever the HOST drew, which is S13's 'ownership follows the scope', and the panel grips are the host's own chrome over leaves it does not own"
     },
     {
       "family": "status",
@@ -1609,7 +1602,7 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-state",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
       "why": "the word a gate reads to know the session is open; the one status a browser gate waits on before asserting anything else"
     },
     {
@@ -1619,12 +1612,12 @@ string" is the question a broken gate actually asks.
     },
     {
       "testid": "connection-status",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
       "why": "the status block that carries the state, scoped so a gate can assert the sidebar's copy of it rather than any occurrence"
     },
     {
       "testid": "machines-section",
-      "renderer": "packages/web/src/sidebar-panel.tsx",
+      "renderer": "packages/plugins/shell/src/sidebar-panel.tsx",
       "why": "templated `${section.id}-section`, so this row is the join between a PLUGIN MANIFEST section id (core.machines) and three gates that open that section — the rename this register exists to make loud"
     },
     {

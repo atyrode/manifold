@@ -10,20 +10,27 @@ import type { MachineSummary, Container, Attendance, PlacementItem } from "@mani
 import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";
-import type { ElementDocument, ElementProps, HostServices, ViewportHandle } from "./host.ts";
+import type {
+  ElementDocument,
+  ElementProps,
+  HostServices,
+  SectionProps,
+  ViewportHandle,
+} from "./host.ts";
 
 /**
  * PROJECTION — how one renderer paints a node it does not own (A4: composition is projection,
  * never absorption).
  *
- * A container renderer is a mount site for other people's work. A tile leaf holds a terminal,
- * a canvas, or a note; a canvas node holds a terminal or a nested composition. Every one of
- * those occupants belongs to a different plugin, and no plugin may import another (REGISTRY.md
+ * A container renderer is a mount site for other people's work, and so is the sidebar's own
+ * stack. A tile leaf holds a terminal, a canvas, or a note; a canvas node holds a terminal or a
+ * nested composition; a sidebar row holds whichever plugin declared it. Every one of those
+ * occupants belongs to a different plugin, and no plugin may import another (REGISTRY.md
  * §Foundation), so the mount site cannot name the renderer it needs. It asks for a KIND and
  * the engine answers with whatever the composition registered for it.
  *
- * That is the same shape the element registry already had, generalized to the other three
- * things a ref projects, and it is deliberately one mechanism rather than four channels:
+ * That is the same shape the element registry already had, generalized to the other four
+ * things a mount site projects, and it is deliberately one mechanism rather than five channels:
  *
  *   terminals   the terminal viewer plus the machine-choice policy that decides where a new
  *               terminal is born (one facet, because the birth and the paint are one plugin's)
@@ -33,6 +40,9 @@ import type { ElementDocument, ElementProps, HostServices, ViewportHandle } from
  *   overlays    decoration painted OVER somebody else's ref, keyed by slot (the presence
  *               island, the spotlight chip)
  *   elements    a scene record's renderer, keyed by wire element type
+ *   sections    a sidebar row's own body, keyed by the global section id its manifest declared
+ *               — the one kind whose mount site is itself a plugin, since the shell's panel
+ *               draws the stack and may not import a single row's owner
  *
  * The registry is built by the engine's browser half from the composition and republished on
  * every roster change, so a disabled plugin's occupant becomes the engine's named placeholder
@@ -40,7 +50,7 @@ import type { ElementDocument, ElementProps, HostServices, ViewportHandle } from
  * NOTHING when absent, because an inert box floating over a canvas is worse than absence.
  *
  * Nothing here decides anything: it resolves names to components a plugin registered, and it
- * carries no domain knowledge beyond the four contribution kinds above.
+ * carries no domain knowledge beyond the five contribution kinds above.
  */
 
 /** Why a projection is inert. Mirrored into `data-plugin-state` for gate assertions. */
@@ -207,6 +217,12 @@ export interface ProjectionRegistry {
   readonly revision: number;
   /** The engine's own inert-contribution chrome, injected so this module paints no CSS of its own. */
   readonly Placeholder: ComponentType<ProjectionPlaceholderProps>;
+  /**
+   * The engine's own fault-containment chrome, injected for exactly the reason
+   * {@link Placeholder} is: a projected occupant that throws must not take the application
+   * with it, the screen that says so is full-bleed floor chrome, and this module paints no CSS.
+   */
+  readonly ErrorBoundary: ComponentType<{ readonly children: ReactNode }>;
   readonly terminals: {
     readonly plugin: string;
     readonly title: string;
@@ -217,6 +233,8 @@ export interface ProjectionRegistry {
   renderer(layout: string): RegisteredRenderer<ContainerRendererProps> | null;
   overlay(slot: OverlaySlot): RegisteredRenderer<ContainerOverlayProps> | null;
   element(type: string): RegisteredElement | null;
+  /** Keyed by the GLOBAL section id a manifest declared — one sidebar, one slot per name. */
+  section(id: string): RegisteredRenderer<SectionProps> | null;
   /** The whole element vocabulary, for a paint boundary that needs a map (React Flow's). */
   readonly elements: ReadonlyMap<string, RegisteredElement>;
   /** The tool vocabulary in roster order, for whichever ref owns a toolbar. */
@@ -329,6 +347,36 @@ export function ContainerRenderer({ layout, ...ref }: ContainerRendererOutletPro
     return createElement(Placeholder, { name: registered.title, state: "unavailable" });
   }
   return createElement(registered.Component, ref);
+}
+
+export interface SectionOutletProps {
+  /** The GLOBAL section id, exactly as the owning manifest declared it. */
+  readonly id: string;
+  readonly host: HostServices;
+}
+
+/**
+ * One sidebar row's body. The mount site here is itself a PLUGIN — the shell's sidebar panel
+ * draws the stack, reads the rows off `host.assembly.sections`, and may not import the owner of
+ * a single one of them — so the stack asks for an id and the engine answers with whatever the
+ * composition registered, on the identical placeholder policy as {@link ElementOutlet}.
+ *
+ * Which CHROME wraps this body — a disclosure with a header, or a plain row that draws itself
+ * end to end — the stack decides from the row's `presentation`. This resolves the occupant and
+ * nothing else.
+ */
+export function SectionOutlet({ id, host }: SectionOutletProps): ReactElement {
+  const registry = useProjection();
+  const Placeholder = registry.Placeholder;
+  const registered = registry.section(id);
+  if (registered === null) return createElement(Placeholder, { name: id, state: "unknown" });
+  if (!registered.enabled) {
+    return createElement(Placeholder, { name: registered.title, state: "disabled" });
+  }
+  if (registered.Component === null) {
+    return createElement(Placeholder, { name: registered.title, state: "unavailable" });
+  }
+  return createElement(registered.Component, { host });
 }
 
 export interface ContainerOverlayOutletProps extends ContainerOverlayProps {

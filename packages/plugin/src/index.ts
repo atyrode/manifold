@@ -97,6 +97,7 @@ export {
   lastSpotlight,
   recordSpotlight,
   type AssemblyFacet,
+  type ComposedSection,
   type ElementDocument,
   type ElementHost,
   type ElementProps,

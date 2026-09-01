@@ -3,6 +3,23 @@ import { toggleArranging, toggleZoneProbe } from "@manifold/plugin/ui";
 import { shellManifest } from "./index.ts";
 
 /**
+ * `core.shell`, browser half — the two panels the workspace tree is built from, plus the keys
+ * the workspace itself answers to.
+ *
+ * THE PANELS LIVE HERE NOW, and that is the shell's carve-out ending rather than a file move.
+ * Both were floor while the sidebar needed a read of the live composition that no plugin had a
+ * door for; `host.assembly` is that door, declared and read-only, so the argument for the
+ * exception expired and the components followed their manifest (A1, invariant 12). The floor
+ * keeps only what a shell genuinely owns — the tile layout, the workspace index, and the two
+ * contexts it publishes above the tree.
+ *
+ * `packages/web/src/assembly.ts` is still the one file that ATTACHES these to the manifest ids
+ * the server's roster published; nothing here knows it is being registered.
+ */
+export { ContainerViewPanel } from "./container-view-panel.tsx";
+export { SidebarPanel } from "./sidebar-panel.tsx";
+
+/**
  * The shell's BROWSER half: the keys the workspace itself answers to.
  *
  * A binding row is a DECLARATION — key, label, scope — and the handler beside it is the shell's
