@@ -52,6 +52,13 @@ export const machinesManifest: PluginManifest = {
 };
 
 /**
+ * The withdrawal door's full name, built from the manifest id rather than spelled: the chrome
+ * that dispatches it and the `data-action` attribute that names it in the DOM (invariant 12)
+ * cannot drift from the declaration below. `core.keys` set this precedent.
+ */
+export const MACHINES_REVOKE_ACTION = `${machinesManifest.id}.revoke`;
+
+/**
  * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
  * is what the SDK's `machines()` parses and what the machine channel's own vocabulary is
  * described in. A plugin re-declaring the same object under a private name would be the

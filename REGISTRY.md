@@ -1620,7 +1620,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "machine",
       "owner": "packages/plugins/machines/src/styles.css",
-      "why": "a machine's liveness pip and the menu row shown when no machine can host a terminal"
+      "why": "a machine's liveness pip, the menu row shown when no machine can host a terminal, the two-press control that withdraws a machine's credential (ADR 0019 \u00a73) and the refusal the section renders in place"
     },
     {
       "family": "canvas-text",
