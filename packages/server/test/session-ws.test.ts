@@ -866,3 +866,59 @@ describe("SessionGateway spectator sockets", () => {
     fixture.store.close();
   });
 });
+
+describe("SessionGateway scene writes", () => {
+  test("a reader in the room is refused both scene writes and nothing else it sends", () => {
+    /*
+      `doc_update` and `gesture` are ONE authorization question — may this principal change what
+      this container looks like — and they are asked at one gate. Asserted for both frames
+      together because the refusal used to be written out twice: two copies are two chances for a
+      later edit to answer the same question differently, and only one of the two answers is a
+      bug anybody would notice.
+     */
+    const fixture = gatewayFixture();
+    const writerSocket = new FakeSocket();
+    const readerSocket = new FakeSocket();
+    const readerToken = fixture.auth.mintToken(
+      {
+        principal: { name: "read-only occupant", kind: "human" },
+        caps: ["containers:read"],
+      },
+      fixture.auth.authenticate(fixture.ownerKey),
+    ).token;
+    join(fixture.gateway, "writer", writerSocket, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "reader", readerSocket, fixture.container.id, readerToken);
+
+    const writes: Record<string, unknown>[] = [
+      { type: "doc_update", update: docUpdateFor("reader-element") },
+      { type: "gesture", kind: "move", phase: "active", elementId: "element", x: 1, y: 1 },
+    ];
+    for (const write of writes) {
+      readerSocket.clear();
+      writerSocket.clear();
+      send(fixture.gateway, "reader", CH, write);
+      expect(readerSocket.messages()).toEqual([
+        { type: "error", code: "forbidden", message: "scenes:write capability required" },
+      ]);
+      // Refused means refused: neither the update nor the gesture ever reached the room.
+      expect(writerSocket.messages()).toEqual([]);
+    }
+
+    // A reader is not a spectator: recovery still answers, because a token that may READ the
+    // scene must be able to catch up on it.
+    readerSocket.clear();
+    send(fixture.gateway, "reader", CH, { type: "resync_request" });
+    expect(readerSocket.messages().map((message) => message.type)).toEqual(["resync"]);
+
+    // And the gate lets the authorized write through unchanged: the reader sees the owner's.
+    readerSocket.clear();
+    send(fixture.gateway, "writer", CH, {
+      type: "doc_update",
+      update: docUpdateFor("owner-element"),
+    });
+    expect(readerSocket.messages().map((message) => message.type)).toEqual(["doc_update"]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+});
