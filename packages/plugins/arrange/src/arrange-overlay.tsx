@@ -19,6 +19,7 @@ import {
   setVantage,
   useNotice,
   useVantage,
+  type ControlKind,
 } from "@manifold/plugin/ui";
 import { ROOT_TILE_ID, type Structure, type TileEdge, type TileLayout } from "@manifold/protocol";
 import {
@@ -75,6 +76,21 @@ const PALETTE_STRUCTURES: Readonly<Record<string, Structure>> = {
   "stack-row": { kind: "split", dir: "row" },
   "stack-column": { kind: "split", dir: "column" },
   spacer: { kind: "spacer" },
+};
+
+/**
+ * WHICH OPERATION WEARS WHICH VERB MARK — the same private reading of this plugin's own tool
+ * ids the palette table above makes, for the buttons instead of the drag sources. The marks
+ * come from the engine's CLOSED control vocabulary and every one of them is a neutral verb:
+ * Shelf IS `park` (the representation leaves its seat, the panel keeps running on the shelf),
+ * Reset IS `restart` (back to its beginning, whatever it is), Equalize IS `equalize` (one
+ * even share for the parts). A stranger plugin's tool is not in the table and paints as a
+ * plain word — this component cannot know its verb, and a wrong mark is worse than none.
+ */
+const OPERATION_ICONS: Readonly<Record<string, ControlKind>> = {
+  equalize: "equalize",
+  shelf: "park",
+  reset: "restart",
 };
 
 /** Which sibling an arrow key reaches for; the tile vocabulary's own edges, not a new one. */
@@ -757,13 +773,17 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                   className={`arrange-slot${trade ? " is-swap" : ""}`}
                   style={paint(prospect.slot)}
                   aria-hidden="true"
-                />
+                >
+                  {trade ? <ControlIcon kind="swap" size={16} /> : null}
+                </div>
                 {prospect.partner === null ? null : (
                   <div
                     className="arrange-slot is-swap"
                     style={paint(prospect.partner)}
                     aria-hidden="true"
-                  />
+                  >
+                    <ControlIcon kind="swap" size={16} />
+                  </div>
                 )}
               </>
             );
@@ -789,6 +809,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         </button>
         <div className="arrange-toolbar-status" role="status">
           <strong className="arrange-toolbar-title">Arrange mode</strong>
+          <span className="arrange-toolbar-sep" aria-hidden="true" />
           {scopeTitle === null ? (
             <span className="arrange-toolbar-hint">Esc or F8 to finish.</span>
           ) : (
@@ -807,28 +828,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
             </span>
           )}
         </div>
-        {shelvedList.length === 0 ? null : (
-          <div className="arrange-shelf" role="list" aria-label="Unseated panels">
-            {shelvedList.map((entry) => (
-              <button
-                key={entry.panelId}
-                type="button"
-                className="arrange-shelf-item"
-                data-action="core.space.setLayout"
-                data-testid="arrange-shelf-item"
-                disabled={operationsDisabled}
-                onClick={() => runReseat(entry.panelId)}
-              >
-                {entry.title}
-              </button>
-            ))}
-          </div>
-        )}
+        <span className="arrange-toolbar-sep" aria-hidden="true" />
         {/*
           THE PALETTE. Each item is a DRAG SOURCE, not a button — pressing one does nothing,
           because "insert a stack somewhere" was never a question a click could answer without
           the toolbar inventing a second addressing scheme for WHERE. The drag answers it with
           the pointer, through the same seam and zone vocabulary every other carry uses.
+          Hence the grip cue and the grab cursor: an item has to LOOK like the thing you pick
+          up, in the same grip vocabulary the sidebar's rows and this bar's own handle use.
 
           Live even while scoped into a panel: in there the panel takes the drop into its own
           arrangement, which is the whole reason the sidebar can be given side-by-side rows.
@@ -845,35 +852,71 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                 draggable
                 data-action="core.space.setLayout"
                 data-testid={`palette-${tool.id}`}
+                data-dir={structure.kind === "split" ? structure.dir : undefined}
                 aria-label={`Drag in a ${tool.title.toLowerCase()}`}
                 onDragStart={(event) => beginPaletteDrag(event, structure)}
               >
-                <ItemIcon kind="structure" size={13} />
+                <ControlIcon kind="grip" size={11} className="arrange-palette-cue" />
+                <ItemIcon
+                  kind={structure.kind === "spacer" ? "spacer" : "structure"}
+                  size={13}
+                  className="arrange-palette-shape"
+                />
+                {tool.title}
+              </button>
+            );
+          })}
+        </div>
+        <span className="arrange-toolbar-sep" aria-hidden="true" />
+        {/*
+          Shelf is the one operation whose verb needs a SEAT rather than the root, so it reads
+          the selection — tap a grip first — and refuses by name when there is none, which the
+          shelf list after it then makes recoverable in one press.
+        */}
+        <div className="arrange-toolbar-tools">
+          {operations.map((tool) => {
+            const mark = OPERATION_ICONS[tool.id];
+            return (
+              <button
+                key={tool.id}
+                type="button"
+                className="arrange-toolbar-button"
+                data-action="core.space.setLayout"
+                data-testid={`toolbar-${tool.id}`}
+                disabled={operationsDisabled}
+                onClick={() => runTool(tool.id)}
+              >
+                {mark === undefined ? null : <ControlIcon kind={mark} size={13} />}
                 {tool.title}
               </button>
             );
           })}
         </div>
         {/*
-          Shelf is the one operation whose verb needs a SEAT rather than the root, so it reads
-          the selection — tap a grip first — and refuses by name when there is none, which the
-          shelf list below then makes recoverable in one press.
+          LAST, because it is transient: a shelf that appeared mid-bar would shove the palette
+          and the operations sideways at the very moment the reader is aiming at them.
         */}
-        <div className="arrange-toolbar-tools">
-          {operations.map((tool) => (
-            <button
-              key={tool.id}
-              type="button"
-              className="arrange-toolbar-button"
-              data-action="core.space.setLayout"
-              data-testid={`toolbar-${tool.id}`}
-              disabled={operationsDisabled}
-              onClick={() => runTool(tool.id)}
-            >
-              {tool.title}
-            </button>
-          ))}
-        </div>
+        {shelvedList.length === 0 ? null : (
+          <div className="arrange-shelf" role="list" aria-label="Unseated panels">
+            <span className="arrange-shelf-label" aria-hidden="true">
+              Shelf
+            </span>
+            {shelvedList.map((entry) => (
+              <button
+                key={entry.panelId}
+                type="button"
+                className="arrange-shelf-item"
+                data-action="core.space.setLayout"
+                data-testid="arrange-shelf-item"
+                disabled={operationsDisabled}
+                onClick={() => runReseat(entry.panelId)}
+              >
+                <ItemIcon kind="panel" size={13} />
+                {entry.title}
+              </button>
+            ))}
+          </div>
+        )}
       </aside>
     </>
   );

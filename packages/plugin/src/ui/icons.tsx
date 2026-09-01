@@ -10,6 +10,7 @@ import {
   Columns2,
   CornerDownRight,
   Ellipsis,
+  Equal,
   Eye,
   Folder,
   FolderOpen,
@@ -174,6 +175,12 @@ const ITEM_GLYPHS: Readonly<Record<string, LucideIcon>> = {
    * what a palette carry holds — a shape with an axis and no occupant yet.
    */
   structure: Columns2,
+  /**
+   * EMPTY ROOM HELD OPEN: a spacer leaf is a seat with deliberately nothing in it, and it
+   * wears the same dashed plane the arrange wireframe already paints on its leaf — dashed
+   * meaning "bounds, no occupant" in both places.
+   */
+  spacer: SquareDashed,
   machine: Server,
   folder: Folder,
   folderOpen: FolderOpen,
@@ -236,6 +243,12 @@ export type ControlKind =
    * (#116) and had no caller at all.
    */
   | "restart"
+  /**
+   * GIVE THE PARTS ONE EVEN SHARE, whatever they are parts of. A neutral verb by the same
+   * litmus as `restart` above: it carries no object, so the vocabulary reads the same with
+   * `core.arrange` — today's one caller, normalizing a tree's ratios — removed.
+   */
+  | "equalize"
   | "grip"
   /**
    * THIS CONTROL IS NOT YOURS TO OPERATE — the one member of the vocabulary that names a
@@ -300,6 +313,8 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
    */
   revoke: Ban,
   restart: RotateCw,
+  /** The equals sign itself: two even bars, legible at 13px where a distribute glyph mushes. */
+  equalize: Equal,
   locked: Lock,
   assembly: Blocks,
   nesting: ListTree,
