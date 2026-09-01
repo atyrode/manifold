@@ -35,7 +35,7 @@ function roster(entries: readonly { manifest: PluginManifest; enabled?: boolean 
   return entries.map((entry) => ({
     manifest: entry.manifest,
     enabled: entry.enabled ?? true,
-    source: "core" as const,
+    source: "plugin" as const,
     actions: [],
   }));
 }
