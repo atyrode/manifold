@@ -388,3 +388,36 @@ export function testPluginHost(
   }
   return host;
 }
+
+/**
+ * THE SAME STORE, REASSEMBLED WITH ONE SEAT OFF — switched off out of band, which for an
+ * `essential` seat is the only way it can be off at all.
+ *
+ * `engine.plugins.setEnabled` refuses `core.shell`, `core.space`, `core.index`, `core.access`,
+ * `core.brand`, `core.keys` and `core.plugins` with the `essential` class (issue #113), and
+ * that refusal is a rule at the DOOR rather than an impossibility: an assembly can still boot
+ * with the row in the store's disabled set — an operator editing SQLite, or a shipped seat
+ * that lost its flag between releases — which is precisely the state the floor's recovery gate
+ * exists to answer (`EssentialRecovery`). So the disabled-door contracts are still owed by
+ * every one of those plugins: rung 2 refuses, and the `cleanup` carve-outs must still let an
+ * administrator remove what is left (D12). This is how a test reaches that state honestly,
+ * instead of asserting a door answer the door no longer gives.
+ *
+ * A second host over the same store, rooms and broker, because an assembly is composed once
+ * at boot; the fixture's original host keeps the roster it was built with and the caller uses
+ * the one returned here.
+ */
+export function hostWithSeatOff(
+  parts: {
+    readonly store: ServerStore;
+    readonly auth: AuthService;
+    readonly rooms: RoomManager;
+    readonly broker: TerminalBroker;
+    readonly runtime: RuntimeDeps;
+  },
+  id: string,
+  changedBy = "out-of-band",
+): PluginHost {
+  parts.store.setPluginEnabled(id, false, changedBy, parts.runtime.now());
+  return testPluginHost(parts.store, parts.auth, parts.rooms, parts.broker, parts.runtime);
+}

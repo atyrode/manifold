@@ -34,12 +34,23 @@ import { z } from "zod";
  * the calling principal (`ctx.identity`), and it cannot see a raw secret except the one it
  * is handing to the caller who just asked for it.
  *
- * NOT `essential`, deliberately, and the reason is structural rather than a judgement call:
- * the owner key authenticates OUTSIDE the token system (`AuthService.authenticate` compares
- * it before any token lookup), so disabling this plugin can never lock the owner out of
- * their own workspace. Turning it off costs the ability to issue and revoke DELEGATED
- * authority; it does not cost the ability to administer, and the owner can always turn it
- * back on. `essential` is reserved for plugins the workspace cannot draw itself without.
+ * ESSENTIAL (issue #113), and this manifest used to say the opposite, so the correction is
+ * recorded rather than quietly swapped. The old reading was: the owner key authenticates
+ * OUTSIDE the token system (`AuthService.authenticate` compares it before any token lookup),
+ * so disabling this plugin can never lock the owner out — therefore ordinary. That answers
+ * LOCKOUT, which was never the criterion. The criterion is whether the workspace can be
+ * DRAWN, and `createPrincipal` is the only door that turns a credential into an identity: off,
+ * the identity gate has nothing to knock on, so no browser that is not already holding a token
+ * can enter this workspace at all — first-run onboarding and every new device with it. The
+ * floor's boot path names this door (`packages/web/src/api.ts`), and the floor may only lean
+ * on a seat the engine guarantees is there.
+ *
+ * What survives from the old reading is the RECOVERY story, and it is load-bearing here in a
+ * way it is not for the other essential seats: the floor's recovery gate mounts inside the
+ * identity gate, so an assembly that arrives with this seat off out of band cannot offer the
+ * one-click restore to a device with no token. The owner key is the way back — it dispatches
+ * `engine.plugins.setEnabled` as root without a principal — which is why the same fact that
+ * used to argue for `ordinary` is the reason the refusal is safe.
  *
  * ADR 0011 LANDED beneath this door. Flat caps plus a container scope are grant rows on the node
  * tree now, and a token references the grant it was minted from. The vocabulary a caller sees —
@@ -99,6 +110,7 @@ export const accessManifest: PluginManifest = {
     would have meant the two were never orthogonal.
   */
   capabilities: ["*", "tokens:mint", "containers:read", "containers:write"],
+  essential: true,
   contributes: {
     panels: [],
     /*

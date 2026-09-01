@@ -14,7 +14,7 @@ import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, hostWithSeatOff, testPluginHost, testStore } from "./helpers.ts";
 
 /**
  * THE WORKSPACE INDEX'S DOORS. Nine of them replaced four bespoke route families, and the
@@ -43,6 +43,8 @@ interface IndexFixture {
   readonly store: ServerStore;
   readonly auth: AuthService;
   readonly owner: AuthContext;
+  readonly rooms: RoomManager;
+  readonly broker: TerminalBroker;
   readonly host: PluginHost;
 }
 
@@ -65,7 +67,7 @@ function fixture(): IndexFixture {
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   const host = testPluginHost(store, auth, rooms, broker, runtime);
-  return { runtime, store, auth, owner, host };
+  return { runtime, store, auth, owner, rooms, broker, host };
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
@@ -140,13 +142,22 @@ describe("the ladder every core.index door answers", () => {
     });
   });
 
-  test("rung 2: disabling the index closes its reads and its writes, never its removals", async () => {
+  test("rung 2: an index that is off closes its reads and its writes, never its removals", async () => {
     const base = fixture();
     const container = await createContainer(base, "doomed");
     const folder = await createFolder(base, "doomed folder");
+
+    /*
+      THE DOOR REFUSES NOW. `core.index` is `essential` (issue #113) — the only door that
+      mints a container and the only one that reads one — so an administrator cannot reach
+      this state through the product at all, and the rung-2 contracts below are what the seat
+      still owes when an assembly arrives with it off out of band (the state the floor's
+      recovery gate answers).
+    */
     expect(await base.host.setEnabled("core.index", false, base.owner.principal.id)).toEqual({
-      ok: true,
+      refused: "essential",
     });
+    const host = hostWithSeatOff(base, "core.index");
 
     for (const [name, args] of [
       ["core.index.read", {}],
@@ -161,19 +172,19 @@ describe("the ladder every core.index door answers", () => {
         { item: { kind: "container", id: container.id }, parentId: null, index: 0 },
       ],
     ] as const) {
-      expect(denial(await base.host.dispatch(base.owner, name, args))).toEqual({
+      expect(denial(await host.dispatch(base.owner, name, args))).toEqual({
         rule: "plugin_disabled",
         message: 'plugin "core.index" is disabled',
       });
     }
 
-    // D12: creation and administration die, CLEANUP survives. An administrator turning the
-    // index off must never leave a container or a folder nobody is able to remove.
+    // D12: creation and administration die, CLEANUP survives. An assembly that arrives with
+    // the index off must never leave a container or a folder nobody is able to remove.
     expect(
-      await base.host.dispatch(base.owner, "core.index.deleteFolder", { folderId: folder.id }),
+      await host.dispatch(base.owner, "core.index.deleteFolder", { folderId: folder.id }),
     ).toMatchObject({ ok: true });
     expect(
-      await base.host.dispatch(base.owner, "core.index.deleteContainer", {
+      await host.dispatch(base.owner, "core.index.deleteContainer", {
         containerId: container.id,
       }),
     ).toEqual({ ok: true, result: {} });

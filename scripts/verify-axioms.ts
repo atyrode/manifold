@@ -4016,6 +4016,65 @@ try {
     );
   }
 
+  {
+    /*
+      THE FLOOR'S OWN SEATS, BOTH WAYS (issue #113). Every other rung of R3 asks what happens
+      when an ORDINARY plugin goes off. This one asks the question the hot-disable matrix never
+      did: what happens to a plugin the FLOOR ITSELF dispatches.
+
+      `packages/web/src/assembly.ts` names five doors on three plugins, and each is a step the
+      workspace must complete before anybody can see it — `core.space` writes every principal's
+      tile tree, including the pruned commit the engine's own placeholder makes, which is the
+      D4 promise that a disabled panel plugin can never brick a layout; `core.index` mints and
+      reads the containers a route resolves; `core.access` turns the owner key into an identity,
+      the first thing that happens in this app. All three are `essential`, so the answer is
+      REFUSAL: an administrator cannot take a door out from under the shell that dispatches it.
+      The live roster's flag is asserted beside the refusal, because a manifest field that never
+      reached the assembly would refuse nothing and read identically from the outside.
+
+      The SURVIVAL half is the same claim inverted. What the floor names as data it may find
+      absent stays ordinary: `FEED_TOPICS` subscribes to `core.machines`'s node, so that seat
+      goes off and the workspace keeps painting — rail and canvas both — because a subscription
+      to a plugin that is off simply reports nothing. Naming a DOOR is the coupling that needs
+      the guarantee; naming a TOPIC is not.
+    */
+    const roster = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins;
+    const seats = ["core.space", "core.index", "core.access"] as const;
+    const broken: string[] = [];
+    for (const id of seats) {
+      const outcome = ActionOutcomeSchema.parse(
+        await dispatch(ENGINE_SET_ENABLED_ACTION, { id, enabled: false }),
+      );
+      const declared = roster.find((row) => row.manifest.id === id)?.manifest.essential === true;
+      if (!declared) broken.push(`${id} is not essential in the live roster`);
+      if (outcome.ok) broken.push(`${id} accepted its own disable`);
+      else if (outcome.denial.rule !== "refused" || outcome.denial.message !== "essential") {
+        broken.push(`${id} answered ${outcome.denial.rule}/${outcome.denial.message}`);
+      }
+    }
+    /*
+      "Still painting" is the canvas AND the index row, and it is also the negative rung the
+      floor would otherwise fail silently: `EssentialRecovery` replaces the whole workspace
+      when any essential seat reads as off, so a canvas on screen is a live assembly whose
+      essential seats are all present, not merely a page that did not crash.
+    */
+    const painting = async (): Promise<boolean> =>
+      await browser!.evaluate<boolean>(
+        `document.querySelector('.react-flow') !== null && document.querySelector('[data-section-id="index"]') !== null`,
+      );
+    const ordinaryOff = await setEnabled("core.machines", false);
+    const survived = await settles(painting, 10_000);
+    const ordinaryBack = await setEnabled("core.machines", true);
+    const restored = await settles(painting, 10_000);
+    check(
+      "R3 floor seats: essential refuse, ordinary survive",
+      broken.length === 0 && ordinaryOff && survived && ordinaryBack && restored,
+      broken.length === 0
+        ? `${list([...seats])} each refuse their own disable as essential; the workspace keeps painting across an ordinary coupling (core.machines) going off and coming back`
+        : list(broken),
+    );
+  }
+
   // ─────────────────────────────────────────── R9: layout resilience
 
   {

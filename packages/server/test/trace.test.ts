@@ -21,7 +21,14 @@ import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testEventHub, testPluginHost, testStore } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  hostWithSeatOff,
+  testEventHub,
+  testPluginHost,
+  testStore,
+} from "./helpers.ts";
 
 /**
  * THE TRACE LEDGER (axiom A6, ADR 0018).
@@ -415,9 +422,14 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(argRow.outcome).toBe("invalid_args");
     expect(JSON.parse(argRow.payload)).toEqual({ nonsense: true });
 
-    // Rung 2, PLUGIN DISABLED: a door whose plugin is off answers, and the answer is recorded.
-    await base.host.setEnabled("core.index", false, base.owner.principal.id);
-    const disabledRefusal = await base.host.dispatch(base.owner, "core.index.createContainer", {
+    /*
+      Rung 2, PLUGIN DISABLED: a door whose plugin is off answers, and the answer is recorded.
+      `core.index` is `essential` (issue #113), so the seat is switched off the one way it can
+      be — out of band, before an assembly composes — and the ledger it writes to is the same
+      store, which is what `newestTrace` reads.
+    */
+    const offIndex = hostWithSeatOff(base, "core.index");
+    const disabledRefusal = await offIndex.dispatch(base.owner, "core.index.createContainer", {
       name: "nope",
     });
     expect(disabledRefusal.ok).toBeFalse();
