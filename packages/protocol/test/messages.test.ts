@@ -840,7 +840,7 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v20 ADDS to the acceptance set, because the agent wire still did not move", () => {
+  test("v21 ADDS to the acceptance set, because the agent wire still did not move", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
@@ -849,14 +849,15 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
 
       v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing), v18 -> v19 (the
       session channel's liveness pair, reoriented so the SERVER pings and the browser
-      answers) and v19 -> v20 (credential expiry and the credential list, whose one exemption
-      is precisely the machine token) are all the other case. Every one of them leaves
-      `AgentMessage` and `ServerToAgentMessage` gaining, losing and renaming nothing; an agent
-      never sees a principal, a session frame or a browser's throttled timers, and no
-      credential an enrolled spoke holds changed meaning at v20. So the invariant's first
-      clause applies verbatim — a bump that leaves the agent wire identical ADDS — and a v16
-      agent keeps its terminals across this deploy instead of being locked out by a version
-      check for a change it cannot see.
+      answers), v19 -> v20 (credential expiry and the credential list, whose one exemption
+      is precisely the machine token) and v20 -> v21 (the container-discipline roster
+      opening from a wire enum into a manifest contribution) are all the other case. Every
+      one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining, losing and
+      renaming nothing; an agent never sees a principal, a session frame, a container row, a
+      manifest or a browser's throttled timers, and no credential an enrolled spoke holds
+      changed meaning at v20. So the invariant's first clause applies verbatim — a bump that
+      leaves the agent wire identical ADDS — and a v16 agent keeps its terminals across this
+      deploy instead of being locked out by a version check for a change it cannot see.
 
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a
@@ -865,6 +866,7 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
     expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 5,
       PROTOCOL_VERSION - 4,
       PROTOCOL_VERSION - 3,
       PROTOCOL_VERSION - 2,

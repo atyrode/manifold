@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -175,8 +175,36 @@ export const PROTOCOL_VERSION = 20;
  * agent's credential is long-lived by design, so nothing an enrolled spoke holds changes
  * meaning across this deploy. So invariant 10's first clause applies verbatim: the set is
  * `{16, 17, 18, 19, 20}` and NO fleet restart is owed.
+ * v20 -> v21: THE DISCIPLINE ROSTER OPENS (#110, building the ruling ratified on #86).
+ * `ContainerDisciplineSchema` stops enumerating `canvas` and `composition` and becomes a
+ * bounded plugin-id-segment string, so a container discipline is a manifest contribution
+ * (`contributes.disciplines`) instead of a wire enum. Every direction of this is a
+ * LOOSENING or an ADDITION: every `Container` row that parsed at v20 parses at v21 with
+ * the same meaning, every manifest written before the field existed composes unchanged,
+ * and the two shipped disciplines say in `core.canvas`'s and `core.compositions`'
+ * manifests exactly what `placement.ts` used to say in four literal tables.
+ *
+ * It is a bump rather than a quiet addition because the ANSWERS change shape in ways a
+ * v20 reader would misread: `PLACEMENT_DENIAL_RULES` gains `unknown_discipline`, a word a
+ * v20 client has no rendering for; `placementVocabulary().items` and `.canvasOps` no
+ * longer carry `canvas`/`composition` rows, `.containers` is the closed FAMILY list
+ * rather than a table of acceptances, and `.destinations` loses its `requires` column. A
+ * client switching on those tables to predict legality would predict wrongly, and being
+ * refused at the join with 4409 is the honest outcome.
+ *
+ * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
+ * lost and renamed nothing; `machine.ts` mentions no container, no placement and no
+ * manifest, and an agent never sees a session frame, a scene document or a roster. So
+ * invariant 10's first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and
+ * NO fleet restart is owed — an enrolled v16 spoke keeps its terminals across this deploy.
+ *
+ * The hub-ahead-of-fleet coupling still holds and is stated rather than assumed: the
+ * compat set only makes a hub tolerant of OLDER agents, so the release carrying this bump
+ * deploys the hub at or ahead of the agent binaries the pin cron ships.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16, 17, 18, 19, 20]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  16, 17, 18, 19, 20, 21,
+]);
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -196,8 +224,12 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([16
  * v20: session/HTTP only — credential expiry and the credential list (ADR 0019). A guest
  * instance holds a SHARE secret, which is not a token row and carries no expiry, so the
  * instance wire is byte-identical again and the version is ADDED.
+ * v21: session/HTTP and manifest only — the discipline roster opens (#110). `instance.ts`
+ * mentions no container, no placement and no manifest, and a guest holds a share secret
+ * rather than a scene, so the instance wire is byte-identical a third time and the
+ * version is ADDED.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
