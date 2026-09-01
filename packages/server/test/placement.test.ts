@@ -59,6 +59,7 @@ import {
   FakeClock,
   FakeRuntime,
   FakeSocket,
+  hostWithSeatOff,
   placeTile,
   testPluginHost,
   testStore,
@@ -1859,16 +1860,33 @@ describe("core.space.place", () => {
     // Nothing above the handler's rung wrote anything.
     expect(readElements(roomFor(fixture, fixture.canvas.id).doc).size).toBe(5);
 
-    // And with the plugin off, the door is gone rather than silent: a disabled plugin's
-    // action reports `plugin_disabled`, which is a different truth from a wrong name.
-    const disabled = await dispatch(
+    /*
+      And with the seat off, the door is gone rather than silent: a disabled plugin's action
+      reports `plugin_disabled`, which is a different truth from a wrong name.
+
+      `core.space` is `essential` (issue #113) — it writes every principal's workspace tree,
+      including the pruned commit the engine's own placeholder makes — so the toggle refuses,
+      and the rung is exercised on an assembly composed with the row already in the store's
+      disabled set, which is the only way this state is reachable. Dispatched on that assembly
+      directly rather than over HTTP, because this fixture's app holds the host it was built
+      with.
+    */
+    const refusedToggle = await dispatch(
       fixture,
       OWNER_KEY,
       { id: "core.space", enabled: false },
       "engine.plugins.setEnabled",
     );
-    expect(disabled.ok).toBe(true);
-    const afterDisable = await dispatch(fixture, OWNER_KEY, legal);
+    expect(refusedToggle.ok).toBe(false);
+    if (!refusedToggle.ok) {
+      expect(refusedToggle.denial.rule).toBe("refused");
+      expect(refusedToggle.denial.message).toBe("essential");
+    }
+    const afterDisable = await hostWithSeatOff(fixture, "core.space").dispatch(
+      fixture.root,
+      "core.space.place",
+      legal,
+    );
     expect(afterDisable.ok).toBe(false);
     if (!afterDisable.ok) expect(afterDisable.denial.rule).toBe("plugin_disabled");
   });

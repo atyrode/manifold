@@ -117,7 +117,7 @@ export const manifest: PluginManifest = {
   title: "Draw",
   description: "Freehand strokes on the canvas.",
   capabilities: ["scenes:write"], // the union of everything this plugin's actions may need
-  // essential: true,              // optional; only core.shell claims it
+  // essential: true,              // optional; seven shipped seats claim it
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
   dependencies: {
     "core.canvas": {
@@ -210,9 +210,14 @@ Rules worth knowing before you write one:
   `label`. It is **data, not a component**: the engine draws the placeholder, because a plugin that
   is off cannot be asked to render its own absence. Omitting the field is a real declaration
   (absent ≡ `ghost`), and `hide` is for chrome only — never for a node holding a user's work (§6).
-- **`essential: true` means the workspace cannot be drawn without you.** Four plugins claim it:
-  `core.shell` (the panels), `core.brand`, `core.keys` and `core.plugins` — the rail's
-  non-negotiables (issue #91). Attempting to disable an essential plugin returns
+- **`essential: true` means the workspace cannot be drawn without you.** Seven plugins claim it,
+  in two families. The RAIL'S NON-NEGOTIABLES: `core.shell` (the panels), `core.brand`,
+  `core.keys` and `core.plugins` (issue #91). The SEATS THE FLOOR DISPATCHES: `core.space` (the
+  only writer of a workspace tile tree, the placeholder's own pruned commit included),
+  `core.index` (the only door that mints or reads a container) and `core.access` (the only path
+  from a credential to an identity) — each named by `packages/web/src/assembly.ts`, because a
+  floor that dispatches a door may not have that door taken away underneath it (issue #113, ADR
+  0013 addendum 2026-09-01). Attempting to disable an essential plugin returns
   `{ ok: false, denial: { rule: "refused", message: "essential" } }`, where the message is one
   member of the published refusal-class set (`essential`, `builtin`, the dependency classes, the
   data-version classes, `still_enabled`, …) — never free-form text. Essential protects the SEAT,

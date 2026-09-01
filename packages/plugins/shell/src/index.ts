@@ -96,11 +96,21 @@ export const shellManifest: PluginManifest = {
  * and "the tree" and "the panels that fill it" are two concepts even when one package ships
  * both.
  *
- * It contributes no panel, no section and no element. Disabling it stops layout writes and
- * placements without taking the shell's panels down with it — and never stops REMOVAL:
- * `removeTile` is `cleanup`, so an administrator switching this plugin off can no more
- * strand a composition's leaves than they can strand a terminal (D12, `core.terminals.kill`'s
- * carve-out for the same reason).
+ * It contributes no panel, no section and no element, and it is `essential` (issue #113): the
+ * tile tree is the SHELL's own state, and this is the only door that writes it. `core.shell`
+ * is essential because nothing else can draw the workspace; splitting the tree out from the
+ * panels that fill it was a NAMESPACE decision, so leaving the write half disableable made
+ * half of one concept protected and the other half a toggle. Off, every arrangement in the
+ * workspace freezes for every principal at once, nothing can be placed anywhere, and — the
+ * decisive rung — the engine's own placeholder-with-remove, the affordance that guarantees a
+ * disabled panel plugin can never brick a layout (D4), is dead, because it commits its pruned
+ * tree through `setLayout`. An engine guarantee may not sit behind a plugin's toggle.
+ *
+ * `removeTile` stays `cleanup` and the carve-out stays live, because `essential` is a
+ * REFUSAL at the door rather than an impossibility: an assembly can still arrive with this
+ * seat off, out of band, and the floor answers that with its recovery gate
+ * (`EssentialRecovery`). In that state removal must still reach a composition's leaves, for
+ * `core.terminals.kill`'s reason exactly (D12).
  *
  * The three events it declares are its three doors' commit points, and each is addressed to the
  * node it actually changed. `layout_set` is announced on the CALLER'S PRINCIPAL node, because a
@@ -121,6 +131,7 @@ export const spaceManifest: PluginManifest = {
   description:
     "Stores each principal's workspace tile tree, and places items into the containers they compose.",
   capabilities: ["containers:write"],
+  essential: true,
   contributes: {
     panels: [],
     sections: [],

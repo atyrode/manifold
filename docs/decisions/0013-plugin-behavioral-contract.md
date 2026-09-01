@@ -1012,3 +1012,34 @@ exercisable with the first disableable panel plugin — this sentence is that de
 in-product-adjacent marker). Process lesson, now law-adjacent: a gate check inherits the
 authority of the contract it encodes — when a contract is amended, its checks amend in the
 SAME change, or the gate defends the past.
+
+---
+
+## Addendum — 2026-09-01: a floor may NAME a door it cannot lose (#113)
+
+§14 ruled the mechanism/verb split for the SERVER floor and left two surfaces unlitigated, and a
+probe found both naming ordinary, disableable seats: `SessionClient` carries roughly fourteen
+typed wrappers that spell `core.*` action ids inside a floor pillar, and `packages/web/src`
+dispatched `core.space.setLayout`, `core.index.createContainer/createFolder/readContainer` and
+`core.access.createPrincipal` directly from shell files. The ruling is one rule with two halves.
+**A convenience wrapper is a TYPED PROJECTION of a published door, never a second door**, and it
+is permitted on four conditions: it dispatches through the neutral primitive (`action` /
+`invoke`) rather than a transport of its own, so invariant 3 keeps one WS client; it adds typing
+and result parsing only — never policy, never a fallback, never a second refusal vocabulary, so
+a `plugin_disabled` refusal reaches the caller verbatim; the primitive stays complete and public,
+so a stranger's door is reachable with no wrapper and deleting every wrapper would lose reach
+for nobody; and the `core.` in a method name is AUTHORSHIP, not authority, exactly as it is on
+the wire (`CORE_NAMESPACE_PREFIX`). That is what keeps the pillar neutral: the SDK decides
+nothing differently for a door it happens to have typed. **And a floor that DISPATCHES a door
+may not have that door taken away underneath it.** Naming a door is a harder coupling than
+naming a topic — a subscription to a plugin that is off reports nothing, while a dispatch to one
+is a shell that stopped working — so the floor's own doors go through `assembly.ts`, the one file
+allowed to name a plugin, and the seats behind them are `essential`: `core.space` (the only
+writer of a workspace tree, including the pruned commit the engine's placeholder makes, which is
+D4's promise that a disable can never brick a layout), `core.index` (the only door that mints or
+reads a container) and `core.access` (the only path from a credential to an identity). `essential`
+stays what §10 made it — a refusal class at the door, not an impossibility — so the disabled-door
+contracts those seats owe, `cleanup` carve-outs included, remain live for the out-of-band state
+the floor's recovery gate answers. The gate half rides along, per the correction above: R3's
+hot-disable matrix now asserts the refusal for each of the three and continued painting across an
+ordinary coupling's disable.

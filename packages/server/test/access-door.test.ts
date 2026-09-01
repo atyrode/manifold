@@ -6,7 +6,7 @@ import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore } from "./helpers.ts";
+import { FakeClock, FakeRuntime, hostWithSeatOff, testPluginHost, testStore } from "./helpers.ts";
 
 /**
  * THE ACCESS DOOR — `core.access`, rung by rung, over the real assembly.
@@ -34,6 +34,8 @@ interface Fixture {
   readonly store: ServerStore;
   readonly auth: AuthService;
   readonly owner: AuthContext;
+  readonly rooms: RoomManager;
+  readonly broker: TerminalBroker;
   readonly host: PluginHost;
   readonly runtime: FakeRuntime;
 }
@@ -59,6 +61,8 @@ function fixture(logger: Logger = silentLogger): Fixture {
     store,
     auth,
     owner: auth.authenticate(OWNER_KEY),
+    rooms,
+    broker,
     host: testPluginHost(store, auth, rooms, broker, runtime, { logger }),
     runtime,
   };
@@ -117,19 +121,28 @@ describe("core.access ladder", () => {
     fix.store.close();
   });
 
-  test("disabling the plugin closes creation and minting but never revocation", async () => {
+  test("an access seat that is off closes creation and minting but never revocation", async () => {
     const fix = fixture();
     const victim = grant(fix, ["containers:read"]);
-    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({ ok: true });
+    /*
+      THE DOOR REFUSES NOW. `core.access` is `essential` (issue #113): `createPrincipal` is the
+      only path from a credential to an identity, so a workspace with this seat off cannot let
+      a new browser in at all. The rung-2 contracts below are what the seat still owes when an
+      assembly arrives with it off out of band, which is the only way it can be.
+    */
+    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({
+      refused: "essential",
+    });
+    const host = hostWithSeatOff(fix, "core.access");
 
-    const created = await fix.host.dispatch(fix.owner, "core.access.createPrincipal", {
+    const created = await host.dispatch(fix.owner, "core.access.createPrincipal", {
       name: "blocked",
     });
-    const minted = await fix.host.dispatch(fix.owner, "core.access.mint", {
+    const minted = await host.dispatch(fix.owner, "core.access.mint", {
       principal: { name: "blocked", kind: "agent" },
       caps: ["containers:read"],
     });
-    const revoked = await fix.host.dispatch(fix.owner, "core.access.revoke", {
+    const revoked = await host.dispatch(fix.owner, "core.access.revoke", {
       principalId: victim.principal.id,
     });
 
@@ -513,7 +526,7 @@ describe("core.access share ladder", () => {
     fix.store.close();
   });
 
-  test("disabling the plugin stops sharing and dialling, but never revocation", async () => {
+  test("an access seat that is off stops sharing and dialling, but never revocation", async () => {
     const fix = fixture();
     const container = accessContainer(fix);
     const minted = result(
@@ -525,15 +538,15 @@ describe("core.access share ladder", () => {
     );
     const shareId = Reflect.get(Reflect.get(minted as object, "share") as object, "id");
     if (typeof shareId !== "string") throw new Error("no share id");
-    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({ ok: true });
+    const host = hostWithSeatOff(fix, "core.access");
 
-    const blocked = await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+    const blocked = await host.dispatch(fix.owner, "core.access.mintShare", {
       node: containerNode(container),
       caps: ["containers:read"],
       origin: GUEST_ORIGIN,
     });
-    const listed = await fix.host.dispatch(fix.owner, "core.access.listShares", {});
-    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeShare", { shareId });
+    const listed = await host.dispatch(fix.owner, "core.access.listShares", {});
+    const revoked = await host.dispatch(fix.owner, "core.access.revokeShare", { shareId });
 
     /*
       D12 with the sharpest possible subject: the holder of a share secret is ANOTHER INSTANCE,
@@ -937,7 +950,7 @@ describe("core.access grant ladder", () => {
     fix.store.close();
   });
 
-  test("revoking a grant outlives a disable; writing and listing do not", async () => {
+  test("revoking a grant outlives an access seat being off; writing and listing do not", async () => {
     const fix = fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
@@ -948,17 +961,17 @@ describe("core.access grant ladder", () => {
       effect: "allow",
       reach: "subtree",
     });
-    expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({ ok: true });
+    const host = hostWithSeatOff(fix, "core.access");
 
-    const blocked = await fix.host.dispatch(fix.owner, "core.access.grant", {
+    const blocked = await host.dispatch(fix.owner, "core.access.grant", {
       principal: { kind: "any-agent" },
       node: ROOT,
       caps: ["containers:read"],
       effect: "allow",
       reach: "subtree",
     });
-    const listed = await fix.host.dispatch(fix.owner, "core.access.listGrants", {});
-    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeGrant", {
+    const listed = await host.dispatch(fix.owner, "core.access.listGrants", {});
+    const revoked = await host.dispatch(fix.owner, "core.access.revokeGrant", {
       grantId: written.id,
     });
 
