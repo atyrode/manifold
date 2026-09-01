@@ -342,8 +342,12 @@ export type DestinationKind = keyof typeof DESTINATION_KINDS;
  * The destination forms as a value tuple, so a discipline's `destinations` list has a
  * schema to be bounded by. Same completeness discipline as the guard tuples above.
  */
-export const DESTINATION_KIND_NAMES = ["canvas", "tile", "compose", "unplaced"] as const satisfies
-  readonly [DestinationKind, ...DestinationKind[]];
+export const DESTINATION_KIND_NAMES = [
+  "canvas",
+  "tile",
+  "compose",
+  "unplaced",
+] as const satisfies readonly [DestinationKind, ...DestinationKind[]];
 type MissingDestinationName = Exclude<DestinationKind, (typeof DESTINATION_KIND_NAMES)[number]>;
 const destinationNamesComplete: MissingDestinationName extends never ? true : never = true;
 void destinationNamesComplete;

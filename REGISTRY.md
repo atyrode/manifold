@@ -642,7 +642,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "discipline",
-      "means": "which renderer a container asks for, as a bounded id. The one field that separates one renderer of an object from another, and an OPEN roster since #110: a discipline is declared in a plugin manifest (contributes.disciplines) with the placement rows it owns, not enumerated in the protocol. The distribution ships canvas and composition. The retired claim that a value equals its owning plugin's last id segment is recorded in packages/protocol/src/layout.ts; who declares a discipline is answered by the assembly's registry and the published roster instead"
+      "means": "which renderer a container asks for, as a bounded id. The one field that separates one renderer of an object from another, and an OPEN roster since #110: a discipline is declared in a plugin manifest (contributes.disciplines) with the placement rows it owns, not enumerated in the protocol. The distribution ships canvas and composition. The retired claim that a value equals its owning plugin's last id segment is recorded in packages/protocol/src/layout.ts; who declares a discipline is answered by the assembly's registry and the published roster instead",
       "banned": [],
       "allow": []
     },

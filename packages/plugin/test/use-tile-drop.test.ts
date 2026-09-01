@@ -152,7 +152,10 @@ describe("the one state constructor", () => {
       previewFor(
         context(),
         wire,
-        carrying({ kind: "tile", containerId: "other", tileId: "a" }, { kind: "tile", containerId: null }),
+        carrying(
+          { kind: "tile", containerId: "other", tileId: "a" },
+          { kind: "tile", containerId: null },
+        ),
         null,
       )?.chip,
     ).toEqual({ kind: "tile", label: "tile" });

@@ -814,13 +814,13 @@ describe("open discipline roster", () => {
     expect(dropped.ok).toBe(false);
     if (!dropped.ok) expect(dropped.denial.rule).toBe("unknown_discipline");
     // Every form that names a container asks the same question and gets the same answer.
-    const tiled = resolvePlacement(
+    const intoTree = resolvePlacement(
       REFS.terminal,
       { kind: "tile", containerId: ORPHAN, targetTileId: null, edge: null },
       lookup,
     );
-    expect(tiled.ok).toBe(false);
-    if (!tiled.ok) expect(tiled.denial.rule).toBe("unknown_discipline");
+    expect(intoTree.ok).toBe(false);
+    if (!intoTree.ok) expect(intoTree.denial.rule).toBe("unknown_discipline");
     // And it is distinct from the container simply not being there.
     const missing = resolvePlacement(
       REFS.terminal,
@@ -876,12 +876,12 @@ describe("open discipline roster", () => {
       discipline: (id) =>
         id === "spreadsheet" ? spreadsheet : (CONTRIBUTED_DISCIPLINES[id] ?? null),
     };
-    const tiled = resolvePlacement(
+    const intoTree = resolvePlacement(
       REFS.terminal,
       { kind: "tile", containerId: "sheet-1", targetTileId: null, edge: null },
       withSheets,
     );
-    expect(tiled.ok && tiled.op).toBe("add_tile");
+    expect(intoTree.ok && intoTree.op).toBe("add_tile");
     // Its own legality rows are enforced, not the canvas's: it declared only the `tile`
     // form, so a coordinate drop is the `discipline` refusal and not a silent success.
     const dropped = resolvePlacement(
