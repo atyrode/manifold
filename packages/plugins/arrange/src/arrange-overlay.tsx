@@ -15,6 +15,7 @@ import {
 import {
   ControlIcon,
   ItemIcon,
+  KeyCap,
   WORKSPACE_TREE_CLASSES,
   heldStructure,
   holdStructure,
@@ -893,91 +894,102 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
       )}
       {!gripsPainted || layout === null || rects === null
         ? null
-        : Object.values(layout).map((tile) => {
-            const rect = rects.get(tile.id);
-            if (rect === undefined || tile.id === ROOT_TILE_ID) return null;
-            const structure = isStructure(tile);
-            if (!structure && !panelsGrabbable) return null;
-            const ref = tile.ref;
-            const panelId = ref?.kind === "panel" ? ref.panelId : null;
-            const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
-            const title =
-              panelId !== null
-                ? (panel?.title ?? panelId)
-                : (STRUCTURE_TITLES[tile.dir ?? (ref === null ? "vacant" : "spacer")] ?? "");
-            const depth = depths?.get(tile.id) ?? 1;
-            const style: CSSProperties = {
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-              ["--arrange-depth" as string]: depth,
-            };
-            const state = `${liveGrab === tile.id ? " is-grabbed" : ""}${
-              selected === tile.id ? " is-selected" : ""
-            }`;
-            const keys = (event: ReactKeyboardEvent<HTMLElement>): void => {
-              const direction = ARROW_EDGES[event.key];
-              if (direction === undefined) return;
-              event.preventDefault();
-              nudgeGrip(tile.id, direction);
-            };
-            /*
+        : /*
+            LEAVES FIRST, THEN SPLITS OUTERMOST FIRST: every host paints in DOM order, so a
+            split's handle lands above the full-box grip of the leaf it sits in the corner
+            of, and a nested split's handle above its parent's frame.
+          */
+          [...Object.values(layout)]
+            .sort(
+              (a, b) =>
+                (a.dir === null ? 0 : 1 + (depths?.get(a.id) ?? 0)) -
+                (b.dir === null ? 0 : 1 + (depths?.get(b.id) ?? 0)),
+            )
+            .map((tile) => {
+              const rect = rects.get(tile.id);
+              if (rect === undefined || tile.id === ROOT_TILE_ID) return null;
+              const structure = isStructure(tile);
+              if (!structure && !panelsGrabbable) return null;
+              const ref = tile.ref;
+              const panelId = ref?.kind === "panel" ? ref.panelId : null;
+              const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
+              const title =
+                panelId !== null
+                  ? (panel?.title ?? panelId)
+                  : (STRUCTURE_TITLES[tile.dir ?? (ref === null ? "vacant" : "spacer")] ?? "");
+              const depth = depths?.get(tile.id) ?? 1;
+              const style: CSSProperties = {
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                ["--arrange-depth" as string]: depth,
+              };
+              const state = `${liveGrab === tile.id ? " is-grabbed" : ""}${
+                selected === tile.id ? " is-selected" : ""
+              }`;
+              const keys = (event: ReactKeyboardEvent<HTMLElement>): void => {
+                const direction = ARROW_EDGES[event.key];
+                if (direction === undefined) return;
+                event.preventDefault();
+                nudgeGrip(tile.id, direction);
+              };
+              /*
               A SPLIT'S GRIP IS A HANDLE AT ITS CORNER, not a cover: its members paint their own
               grips over its whole box, so a full-rect grip would take the pointer from exactly
               the seats it holds. The frame under it paints only the selection, and steps
               down by depth so a stack nested first inside a stack keeps a handle of its own.
             */
-            return (
-              <span key={tile.id} className="arrange-grip-host" style={style}>
-                {tile.dir !== null ? (
-                  <>
-                    <span className={`arrange-grip-frame${state}`} aria-hidden="true" />
-                    <button
-                      type="button"
-                      className={`arrange-grip-handle${state}`}
-                      data-action="core.space.setLayout"
-                      data-tile-id={tile.id}
-                      aria-label={`Pick up the ${title}`}
-                      onPointerDown={beginGrip}
-                      onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
-                    >
-                      <ControlIcon kind="grip" size={11} className="arrange-palette-cue" />
-                      <ItemIcon kind="structure" size={13} className="arrange-palette-shape" />
-                      {title}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    className={`arrange-grip${state}`}
-                    data-action="core.space.setLayout"
-                    data-panel-id={panelId ?? undefined}
-                    data-tile-id={tile.id}
-                    aria-label={structure ? `Pick up the ${title}` : `Move the ${title} panel`}
-                    onPointerDown={beginGrip}
-                    onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
-                    onKeyDown={keys}
-                  />
-                )}
-                {tile.dir !== null ? null : (
-                  <span className="arrange-grip-pill">
-                    <span className="arrange-grip-label">{title}</span>
-                    {panel?.arranges === undefined ? null : (
+              return (
+                <span key={tile.id} className="arrange-grip-host" style={style}>
+                  {tile.dir !== null ? (
+                    <>
+                      <span className={`arrange-grip-frame${state}`} aria-hidden="true" />
                       <button
                         type="button"
-                        className="arrange-scope"
-                        data-panel-id={panelId ?? undefined}
-                        aria-label={`Arrange ${panel.arranges.title}`}
-                        onClick={() => panelId !== null && setVantage({ arrangeScope: panelId })}
+                        className={`arrange-grip-handle${state}`}
+                        data-action="core.space.setLayout"
+                        data-tile-id={tile.id}
+                        aria-label={`Pick up the ${title}`}
+                        onPointerDown={beginGrip}
+                        onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
                       >
-                        <ControlIcon kind="scopeIn" size={13} />
+                        <ControlIcon kind="grip" size={11} className="arrange-palette-cue" />
+                        <ItemIcon kind="structure" size={13} className="arrange-palette-shape" />
+                        {title}
                       </button>
-                    )}
-                  </span>
-                )}
-              </span>
-            );
-          })}
+                    </>
+                  ) : (
+                    <button
+                      className={`arrange-grip${state}`}
+                      data-action="core.space.setLayout"
+                      data-panel-id={panelId ?? undefined}
+                      data-tile-id={tile.id}
+                      aria-label={structure ? `Pick up the ${title}` : `Move the ${title} panel`}
+                      onPointerDown={beginGrip}
+                      onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
+                      onKeyDown={keys}
+                    />
+                  )}
+                  {tile.dir !== null ? null : (
+                    <span className="arrange-grip-pill">
+                      <span className="arrange-grip-label">{title}</span>
+                      {panel?.arranges === undefined ? null : (
+                        <button
+                          type="button"
+                          className="arrange-scope"
+                          data-panel-id={panelId ?? undefined}
+                          aria-label={`Arrange ${panel.arranges.title}`}
+                          onClick={() => panelId !== null && setVantage({ arrangeScope: panelId })}
+                        >
+                          <ControlIcon kind="scopeIn" size={13} />
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
       {frame === null
         ? null
         : (() => {
@@ -1036,9 +1048,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         <div className="arrange-toolbar-status" role="status">
           <strong className="arrange-toolbar-title">Arrange mode</strong>
           <span className="arrange-toolbar-sep" aria-hidden="true" />
-          {carrying ? (
-            <span className="arrange-toolbar-hint">Esc lets go.</span>
-          ) : scopeTitle === null ? (
+          {scopeTitle === null ? (
             <span className="arrange-toolbar-hint">Esc or F8 to finish.</span>
           ) : (
             <span className="arrange-crumbs">
@@ -1086,10 +1096,19 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
           onDragLeave={paletteLeave}
           onDrop={paletteDrop}
         >
+          {/*
+            The state rides an ABSOLUTE overlay and the bar's own copy never changes while
+            something is carried, on purpose: a bar that re-flowed under a native drag moved
+            the very item the drag began on, and Chromium ends a drag whose source moves out
+            from under it. The Escape hint lives here for the same reason — beside the one
+            other way out, and costing the bar no width.
+          */}
           {carrying ? (
             <span className="arrange-palette-state" role="status">
               <ControlIcon kind={paletteCarry === "remove" ? "discard" : "cancel"} size={13} />
               {paletteCarry === "remove" ? "Drop to remove" : "Drop to cancel"}
+              <KeyCap stroke="Escape" />
+              lets go
             </span>
           ) : null}
           {palette.map((tool) => {

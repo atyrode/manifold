@@ -499,7 +499,7 @@ interface RowGestures {
 }
 
 /**
- * A SPLIT'S GRIP (issue #148): the band along the split's leading edge, worn only while this
+ * A SPLIT'S GRIP (issue #148): the band along the split's top edge, worn only while this
  * panel is the arrangement in scope. Its members' grips cover the rest of the split's box,
  * so the split itself is reachable at the one strip that is nobody else's — the edge the
  * mode's dashed outline runs along, which is also where a reader looks for "this group".

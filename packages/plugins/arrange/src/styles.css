@@ -273,9 +273,11 @@
    * `left: 50%` caps a shrink-to-fit fixed box at HALF the viewport (available width is what
    * remains right of the left edge), which is what used to wrap this bar at 720px on a 1440px
    * screen. max-content sizes it to its row; the max-width still wraps it on small screens.
+   * 66rem, not 60: Remove (issue #148) is the seventh tool, and at 60rem the bar folded onto
+   * two lines on a 1440px screen — a wrap the small-screen cap exists for, not the default.
    */
   width: max-content;
-  max-width: min(60rem, calc(100% - 2rem));
+  max-width: min(66rem, calc(100% - 2rem));
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
@@ -414,7 +416,8 @@
   border: 1px dashed #748ffc;
   border-radius: 0.5rem;
   color: #edf2ff;
-  background: rgb(29 32 37 / 90%);
+  /* Opaque in every state: the items underneath must not bleed through the words over them. */
+  background: #1d2025;
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -429,11 +432,11 @@
 
 .arrange-palette.is-hot > .arrange-palette-state {
   border-style: solid;
-  background: rgb(76 110 245 / 32%);
+  background: #2c3968;
 }
 
 .arrange-palette[data-carry="remove"].is-hot > .arrange-palette-state {
-  background: rgb(247 103 7 / 32%);
+  background: #63371b;
 }
 
 .arrange-palette-item {
