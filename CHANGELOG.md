@@ -55,7 +55,7 @@
 
 ### Changed
 
-- The Sessions list shows the living by default: identities holding no live credential — the sediment every gate run and agent re-enrolment leaves behind — now fold into one collapsed "N inactive identities" disclosure at the bottom instead of burying the handful of rows that can still act. Nothing is deleted: open the fold and the full history is exactly where it was. (#145, #PR)
+- The Sessions list shows the living by default: identities holding no live credential — the sediment every gate run and agent re-enrolment leaves behind — now fold into one collapsed "N inactive identities" disclosure at the bottom instead of burying the handful of rows that can still act. Nothing is deleted: open the fold and the full history is exactly where it was. (#145, #147)
 - The plugin manager says dependencies only when there are any — an absent line now means independence — and every named plugin is a link that jumps to its row, clearing whatever search or filter was hiding it. (#105, #106)
 - Closing a tile is an action like everything else. The last bespoke HTTP route that changed your workspace — `DELETE /api/containers/:id/tiles/:tileId` — is gone, and leaf removal is now `core.space.removeTile { containerId, tileId }`: same authority, same rules, same refusals, and now the same journal line every other action leaves, so "who closed that terminal" is a question the workspace can answer. The app behaves exactly as it did; a script or agent that called the old route dispatches the action instead. (#114, #121)
 
