@@ -2668,12 +2668,23 @@ try {
       viewer gone before the focus is dispatched.
     */
     const leaveWaitStarted = Date.now();
-    await until(
+    const viewerLeft = await settles(
       () => terminalClient!.attendance.get(viewerPrincipalId) === undefined,
       10_000,
-      "viewer left the terminal room",
     );
     const leaveLagMs = Date.now() - leaveWaitStarted;
+    if (!viewerLeft) {
+      // Evidence for #172, printed rather than thrown: what the peer still sees in the old room.
+      console.log(
+        `INFO  R5 precondition: the terminal room still lists the viewer after ${String(leaveLagMs)}ms: ${JSON.stringify(
+          [...terminalClient!.attendance.values()].map((row) => ({
+            principal: row.principal.id,
+            name: row.principal.name,
+            vantage: row.payload.vantage ?? null,
+          })),
+        )}`,
+      );
+    }
     const outcome = ActionOutcomeSchema.parse(
       await dispatch("core.presence.focus", { targetPrincipalId: viewerPrincipalId, uri }),
     );
