@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-02
+
 ### Added
 
 - Every release now ships a macOS (Apple silicon) agent binary, `manifold-agent-darwin-arm64`, beside the Linux one, so a Mac can be enrolled as a spoke without building from source. (#176, #181)
