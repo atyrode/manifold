@@ -1,0 +1,54 @@
+# THE OPERATOR'S INSTANCE (manifold.tyrode.dev on Clever Cloud) consuming a release.
+# One deployment, not THE deployment: this is the only file in the tree allowed to name a
+# hosting provider (verify:axioms S17, ADR 0022), and it is inert unless the repository
+# variable CLEVER_HUB_APP_ID exists - a fork never runs it. Self-hosting is docs/SELF-HOST.md;
+# replace this file with whatever consumes YOUR releases.
+name: Deploy hub
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+concurrency:
+  group: deploy-hub
+  cancel-in-progress: false
+
+jobs:
+  clever:
+    name: manifold.tyrode.dev
+    if: github.event.workflow_run.conclusion == 'success' && vars.CLEVER_HUB_APP_ID != ''
+    runs-on: ubuntu-latest
+    env:
+      CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
+      CLEVER_SECRET: ${{ secrets.CLEVER_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Name the released tag
+        run: echo "TAG=$(git describe --tags --exact-match '${{ github.event.workflow_run.head_sha }}')" >> "$GITHUB_ENV"
+
+      - name: Link the application
+        run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+
+      - name: Stamp the build
+        run: bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "$TAG"
+
+      - name: Deploy the tag
+        run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force
+
+      - name: Hub answers with this build
+        env:
+          ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
+        run: |
+          for _ in $(seq 1 40); do
+            if [ "$(curl -fsS "$ORIGIN/healthz" | jq -r .build)" = "$TAG" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "hub at $ORIGIN never reported build $TAG"; exit 1

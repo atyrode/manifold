@@ -1,0 +1,13 @@
+# Optional continuous replication of the hub's SQLite store (docs/SELF-HOST.md
+# §Replicate the database). Read by infra/entrypoint.sh only when
+# MANIFOLD_REPLICA_BUCKET is set; every value comes from the environment.
+dbs:
+  - path: ${MANIFOLD_DATA_DIR}/manifold.db
+    replicas:
+      - type: s3
+        bucket: ${MANIFOLD_REPLICA_BUCKET}
+        path: manifold.db
+        endpoint: ${MANIFOLD_REPLICA_ENDPOINT}
+        force-path-style: true
+        snapshot-interval: 1h
+        retention: 72h

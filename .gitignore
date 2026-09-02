@@ -5,6 +5,8 @@ data/
 *.log
 .env
 .env.*
+# The template ships; only real env files stay out.
+!.env.example
 coverage/
 *.tsbuildinfo
 .types/
