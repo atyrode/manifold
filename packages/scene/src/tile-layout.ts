@@ -334,6 +334,56 @@ export function withoutTileLeaf(layout: TileLayout, tileId: string): TileLayout 
   return pruneFromParent(next, layout, tileId);
 }
 
+/**
+ * Take PLACED STRUCTURE back out of the tree — the inverse of {@link withTileStructure}, for the
+ * palette a structure came from and goes back to (issue #148).
+ *
+ * A SPLIT DISSOLVES: its members are promoted into its parent at its own index, in their own
+ * order, each taking its share of the split's share along the parent's axis — so nothing that
+ * was seated is lost and no room changes hands. The vacant seats a dropped split arrived with
+ * are the split's OWN emptiness rather than members, so they go with it (`withoutTileLeaf`,
+ * which also collapses a split thinned to one survivor — a split holding one member and one
+ * vacant seat dissolves by that collapse alone). A member that is itself a split keeps its
+ * shape: it is structure of its own, and taking it apart is its own removal.
+ *
+ * A SPACER or a VACANT leaf is removed like any leaf. The root is refused (null): it is the tree
+ * itself, and there is no parent to promote anything into. A leaf holding an occupant is refused
+ * too — a panel, a container or a terminal is not structure, and the verb that unseats one is
+ * the caller's to name.
+ */
+export function withoutTileStructure(layout: TileLayout, tileId: string): TileLayout | null {
+  const tile = layout[tileId];
+  if (tile === undefined || tileId === ROOT_TILE_ID) return null;
+  if (tile.dir === null) {
+    return tile.ref === null || tile.ref.kind === "spacer" ? withoutTileLeaf(layout, tileId) : null;
+  }
+
+  let next: TileLayout = layout;
+  for (const childId of tile.children) {
+    const child = next[childId];
+    if (child === undefined || child.dir !== null || child.ref !== null) continue;
+    const pruned = withoutTileLeaf(next, childId);
+    if (pruned === null) return null;
+    next = pruned;
+  }
+  const split = next[tileId];
+  // Thinned to one survivor above, the split has already collapsed into its parent's seat.
+  if (split === undefined) return next;
+  const parentId = tileParentId(next, tileId);
+  const parent = parentId === null ? undefined : next[parentId];
+  if (parentId === null || parent === undefined) return null;
+  const index = parent.children.indexOf(tileId);
+  if (index < 0) return null;
+  const share = parent.ratios[index] ?? 1;
+  const children = [...parent.children];
+  const ratios = [...parent.ratios];
+  children.splice(index, 1, ...split.children);
+  ratios.splice(index, 1, ...split.ratios.map((ratio) => ratio * share));
+  const promoted: Record<string, Tile> = { ...next, [parentId]: { ...parent, children, ratios } };
+  delete promoted[tileId];
+  return promoted;
+}
+
 /** Detach `childId` from its parent, then collapse the parent when it thins out. */
 function pruneFromParent(
   next: Record<string, Tile>,

@@ -101,7 +101,8 @@
   pointer-events: none;
 }
 
-.workspace.is-arranging .sidebar-section-grip {
+.workspace.is-arranging .sidebar-section-grip,
+.workspace.is-arranging .sidebar-split-grip {
   pointer-events: auto;
 }
 
@@ -1092,6 +1093,64 @@ button.sidebar-terminal.is-summary > small {
 .workspace.is-carrying .sidebar-split[data-vacant="true"] {
   flex: 0 0 2.2rem;
   overflow: visible;
+}
+
+/*
+ * A SPLIT'S OWN GRIP (issue #148): the band along its leading edge, worn while the rail is the
+ * arrangement in scope. Its members' grips cover the rest of the box, so the strip is the one
+ * place a reader can take hold of the GROUP rather than a row in it — the edge the dashed
+ * outline below runs along, which is where the eye already reads "this stack". Out of flow,
+ * like every affordance the mode adds: arming the mode reflows nothing (R4 measures it), so
+ * the band overlaps the first sliver of its members instead of pushing them aside, and sits
+ * above their grips (`z-index`) for exactly that sliver.
+ *
+ * It goes ONE place — the palette, where structure comes from and goes back to — so the stack
+ * never reflows under it; `--grabbed` marks the split in hand, `--selected` the one Delete
+ * would remove, in the selection orange `core.arrange`'s grips already wear.
+ */
+.workspace.is-arranging .sidebar-split {
+  position: relative;
+  border-radius: 0.65rem;
+  outline: 1px dashed rgb(116 143 252 / 45%);
+  outline-offset: 2px;
+}
+
+.sidebar-split-grip {
+  position: absolute;
+  z-index: 26;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.6rem;
+  border: 0;
+  border-radius: 0.65rem 0 0 0.65rem;
+  padding: 0;
+  background: rgb(76 110 245 / 28%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sidebar-split-grip:hover,
+.sidebar-split-grip:focus-visible {
+  background: rgb(76 110 245 / 48%);
+}
+
+.sidebar-split--grabbed {
+  outline-color: #4c6ef5;
+  outline-style: solid;
+}
+
+.sidebar-split--grabbed > .sidebar-split-grip {
+  background: rgb(76 110 245 / 60%);
+  cursor: grabbing;
+}
+
+.workspace.is-arranging .sidebar-split--selected {
+  outline: 2px solid #f76707;
+}
+
+.sidebar-split--selected > .sidebar-split-grip {
+  background: rgb(247 103 7 / 45%);
 }
 
 .sidebar-split-seat {

@@ -218,7 +218,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store)"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148))"
     },
     {
       "glob": "packages/agent/src/**",
@@ -1710,7 +1710,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "arrange",
       "owner": "packages/plugins/arrange/src/styles.css",
-      "why": "core.arrange's own chrome: the floating F8 toolbar, its drag handle, the PALETTE of carry sources it leads with and the buttons of the operations that survive beside it (issue #104), the panel grip overlay and its scope-in pill, the live move preview slot, the mode bar and its scope crumbs, and the wireframe delimitation painted over stack/split containers while armed. `arrange-palette*` needs no row of its own: the longest-prefix rule already resolves it to this family, and this stylesheet is its owner. Extracted from the `workspace` family (issue #89) when the grips and the mode bar left `workspace.tsx` for the plugin that now owns arrange mode's affordances"
+      "why": "core.arrange's own chrome: the floating F8 toolbar, its drag handle, the PALETTE of carry sources it leads with and the buttons of the operations that survive beside it (issue #104), the panel grip overlay and its scope-in pill, the handle a placed split is picked up by and the frame that paints its selection, the palette's own carried state (\"Drop to cancel\" / \"Drop to remove\", issue #148), the live move preview slot, the mode bar and its scope crumbs, and the wireframe delimitation painted over stack/split containers while armed. `arrange-palette*` needs no row of its own: the longest-prefix rule already resolves it to this family, and this stylesheet is its owner. Extracted from the `workspace` family (issue #89) when the grips and the mode bar left `workspace.tsx` for the plugin that now owns arrange mode's affordances"
     },
     {
       "family": "is",
@@ -1936,6 +1936,16 @@ string" is the question a broken gate actually asks.
       "testid": "arrange-shelf-item",
       "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
       "why": "the shelved panel's own row, and the second half of Shelf: R4 presses it to put the panel back, so 'nothing vanishes' is proved by re-seating rather than by reading the tree the tool left behind"
+    },
+    {
+      "testid": "arrange-palette",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "the palette as a DROP TARGET (issue #148): where structure comes from and where it goes back to. R4 drops a fresh Stack row back on it and reads the tree byte-identical, releases a placed spacer's grip and a rail stack's grip on it and reads them gone — and reads `data-carry` off it mid-gesture, which is the only way to prove the palette SAYS which of the two it is about to do rather than doing one silently"
+    },
+    {
+      "testid": "toolbar-remove",
+      "renderer": "packages/plugins/arrange/src/arrange-overlay.tsx",
+      "why": "templated `toolbar-${tool.id}`; the third door onto `removedStructure` (issue #148), and the one tool whose precondition a reader can SEE: R4 reads it disabled with a panel selected and enabled with a structure selected, so 'Remove never means Shelf' is a painted fact rather than a refusal somebody has to trigger"
     }
   ]
 }

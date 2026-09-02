@@ -13,6 +13,7 @@ import {
   panelSections,
   projectSectionArrangement,
   releasedSectionArrangement,
+  removedSectionStructure,
   sectionArrangementOf,
   withPanelSections,
 } from "../src/layout.ts";
@@ -255,6 +256,50 @@ describe("what a rail release means", () => {
   test("a row the arrangement does not hold moves nothing", () => {
     const aim = railAim(flat, { x: 0.5, y: 0.95 }, null);
     expect(released(flat, { kind: "section", id: "ghost" }, aim)).toBeNull();
+  });
+});
+
+/**
+ * WHAT A RAIL REMOVAL MEANS (issue #148): the split at a path dissolves into its members, in
+ * place, through the same inverse the workspace tree's structures go through — so the two
+ * legs cannot disagree about what "take the stack away, keep the rows" produces.
+ */
+describe("what a rail removal means", () => {
+  const removed = (nodes: readonly SectionNode[], path: string): readonly SectionNode[] | null =>
+    removedSectionStructure(
+      projectSectionArrangement(nodes, () => 1),
+      path,
+    );
+
+  test("a stack dissolves into its rows where it stood, in their order", () => {
+    expect(removed(["a", { dir: "row", sections: ["b", "c"] }, "d"], "n1")).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+  });
+
+  test("a vacant stack leaves nothing behind, and a lone member joins the rail flat", () => {
+    expect(removed(["a", { dir: "row", sections: [] }, "b"], "n1")).toEqual(["a", "b"]);
+    expect(removed(["a", { dir: "column", sections: ["b"] }], "n1")).toEqual(["a", "b"]);
+  });
+
+  test("a stack inside a stack dissolves into the outer one, which keeps its own shape", () => {
+    const nested: readonly SectionNode[] = [
+      "a",
+      { dir: "row", sections: ["b", { dir: "column", sections: ["c", "d"] }, "e"] },
+    ];
+    expect(removed(nested, "n1.1")).toEqual(["a", { dir: "row", sections: ["b", "c", "d", "e"] }]);
+    // The outer stack goes too, and the inner one is promoted whole: it is structure of its own.
+    expect(removed(nested, "n1")).toEqual(["a", "b", { dir: "column", sections: ["c", "d"] }, "e"]);
+  });
+
+  test("a row is not structure, the root is not removable, and a ghost path is nothing", () => {
+    const flat: readonly SectionNode[] = ["a", "b"];
+    expect(removed(flat, "n0")).toBeNull();
+    expect(removed(flat, ROOT_TILE_ID)).toBeNull();
+    expect(removed(flat, "n7")).toBeNull();
   });
 });
 

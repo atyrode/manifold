@@ -36,7 +36,7 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * WHAT IT CONTRIBUTES:
  *
- * `tools` — six rows on the `arrange` toolbar, and the bar reads them in TWO HALVES (issue
+ * `tools` — seven rows on the `arrange` toolbar, and the bar reads them in TWO HALVES (issue
  * #104, superseding #89's button reading, which shipped root-split operations from a wrong
  * reading of the operator's intent).
  *
@@ -47,14 +47,17 @@ import { type PluginManifest } from "@manifold/protocol";
  * through `core.space.setLayout`, a composition's tree through `core.space.place`, and a
  * scoped panel's own arrangement through the layout door that already stores it. There is no
  * second drag flavour anywhere in that sentence, which is the invariant it exists to keep
- * (11 and 14).
+ * (11 and 14). The palette is also where structure GOES BACK (issue #148): while anything is
+ * carried it is a drop target — a fresh item dropped on it is a cancel, a placed structure
+ * dropped on it is removed — and Escape ends a grip carry with the tree untouched.
  *
- * Equalize, Shelf and Reset are the OPERATIONS, and they are exactly the three a drag cannot
- * express, because none of them is a placement: Equalize is arithmetic over one split's
- * ratios, Shelf takes a panel OUT of the tree without putting it anywhere, and Reset discards
- * the arrangement for the manifest default. Stack and Swap used to sit beside them and no
- * longer do — the drag replaces Stack, and a center release already trades two seats, which
- * is all Swap ever did.
+ * Equalize, Shelf, Remove and Reset are the OPERATIONS, and they are exactly the four a drag
+ * cannot express, because none of them is a placement: Equalize is arithmetic over one split's
+ * ratios, Shelf takes a panel OUT of the tree without putting it anywhere, Remove takes a
+ * placed STRUCTURE out (a split dissolves into its members, a spacer goes) through the same
+ * function the palette drop and the Delete key reach, and Reset discards the arrangement for
+ * the manifest default. Stack and Swap used to sit beside them and no longer do — the drag
+ * replaces Stack, and a center release already trades two seats, which is all Swap ever did.
  *
  * No `panels`, no `sections`, no `elements`. This plugin owns no leaf and no row of its own;
  * it is chrome over OTHER plugins' panels, painted through the overlay outlet rather than
@@ -72,7 +75,7 @@ export const arrangeManifest: PluginManifest = {
     sections: [],
     elements: [],
     /*
-      All six ride the SAME toolbar (`arrange`), so a disabled `core.arrange` takes every one
+      All seven ride the SAME toolbar (`arrange`), so a disabled `core.arrange` takes every one
       of them out at once (D4′) rather than leaving an orphaned Reset button behind. WHICH
       half a row lands in is this plugin's own reading of its own ids and is not declared
       here: a toolbar row is a toolbar row, and the palette is a rendering of three of them.
@@ -83,6 +86,7 @@ export const arrangeManifest: PluginManifest = {
       { id: "spacer", title: "Spacer", toolbar: "arrange" },
       { id: "equalize", title: "Equalize", toolbar: "arrange" },
       { id: "shelf", title: "Shelf", toolbar: "arrange" },
+      { id: "remove", title: "Remove", toolbar: "arrange" },
       { id: "reset", title: "Reset", toolbar: "arrange" },
     ],
     events: [],

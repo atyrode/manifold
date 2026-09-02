@@ -4,6 +4,7 @@ import {
   panelRefId,
   projectSectionArrangement,
   releasedSectionArrangement,
+  removedSectionStructure,
   type ComposedSection,
   type PanelProps,
   type SectionProjection,
@@ -37,6 +38,8 @@ import {
   Disclosure,
   ScrollRegion,
   Stack,
+  holdStructure,
+  releaseStructure,
   useFlipStack,
   useNotice,
   useVantage,
@@ -159,9 +162,25 @@ interface RailGround {
   readonly dividers: { readonly x: number; readonly y: number };
 }
 
+/**
+ * A PLACED STRUCTURE IN HAND (issue #148): one of this rail's own splits, picked up by the grip
+ * on its edge. It aims at nothing in the rail — the palette is the one place it can go — so
+ * the hold carries only its path and whether the press has become a drag.
+ */
+interface PlacedStructure {
+  readonly kind: "placed";
+  readonly path: string;
+  readonly moved: boolean;
+  readonly startX: number;
+  readonly startY: number;
+}
+
+/** How far a pointer must travel before a structure grip press becomes a DRAG rather than a TAP. */
+const DRAG_THRESHOLD_PX = 6;
+
 /** One live rail gesture: what is held, the geometry it resolves against, and its answer. */
 interface RailHold {
-  readonly release: SectionRelease;
+  readonly release: SectionRelease | PlacedStructure;
   readonly ground: RailGround;
   /**
    * The zone the kernel is holding, for its hysteresis. It stays valid for the whole gesture
@@ -293,7 +312,7 @@ function measuredGround(stack: HTMLElement, nodes: readonly SectionNode[]): Rail
 function openHold(
   stack: HTMLElement,
   nodes: readonly SectionNode[],
-  release: SectionRelease,
+  release: RailHold["release"],
 ): RailHold | null {
   const ground = measuredGround(stack, nodes);
   return ground === null ? null : { release, ground, aim: null, arrangement: nodes };
@@ -323,6 +342,9 @@ function openHold(
  * the "no news" answer, so a frame that moved nothing costs no render.
  */
 function aimedHold(hold: RailHold, clientX: number, clientY: number): RailHold {
+  // A placed structure aims at nothing here: its one destination is the palette (#148).
+  if (hold.release.kind === "placed") return hold;
+  const release = hold.release;
   const { nodes, projection, boxes, rects, area, dividers } = hold.ground;
   const layout = projection.layout;
   const held = hold.aim;
@@ -351,8 +373,7 @@ function aimedHold(hold: RailHold, clientX: number, clientY: number): RailHold {
     mind", and the kernel cannot say it for us (it answers nothing at all over a carried leaf,
     which is why `RAIL_CARRY` never names one).
   */
-  const carried =
-    hold.release.kind === "section" ? (projection.pathOf.get(hold.release.id) ?? null) : null;
+  const carried = release.kind === "section" ? (projection.pathOf.get(release.id) ?? null) : null;
   const home = carried !== null && aim.tileId === carried;
   /*
     THERE IS NO TRADE IN A STACK, and no centre either: `stackPoint` folds an occupied row's
@@ -373,7 +394,7 @@ function aimedHold(hold: RailHold, clientX: number, clientY: number): RailHold {
   ) {
     return hold;
   }
-  const arrangement = home ? nodes : releasedSectionArrangement(projection, hold.release, aim);
+  const arrangement = home ? nodes : releasedSectionArrangement(projection, release, aim);
   if (arrangement === null) return hold;
   return {
     ...hold,
@@ -472,6 +493,45 @@ interface RowGestures {
   readonly onGrab: (id: string, event: ReactPointerEvent<HTMLElement>) => void;
   /** Keyboard arrangement: one slot along, committed immediately. */
   readonly onNudge: (id: string, delta: -1 | 1) => void;
+  /** A split's own grip: picked up towards the palette, or tapped to select it (#148). */
+  readonly onGrabStructure: (path: string, event: ReactPointerEvent<HTMLElement>) => void;
+  readonly onSelectStructure: (path: string) => void;
+}
+
+/**
+ * A SPLIT'S GRIP (issue #148): the band along the split's leading edge, worn only while this
+ * panel is the arrangement in scope. Its members' grips cover the rest of the split's box,
+ * so the split itself is reachable at the one strip that is nobody else's — the edge the
+ * mode's dashed outline runs along, which is also where a reader looks for "this group".
+ *
+ * It goes ONE place: the palette, which is where structure comes from and where it goes back
+ * to. Nothing in the rail is a target for it, so the stack never reflows under this grip and
+ * the pointer stays on the window loop every row grab already uses. A tap SELECTS the split
+ * (Delete then removes it), and the same button answers Enter and Space with the same
+ * selection, so the keyboard reaches everything the pointer does.
+ *
+ * `data-action` names the door a release opens: a removed split commits through
+ * `core.space.setLayout`, the same door as every other arrangement this panel writes.
+ */
+function StructureGrip({
+  path,
+  dir,
+  gestures,
+}: {
+  readonly path: string;
+  readonly dir: TileDir;
+  readonly gestures: RowGestures;
+}): ReactElement {
+  return (
+    <button
+      className="sidebar-split-grip"
+      type="button"
+      aria-label={`Pick up the ${dir} stack`}
+      data-action="core.space.setLayout"
+      onPointerDown={(event) => gestures.onGrabStructure(path, event)}
+      onClick={(event) => event.detail === 0 && gestures.onSelectStructure(path)}
+    />
+  );
 }
 
 /**
@@ -769,8 +829,20 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     setHold(null);
   }
   useEffect(() => {
-    if (!scopedIn) holdRef.current = null;
+    if (!scopedIn) {
+      holdRef.current = null;
+      releaseStructure();
+    }
   }, [scopedIn]);
+
+  /**
+   * THE SELECTED SPLIT, by path — Delete's argument (issue #148). Device-local and in-memory
+   * like the disclosure state: it names a place in THIS reader's arrangement and lasts until
+   * the arrangement changes under it, because a path is positional and the next commit may
+   * put a different node at it.
+   */
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  if (!scopedIn && selectedPath !== null) setSelectedPath(null);
 
   /**
    * WHAT THE STACK IS ARRANGED INTO. Manifest order is the default; this principal's stored
@@ -832,6 +904,23 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    */
   const commitIfMoved = (arrangement: readonly SectionNode[]): void => {
     if (!sameArrangement(arrangement, storedNodes)) commitSectionArrangement(arrangement);
+    setSelectedPath(null);
+  };
+
+  /**
+   * REMOVE, the rail's leg (issue #148): the split at `path` dissolves into its members, in
+   * place, through the engine's one inverse of the palette's insert — and commits through the
+   * same door every arrangement here takes. Two doors open onto it: a grip released on the
+   * palette, and Delete with the split selected. A path that names nothing removable is a
+   * stale selection, and a stale selection is cleared rather than acted on.
+   */
+  const removeStructure = (path: string): void => {
+    const next = removedSectionStructure(
+      projectSectionArrangement(storedNodes, () => 1),
+      path,
+    );
+    if (next !== null) commitIfMoved(next);
+    else setSelectedPath(null);
   };
 
   const gestures: RowGestures = {
@@ -862,6 +951,26 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
       );
       if (next !== null) commitIfMoved(next);
     },
+    onGrabStructure: (path, event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // `preventDefault` withholds focus; the keyboard doors (Enter, Delete) live on this grip.
+      event.currentTarget.focus({ preventScroll: true });
+      const stack = stackRef.current;
+      if (stack === null) return;
+      holdRail(
+        openHold(stack, storedNodes, {
+          kind: "placed",
+          path,
+          moved: false,
+          startX: event.clientX,
+          startY: event.clientY,
+        }),
+      );
+    },
+    onSelectStructure: (path) => {
+      setSelectedPath((current) => (current === path ? null : path));
+    },
   };
 
   /**
@@ -873,33 +982,70 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * so the drag deadended one row from where it started (issue #94). The window is the one
    * listener the stack cannot reorder out from under itself.
    *
+   * A PLACED SPLIT rides the same loop (issue #148) and differs in what its frames mean: past
+   * the drag threshold it is in hand for the palette (`holdStructure`, the engine's one slot
+   * for a structure in the air) and aims at nothing here; short of it, the release is a TAP
+   * that selects. Either way the palette's own listener is what takes it — this loop only
+   * clears the hand afterwards.
+   *
+   * ESCAPE ENDS THE CARRY AND NOTHING ELSE: claimed here, in the capture phase, so the mode's
+   * own Escape (which pops the scope) sees the key already taken and leaves the scope where
+   * the reader is standing. A gesture that never released commits nothing.
+   *
    * NO DEPENDENCY LIST, deliberately: the handlers close over this render's arrangement and
-   * its commit door, so re-subscribing per commit is how they stay current. It costs three
+   * its commit door, so re-subscribing per commit is how they stay current. It costs four
    * listener swaps on the handful of renders a drag produces, and the alternative is a ref
    * per value with the same lifetime and none of the clarity.
    */
   useEffect(() => {
-    if (hold === null || hold.release.kind !== "section") return;
+    if (hold === null || hold.release.kind === "structure") return;
     const move = (event: PointerEvent): void => {
       const held = holdRef.current;
       if (held === null) return;
+      if (held.release.kind === "placed") {
+        const release = held.release;
+        if (release.moved) return;
+        if (
+          Math.hypot(event.clientX - release.startX, event.clientY - release.startY) <
+          DRAG_THRESHOLD_PX
+        ) {
+          return;
+        }
+        holdRail({ ...held, release: { ...release, moved: true } });
+        holdStructure({ remove: () => removeStructure(release.path) });
+        return;
+      }
       const next = aimedHold(held, event.clientX, event.clientY);
       if (next !== held) holdRail(next);
     };
     const end = (): void => {
       const held = holdRef.current;
+      holdRail(null);
+      if (held === null) return;
+      if (held.release.kind === "placed") {
+        if (!held.release.moved) gestures.onSelectStructure(held.release.path);
+        releaseStructure();
+        return;
+      }
       // The commit door itself is the "did anything move" test, so a gesture that resolved an
       // aim and came back to where it started writes nothing.
-      if (held !== null) commitIfMoved(held.arrangement);
+      commitIfMoved(held.arrangement);
+    };
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || holdRef.current === null) return;
+      event.preventDefault();
       holdRail(null);
+      releaseStructure();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
+    window.addEventListener("keydown", escape, true);
     return () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
+      window.removeEventListener("keydown", escape, true);
     };
   });
 
@@ -911,6 +1057,33 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   */
   const arrangingRows = scopedIn && sidebarOpen;
   const grabbedId = heldSection(hold);
+  const grabbedPath =
+    hold !== null && hold.release.kind === "placed" && hold.release.moved
+      ? hold.release.path
+      : null;
+
+  /*
+    DELETE AND BACKSPACE REMOVE THE SELECTED SPLIT (issue #148): the keyboard's door onto the
+    same removal the palette drop performs, offered while these rows are the arrangement in
+    scope and there is a selection to act on. A key a text field is taking is left to it.
+  */
+  useEffect(() => {
+    if (!arrangingRows || selectedPath === null) return;
+    const remove = (event: KeyboardEvent): void => {
+      if ((event.key !== "Delete" && event.key !== "Backspace") || event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest("textarea, input, [contenteditable]") !== null
+      ) {
+        return;
+      }
+      event.preventDefault();
+      removeStructure(selectedPath);
+    };
+    window.addEventListener("keydown", remove);
+    return () => window.removeEventListener("keydown", remove);
+  });
 
   /**
    * THE PALETTE'S END OF THE SAME GESTURE: an HTML5 drag carrying new STRUCTURE, which this
@@ -1022,13 +1195,18 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
       const vacant = node.nodes.length === 0;
       return (
         <div
-          className="sidebar-split"
+          className={`sidebar-split${grabbedPath === node.path ? " sidebar-split--grabbed" : ""}${
+            selectedPath === node.path ? " sidebar-split--selected" : ""
+          }`}
           data-dir={node.dir}
           data-section-path={node.path}
           data-rail-unit={node.path}
           {...(vacant ? { "data-vacant": "true" } : {})}
           key={node.path}
         >
+          {arrangingRows ? (
+            <StructureGrip path={node.path} dir={node.dir} gestures={gestures} />
+          ) : null}
           {/*
             AN EMPTY SPLIT IS A SEAT, not a nothing: it is what the palette's own drop produces,
             and it has to be visible enough to aim the next row into while the mode is on and

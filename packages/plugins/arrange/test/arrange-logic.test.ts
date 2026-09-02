@@ -6,10 +6,13 @@ import {
   PANEL_ARRANGE_RULES,
   ROOT_ARRANGE_SCOPE,
   droppedStructure,
+  escapeMeaning,
+  isStructure,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
   panelsCanMove,
+  removedStructure,
   reseated,
   resolveArrangeScope,
   rootEqualized,
@@ -17,6 +20,7 @@ import {
   shelvedPanels,
   type PanelArrangeOutcome,
 } from "../src/arrange-logic.ts";
+import { projectSectionArrangement } from "@manifold/plugin";
 
 const SIDEBAR = "core.shell.sidebar";
 const MAIN = "core.shell.container-view";
@@ -409,5 +413,131 @@ describe("the operations that outlived the buttons", () => {
     const oneShelved = assertOk(shelved(base(), "ws-sidebar"));
     expect(panelsCanMove(oneShelved)).toBe(false);
     expect(shelvedPanels(oneShelved, panels)).toEqual([{ panelId: SIDEBAR, title: "Sidebar" }]);
+  });
+});
+
+/**
+ * REMOVE — the palette's return leg (issue #148). One pure function behind three doors, so
+ * the contract is stated once: a split dissolves into its parent keeping its members and
+ * their order, a spacer or a vacant seat goes, the root and a panel are refused by name.
+ */
+describe("removing a placed structure", () => {
+  /** sidebar | S(column: main / spacer) — a stack dropped beside the view and then filled. */
+  function stacked(): TileLayout {
+    return {
+      root: {
+        id: "root",
+        dir: "row",
+        ratios: [0.25, 0.75],
+        children: ["ws-sidebar", "t1"],
+        ref: null,
+      },
+      "ws-sidebar": leaf("ws-sidebar", SIDEBAR),
+      t1: { id: "t1", dir: "column", ratios: [0.6, 0.4], children: ["ws-main", "t2"], ref: null },
+      "ws-main": leaf("ws-main", MAIN),
+      t2: { ...leaf("t2", null), ref: { kind: "spacer" } },
+    };
+  }
+
+  test("a split dissolves: members promoted in order, sharing exactly the room it had", () => {
+    const next = assertOk(removedStructure(stacked(), "t1"));
+    expect(next["root"]?.children).toEqual(["ws-sidebar", "ws-main", "t2"]);
+    expect(next["root"]?.ratios).toEqual([0.25, 0.75 * 0.6, 0.75 * 0.4]);
+    expect(next["t1"]).toBeUndefined();
+    expect(panelsInOrder(next)).toEqual([SIDEBAR, MAIN, null]);
+  });
+
+  test("a split inside a split of the same direction joins it flat", () => {
+    const layout: TileLayout = {
+      ...stacked(),
+      t1: { id: "t1", dir: "row", ratios: [0.6, 0.4], children: ["ws-main", "t2"], ref: null },
+    };
+    const next = assertOk(removedStructure(layout, "t1"));
+    expect(next["root"]?.dir).toBe("row");
+    expect(next["root"]?.children).toEqual(["ws-sidebar", "ws-main", "t2"]);
+  });
+
+  test("a member that is itself a split keeps its own shape when the outer one goes", () => {
+    const layout: TileLayout = {
+      ...stacked(),
+      t1: { id: "t1", dir: "column", ratios: [0.5, 0.5], children: ["ws-main", "t3"], ref: null },
+      t3: { id: "t3", dir: "row", ratios: [0.5, 0.5], children: ["t2", "t4"], ref: null },
+      t4: { ...leaf("t4", null), ref: { kind: "spacer" } },
+    };
+    const next = assertOk(removedStructure(layout, "t1"));
+    expect(next["root"]?.children).toEqual(["ws-sidebar", "ws-main", "t3"]);
+    expect(next["t3"]?.children).toEqual(["t2", "t4"]);
+  });
+
+  test("the vacant seats a dropped stack arrived with go with it", () => {
+    const dropped = assertOk(
+      droppedStructure(base(), { kind: "split", dir: "column" }, aimAt("ws-main", "right")),
+    );
+    const splitId = dropped["root"]?.children[2] ?? "";
+    expect(dropped[splitId]?.dir).toBe("column");
+    const next = assertOk(removedStructure(dropped, splitId));
+    expect(next["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
+    expect(Object.values(next).some((tile) => tile.dir === null && tile.ref === null)).toBe(false);
+    // ...and a half-filled stack dissolves by its own collapse: the panel takes the seat.
+    const seat = dropped[splitId]?.children[0] ?? "";
+    const filled = assertOk(
+      movedPanelLayout(dropped, "ws-main", aimAt(seat, "center", { action: "place" })),
+    );
+    const collapsed = assertOk(removedStructure(filled, splitId));
+    expect(panelsInOrder(collapsed)).toEqual([SIDEBAR, MAIN]);
+    expect(Object.values(collapsed).some((tile) => tile.dir === null && tile.ref === null)).toBe(
+      false,
+    );
+  });
+
+  test("a spacer is removed like any leaf, collapsing what it leaves behind", () => {
+    const next = assertOk(removedStructure(stacked(), "t2"));
+    // The column thinned to one member, so it collapsed and the view took its seat.
+    expect(next["root"]?.children).toEqual(["ws-sidebar", "ws-main"]);
+    expect(next["t1"]).toBeUndefined();
+    expect(next["t2"]).toBeUndefined();
+  });
+
+  test("the root and a panel are refused by name, never silently", () => {
+    expect(removedStructure(stacked(), "root")).toEqual({ ok: false, rule: "not_removable" });
+    expect(removedStructure(stacked(), "ws-main")).toEqual({
+      ok: false,
+      rule: "not_a_structure",
+    });
+    expect(removedStructure(stacked(), "ghost")).toEqual({ ok: false, rule: "tree_refused" });
+    expect(removedStructure(null, "t1")).toEqual({ ok: false, rule: "tree_refused" });
+  });
+
+  test("the rail's shape goes through the same function: a row stack dissolves in place", () => {
+    const rail = projectSectionArrangement(
+      ["brand", { dir: "row", sections: ["index", "machines"] }, "identity"],
+      () => 1,
+    ).layout;
+    const next = assertOk(removedStructure(rail, "n1"));
+    expect(next["root"]?.children).toEqual(["n0", "n1.0", "n1.1", "n2"]);
+    expect(panelsInOrder(next)).toEqual(["brand", "index", "machines", "identity"]);
+  });
+
+  test("what counts as structure is what the palette can give back", () => {
+    expect(isStructure({ dir: "row", ref: null })).toBe(true);
+    expect(isStructure({ dir: null, ref: { kind: "spacer" } })).toBe(true);
+    expect(isStructure({ dir: null, ref: null })).toBe(true);
+    expect(isStructure({ dir: null, ref: { kind: "panel", panelId: MAIN } })).toBe(false);
+  });
+});
+
+/**
+ * ESCAPE CANCELS THE CARRY IN HAND AND NOTHING ELSE (issue #148) — the overlay's logic
+ * boundary, decided before any DOM listener is armed.
+ */
+describe("what Escape means", () => {
+  test("with a grip carry in flight it ends the carry and keeps the mode and scope", () => {
+    expect(escapeMeaning(true, null)).toBe("end_carry");
+    expect(escapeMeaning(true, SIDEBAR)).toBe("end_carry");
+  });
+
+  test("with nothing in hand it pops one level, and leaves from the root", () => {
+    expect(escapeMeaning(false, SIDEBAR)).toBe("pop_scope");
+    expect(escapeMeaning(false, null)).toBe("leave_mode");
   });
 });

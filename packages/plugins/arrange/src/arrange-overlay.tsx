@@ -16,7 +16,11 @@ import {
   ControlIcon,
   ItemIcon,
   WORKSPACE_TREE_CLASSES,
+  heldStructure,
+  holdStructure,
+  releaseStructure,
   setVantage,
+  useHeldStructure,
   useNotice,
   useVantage,
   type ControlKind,
@@ -30,16 +34,20 @@ import {
   useState,
   type CSSProperties,
   type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
 import {
   droppedStructure,
+  escapeMeaning,
+  isStructure,
   movedPanelLayout,
   nudgedPanelLayout,
   panelArrangeMessage,
   panelsCanMove,
+  removedStructure,
   reseated,
   resolveArrangeScope,
   rootEqualized,
@@ -83,14 +91,24 @@ const PALETTE_STRUCTURES: Readonly<Record<string, Structure>> = {
  * ids the palette table above makes, for the buttons instead of the drag sources. The marks
  * come from the engine's CLOSED control vocabulary and every one of them is a neutral verb:
  * Shelf IS `park` (the representation leaves its seat, the panel keeps running on the shelf),
- * Reset IS `restart` (back to its beginning, whatever it is), Equalize IS `equalize` (one
- * even share for the parts). A stranger plugin's tool is not in the table and paints as a
- * plain word — this component cannot know its verb, and a wrong mark is worse than none.
+ * Remove IS `discard` (the structure is gone; what it held is not), Reset IS `restart` (back
+ * to its beginning, whatever it is), Equalize IS `equalize` (one even share for the parts). A
+ * stranger plugin's tool is not in the table and paints as a plain word — this component
+ * cannot know its verb, and a wrong mark is worse than none.
  */
 const OPERATION_ICONS: Readonly<Record<string, ControlKind>> = {
   equalize: "equalize",
   shelf: "park",
+  remove: "discard",
   reset: "restart",
+};
+
+/** What the palette calls the structure a placed tile is, for its grip's own label. */
+const STRUCTURE_TITLES: Readonly<Record<string, string>> = {
+  row: "Stack row",
+  column: "Stack column",
+  spacer: "Spacer",
+  vacant: "Empty seat",
 };
 
 /** Which sibling an arrow key reaches for; the tile vocabulary's own edges, not a new one. */
@@ -251,7 +269,8 @@ function Wireframe({ layout, rects, inScope }: WireframeProps): ReactNode {
 
 interface GripState {
   readonly tileId: string;
-  readonly draggable: boolean;
+  /** A panel moves inside the tree; a structure's one destination is the palette (#148). */
+  readonly kind: "panel" | "structure";
   readonly moved: boolean;
   readonly pointerId: number;
   readonly startX: number;
@@ -319,46 +338,94 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     arranging ? arrangeScope : null,
   );
 
-  // Escape POPS ONE LEVEL, and at the root it leaves — the mode's own universal "never mind",
-  // armed only while the overlay is mounted so nothing listens for a key it cannot act on.
-  useEffect(() => {
-    if (!arranging) return;
-    const popScope = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      if (scopedPanelId !== null) setVantage({ arrangeScope: null });
-      else setVantage({ arranging: false, arrangeScope: null });
-    };
-    window.addEventListener("keydown", popScope);
-    return () => window.removeEventListener("keydown", popScope);
-  }, [arranging, scopedPanelId]);
-
-  const rects = useTileRects(arranging, layout, getTreeElement);
-
-  // ------------------------------------------------------------------ selection (Shelf's own)
-  /**
-   * ONE SEAT AT A TIME. It was two while Swap existed, because trading needed a pair; a center
-   * release already trades, so Swap went and the pair went with it. Shelf is the one verb left
-   * that names a seat rather than the root, and it names exactly one.
-   */
-  const [selected, setSelected] = useState<string | null>(null);
-  // Leaving arrange mode drops the selection: a pending Shelf made sense only while armed.
-  // Compared during render rather than reset from an effect (react.dev's own remedy for
-  // "reset state when a prop changes") — one extra render on the transition, no cascade.
-  const [wasArranging, setWasArranging] = useState(arranging);
-  if (wasArranging !== arranging) {
-    setWasArranging(arranging);
-    if (!arranging && selected !== null) setSelected(null);
-  }
-  const toggleSelected = useCallback((tileId: string): void => {
-    setSelected((current) => (current === tileId ? null : tileId));
-  }, []);
-
-  // ------------------------------------------------------------------- the panel-move gesture
+  // ------------------------------------------------------------------- the grip gesture's refs
   const gripRef = useRef<GripState | null>(null);
   const aimRef = useRef<TileAim | null>(null);
   const [liveGrab, setLiveGrab] = useState<string | null>(null);
   const [frame, setFrame] = useState<DragFrame | null>(null);
+  /** The tree as of the latest render, for a callback armed earlier in the gesture (`holdStructure`). */
+  const layoutRef = useRef(layout);
+  useEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
+  /** Ends a grip drag without landing anything: the tree untouched, the mode and scope kept. */
+  const endGrip = useCallback((): void => {
+    gripRef.current = null;
+    aimRef.current = null;
+    setLiveGrab(null);
+    setFrame(null);
+    releaseStructure();
+  }, []);
+
+  /*
+    ESCAPE CANCELS THE CARRY IN HAND AND NOTHING ELSE (#148). With a grip drag in flight it
+    ends that drag with the layout unchanged and leaves the mode armed at the same scope; with
+    nothing in hand it is the mode's own universal "never mind" — one level out of a scoped
+    panel, and out of the mode from the root (`escapeMeaning`, the tested policy). A key a
+    deeper loop already claimed — a scoped panel's own row drag — is left alone: the panel
+    owns that carry exactly as this overlay owns its grips. Armed only while mounted, so
+    nothing listens for a key it cannot act on. Palette drags are the browser's own loop:
+    the hint in the bar says the key out loud, and nothing here fights it.
+  */
+  useEffect(() => {
+    if (!arranging) return;
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      switch (escapeMeaning(gripRef.current?.moved === true, scopedPanelId)) {
+        case "end_carry":
+          endGrip();
+          return;
+        case "pop_scope":
+          setVantage({ arrangeScope: null });
+          return;
+        case "leave_mode":
+          setVantage({ arranging: false, arrangeScope: null });
+          return;
+      }
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [arranging, endGrip, scopedPanelId]);
+
+  const rects = useTileRects(arranging, layout, getTreeElement);
+
+  // -------------------------------------------------------- selection (Shelf's and Remove's)
+  /**
+   * ONE SEAT AT A TIME. It was two while Swap existed, because trading needed a pair; a center
+   * release already trades, so Swap went and the pair went with it. Shelf and Remove are the
+   * two verbs that name a seat rather than the root, and each names exactly one.
+   */
+  const [selected, setSelected] = useState<string | null>(null);
+  // Leaving arrange mode or changing scope drops the selection — a pending Shelf or Remove
+  // made sense only in the arrangement it was made in — and the paint of a grip drag in
+  // flight, so nothing stays in hand for the next arm. Compared during render rather than
+  // reset from an effect (react.dev's own remedy for "reset state when a prop changes") —
+  // one extra render on the transition, no cascade. The gesture's REFS reset in the effect
+  // below, because a ref is for event handlers and the next pointer frame must read "nothing".
+  const [wasScoped, setWasScoped] = useState<string | null | false>(arranging && scopedPanelId);
+  const scopeNow = arranging && scopedPanelId;
+  if (wasScoped !== scopeNow) {
+    setWasScoped(scopeNow);
+    if (selected !== null) setSelected(null);
+    if (liveGrab !== null) setLiveGrab(null);
+    if (frame !== null) setFrame(null);
+  }
+  useEffect(() => {
+    gripRef.current = null;
+    aimRef.current = null;
+    releaseStructure();
+  }, [scopeNow]);
+  const toggleSelected = useCallback((tileId: string): void => {
+    setSelected((current) => (current === tileId ? null : tileId));
+  }, []);
+  const selectedStructure =
+    selected !== null && layout !== null && layout[selected] !== undefined
+      ? isStructure(layout[selected])
+      : false;
+
+  // ------------------------------------------------------------------- the grip gesture
 
   const land = useCallback(
     (outcome: PanelArrangeOutcome): void => {
@@ -373,17 +440,20 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
 
   // Reads its target off the DOM (`data-tile-id`/`data-panel-id`, already painted by the grip
   // markup below) rather than closing over `tile.id` per grip: passed to `onPointerDown`
-  // directly, so no inline wrapper calls a ref-touching function during render.
+  // directly, so no inline wrapper calls a ref-touching function during render. Focus is
+  // taken by hand because `preventDefault` on a pointerdown withholds it, and the keyboard
+  // doors — arrows, Enter, Delete — are on the grip a tap just landed on.
   const beginGrip = useCallback((event: ReactPointerEvent<HTMLElement>): void => {
     const tileId = event.currentTarget.dataset["tileId"];
     if (tileId === undefined) return;
-    const draggable = event.currentTarget.dataset["panelId"] !== undefined;
+    const kind = event.currentTarget.dataset["panelId"] !== undefined ? "panel" : "structure";
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.focus({ preventScroll: true });
     gripRef.current = {
       tileId,
-      draggable,
+      kind,
       moved: false,
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -399,6 +469,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     [land, layout],
   );
 
+  /*
+    ONE LOOP FOR EVERY GRIP, and what is in hand decides where it can land (#148). A PANEL aims
+    at the tree through the shared zone kernel and lands by `movedPanelLayout`; a STRUCTURE
+    has exactly one destination — the palette it came out of — so its frames resolve no tree
+    aim at all, and crossing the drag threshold hands the palette the one verb it can answer
+    with (`holdStructure`). The palette's own listener below is what takes it at the release;
+    this loop only clears the hand afterwards, whether or not the palette took it.
+  */
   useEffect(() => {
     if (!arranging) return;
     const move = (event: PointerEvent): void => {
@@ -407,10 +485,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
       if (!grip.moved) {
         const dx = event.clientX - grip.startX;
         const dy = event.clientY - grip.startY;
-        if (!grip.draggable || Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
         gripRef.current = { ...grip, moved: true };
         setLiveGrab(grip.tileId);
+        if (grip.kind === "structure") {
+          holdStructure({ remove: () => land(removedStructure(layoutRef.current, grip.tileId)) });
+        }
       }
+      if (grip.kind === "structure") return;
       const element = getTreeElement();
       const units = element === null ? null : areaUnits(element, WORKSPACE_TREE_CLASSES.dividerPx);
       if (units === null || layout === null) return;
@@ -445,15 +527,13 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     const end = (event: PointerEvent): void => {
       const grip = gripRef.current;
       if (grip === null || event.pointerId !== grip.pointerId) return;
-      gripRef.current = null;
       const aim = aimRef.current;
-      aimRef.current = null;
-      setLiveGrab(null);
-      setFrame(null);
+      endGrip();
       if (!grip.moved) {
         toggleSelected(grip.tileId);
         return;
       }
+      if (grip.kind === "structure") return;
       if (layout !== null && aim !== null) land(movedPanelLayout(layout, grip.tileId, aim));
     };
     window.addEventListener("pointermove", move);
@@ -464,7 +544,33 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
     };
-  }, [arranging, getTreeElement, land, layout, toggleSelected]);
+  }, [arranging, endGrip, getTreeElement, land, layout, toggleSelected]);
+
+  /*
+    DELETE AND BACKSPACE REMOVE THE SELECTED STRUCTURE — the keyboard's door onto the same
+    function the palette drop and the Remove tool reach. Only at the root: inside a scoped
+    panel the panel's own arrangement owns its keys. A key that a text field is taking is
+    left to it — the mode blanks the pointer, never a focused input's keyboard.
+  */
+  useEffect(() => {
+    if (!arranging || scopedPanelId !== null) return;
+    const remove = (event: KeyboardEvent): void => {
+      if ((event.key !== "Delete" && event.key !== "Backspace") || event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest("textarea, input, [contenteditable]") !== null
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (selected === null) land({ ok: false, rule: "nothing_selected" });
+      else land(removedStructure(layout, selected));
+      setSelected(null);
+    };
+    window.addEventListener("keydown", remove);
+    return () => window.removeEventListener("keydown", remove);
+  }, [arranging, land, layout, scopedPanelId, selected]);
 
   // --------------------------------------------------------------------------- the palette
   /**
@@ -475,9 +581,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
    * no drop, so it is the one signal that always clears this.
    */
   const [carried, setCarried] = useState<Structure | null>(null);
+  /** The pointer is over the palette with something in hand: the target's own "you are here". */
+  const [paletteHot, setPaletteHot] = useState(false);
   useEffect(() => {
     if (carried === null) return;
-    const done = (): void => setCarried(null);
+    const done = (): void => {
+      setCarried(null);
+      setPaletteHot(false);
+    };
     window.addEventListener("dragend", done);
     return () => window.removeEventListener("dragend", done);
   }, [carried]);
@@ -500,6 +611,72 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     },
     [],
   );
+
+  /**
+   * THE PALETTE IS WHERE STRUCTURE COMES FROM AND WHERE IT GOES BACK TO (#148). While anything
+   * is carried it is a drop target, and it paints the state it is in rather than asking the
+   * reader to remember one: a FRESH item over it means "Drop to cancel", a PLACED structure
+   * means "Drop to remove". Two transports reach it — the browser's own drag loop for a
+   * palette item (`dragover`/`drop` on the element) and this plugin's pointer loop for a grip,
+   * whichever plugin painted the grip (`heldStructure`, the engine's one slot for a structure
+   * in hand) — and both land on the same rect test, because a target is a place on screen.
+   */
+  const paletteRef = useRef<HTMLDivElement | null>(null);
+  const held = useHeldStructure();
+  const overPalette = useCallback((clientX: number, clientY: number): boolean => {
+    const box = paletteRef.current?.getBoundingClientRect();
+    return (
+      box !== undefined &&
+      clientX >= box.left &&
+      clientX <= box.right &&
+      clientY >= box.top &&
+      clientY <= box.bottom
+    );
+  }, []);
+  useEffect(() => {
+    if (!arranging || held === null) return;
+    const hover = (event: PointerEvent): void =>
+      setPaletteHot(overPalette(event.clientX, event.clientY));
+    // CAPTURE, so the removal lands before the holder's own release handler clears its hand.
+    const take = (event: PointerEvent): void => {
+      setPaletteHot(false);
+      if (heldStructure() === null || !overPalette(event.clientX, event.clientY)) return;
+      held.remove();
+    };
+    window.addEventListener("pointermove", hover);
+    window.addEventListener("pointerup", take, true);
+    window.addEventListener("pointercancel", take, true);
+    return () => {
+      window.removeEventListener("pointermove", hover);
+      window.removeEventListener("pointerup", take, true);
+      window.removeEventListener("pointercancel", take, true);
+    };
+  }, [arranging, held, overPalette]);
+
+  const paletteOver = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>): void => {
+      if (carried === null || !carriesItem(event.dataTransfer)) return;
+      // Accepting is what earns the drop and the cursor that says so; `copy` is what the
+      // source allowed, and anything else would make the browser cancel the drop outright.
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setPaletteHot(true);
+    },
+    [carried],
+  );
+  const paletteLeave = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
+    const to = event.relatedTarget;
+    if (to instanceof Node && event.currentTarget.contains(to)) return;
+    setPaletteHot(false);
+  }, []);
+  const paletteDrop = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
+    const envelope = readEnvelope(event.dataTransfer);
+    if (envelope === null || envelope.kind !== "structure") return;
+    // A fresh item back where it came from: nothing was placed, so nothing is written.
+    event.preventDefault();
+    setPaletteHot(false);
+    setCarried(null);
+  }, []);
 
   /**
    * THE WORKSPACE'S OWN CLAIM on a palette drag, and deliberately the WEAKEST one.
@@ -641,6 +818,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
     () => shelvedPanels(layout, host.assembly.panels),
     [host.assembly.panels, layout],
   );
+  const depths = useMemo(() => (layout === null ? null : tileDepths(layout)), [layout]);
 
   const runTool = useCallback(
     (id: string): void => {
@@ -651,6 +829,11 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         case "shelf":
           if (selected === null) land({ ok: false, rule: "nothing_selected" });
           else land(shelved(layout, selected));
+          setSelected(null);
+          return;
+        case "remove":
+          if (selected === null) land({ ok: false, rule: "nothing_selected" });
+          else land(removedStructure(layout, selected));
           setSelected(null);
           return;
         case "reset":
@@ -684,57 +867,99 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
   */
   const palette = tools.filter((tool) => PALETTE_STRUCTURES[tool.id] !== undefined);
   const operations = tools.filter((tool) => PALETTE_STRUCTURES[tool.id] === undefined);
-  const grabbable = scopedPanelId === null && panelsCanMove(layout) && carried === null;
+  /*
+    GRIPS ARE THE ROOT'S, and a palette drag puts them away so the drag can reach the tree
+    beneath them. A PANEL is grabbable only with a second seat to take (`panelsCanMove`); a
+    STRUCTURE is grabbable whenever it is there, because its one destination — the palette —
+    is always there too, and a spacer beside a lone panel would otherwise be a spacer forever.
+  */
+  const gripsPainted =
+    scopedPanelId === null && carried === null && layout !== null && rects !== null;
+  const panelsGrabbable = panelsCanMove(layout);
   /*
     Scoped INTO a panel, the workspace's own operations have nothing to act on — but the
     PALETTE does, because the panel in scope takes the drag itself. That asymmetry is the
-    scope working as designed rather than an exception to it.
+    scope working as designed rather than an exception to it. Remove needs a STRUCTURE
+    selected on top of that: it is the one tool whose precondition a reader can see.
   */
   const operationsDisabled = scopedPanelId !== null;
+  const paletteCarry = carried !== null ? "cancel" : held !== null ? "remove" : undefined;
+  const carrying = paletteCarry !== undefined;
 
   return (
     <>
       {layout === null || rects === null ? null : (
         <Wireframe layout={layout} rects={rects} inScope={scopedPanelId === null} />
       )}
-      {!grabbable || layout === null || rects === null
+      {!gripsPainted || layout === null || rects === null
         ? null
-        : Object.values(layout)
-            .filter(
-              (tile) =>
-                tile.dir === null && (tile.ref?.kind === "panel" || tile.ref?.kind === "spacer"),
-            )
-            .map((tile) => {
-              const rect = rects.get(tile.id);
-              if (rect === undefined || tile.ref === null) return null;
-              const ref = tile.ref;
-              const panelId = ref.kind === "panel" ? ref.panelId : null;
-              const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
-              const title = panelId === null ? "Spacer" : (panel?.title ?? panelId);
-              const style: CSSProperties = {
-                left: rect.left,
-                top: rect.top,
-                width: rect.width,
-                height: rect.height,
-              };
-              return (
-                <span key={tile.id} className="arrange-grip-host" style={style}>
+        : Object.values(layout).map((tile) => {
+            const rect = rects.get(tile.id);
+            if (rect === undefined || tile.id === ROOT_TILE_ID) return null;
+            const structure = isStructure(tile);
+            if (!structure && !panelsGrabbable) return null;
+            const ref = tile.ref;
+            const panelId = ref?.kind === "panel" ? ref.panelId : null;
+            const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
+            const title =
+              panelId !== null
+                ? (panel?.title ?? panelId)
+                : (STRUCTURE_TITLES[tile.dir ?? (ref === null ? "vacant" : "spacer")] ?? "");
+            const depth = depths?.get(tile.id) ?? 1;
+            const style: CSSProperties = {
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
+              ["--arrange-depth" as string]: depth,
+            };
+            const state = `${liveGrab === tile.id ? " is-grabbed" : ""}${
+              selected === tile.id ? " is-selected" : ""
+            }`;
+            const keys = (event: ReactKeyboardEvent<HTMLElement>): void => {
+              const direction = ARROW_EDGES[event.key];
+              if (direction === undefined) return;
+              event.preventDefault();
+              nudgeGrip(tile.id, direction);
+            };
+            /*
+              A SPLIT'S GRIP IS A HANDLE AT ITS CORNER, not a cover: its members paint their own
+              grips over its whole box, so a full-rect grip would take the pointer from exactly
+              the seats it holds. The frame under it paints only the selection, and steps
+              down by depth so a stack nested first inside a stack keeps a handle of its own.
+            */
+            return (
+              <span key={tile.id} className="arrange-grip-host" style={style}>
+                {tile.dir !== null ? (
+                  <>
+                    <span className={`arrange-grip-frame${state}`} aria-hidden="true" />
+                    <button
+                      type="button"
+                      className={`arrange-grip-handle${state}`}
+                      data-action="core.space.setLayout"
+                      data-tile-id={tile.id}
+                      aria-label={`Pick up the ${title}`}
+                      onPointerDown={beginGrip}
+                      onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
+                    >
+                      <ControlIcon kind="grip" size={11} className="arrange-palette-cue" />
+                      <ItemIcon kind="structure" size={13} className="arrange-palette-shape" />
+                      {title}
+                    </button>
+                  </>
+                ) : (
                   <button
-                    className={`arrange-grip${liveGrab === tile.id ? " is-grabbed" : ""}${
-                      selected === tile.id ? " is-selected" : ""
-                    }`}
+                    className={`arrange-grip${state}`}
                     data-action="core.space.setLayout"
                     data-panel-id={panelId ?? undefined}
                     data-tile-id={tile.id}
-                    aria-label={`Move the ${title} panel`}
+                    aria-label={structure ? `Pick up the ${title}` : `Move the ${title} panel`}
                     onPointerDown={beginGrip}
-                    onKeyDown={(event) => {
-                      const direction = ARROW_EDGES[event.key];
-                      if (direction === undefined) return;
-                      event.preventDefault();
-                      nudgeGrip(tile.id, direction);
-                    }}
+                    onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
+                    onKeyDown={keys}
                   />
+                )}
+                {tile.dir !== null ? null : (
                   <span className="arrange-grip-pill">
                     <span className="arrange-grip-label">{title}</span>
                     {panel?.arranges === undefined ? null : (
@@ -749,9 +974,10 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                       </button>
                     )}
                   </span>
-                </span>
-              );
-            })}
+                )}
+              </span>
+            );
+          })}
       {frame === null
         ? null
         : (() => {
@@ -810,7 +1036,9 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         <div className="arrange-toolbar-status" role="status">
           <strong className="arrange-toolbar-title">Arrange mode</strong>
           <span className="arrange-toolbar-sep" aria-hidden="true" />
-          {scopeTitle === null ? (
+          {carrying ? (
+            <span className="arrange-toolbar-hint">Esc lets go.</span>
+          ) : scopeTitle === null ? (
             <span className="arrange-toolbar-hint">Esc or F8 to finish.</span>
           ) : (
             <span className="arrange-crumbs">
@@ -839,8 +1067,31 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
 
           Live even while scoped into a panel: in there the panel takes the drop into its own
           arrangement, which is the whole reason the sidebar can be given side-by-side rows.
+
+          AND A DROP TARGET while anything is carried (#148): its state overlay says which of
+          the two things letting go here means, and `data-action` names the door a placed
+          structure's return opens, since that one writes the tree.
         */}
-        <div className="arrange-palette" role="group" aria-label="Structure palette">
+        <div
+          ref={(element) => {
+            paletteRef.current = element;
+          }}
+          className={`arrange-palette${carrying && paletteHot ? " is-hot" : ""}`}
+          role="group"
+          aria-label="Structure palette"
+          data-testid="arrange-palette"
+          data-action="core.space.setLayout"
+          data-carry={paletteCarry}
+          onDragOver={paletteOver}
+          onDragLeave={paletteLeave}
+          onDrop={paletteDrop}
+        >
+          {carrying ? (
+            <span className="arrange-palette-state" role="status">
+              <ControlIcon kind={paletteCarry === "remove" ? "discard" : "cancel"} size={13} />
+              {paletteCarry === "remove" ? "Drop to remove" : "Drop to cancel"}
+            </span>
+          ) : null}
           {palette.map((tool) => {
             const structure = PALETTE_STRUCTURES[tool.id];
             if (structure === undefined) return null;
@@ -869,9 +1120,10 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
         </div>
         <span className="arrange-toolbar-sep" aria-hidden="true" />
         {/*
-          Shelf is the one operation whose verb needs a SEAT rather than the root, so it reads
-          the selection — tap a grip first — and refuses by name when there is none, which the
-          shelf list after it then makes recoverable in one press.
+          Shelf and Remove are the operations whose verb needs a SEAT rather than the root, so
+          they read the selection — tap a grip first. Shelf refuses by name when there is none,
+          which the shelf list after it then makes recoverable in one press; Remove is
+          disabled until a STRUCTURE is selected, because a panel is never its argument.
         */}
         <div className="arrange-toolbar-tools">
           {operations.map((tool) => {
@@ -883,7 +1135,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                 className="arrange-toolbar-button"
                 data-action="core.space.setLayout"
                 data-testid={`toolbar-${tool.id}`}
-                disabled={operationsDisabled}
+                disabled={operationsDisabled || (tool.id === "remove" && !selectedStructure)}
                 onClick={() => runTool(tool.id)}
               >
                 {mark === undefined ? null : <ControlIcon kind={mark} size={13} />}

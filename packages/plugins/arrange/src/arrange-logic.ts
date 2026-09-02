@@ -3,6 +3,7 @@ import {
   ROOT_TILE_ID,
   validateTileLayout,
   type Structure,
+  type TileDir,
   type TileEdge,
   type TileLayout,
   type TileRef,
@@ -13,6 +14,7 @@ import {
   withTileLeaf,
   withTileRatios,
   withoutTileLeaf,
+  withoutTileStructure,
 } from "@manifold/scene";
 
 /**
@@ -71,6 +73,8 @@ export const PANEL_ARRANGE_RULES = [
   "no_sibling",
   "tree_refused",
   "nothing_selected",
+  "not_removable",
+  "not_a_structure",
 ] as const;
 
 export type PanelArrangeRule = (typeof PANEL_ARRANGE_RULES)[number];
@@ -82,7 +86,7 @@ export type PanelArrangeOutcome =
 
 /**
  * One sentence per rule, keyed by the union so a rule cannot ship without prose — the
- * table `item-drop.ts` keeps for placement refusals, applied to this gesture's own six.
+ * table `item-drop.ts` keeps for placement refusals, applied to this gesture's own eight.
  */
 const RULE_PROSE: Readonly<Record<PanelArrangeRule, string>> = {
   panel_alone: "This workspace shows one panel, so there is nowhere to move it.",
@@ -91,6 +95,8 @@ const RULE_PROSE: Readonly<Record<PanelArrangeRule, string>> = {
   no_sibling: "No panel sits on that side of this one.",
   tree_refused: "The workspace tree cannot take the panel there.",
   nothing_selected: "Select the seat this tool acts on first.",
+  not_removable: "The root is the workspace itself; there is nothing to take it out of.",
+  not_a_structure: "That seat holds a panel: Shelf is the verb that takes a panel out.",
 };
 
 /** The refusal in prose, for the notice the toolbar raises when a tool cannot act. */
@@ -281,6 +287,48 @@ export function shelved(layout: TileLayout | null, tileId: string): PanelArrange
   if (layout === null) return refuse("tree_refused");
   if (panelRefAt(layout, tileId) === null) return refuse("not_a_panel");
   return settled(withoutTileLeaf(layout, tileId));
+}
+
+/**
+ * REMOVE: takes a placed structure back out of the tree — the palette's return leg (#148).
+ *
+ * Three doors open onto this one function and none of them is a second copy of it: a grip
+ * drag released on the palette, Delete with the structure selected, and the Remove tool. A
+ * split DISSOLVES (its members promoted into its parent, order kept, nothing lost), a spacer
+ * or a vacant seat is removed; the arithmetic is `withoutTileStructure`, the scene's own
+ * inverse of the palette's insert, so the rail's structures go through the same surgery.
+ * The root is refused by name — it is the tree, not something in it — and so is a panel:
+ * Shelf stays the panel verb, and "remove" never silently means "shelve".
+ */
+export function removedStructure(layout: TileLayout | null, tileId: string): PanelArrangeOutcome {
+  const tile = layout?.[tileId];
+  if (layout === null || tile === undefined) return refuse("tree_refused");
+  if (tileId === ROOT_TILE_ID) return refuse("not_removable");
+  if (!isStructure(tile)) return refuse("not_a_structure");
+  return settled(withoutTileStructure(layout, tileId));
+}
+
+/** A placed structure: a split, a spacer, or the vacant seat a dropped split left behind. */
+export function isStructure(tile: {
+  readonly dir: TileDir | null;
+  readonly ref: TileRef | null;
+}): boolean {
+  return tile.dir !== null || tile.ref === null || tile.ref.kind === "spacer";
+}
+
+/**
+ * WHAT ESCAPE MEANS, decided before any DOM is touched (#148).
+ *
+ * One rule: Escape cancels the carry in hand and nothing else. A grip drag in flight ends
+ * with the tree untouched and the mode still armed at the same scope; with nothing in hand
+ * the key is the mode's own "never mind" — one level out of a scoped panel, and out of the
+ * mode from the root. Palette drags are the browser's own loop and never reach here.
+ */
+export type EscapeOutcome = "end_carry" | "pop_scope" | "leave_mode";
+
+export function escapeMeaning(carrying: boolean, scopedPanelId: string | null): EscapeOutcome {
+  if (carrying) return "end_carry";
+  return scopedPanelId === null ? "leave_mode" : "pop_scope";
 }
 
 /** Shelf's re-seat: appends a shelved panel back onto the workspace's own arrangement. */
