@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-02
+
 ### Breaking Changes
 
 - One word per concept, everywhere: the app, its API and its database now speak a single canonical vocabulary — a **container** holds one of two **disciplines** (a freeform canvas or a tiled composition), a **terminal** is a shell while a **session** is your connection, and the sidebar's one tree is the **Index**. Capabilities (`containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`, `terminals:write`), HTTP routes, wire fields and the SQLite schema were renamed in place: your containers, terminals, folders and tokens are migrated for you behind a pre-migration backup, and protocol v16 needs the server and every enrolled machine agent restarted together. (#69, #70)
