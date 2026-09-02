@@ -162,6 +162,12 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
   agents. The reverse is rejected loudly (close 4409, `machine_version_rejected`
   in hub logs naming both versions). For a protocol bump that resets the compat
   set, upgrade hub and all spokes together; never advance only one side.
+- **Downstream pins follow `main`.** A release is a tag that `bun run release` cuts
+  from `main`, the release line; a tag that is not an ancestor of `main` is not a
+  release whatever it is called. v0.5.0 (2026-08-30) is the one such tag - published
+  as a pre-release from a `dev` commit and never deployed. Pin refreshers (the dotfiles
+  cron) resolve "latest" through GitHub, which excludes pre-releases, and hold any
+  candidate whose protocol is newer than the deployed hub (`atyrode/dotfiles#454`).
 - **Verify before removing the old agent.** Start the new binary and confirm
   `welcome` in its log (and `online: true` from `core.machines.list`) before
   decommissioning whatever ran previously with the same token.
