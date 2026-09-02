@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -406,6 +406,36 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '14');
 ALTER TABLE tokens ADD COLUMN expires_at INTEGER;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '15');
 `,
+  /**
+   * Dead-token grant rows retired (#140). A token's grant row is that one credential's
+   * synthesized authority and reaches no other, so once the token is revoked the row answers
+   * no question anybody can ask — and migration 13 materialized revoked tokens all the same,
+   * as "a faithful account of what was issued". That ruling is reversed: the account of what
+   * was issued is the `tokens` row (`caps`, `container_id`, `revoked_at` all stay), a grant row
+   * is LIVE authority, and `ServerStore.revokeTokensWhere` now deletes the row in the same
+   * transaction that marks the token. This is the same rule applied to history, exactly as 13
+   * skipped revoked shares for the reason `revokeShare` deletes theirs.
+   *
+   * No credential's answer to any authority question moves: a revoked token is refused at
+   * authentication before the evaluator is asked, and a row bound to one is reachable through
+   * no other credential (`tokenBound`). The second predicate is belt to that brace — a row
+   * some LIVE token still references is kept even if a dead one also names it, which the
+   * one-row-per-token construction makes impossible and the migration refuses to assume.
+   *
+   * Backed up, by the house rule: rows go one way here, and a mistake would look like an
+   * authority that vanished rather than like corrupt data an operator can read.
+   */
+  16: {
+    backup: true,
+    sql: `
+DELETE FROM grants
+ WHERE id IN (SELECT grant_id FROM tokens WHERE revoked_at IS NOT NULL AND grant_id IS NOT NULL)
+   AND id NOT IN (SELECT grant_id FROM tokens WHERE revoked_at IS NULL AND grant_id IS NOT NULL);
+UPDATE tokens SET grant_id = NULL
+ WHERE revoked_at IS NOT NULL AND grant_id NOT IN (SELECT id FROM grants);
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '16');
+`,
+  },
 };
 
 interface TableRow {
