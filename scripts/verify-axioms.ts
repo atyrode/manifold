@@ -3915,6 +3915,84 @@ try {
     );
 
     /*
+      AND AN OCCUPIED STACK KEEPS THE ROOM ITS MEMBERS NEED, WHATEVER HEIGHT THE RAIL HAS
+      (issue #143). Every rung above this one was green while the surface was broken, and this
+      is the rung that was missing: they all ran in a 900 px window, where the rail has slack,
+      and the defect only shows once the rail is asked for more rows than it has room for.
+
+      A stack that zeroed its own `min-height` was the ONE row in the rail that could be
+      squeezed below what it holds — a plain row keeps the automatic minimum a flex item is born
+      with, an open section declares a floor — and a stack does not clip, so its members went on
+      painting where the rail had already laid the next row. The operator saw the row below drawn
+      straight over the stack's occupant, and the same zero left the stack with no band for the
+      drop descent to land in, so nothing could be dragged in either.
+
+      So the window is SQUEEZED for this one reading, which is the only state the claim lives
+      in, and every split the rungs above authored is measured at once: the rail is carrying a
+      vacant one, a pair and a trio, which is occupancy 0, 2 and 3 in one frame. Ink, not boxes
+      — a crushed member reports a crushed BOX and paints at its natural size regardless, so a
+      box-only reading is exactly how this shipped.
+    */
+    interface StackRoom {
+      readonly dir: string;
+      readonly members: number;
+      readonly height: number;
+      /** How far the deepest thing the stack paints falls past the stack's own bottom. */
+      readonly spill: number;
+      /** How far the next top-level row reaches back UP over what the stack paints. */
+      readonly overlap: number;
+      readonly nextId: string;
+    }
+    const stackRoom = (): Promise<readonly StackRoom[]> =>
+      browser!.evaluate<readonly StackRoom[]>(
+        `Array.from(document.querySelectorAll('.sidebar-sections .sidebar-split'), (split) => {
+           const box = split.getBoundingClientRect();
+           const ink = Array.from(split.querySelectorAll('*')).reduce((low, node) => {
+             const rect = node.getBoundingClientRect();
+             return rect.height > 0 ? Math.max(low, rect.bottom) : low;
+           }, box.top);
+           let unit = split;
+           while (unit.parentElement !== null && !unit.parentElement.classList.contains('sidebar-sections')) {
+             unit = unit.parentElement;
+           }
+           const next = unit.nextElementSibling;
+           return {
+             dir: split.dataset.dir ?? '',
+             members: split.querySelectorAll('[data-section-id]').length,
+             height: box.height,
+             spill: ink - box.bottom,
+             overlap: next === null ? 0 : ink - next.getBoundingClientRect().top,
+             nextId: next === null ? '' : (next.dataset.sectionId ?? next.className),
+           };
+         })`,
+      );
+    await browser.send("Emulation.setDeviceMetricsOverride", {
+      width: 1440,
+      height: 460,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await sleep(1_000);
+    const squeezed = await stackRoom();
+    await browser.send("Emulation.clearDeviceMetricsOverride", {});
+    await sleep(600);
+    /* One pixel of slack for subpixel layout; the defect measured tens. */
+    const crushed = squeezed.filter((stack) => stack.spill > 1 || stack.overlap > 1);
+    const occupancies = [...new Set(squeezed.map((stack) => stack.members))].sort();
+    const heldRoom = squeezed.length > 0 && crushed.length === 0 && occupancies.includes(0);
+    check(
+      "R4 an occupied rail stack keeps its members' room in a rail with none to spare",
+      heldRoom,
+      squeezed.length === 0
+        ? "no split left in the rail to squeeze: the claim was never tested"
+        : !occupancies.includes(0)
+          ? `no VACANT stack among ${String(squeezed.length)} — the empty case is half the claim, since a stack that costs room while empty is the opposite bug`
+          : heldRoom
+            ? `${String(squeezed.length)} stack(s) at occupancy ${occupancies.join("/")} held their room in a 460 px window: ${squeezed.map((stack) => `${stack.dir}×${String(stack.members)} ${String(Math.round(stack.height))}px`).join(", ")}`
+            : `${String(crushed.length)} stack(s) squeezed below what they paint: ${crushed.map((stack) => `${stack.dir}×${String(stack.members)} is ${String(Math.round(stack.height))}px tall, paints ${String(Math.round(stack.spill))}px past its own bottom, and "${stack.nextId}" is drawn ${String(Math.round(stack.overlap))}px over it`).join("; ")}`,
+    );
+
+    /*
       The arrangement this check made is not this check's to leave behind: later checks read a
       rail whose rows sit where their manifests put them (R3's disable/re-enable, R9's sweep).
       So the tree goes back through the same door the drag committed through.

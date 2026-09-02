@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { projectSectionArrangement, type SectionProjection } from "@manifold/plugin";
+import {
+  projectSectionArrangement,
+  releasedSectionArrangement,
+  UNPAINTED_EXTENT,
+  type SectionProjection,
+} from "@manifold/plugin";
 import { resolveTileAim, tileRects, type TileAim } from "@manifold/plugin/hooks";
 import type { SectionNode } from "@manifold/protocol";
 import { railExtents, railPoint, stackPoint, type RailBox } from "../src/rail-aim.ts";
@@ -219,5 +224,168 @@ describe("stackPoint", () => {
     ]);
     const projection = ground(nodes, boxes);
     expect(aimAt(projection, boxes, 150, 66)?.edge).toBe("center");
+  });
+});
+
+describe("an occupied stack", () => {
+  /*
+    WHAT A STACK CONTRIBUTES TO THE RAIL, at every occupancy it can be in (issue #143).
+
+    The operator's report was two defects with one number behind them: a stack holding a row
+    reported no height, so the rail laid the next row where the stack was not — painting it
+    straight over the occupant — and left the stack no band for {@link railPoint}'s descent to
+    land in, so nothing could be dragged in either. The paint half is the stylesheet's (an
+    occupied `.sidebar-split` keeps the content floor every other rail row keeps); this is the
+    reading half, and it is the one that decides which pixel means what.
+
+    A stack is read along TWO axes at once and that is the whole subtlety: the stack itself
+    along the rail's axis, what it holds along the stack's own. Below, the same three
+    occupancies are asserted for a stack that runs DOWN the rail and one that runs ACROSS it,
+    because those two cases exchange which axis is which.
+  */
+  const ROW_H = 37.6;
+
+  test("empty, it reports the band it paints and mints a seat to aim into", () => {
+    const nodes: readonly SectionNode[] = ["brand", { dir: "row", sections: [] }, "index"];
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 32)],
+      // A vacant stack is spaceless at rest and a 2.2rem band while the mode is armed; armed
+      // is the only state a drag can happen in, so armed is what the reading is about.
+      ["n1", row(48.79, 35.19)],
+      ["n1.0", row(48.79, 35.19)],
+      ["n2", row(90.38, 292.41)],
+    ]);
+    const extents = railExtents(nodes, boxes);
+    expect(extents.get("n1")).toBeCloseTo(35.19, 2);
+    // The seat is the projection's own, and it is VACANT: `ref: null` is what a centre release
+    // fills, and the one aim a fresh stack exists to receive.
+    expect(ground(nodes, boxes).layout["n1.0"]?.ref).toBeNull();
+  });
+
+  test("one member deep, a stack is as tall as its occupant", () => {
+    const nodes: readonly SectionNode[] = ["brand", { dir: "column", sections: ["canvas"] }];
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 32)],
+      ["n1", row(48.79, ROW_H)],
+      ["n1.0", row(48.79, ROW_H)],
+    ]);
+    const extents = railExtents(nodes, boxes);
+    expect(extents.get("n1")).toBeCloseTo(ROW_H, 2);
+    expect(extents.get("n1.0")).toBeCloseTo(ROW_H, 2);
+    // Not an unpainted sliver: a stack holding a row is a node a pointer can land on.
+    expect(extents.get("n1") ?? 0).toBeGreaterThan(UNPAINTED_EXTENT);
+  });
+
+  test("n members deep, a stack is as tall as all of them and the gaps between", () => {
+    const nodes: readonly SectionNode[] = [
+      "brand",
+      { dir: "column", sections: ["canvas", "notes", "index"] },
+    ];
+    const stacked = ROW_H * 3 + GAP * 2;
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 32)],
+      ["n1", row(48.79, stacked)],
+      ["n1.0", row(48.79, ROW_H)],
+      ["n1.1", row(48.79 + ROW_H + GAP, ROW_H)],
+      ["n1.2", row(48.79 + (ROW_H + GAP) * 2, ROW_H)],
+    ]);
+    const extents = railExtents(nodes, boxes);
+    expect(extents.get("n1")).toBeCloseTo(stacked, 2);
+    for (const path of ["n1.0", "n1.1", "n1.2"]) {
+      expect(extents.get(path)).toBeCloseTo(ROW_H, 2);
+    }
+  });
+
+  test("across the rail the axes swap: n members abreast are still one row tall", () => {
+    const nodes: readonly SectionNode[] = [
+      "brand",
+      { dir: "row", sections: ["canvas", "notes", "index"] },
+    ];
+    const share = (AREA.width - GAP * 2) / 3;
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 32)],
+      ["n1", row(48.79, ROW_H)],
+      ["n1.0", { left: AREA.left, top: 48.79, width: share, height: ROW_H }],
+      ["n1.1", { left: AREA.left + share + GAP, top: 48.79, width: share, height: ROW_H }],
+      ["n1.2", { left: AREA.left + (share + GAP) * 2, top: 48.79, width: share, height: ROW_H }],
+    ]);
+    const extents = railExtents(nodes, boxes);
+    expect(extents.get("n1")).toBeCloseTo(ROW_H, 2);
+    for (const path of ["n1.0", "n1.1", "n1.2"]) {
+      expect(extents.get(path)).toBeCloseTo(share, 2);
+    }
+  });
+
+  /*
+    AND IT TAKES ANOTHER ROW. There is no capacity in a rail stack — a split holds as many rows
+    as the tree's own bound allows — so an occupant is never a reason to refuse, and "the stack
+    stopped accepting rows" was the missing band, not a rule. Asserted through the release
+    rather than the aim alone: what a drop MEANS is the arrangement it commits.
+  */
+  const occupied = (
+    sections: readonly string[],
+  ): {
+    readonly nodes: readonly SectionNode[];
+    readonly boxes: ReadonlyMap<string, RailBox>;
+  } => {
+    const share = (AREA.width - GAP * (sections.length - 1)) / sections.length;
+    const top = 10.39 + ROW_H + GAP;
+    const boxes = new Map<string, RailBox>([
+      // A row ABOVE the stack, so the rail the release lands in is a rail: a root split left
+      // holding one child dissolves it, which is the kernel's rule and not this claim's subject.
+      ["n0", row(10.39, ROW_H)],
+      ["n1", row(top, ROW_H)],
+      ["n2", row(top + ROW_H + GAP, 292.41)],
+    ]);
+    sections.forEach((_, index) => {
+      boxes.set(`n1.${String(index)}`, {
+        left: AREA.left + (share + GAP) * index,
+        top,
+        width: share,
+        height: ROW_H,
+      });
+    });
+    return { nodes: ["brand", { dir: "row", sections }, "index"], boxes };
+  };
+
+  test("a stack holding one row accepts a second, and holding two accepts a third", () => {
+    for (const held of [["canvas"], ["canvas", "notes"]]) {
+      const { nodes, boxes } = occupied(held);
+      const projection = ground(nodes, boxes);
+      const last = boxes.get(`n1.${String(held.length - 1)}`);
+      if (last === undefined) throw new Error("fixture");
+      // The trailing member's own outer edge: "join it, after" — the aim a hand dragging a row
+      // into the stack from below arrives on.
+      const aim = aimAt(projection, boxes, last.left + last.width - 2, last.top + last.height / 2);
+      expect(aim?.tileId).toBe(`n1.${String(held.length - 1)}`);
+      expect(aim?.edge).toBe("right");
+      if (aim === null) throw new Error("no aim");
+      const released = releasedSectionArrangement(
+        projection,
+        { kind: "section", id: "index" },
+        aim,
+      );
+      expect(released).toEqual(["brand", { dir: "row", sections: [...held, "index"] }]);
+    }
+  });
+
+  /*
+    EVERY PIXEL OF AN OCCUPIED STACK IS A DROP, which is the other half of "never silently
+    refused": the cross axis carries no meaning and an occupied member has no centre, so a
+    stack's whole painted surface answers with one of its boundaries. A dead patch here would
+    be a refusal a reader cannot see, and that is what half of #124's report was.
+  */
+  test("no pixel of an occupied stack is a dead patch", () => {
+    const { nodes, boxes } = occupied(["canvas", "notes"]);
+    const projection = ground(nodes, boxes);
+    const first = boxes.get("n1.0");
+    const second = boxes.get("n1.1");
+    if (first === undefined || second === undefined) throw new Error("fixture");
+    for (let x = Math.ceil(first.left) + 1; x < second.left + second.width - 1; x += 2) {
+      const aim = aimAt(projection, boxes, x, first.top + first.height / 2);
+      expect(aim).not.toBeNull();
+      expect(aim?.edge).not.toBe("center");
+      expect(["n1.0", "n1.1"]).toContain(aim?.tileId ?? "");
+    }
   });
 });
