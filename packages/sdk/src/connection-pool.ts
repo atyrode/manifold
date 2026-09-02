@@ -224,6 +224,36 @@ interface TopicRecord {
   count: number;
 }
 
+/**
+ * The slice of a browser `window` the pool listens on, typed structurally: the SDK is
+ * consumed by the server and the testkit under bun-types alone, so it may not name the DOM
+ * lib's `window` or `PageTransitionEvent`. Under Bun no document exists and the lookup
+ * answers `undefined`.
+ */
+type PageListener = (event: { readonly persisted?: boolean }) => void;
+interface PageWindow {
+  addEventListener(type: "pagehide" | "pageshow", listener: PageListener): void;
+  removeEventListener(type: "pagehide" | "pageshow", listener: PageListener): void;
+}
+function pageWindow(): PageWindow | undefined {
+  // `typeof globalThis` under bun-types has no `window` and no index signature; Reflect reads it as a value.
+  const candidate: unknown = Reflect.get(globalThis, "window");
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    !("addEventListener" in candidate) ||
+    typeof candidate.addEventListener !== "function" ||
+    !("removeEventListener" in candidate) ||
+    typeof candidate.removeEventListener !== "function"
+  ) {
+    return undefined;
+  }
+  // A browser window, checked above for exactly the two methods used; the DOM lib that
+  // would name it is not in scope for every consumer of this package.
+  const page = candidate as PageWindow;
+  return page;
+}
+
 /** One WebSocket carrying every room a tab renders. */
 class PooledConnection {
   private socket: WebSocket | null = null;
@@ -250,11 +280,11 @@ class PooledConnection {
    * `persisted` short-circuits that backoff so a restored page reconnects at once.
    * Browser-only by construction: a Bun client has no document to hide.
    */
-  private readonly onPageHide = (): void => {
+  private readonly onPageHide: PageListener = () => {
     this.socket?.close(1000, "pagehide");
   };
-  private readonly onPageShow = (event: PageTransitionEvent): void => {
-    if (!event.persisted || this.dead) return;
+  private readonly onPageShow: PageListener = (event) => {
+    if (event.persisted !== true || this.dead) return;
     this.backoff.cancel();
     if (this.socket === null) this.dial();
   };
@@ -276,10 +306,8 @@ class PooledConnection {
         if (!this.dead && this.socket === null) this.dial();
       },
     });
-    if (typeof window !== "undefined") {
-      window.addEventListener("pagehide", this.onPageHide);
-      window.addEventListener("pageshow", this.onPageShow);
-    }
+    pageWindow()?.addEventListener("pagehide", this.onPageHide);
+    pageWindow()?.addEventListener("pageshow", this.onPageShow);
   }
 
   /** Registers one room on this socket, joining it as soon as the wire allows. */
@@ -605,10 +633,8 @@ class PooledConnection {
     this.dead = true;
     this.liveness.clear();
     this.backoff.cancel();
-    if (typeof window !== "undefined") {
-      window.removeEventListener("pagehide", this.onPageHide);
-      window.removeEventListener("pageshow", this.onPageShow);
-    }
+    pageWindow()?.removeEventListener("pagehide", this.onPageHide);
+    pageWindow()?.removeEventListener("pageshow", this.onPageShow);
     const socket = this.socket;
     this.socket = null;
     if (closeCode !== null) socket?.close(closeCode);
