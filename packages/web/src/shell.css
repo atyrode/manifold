@@ -1002,12 +1002,31 @@ button.sidebar-terminal.is-summary > small {
  * a drop by projecting itself into a tile tree and asking the shared seam/zone kernel, and it
  * feeds that kernel ONE divider thickness read off `.sidebar-sections`. A split spaced
  * differently would put its seam bands somewhere other than where a reader sees the gap.
+ *
+ * AN OCCUPIED STACK'S FLOOR IS ITS MEMBERS' (issue #143), which is why `min-height` is spelled
+ * out here instead of zeroed with the `min-width` beside it. The rail is a column of rows and
+ * every one of them holds its content against pressure: a plain row keeps the automatic
+ * minimum a flex item is born with, an open section declares a floor of its own. A stack that
+ * zeroed its own `min-height` was the one row in the rail that could be squeezed BELOW what it
+ * holds — and its members paint outside it when it is, because a stack does not clip. So the
+ * rail assigned the stack no height, laid the next row where the stack was not, and the reader
+ * saw the row below painted straight over the stack's occupant; the same zero left the stack
+ * with no band for `railPoint`'s descent to land in, so nothing could be dragged into it
+ * either. One number, both halves of what the operator reported.
+ *
+ * The pressure has to go somewhere and now it goes where it goes for every other row: the
+ * height absorber gives first, and past that the rail's own `overflow: hidden` clips its tail.
+ * A clipped row is a row you scroll the rail to reach; an overlapped one is a bug.
+ *
+ * EMPTY IS THE EXCEPTION AND STAYS ONE, because it is not a floor at all: a vacant stack is
+ * `flex: 0 0 0` (see below), it never shrinks, and `auto` measures the nothing it holds as
+ * nothing — so the shape a fresh palette drop leaves behind still costs the rail no room.
  */
 .sidebar-split {
   display: flex;
   gap: 0.4rem;
   min-width: 0;
-  min-height: 0;
+  min-height: auto;
 }
 
 .sidebar-split[data-dir="row"] {
