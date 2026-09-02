@@ -240,6 +240,25 @@ class PooledConnection {
   });
   private dead = false;
 
+  /**
+   * A document leaving the foreground for good — a full navigation, a reload, a tab going
+   * into the back/forward cache — must release its rooms NOW, not when the server's ping
+   * finally goes unanswered: until then every peer sees a ghost occupant, and a spotlight
+   * addressed to this principal can land on the ghost (#172). `pagehide` is the one event
+   * fired on every such exit; the close is a normal 1000, so `onclose` schedules the usual
+   * redial, whose timer only ever fires if the page comes back — and `pageshow` with
+   * `persisted` short-circuits that backoff so a restored page reconnects at once.
+   * Browser-only by construction: a Bun client has no document to hide.
+   */
+  private readonly onPageHide = (): void => {
+    this.socket?.close(1000, "pagehide");
+  };
+  private readonly onPageShow = (event: PageTransitionEvent): void => {
+    if (!event.persisted || this.dead) return;
+    this.backoff.cancel();
+    if (this.socket === null) this.dial();
+  };
+
   constructor(
     readonly id: string,
     private readonly url: string,
@@ -257,6 +276,10 @@ class PooledConnection {
         if (!this.dead && this.socket === null) this.dial();
       },
     });
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", this.onPageHide);
+      window.addEventListener("pageshow", this.onPageShow);
+    }
   }
 
   /** Registers one room on this socket, joining it as soon as the wire allows. */
@@ -582,6 +605,10 @@ class PooledConnection {
     this.dead = true;
     this.liveness.clear();
     this.backoff.cancel();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("pagehide", this.onPageHide);
+      window.removeEventListener("pageshow", this.onPageShow);
+    }
     const socket = this.socket;
     this.socket = null;
     if (closeCode !== null) socket?.close(closeCode);

@@ -2674,7 +2674,7 @@ try {
     );
     const leaveLagMs = Date.now() - leaveWaitStarted;
     if (!viewerLeft) {
-      // Evidence for #172, printed rather than thrown: what the peer still sees in the old room.
+      // The evidence, then the named failure (#172): what the peer still sees in the old room.
       console.log(
         `INFO  R5 precondition: the terminal room still lists the viewer after ${String(leaveLagMs)}ms: ${JSON.stringify(
           [...terminalClient!.attendance.values()].map((row) => ({
@@ -2684,6 +2684,7 @@ try {
           })),
         )}`,
       );
+      throw new Error("timed out waiting for viewer left the terminal room");
     }
     const outcome = ActionOutcomeSchema.parse(
       await dispatch("core.presence.focus", { targetPrincipalId: viewerPrincipalId, uri }),
