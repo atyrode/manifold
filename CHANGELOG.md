@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The verification gate runs once per commit, on CI, for every pull request and every push to `main`; a release refuses a commit CI has not proven green instead of re-running the gate itself, so a release takes minutes rather than twenty. (#174, #179)
+
 ## [0.6.1] - 2026-09-02
 
 ### Added
