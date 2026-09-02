@@ -224,6 +224,36 @@ interface TopicRecord {
   count: number;
 }
 
+/**
+ * The slice of a browser `window` the pool listens on, typed structurally: the SDK is
+ * consumed by the server and the testkit under bun-types alone, so it may not name the DOM
+ * lib's `window` or `PageTransitionEvent`. Under Bun no document exists and the lookup
+ * answers `undefined`.
+ */
+type PageListener = (event: { readonly persisted?: boolean }) => void;
+interface PageWindow {
+  addEventListener(type: "pagehide" | "pageshow", listener: PageListener): void;
+  removeEventListener(type: "pagehide" | "pageshow", listener: PageListener): void;
+}
+function pageWindow(): PageWindow | undefined {
+  // `typeof globalThis` under bun-types has no `window` and no index signature; Reflect reads it as a value.
+  const candidate: unknown = Reflect.get(globalThis, "window");
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    !("addEventListener" in candidate) ||
+    typeof candidate.addEventListener !== "function" ||
+    !("removeEventListener" in candidate) ||
+    typeof candidate.removeEventListener !== "function"
+  ) {
+    return undefined;
+  }
+  // A browser window, checked above for exactly the two methods used; the DOM lib that
+  // would name it is not in scope for every consumer of this package.
+  const page = candidate as PageWindow;
+  return page;
+}
+
 /** One WebSocket carrying every room a tab renders. */
 class PooledConnection {
   private socket: WebSocket | null = null;
@@ -239,6 +269,25 @@ class PooledConnection {
     current: () => this.socket,
   });
   private dead = false;
+
+  /**
+   * A document leaving the foreground for good — a full navigation, a reload, a tab going
+   * into the back/forward cache — must release its rooms NOW, not when the server's ping
+   * finally goes unanswered: until then every peer sees a ghost occupant, and a spotlight
+   * addressed to this principal can land on the ghost (#172). `pagehide` is the one event
+   * fired on every such exit; the close is a normal 1000, so `onclose` schedules the usual
+   * redial, whose timer only ever fires if the page comes back — and `pageshow` with
+   * `persisted` short-circuits that backoff so a restored page reconnects at once.
+   * Browser-only by construction: a Bun client has no document to hide.
+   */
+  private readonly onPageHide: PageListener = () => {
+    this.socket?.close(1000, "pagehide");
+  };
+  private readonly onPageShow: PageListener = (event) => {
+    if (event.persisted !== true || this.dead) return;
+    this.backoff.cancel();
+    if (this.socket === null) this.dial();
+  };
 
   constructor(
     readonly id: string,
@@ -257,6 +306,8 @@ class PooledConnection {
         if (!this.dead && this.socket === null) this.dial();
       },
     });
+    pageWindow()?.addEventListener("pagehide", this.onPageHide);
+    pageWindow()?.addEventListener("pageshow", this.onPageShow);
   }
 
   /** Registers one room on this socket, joining it as soon as the wire allows. */
@@ -582,6 +633,8 @@ class PooledConnection {
     this.dead = true;
     this.liveness.clear();
     this.backoff.cancel();
+    pageWindow()?.removeEventListener("pagehide", this.onPageHide);
+    pageWindow()?.removeEventListener("pageshow", this.onPageShow);
     const socket = this.socket;
     this.socket = null;
     if (closeCode !== null) socket?.close(closeCode);

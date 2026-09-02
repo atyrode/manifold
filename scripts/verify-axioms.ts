@@ -2657,6 +2657,35 @@ try {
       containerId: canvasContainerId,
       elementId: strokeId,
     });
+    /*
+      The door writes the spotlight into the FIRST shared room by container id (sorted), to the
+      target's first connection there (room.ts `sharedContainerIds` / `writeSpotlight`). The
+      viewer's previous page — R2's terminal container — stays a member of that room until the
+      server processes its socket close, and on a loaded runner that lags the new page's join by
+      seconds; when the terminal container's id sorts first, the spotlight lands on a connection
+      that no longer has a page (#172: green locally, RED once on CI, re-run green). So the
+      precondition is OBSERVED rather than assumed: the SDK peer still in the old room sees the
+      viewer gone before the focus is dispatched.
+    */
+    const leaveWaitStarted = Date.now();
+    const viewerLeft = await settles(
+      () => terminalClient!.attendance.get(viewerPrincipalId) === undefined,
+      10_000,
+    );
+    const leaveLagMs = Date.now() - leaveWaitStarted;
+    if (!viewerLeft) {
+      // The evidence, then the named failure (#172): what the peer still sees in the old room.
+      console.log(
+        `INFO  R5 precondition: the terminal room still lists the viewer after ${String(leaveLagMs)}ms: ${JSON.stringify(
+          [...terminalClient!.attendance.values()].map((row) => ({
+            principal: row.principal.id,
+            name: row.principal.name,
+            vantage: row.payload.vantage ?? null,
+          })),
+        )}`,
+      );
+      throw new Error("timed out waiting for viewer left the terminal room");
+    }
     const outcome = ActionOutcomeSchema.parse(
       await dispatch("core.presence.focus", { targetPrincipalId: viewerPrincipalId, uri }),
     );
@@ -2670,7 +2699,7 @@ try {
       outcome.ok && applied,
       outcome.ok
         ? applied
-          ? "the target's viewport centered on the named node"
+          ? `the target's viewport centered on the named node (the old room released the viewer ${String(leaveLagMs)}ms after the new page was already painting)`
           : "the action succeeded but no client applied it"
         : `focus was denied: ${outcome.ok ? "" : outcome.denial.message}`,
     );

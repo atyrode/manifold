@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   release:
-    name: Verify and publish
+    name: Publish
     runs-on: ubuntu-latest
     steps:
       - name: Check out tagged source
@@ -30,9 +30,6 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Verify release
-        run: bun run gate
 
       - name: Build fleet binaries
         # Compiled single-file binaries for fleet consumers (dotfiles pins

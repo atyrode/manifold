@@ -1216,6 +1216,13 @@ through the reconnect-and-rejoin path it already owns, rather than waiting on an
 never notice. ANY inbound frame resets that deadline, room traffic and pings alike: what it
 watches is the TRANSPORT, not the pair.
 
+A document that leaves the foreground for good — a full navigation, a reload, a tab entering
+the back/forward cache — does not wait for that reaper either: the SDK closes the socket
+(1000 `pagehide`) on the browser's `pagehide` event, so its rooms are released at once and no
+peer sees a ghost occupant for a minute (a spotlight addressed to that principal would have
+landed on the ghost, #172). A page restored from the cache redials on `pageshow` without
+waiting out the reconnect backoff. A Bun client has no document and nothing changes for it.
+
 Which side asks is not a coin flip. A background tab's timers are throttled to roughly one
 firing per minute, so a reap keyed on pings the BROWSER generates would close tabs that are
 perfectly alive, while answering an inbound ping rides the message event and is throttled by

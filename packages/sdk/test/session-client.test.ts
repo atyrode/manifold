@@ -624,6 +624,33 @@ describe("connection lifecycle", () => {
     client.close();
   });
 
+  test("pagehide closes the socket at once; a restored page redials without waiting out the backoff", () => {
+    /*
+      A document leaving the foreground for good must leave its rooms NOW: until the server
+      notices the dead socket by liveness (a minute), every peer sees a ghost occupant and a
+      spotlight addressed to this principal lands on it (#172). The pool listens on the one
+      event every such exit fires, so a Bun runtime — no document — needs a stand-in window.
+    */
+    vi.useFakeTimers();
+    const stage = new EventTarget();
+    Object.defineProperty(globalThis, "window", { value: stage, configurable: true });
+    try {
+      const { client, socket } = connected({ reconnect: true, backoffCapMs: 60_000 });
+      stage.dispatchEvent(new Event("pagehide"));
+      expect(socket.closedWith).toEqual({ code: 1000, reason: "pagehide" });
+      expect(FakeSocket.instances).toHaveLength(1);
+
+      stage.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      expect(FakeSocket.instances).toHaveLength(2);
+      client.close();
+      // A retired connection stops listening: a later hide reaches no socket of its own.
+      stage.dispatchEvent(new Event("pagehide"));
+      expect(FakeSocket.instances).toHaveLength(2);
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
   test("dial closes the prior socket and ignores its late open and message callbacks", async () => {
     const { client, socket: first, connection: firstConnection } = dialing();
     const secondConnection = client.connect();

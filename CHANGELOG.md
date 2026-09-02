@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The verification gate runs once per commit, on CI, for every pull request and every push to `main`; a release refuses a commit CI has not proven green instead of re-running the gate itself, so a release takes minutes rather than twenty. (#174, #179)
+
+### Fixed
+
+- A tab that reloads, navigates away or is parked in the browser's back/forward cache leaves its rooms immediately instead of lingering as a ghost peer for up to a minute — collaborators no longer see a stale presence row, and a spotlight aimed at that person no longer lands on the ghost. (#172, #179)
+
 ## [0.6.1] - 2026-09-02
 
 ### Added
