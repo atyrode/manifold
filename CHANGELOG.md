@@ -5,6 +5,7 @@
 ### Changed
 
 - The verification gate runs once per commit, on CI, for every pull request and every push to `main`; a release refuses a commit CI has not proven green instead of re-running the gate itself, so a release takes minutes rather than twenty. (#174, #179)
+- The operator's hub deployment hands the fleet its new agent pin as soon as the hub answers with the released build, so "hub first, then the agents" is a sequence the pipeline enforces rather than a cron racing a guard. (#175, #180)
 
 ### Fixed
 
