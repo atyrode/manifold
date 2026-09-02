@@ -9,8 +9,10 @@
  * gates unlinked the data dir out from under a server that had not exited yet. This module
  * is the one home, and `cdp.ts` (the browser driver) sits ON it rather than beside it.
  */
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+
+const AGENT_ENTRY_MARKER = "packages/agent/src/main.ts";
 
 export const sleep = (ms: number): Promise<void> => {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -65,14 +67,72 @@ export async function ownerKeyOf(dataDir: string): Promise<string> {
 }
 
 /**
- * The one teardown: stop the server, WAIT for it to be gone, and only then take its data dir.
+ * The local agent the gate's own server spawned, or null. Read the way the server decides
+ * whether a recorded pid is still its agent (`agent-spawn.ts`, `livePid`): the pid file names
+ * it AND `/proc/<pid>/cmdline` must still be the agent entry, so a pid the kernel has since
+ * handed to something else is never signalled. Never by name: this box runs many manifolds.
+ */
+function spawnedAgentPid(dataDir: string): number | null {
+  let raw: string;
+  try {
+    raw = readFileSync(join(dataDir, "agent.pid"), "utf8").trim();
+  } catch {
+    return null;
+  }
+  const pid = Number(raw);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    return readFileSync(`/proc/${String(pid)}/cmdline`, "utf8").includes(AGENT_ENTRY_MARKER)
+      ? pid
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** SIGTERM, five seconds, SIGKILL — the server's own discipline, applied to one pid. */
+async function reap(pid: number): Promise<void> {
+  const alive = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + 5_000;
+  while (alive() && Date.now() < deadline) await sleep(100);
+  if (!alive()) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Gone between the check and the signal: the outcome this wanted.
+  }
+}
+
+/**
+ * The one teardown: stop the server, WAIT for it to be gone, reap the agent it spawned, and
+ * only then take its data dir.
  *
  * SIGTERM, five seconds, SIGKILL — a server that ignores the polite signal must not hold the
  * gate open. The ordering is the point: a store still being flushed into a directory the gate
  * is unlinking turns a green run into a spurious crash, and that race is exactly what two
  * gates shipped by killing and removing in the same tick.
+ *
+ * THE AGENT IS THE GATE'S TO REAP. A server booted with `MANIFOLD_SPAWN_AGENT=1` detaches its
+ * local agent on purpose — in production the agent must survive a server restart (CONTRACTS
+ * §Runtime contracts) — so killing the server leaves the agent redialing an origin that will
+ * never answer, forever. Every browser gate did exactly that, and the box accumulated 453
+ * orphaned agents holding ~21 GiB before anybody looked (2026-09-02). The pid file the server
+ * writes is the handle, and it has to be read BEFORE the data dir goes.
  */
 export async function teardownServer(server: Bun.Subprocess, dataDir: string): Promise<void> {
+  const agent = spawnedAgentPid(dataDir);
   if (server.exitCode === null) server.kill("SIGTERM");
   const stopped = await Promise.race([
     server.exited.then(() => true),
@@ -80,5 +140,6 @@ export async function teardownServer(server: Bun.Subprocess, dataDir: string): P
   ]);
   if (!stopped && server.exitCode === null) server.kill("SIGKILL");
   await server.exited;
+  if (agent !== null) await reap(agent);
   rmSync(dataDir, { recursive: true, force: true });
 }

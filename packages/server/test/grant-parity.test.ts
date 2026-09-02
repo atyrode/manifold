@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -335,7 +335,7 @@ describe("migration 13: flat caps become grant rows", () => {
     }
   });
 
-  test("materializes one row per credential, at the node its scope names", () => {
+  test("materializes one row per LIVE credential, at the node its scope names", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-grant-rows-"));
     const path = join(dir, "manifold.db");
     try {
@@ -349,15 +349,17 @@ describe("migration 13: flat caps become grant rows", () => {
         .all();
 
       /*
-        Six tokens carry caps and become six rows; `t-machine` carries `[]` and becomes none,
-        because a grant granting nothing answers no question. One LIVE share becomes an instance
-        row at its container; the revoked share becomes nothing, which is the same rule
-        `revokeShare` applies going forward.
+        Six tokens carry caps and 13 materializes six rows; `t-machine` carries `[]` and becomes
+        none, because a grant granting nothing answers no question. One LIVE share becomes an
+        instance row at its container; the revoked share becomes nothing, which is the same rule
+        `revokeShare` applies going forward. Then 16 runs on the same replay and applies that
+        rule to TOKENS: `t-revoked`'s row is retired (issue #140), because a row only its dead
+        credential could reach is authority nobody holds — so the replay lands on five token rows,
+        and the revoked token's `caps` on its own row is the account of what it was issued.
       */
       expect(rows.map((row) => row.id)).toEqual([
         "grant-share-s-live",
         "grant-token-t-narrow",
-        "grant-token-t-revoked",
         "grant-token-t-root",
         "grant-token-t-scoped",
         "grant-token-t-ticket",
@@ -385,7 +387,8 @@ describe("migration 13: flat caps become grant rows", () => {
       expect(share?.principal_id).toBe(GUEST_ORIGIN);
       expect(share?.node).toBe(containerA);
 
-      // Every credential that has authority references the row carrying it.
+      // Every LIVE credential that has authority references the row carrying it; the revoked
+      // one lost its reference with its row rather than keeping a dangling edge.
       const references = db
         .query<{ id: string; grant_id: string | null }, []>(
           "SELECT id, grant_id FROM tokens ORDER BY id",
@@ -394,12 +397,19 @@ describe("migration 13: flat caps become grant rows", () => {
       expect(Object.fromEntries(references.map((row) => [row.id, row.grant_id]))).toEqual({
         "t-machine": null,
         "t-narrow": "grant-token-t-narrow",
-        "t-revoked": "grant-token-t-revoked",
+        "t-revoked": null,
         "t-root": "grant-token-t-root",
         "t-scoped": "grant-token-t-scoped",
         "t-ticket": "grant-token-t-ticket",
         "t-workspace": "grant-token-t-workspace",
       });
+      expect(
+        db.query<{ caps: string }, []>("SELECT caps FROM tokens WHERE id = 't-revoked'").get()
+          ?.caps,
+      ).toBe('["*"]');
+      // Rows went one way in 13 and again in 16, so each left its image beside the database.
+      expect(existsSync(`${path}.pre-v13.bak`)).toBeTrue();
+      expect(existsSync(`${path}.pre-v16.bak`)).toBeTrue();
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

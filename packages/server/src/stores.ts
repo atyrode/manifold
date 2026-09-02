@@ -251,6 +251,19 @@ export interface TokenRecord {
 }
 
 /**
+ * What one revocation did: the tokens it marked, and the grant rows that died with them.
+ *
+ * Two numbers rather than one because they answer different callers. `tokens` is the count
+ * the revoke door publishes and the fence keys on; `grants` is what the evaluator's memo has
+ * to hear about, and a machine credential — caps `[]`, no row — revokes one token and retires
+ * nothing, so the second number is not derivable from the first.
+ */
+export interface TokenRevocation {
+  readonly tokens: number;
+  readonly grants: number;
+}
+
+/**
  * A stored grant, plus the one fact the protocol row cannot carry: whether some TOKEN
  * references it.
  *
@@ -1342,30 +1355,67 @@ export class ServerStore {
     return row?.found === 1;
   }
 
-  revokeTokensByPrincipal(principalId: string, revokedAt: number, containerId?: string): number {
-    if (containerId !== undefined) {
-      return this.db
-        .query<void, [number, string, string]>(
-          `UPDATE tokens SET revoked_at = ?
-           WHERE principal_id = ? AND container_id = ? AND revoked_at IS NULL`,
-        )
-        .run(revokedAt, principalId, containerId).changes;
-    }
-    return this.db
-      .query<void, [number, string]>(
-        "UPDATE tokens SET revoked_at = ? WHERE principal_id = ? AND revoked_at IS NULL",
-      )
-      .run(revokedAt, principalId).changes;
+  revokeTokensByPrincipal(
+    principalId: string,
+    revokedAt: number,
+    containerId?: string,
+  ): TokenRevocation {
+    return containerId === undefined
+      ? this.revokeTokensWhere("principal_id = ?", [principalId], revokedAt)
+      : this.revokeTokensWhere(
+          "principal_id = ? AND container_id = ?",
+          [principalId, containerId],
+          revokedAt,
+        );
   }
 
-  revokeToken(tokenId: string, revokedAt: number): boolean {
-    return (
-      this.db
-        .query<void, [number, string]>(
-          "UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+  revokeToken(tokenId: string, revokedAt: number): TokenRevocation {
+    return this.revokeTokensWhere("id = ?", [tokenId], revokedAt);
+  }
+
+  /**
+   * Marks every live token the predicate names revoked, and retires the grant row each one
+   * references — one transaction, so no instant shows a dead credential standing on live
+   * authority or the reverse.
+   *
+   * A TOKEN'S ROW DIES WITH THE TOKEN. The row is that one credential's synthesized authority
+   * and reaches no other (`tokenBound`), so once the token is refused at authentication the row
+   * answers no question anybody can ask — it is unexercisable, and without this it was also
+   * immortal: `listGrants` and the inspector's authority reading kept printing every principal
+   * a gate run had ever minted and revoked (issue #140). Migration 13 materialized revoked
+   * tokens on purpose, as "a faithful account of what was issued"; that account is the
+   * `tokens` table's job — `caps`, `container_id` and `revoked_at` all survive here — and a
+   * grant row is LIVE authority, which is the same ruling `revokeShare` already made for a
+   * share's row. Migration 16 applies it to history.
+   *
+   * The token loses its reference as it loses its row, exactly as `deleteGrant` severs a
+   * share's: a reference to a row that no longer exists would be the one dangling edge in the
+   * schema. The predicate is written ONCE and the DELETE runs first, because "the tokens this
+   * call revokes" is the UPDATE's own `revoked_at IS NULL` set and no second timestamp query
+   * can name it after the fact.
+   */
+  private revokeTokensWhere(
+    where: string,
+    params: readonly string[],
+    revokedAt: number,
+  ): TokenRevocation {
+    return this.transaction(() => {
+      const grants = this.db
+        .query<void, string[]>(
+          `DELETE FROM grants WHERE id IN (
+             SELECT grant_id FROM tokens
+             WHERE ${where} AND revoked_at IS NULL AND grant_id IS NOT NULL
+           )`,
         )
-        .run(revokedAt, tokenId).changes > 0
-    );
+        .run(...params).changes;
+      const tokens = this.db
+        .query<void, [number, ...string[]]>(
+          `UPDATE tokens SET revoked_at = ?, grant_id = NULL
+           WHERE ${where} AND revoked_at IS NULL`,
+        )
+        .run(revokedAt, ...params).changes;
+      return { tokens, grants };
+    });
   }
 
   /*

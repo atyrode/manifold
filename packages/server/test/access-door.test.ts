@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { ActionOutcome, Cap, Grant, TokenGrant } from "@manifold/protocol";
-import { AuthService, type AuthContext } from "../src/auth.ts";
+import {
+  GrantsSchema,
+  ShareGrantSchema,
+  TokenGrantSchema,
+  type ActionOutcome,
+  type Cap,
+  type Grant,
+  type TokenGrant,
+} from "@manifold/protocol";
+import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
@@ -1073,6 +1081,134 @@ describe("core.access shares are grant rows", () => {
     */
     expect(listed.grants.some((grant) => grant.principal.kind === "instance")).toBe(false);
     expect(Reflect.get(inventory as object, "shares")).toMatchObject([{ id: shareId }]);
+    fix.store.close();
+  });
+});
+
+/**
+ * A TOKEN'S ROW DIES WITH THE TOKEN (issue #140).
+ *
+ * Before this, revoking a principal left its token-materialized grant rows behind — unreachable,
+ * because `tokenBound` rows answer only to the credential that holds them, but immortal, so
+ * `listGrants` and the inspector's authority reading printed every principal a gate run had ever
+ * minted and revoked. Pinned at the DOOR because the claim is about what the read door shows
+ * after the write door ran, and both sides of that are contracts an operator reads.
+ */
+describe("core.access revocation retires a token's grant row", () => {
+  /** The rows one principal, or one node, answers for — through the read door. */
+  async function rows(fix: Fixture, filter: { principalId?: string; node?: string }) {
+    return GrantsSchema.parse(
+      result(await fix.host.dispatch(fix.owner, "core.access.listGrants", filter)),
+    ).grants;
+  }
+
+  test("revoking a principal's last token empties its rows, and revoking again is a no-op", async () => {
+    const fix = fixture();
+    const guest = grant(fix, ["containers:read", "scenes:write"]);
+    const principalId = guest.principal.id;
+
+    const before = await rows(fix, { principalId });
+    const revoked = await fix.host.dispatch(fix.owner, "core.access.revoke", { principalId });
+    const after = await rows(fix, { principalId });
+    const again = await fix.host.dispatch(fix.owner, "core.access.revoke", { principalId });
+
+    /*
+      The door's answer is unchanged — the TOKEN count, with zero a success the second time —
+      and the row is simply absent, not filtered: a grant presents nothing to anybody, so its
+      absence is its revocation, exactly as it is for a share's row. The credential's own
+      account of what it was issued survives on the token, which is why nothing is lost.
+    */
+    expect(before).toMatchObject([{ caps: ["containers:read", "scenes:write"] }]);
+    expect(result(revoked)).toEqual({ revoked: 1 });
+    expect(after).toEqual([]);
+    expect(result(again)).toEqual({ revoked: 0 });
+    expect(() => fix.auth.authenticate(guest.token)).toThrow(ServiceError);
+    expect(fix.store.listTokensByPrincipal(principalId)).toMatchObject([
+      { caps: ["containers:read", "scenes:write"], grantId: null },
+    ]);
+    fix.store.close();
+  });
+
+  test("a principal with two tokens keeps the survivor's row until the second dies", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const minter = context(fix, ["tokens:mint", "containers:read"], container);
+
+    // One principal, two credentials: a scoped one minted inside the container by a scoped
+    // minter, and an unscoped one minted by the owner. A scoped revocation reaches only the
+    // first — the door's published contract — which is what lets this test kill one at a time.
+    const scoped = TokenGrantSchema.parse(
+      result(
+        await fix.host.dispatch(minter, "core.access.mint", {
+          principal: { name: "twice", kind: "agent" },
+          caps: ["containers:read"],
+        }),
+      ),
+    );
+    const principalId = scoped.principal.id;
+    const unscoped = fix.auth.mintToken({ principalId, caps: ["containers:read"] }, fix.owner);
+
+    const both = await rows(fix, { principalId });
+    const first = await fix.host.dispatch(minter, "core.access.revoke", { principalId });
+    const survivor = await rows(fix, { principalId });
+    const stillHeld = fix.auth.authenticate(unscoped.token).principal.id;
+    const second = await fix.host.dispatch(fix.owner, "core.access.revoke", { principalId });
+    const none = await rows(fix, { principalId });
+
+    /*
+      Retirement is per TOKEN, not per principal: the scoped credential's row goes with the
+      scoped credential, the unscoped one's stays with the credential that still authenticates
+      — anything coarser would either strand a live bearer's authority or keep a dead one's.
+    */
+    expect(both.map((row) => row.node).sort()).toEqual(
+      [`manifold://container/${container}`, "manifold://"].sort(),
+    );
+    expect(result(first)).toEqual({ revoked: 1 });
+    expect(survivor.map((row) => row.node)).toEqual(["manifold://"]);
+    expect(stillHeld).toBe(principalId);
+    expect(result(second)).toEqual({ revoked: 1 });
+    expect(none).toEqual([]);
+    fix.store.close();
+  });
+
+  test("a share's tickets lose their rows with the share, and the share row stays", async () => {
+    const fix = fixture();
+    const container = accessContainer(fix);
+    const node = `manifold://container/${container}`;
+    const minted = ShareGrantSchema.parse(
+      result(
+        await fix.host.dispatch(fix.owner, "core.access.mintShare", {
+          node: { kind: "container", containerId: container },
+          caps: ["containers:read"],
+          origin: "http://guest.localhost:7778",
+        }),
+      ),
+    );
+    const share = fix.store.getShare(minted.share.id);
+    if (share === null) throw new Error("minted share has no row");
+    const ticket = fix.auth.mintShareTicket(share, {
+      id: "guest-visitor",
+      kind: "human",
+      name: "visitor",
+      color: "#3355cc",
+    });
+
+    const before = await rows(fix, { node });
+    const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeShare", {
+      shareId: minted.share.id,
+    });
+    const after = await rows(fix, { node });
+
+    /*
+      Share revocation is UNCHANGED at its door — severed tickets are the count, the share row
+      survives revoked — and the ticket's own token row now follows the same rule as any other
+      token's: the instance row and the ticket principal's row both leave the node together.
+    */
+    expect(before.map((row) => row.principal.kind).sort()).toEqual(["instance", "principal"]);
+    expect(result(revoked)).toEqual({ revoked: 1 });
+    expect(after).toEqual([]);
+    expect(() => fix.auth.authenticate(ticket.token)).toThrow(ServiceError);
+    expect(fix.store.getShare(minted.share.id)?.revokedAt).not.toBeNull();
     fix.store.close();
   });
 });
