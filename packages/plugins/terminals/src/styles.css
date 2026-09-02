@@ -1,0 +1,267 @@
+/*
+ * THE TERMINALS PLUGIN'S SKIN — the terminal frame and its titlebar, the idle veil, the focus-presence chips, the xterm host, the exited/restart states, and the sidebar terminal pool's rows.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+/* Machine badge in the terminal title bar. */
+.terminal-machine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  color: #868e96;
+  font-size: 0.68rem;
+}
+
+.terminal-placeholder,
+.terminal-frame {
+  width: 100%;
+  height: 100%;
+  border-radius: 0.45rem;
+  background: #0b0d10;
+}
+
+.terminal-placeholder {
+  display: grid;
+  place-items: center;
+  color: #868e96;
+  font-size: 0.82rem;
+}
+
+.terminal-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid #2c3239;
+  border-radius: 0.5rem;
+  background: #0b0d10;
+  /* sshx-style quiet depth: reads as a window, not a flat rectangle. */
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+/* Remote focus: the frame wears a ring in the focuser's presence color, supplied
+   inline as border-color + box-shadow so there is no layout shift. */
+.terminal-frame--remote-focus {
+  border-color: transparent;
+}
+
+.terminal-frame--panel-highlight::after {
+  content: "";
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  border: 3px solid #4dabf7;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
+  pointer-events: none;
+}
+
+/* Idle veil — faint white haze over an unfocused terminal, readable underneath;
+   sits above the title bar too, so the whole ref reads as dimmed without intercepting input. */
+.terminal-idle-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: inherit;
+  background: rgb(255 255 255 / 12%);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.terminal-idle-veil--on {
+  opacity: 1;
+}
+
+/* Geometry, rhythm and controls come from the shared `.node-titlebar` block at the
+   end of this file; what stays here is what makes this bar a TERMINAL's bar: it
+   floats over the xterm ref and lets the pointer through to it. */
+.terminal-titlebar {
+  position: absolute;
+  z-index: 3;
+  inset: 0 0 auto 0;
+  background: #14181e;
+  border-bottom: 1px solid #23272e;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Focus-presence chips: who (other than you) is on this terminal right now. */
+/* The chip row is a layout Cluster (it WRAPS at a narrow terminal instead of
+   escaping it); this positions and constrains it. */
+.terminal-presence {
+  position: absolute;
+  z-index: 5;
+  top: 0.18rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  pointer-events: none;
+}
+
+.terminal-presence__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.45rem 0.05rem 0.05rem;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
+}
+
+.terminal-presence__initial {
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 25%);
+  font-size: 0.6rem;
+}
+
+.terminal-presence__name {
+  overflow: hidden;
+  max-width: 9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xterm-host {
+  position: absolute;
+  inset: 1.75rem 0.35rem 0.35rem;
+}
+
+.xterm-host .xterm {
+  height: 100%;
+}
+
+/* Stock xterm.css paints the scroll viewport pure black; match the frame's
+   background so the row-quantization remainder below the last line (its height
+   varies with element size) reads as seamless terminal, not a stray bar. */
+.xterm-host .xterm-viewport {
+  background-color: #0b0d10;
+}
+
+.view-only-ribbon {
+  position: absolute;
+  z-index: 4;
+  right: 0.6rem;
+  bottom: 0.55rem;
+  border: 1px solid #495057;
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  color: #ced4da;
+  background: rgb(33 37 41 / 90%);
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.view-only-ribbon:hover {
+  border-color: #748ffc;
+  color: #fff;
+}
+
+/* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
+.terminal-exited {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  color: #ced4da;
+  background: rgb(11 13 16 / 72%);
+  font-size: 0.9rem;
+  font-weight: 700;
+  backdrop-filter: grayscale(1);
+  pointer-events: none;
+}
+
+/* Clickable even while the embed is idle (same mechanism as .node-titlebar__ctl). */
+.terminal-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #495057;
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  color: #e6e9ef;
+  background: #1b1f26;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.terminal-restart:hover {
+  border-color: #74c0fc;
+  color: #d0ebff;
+}
+
+.terminal-restart:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.terminal-state {
+  color: var(--text-secondary-color, #868e96);
+}
+
+.terminal-state.is-running {
+  color: #51cf66;
+}
+
+/* ── The terminal pool's rows ─────────────────────────────────────────────────
+   Carried objects, so the whole row advertises the grab. The pool's seat in the
+   sidebar is the shell's (packages/web/src/shell.css `.sidebar-terminal-pool`). */
+.terminal-pool-row,
+.terminal-pool-row .terminal-pool-label {
+  cursor: grab;
+}
+
+.terminal-pool-row:active,
+.terminal-pool-row:active .terminal-pool-label {
+  cursor: grabbing;
+}
+
+.terminal-pool-row.is-exited {
+  opacity: 0.55;
+}
+
+/* Two stacked lines, kept on the container-row height rhythm by a tighter block padding. */
+.terminal-pool-label {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.05rem;
+  padding-block: 0.28rem;
+  padding-inline-start: 0.55rem;
+}
+
+.terminal-pool-name,
+.terminal-pool-machine {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-pool-name {
+  line-height: 1.15;
+}
+
+.terminal-pool-machine {
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.66rem;
+  line-height: 1.1;
+}
+
+.terminal-pool-empty {
+  padding: 0.45rem 0.55rem;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.7rem;
+}

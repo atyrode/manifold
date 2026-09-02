@@ -1,3 +1,17 @@
+/*
+ * THE FLOOR'S STYLESHEET — and nothing else.
+ *
+ * What survives here passes the same test every floor file passes: it is bootstrap
+ * chrome, it is neutral between plugins, or it is a token two owners read. That is the
+ * reset, the type and colour ground, the identity gate, the one notice stack, the engine's
+ * inert plugin placeholder, the drop-denial cue every target shares, and the two keyframes
+ * more than one owner animates with.
+ *
+ * Every family that belongs to somebody is somewhere else, and `verify:axioms` S13 keeps
+ * it that way: the cssFamilies registry in REGISTRY.md §Lexicon names one owning stylesheet
+ * per selector family, and a family painted outside its owner is gate RED.
+ */
+
 :root {
   color-scheme: dark;
   font-family:
@@ -9,6 +23,30 @@
   color: #f1f3f5;
   background: #101216;
   font-synthesis: none;
+
+  /* The carry ease-away, published as tokens because it is read from two owners' sheets:
+     the canvas half (packages/plugins/canvas/src/styles.css) and the tile half
+     (packages/plugin/src/ui/styles.css). A held item and every viewer's copy of it must
+     fade by the SAME amount, and a duplicated number is how that stops being true. */
+  --carry-fade-opacity: 0.15;
+  --carry-fade-transition: opacity 160ms ease;
+
+  /* THE DROP PREVIEW'S MOTION, in one place (issue #66). Three durations used to live in
+     three unrelated blocks with nothing saying they were one system, so the slot, its cue
+     and the panes gliding under them could be retuned apart. They are one gesture and they
+     read as one: the slot leads, its fade is a touch quicker so a zone change reads as a
+     move rather than a cross-dissolve, and the real panes take longer because they travel
+     further and carry live content.
+
+     ONE DURATION FOR BOTH PRODUCERS, deliberately. The alternative considered — easing a
+     REMOTE slot differently so it pairs with the sender's eased ghost — is exactly the
+     "second remote flavor" invariant 11 forbids: the ghost is a peer's POINTER, resampled
+     at the send cadence and smoothed by `GESTURE_HALF_LIFE_MS` because it arrives as
+     samples, while a slot is a resolved ZONE that snaps to tile boundaries for everyone.
+     Different objects, different jobs; the pairing was never the missing thing. */
+  --preview-slot-transition: 90ms ease;
+  --preview-cue-transition: 80ms ease;
+  --preview-pane-transition: 120ms ease;
 }
 
 * {
@@ -38,15 +76,17 @@ button {
 }
 
 .gate-screen {
-  min-height: 100%;
+  height: 100%;
   overflow: auto;
+  padding: 1.5rem;
   background: radial-gradient(circle at 25% 10%, rgb(54 79 199 / 18%), transparent 34rem), #101216;
 }
 
-.gate-screen {
-  display: grid;
-  place-items: center;
-  padding: 1.5rem;
+/* Vertical centering is the layout Cover's; the auto margins seat the card on the
+   inline axis inside the stretched principal, where its percentage width resolves. */
+.gate-cover > .layout-cover__principal > .gate-card,
+.gate-cover > .layout-cover__principal > .identity-dialog {
+  margin-inline: auto;
 }
 
 .gate-card,
@@ -174,1879 +214,6 @@ input:focus {
   border-radius: 999px;
 }
 
-.pad-browser {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  grid-template-columns: var(--sidebar-width, 17.5rem) minmax(0, 1fr);
-  overflow: hidden;
-  background: #121417;
-  transition: grid-template-columns 160ms ease;
-}
-
-.pad-browser.is-collapsed {
-  grid-template-columns: 3.25rem minmax(0, 1fr);
-}
-
-.pad-sidebar {
-  position: relative;
-  z-index: 20;
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.55rem;
-  overflow: hidden;
-  border-right: 1px solid #2e3238;
-  padding: 0.65rem;
-  color: #e9ecef;
-  background: #181a1f;
-  box-shadow: 0.25rem 0 1.2rem rgb(0 0 0 / 16%);
-}
-.pad-sidebar-resize {
-  position: absolute;
-  z-index: 30;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--sidebar-width, 17.5rem) - 0.2rem);
-  width: 0.4rem;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.pad-sidebar-resize:hover,
-.pad-sidebar-resize:focus-visible {
-  background: rgb(92 124 250 / 55%);
-}
-
-.pad-sidebar-header {
-  display: flex;
-  min-height: 2.25rem;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.pad-sidebar-brand {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.65rem;
-  overflow: hidden;
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-}
-
-.pad-sidebar-brand-copy {
-  display: grid;
-  min-width: 0;
-  gap: 0.08rem;
-  line-height: 1.05;
-}
-
-.pad-sidebar-version {
-  overflow: hidden;
-  max-width: 10.5rem;
-  border: 0;
-  padding: 0;
-  color: #868e96;
-  background: transparent;
-  font-family: var(--font-family-monospace, monospace);
-  font-size: 0.6rem;
-  line-height: 1.25;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.pad-sidebar-version:hover,
-.pad-sidebar-version:focus-visible {
-  color: #bac8ff;
-}
-
-.pad-sidebar-mark,
-.pad-browser-empty-mark {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  border: 1px solid #4c6ef5;
-  border-radius: 0.6rem;
-  color: #dbe4ff;
-  font-size: 0.78rem;
-  font-weight: 800;
-  background: linear-gradient(145deg, #364fc7, #5f3dc4);
-  box-shadow: 0 0.3rem 1rem rgb(54 79 199 / 28%);
-}
-
-.pad-sidebar-icon-button,
-.pad-sidebar-new,
-.pad-sidebar-link,
-.pad-sidebar-delete,
-.pad-sidebar-create button {
-  border: 1px solid transparent;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
-}
-
-.pad-sidebar-icon-button,
-.pad-sidebar-delete {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 0.5rem;
-  padding: 0;
-  color: #868e96;
-}
-
-.pad-sidebar-icon-button:hover,
-.pad-sidebar-delete:hover {
-  color: #f1f3f5;
-  background: #2b2e34;
-}
-
-.pad-sidebar svg {
-  width: 1rem;
-  height: 1rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.pad-sidebar-create-buttons {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.35rem;
-}
-
-.pad-sidebar-new {
-  display: flex;
-  min-height: 2.35rem;
-  align-items: center;
-  gap: 0.65rem;
-  border-color: #343a40;
-  border-radius: 0.6rem;
-  padding: 0.45rem 0.55rem;
-  color: #dee2e6;
-  font-size: 0.84rem;
-  font-weight: 650;
-  text-align: left;
-  background: #202329;
-  white-space: nowrap;
-}
-
-.pad-sidebar-new:hover {
-  border-color: #4c6ef5;
-  background: #252932;
-}
-
-.pad-browser.is-collapsed .pad-sidebar {
-  padding-inline: 0.6rem;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-header {
-  flex-direction: column;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-brand {
-  justify-content: center;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-create-buttons {
-  grid-template-columns: 1fr;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-new {
-  justify-content: center;
-  padding-inline: 0;
-}
-
-.pad-sidebar-create {
-  display: grid;
-  gap: 0.45rem;
-  border: 1px solid #343a40;
-  border-radius: 0.65rem;
-  padding: 0.55rem;
-  background: #202329;
-}
-
-.pad-sidebar-create input {
-  padding: 0.55rem 0.6rem;
-  font-size: 0.82rem;
-}
-
-.pad-sidebar-create > div {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.35rem;
-}
-
-.pad-sidebar-create button {
-  border-radius: 0.4rem;
-  padding: 0.3rem 0.5rem;
-  color: #adb5bd;
-  font-size: 0.72rem;
-}
-
-.pad-sidebar-create button[type="submit"] {
-  color: #fff;
-  background: #4263eb;
-}
-
-.pad-sidebar-create button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.pad-sidebar-section-heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 0.25rem;
-  min-height: 1.8rem;
-  padding: 0.2rem 0.35rem 0;
-  color: #868e96;
-  font-size: 0.67rem;
-  text-transform: uppercase;
-  letter-spacing: 0.045em;
-}
-
-.pad-sidebar-section-heading > span {
-  font-variant-numeric: tabular-nums;
-}
-
-.pad-sidebar-section-action {
-  width: 1.55rem;
-  min-width: 1.55rem;
-  height: 1.55rem;
-  min-height: 1.55rem;
-  border-color: transparent;
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding: 0;
-  color: #868e96;
-  background: transparent;
-  font-size: 0.8rem;
-}
-
-.pad-sidebar-section-action:hover,
-.pad-sidebar-section-action:focus-visible,
-.pad-sidebar-section-action.selected {
-  color: #edf2ff;
-  background: #292d35;
-}
-
-.pad-sidebar-list {
-  display: grid;
-  align-content: start;
-  gap: 0.16rem;
-  min-height: 0;
-  flex: 1;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
-.pad-sidebar-tree {
-  position: relative;
-}
-
-.pad-tree-item {
-  position: relative;
-  min-width: 0;
-  border-radius: 0.55rem;
-  outline: none;
-}
-
-.pad-tree-item.is-drop-target > .pad-sidebar-row {
-  outline: 1px solid #748ffc;
-  outline-offset: -1px;
-  background: rgb(92 124 250 / 12%);
-}
-
-.pad-tree-drag-line {
-  z-index: 8;
-  height: 2px;
-  border-radius: 999px;
-  background: #91a7ff;
-  pointer-events: none;
-}
-
-.pad-drag-handle {
-  position: absolute;
-  z-index: 4;
-  top: 1.125rem;
-  left: 0.12rem;
-  display: grid;
-  place-items: center;
-  width: 1rem;
-  height: 1.65rem;
-  transform: translateY(-50%);
-  border: 0;
-  border-radius: 0.3rem;
-  padding: 0;
-  opacity: 0;
-  color: #868e96;
-  background: #22252b;
-  cursor: grab;
-}
-
-.pad-tree-item:hover > .pad-drag-handle,
-.pad-tree-item:has(> .pad-drag-handle:focus-visible) > .pad-drag-handle {
-  opacity: 1;
-}
-
-.pad-drag-handle:active {
-  cursor: grabbing;
-}
-
-.pad-tree-item:has(.is-editing, .is-confirming) > .pad-drag-handle {
-  display: none;
-}
-
-.pad-tree-item > .pad-sidebar-row .pad-sidebar-link,
-.pad-tree-item > .pad-sidebar-folder-row .pad-sidebar-folder-toggle {
-  padding-left: 1.3rem;
-}
-
-.pad-sidebar-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  border-radius: 0.55rem;
-  position: relative;
-}
-
-.pad-sidebar-row:hover {
-  background: #22252b;
-}
-
-.pad-sidebar-row.is-active {
-  background: #292d35;
-}
-
-.pad-sidebar-link {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 0.6rem;
-  border-radius: 0.55rem;
-  padding: 0.52rem 0.55rem;
-  overflow: hidden;
-  color: #ced4da;
-  font-size: 0.82rem;
-  text-align: left;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-link {
-  min-height: 2.25rem;
-  justify-content: center;
-  gap: 0;
-  padding-inline: 0;
-}
-
-.pad-sidebar-collapsed-presence {
-  position: absolute;
-  z-index: 2;
-  top: 0.05rem;
-  right: -0.2rem;
-  display: grid;
-  place-items: center;
-  min-width: 1.05rem;
-  height: 1.05rem;
-  border: 1px solid #5c7cfa;
-  border-radius: 999px;
-  padding: 0 0.18rem;
-  color: #edf2ff;
-  background: #364fc7;
-  box-shadow: 0 0.15rem 0.4rem rgb(0 0 0 / 35%);
-  font-size: 0.56rem;
-  font-weight: 750;
-  line-height: 1;
-}
-
-.pad-sidebar-collapsed-presence:hover,
-.pad-sidebar-collapsed-presence:focus-visible {
-  border-color: #bac8ff;
-  background: #4263eb;
-}
-
-.collapsed-presence-popover {
-  position: fixed;
-  z-index: 100;
-  display: grid;
-  gap: 0.25rem;
-  min-width: 10rem;
-  max-width: min(18rem, calc(100vw - 5rem));
-  border: 1px solid #3b4048;
-  border-radius: 0.65rem;
-  padding: 0.4rem;
-  color: #e9ecef;
-  background: #202329;
-  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 42%);
-  pointer-events: none;
-}
-
-.collapsed-presence-popover-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.3rem;
-}
-
-.collapsed-presence-popover-row > span:last-child {
-  display: grid;
-  min-width: 0;
-}
-
-.collapsed-presence-popover-row strong {
-  overflow: hidden;
-  font-size: 0.72rem;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.collapsed-presence-popover-row small {
-  color: #868e96;
-  font-size: 0.62rem;
-  text-transform: capitalize;
-}
-
-.pad-sidebar-pad-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pad-sidebar-session-count {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  min-width: 1.15rem;
-  height: 1.15rem;
-  border-radius: 999px;
-  padding: 0 0.28rem;
-  color: #adb5bd;
-  background: #343a40;
-  font-size: 0.62rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.pad-sidebar-row.is-active .pad-sidebar-link {
-  color: #fff;
-  font-weight: 650;
-}
-
-.pad-sidebar-pad-mark {
-  flex: 0 0 auto;
-  width: 0.55rem;
-  height: 0.55rem;
-  border: 1px solid #5c6370;
-  border-radius: 0.2rem;
-  background: #343a40;
-}
-
-.pad-sidebar-row.is-active .pad-sidebar-pad-mark {
-  border-color: #91a7ff;
-  background: #5c7cfa;
-}
-
-.pad-sidebar-actions {
-  position: relative;
-  width: 0;
-  height: 1.75rem;
-  flex: 0 0 auto;
-  transition: width 150ms ease;
-}
-
-.pad-sidebar-delete {
-  position: absolute;
-  top: 50%;
-  right: 0.2rem;
-  width: 1.75rem;
-  height: 1.75rem;
-  opacity: 0;
-  transform: translate(0.35rem, -50%);
-  transition:
-    opacity 120ms ease,
-    transform 150ms ease;
-}
-
-.pad-sidebar-row:hover .pad-sidebar-actions,
-.pad-sidebar-row:focus-within .pad-sidebar-actions {
-  width: 1.95rem;
-}
-
-.pad-sidebar-row:hover .pad-sidebar-delete,
-.pad-sidebar-row:focus-within .pad-sidebar-delete {
-  opacity: 1;
-  transform: translate(0, -50%);
-}
-
-.pad-sidebar-delete:hover {
-  color: #f1f3f5;
-  background: #2b2e34;
-}
-
-.pad-sidebar-muted,
-.pad-sidebar-error {
-  margin: 0.65rem 0.55rem;
-  color: #868e96;
-  font-size: 0.76rem;
-}
-
-.pad-sidebar-error {
-  color: #ffa8a8;
-}
-
-.pad-sidebar-folder-icon {
-  position: relative;
-  width: 0.82rem;
-  height: 0.6rem;
-  flex: 0 0 auto;
-  border: 1px solid #5c6370;
-  border-radius: 0.15rem;
-  background: #343a40;
-}
-
-.pad-sidebar-folder-icon::before {
-  position: absolute;
-  top: -0.24rem;
-  left: 0.04rem;
-  width: 0.38rem;
-  height: 0.2rem;
-  border: 1px solid #5c6370;
-  border-bottom: 0;
-  border-radius: 0.12rem 0.12rem 0 0;
-  background: #343a40;
-  content: "";
-}
-
-.pad-sidebar-folder-toggle {
-  display: flex;
-  min-width: 0;
-  min-height: 2.25rem;
-  flex: 1;
-  align-items: center;
-  gap: 0.45rem;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0.55rem;
-  padding: 0.45rem 0.55rem;
-  color: #ced4da;
-  background: transparent;
-  text-align: left;
-}
-
-.pad-sidebar-folder-toggle > strong {
-  overflow: hidden;
-  font-size: 0.8rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pad-sidebar-folder-chevron {
-  width: 0.55rem;
-  flex: 0 0 auto;
-  color: #868e96;
-  font-size: 0.9rem;
-  text-align: center;
-}
-
-.pad-sidebar-folder-add {
-  position: absolute;
-  top: 50%;
-  right: 1.95rem;
-  width: 1.55rem;
-  min-width: 1.55rem;
-  height: 1.55rem;
-  min-height: 1.55rem;
-  transform: translate(0.25rem, -50%);
-  border-color: transparent;
-  padding: 0;
-  opacity: 0;
-  color: #868e96;
-  background: transparent;
-  transition:
-    opacity 120ms ease,
-    transform 150ms ease;
-}
-
-.pad-sidebar-folder-row:hover .pad-sidebar-actions,
-.pad-sidebar-folder-row:focus-within .pad-sidebar-actions {
-  width: 3.65rem;
-}
-
-.pad-sidebar-folder-row:hover .pad-sidebar-folder-add,
-.pad-sidebar-folder-row:focus-within .pad-sidebar-folder-add {
-  transform: translate(0, -50%);
-  opacity: 1;
-}
-
-.pad-sidebar-folder-add:hover,
-.pad-sidebar-folder-add:focus-visible {
-  color: #edf2ff;
-  background: #292d35;
-}
-
-.pad-sidebar-folder-create.is-nested {
-  margin: 0.2rem 0 0.35rem 1.3rem;
-}
-
-.pad-sidebar-session {
-  margin-left: 1.35rem;
-  border-left: 1px solid #343a40;
-  padding-left: 0.3rem;
-}
-
-button.pad-sidebar-session.is-summary {
-  display: grid;
-  width: calc(100% - 1.35rem);
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 1.8rem;
-  border: 0;
-  color: #adb5bd;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-button.pad-sidebar-session.is-summary > span:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-button.pad-sidebar-session.is-summary > small {
-  color: #868e96;
-}
-
-.pad-sidebar-session.is-exited {
-  opacity: 0.55;
-}
-
-.pad-sidebar-identity {
-  display: flex;
-  min-height: 2.25rem;
-  align-items: center;
-  gap: 0.6rem;
-  overflow: hidden;
-  border-top: 1px solid #2e3238;
-  padding: 0.65rem 0.45rem 0;
-  color: #adb5bd;
-  font-size: 0.78rem;
-  white-space: nowrap;
-}
-
-.pad-browser.is-collapsed .pad-sidebar-identity {
-  justify-content: center;
-  padding-inline: 0;
-}
-
-.web-changelog-dialog {
-  width: min(34rem, calc(100vw - 2rem));
-  max-height: min(44rem, calc(100vh - 2rem));
-  overflow: hidden;
-  border: 1px solid #3b4149;
-  border-radius: 0.9rem;
-  padding: 0;
-  color: #e9ecef;
-  background: #1d2025;
-  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
-}
-
-.web-changelog-dialog::backdrop {
-  background: rgb(7 9 12 / 72%);
-  backdrop-filter: blur(0.2rem);
-}
-
-.web-changelog-card {
-  display: grid;
-  max-height: min(44rem, calc(100vh - 2rem));
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.web-changelog-card > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  border-bottom: 1px solid #343a40;
-  padding: 1.25rem 1.35rem 1rem;
-}
-
-.web-changelog-card > header span {
-  color: #748ffc;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.web-changelog-card h2 {
-  margin: 0.15rem 0 0.35rem;
-  font-size: 1.35rem;
-  letter-spacing: -0.025em;
-}
-
-.web-changelog-card code {
-  color: #ced4da;
-  font-size: 0.7rem;
-}
-
-.web-changelog-card > header button {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  border: 1px solid transparent;
-  border-radius: 0.5rem;
-  color: #adb5bd;
-  background: transparent;
-  font-size: 1.25rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.web-changelog-card > header button:hover,
-.web-changelog-card > header button:focus-visible {
-  border-color: #495057;
-  color: #f1f3f5;
-  background: #2b3036;
-}
-
-.web-changelog-releases {
-  overflow-y: auto;
-  padding: 0.25rem 1.35rem 1.35rem;
-}
-
-.web-changelog-releases article {
-  padding-top: 1.1rem;
-}
-
-.web-changelog-releases article > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.web-changelog-releases h3 {
-  margin: 0;
-  font-size: 0.9rem;
-}
-
-.web-changelog-releases time {
-  color: #adb5bd;
-  font-size: 0.72rem;
-}
-
-.web-changelog-releases ul {
-  display: grid;
-  gap: 0.55rem;
-  margin: 0.75rem 0 0;
-  padding-left: 1.15rem;
-  color: #ced4da;
-  font-size: 0.82rem;
-  line-height: 1.45;
-}
-
-.web-changelog-releases a {
-  color: #91a7ff;
-  font-weight: 650;
-  text-decoration: none;
-}
-
-.web-changelog-releases a:hover,
-.web-changelog-releases a:focus-visible {
-  color: #bac8ff;
-  text-decoration: underline;
-  text-underline-offset: 0.15em;
-}
-
-.pad-sidebar-action-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 0.25rem);
-  right: 0;
-  display: grid;
-  min-width: 8rem;
-  padding: 0.3rem;
-  border: 1px solid #343a40;
-  border-radius: 0.55rem;
-  background: #202329;
-  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 35%);
-}
-
-.pad-sidebar-action-menu button {
-  display: flex;
-  width: 100%;
-  min-height: 2rem;
-  align-items: center;
-  justify-content: flex-start;
-  border-color: transparent;
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding-inline: 0.55rem;
-  color: var(--text-primary-color, #dee2e6);
-  background: transparent;
-  text-align: left;
-}
-
-.pad-sidebar-action-menu button:hover,
-.pad-sidebar-action-menu button:focus-visible {
-  color: #f1f3f5;
-  background: #2b2e34;
-}
-
-.pad-sidebar-action-menu button.is-danger {
-  color: #ffa8a8;
-}
-
-.pad-sidebar-action-menu button.is-danger:hover,
-.pad-sidebar-action-menu button.is-danger:focus-visible {
-  color: #ffc9c9;
-  background: rgb(250 82 82 / 12%);
-}
-
-.pad-sidebar-presence {
-  display: flex;
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-
-.pad-sidebar-presence .presence-avatar {
-  width: 1.2rem;
-  height: 1.2rem;
-  border-color: #292d35;
-  font-size: 0.55rem;
-}
-
-.workspace-sidebar {
-  --default-border-color: #343a40;
-  --island-bg-color: #202329;
-  --text-primary-color: #e9ecef;
-  --text-secondary-color: #868e96;
-  display: grid;
-  gap: 0.35rem;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-
-.workspace-sidebar-section {
-  overflow: hidden;
-  border: 1px solid #30343b;
-  border-radius: 0.65rem;
-  background: #1d2025;
-}
-
-.workspace-sidebar-section.has-orphans {
-  border-color: rgb(240 140 0 / 55%);
-}
-
-.workspace-sidebar-section > summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 2.15rem;
-  padding: 0.45rem 0.55rem;
-  color: #dee2e6;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 650;
-  list-style: none;
-}
-
-.workspace-sidebar-section > summary::-webkit-details-marker {
-  display: none;
-}
-
-.workspace-sidebar-section > summary::before {
-  content: "";
-  width: 0.35rem;
-  height: 0.35rem;
-  grid-column: 1;
-  grid-row: 1;
-  transform: rotate(-45deg);
-  border-right: 1.5px solid #868e96;
-  border-bottom: 1.5px solid #868e96;
-  transition: transform 120ms ease;
-}
-
-.workspace-sidebar-section > summary > span:first-child {
-  grid-column: 1;
-  grid-row: 1;
-  padding-left: 0.75rem;
-}
-
-.workspace-sidebar-section > summary > span:last-child {
-  grid-column: 2;
-  color: #868e96;
-  font-size: 0.64rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
-.workspace-sidebar-section[open] > summary::before {
-  transform: rotate(45deg) translate(-0.1rem, -0.1rem);
-}
-
-.workspace-sidebar-section[open] > summary {
-  border-bottom: 1px solid #30343b;
-}
-
-.workspace-sidebar-section-content {
-  padding: 0.35rem;
-}
-
-.workspace-status {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.45rem;
-  min-width: 0;
-  padding: 0.25rem 0.45rem;
-  color: #868e96;
-}
-
-.workspace-status > span:last-child {
-  display: grid;
-  min-width: 0;
-}
-
-.workspace-status strong {
-  overflow: hidden;
-  color: #ced4da;
-  font-size: 0.66rem;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-status small {
-  overflow: hidden;
-  color: #868e96;
-  font-size: 0.6rem;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-machine-create {
-  width: 1.45rem;
-  min-width: 1.45rem;
-  height: 1.45rem;
-  min-height: 1.45rem;
-  border-color: transparent;
-  border-radius: 0.4rem;
-  padding: 0;
-  color: #bac8ff;
-  background: transparent;
-  font-size: 1rem;
-  line-height: 1;
-}
-
-.workspace-machine-create:hover,
-.workspace-machine-create:focus-visible {
-  border-color: #495057;
-  color: #edf2ff;
-  background: #292d35;
-}
-
-.pad-sidebar-row.is-editing,
-.pad-sidebar-row.is-confirming {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 0.3rem;
-  padding: 0.32rem 0.35rem;
-}
-
-.pad-sidebar-rename-input {
-  min-width: 0;
-  height: 1.8rem;
-  border-color: var(--default-border-color, #495057);
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding: 0.25rem 0.4rem;
-  color: var(--text-primary-color, #f1f3f5);
-  background: var(--island-bg-color, #202329);
-  font-size: 0.78rem;
-}
-
-.pad-sidebar-inline-action {
-  width: 1.8rem;
-  min-width: 1.8rem;
-  height: 1.8rem;
-  min-height: 1.8rem;
-  border-color: transparent;
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding: 0;
-  color: var(--text-secondary-color, #adb5bd);
-  background: transparent;
-}
-
-.pad-sidebar-inline-action:hover,
-.pad-sidebar-inline-action:focus-visible {
-  color: var(--text-primary-color, #f1f3f5);
-  background: #2b2e34;
-}
-
-.pad-sidebar-inline-action.is-primary {
-  color: #bac8ff;
-}
-
-.pad-sidebar-inline-action:disabled {
-  opacity: 0.4;
-}
-
-.pad-sidebar-row.is-confirming {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  border: 1px solid rgb(250 82 82 / 32%);
-  background: rgb(250 82 82 / 7%);
-}
-
-.pad-sidebar-confirm-label {
-  align-self: center;
-  overflow: hidden;
-  color: #ffc9c9;
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pad-sidebar-confirm-delete,
-.pad-sidebar-confirm-cancel {
-  width: auto;
-  min-height: 1.8rem;
-  border-color: transparent;
-  border-radius: var(--border-radius-md, 0.4rem);
-  padding-inline: 0.45rem;
-  font-size: 0.68rem;
-}
-
-.pad-sidebar-confirm-delete {
-  color: #fff;
-  background: #c92a2a;
-}
-
-.pad-sidebar-confirm-delete:hover,
-.pad-sidebar-confirm-delete:focus-visible {
-  background: #e03131;
-}
-
-.pad-sidebar-confirm-cancel {
-  color: var(--text-secondary-color, #adb5bd);
-  background: transparent;
-}
-
-.pad-sidebar-confirm-cancel:hover,
-.pad-sidebar-confirm-cancel:focus-visible {
-  color: var(--text-primary-color, #f1f3f5);
-  background: #2b2e34;
-}
-
-.pad-browser-canvas {
-  position: relative;
-  min-width: 0;
-  overflow: hidden;
-  background: #121417;
-}
-
-.pad-browser-empty {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  padding: 2rem;
-  text-align: center;
-  background: radial-gradient(circle at center, rgb(54 79 199 / 10%), transparent 28rem), #121417;
-}
-
-.pad-browser-empty-mark {
-  width: 3.25rem;
-  height: 3.25rem;
-  margin-bottom: 0.9rem;
-  border-radius: 0.85rem;
-  font-size: 1.05rem;
-}
-
-.pad-browser-empty h1 {
-  margin: 0;
-  font-size: 1.35rem;
-}
-
-.pad-browser-empty p {
-  margin: 0.55rem 0 1.25rem;
-  color: #868e96;
-}
-
-.pad-view {
-  position: absolute;
-  inset: 0;
-  background: #121417;
-}
-
-.pad-view > .excalidraw {
-  width: 100%;
-  height: 100%;
-}
-
-.pad-name-menu-item {
-  max-width: 16rem;
-  overflow: hidden;
-  color: #adb5bd;
-  font-size: 0.82rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Non-actionable menu row: no machine can host a terminal right now. */
-.machine-none-menu-item {
-  color: #868e96;
-  font-size: 0.82rem;
-  cursor: default;
-}
-
-/* Machine badge in the terminal title bar. */
-.terminal-machine-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: 0.5rem;
-  color: #868e96;
-  font-size: 0.68rem;
-}
-
-.machine-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 999px;
-  flex: none;
-}
-
-.machine-dot.is-offline {
-  opacity: 0.35;
-}
-
-.pad-load-error {
-  position: absolute;
-  z-index: 25;
-  bottom: 2.8rem;
-  left: 50%;
-  max-width: min(34rem, calc(100vw - 2rem));
-  transform: translateX(-50%);
-  border: 1px solid #c92a2a;
-  border-radius: 0.55rem;
-  padding: 0.55rem 0.8rem;
-  color: #ffc9c9;
-  background: rgb(73 15 19 / 92%);
-  font-size: 0.78rem;
-}
-
-.terminal-placeholder,
-.manifold-terminal {
-  width: 100%;
-  height: 100%;
-  border-radius: 0.45rem;
-  background: #0b0d10;
-}
-
-.terminal-placeholder {
-  display: grid;
-  place-items: center;
-  color: #868e96;
-  font-size: 0.82rem;
-}
-
-.manifold-terminal {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  border: 1px solid #2c3239;
-  border-radius: 0.5rem;
-  background: #0b0d10;
-  /* sshx-style quiet depth: reads as a window, not a flat rectangle. */
-  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
-}
-
-.pad-view.is-panning .manifold-terminal,
-.pad-view.is-panning .terminal-placeholder {
-  pointer-events: none;
-}
-
-/* Maximized: the terminal is promoted to the browser top layer (Popover API)
-   and becomes the view; the canvas stays behind. Esc or the button restores.
-   Explicit inset/size because showPopover() alone doesn't size anything. */
-.manifold-terminal--maximized {
-  position: fixed;
-  inset: 2vh 2vw;
-  width: auto;
-  height: auto;
-  margin: 0;
-  padding: 0;
-  border: 1px solid #343a40;
-  border-radius: 0.45rem;
-  background: #0b0d10;
-  /* Excalidraw gates pointer events on inactive embeds; the top-layer view
-     must accept input regardless of canvas activation state. */
-  pointer-events: auto;
-}
-
-/* Remote focus: the frame wears a ring in the focuser's presence color, supplied
-   inline as border-color + box-shadow so there is no layout shift. */
-.manifold-terminal--remote-focus {
-  border-color: transparent;
-}
-
-.manifold-terminal--panel-highlight::after {
-  content: "";
-  position: absolute;
-  z-index: 30;
-  inset: 0;
-  border: 3px solid #4dabf7;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
-  pointer-events: none;
-}
-
-/* Window-shade minimize: only the title bar remains; the body goes transparent
-   so the collapsed terminal reads as a slim bar floating on the canvas. */
-.manifold-terminal--collapsed {
-  background: transparent;
-  border-color: transparent;
-}
-
-.manifold-terminal--collapsed .xterm-host {
-  display: none;
-}
-
-/* Idle veil — faint white haze over an unfocused terminal, readable underneath;
-   sits above the title bar too, so the whole surface reads as dimmed. Never
-   intercepts input (Excalidraw already gates the embed until activated). */
-.terminal-idle-veil {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  border-radius: inherit;
-  background: rgb(255 255 255 / 12%);
-  opacity: 0;
-  transition: opacity 140ms ease;
-  pointer-events: none;
-}
-
-.terminal-idle-veil--on {
-  opacity: 1;
-}
-
-.terminal-titlebar {
-  position: absolute;
-  z-index: 3;
-  inset: 0 0 auto 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 1.5rem;
-  padding: 0 0.15rem 0 0.5rem;
-  background: #14181e;
-  border-bottom: 1px solid #23272e;
-  pointer-events: none;
-  user-select: none;
-}
-
-.terminal-titlebar__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: #adb5bd;
-  font-size: 0.66rem;
-  letter-spacing: 0.02em;
-}
-
-.terminal-titlebar__glyph {
-  color: #5c6370;
-  font-family: ui-monospace, "SFMono-Regular", monospace;
-}
-
-.terminal-titlebar__controls {
-  display: inline-flex;
-  gap: 0.1rem;
-}
-
-/* Pad navigation and terminal creation live in the application sidebar. */
-.pad-view .main-menu-trigger {
-  display: none;
-}
-
-/* Controls re-enable pointer events above Excalidraw's idle embed, so you can
-   minimize/fullscreen/close without first activating the terminal. */
-.terminal-ctl {
-  display: grid;
-  place-items: center;
-  width: 1.15rem;
-  height: 1.15rem;
-  border: none;
-  border-radius: 0.25rem;
-  padding: 0;
-  color: #868e96;
-  background: transparent;
-  font-size: 0.72rem;
-  line-height: 1;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.terminal-ctl:hover {
-  color: #e6e9ef;
-  background: #2a2f37;
-}
-
-.terminal-ctl--close:hover {
-  color: #fff;
-  background: #e03131;
-}
-
-/* Focus-presence chips: who (other than you) is on this terminal right now. */
-.terminal-presence {
-  position: absolute;
-  z-index: 5;
-  top: 0.18rem;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  max-width: 70%;
-  gap: 0.25rem;
-  pointer-events: none;
-}
-
-.terminal-presence__tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.05rem 0.45rem 0.05rem 0.05rem;
-  border-radius: 999px;
-  color: #fff;
-  font-size: 0.62rem;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
-}
-
-.terminal-presence__initial {
-  display: grid;
-  place-items: center;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 999px;
-  background: rgb(0 0 0 / 25%);
-  font-size: 0.6rem;
-}
-
-.terminal-presence__name {
-  overflow: hidden;
-  max-width: 9rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.xterm-host {
-  position: absolute;
-  inset: 1.5rem 0.35rem 0.35rem;
-}
-
-.xterm-host .xterm {
-  height: 100%;
-}
-
-/* Stock xterm.css paints the scroll viewport pure black; match the frame's
-   background so the row-quantization remainder below the last line (its height
-   varies with element size) reads as seamless terminal, not a stray bar. */
-.xterm-host .xterm-viewport {
-  background-color: #0b0d10;
-}
-
-.view-only-ribbon {
-  position: absolute;
-  z-index: 4;
-  right: 0.6rem;
-  bottom: 0.55rem;
-  border: 1px solid #495057;
-  border-radius: 999px;
-  padding: 0.25rem 0.55rem;
-  color: #ced4da;
-  background: rgb(33 37 41 / 90%);
-  font-size: 0.66rem;
-  cursor: pointer;
-}
-
-.view-only-ribbon:hover {
-  border-color: #748ffc;
-  color: #fff;
-}
-
-.terminal-exited {
-  position: absolute;
-  z-index: 5;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 0.6rem;
-  color: #ced4da;
-  background: rgb(11 13 16 / 72%);
-  font-size: 0.9rem;
-  font-weight: 700;
-  backdrop-filter: grayscale(1);
-  pointer-events: none;
-}
-
-/* Clickable even while the embed is idle (same mechanism as .terminal-ctl). */
-.terminal-restart {
-  border: 1px solid #495057;
-  border-radius: 999px;
-  padding: 0.3rem 0.9rem;
-  color: #e6e9ef;
-  background: #1b1f26;
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.terminal-restart:hover {
-  border-color: #74c0fc;
-  color: #d0ebff;
-}
-
-.terminal-restart:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-/* manifold top-right cluster — rendered inside .excalidraw via renderTopRightUI,
-   so excalidraw design tokens cascade. The slot's flex row owns layout. */
-.presence-wrapper {
-  position: relative;
-}
-
-.presence-stack {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.4rem;
-  border: 1px solid var(--default-border-color);
-  border-radius: var(--border-radius-lg);
-  background: var(--island-bg-color);
-  box-shadow: var(--shadow-island);
-  cursor: pointer;
-}
-
-.presence-avatar {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 1.75rem;
-  height: 1.75rem;
-  border: 1px solid var(--island-bg-color);
-  border-radius: 50%;
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 650;
-}
-
-.presence-avatar + .presence-avatar {
-  margin-left: -0.25rem;
-}
-
-.presence-avatar.is-agent {
-  border-radius: var(--border-radius-md);
-}
-
-.presence-avatar.is-self {
-  outline: 1px solid var(--color-primary);
-}
-
-.presence-overflow {
-  background: var(--island-bg-color);
-  border-color: var(--default-border-color);
-  color: var(--text-primary-color);
-}
-
-.presence-popover {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 0.5rem);
-  right: 0;
-  display: grid;
-  gap: 0.25rem;
-  width: max-content;
-  min-width: 14rem;
-  max-width: min(20rem, calc(100vw - 1.5rem));
-  padding: 0.4rem;
-  border: 1px solid var(--default-border-color);
-  border-radius: var(--border-radius-lg);
-  background: var(--island-bg-color);
-  box-shadow: var(--shadow-island);
-  color: var(--text-primary-color);
-  font-size: 0.72rem;
-}
-
-.presence-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 1.55rem;
-  padding: 0.2rem 0.3rem;
-}
-
-.presence-dot {
-  flex: 0 0 auto;
-  width: 0.65rem;
-  height: 0.65rem;
-  border-radius: 999px;
-}
-
-.presence-name {
-  overflow: hidden;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.you-chip,
-.agent-chip {
-  margin-left: 0.35rem;
-  font-size: 0.62rem;
-  font-weight: 500;
-}
-
-.you-chip {
-  color: var(--color-primary);
-}
-
-.agent-chip {
-  color: #ffd43b;
-}
-
-.presence-status {
-  color: var(--text-primary-color);
-  opacity: 0.7;
-}
-
-.presence-connections {
-  min-width: 1.4rem;
-  opacity: 0.55;
-  text-align: right;
-}
-
-@media (max-width: 700px) {
-  .pad-browser {
-    grid-template-columns: 3.25rem minmax(0, 1fr);
-  }
-
-  .pad-sidebar {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 15rem;
-    transition: width 160ms ease;
-  }
-
-  .pad-browser.is-collapsed .pad-sidebar {
-    width: 3.25rem;
-  }
-
-  .pad-sidebar-resize {
-    display: none;
-  }
-
-  .pad-browser-canvas {
-    grid-column: 2;
-  }
-
-  .status-meta {
-    display: none;
-  }
-}
-
-.status-dot {
-  width: 0.48rem;
-  height: 0.48rem;
-  flex: 0 0 auto;
-  position: relative;
-  border-radius: 50%;
-  color: #868e96;
-  background: currentColor;
-}
-
-.status-dot.open {
-  color: #40c057;
-}
-
-.status-dot.connecting,
-.status-dot.reconnecting {
-  color: #f59f00;
-}
-
-.status-dot.open::after,
-.status-dot.connecting::after,
-.status-dot.reconnecting::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: currentColor;
-  pointer-events: none;
-  animation: status-dot-ping 2.8s cubic-bezier(0, 0, 0.2, 1) infinite;
-}
-
-.status-dot.connecting::after,
-.status-dot.reconnecting::after {
-  animation-duration: 1.5s;
-}
-
-.status-dot.closed {
-  color: #fa5252;
-}
-
-@keyframes status-dot-ping {
-  0% {
-    transform: scale(0.9);
-    opacity: 0.45;
-  }
-  72%,
-  100% {
-    transform: scale(1.9);
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .status-dot::after {
-    animation: none;
-  }
-}
-
-.workspace-list {
-  display: grid;
-  gap: 0.2rem;
-}
-
-.workspace-empty {
-  padding: 0.45rem 0.2rem;
-  color: var(--text-secondary-color, #868e96);
-}
-
-.workspace-machine-row,
-.workspace-session-row {
-  min-width: 0;
-  border-radius: var(--border-radius-md);
-  padding: 0.4rem 0.45rem;
-}
-
-.workspace-machine-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.workspace-machine-row:hover,
-.workspace-session-row:hover {
-  background: rgb(134 142 150 / 8%);
-}
-
-.workspace-machine-row.is-offline,
-.workspace-session-row.is-exited {
-  opacity: 0.55;
-}
-
-.workspace-machine-row strong {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-machine-row > span:not(.machine-dot) {
-  color: var(--text-secondary-color, #868e96);
-}
-
-.workspace-session-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.workspace-session-row.is-orphaned {
-  background: rgb(240 140 0 / 8%);
-}
-
-.session-state {
-  color: var(--text-secondary-color, #868e96);
-}
-
-.session-state.is-running {
-  color: #51cf66;
-}
-
-.workspace-session-row.is-orphaned .session-state {
-  color: #f08c00;
-}
-
-.workspace-session-label {
-  display: grid;
-  min-width: 0;
-  gap: 0.1rem;
-}
-
-.workspace-session-label strong,
-.workspace-session-label span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-session-label strong {
-  font-weight: 600;
-}
-
-.workspace-session-label span {
-  color: var(--text-secondary-color, #868e96);
-  font-size: 0.66rem;
-}
-
-.workspace-session-row.is-orphaned .workspace-session-label span {
-  color: #f08c00;
-}
-
-.workspace-session-group {
-  display: grid;
-  gap: 0.12rem;
-}
-
-.workspace-copy-list {
-  display: grid;
-  gap: 0.12rem;
-  margin: 0 0.35rem 0.25rem 1rem;
-  padding-left: 0.55rem;
-  border-left: 1px solid var(--default-border-color);
-}
-
-.workspace-copy-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-  padding: 0.25rem 0.1rem;
-  border-radius: var(--border-radius-md);
-}
-
-.workspace-copy-row:hover {
-  background: rgb(134 142 150 / 8%);
-}
-
-.workspace-copy-branch {
-  width: 0.35rem;
-  height: 1px;
-  background: var(--default-border-color);
-}
-
-.workspace-copy-label {
-  overflow: hidden;
-  color: var(--text-secondary-color, #868e96);
-  font-size: 0.66rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-copies-toggle {
-  display: inline-flex;
-  width: auto;
-  gap: 0.3rem;
-  padding-inline: 0.4rem;
-  color: var(--text-secondary-color, #868e96);
-  font-size: 0.62rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.workspace-copy-chevron {
-  width: 0.3rem;
-  height: 0.3rem;
-  margin-bottom: 0.12rem;
-  transform: rotate(45deg);
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transition: transform 120ms ease;
-}
-
-.workspace-copies-toggle[aria-expanded="true"] .workspace-copy-chevron {
-  margin-bottom: -0.08rem;
-  transform: rotate(-135deg);
-}
-
-.workspace-session-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.workspace-action {
-  display: grid;
-  place-items: center;
-  width: 1.65rem;
-  min-width: 1.65rem;
-  height: 1.55rem;
-  min-height: 1.55rem;
-  padding: 0;
-  border-radius: var(--border-radius-md);
-}
-
-.workspace-action svg {
-  width: 0.78rem;
-  height: 0.78rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.workspace-action.is-reveal {
-  color: #a5d8ff;
-}
-
-.workspace-action.is-restore {
-  color: #b2f2bb;
-}
-
-.workspace-action.is-end-session {
-  color: #ffd8a8;
-}
-
-.workspace-action.is-remove {
-  color: #ffa8a8;
-}
-
-.workspace-action:hover {
-  border-color: currentColor;
-  background: rgb(255 255 255 / 6%);
-}
-
 .sr-only {
   position: absolute;
   width: 1px;
@@ -2055,4 +222,240 @@ button.pad-sidebar-session.is-summary > small {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   clip-path: inset(50%);
+}
+
+/* THE notice layer. Fixed to the viewport and mounted at the application root, so
+   it is above every renderer, outside the sidebar's collapse subtree, and outside
+   any transformed canvas — the three places notices used to get lost. The layer
+   itself is pointer-transparent; only the rows take the pointer, so a stack sitting
+   over the canvas never eats a drag. */
+.notice-layer {
+  position: fixed;
+  z-index: 200;
+  right: 0;
+  bottom: 1.1rem;
+  left: 0;
+  padding: 0 1rem;
+  pointer-events: none;
+}
+
+.notice {
+  display: flex;
+  max-width: min(34rem, 100%);
+  align-items: flex-start;
+  gap: 0.55rem;
+  border: 1px solid #3b4048;
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.45rem 0.45rem 0.7rem;
+  color: #e9ecef;
+  background: #202329;
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 45%);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  pointer-events: auto;
+  animation: notice-enter 160ms ease-out;
+}
+
+/* A failure that leaves the app degraded reads as one: the same card, alarmed. */
+.notice--sticky {
+  border-color: #7a3b3b;
+  color: #ffc9c9;
+  background: #2a2023;
+}
+
+/* Duration must match NOTICE_FADE_MS in notice.tsx. */
+.notice--leaving {
+  opacity: 0;
+  transform: translateY(0.35rem);
+  transition:
+    opacity 220ms ease-in,
+    transform 220ms ease-in;
+}
+
+.notice-message {
+  overflow-wrap: anywhere;
+}
+
+.notice-dismiss {
+  width: 1.3rem;
+  height: 1.3rem;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 0.3rem;
+  padding: 0;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.notice-dismiss:hover,
+.notice-dismiss:focus-visible {
+  color: #f1f3f5;
+  background: #2f333a;
+}
+
+@keyframes notice-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice {
+    animation: none;
+  }
+
+  .notice--leaving {
+    transform: none;
+    transition: opacity 220ms linear;
+  }
+}
+
+/* ── The lens's own conditions ────────────────────────────────────────────────
+   What this WINDOW is doing — offline, a newer build waiting, a foreign instance
+   (`lens.tsx`). Top-centre and above the notice layer on purpose: a notice is about
+   something that just happened inside the workspace, while these are standing facts
+   about the app around it, and the one thing worse than not saying "offline" is
+   saying it where a burst of notices can bury it. Same card vocabulary as a notice,
+   because it is the same kind of quiet, and the layer is pointer-transparent so a
+   banner over a canvas never eats a drag. */
+.lens-layer {
+  position: fixed;
+  z-index: 210;
+  top: 0.6rem;
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 1rem;
+  pointer-events: none;
+}
+
+.lens-note {
+  display: flex;
+  max-width: min(40rem, 100%);
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid #3b4048;
+  border-radius: 0.55rem;
+  padding: 0.4rem 0.45rem 0.4rem 0.7rem;
+  color: #e9ecef;
+  background: #202329;
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 45%);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+
+/* Disconnected is the one condition that is a FAILURE rather than an offer. */
+.lens-note--alarmed {
+  border-color: #7a3b3b;
+  color: #ffc9c9;
+  background: #2a2023;
+}
+
+.lens-note-body {
+  overflow-wrap: anywhere;
+}
+
+.lens-note-detail {
+  color: #adb5bd;
+}
+
+.lens-note--alarmed .lens-note-detail {
+  color: #ffa8a8;
+}
+
+.lens-note-action {
+  flex: 0 0 auto;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  color: #dbe4ff;
+  background: #2b3450;
+  font: inherit;
+  cursor: pointer;
+}
+
+.lens-note-action:hover,
+.lens-note-action:focus-visible {
+  color: #f1f3f5;
+  background: #364fc7;
+}
+
+/* ── Placement legality cues ──────────────────────────────────────────────────
+   Uniform across every drop target, because the pipeline behind them is uniform:
+   a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its
+   preview box, and the named rule rides in the element's `title`. The prose badge
+   is the human half of the same denial. Legal targets keep the existing highlights
+   (`.sidebar-row--terminal-target`, `.tile-preview`). */
+[data-drop-denial] {
+  outline: 1px dashed rgb(255 107 107 / 55%);
+  outline-offset: -2px;
+  cursor: not-allowed;
+}
+
+/* ── Skeletons ────────────────────────────────────────────────────────────────
+   Shown only where the answer is genuinely unknown: a cold deep-link whose container
+   record this tab has never resolved, and the very first index fetch. Every warm
+   navigation renders the real thing immediately, so these must read as "the shape is
+   arriving", never as a screen with a sentence on it. */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+
+  50% {
+    opacity: 0.62;
+  }
+}
+
+/* ── Inert plugin contributions (.plugin-placeholder) ─────────────────────────
+   The one ref for a contribution that cannot render: a disabled plugin, an id
+   nothing composed, or a declared panel whose web half is absent. It is deliberately
+   the `.portal__empty` idiom — dashed, muted, centred, filling whatever box it
+   is handed — so the same element reads correctly as a workspace pane and as a canvas
+   node without a second skin. It NAMES what is missing; a blank tile is the bug this
+   block exists to prevent. `data-plugin-state` carries the reason for the gate. */
+/* Centering and rhythm are the layout Cover+Stack's; this is skin: the dashed box. */
+.plugin-placeholder {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed #343a40;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  color: #868e96;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.plugin-placeholder__name {
+  color: #dee2e6;
+  font-size: 0.76rem;
+}
+
+.plugin-placeholder__remove {
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  background: transparent;
+  padding: 0.2rem 0.5rem;
+  color: #adb5bd;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.plugin-placeholder__remove:hover {
+  border-color: #495057;
+  color: #dee2e6;
 }

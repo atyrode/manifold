@@ -1,0 +1,552 @@
+/*
+ * `arrange` cssFamily (REGISTRY.md) — core.arrange's own chrome: the floating toolbar, the
+ * palette of carry sources and the operation buttons beside it, the panel-move grip overlay,
+ * the live move preview slot, and the wireframe delimitation. All of it paints while
+ * `vantage.arranging` is true and nowhere else, mounted through the workspace overlay outlet
+ * rather than in the tree's own flow, so none of it ever reflows a pane.
+ *
+ * The skin is the application's, not a second one: surfaces sit on the #1d2025..#262a33
+ * family behind #343a40 hairlines, the accent is #4c6ef5 with #748ffc/#edf2ff for its lit
+ * states, swap keeps the established orange, and dashed strokes mean the same thing they
+ * mean everywhere else in this app — bounds with no occupant yet.
+ */
+
+.arrange-grip-host {
+  position: fixed;
+  z-index: 26;
+  pointer-events: none;
+}
+
+.arrange-grip {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgb(76 110 245 / 8%);
+  font: inherit;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.arrange-grip:hover,
+.arrange-grip:focus-visible {
+  background: rgb(76 110 245 / 16%);
+}
+
+.arrange-grip.is-grabbed {
+  background: rgb(76 110 245 / 24%);
+  cursor: grabbing;
+}
+
+.arrange-grip.is-selected {
+  background: rgb(247 103 7 / 18%);
+  outline: 2px solid #f76707;
+  outline-offset: -2px;
+}
+
+/*
+ * A SPLIT'S GRIP (issue #148): a handle at the split's top-left corner — the corner its
+ * wireframe tick already marks — over a frame that paints nothing but the selection. The
+ * members inside a split paint their own grips over its whole box, so a cover here would take
+ * the pointer from exactly the seats it holds. A pill, because that is what the panel's own
+ * tag is: the two read as one species of object, and the grip cue says which one you can pick
+ * up. Stepped down by depth so a stack nested first inside a stack keeps a handle of its own.
+ */
+.arrange-grip-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.35rem;
+  pointer-events: none;
+}
+
+.arrange-grip-frame.is-selected {
+  background: rgb(247 103 7 / 10%);
+  outline: 2px solid #f76707;
+  outline-offset: -2px;
+}
+
+.arrange-grip-handle {
+  position: absolute;
+  z-index: 27;
+  top: calc(0.35rem + (var(--arrange-depth, 1) - 1) * 1.5rem);
+  left: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #4c6ef5;
+  border-radius: 999px;
+  padding: 0.18rem 0.6rem 0.18rem 0.4rem;
+  color: #edf2ff;
+  background: #1f232b;
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 60%);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.arrange-grip-handle:hover,
+.arrange-grip-handle:focus-visible {
+  border-color: #748ffc;
+  background: #262c38;
+}
+
+.arrange-grip-handle.is-grabbed {
+  background: rgb(76 110 245 / 30%);
+  cursor: grabbing;
+}
+
+.arrange-grip-handle.is-selected {
+  border-color: #f76707;
+  color: #ffd8a8;
+}
+
+/*
+ * The panel's name, floated near its top. A true pill (999px) so it reads as a floating tag
+ * rather than a box of the panel's own chrome, and a real shadow so the panel's content
+ * underneath reads as layering, not collision. 2.75rem down, not flush with the edge: every
+ * panel's identity lives in its top strip (the sidebar's wordmark, a titlebar), and a mode
+ * tag that truncates the app's own brand reads as a z-fight — the row it covers instead is
+ * inert behind the grip while the mode is armed.
+ */
+.arrange-grip-pill {
+  position: absolute;
+  z-index: 27;
+  top: 2.75rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid #4c6ef5;
+  border-radius: 999px;
+  padding: 0.18rem 0.6rem;
+  color: #edf2ff;
+  background: #1f232b;
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 60%);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.arrange-grip-label {
+  white-space: nowrap;
+}
+
+/* The scope-in door on an arrangeable panel's pill; tucked against the pill's rounded end. */
+.arrange-scope {
+  display: flex;
+  align-items: center;
+  margin-right: -0.3rem;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.12rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.arrange-scope:hover,
+.arrange-scope:focus-visible {
+  color: #edf2ff;
+  background: rgb(76 110 245 / 35%);
+}
+
+/*
+ * THE MOVE PREVIEW SLOT — the same vocabulary as the shared `.tile-preview` every other drop
+ * in the app paints: legal blue (#748ffc on a soft fill), and the established swap orange on
+ * BOTH partners of a trade so "the two exchange seats" never reads as "this half becomes
+ * yours". A swap slot centres the swap mark, exactly as the tile preview does.
+ */
+.arrange-slot {
+  position: fixed;
+  z-index: 38;
+  display: grid;
+  place-items: center;
+  border: 2px solid #748ffc;
+  border-radius: 0.35rem;
+  color: #bac8ff;
+  background: rgb(92 124 250 / 20%);
+  pointer-events: none;
+  transition:
+    left 90ms ease,
+    top 90ms ease,
+    width 90ms ease,
+    height 90ms ease;
+}
+
+/* The mark rides a small dark disc so it stays legible over whatever content the slot covers. */
+.arrange-slot > .mf-icon {
+  box-sizing: content-box;
+  border-radius: 999px;
+  padding: 0.3rem;
+  background: rgb(16 18 22 / 72%);
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+}
+
+.arrange-slot.is-swap {
+  border-color: rgb(255 146 43 / 85%);
+  color: #ffd8a8;
+  background: rgb(255 146 43 / 16%);
+}
+
+/*
+ * THE WIREFRAME: every stack/split's outline plus its axis marker, and a lighter outline on
+ * every spacer leaf — issue #89's second comment. `--arrange-depth` steps the hue and the
+ * inset so nesting reads at a glance; `is-out-of-scope` dims the workspace's own containers
+ * while a reader is zoomed into a panel's inner arrangement instead. One-pixel dashes: the
+ * frame is delimitation, and it must never compete with the panes it delimits.
+ */
+.arrange-wireframe-outline {
+  position: fixed;
+  z-index: 24;
+  inset: calc(var(--arrange-depth, 0) * 4px);
+  border: 1px dashed hsl(calc(220 + var(--arrange-depth, 0) * 18) 70% 62% / 60%);
+  border-radius: 0.35rem;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.arrange-wireframe-outline.is-out-of-scope {
+  opacity: 0.35;
+}
+
+/* The split's axis, worn as a small rounded tick in its top-left corner. */
+.arrange-wireframe-axis {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  display: block;
+  background: hsl(calc(220 + var(--arrange-depth, 0) * 18) 70% 62% / 85%);
+  border-radius: 999px;
+}
+
+.arrange-wireframe-axis[data-dir="row"] {
+  width: 0.9rem;
+  height: 3px;
+}
+
+.arrange-wireframe-axis[data-dir="column"] {
+  width: 3px;
+  height: 0.9rem;
+}
+
+.arrange-wireframe-spacer {
+  position: fixed;
+  z-index: 23;
+  border: 1px dashed rgb(134 142 150 / 45%);
+  border-radius: 0.25rem;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.arrange-wireframe-spacer.is-out-of-scope {
+  opacity: 0.35;
+}
+
+/*
+ * THE FLOATING TOOLBAR: bottom-center default, drag-anywhere, device-local (REGISTRY.md's
+ * device-local register: `manifold:arrange-toolbar-position`). Absolutely positioned so
+ * arming the mode moves nothing else on screen. Dressed exactly like the app's other
+ * floating strip (`.canvas-toolbar`): the same near-opaque #181b20 wash, the same #343a40
+ * hairline and 0.65rem radius, so the two bars read as one species of object.
+ *
+ * ONE ROW, COMPOSED: handle · status · | · palette · | · operations · shelf, with hairline
+ * separators between the word half and the two control clusters. Every control in the bar
+ * shares one 1.75rem height and one 0.4rem radius; wrap (small viewports, a long shelf)
+ * breaks between clusters and re-centres rather than ragging left.
+ */
+.arrange-toolbar {
+  position: fixed;
+  z-index: 40;
+  bottom: 1.1rem;
+  left: 50%;
+  display: flex;
+  /*
+   * `left: 50%` caps a shrink-to-fit fixed box at HALF the viewport (available width is what
+   * remains right of the left edge), which is what used to wrap this bar at 720px on a 1440px
+   * screen. max-content sizes it to its row; the max-width still wraps it on small screens.
+   * 66rem, not 60: Remove (issue #148) is the seventh tool, and at 60rem the bar folded onto
+   * two lines on a 1440px screen — a wrap the small-screen cap exists for, not the default.
+   */
+  width: max-content;
+  max-width: min(66rem, calc(100% - 2rem));
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem 0.55rem;
+  border: 1px solid #343a40;
+  border-radius: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  color: #e9ecef;
+  background: rgb(24 27 32 / 96%);
+  box-shadow: 0 0.6rem 1.6rem rgb(0 0 0 / 38%);
+  font-size: 0.78rem;
+}
+
+.arrange-toolbar-sep {
+  align-self: center;
+  width: 1px;
+  height: 1.2rem;
+  background: #3e434b;
+}
+
+.arrange-toolbar-handle {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  margin-left: -0.25rem;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0 0.1rem;
+  color: #5c6370;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.arrange-toolbar-handle:hover,
+.arrange-toolbar-handle:focus-visible {
+  color: #e6e9ef;
+  background: #2a2f37;
+}
+
+.arrange-toolbar-handle:active {
+  cursor: grabbing;
+}
+
+.arrange-toolbar-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+/*
+ * The mode's name is a BADGE, not a crumb: uppercase, small, accent-tinted — the same accent
+ * the armed grips wash every panel with — so it never competes with the bold current crumb
+ * for "where am I", only answers "what mode is this".
+ */
+.arrange-toolbar-title {
+  color: #bac8ff;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.arrange-toolbar-hint {
+  color: #adb5bd;
+  font-size: 0.72rem;
+}
+
+.arrange-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+/*
+ * The way up is a LINK-SHAPED crumb, not a chip: a bordered token beside a bare one read as
+ * two different species. Ancestors are quiet and light up under the pointer; the crumb you
+ * are standing on is the bold one.
+ */
+.arrange-crumb-up {
+  border: 0;
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.35rem;
+  color: #adb5bd;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.arrange-crumb-up:hover,
+.arrange-crumb-up:focus-visible {
+  color: #edf2ff;
+  background: #2a2f37;
+}
+
+.arrange-crumb-sep {
+  color: #5c6370;
+}
+
+.arrange-crumb {
+  color: #edf2ff;
+  font-weight: 600;
+}
+
+/*
+ * THE PALETTE: carry sources, so each item wears the app's grip vocabulary (the same mark as
+ * this bar's own handle and the sidebar's rows), a DASHED hairline — bounds, no occupant yet,
+ * the wireframe's own meaning — and the grab cursor. Split items rotate the shape glyph to
+ * their axis so row and column differ at a glance.
+ */
+.arrange-palette {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/*
+ * THE PALETTE'S CARRIED STATE (issue #148): while anything is in the air the palette is a
+ * drop target, and it SAYS which one it is — "Drop to cancel" over a fresh item, "Drop to
+ * remove" over a placed structure — as an overlay on its own box rather than a change of
+ * copy on the items, so the items keep their place and the target is the whole region.
+ * Cancel wears the accent; remove wears the established orange, the colour the selection a
+ * removal acts on already wears. `is-hot` is the pointer over it: the dashes solidify and
+ * the wash deepens, the same "you are here" every other drop target in the app paints.
+ */
+.arrange-palette-state {
+  position: absolute;
+  z-index: 1;
+  inset: -0.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px dashed #748ffc;
+  border-radius: 0.5rem;
+  color: #edf2ff;
+  /* Opaque in every state: the items underneath must not bleed through the words over them. */
+  background: #1d2025;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.arrange-palette[data-carry="remove"] > .arrange-palette-state {
+  border-color: #f76707;
+  color: #ffd8a8;
+}
+
+.arrange-palette.is-hot > .arrange-palette-state {
+  border-style: solid;
+  background: #2c3968;
+}
+
+.arrange-palette[data-carry="remove"].is-hot > .arrange-palette-state {
+  background: #63371b;
+}
+
+.arrange-palette-item {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px dashed #495057;
+  border-radius: 0.4rem;
+  padding: 0 0.55rem 0 0.35rem;
+  color: #ced4da;
+  background: #262a33;
+  font: inherit;
+  cursor: grab;
+  white-space: nowrap;
+  touch-action: none;
+}
+
+.arrange-palette-item:hover,
+.arrange-palette-item:focus-visible {
+  border-color: #748ffc;
+  color: #edf2ff;
+  background: #2c323c;
+}
+
+.arrange-palette-item:active {
+  border-color: #4c6ef5;
+  background: rgb(76 110 245 / 18%);
+  cursor: grabbing;
+}
+
+.arrange-palette-cue {
+  margin-right: -0.15rem;
+  color: #5c6370;
+}
+
+.arrange-palette-item:hover .arrange-palette-cue,
+.arrange-palette-item:focus-visible .arrange-palette-cue {
+  color: #868e96;
+}
+
+.arrange-palette-item[data-dir="column"] .arrange-palette-shape {
+  transform: rotate(90deg);
+}
+
+/* The whole-arrangement operations: the bar's solid, pressable half. */
+.arrange-toolbar-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.arrange-shelf-item,
+.arrange-toolbar-button {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #3e434b;
+  border-radius: 0.4rem;
+  padding: 0 0.6rem;
+  color: #dee2e6;
+  background: #262a33;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.arrange-shelf-item:hover,
+.arrange-shelf-item:focus-visible,
+.arrange-toolbar-button:hover,
+.arrange-toolbar-button:focus-visible {
+  border-color: #4c6ef5;
+  color: #edf2ff;
+  background: #2c323c;
+}
+
+.arrange-shelf-item:active,
+.arrange-toolbar-button:active {
+  background: rgb(76 110 245 / 22%);
+}
+
+.arrange-shelf-item:disabled,
+.arrange-toolbar-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  /* A dead hover on a dead button: hover paint stays put while disabled. */
+  border-color: #3e434b;
+  color: #dee2e6;
+  background: #262a33;
+}
+
+/*
+ * THE SHELF: unseated panels, held at the bar's end behind its own quiet label so a row that
+ * appears mid-session reads as a cluster with a name, not as wrap debris. Each entry wears
+ * the panel mark; pressing it seats the panel back.
+ */
+.arrange-shelf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  border-left: 1px solid #343a40;
+  padding-left: 0.55rem;
+}
+
+.arrange-shelf-label {
+  color: #868e96;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

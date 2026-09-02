@@ -37,20 +37,26 @@ docker compose exec -T manifold sh -c \
 curl --config - -X POST \
   -H "content-type: application/json" \
   -d '{"name":"<machine-name>"}' \
-  https://manifold.tyrode.dev/api/machines
+  https://manifold.tyrode.dev/api/actions/core.machines.enroll
 ```
 
-The response contains `machineToken` — **shown exactly once**; the server keeps
-only its hash. Store it on the target machine:
+Enrolment is an ACTION, so the answer is always HTTP 200 carrying an outcome
+envelope: `{"ok":true,"result":{...}}` on success, or
+`{"ok":false,"denial":{"rule":"...","message":"..."}}` when the door refuses.
+Read `.result`, and never trust the status code alone.
+
+`result.machineToken` is the raw secret — **shown exactly once**; the server
+keeps only its hash. Store it on the target machine:
 
 ```sh
 install -m 600 /dev/null ~/.config/manifold/machine.token
 # paste the token into that file (avoid putting it in shell history/argv)
 ```
 
-Enrollment is **idempotent**: re-POSTing an existing `name` returns the machine
-row without minting — the token a running agent holds stays valid, and re-run
-provisioning flows are safe. To recover a _lost_ token, rotate explicitly:
+Enrollment is **idempotent**: re-invoking with an existing `name` returns the
+machine row without minting — the token a running agent holds stays valid, and
+re-run provisioning flows are safe. To recover a _lost_ token, rotate
+explicitly:
 
 ```sh
 -d '{"name":"<machine-name>","rotateToken":true}'
@@ -156,15 +162,21 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
   agents. The reverse is rejected loudly (close 4409, `machine_version_rejected`
   in hub logs naming both versions). For a protocol bump that resets the compat
   set, upgrade hub and all spokes together; never advance only one side.
+- **Downstream pins follow `main`.** A release is a tag that `bun run release` cuts
+  from `main`, the release line; a tag that is not an ancestor of `main` is not a
+  release whatever it is called. v0.5.0 (2026-08-30) is the one such tag - published
+  as a pre-release from a `dev` commit and never deployed. Pin refreshers (the dotfiles
+  cron) resolve "latest" through GitHub, which excludes pre-releases, and hold any
+  candidate whose protocol is newer than the deployed hub (`atyrode/dotfiles#454`).
 - **Verify before removing the old agent.** Start the new binary and confirm
-  `welcome` in its log (and `online: true` via `GET /api/machines`) before
+  `welcome` in its log (and `online: true` from `core.machines.list`) before
   decommissioning whatever ran previously with the same token.
 
 ## 5. Acceptance checklist (per machine)
 
 - Agent log shows `starting` with the expected `build`, then `welcome` (its
   machineId) after connecting.
-- `GET /api/machines` lists the machine `online: true`.
+- `core.machines.list` reports the machine `online: true`.
 - Expanding **Machines** in the sidebar shows a terminal `+` action beside the
   enrolled machine; selecting it opens a shell, typing round-trips, and a second
   browser attaches to the same session.

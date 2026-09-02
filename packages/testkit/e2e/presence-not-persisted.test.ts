@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
+import { Y, createSceneDoc, decodeUpdate, readElements } from "@manifold/scene";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
   isMachineOnline,
   mintToken,
@@ -13,8 +14,12 @@ import {
   type TestAgent,
   type TestServer,
 } from "../src/index.ts";
-import { rawSessionSocket, type AdversarialSessionSocket } from "../src/adversarial.ts";
-import { closeClients, e2eFailure, nextMessage, sceneElement, stopProcesses } from "./helpers.ts";
+import {
+  rawSessionSocket,
+  sessionFrame,
+  type AdversarialSessionSocket,
+} from "../src/adversarial.ts";
+import { closeClients, e2eFailure, nextMessage, portalElement, stopProcesses } from "./helpers.ts";
 
 type InitMessage = Extract<ServerMessage, { type: "init" }>;
 
@@ -26,7 +31,9 @@ test("scene survives restart while presence and cursors do not", async () => {
   try {
     const firstServer = await startServer();
     servers.push(firstServer);
-    const pad = await createPad(firstServer, "presence restart isolation");
+    const container = await createContainer(firstServer, "presence restart isolation");
+    // Scene content only: a canvas element is a reference to a container these days.
+    const referenced = await createContainer(firstServer, "presence restart reference");
     const enrolled = await enrollMachine(firstServer, "presence-restart-agent");
     const agent = await startAgent({
       serverUrl: firstServer.url,
@@ -37,20 +44,26 @@ test("scene survives restart while presence and cursors do not", async () => {
 
     const alice = await mintToken(firstServer, {
       principal: { kind: "human", name: "Presence Alice", color: "#d13f62" },
-      caps: ["pads:read", "scene:write"],
-      padId: pad.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId: container.id,
     });
     const observer = await mintToken(firstServer, {
       principal: { kind: "human", name: "Presence Observer", color: "#3274d9" },
-      caps: ["pads:read"],
-      padId: pad.id,
+      caps: ["containers:read"],
+      containerId: container.id,
     });
-    const aliceClient = await connect(firstServer, { padId: pad.id, token: alice.token });
-    const observerClient = await connect(firstServer, { padId: pad.id, token: observer.token });
+    const aliceClient = await connect(firstServer, {
+      containerId: container.id,
+      token: alice.token,
+    });
+    const observerClient = await connect(firstServer, {
+      containerId: container.id,
+      token: observer.token,
+    });
     clients.push(aliceClient, observerClient);
 
     const saved = nextMessage(aliceClient, "saved", 15_000);
-    expect(aliceClient.updateScene([sceneElement("restart-scene")])).not.toBeNull();
+    aliceClient.transact((tx) => tx.create(portalElement("restart-scene", referenced.id)));
     await saved;
 
     const cursorSeen = nextMessage(
@@ -60,14 +73,14 @@ test("scene survives restart while presence and cursors do not", async () => {
       (message) => message.principalId === alice.principal.id && message.x === 41,
     );
     aliceClient.sendPresence({
-      cursor: { x: 41, y: 82, tool: "pointer" },
+      cursor: { x: 41, y: 82 },
       selection: ["restart-scene"],
     });
-    aliceClient.sendCursor(41, 82, "pointer");
+    aliceClient.sendCursor(41, 82);
     await cursorSeen;
     await waitFor(
       () => {
-        const payload = observerClient.roster.get(alice.principal.id)?.payload;
+        const payload = observerClient.attendance.get(alice.principal.id)?.payload;
         return payload?.cursor?.x === 41 && payload.selection?.[0] === "restart-scene";
       },
       5_000,
@@ -86,9 +99,9 @@ test("scene survives restart while presence and cursors do not", async () => {
 
     rejoined = await rawSessionSocket(restarted);
     rejoined.sendRaw(
-      JSON.stringify({
+      sessionFrame({
         type: "join",
-        padId: pad.id,
+        containerId: container.id,
         token: alice.token,
         protocolVersion: PROTOCOL_VERSION,
       }),
@@ -99,12 +112,12 @@ test("scene survives restart while presence and cursors do not", async () => {
       20,
     );
 
-    expect(
-      init.elements.some((element) => element.id === "restart-scene" && !element.isDeleted),
-    ).toBe(true);
-    expect(init.roster).toHaveLength(1);
-    expect(init.roster[0]?.principal.id).toBe(alice.principal.id);
-    expect(init.roster[0]?.payload).toEqual({});
+    const restored = createSceneDoc();
+    Y.applyUpdate(restored, decodeUpdate(init.doc));
+    expect(readElements(restored).has("restart-scene")).toBe(true);
+    expect(init.attendance).toHaveLength(1);
+    expect(init.attendance[0]?.principal.id).toBe(alice.principal.id);
+    expect(init.attendance[0]?.payload).toEqual({});
     expect(rejoined.frames.some((frame) => frame.type === "cursor")).toBe(false);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);

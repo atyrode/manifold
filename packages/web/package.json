@@ -1,6 +1,6 @@
 {
   "name": "@manifold/web",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,16 +9,31 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@excalidraw/excalidraw": "https://github.com/atyrode/excalidraw-manifold/releases/download/v0.18.1-manifold.3/excalidraw-excalidraw-0.18.1-manifold.3.tgz",
-    "@headless-tree/core": "1.7.0",
-    "@headless-tree/react": "1.7.0",
+    "@manifold-plugin/access": "workspace:*",
+    "@manifold-plugin/arrange": "workspace:*",
+    "@manifold-plugin/brand": "workspace:*",
+    "@manifold-plugin/canvas": "workspace:*",
+    "@manifold-plugin/commands": "workspace:*",
+    "@manifold-plugin/compositions": "workspace:*",
+    "@manifold-plugin/debug": "workspace:*",
+    "@manifold-plugin/draw": "workspace:*",
+    "@manifold-plugin/keys": "workspace:*",
+    "@manifold-plugin/machines": "workspace:*",
+    "@manifold-plugin/notes": "workspace:*",
+    "@manifold-plugin/plugin-manager": "workspace:*",
+    "@manifold-plugin/presence": "workspace:*",
+    "@manifold-plugin/terminals": "workspace:*",
+    "@manifold-plugin/uri": "workspace:*",
+    "@manifold-plugin/shell": "workspace:*",
+    "@manifold-plugin/index": "workspace:*",
+    "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
+    "@manifold/scene": "workspace:*",
     "@manifold/sdk": "workspace:*",
-    "@xterm/addon-fit": "0.11.0",
-    "@xterm/xterm": "6.0.0",
+    "@xyflow/react": "12.11.5",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "zod": "4.4.3"
+    "yjs": "13.6.32"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",

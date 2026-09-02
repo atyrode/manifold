@@ -3,19 +3,25 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "packages/plugins/*"
   ],
   "engines": {
     "bun": ">=1.3.13"
   },
   "scripts": {
-    "check": "tsc -p packages/protocol && tsc -p packages/sdk && tsc -p packages/server && tsc -p packages/agent && tsc -p packages/testkit && tsc -p packages/web && tsc -p tsconfig.scripts.json",
-    "test": "bun test packages/protocol packages/sdk packages/server packages/agent packages/web",
+    "check": "tsc -p packages/protocol && tsc -p packages/plugin && tsc -p packages/scene && tsc -p packages/sdk && tsc -p packages/server && tsc -p packages/agent && tsc -p packages/testkit && tsc -p packages/web && tsc -p packages/plugins/shell && tsc -p packages/plugins/plugin-manager && tsc -p packages/plugins/terminals && tsc -p packages/plugins/presence && tsc -p packages/plugins/machines && tsc -p packages/plugins/index && tsc -p packages/plugins/draw && tsc -p packages/plugins/notes && tsc -p packages/plugins/uri && tsc -p packages/plugins/access && tsc -p packages/plugins/events && tsc -p packages/plugins/debug && tsc -p packages/plugins/brand && tsc -p packages/plugins/keys && tsc -p packages/plugins/canvas && tsc -p packages/plugins/compositions && tsc -p packages/plugins/arrange && tsc -p packages/plugins/commands && tsc -p tsconfig.scripts.json",
+    "test": "bun test packages/protocol packages/plugin packages/scene packages/sdk packages/server packages/agent packages/web packages/plugins",
     "e2e": "bun test packages/testkit --timeout 60000",
     "verify:convergence": "bun scripts/verify-convergence.ts",
     "verify:public": "bun scripts/verify-public.ts",
     "verify:terminal-selection": "bun scripts/verify-terminal-selection.ts",
     "verify:terminal-mirror": "bun scripts/verify-terminal-mirror.ts",
+    "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
+    "verify:budgets": "bun scripts/verify-budgets.ts",
+    "verify:pwa": "bun scripts/verify-pwa.ts",
+    "verify:axioms": "bun scripts/verify-axioms.ts",
+    "verify:trace": "bun scripts/verify-trace.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",
@@ -25,7 +31,7 @@
     "dev:server": "MANIFOLD_ANNOUNCE_KEY=1 bun --watch packages/server/src/main.ts",
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
-    "gate": "bun run changelog:check && bun run check && bun run lint && bun run format:check && bun run test && bun run e2e && bun run verify:convergence && bun run verify:terminal-selection && bun run verify:terminal-mirror"
+    "gate": "bun scripts/gate.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

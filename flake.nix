@@ -28,15 +28,37 @@
         "aarch64-darwin"
       ];
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      # Fixed-output hash of the vendored node_modules tree, per system (native
-      # packages differ). Filled in the first time a system builds: leave the
-      # entry as lib.fakeHash, run `nix build .#manifold-agent`, copy the
-      # "got:" hash here.
+      # Fixed-output hash of the vendored node_modules tree, per system (the
+      # native optionalDependencies bun materializes differ per platform).
+      # Filled in the first time a system builds: leave the entry as
+      # lib.fakeHash, run `nix build .#bun-deps`, copy the "got:" hash here.
       depsHashes = {
-        x86_64-linux = "sha256-MUrQk0kCoK58BSOrOMu9hoDMPOEfHMit6oe/299vK0A=";
+        x86_64-linux = "sha256-cbjDbZqe+wkPN7HbitqeYimniuBfkdjpgiUC+jTxVuE=";
         aarch64-linux = nixpkgs.lib.fakeHash;
         x86_64-darwin = nixpkgs.lib.fakeHash;
         aarch64-darwin = nixpkgs.lib.fakeHash;
+      };
+
+      # Input of the vendored-dependency FOD. Deliberately not `self`: keying it
+      # on the whole workspace re-derives the FOD on every unrelated commit, so
+      # nothing is ever reused from the store and each commit re-runs a cold,
+      # live-network `bun install` — re-rolling the dice on exactly the
+      # nondeterminism issue #51 tracks, and re-downloading ~240 MB to produce a
+      # tree that did not change. bun needs only the dependency-defining files:
+      # it resolves the `workspace:*` members from their package.json manifests
+      # and links them as relative symlinks without reading their sources.
+      # Verified: installing from this subset yields a node_modules tree
+      # byte-identical to installing from the full workspace, so the FOD is now
+      # rebuilt only when the dependencies themselves change.
+      bunDepsSrc = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          ./bun.lock
+          ./bunfig.toml
+          ./package.json
+          ./patches
+          (nixpkgs.lib.fileset.fileFilter (file: file.name == "package.json") ./packages)
+        ];
       };
     in
     {
@@ -47,18 +69,36 @@
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
-          # cache: `@excalidraw/excalidraw` is a URL-tarball dependency and bun
-          # re-contacts its origin on every install even with a warm cache,
-          # which hangs forever inside the netless build sandbox.
+          # cache — every later derivation runs in the netless build sandbox and
+          # cannot resolve anything bun has not already materialized.
           # `--ignore-scripts` keeps the output deterministic (no lifecycle
           # script output lands in the tree; nothing in this workspace needs
-          # lifecycle scripts). Workspace symlinks (@manifold/* -> ../packages/*)
-          # are relative, so they dangle in $out and resolve again once the
-          # tree is copied back into a checkout.
+          # lifecycle scripts).
+          #
+          # `--linker=hoisted` is load-bearing, not a style choice (issue #51).
+          # bun >=1.3 defaults workspaces to the isolated linker, which stages
+          # every package under node_modules/.bun/<name>@<version>+<peerhash>/
+          # and then races on whether it materializes the .bin shims a store
+          # entry inherits from its *peer* dependencies. Eight cold builds of
+          # this derivation in the nix sandbox on one machine produced three
+          # different output hashes, differing only in
+          #   .bun/@eslint-community+eslint-utils@…/node_modules/.bin/eslint
+          #   .bun/update-browserslist-db@…/node_modules/.bin/browserslist
+          # (eslint and browserslist are peerDependencies of those two
+          # packages, and neither shim is ever executed). A fixed-output
+          # derivation cannot tolerate that: the output hash becomes a coin flip
+          # decided by scheduling, which is why the same drv hashed differently
+          # on a CI runner than on the machine that pinned it. The hoisted
+          # linker builds no peer-scoped store, so the race has nowhere to
+          # happen: eleven consecutive cold builds reproduce bit for bit. It
+          # also restores the layout the rest of this flake documents and
+          # depends on — relative workspace symlinks
+          # (node_modules/@manifold/* -> ../../packages/*), which the isolated
+          # linker does not create at all.
           bunDeps = pkgs.stdenvNoCC.mkDerivation {
             pname = "manifold-bun-deps";
             inherit version;
-            src = self;
+            src = bunDepsSrc;
             nativeBuildInputs = [
               pkgs.bun
               pkgs.cacert
@@ -68,7 +108,8 @@
             buildPhase = ''
               export HOME="$TMPDIR"
               export BUN_INSTALL_CACHE_DIR="$TMPDIR/bun-install-cache"
-              bun install --frozen-lockfile --ignore-scripts --no-progress --backend=copyfile
+              bun install --frozen-lockfile --ignore-scripts --no-progress \
+                --backend=copyfile --linker=hoisted
             '';
             installPhase = ''
               mkdir -p "$out"
@@ -141,6 +182,12 @@
             };
         in
         {
+          # Exposed so the vendored tree can be re-pinned and its
+          # reproducibility checked on its own, without building a binary:
+          #   nix build .#bun-deps
+          #   nix build .#bun-deps --rebuild   # must not report a hash mismatch
+          bun-deps = bunDeps;
+
           manifold-agent = compiled {
             pname = "manifold-agent";
             entry = "packages/agent/src/main.ts";

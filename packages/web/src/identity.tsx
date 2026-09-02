@@ -1,4 +1,6 @@
-import { PrincipalSchema } from "@manifold/protocol";
+import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
+import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
+import { Cover } from "@manifold/plugin/ui";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPrincipal, type StoredIdentity } from "./api.ts";
 
@@ -7,24 +9,35 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 
-/** The one color scheme: principals pick from it, machine dots hash into it. */
-export const IDENTITY_COLORS = [
-  "#e03131",
-  "#f08c00",
-  "#2f9e44",
-  "#1971c2",
-  "#6741d9",
-  "#c2255c",
-  "#0c8599",
-  "#495057",
-] as const;
+/**
+ * A CREDENTIAL BELONGS TO ONE INSTANCE. A token is minted by the server that will be asked to
+ * honour it, and an owner key authenticates as root at exactly one origin — so a lens pointed
+ * at a second instance may not read, and must never overwrite, the grant it holds for the
+ * first. The key therefore carries the instance whenever the lens is looking somewhere other
+ * than its birthplace (`manifold.identity@https://other.example`), and stays bare in the
+ * ordinary case where those are the same place.
+ *
+ * Bare is not a special case dressed up: the served instance is the one every deployment has,
+ * so its key is the one every reader — a human in devtools, a browser gate — already knows.
+ * `REGISTRY.md` §Device-local register carries both spellings under one prefixed row.
+ */
+function credentialKey(base: string): string {
+  return isForeignInstance() ? `${base}@${instanceOrigin()}` : base;
+}
+
+/**
+ * The one color scheme: principals pick from it, machine dots hash into it. It lives in the
+ * protocol now, because the server derives `MachineSummary.color` from the same palette and
+ * two ends agreeing on a list of colors makes it vocabulary rather than styling.
+ */
+export { IDENTITY_COLORS };
 
 /** Captures the one permitted URL-secret carrier before React renders, then cleans the URL. */
 export function captureOwnerKeyFromFragment(): void {
   const match = OWNER_FRAGMENT_PATTERN.exec(window.location.hash);
   const ownerKey = match?.[1];
   if (ownerKey === undefined) return;
-  window.localStorage.setItem(OWNER_KEY_STORAGE, ownerKey);
+  window.localStorage.setItem(credentialKey(OWNER_KEY_STORAGE), ownerKey);
   window.history.replaceState(
     window.history.state,
     "",
@@ -33,14 +46,15 @@ export function captureOwnerKeyFromFragment(): void {
 }
 
 function loadOwnerKey(): string | null {
-  const ownerKey = window.localStorage.getItem(OWNER_KEY_STORAGE);
+  const key = credentialKey(OWNER_KEY_STORAGE);
+  const ownerKey = window.localStorage.getItem(key);
   if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
-  if (ownerKey !== null) window.localStorage.removeItem(OWNER_KEY_STORAGE);
+  if (ownerKey !== null) window.localStorage.removeItem(key);
   return null;
 }
 
 function loadIdentity(): StoredIdentity | null {
-  const serialized = window.localStorage.getItem(IDENTITY_STORAGE);
+  const serialized = window.localStorage.getItem(credentialKey(IDENTITY_STORAGE));
   if (serialized === null) return null;
   try {
     const decoded: unknown = JSON.parse(serialized);
@@ -52,7 +66,7 @@ function loadIdentity(): StoredIdentity | null {
     }
     return { token, principal: principal.data };
   } catch {
-    window.localStorage.removeItem(IDENTITY_STORAGE);
+    window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
     return null;
   }
 }
@@ -75,14 +89,16 @@ export function IdentityGate({ children }: IdentityGateProps) {
   if (ownerKey === null) {
     return (
       <main className="gate-screen">
-        <section className="gate-card" aria-labelledby="owner-link-title">
-          <p className="eyebrow">manifold</p>
-          <h1 id="owner-link-title">Open the URL printed by the server</h1>
-          <p>
-            This browser has no owner key or identity token. Start manifold and open its full
-            pre-authenticated URL to continue.
-          </p>
-        </section>
+        <Cover className="gate-cover">
+          <section className="gate-card" aria-labelledby="owner-link-title">
+            <p className="eyebrow">manifold</p>
+            <h1 id="owner-link-title">Open the URL printed by the server</h1>
+            <p>
+              This browser has no owner key or identity token. Start manifold and open its full
+              pre-authenticated URL to continue.
+            </p>
+          </section>
+        </Cover>
       </main>
     );
   }
@@ -95,7 +111,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
     setError(null);
     try {
       const grant = await createPrincipal(ownerKey, { name: trimmedName, color });
-      window.localStorage.setItem(IDENTITY_STORAGE, JSON.stringify(grant));
+      window.localStorage.setItem(credentialKey(IDENTITY_STORAGE), JSON.stringify(grant));
       setIdentity(grant);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create your identity");
@@ -106,47 +122,58 @@ export function IdentityGate({ children }: IdentityGateProps) {
 
   return (
     <main className="gate-screen">
-      <dialog className="identity-dialog" open aria-labelledby="identity-title">
-        <form onSubmit={(event) => void submit(event)}>
-          <p className="eyebrow">first visit</p>
-          <h1 id="identity-title">Choose your identity</h1>
-          <label className="field-label" htmlFor="identity-name">
-            Name
-          </label>
-          <input
-            id="identity-name"
-            autoFocus
-            maxLength={64}
-            value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
-            placeholder="How should collaborators see you?"
-          />
-          <fieldset className="color-fieldset">
-            <legend>Color</legend>
-            <div className="color-grid">
-              {IDENTITY_COLORS.map((swatch) => (
-                <button
-                  key={swatch}
-                  className={swatch === color ? "color-swatch selected" : "color-swatch"}
-                  type="button"
-                  aria-label={`Use color ${swatch}`}
-                  aria-pressed={swatch === color}
-                  style={{ backgroundColor: swatch }}
-                  onClick={() => setColor(swatch)}
-                />
-              ))}
-            </div>
-          </fieldset>
-          {error === null ? null : <p className="form-error">{error}</p>}
-          <button
-            className="primary-button"
-            type="submit"
-            disabled={submitting || name.trim() === ""}
-          >
-            {submitting ? "Creating identity…" : "Enter manifold"}
-          </button>
-        </form>
-      </dialog>
+      <Cover className="gate-cover">
+        <dialog className="identity-dialog" open aria-labelledby="identity-title">
+          <form onSubmit={(event) => void submit(event)}>
+            <p className="eyebrow">first visit</p>
+            <h1 id="identity-title">Choose your identity</h1>
+            <label className="field-label" htmlFor="identity-name">
+              Name
+            </label>
+            <input
+              id="identity-name"
+              autoFocus
+              maxLength={64}
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+              placeholder="How should collaborators see you?"
+            />
+            <fieldset className="color-fieldset">
+              <legend>Color</legend>
+              <div className="color-grid">
+                {IDENTITY_COLORS.map((swatch) => (
+                  <button
+                    key={swatch}
+                    className={swatch === color ? "color-swatch selected" : "color-swatch"}
+                    type="button"
+                    aria-label={`Use color ${swatch}`}
+                    aria-pressed={swatch === color}
+                    style={{ backgroundColor: swatch }}
+                    onClick={() => setColor(swatch)}
+                  />
+                ))}
+              </div>
+            </fieldset>
+            {/*
+              Stays an inline form error rather than a notice, for two reasons that both
+              hold. Structurally: the gate renders BEFORE the workspace, so there is no
+              NoticeProvider above it — the notice layer is mounted inside the authenticated
+              application. Substantively: this is field-level validation feedback about the
+              submission the user is looking at, and it belongs beside that submit button,
+              not in a corner of a screen with nothing else on it.
+            */}
+            {error === null ? null : <p className="form-error">{error}</p>}
+            <button
+              className="primary-button"
+              data-testid="identity-enter"
+              type="submit"
+              disabled={submitting || name.trim() === ""}
+            >
+              {submitting ? "Creating identity…" : "Enter manifold"}
+            </button>
+          </form>
+        </dialog>
+      </Cover>
     </main>
   );
 }

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
-  createPad,
+  createContainer,
   enrollMachine,
   mintToken,
   startAgent,
@@ -19,12 +19,12 @@ test("raw bearer and machine tokens never appear in captured child output", asyn
   try {
     const server = await startServer({ env: { MANIFOLD_ANNOUNCE_KEY: "1" } });
     servers.push(server);
-    const pad = await createPad(server, "secret logging guard");
+    const container = await createContainer(server, "secret logging guard");
     const enrolled = await enrollMachine(server, "secret-logging-agent");
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Secret Holder", color: "#5e48c7" },
-      caps: ["pads:read"],
-      padId: pad.id,
+      caps: ["containers:read"],
+      containerId: container.id,
     });
 
     const agent = await startAgent({
@@ -33,7 +33,9 @@ test("raw bearer and machine tokens never appear in captured child output", asyn
       name: "secret-logging-agent",
     });
     agents.push(agent);
-    clients.push(await connect(server, { padId: pad.id, token: grant.token, reconnect: false }));
+    clients.push(
+      await connect(server, { containerId: container.id, token: grant.token, reconnect: false }),
+    );
 
     closeClients(clients);
     await stopProcesses([...servers, ...agents]);

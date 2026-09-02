@@ -1,27 +1,29 @@
 /**
  * manifold sync smoothness benchmark (local-only; production is never touched).
  *
- * Question it answers: what does the scene-flush cadence (SCENE_SEND_INTERVAL_MS,
- * default 80ms ≈ 12.5Hz) actually buy or cost? For each candidate cadence it builds a
- * web bundle with VITE_SCENE_SEND_MS injected, spawns a throwaway server, drives a
- * continuous 6s element drag in browser A with real pointer events, and measures:
+ * Question it answers: what does the ephemeral gesture cadence actually buy or cost?
+ * For each candidate cadence it builds the web client with VITE_GESTURE_SEND_MS injected,
+ * spawns a throwaway server, drives a continuous 6s terminal drag in browser A with real
+ * pointer events, and measures:
  *
  * - remote effective Hz: distinct position updates/s observed on browser B's canvas
- *   (polled through the debug seam), i.e. what a collaborator's eye actually sees;
+ *   (polled through the debug probe), i.e. what a collaborator's eye actually sees;
  * - inter-update gap p50/p95 on B (visual choppiness);
- * - wire cost: scene_applied frames/s and payload bytes/s at an SDK observer;
+ * - wire cost: gesture frames/s and JSON payload bytes/s at an SDK observer;
  * - input→remote latency p50/p95: the drag sweeps x monotonically on a known schedule,
  *   so each observed x maps back to its dispatch time (includes ~1-3ms CDP overhead).
  *
- * NOT measured: render CPU on B (needs a tracing session; out of scope here).
+ * NOT measured: render CPU on B (needs a tracing terminal; out of scope here).
  *
  * Usage:  bun scripts/bench-sync.ts [cadenceMs ...]     # default: 80 32 16
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
-import { Browser, sleep, until } from "./cdp.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const cadences = process.argv
@@ -63,7 +65,7 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
   try {
     const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
       cwd: join(repoRoot, "packages/web"),
-      env: { ...process.env, VITE_SCENE_SEND_MS: String(cadenceMs) },
+      env: { ...process.env, VITE_GESTURE_SEND_MS: String(cadenceMs) },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -92,13 +94,17 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       20_000,
       "bench server healthz",
     );
-    const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
-    const created = await fetch(`${origin}/api/pads`, {
+    const ownerKey = await ownerKeyOf(dataDir);
+    // `core.index.createContainer` replaced `POST /api/containers`: the door answers an ActionOutcome,
+    // so the created record arrives inside a validated envelope.
+    const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
       method: "POST",
       headers: { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" },
       body: JSON.stringify({ name: `bench-${String(cadenceMs)}ms` }),
     });
-    const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+    const outcome = ActionOutcomeSchema.parse(await created.json());
+    if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+    const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
     const debugPort = 9700 + Math.floor(Math.random() * 200);
     for (const [browser, offset, name] of [
@@ -110,59 +116,50 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
       await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
       if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
         await browser.typeInto("input", name);
-        await browser.clickText("Enter manifold");
+        await browser.clickTestId("identity-enter");
       }
-      await browser.goto(`${origin}/p/${padId}`);
+      await browser.goto(`${origin}/p/${containerId}`);
       await until(
         () => browser.evaluate<boolean>("window.__manifold !== undefined"),
         15_000,
-        `${name} seam`,
+        `${name} probe`,
       );
     }
 
     const sdk = new SessionClient({
       url: `${origin.replace(/^http/, "ws")}/ws/session`,
-      padId,
+      containerId,
       token: ownerKey,
       reconnect: false,
     });
     observer = sdk;
     await sdk.connect();
 
-    // A creates the dragged rectangle.
-    await browserA.evaluate(
-      "(() => { document.querySelector('[data-testid=toolbar-rectangle]')?.click(); })()",
-    );
-    await sleep(200);
-    await browserA.drag(
-      [
-        { x: 500, y: 400 },
-        { x: 640, y: 480 },
-      ],
-      30,
-    );
-    let rectId = "";
-    await until(
-      () => {
-        for (const el of sdk.scene.values()) {
-          if (el["type"] === "rectangle") {
-            rectId = el.id;
-            return true;
-          }
-        }
-        return false;
-      },
-      10_000,
-      "bench rectangle canonical",
-    );
-    const rect = { id: rectId };
+    // Seed one native reference node through the SDK, then drag it through the real
+    // renderer. The bench measures gesture throughput, so the portal's target need not
+    // resolve — only its geometry travels.
+    const nodeId = "bench-terminal";
+    sdk.transact((tx) => {
+      tx.create({
+        id: nodeId,
+        type: "portal",
+        containerId: "bench-container",
+        x: 500,
+        y: 400,
+        width: 480,
+        height: 320,
+        zIndex: 0,
+      });
+    });
+    await until(() => sdk.elements.has(nodeId), 10_000, "bench terminal canonical");
+    const node = { id: nodeId };
     await until(
       () =>
         browserB.evaluate<boolean>(
-          `window.__manifold.canvas().some((e) => e.id === ${JSON.stringify(rect.id)})`,
+          `window.__manifold.canvas().some((e) => e.id === ${JSON.stringify(node.id)})`,
         ),
       10_000,
-      "rectangle visible on B",
+      "terminal visible on B",
     );
 
     // Wire counters on the observer.
@@ -170,45 +167,46 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     let bytes = 0;
     let counting = false;
     const probe = process.env["BENCH_PROBE"] === "1";
-    sdk.on("scene_applied", (msg) => {
-      if (!counting) return;
+    sdk.on("gesture", (msg) => {
+      if (!counting || msg.kind !== "move" || msg.phase !== "active") return;
       frames += 1;
-      bytes += JSON.stringify(msg.elements).length;
+      const payloadBytes = JSON.stringify(msg).length;
+      bytes += payloadBytes;
       if (probe) {
-        const composition = msg.elements
-          .map((el) => `${el.id.slice(0, 6)}@v${String(el.version)}`)
-          .join(",");
         console.log(
-          `probe t=${performance.now().toFixed(0)} rev=${String(msg.rev)} by=${msg.by.slice(0, 6)} n=${String(msg.elements.length)} ${composition}`,
+          `probe t=${performance.now().toFixed(0)} by=${msg.connId.slice(0, 6)} bytes=${String(payloadBytes)}`,
         );
       }
     });
 
-    // B polls its own canvas for the rectangle's live position.
+    // B polls its own canvas for the terminal node's live position.
     const samples: { t: number; x: number }[] = [];
     let polling = true;
     const pollLoop = (async () => {
       while (polling) {
         const x = await browserB.evaluate<number | null>(
-          `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)});
+          `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(node.id)});
             return el ? el.x : null; })()`,
         );
         if (x !== null) samples.push({ t: performance.now(), x });
         await sleep(4);
       }
     })();
-
-    // A drags: grab the top edge, then sweep x monotonically right on a known schedule.
+    // A drags through the terminal's real titlebar handle, exercising the gesture stream.
     const edge = await browserA.evaluate<{ x: number; y: number } | null>(
-      `(() => { const el = window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)});
-        const vp = window.__manifold.viewport();
-        if (!el || !vp) return null;
-        return { x: (el.x + el.width / 2 + vp.scrollX) * vp.zoom + vp.offsetLeft,
-                 y: (el.y + vp.scrollY) * vp.zoom + vp.offsetTop }; })()`,
+      `(() => {
+        const node = document.querySelector(${JSON.stringify(
+          `.react-flow__node[data-id="${node.id}"]`,
+        )});
+        const titlebar = node?.querySelector(".terminal-titlebar");
+        if (!(titlebar instanceof HTMLElement)) return null;
+        const rect = titlebar.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`,
     );
-    if (edge === null) throw new Error("rectangle edge not resolvable on A");
+    if (edge === null) throw new Error("terminal titlebar drag handle not resolvable on A");
     const startXCanvas = await browserB.evaluate<number>(
-      `window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(rect.id)}).x`,
+      `window.__manifold.canvas().find((e) => e.id === ${JSON.stringify(node.id)}).x`,
     );
 
     const steps = Math.floor((DRAG_SECONDS * 1000) / STEP_MS);
@@ -293,9 +291,8 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     await browserA.close().catch(() => undefined);
     await browserB.close().catch(() => undefined);
     observer?.close();
-    server?.kill();
+    if (server !== null) await teardownServer(server, dataDir);
     rmSync(distDir, { recursive: true, force: true });
-    rmSync(dataDir, { recursive: true, force: true });
   }
 }
 

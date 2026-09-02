@@ -1,0 +1,1884 @@
+/*
+ * THE SHELL'S SKIN — the workspace frame, the sidebar rail, and the ROW VOCABULARY every
+ * contributed sidebar row is filled into. Painted by the floor workspace host
+ * (`workspace.tsx`) and by `@manifold-plugin/shell`'s two panels (`sidebar-panel.tsx`,
+ * `container-view-panel.tsx`).
+ *
+ * This file is the one asymmetry in the split, and the reason it stays floor CHANGED in the
+ * wave that moved those two panels into their plugin — then got STRONGER in the wave that
+ * hollowed the rail. It is no longer "the shell is not a package" — `core.shell` is one, and
+ * its components live in it. It is that the `sidebar` family is a vocabulary the FLOOR
+ * PUBLISHES for every contributed row to fill, and the list of plugins filling it is now most
+ * of the roster: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted` and
+ * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`; `.sidebar-new`
+ * is `core.canvas`, `core.compositions` and `core.index`, one creator each; `.sidebar-brand` is
+ * `core.brand`'s and `.sidebar-status` / `.sidebar-identity` are `core.shell`'s two remaining
+ * rows — all of which reach the rail through the projection registry exactly as a stranger's
+ * would. `.sidebar-opener` and `.sidebar-cluster` are the newest members and the clearest case
+ * for the rule: an opener row is worn by `core.keys` AND `core.plugins`, and a cluster wrapper
+ * is drawn by the rail around rows belonging to plugins that have never heard of each other
+ * (issue #91), so neither could live in any one tenant's package.
+ * Moving the family into `packages/plugins/shell` would make five plugins depend on a sixth
+ * plugin's stylesheet for their own appearance — the exact neutrality the row vocabulary exists
+ * to provide, inverted. So it belongs beside the `plugin-placeholder` and `notice` families for
+ * the same stated reason those are the floor's: the layer's skin is the layer owner's, and the
+ * layer owner here is the engine.
+ *
+ * It is registered as its OWN owner in the cssFamilies registry rather than folded back into
+ * the floor stylesheet, so what is shell chrome stays legible as shell chrome. Separate owner,
+ * same package: the check enforces the stylesheet, not the directory.
+ *
+ * The tile-tree's `workspace-split` / `workspace-pane` / `workspace-divider` skin is NOT here.
+ * Those three class names are declared in `packages/plugin/src/ui/tile-tree.tsx`
+ * (`WORKSPACE_TREE_CLASSES`), so they live with the component that draws them.
+ */
+
+/* The workspace IS a tile tree now (D2): one flex box holding the root split. */
+.workspace {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  background: #121417;
+}
+
+/* The sidebar is a size CONTAINER (`sidebar / inline-size`): the layout primitives'
+   clamp()ed gaps and this sheet's own @container queries read ITS width, so density
+   follows the rail instead of the window. */
+.sidebar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.55rem;
+  overflow: hidden;
+  container: sidebar / inline-size;
+  border-right: 1px solid #2e3238;
+  padding: 0.65rem;
+  color: #e9ecef;
+  background: #181a1f;
+  box-shadow: 0.25rem 0 1.2rem rgb(0 0 0 / 16%);
+}
+
+/*
+ * Collapsing is not a layout write: the stored ratios stay exactly as the operator dragged
+ * them, and the pane HOLDING the sidebar is pinned to the icon rail's width for as long as
+ * the collapse lasts. `:has()` is what lets the rail be presentation rather than a second,
+ * competing copy of the tree.
+ */
+.workspace.is-collapsed .workspace-pane:has(> .tile-content-host > .sidebar) {
+  flex: 0 0 3.25rem;
+}
+
+/*
+ * ── ARRANGE MODE (F8) ─────────────────────────────────────────────────────────────────
+ *
+ * The mode is one class on the workspace root, written from `vantage.arranging` — so what
+ * paints here is the same value every collaborator can read off presence, not a private
+ * flag. `core.arrange` owns every affordance the mode paints now (issue #89: the grip, the
+ * pill, the landing slot, the mode bar, the wireframe — `arrange` cssFamily,
+ * `packages/plugins/arrange/src/styles.css`); this file's only remaining stake is the frame
+ * getting out of the way of the pointer for the plugin's overlay to answer instead.
+ *
+ * CONTENT STOPS TAKING POINTER INPUT. Suppression sits on `.tile-content-host`, the one seat
+ * every pane's content rides in (`tile-tree.tsx`), because that is the single place that
+ * covers every renderer at once — a terminal, a canvas, a plugin panel nobody has written
+ * yet. Dividers are deliberately NOT suppressed: resizing IS arranging, and the seam already
+ * commits through the layout door this mode's own releases use.
+ *
+ * `core.shell`'s OWN section-arrange leg re-enables itself out of that blanket — the sidebar
+ * declares its own inner arrangement (#88) and renders its own row grips inside its own
+ * content host, so it is the one affordance still nested under `.tile-content-host` and the
+ * one exception this file still owns. `core.arrange`'s grips paint through the workspace
+ * overlay instead (a sibling of the tree, never a descendant), so the suppression never
+ * reaches them and they need no re-enable rule here.
+ */
+.workspace.is-arranging .tile-content-host {
+  position: relative;
+  pointer-events: none;
+}
+
+.workspace.is-arranging .sidebar-section-grip,
+.workspace.is-arranging .sidebar-split-grip {
+  pointer-events: auto;
+}
+
+/*
+ * ...AND THE MODE'S SUPPRESSION LIFTS FOR A DRAG (issue #104). The blanket above exists so
+ * the overlay owns the POINTER while armed; a palette drag is the one case where the content
+ * underneath must answer instead, because a composition takes new structure through its own
+ * door and a scoped panel takes it into its own rows. An element with `pointer-events: none`
+ * never receives a `dragover`, so without this carve-out the palette could reach nothing but
+ * the workspace's own tree. `.is-carrying` is on for exactly the length of one HTML5 drag
+ * (`workspace.tsx`), so the mode is inert again the instant the reader lets go.
+ */
+.workspace.is-arranging.is-carrying .tile-content-host {
+  pointer-events: auto;
+}
+
+/*
+ * A SPACER LEAF: inert first-class arrangeable emptiness (issue #89's Spacer tool). Painted
+ * by the floor host directly — a spacer ref carries no plugin to project — so its one rule
+ * lives beside the frame that draws it rather than in the arrange plugin's sheet, which owns
+ * only the CHROME arrange mode paints over the tree, not a tile kind the tree itself renders.
+ */
+.workspace-tile-spacer {
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * THE RAIL'S ONE NON-CONTRIBUTED CONTROL: the collapse toggle. Every other thing in the
+ * sidebar is a contributed row now, and this one cannot be — it changes how wide the rail is
+ * DRAWN, so a row that owned it would be a contribution deciding its own container's geometry,
+ * and disabling that plugin would strand a collapsed rail with no way back.
+ *
+ * FLOATED over the rail's top-right corner while the rail is open, which is where it has
+ * always sat: the brand line beside it is a contribution now, and two siblings in a flex row
+ * cannot be one plugin's row and one panel's control. Whatever row the reader has arranged
+ * into first place reserves its width (see `.sidebar-sections > :first-child` below), so the
+ * float never lands on somebody else's content.
+ */
+.sidebar-collapse {
+  position: absolute;
+  z-index: 22;
+  top: 0.65rem;
+  right: 0.65rem;
+  display: flex;
+}
+
+/* Collapsed there is no corner to spare: the control takes the top of the icon strip. */
+.workspace.is-collapsed .sidebar-collapse {
+  position: static;
+  justify-content: center;
+}
+
+.sidebar-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.65rem;
+  overflow: hidden;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.sidebar-brand-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.08rem;
+  line-height: 1.05;
+}
+
+.sidebar-version {
+  overflow: hidden;
+  max-width: min(10.5rem, 100%);
+  border: 0;
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.6rem;
+  line-height: 1.25;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The wordmark's declared overflow contract: truncate, never push the collapse control. */
+.sidebar-brand-copy > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-version:hover,
+.sidebar-version:focus-visible {
+  color: #bac8ff;
+}
+
+.sidebar-mark,
+.workspace-empty-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.6rem;
+  color: #dbe4ff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  background: linear-gradient(145deg, #364fc7, #5f3dc4);
+  box-shadow: 0 0.3rem 1rem rgb(54 79 199 / 28%);
+}
+
+.sidebar-icon-button,
+.sidebar-new,
+.sidebar-link,
+.sidebar-delete,
+.sidebar-create button {
+  border: 1px solid transparent;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-icon-button,
+.sidebar-delete {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  padding: 0;
+  color: #868e96;
+}
+
+.sidebar-icon-button:hover,
+.sidebar-delete:hover {
+  color: #f1f3f5;
+  background: #2b2e34;
+}
+
+/* Icons describe themselves (size, stroke, currentColor) — see `.mf-icon`. */
+
+/*
+ * A PLAIN ROW — the stack's other presentation, and the wrapper the panel puts around a row
+ * that draws itself end to end (a creator, the brand line, the status line, the identity
+ * footer). A grid rather than a block because several of those rows are a control PLUS what it
+ * opens: the folder creator's button and its form are one row, spaced by this gap.
+ *
+ * The three creators no longer share a two-column strip, and that is the decomposition rather
+ * than a re-style: they belong to three different plugins now, and a grid across owners is a
+ * layout one plugin's roster change can break. Full-width rows in one order also hold at every
+ * rail width the R9 sweep tries, which the strip only managed with a `@container` query.
+ */
+.sidebar-plain {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+}
+
+/*
+ * A ROW THAT DREW NOTHING TAKES NO SPACE. `core.shell.status` renders null with no container
+ * mounted and on a collapsed rail, and a plain row is entitled to: the seat stays in the
+ * arrangement, but the stack's gap must not open a phantom slot above the row below it. In
+ * arrange mode the row is never empty — it holds the grip — so the mode still shows the seat.
+ */
+.sidebar-plain:empty {
+  display: none;
+}
+
+.sidebar-new {
+  display: flex;
+  min-width: 0;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: 0.65rem;
+  border-color: #343a40;
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  color: #dee2e6;
+  font-size: 0.84rem;
+  font-weight: 650;
+  text-align: left;
+  background: #202329;
+  white-space: nowrap;
+}
+
+/* A creator label's declared contract: truncate; the title attribute still says it all. */
+.sidebar-new > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-new:hover {
+  border-color: #4c6ef5;
+  background: #252932;
+}
+
+.workspace.is-collapsed .sidebar {
+  padding-inline: 0.6rem;
+}
+
+.workspace.is-collapsed .sidebar-brand {
+  justify-content: center;
+}
+
+/* Collapsed, the collapse control is back in the flow, so the first row reserves nothing. */
+.workspace.is-collapsed .sidebar-sections > .sidebar-plain:first-child,
+.workspace.is-collapsed .sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
+  padding-right: 0;
+}
+
+.workspace.is-collapsed .sidebar-new {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar-create {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #343a40;
+  border-radius: 0.65rem;
+  padding: 0.55rem;
+  background: #202329;
+}
+
+.sidebar-create input {
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.sidebar-create > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.sidebar-create button {
+  border-radius: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  color: #adb5bd;
+  font-size: 0.72rem;
+}
+
+.sidebar-create button[type="submit"] {
+  color: #fff;
+  background: #4263eb;
+}
+
+.sidebar-create button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/*
+ * THE STACK, and by now it is the whole sidebar: every row the composition composed, in the
+ * one order, whatever its presentation — the brand line, the three creators, the bodies
+ * (Index, Machines, Plugins), the status line, the key-table door and the identity footer. The
+ * stack itself is a layout `Stack` (direction and gap live in the primitive); a `disclosure`
+ * row is the engine's one Disclosure over its one ScrollRegion, so the stack never scrolls — a
+ * section that outgrows its slot scrolls ITSELF — and a `plain` row draws itself end to end.
+ *
+ * While a row is held the stack makes space: the ORDER is the preview, so rows land in their
+ * projected slots and FLIP plays the difference (`@manifold/plugin/ui`'s `useFlipStack`, which
+ * is off entirely under `prefers-reduced-motion: reduce`). Nothing here animates: the transform
+ * is the motion primitive's, so there is no transition on a row to fight with it.
+ */
+.sidebar-sections {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+/*
+ * ROOM FOR THE COLLAPSE CONTROL, which floats over the rail's top-right corner. Keyed on
+ * `:first-child` rather than on a section id, because which row is up there is the READER'S
+ * arrangement: the brand line by default, anything at all once they have rearranged it.
+ */
+.sidebar-sections > .sidebar-plain:first-child {
+  padding-right: 2.1rem;
+}
+
+/* A split arranged into first place reserves the collapse control's width like any row. */
+.sidebar-sections > .sidebar-split:first-child {
+  padding-right: 2.1rem;
+}
+
+.sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
+  padding-right: 2.5rem;
+}
+
+.sidebar-section {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #30343b;
+  border-radius: 0.65rem;
+  background: #1d2025;
+}
+
+/* An OPEN section never shrinks past its header and a row: crushing a section to a
+   sliver helps nobody; past this floor its own ScrollRegion takes over. */
+.sidebar-section[data-state="open"] {
+  min-height: 4.4rem;
+}
+
+/* The container tree absorbs leftover height so a short stack stays top-aligned — but only
+   while open: a collapsed section must shrink to its header instead of holding its slot. */
+.sidebar-section--grow[data-state="open"] {
+  flex: 1 1 auto;
+}
+
+/*
+ * THE GRAB SURFACE — how a row is taken hold of inside the sidebar's own arrangement, worn by
+ * every row whatever its presentation.
+ *
+ * It exists only while the reader is standing INSIDE this panel's arrangement (the panel
+ * renders it from `vantage.arrangeScope`) and covers the WHOLE row, which does two jobs with
+ * one box: it says the row itself is the thing in hand, and it keeps the pointer off whatever
+ * is underneath — a disclosure's toggle, a creator's button — so a grab can never fire the
+ * affordance it is moving. It re-enables its own pointer events out of the mode's blanket
+ * suppression (see §ARRANGE MODE), the way every affordance the mode paints does.
+ *
+ * There is no z-order fight with the panel grip any more, and no z-order arbitration either:
+ * one scope is live at a time, so while these exist the panel's own grip does not.
+ *
+ * The positioning ancestor is the ROW, granted only while the mode is on, so nothing about the
+ * stack's stacking or containing blocks changes when nobody is arranging.
+ *
+ * IT DRAWS NOTHING. The grip is an empty box and its TINT is the whole affordance: the mode
+ * washes every grabbable row at once, so what can be moved is read off the stack in one look
+ * rather than hunted for one handle at a time — and since the grab surface IS the whole row,
+ * a corner glyph would have been pointing at a fraction of what is live. So there is no
+ * `display`, no alignment and no `color` here: nothing is laid out inside this box, and the
+ * rules that once centred a 14px icon in it went with the icon.
+ *
+ * On a plain row the grip is a real `<button>` (a plain row has no header button to carry the
+ * tab stop), so the rule resets border and background the way `core.arrange`'s panel-move
+ * grip does for the workspace leg's own grip.
+ *
+ * `min-height` is the grabbable FLOOR for a row that draws almost nothing (`core.shell.status`
+ * with no container mounted): a zero-height row would be a seat nobody can take. It sits on
+ * the grip, which is out of flow, rather than on the row — a floor on the row would reflow the
+ * stack the moment the arrangement opened.
+ */
+.workspace.is-arranging .sidebar-section,
+.workspace.is-arranging .sidebar-plain {
+  position: relative;
+}
+
+.sidebar-section-grip {
+  position: absolute;
+  z-index: 25;
+  inset: 0;
+  min-height: 1.7rem;
+  border: 0;
+  background: rgb(76 110 245 / 12%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sidebar-section-grip:hover,
+.sidebar-section-grip:focus-visible {
+  background: rgb(76 110 245 / 22%);
+}
+
+/* The row IN HAND. It keeps its place in the stack — the ORDER is the preview, so the
+   stack reflows under the pointer and there is no second floating copy to keep in step with
+   it. One derivation, which is also why a collaborator would see the same thing. */
+.sidebar-section--grabbed,
+.sidebar-plain--grabbed {
+  outline: 1px solid #4c6ef5;
+  outline-offset: -1px;
+  border-radius: 0.65rem;
+}
+
+.sidebar-section--grabbed > .sidebar-section-header > .sidebar-section-grip,
+.sidebar-plain--grabbed > .sidebar-section-grip {
+  background: rgb(76 110 245 / 30%);
+  cursor: grabbing;
+}
+
+/* The header IS the disclosure's toggle button (`.disclosure__header` resets the
+   button chrome); it never shrinks — the body under it does the giving. */
+.sidebar-section-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.15rem;
+  flex-shrink: 0;
+  padding: 0.4rem 0.5rem;
+  color: #adb5bd;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.sidebar-section-header:hover,
+.sidebar-section-header:focus-visible {
+  color: #f1f3f5;
+}
+
+.sidebar-section[data-state="open"] > .sidebar-section-header {
+  border-bottom: 1px solid #30343b;
+}
+
+.sidebar-section-chevron {
+  display: inline-grid;
+  flex: 0 0 auto;
+  margin-inline: 0 0.05rem;
+  place-items: center;
+  color: #868e96;
+  transition: transform 120ms ease;
+}
+
+.sidebar-section[data-state="open"] > .sidebar-section-header > .sidebar-section-chevron {
+  transform: rotate(90deg);
+}
+
+.sidebar-section-title {
+  overflow: hidden;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-section-count {
+  color: #868e96;
+  font-size: 0.64rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Padding and rhythm only: the flex column, the height absorption and the closed
+   state's hiding are the disclosure body's own (`.disclosure__body`). */
+.sidebar-section-body {
+  gap: 0.35rem;
+  padding: 0.3rem;
+}
+
+/* Each section scrolls itself: the region absorbs the body's height. */
+.sidebar-section-scroll {
+  flex: 1 1 auto;
+}
+
+.workspace.is-collapsed .sidebar-section {
+  border: 0;
+  background: transparent;
+}
+
+.workspace.is-collapsed .sidebar-section-header {
+  display: none;
+}
+
+.workspace.is-collapsed .sidebar-section-body {
+  padding: 0;
+}
+
+.sidebar-section-action {
+  width: 1.55rem;
+  min-width: 1.55rem;
+  height: 1.55rem;
+  min-height: 1.55rem;
+  border-color: transparent;
+  border-radius: var(--border-radius-md, 0.4rem);
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.8rem;
+}
+
+.sidebar-section-action:hover,
+.sidebar-section-action:focus-visible,
+.sidebar-section-action.selected {
+  color: #edf2ff;
+  background: #292d35;
+}
+
+/* The section's ScrollRegion owns scrolling now; the list only lays rows out and
+   grows to fill its section so the release-past-the-last-row target survives. */
+.sidebar-list {
+  display: grid;
+  align-content: start;
+  gap: 0.16rem;
+  min-height: 0;
+  flex: 1;
+}
+
+.sidebar-tree {
+  position: relative;
+}
+
+.sidebar-row {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 2.25rem;
+  align-items: center;
+  border-radius: 0.55rem;
+}
+
+.sidebar-row:hover {
+  background: #22252b;
+}
+
+.sidebar-row.is-active {
+  background: #292d35;
+}
+
+.sidebar-link {
+  display: flex;
+  min-width: 0;
+  min-height: 2.25rem;
+  flex: 1;
+  align-items: center;
+  gap: 0.6rem;
+  border-radius: 0.55rem;
+  padding: 0.42rem 0.55rem;
+  overflow: hidden;
+  color: #ced4da;
+  font-size: 0.82rem;
+  text-align: left;
+}
+
+.workspace.is-collapsed .sidebar-link {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+.sidebar-collapsed-presence {
+  position: absolute;
+  z-index: 2;
+  top: 0.05rem;
+  right: -0.2rem;
+  display: grid;
+  place-items: center;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  border: 1px solid #5c7cfa;
+  border-radius: 999px;
+  padding: 0 0.18rem;
+  color: #edf2ff;
+  background: #364fc7;
+  box-shadow: 0 0.15rem 0.4rem rgb(0 0 0 / 35%);
+  font-size: 0.56rem;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.sidebar-collapsed-presence:hover,
+.sidebar-collapsed-presence:focus-visible {
+  border-color: #bac8ff;
+  background: #4263eb;
+}
+
+.collapsed-presence-popover {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  gap: 0.25rem;
+  min-width: 10rem;
+  max-width: min(18rem, calc(100vw - 5rem));
+  border: 1px solid #3b4048;
+  border-radius: 0.65rem;
+  padding: 0.4rem;
+  color: #e9ecef;
+  background: #202329;
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 42%);
+  pointer-events: none;
+}
+
+.collapsed-presence-popover-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.3rem;
+}
+
+.collapsed-presence-popover-row > span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.collapsed-presence-popover-row strong {
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsed-presence-popover-row small {
+  color: #868e96;
+  font-size: 0.62rem;
+  text-transform: capitalize;
+}
+
+.sidebar-container-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-terminal-count {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  padding: 0 0.28rem;
+  color: #adb5bd;
+  background: #343a40;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-row.is-active .sidebar-link {
+  color: #fff;
+  font-weight: 650;
+}
+
+/* The index mark is the object's own species icon; see `.sidebar-item-mark` below. */
+
+.sidebar-actions {
+  position: relative;
+  width: 0;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  transition: width 150ms ease;
+}
+
+.sidebar-delete {
+  position: absolute;
+  top: 50%;
+  right: 0.2rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  opacity: 0;
+  transform: translate(0.35rem, -50%);
+  transition:
+    opacity 120ms ease,
+    transform 150ms ease;
+}
+
+.sidebar-row:hover .sidebar-actions,
+.sidebar-row:focus-within .sidebar-actions {
+  width: 1.95rem;
+}
+
+.sidebar-row:hover .sidebar-delete,
+.sidebar-row:focus-within .sidebar-delete {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
+.sidebar-delete:hover {
+  color: #f1f3f5;
+  background: #2b2e34;
+}
+
+/* Prose, so it WRAPS — the one sidebar text contract that is not an ellipsis. */
+.sidebar-muted {
+  margin: 0.65rem 0.55rem;
+  color: #868e96;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-folder-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+.sidebar-folder-toggle {
+  display: flex;
+  min-width: 0;
+  min-height: 2.25rem;
+  flex: 1;
+  align-items: center;
+  gap: 0.45rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  color: #ced4da;
+  background: transparent;
+  text-align: left;
+}
+
+.sidebar-folder-toggle > strong {
+  overflow: hidden;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-folder-chevron {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+.sidebar-folder-add {
+  position: absolute;
+  top: 50%;
+  right: 1.95rem;
+  width: 1.55rem;
+  min-width: 1.55rem;
+  height: 1.55rem;
+  min-height: 1.55rem;
+  transform: translate(0.25rem, -50%);
+  border-color: transparent;
+  padding: 0;
+  opacity: 0;
+  color: #868e96;
+  background: transparent;
+  transition:
+    opacity 120ms ease,
+    transform 150ms ease;
+}
+
+.sidebar-folder-row:hover .sidebar-actions,
+.sidebar-folder-row:focus-within .sidebar-actions {
+  width: 3.65rem;
+}
+
+.sidebar-folder-row:hover .sidebar-folder-add,
+.sidebar-folder-row:focus-within .sidebar-folder-add {
+  transform: translate(0, -50%);
+  opacity: 1;
+}
+
+.sidebar-folder-add:hover,
+.sidebar-folder-add:focus-visible {
+  color: #edf2ff;
+  background: #292d35;
+}
+
+.sidebar-folder-create.is-nested {
+  margin: 0.2rem 0 0.35rem 1.3rem;
+}
+
+.sidebar-terminal {
+  margin-left: 1.35rem;
+  border-left: 1px solid #343a40;
+  padding-left: 0.3rem;
+}
+
+button.sidebar-terminal.is-summary {
+  display: grid;
+  width: calc(100% - 1.35rem);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.8rem;
+  border: 0;
+  color: #adb5bd;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.sidebar-terminal.is-summary > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.sidebar-terminal.is-summary > small {
+  color: #868e96;
+}
+
+.sidebar-terminal.is-exited {
+  opacity: 0.55;
+}
+
+.sidebar-identity {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.6rem;
+  overflow: hidden;
+  border-top: 1px solid #2e3238;
+  padding: 0.65rem 0.45rem 0;
+  color: #adb5bd;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* The principal's name truncates; the title attribute carries the whole of it. */
+.sidebar-identity > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace.is-collapsed .sidebar-identity {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+/*
+  A ROW THAT OPENS SOMETHING: quiet chrome at the foot of the rail, worn by every seat whose
+  row is nothing but the door onto a modal. `core.keys` wears it and so does `core.plugins`,
+  which is exactly why it is here and generic instead of one plugin's `.sidebar-bindings`
+  copied into a second package (issue #91): two clustered rows that must look identical cannot
+  be two stylesheets agreeing. What each modal looks like INSIDE is its own plugin's sheet.
+*/
+.sidebar-opener {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.9rem;
+  /*
+    SHRINKABLE, because two of these share one rail line. A cluster splits its width evenly
+    (`.sidebar-cluster > *` below), and a flex item's automatic minimum is its CONTENT — so an
+    opener with a glyph and a word wider than half a narrow rail painted straight past its
+    wrapper instead of narrowing. The glyph is the fixed part, the word is the elastic one.
+  */
+  min-width: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0 0.35rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.sidebar-opener > svg {
+  flex: none;
+}
+
+/* The label is what gives: it ellipses, and the `title` carries the whole word regardless. */
+.sidebar-opener > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-opener:hover,
+.sidebar-opener:focus-visible {
+  color: #edf2ff;
+  background: #292d35;
+}
+
+.workspace.is-collapsed .sidebar-opener {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+/*
+  A DECLARED CLUSTER, painted: the rows that named the same word, side by side, as one unit of
+  the stack (`SectionDef.cluster`; `clusteredSections`). The rail draws the box and knows
+  nothing about who is in it — the members are ordinary rows, each still naming its own owner in
+  the DOM — and the members share the width evenly, so a two-row cluster reads as one line
+  rather than as a row with an afterthought beside it.
+
+  Collapsed, the rail is an icon strip one glyph wide, so a cluster stacks instead: side by side
+  is a statement about a rail that has room for it.
+*/
+.sidebar-cluster {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.sidebar-cluster > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.workspace.is-collapsed .sidebar-cluster {
+  flex-direction: column;
+}
+
+/*
+ * A NESTED RAIL SPLIT (issue #104): the wrapper the rail draws around rows a reader arranged
+ * together by dropping a stack into the stack. It lives here for exactly the reason
+ * `.sidebar-cluster` does — it wraps rows belonging to plugins that have never heard of each
+ * other, so it cannot live in any one tenant's package — and it is a DIFFERENT concept from a
+ * cluster: a cluster's membership is a manifest word, a split's is this principal's own
+ * arrangement, stored on their workspace tree.
+ *
+ * ITS GAP IS THE STACK'S GAP, and that is load-bearing rather than cosmetic. The rail resolves
+ * a drop by projecting itself into a tile tree and asking the shared seam/zone kernel, and it
+ * feeds that kernel ONE divider thickness read off `.sidebar-sections`. A split spaced
+ * differently would put its seam bands somewhere other than where a reader sees the gap.
+ *
+ * AN OCCUPIED STACK'S FLOOR IS ITS MEMBERS' (issue #143), which is why `min-height` is spelled
+ * out here instead of zeroed with the `min-width` beside it. The rail is a column of rows and
+ * every one of them holds its content against pressure: a plain row keeps the automatic
+ * minimum a flex item is born with, an open section declares a floor of its own. A stack that
+ * zeroed its own `min-height` was the one row in the rail that could be squeezed BELOW what it
+ * holds — and its members paint outside it when it is, because a stack does not clip. So the
+ * rail assigned the stack no height, laid the next row where the stack was not, and the reader
+ * saw the row below painted straight over the stack's occupant; the same zero left the stack
+ * with no band for `railPoint`'s descent to land in, so nothing could be dragged into it
+ * either. One number, both halves of what the operator reported.
+ *
+ * The pressure has to go somewhere and now it goes where it goes for every other row: the
+ * height absorber gives first, and past that the rail's own `overflow: hidden` clips its tail.
+ * A clipped row is a row you scroll the rail to reach; an overlapped one is a bug.
+ *
+ * EMPTY IS THE EXCEPTION AND STAYS ONE, because it is not a floor at all: a vacant stack is
+ * `flex: 0 0 0` (see below), it never shrinks, and `auto` measures the nothing it holds as
+ * nothing — so the shape a fresh palette drop leaves behind still costs the rail no room.
+ */
+.sidebar-split {
+  display: flex;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: auto;
+}
+
+.sidebar-split[data-dir="row"] {
+  flex-direction: row;
+}
+
+.sidebar-split[data-dir="column"] {
+  flex-direction: column;
+}
+
+.sidebar-split > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/*
+ * A MEMBER'S SHARE DEPENDS ON WHICH WAY THE SPLIT RUNS, and the two answers are not
+ * symmetric (issue #124).
+ *
+ * ACROSS the rail, `flex: 1 1 0` is the whole point: two rows abreast divide the width evenly
+ * whatever either of them contains, and their height still comes from their content because
+ * that is the cross axis.
+ *
+ * DOWN the rail it collapses them to nothing. A split's own height is its content's — nothing
+ * in the stack gives it one — so a column split sizes to its members while `flex-basis: 0`
+ * tells its members to size to the split: the circle resolves at zero, and `min-height: 0`
+ * (which every member needs, so a tall row can shrink under pressure) removes the automatic
+ * minimum that would otherwise have saved it. A row dragged into a Stack column therefore
+ * arrived, committed, and painted zero pixels tall — present in the arrangement, invisible in
+ * the rail, and impossible to aim a second row at. Down the rail a member takes the height it
+ * asks for, which is what every other row in the stack does.
+ */
+.sidebar-split[data-dir="row"] > * {
+  flex: 1 1 0;
+}
+
+.sidebar-split[data-dir="column"] > * {
+  flex: 0 1 auto;
+}
+
+/* An icon rail has no width to sit rows side by side in; the arrangement survives, folded. */
+.workspace.is-collapsed .sidebar-split[data-dir="row"] {
+  flex-direction: column;
+}
+
+/* Folded, a row split runs DOWN the rail, so its members take the other rule with it. */
+.workspace.is-collapsed .sidebar-split[data-dir="row"] > * {
+  flex: 0 1 auto;
+}
+
+/*
+ * AN EMPTY SPLIT: what the palette's drop leaves behind until something is dragged into it.
+ * Spaceless at rest for the same reason a vacant pane is — a shape you have not filled must
+ * not push the rail around — and a visible band while the mode is armed or something is in
+ * the air, because otherwise there would be nothing to aim the next drag at.
+ */
+.sidebar-split[data-vacant="true"] {
+  flex: 0 0 0;
+  overflow: hidden;
+}
+
+.workspace.is-arranging .sidebar-split[data-vacant="true"],
+.workspace.is-carrying .sidebar-split[data-vacant="true"] {
+  flex: 0 0 2.2rem;
+  overflow: visible;
+}
+
+/*
+ * A SPLIT'S OWN GRIP (issue #148): the band along its TOP edge, worn while the rail is the
+ * arrangement in scope. Its members' grips cover the rest of the box, so the strip is the one
+ * place a reader can take hold of the GROUP rather than a row in it — the edge the dashed
+ * outline below runs along, where the eye already reads "this stack" and where a title strip
+ * sits on every window a reader has ever dragged. Out of flow, like every affordance the mode
+ * adds: arming the mode reflows nothing (R4 measures it), so the band overlaps the first
+ * sliver of its members instead of pushing them aside — the top sliver, which is a row's own
+ * padding rather than its glyphs (a LEFT band sat squarely on the brand row's avatar) — and
+ * sits above their grips (`z-index`) for exactly that sliver.
+ *
+ * It goes ONE place — the palette, where structure comes from and goes back to — so the stack
+ * never reflows under it; `--grabbed` marks the split in hand, `--selected` the one Delete
+ * would remove, in the selection orange `core.arrange`'s grips already wear.
+ */
+.workspace.is-arranging .sidebar-split {
+  position: relative;
+  border-radius: 0.65rem;
+  outline: 1px dashed rgb(116 143 252 / 45%);
+  outline-offset: 2px;
+}
+
+.sidebar-split-grip {
+  position: absolute;
+  z-index: 26;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 0.5rem;
+  border: 0;
+  border-radius: 0.65rem 0.65rem 0 0;
+  padding: 0;
+  /* Solid enough to read as a handle at a glance: the rows under it wear a 12% wash. */
+  background: rgb(76 110 245 / 55%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sidebar-split-grip:hover,
+.sidebar-split-grip:focus-visible {
+  background: rgb(76 110 245 / 75%);
+}
+
+.sidebar-split--grabbed {
+  outline-color: #4c6ef5;
+  outline-style: solid;
+}
+
+.sidebar-split--grabbed > .sidebar-split-grip {
+  background: #4c6ef5;
+  cursor: grabbing;
+}
+
+.workspace.is-arranging .sidebar-split--selected {
+  outline: 2px solid #f76707;
+}
+
+.sidebar-split--selected > .sidebar-split-grip {
+  background: rgb(247 103 7 / 70%);
+}
+
+.sidebar-split-seat {
+  display: none;
+}
+
+.workspace.is-arranging .sidebar-split-seat,
+.workspace.is-carrying .sidebar-split-seat {
+  display: block;
+  flex: 1;
+  border: 1px dashed var(--accent-soft, currentColor);
+  border-radius: var(--radius-sm, 0.25rem);
+  opacity: 0.5;
+}
+
+.web-changelog-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(100vh - 2rem));
+  overflow: hidden;
+  border: 1px solid #3b4149;
+  border-radius: 0.9rem;
+  padding: 0;
+  color: #e9ecef;
+  background: #1d2025;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.web-changelog-dialog::backdrop {
+  background: rgb(7 9 12 / 72%);
+  backdrop-filter: blur(0.2rem);
+}
+
+.web-changelog-card {
+  display: grid;
+  max-height: min(44rem, calc(100vh - 2rem));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.web-changelog-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #343a40;
+  padding: 1.25rem 1.35rem 1rem;
+}
+
+.web-changelog-card > header span {
+  color: #748ffc;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.web-changelog-card h2 {
+  margin: 0.15rem 0 0.35rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.025em;
+}
+
+.web-changelog-card code {
+  color: #ced4da;
+  font-size: 0.7rem;
+}
+
+.web-changelog-card > header button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.web-changelog-card > header button:hover,
+.web-changelog-card > header button:focus-visible {
+  border-color: #495057;
+  color: #f1f3f5;
+  background: #2b3036;
+}
+
+.web-changelog-releases {
+  overflow-y: auto;
+  padding: 0.25rem 1.35rem 1.35rem;
+}
+
+.web-changelog-releases article {
+  padding-top: 1.1rem;
+}
+
+.web-changelog-releases article > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.web-changelog-releases h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.web-changelog-releases time {
+  color: #adb5bd;
+  font-size: 0.72rem;
+}
+
+.web-changelog-releases ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.75rem 0 0;
+  padding-left: 1.15rem;
+  color: #ced4da;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.web-changelog-releases a {
+  color: #91a7ff;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.web-changelog-releases a:hover,
+.web-changelog-releases a:focus-visible {
+  color: #bac8ff;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.sidebar-action-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  display: grid;
+  min-width: 8rem;
+  padding: 0.3rem;
+  border: 1px solid #343a40;
+  border-radius: 0.55rem;
+  background: #202329;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 35%);
+}
+
+.sidebar-action-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: flex-start;
+  border-color: transparent;
+  border-radius: var(--border-radius-md, 0.4rem);
+  padding-inline: 0.55rem;
+  color: var(--text-primary-color, #dee2e6);
+  background: transparent;
+  text-align: left;
+}
+
+.sidebar-action-menu button:hover,
+.sidebar-action-menu button:focus-visible {
+  color: #f1f3f5;
+  background: #2b2e34;
+}
+
+.sidebar-action-menu button.is-danger {
+  color: #ffa8a8;
+}
+
+.sidebar-action-menu button.is-danger:hover,
+.sidebar-action-menu button.is-danger:focus-visible {
+  color: #ffc9c9;
+  background: rgb(250 82 82 / 12%);
+}
+
+.sidebar-presence {
+  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.sidebar-presence .presence-avatar {
+  width: 1.2rem;
+  height: 1.2rem;
+  border-color: #292d35;
+  font-size: 0.55rem;
+}
+
+/* The vars stay: a section body reads the shell's tones through them. The box
+   itself is a layout `Stack` now, so arrangement lives in the primitive. */
+.sidebar-section-content {
+  --default-border-color: #343a40;
+  --island-bg-color: #202329;
+  --text-primary-color: #e9ecef;
+  --text-secondary-color: #868e96;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.sidebar-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.25rem 0.45rem;
+  color: #868e96;
+}
+
+.sidebar-status > span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.sidebar-status strong {
+  overflow: hidden;
+  color: #ced4da;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-status small {
+  overflow: hidden;
+  color: #868e96;
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-machine-create {
+  width: 1.45rem;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  min-height: 1.45rem;
+  border-color: transparent;
+  border-radius: 0.4rem;
+  padding: 0;
+  color: #bac8ff;
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.sidebar-machine-create:hover,
+.sidebar-machine-create:focus-visible {
+  border-color: #495057;
+  color: #edf2ff;
+  background: #292d35;
+}
+
+.sidebar-row.is-editing {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.32rem 0.35rem;
+}
+
+.sidebar-rename-input {
+  min-width: 0;
+  height: 1.8rem;
+  border-color: var(--default-border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+  padding: 0.25rem 0.4rem;
+  color: var(--text-primary-color, #f1f3f5);
+  background: var(--island-bg-color, #202329);
+  font-size: 0.78rem;
+}
+
+.sidebar-inline-action {
+  width: 1.8rem;
+  min-width: 1.8rem;
+  height: 1.8rem;
+  min-height: 1.8rem;
+  border-color: transparent;
+  border-radius: var(--border-radius-md, 0.4rem);
+  padding: 0;
+  color: var(--text-secondary-color, #adb5bd);
+  background: transparent;
+}
+
+.sidebar-inline-action:hover,
+.sidebar-inline-action:focus-visible {
+  color: var(--text-primary-color, #f1f3f5);
+  background: #2b2e34;
+}
+
+.sidebar-inline-action.is-primary {
+  color: #bac8ff;
+}
+
+.sidebar-inline-action:disabled {
+  opacity: 0.4;
+}
+
+/* A panel fills the content host the tree seats it in, whatever pane that host is sitting in. */
+.workspace-canvas {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: #121417;
+}
+
+/* Centering and rhythm are the layout Cover+Stack's; this is skin and position. */
+.workspace-empty {
+  position: absolute;
+  inset: 0;
+  padding: 2rem;
+  text-align: center;
+  background: radial-gradient(circle at center, rgb(54 79 199 / 10%), transparent 28rem), #121417;
+}
+
+.workspace-empty-mark {
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 0.85rem;
+  font-size: 1.05rem;
+}
+
+.workspace-empty h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.workspace-empty p {
+  margin: 0;
+  color: #868e96;
+}
+
+.container-name-menu-item {
+  max-width: 16rem;
+  overflow: hidden;
+  color: #adb5bd;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.container-load-error {
+  position: absolute;
+  z-index: 25;
+  bottom: 2.8rem;
+  left: 50%;
+  max-width: min(34rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  border: 1px solid #c92a2a;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.8rem;
+  color: #ffc9c9;
+  background: rgb(73 15 19 / 92%);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 700px) {
+  /*
+   * Narrow viewports pin the sidebar's pane to the rail and let the panel float over the
+   * container view, rather than letting the stored ratio eat the screen. The tree is untouched:
+   * this is presentation, so a phone and a monitor read the same stored layout.
+   */
+  .workspace .workspace-pane:has(> .tile-content-host > .sidebar) {
+    flex: 0 0 3.25rem;
+  }
+
+  .sidebar {
+    position: absolute;
+    z-index: 20;
+    inset: 0 auto 0 0;
+    width: 15rem;
+    transition: width 160ms ease;
+  }
+
+  .workspace.is-collapsed .sidebar {
+    width: 3.25rem;
+  }
+
+  .status-meta {
+    display: none;
+  }
+}
+
+.status-dot {
+  width: 0.48rem;
+  height: 0.48rem;
+  flex: 0 0 auto;
+  position: relative;
+  border-radius: 50%;
+  color: #868e96;
+  background: currentColor;
+}
+
+.status-dot.open {
+  color: #40c057;
+}
+
+.status-dot.connecting,
+.status-dot.reconnecting {
+  color: #f59f00;
+}
+
+.status-dot.open::after,
+.status-dot.connecting::after,
+.status-dot.reconnecting::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  pointer-events: none;
+  animation: status-dot-ping 2.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.status-dot.connecting::after,
+.status-dot.reconnecting::after {
+  animation-duration: 1.5s;
+}
+
+.status-dot.closed {
+  color: #fa5252;
+}
+
+@keyframes status-dot-ping {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.45;
+  }
+  72%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot::after {
+    animation: none;
+  }
+}
+
+.sidebar-section-empty {
+  padding: 0.45rem 0.2rem;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-machine-row,
+.sidebar-terminal-row {
+  min-width: 0;
+  border-radius: var(--border-radius-md);
+  padding: 0.4rem 0.45rem;
+}
+
+/* Machine rows share the container-row rhythm: same leading inset, height, and label size. */
+.sidebar-machine-row {
+  display: grid;
+  min-height: 2.1rem;
+  /* Six slots: pip, mark, name, state, and the two trailing controls core.machines fills —
+     "new terminal" and, since ADR 0019 §3, "withdraw this machine's credential". Both are
+     conditional, and an `auto` track with no child in it collapses to nothing. */
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, auto) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  padding-inline: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.sidebar-machine-row:hover,
+.sidebar-terminal-row:hover {
+  background: rgb(134 142 150 / 8%);
+}
+
+.sidebar-machine-row.is-offline,
+.sidebar-terminal-row.is-exited {
+  opacity: 0.55;
+}
+
+.sidebar-machine-row strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-machine-row > span:not(.machine-dot) {
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.7rem;
+}
+
+.sidebar-terminal-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sidebar-terminal-label {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.sidebar-terminal-label strong,
+.sidebar-terminal-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-terminal-label strong {
+  font-weight: 600;
+}
+
+.sidebar-terminal-label span {
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.66rem;
+}
+
+.sidebar-terminal-group {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.sidebar-copy-list {
+  display: grid;
+  gap: 0.12rem;
+  margin: 0 0.35rem 0.25rem 1rem;
+  padding-left: 0.55rem;
+  border-left: 1px solid var(--default-border-color);
+}
+
+.sidebar-copy-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.25rem 0.1rem;
+  border-radius: var(--border-radius-md);
+}
+
+.sidebar-copy-row:hover {
+  background: rgb(134 142 150 / 8%);
+}
+
+.sidebar-copy-branch {
+  width: 0.35rem;
+  height: 1px;
+  background: var(--default-border-color);
+}
+
+.sidebar-copy-label {
+  overflow: hidden;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-copies-toggle {
+  display: inline-flex;
+  width: auto;
+  gap: 0.3rem;
+  padding-inline: 0.4rem;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-copy-chevron {
+  width: 0.3rem;
+  height: 0.3rem;
+  margin-bottom: 0.12rem;
+  transform: rotate(45deg);
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.sidebar-copies-toggle[aria-expanded="true"] .sidebar-copy-chevron {
+  margin-bottom: -0.08rem;
+  transform: rotate(-135deg);
+}
+
+.sidebar-terminal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sidebar-action {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  min-width: 1.65rem;
+  height: 1.55rem;
+  min-height: 1.55rem;
+  padding: 0;
+  border-radius: var(--border-radius-md);
+}
+
+.sidebar-action.is-reveal {
+  color: #a5d8ff;
+}
+
+.sidebar-action.is-end-terminal {
+  color: #ffd8a8;
+}
+
+.sidebar-action.is-remove {
+  color: #ffa8a8;
+}
+
+.sidebar-action:hover {
+  border-color: currentColor;
+  background: rgb(255 255 255 / 6%);
+}
+
+/* The terminal pool's SEAT in the sidebar. The rows it holds are the terminals plugin's
+   own (packages/plugins/terminals/src/styles.css); this is the grid they land in. */
+.sidebar-terminal-pool {
+  display: grid;
+  align-content: start;
+}
+
+/* The row's mark sits outside the label, so it carries the row's leading inset itself. */
+.sidebar-row > .terminal-state {
+  flex: 0 0 auto;
+  align-self: center;
+  padding-inline-start: 0.55rem;
+  line-height: 1;
+}
+
+.sidebar-row--terminal-target {
+  outline: 1px solid #748ffc;
+  outline-offset: -1px;
+  background: rgb(92 124 250 / 12%);
+}
+
+/* A bubble: alive only while someone is inside it. */
+.sidebar-row--transient .sidebar-container-name {
+  font-style: italic;
+  color: #adb5bd;
+}
+
+.sidebar-terminal-pool.is-drop-target {
+  outline: 1px dashed rgb(116 192 252 / 50%);
+  outline-offset: -2px;
+}
+
+.canvas-skeleton {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 1.75rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.75rem;
+  background: #121417;
+}
+
+/* The bar and the body ride the floor's `skeleton-pulse`, exactly as the index's own
+   skeleton rows do (packages/plugins/index/src/styles.css): one loading language for a
+   cold deep-link and a cold index alike. The two blocks must stay in step. */
+.canvas-skeleton-bar,
+.canvas-skeleton-body {
+  border-radius: 0.35rem;
+  background: #1d2127;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.canvas-skeleton-bar {
+  width: 40%;
+  max-width: 16rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-skeleton-bar,
+  .canvas-skeleton-body {
+    animation: none;
+  }
+}
+
+/* One mark per index row, whatever the row is: terminal, canvas or composition. */
+.sidebar-item-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+.sidebar-item-mark .mf-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.sidebar-row.is-active .sidebar-item-mark {
+  color: #91a7ff;
+}
+
+/* Status still reads through the mark: `is-running` tints the terminal's own icon
+   green instead of adding a second dot beside it. */
+.sidebar-item-mark.terminal-state.is-running {
+  color: #51cf66;
+}
+
+/* The machine row keeps its colour pip (status + identity colour) and adds the
+   species mark beside it; both are quiet enough to share the row's leading inset. */
+.sidebar-machine-mark {
+  display: inline-grid;
+  place-items: center;
+  color: #868e96;
+}
+
+.sidebar-terminal-row > .terminal-state {
+  display: inline-grid;
+  place-items: center;
+}

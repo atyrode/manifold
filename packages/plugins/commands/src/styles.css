@@ -1,0 +1,170 @@
+/*
+  `core.commands`' own skin: the command surface, its search line, its grouped rows.
+
+  It is this package's stylesheet rather than a block in the floor's shell sheet for the reason
+  `core.keys`' is — a skin that cannot leave with the plugin it dresses is a plugin that was
+  never really extracted (A1, REGISTRY.md §cssFamilies) — and every rule here is anchored on a
+  `commands-*` class for a second reason: `cmdk` marks its own parts with ATTRIBUTES
+  (`[cmdk-item]`, `[cmdk-group-heading]`), which own no family and would otherwise fall to the
+  floor's `*` row. Scoping each one under this surface keeps the library's internals styled by
+  the package that chose the library.
+
+  The measurements are the binding editor's, deliberately: same card, same borders, same muted
+  greys, same accent. A second modal that looked like a different product would be the defect
+  the rail's shared row vocabulary exists to prevent. The KEYCAP is not copied — it is the
+  stdlib's one keycap (`@manifold/plugin/ui`).
+*/
+
+.commands-dialog {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: min(30rem, calc(100vh - 8rem));
+  margin-block-start: 12vh;
+  margin-block-end: auto;
+  overflow: hidden;
+  border: 1px solid #3b4149;
+  border-radius: 0.9rem;
+  padding: 0;
+  color: #e9ecef;
+  background: #1d2025;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.commands-dialog::backdrop {
+  background: rgb(7 9 12 / 72%);
+  backdrop-filter: blur(0.2rem);
+}
+
+.commands-card {
+  display: grid;
+  max-height: min(30rem, calc(100vh - 8rem));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.commands-search {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border-bottom: 1px solid #2b3036;
+  padding: 0.85rem 1rem;
+}
+
+/*
+  The focus ring belongs to the LINE, not to the box inside it. The input is chromeless by
+  design — it is the card's own first line — so the platform's ring around a borderless field
+  reads as a stray rectangle; the accent under the line is the same one every focused control
+  in this product wears.
+*/
+.commands-search:focus-within {
+  border-bottom-color: #4c6ef5;
+}
+
+.commands-search [cmdk-input] {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  padding: 0;
+  color: #f1f3f5;
+  background: none;
+  font: inherit;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.commands-search [cmdk-input]::placeholder {
+  color: #6c757d;
+}
+
+.commands-body {
+  padding: 0.4rem 0.55rem 0.55rem;
+}
+
+.commands-card [cmdk-group-heading] {
+  padding: 0.55rem 0.45rem 0.3rem;
+  color: #748ffc;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.commands-card [cmdk-empty] {
+  padding: 1.4rem 0.45rem;
+  color: #868e96;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.commands-card [cmdk-item] {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 0.45rem;
+  padding: 0.32rem 0.45rem;
+  cursor: pointer;
+}
+
+/* The highlighted row, wherever the highlight came from — arrow key or pointer. */
+.commands-card [cmdk-item][aria-selected="true"] {
+  border-color: #4c6ef5;
+  background: #232a3a;
+}
+
+/*
+  A DOOR THIS CALLER CANNOT OPEN is here and dimmed, never absent: the row still names the
+  door and the small line beside it still says what it would cost.
+*/
+.commands-card [cmdk-item][data-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.commands-title {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.05rem;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.commands-title > small {
+  overflow: hidden;
+  color: #868e96;
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commands-card [cmdk-item][data-commands-here="true"] .commands-title > small {
+  color: #8ab4f8;
+}
+
+/* What Enter does here — shown on the highlighted row only, the way a menu hints. */
+.commands-verb {
+  flex: 0 0 auto;
+  color: #adb5bd;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  visibility: hidden;
+}
+
+.commands-card [cmdk-item][aria-selected="true"]:not([data-disabled="true"]) .commands-verb {
+  visibility: visible;
+}
+
+.commands-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid #2b3036;
+  padding: 0.6rem 1rem 0.7rem;
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.commands-foot > span:last-child {
+  flex: 0 0 auto;
+}

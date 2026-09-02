@@ -16,7 +16,7 @@ export interface ServerConfig {
   localMachineName: string;
   /** Opt-in (`MANIFOLD_ANNOUNCE_KEY=1`): embed `#key=` in the boot announce. Off by default so the owner key never enters log streams. */
   announceKey: boolean;
-  /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) surfaced on `/healthz`; undefined on ad-hoc runs. */
+  /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) exposed by `/healthz`; undefined on ad-hoc runs. */
   build: string | undefined;
 }
 

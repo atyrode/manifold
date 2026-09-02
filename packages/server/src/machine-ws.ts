@@ -1,7 +1,7 @@
 import {
   AGENT_MESSAGE_TYPES,
   AgentMessageSchema,
-  MACHINE_PING_INTERVAL_MS,
+  DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -13,7 +13,7 @@ import {
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
 import type { RoomTimers } from "./room.ts";
-import type { RawSocket } from "./session-peer.ts";
+import type { RawSocket } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
 import type { MachineChannel, TerminalBroker } from "./terminal-broker.ts";
 
@@ -99,8 +99,8 @@ export class MachineGateway {
     private readonly serverEpoch: string,
     private readonly runtime: RuntimeDeps,
   ) {
-    this.removeRevocationListener = auth.onRevoked((principalId, padId) => {
-      this.revokePrincipal(principalId, padId);
+    this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
+      this.revokePrincipal(principalId, containerId);
     });
   }
   private pruneExpiredSupersessionDamp(now: number): void {
@@ -169,8 +169,11 @@ export class MachineGateway {
       return;
     }
     if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
-      // Long-lived agents survive server deploys; reject only wire-incompatible ones,
-      // and say so out loud — a silent 4409 lockout is a diagnosed outage (2026-08-25).
+      // Long-lived agents survive server deploys, so the compat set is the whole point: it
+      // admits every wire version this server can still speak — v16 and v17, since the event
+      // plane is session-side and left the machine frames byte-identical — and refuses
+      // everything below the v16 reset right here. Say so out loud — a silent 4409 lockout is
+      // a diagnosed outage (2026-08-25).
       this.logger.warn("machine_version_rejected", {
         agentProtocolVersion: message.protocolVersion,
         serverProtocolVersion: PROTOCOL_VERSION,
@@ -244,7 +247,7 @@ export class MachineGateway {
       this.logger.info("machine_superseded", { machineId: authenticated.id });
       older.close(4001, "superseded");
     }
-    this.broker.reconcileMachineHello(authenticated.id, message.sessions);
+    this.broker.reconcileMachineHello(authenticated.id, message.terminals);
     this.schedulePing(connection);
   }
 
@@ -265,7 +268,7 @@ export class MachineGateway {
         return;
       }
       this.schedulePing(connection);
-    }, MACHINE_PING_INTERVAL_MS);
+    }, DIAL_PING_INTERVAL_MS);
   }
 
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
@@ -274,10 +277,10 @@ export class MachineGateway {
         channel.close(4002, "duplicate hello");
         return;
       case "created":
-        this.broker.onCreated(channel.machineId, message.sessionId);
+        this.broker.onCreated(channel.machineId, message.terminalId);
         return;
       case "create_error":
-        this.broker.onCreateError(channel.machineId, message.sessionId);
+        this.broker.onCreateError(channel.machineId, message.terminalId);
         return;
       case "output":
         this.broker.onOutput(channel.machineId, message);
@@ -286,7 +289,7 @@ export class MachineGateway {
         this.broker.onSnapshot(channel.machineId, message);
         return;
       case "exited":
-        this.broker.onExited(channel.machineId, message.sessionId, message.exitCode);
+        this.broker.onExited(channel.machineId, message.terminalId, message.exitCode);
         return;
       case "pong":
         return;
@@ -314,8 +317,8 @@ export class MachineGateway {
   }
 
   /** Fences a machine socket whose token principal was durably revoked. */
-  revokePrincipal(principalId: string, padId: string | null = null): void {
-    if (padId !== null) return;
+  revokePrincipal(principalId: string, containerId: string | null = null): void {
+    if (containerId !== null) return;
     for (const [id, connection] of [...this.connections]) {
       const channel = connection.channel;
       if (channel?.tokenPrincipalId !== principalId) continue;

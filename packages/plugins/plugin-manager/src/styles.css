@@ -1,0 +1,499 @@
+/*
+ * THE PLUGIN MANAGER'S SKIN — the ledger's dialog: its tabs, its search and filter, its
+ * categories, and one row per assembled plugin with its toggle, its dependencies and the lock
+ * an essential plugin wears.
+ *
+ * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
+ * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
+ * §Lexicon names this file as the owner of the families below, and any of them painted from
+ * another stylesheet is gate RED.
+ */
+
+/* Same failure prose as the index section's (packages/plugins/index/src/styles.css).
+   Prose WRAPS — that is its declared overflow contract. */
+.plugin-manager-error {
+  margin: 0.35rem 0.25rem;
+  color: #ffa8a8;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+/* The list box is a layout `Stack` (arrangement lives in the primitive); the class
+   remains the section's root hook for the gate contract and the row family. */
+.plugin-manager {
+  min-width: 0;
+}
+
+/* A row is now TWO lines: the ledger line a reader acts on, and the dependency sentence
+   under it. A grid rather than a wrapping flex, because the second line must never ride up
+   beside the toggle when the dialog is narrow. */
+.plugin-manager-row {
+  display: grid;
+  gap: 0.15rem;
+  border-radius: 0.35rem;
+  padding: 0.28rem 0.35rem;
+}
+
+.plugin-manager-row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.plugin-manager-row:hover {
+  background: #22252b;
+}
+
+.plugin-manager-row.is-disabled .plugin-manager-label {
+  opacity: 0.55;
+}
+
+.plugin-manager-label {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.05rem;
+}
+
+.plugin-manager-label > strong {
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-manager-label > small {
+  overflow: hidden;
+  color: #868e96;
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-manager-toggle {
+  flex: 0 0 auto;
+  border: 1px solid #343a40;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 0.66rem;
+}
+
+.plugin-manager-toggle[aria-checked="true"] {
+  border-color: #4263eb;
+  color: #edf2ff;
+  background: rgb(66 99 235 / 22%);
+}
+
+.plugin-manager-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plugin-manager-lock {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #868e96;
+}
+
+/* The manifest's `purges` declaration, read BEFORE the button is pressed (ADR 0013 §1). */
+.plugin-manager-purges {
+  overflow: hidden;
+  color: #c98b8b;
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Destructive and two-press: muted until armed, unmistakable once it is. */
+.plugin-manager-purge {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #343a40;
+  border-radius: 999px;
+  padding: 0.1rem 0.4rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.66rem;
+}
+
+.plugin-manager-purge:hover {
+  border-color: #c92a2a;
+  color: #ffa8a8;
+}
+
+.plugin-manager-purge.is-confirming {
+  border-color: #c92a2a;
+  color: #fff5f5;
+  background: rgb(201 42 42 / 30%);
+}
+
+.plugin-manager-purge:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The removal record: exhaustive, zeros included, and it outlives the row it describes. */
+.plugin-manager-removed {
+  margin: 0.35rem 0.25rem;
+  color: #a5d8a5;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * THE LEDGER'S DIALOG — the door at the rail's foot opens a screen, so this stylesheet now
+ * dresses two things: the rows above, and the modal they live in.
+ *
+ * The opener itself is deliberately absent from this file. It wears the shell's own
+ * `.sidebar-opener` vocabulary (packages/web/src/shell.css), which is what makes it identical
+ * to the key table's door beside it in the same cluster instead of identical-by-agreement
+ * between two stylesheets — and a plugin may not paint the `sidebar` family regardless
+ * (REGISTRY.md §cssFamilies, S13).
+ */
+.plugin-manager-dialog {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: min(40rem, calc(100vh - 2rem));
+  overflow: hidden;
+  border: 1px solid #3b4149;
+  border-radius: 0.9rem;
+  padding: 0;
+  color: #e9ecef;
+  background: #1d2025;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.plugin-manager-dialog::backdrop {
+  background: rgb(7 9 12 / 72%);
+  backdrop-filter: blur(0.2rem);
+}
+
+/* Header and tabs hold their height; the body is the only part that gives and scrolls. */
+.plugin-manager-card {
+  display: grid;
+  max-height: min(40rem, calc(100vh - 2rem));
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.plugin-manager-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem 1.35rem 0.7rem;
+}
+
+.plugin-manager-card > header span {
+  color: #748ffc;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-manager-card h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+  letter-spacing: -0.025em;
+}
+
+.plugin-manager-card > header button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  color: #adb5bd;
+  background: #22262c;
+  cursor: pointer;
+}
+
+.plugin-manager-card > header button:hover,
+.plugin-manager-card > header button:focus-visible {
+  border-color: #495057;
+  color: #f1f3f5;
+  background: #2b3036;
+}
+
+/* Two tabs on a rule: the underline is the selected state, so nothing moves when it changes. */
+.plugin-manager-tabs {
+  display: flex;
+  gap: 0.35rem;
+  border-bottom: 1px solid #2b3036;
+  padding: 0 1.35rem;
+}
+
+.plugin-manager-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.4rem 0.15rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.plugin-manager-tab:hover,
+.plugin-manager-tab:focus-visible {
+  color: #dee2e6;
+}
+
+.plugin-manager-tab[aria-selected="true"] {
+  border-bottom-color: #4c6ef5;
+  color: #edf2ff;
+}
+
+.plugin-manager-body {
+  padding: 0.9rem 1.35rem 1.35rem;
+}
+
+/* Search and filter are one band: they narrow the same list, so they read as one control. */
+.plugin-manager-controls {
+  padding-bottom: 0.35rem;
+}
+
+.plugin-manager-search {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 1.9rem;
+  border: 1px solid #343a40;
+  border-radius: 0.45rem;
+  padding: 0 0.55rem;
+  color: #e9ecef;
+  background: #16181c;
+  font-size: 0.78rem;
+}
+
+.plugin-manager-search:focus-visible {
+  border-color: #4c6ef5;
+  outline: none;
+}
+
+.plugin-manager-filters {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+}
+
+.plugin-manager-filter {
+  border: 1px solid #343a40;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  color: #adb5bd;
+  background: transparent;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.plugin-manager-filter:hover {
+  border-color: #495057;
+  color: #edf2ff;
+}
+
+/* `aria-pressed` IS the state: the chip is drawn from the attribute a reader's assistive
+   technology reads, so the two can never disagree about which filter is on. */
+.plugin-manager-filter[aria-pressed="true"] {
+  border-color: #4263eb;
+  color: #edf2ff;
+  background: rgb(66 99 235 / 22%);
+}
+
+.plugin-manager-category {
+  display: grid;
+  gap: 0.1rem;
+  padding-top: 0.5rem;
+}
+
+/* The heading carries its own count, because "Core seats 6" answers a question the rows
+   underneath would only answer by being counted. */
+.plugin-manager-category-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.2rem;
+  padding-left: 0.35rem;
+  color: #868e96;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-manager-category-count {
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  color: #adb5bd;
+  background: #22262c;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* Dependency sentences render only when they have members (#105): absence means independence. */
+.plugin-manager-deps {
+  display: grid;
+  gap: 0.02rem;
+  margin: 0;
+  padding-left: 0.35rem;
+  color: #6f7680;
+  font-size: 0.62rem;
+}
+
+.plugin-manager-dep {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A named dependency is a JUMP to its own row, so it reads as a link, not prose. */
+.plugin-manager-dep-link {
+  display: inline;
+  border: 0;
+  padding: 0;
+  color: #8ea4e8;
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.plugin-manager-dep-link:hover,
+.plugin-manager-dep-link:focus-visible {
+  color: #b6c6f5;
+}
+
+/* The row a dependency link just landed on; retires itself with the jump state. */
+.plugin-manager-row.is-jump-target {
+  background: rgb(76 110 245 / 16%);
+  transition: background 0.5s ease;
+}
+
+/* The named deferral. Prose, so it WRAPS, and quiet enough that it never reads as an error. */
+.plugin-manager-browse {
+  padding-top: 0.4rem;
+  color: #adb5bd;
+  font-size: 0.8rem;
+}
+
+.plugin-manager-browse p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-browse code {
+  border-radius: 0.25rem;
+  padding: 0 0.2rem;
+  color: #dee2e6;
+  background: #22262c;
+  font-size: 0.74rem;
+}
+
+.plugin-manager-browse-title {
+  margin: 0;
+  color: #e9ecef;
+  font-size: 0.95rem;
+  letter-spacing: -0.015em;
+}
+
+.plugin-manager-browse-meanwhile {
+  border-left: 2px solid #343a40;
+  padding-left: 0.6rem;
+  color: #868e96;
+}
+
+/*
+  THE SETTINGS PANE (#133). One gear per row opens it; the pane is generic — a control per
+  DECLARED setting, or one sentence naming the absence — so nothing here is keyed to any
+  particular plugin, and a stranger's declarations paint exactly as core's do.
+
+  It sits INSIDE the row, under the dependency block, so it reads as part of the row it belongs
+  to rather than as a second list beside it.
+*/
+.plugin-manager-settings-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0.2rem 0.32rem;
+  color: #868e96;
+  background: none;
+  cursor: pointer;
+}
+
+.plugin-manager-settings-open:hover,
+.plugin-manager-settings-open.is-open {
+  border-color: #495057;
+  color: #dee2e6;
+}
+
+.plugin-manager-settings,
+.plugin-manager-settings-empty {
+  margin: 0.3rem 0 0;
+  border-top: 1px solid #2b3036;
+  padding-top: 0.4rem;
+}
+
+.plugin-manager-settings-empty {
+  color: #868e96;
+  font-size: 0.78rem;
+}
+
+.plugin-manager-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.plugin-manager-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plugin-manager-setting-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.plugin-manager-setting-label strong {
+  color: #dee2e6;
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+.plugin-manager-setting-moved {
+  color: #868e96;
+  font-size: 0.7rem;
+}
+
+.plugin-manager-setting-toggle {
+  flex: none;
+  border: 1px solid #343a40;
+  border-radius: 0.3rem;
+  padding: 0.12rem 0.5rem;
+  min-width: 2.6rem;
+  color: #adb5bd;
+  background: #1c2126;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.plugin-manager-setting-toggle[aria-checked="true"] {
+  border-color: #2f6f4f;
+  color: #b2f2bb;
+  background: #1b2b22;
+}
+
+.plugin-manager-setting-toggle:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}

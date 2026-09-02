@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The SHELL's own assets, and every one of them is relative on purpose: a lens is served by
+      some origin and may be POINTED at another instance (AXIOMS §The portable lens), so the
+      bundle, its icon and its web app manifest belong to whoever served them, while the
+      instance the app talks to is resolved at runtime (`@manifold/plugin/hooks`
+      `instanceOrigin`). Nothing here names an instance, which is what makes one build
+      installable from any of them.
+    -->
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/app.webmanifest" />
+    <meta name="theme-color" content="#101216" />
     <title>manifold</title>
   </head>
   <body>

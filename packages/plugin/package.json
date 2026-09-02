@@ -1,0 +1,28 @@
+{
+  "name": "@manifold/plugin",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./hooks": "./src/hooks.ts",
+    "./ui": "./src/ui/index.ts"
+  },
+  "dependencies": {
+    "@manifold/protocol": "workspace:*",
+    "@manifold/scene": "workspace:*",
+    "@manifold/sdk": "workspace:*",
+    "@radix-ui/react-collapsible": "1.1.20",
+    "@radix-ui/react-popover": "1.1.20",
+    "@radix-ui/react-scroll-area": "1.2.18",
+    "lucide-react": "1.37.0",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  }
+}

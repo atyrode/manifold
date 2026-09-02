@@ -1,8 +1,8 @@
 /**
  * manifold terminal-selection regression gate.
  *
- * Guards the xterm pointer-coordinate boundary inside Excalidraw's scaled embeddable
- * container: with any ancestor CSS transform (canvas zoom ≠ 1), xterm's mouse→cell
+ * Guards the xterm pointer-coordinate boundary inside a scaled canvas node:
+ * with any ancestor CSS transform (canvas zoom ≠ 1), xterm's mouse→cell
  * math in `getCoords` divides post-transform `getBoundingClientRect()` offsets by
  * unscaled cell dimensions, so painted selection drifts downward proportionally to
  * distance from the terminal origin ("the more down I go, the greater the offset").
@@ -15,23 +15,19 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Browser, sleep, until } from "./cdp.ts";
+import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
+import { resolveWebDist } from "./gate-dist.ts";
+import { Browser } from "./cdp.ts";
+import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
-const distDir = join(mkdtempSync(join(tmpdir(), "manifold-sel-")), "dist");
+const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-sel-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-sel-data-"));
 const port = 39000 + Math.floor(Math.random() * 2000);
 const origin = `http://127.0.0.1:${String(port)}`;
-
-const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
-  cwd: join(repoRoot, "packages", "web"),
-  stdout: "ignore",
-  stderr: "inherit",
-});
-if (!build.success) throw new Error("web build failed");
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   cwd: repoRoot,
@@ -63,15 +59,17 @@ try {
     20_000,
     "local server healthz",
   );
-  const ownerKey = (await Bun.file(join(dataDir, "owner.key")).text()).trim();
+  const ownerKey = await ownerKeyOf(dataDir);
   const httpHeaders = { authorization: `Bearer ${ownerKey}`, "content-type": "application/json" };
 
-  const created = await fetch(`${origin}/api/pads`, {
+  const created = await fetch(`${origin}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify({ name: "terminal-selection-gate" }),
   });
-  const padId = ((await created.json()) as { pad: { id: string } }).pad.id;
+  const outcome = ActionOutcomeSchema.parse(await created.json());
+  if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
+  const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
   browser = new Browser();
   await browser.launch(9340);
@@ -79,18 +77,18 @@ try {
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "sel-gate");
-    await browser.clickText("Enter manifold");
+    await browser.clickTestId("identity-enter");
   }
-  await browser.goto(`${origin}/p/${padId}`);
+  await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () => browser!.evaluate<boolean>("window.__manifold !== undefined"),
     20_000,
-    "debug seam installed",
+    "debug probe installed",
   );
 
   // Create a terminal directly from an online machine row in the sidebar.
   await browser.evaluate(
-    "document.querySelector('[data-testid=machines-section] > summary').click()",
+    "document.querySelector('[data-testid=machines-section] button[aria-expanded]').click()",
   );
   await until(
     () =>
@@ -108,7 +106,7 @@ try {
   );
   // Activate the embed (click-to-focus model), then focus xterm itself.
   await browser.evaluate(`(() => {
-    const r = document.querySelector('.manifold-terminal').getBoundingClientRect();
+    const r = document.querySelector('.terminal-frame').getBoundingClientRect();
     const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const o = { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 };
     el.dispatchEvent(new PointerEvent('pointerdown', o));
@@ -175,14 +173,26 @@ try {
   // Baseline at zoom 1: must always pass.
   for (const rowIndex of [2, 12, 24]) await assertRow(`zoom 1 selects the dragged row`, rowIndex);
 
-  // Zoom the canvas to ~1.2 via Excalidraw's own zoom control.
+  // Zoom through the canvas's real pinch interaction: trackpad pinches arrive as
+  // ctrl+wheel (modifiers bit 2), which is the only wheel gesture that zooms now —
+  // plain two-finger scroll pans (Excalidraw convention).
+  const zoomPoint = await browser.evaluate<{ readonly x: number; readonly y: number }>(
+    `(() => {
+      const rect = document.querySelector('.canvas').getBoundingClientRect();
+      return { x: rect.right - 80, y: rect.bottom - 80 };
+    })()`,
+  );
   for (let i = 0; i < 10; i++) {
     const z = await browser.evaluate<number>("window.__manifold.viewport().zoom");
     if (z >= 1.15 && z <= 1.3) break;
-    await browser.evaluate(
-      `(() => { const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('aria-label') || '').includes(${z > 1.3 ? "'Zoom out'" : "'Zoom in'"})); b && b.click(); })()`,
-    );
-    await sleep(350);
+    await browser.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...zoomPoint,
+      modifiers: 2,
+      deltaX: 0,
+      deltaY: z > 1.3 ? 80 : -80,
+    });
+    await sleep(200);
   }
   const zoomNow = await browser.evaluate<number>("window.__manifold.viewport().zoom");
   if (zoomNow < 1.1 || zoomNow > 1.35)
@@ -209,128 +219,25 @@ try {
   for (const rowIndex of [2, 8, 14, 20])
     await assertRow(`zoomed canvas selects the dragged row`, rowIndex);
 
-  // Restore baseline sanity after zooming back out.
+  // Restore baseline sanity after zooming back out through the same real input path.
   for (let i = 0; i < 12; i++) {
     const z = await browser.evaluate<number>("window.__manifold.viewport().zoom");
     if (Math.abs(z - 1) < 0.06) break;
-    await browser.evaluate(
-      `(() => { const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('aria-label') || '').includes(${z > 1 ? "'Zoom out'" : "'Zoom in'"})); b && b.click(); })()`,
-    );
-    await sleep(350);
+    await browser.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...zoomPoint,
+      deltaX: 0,
+      deltaY: z > 1 ? 80 : -80,
+    });
+    await sleep(200);
   }
   await assertRow("zoom restored to 1 selects the dragged row", 12);
-
-  // ---- fork-gate regressions (docs/decisions/0005: re-derived per-element gates) ----
-
-  // Excalidraw binds keydown on its container div (no handleKeyboardGlobally),
-  // so keys must be focused + dispatched there, not on document.body.
-  const pressKey = (key: string): Promise<unknown> =>
-    browser!.evaluate(`(() => {
-      const target = document.querySelector('.excalidraw-container') ?? document.body;
-      if (target instanceof HTMLElement) target.focus();
-      for (const type of ["keydown", "keyup"])
-        target.dispatchEvent(new KeyboardEvent(type, { key: ${JSON.stringify(key)}, bubbles: true, cancelable: true }));
-    })()`);
-  const check = (name: string, ok: boolean, detail: string): void => {
-    console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
-    if (!ok) failures.push(`${name}: ${detail}`);
-  };
-
-  // 1. Hover hint: deactivate the embed, hover the terminal center, and assert the
-  //    "Click to interact" pill never renders — the fork skips it for
-  //    fullInteractionTarget elements (on stock it would appear now that the CSS
-  //    override is gone).
-  await pressKey("Escape");
-  await sleep(300);
-  await browser.evaluate(`(() => {
-    const r = document.querySelector('.manifold-terminal').getBoundingClientRect();
-    const cx = r.x + r.width / 2;
-    const cy = r.y + r.height / 2;
-    const el = document.elementFromPoint(cx, cy);
-    const o = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
-    el.dispatchEvent(new PointerEvent('pointermove', o));
-    el.dispatchEvent(new MouseEvent('mouseover', o));
-  })()`);
-  await sleep(400);
-  check(
-    "hint suppressed",
-    await browser.evaluate<boolean>(
-      "document.querySelector('.excalidraw__embeddable-hint') === null",
-    ),
-    "no .excalidraw__embeddable-hint while hovering a fullInteractionTarget terminal",
-  );
-
-  // 2. Style panel gated per-element: box-select the terminal (drag from empty
-  //    canvas above-left to below-right of its frame), prove the selection took
-  //    (an arrow nudge moves the only live element — readable via the debug seam),
-  //    then assert the panel is absent for the terminals-only selection.
-  const frame = await browser.evaluate<{ x: number; y: number; w: number; h: number }>(
-    "(() => { const r = document.querySelector('.manifold-terminal').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()",
-  );
-  await browser.drag(
-    [
-      { x: frame.x - 40, y: frame.y - 40 },
-      { x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 },
-      { x: frame.x + frame.w + 40, y: frame.y + frame.h + 40 },
-    ],
-    40,
-  );
-  await sleep(400);
-  const liveX = (): Promise<number> =>
-    browser!.evaluate<number>("window.__manifold.canvas().filter(e => !e.isDeleted)[0].x");
-  const xBefore = await liveX();
-  await pressKey("ArrowRight");
-  await sleep(250);
-  const xAfter = await liveX();
-  check(
-    "box-select took",
-    xAfter !== xBefore,
-    `arrow nudge moved the selected terminal (x ${String(xBefore)} -> ${String(xAfter)})`,
-  );
-  await pressKey("ArrowLeft");
-  await sleep(250);
-  check(
-    "panel gated per-element",
-    await browser.evaluate<boolean>("document.querySelector('.selected-shape-actions') === null"),
-    "no .selected-shape-actions while only showShapeActions:false terminals are selected",
-  );
-
-  // 3. Panel still exists for real shapes — proves the gate is per-element, not
-  //    global. Draw a rectangle on empty canvas below the terminal, assert the
-  //    panel renders for it, then delete it so it never reaches other assertions.
-  await pressKey("Escape");
-  await sleep(200);
-  const usedToolbar = await browser.evaluate<boolean>(`(() => {
-    const b = document.querySelector('[data-testid="toolbar-rectangle"]');
-    if (b instanceof HTMLElement) { b.click(); return true; }
-    for (const type of ["keydown", "keyup"])
-      document.body.dispatchEvent(new KeyboardEvent(type, { key: "r", bubbles: true, cancelable: true }));
-    return false;
-  })()`);
-  await sleep(300);
-  await browser.drag(
-    [
-      { x: frame.x, y: frame.y + frame.h + 50 },
-      { x: frame.x + 60, y: frame.y + frame.h + 90 },
-      { x: frame.x + 120, y: frame.y + frame.h + 130 },
-    ],
-    40,
-  );
-  await sleep(400);
-  check(
-    "panel exists for shapes",
-    await browser.evaluate<boolean>("document.querySelector('.selected-shape-actions') !== null"),
-    `style panel renders for a drawn rectangle (tool via ${usedToolbar ? "toolbar" : "keyboard 'r'"})`,
-  );
-  await pressKey("Delete");
-  await sleep(250);
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
   await browser?.close();
-  server.kill();
-  rmSync(distDir, { recursive: true, force: true });
-  rmSync(dataDir, { recursive: true, force: true });
+  await teardownServer(server, dataDir);
+  cleanupDist();
 }
 
 console.log(

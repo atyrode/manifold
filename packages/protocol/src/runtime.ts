@@ -5,7 +5,7 @@
  * seam — deterministic tests are a repo invariant (AGENTS.md), not a convenience.
  */
 export interface RuntimeDeps {
-  /** Mints ids for pads, principals, sessions, machines, tokens. */
+  /** Mints ids for containers, principals, terminals, machines, tokens. */
   newId(): string;
   /** Milliseconds since epoch. */
   now(): number;

@@ -1,19 +1,35 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { z } from "zod";
 import {
-  MAX_SESSION_FRAME_BYTES,
+  DIAL_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
+  ROOT_TILE_ID,
+  type ManifoldRef,
   type SceneElement,
-  type ServerMessage,
+  type ServerMessageBody,
+  type TileRef,
 } from "@manifold/protocol";
-import { SessionClient, type SceneUpdateRejection } from "@manifold/sdk";
+import {
+  LOCAL_ORIGIN,
+  SERVER_PLACE_ORIGIN,
+  Y,
+  createSceneDoc,
+  decodeUpdate,
+  encodeUpdate,
+  initCompositionLayout,
+  readElements,
+  readTileLayout,
+  writeElement,
+  writeTileLeaf,
+} from "@manifold/scene";
+import { SessionClient } from "@manifold/sdk";
+import { z } from "zod";
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 /**
- * Minimal in-memory WebSocket double implementing exactly the surface SessionClient
+ * Minimal in-memory WebSocket double implementing exactly the ref SessionClient
  * uses. Lets unit tests drive the full state machine without a server process.
  */
 class FakeSocket {
@@ -46,57 +62,114 @@ class FakeSocket {
     this.onopen?.();
   }
 
+  /**
+   * Tests that are not about routing drive one room, so an untagged frame is stamped with
+   * this socket's channel: v12 made routing mandatory on the wire, not interesting here.
+   */
+  channel = "c1";
+
   receive(frame: unknown): void {
-    const data = typeof frame === "string" ? frame : JSON.stringify(frame);
+    const tagged =
+      typeof frame === "object" &&
+      frame !== null &&
+      !("ch" in frame) &&
+      Reflect.get(frame, "type") !== "ping"
+        ? { ch: this.channel, ...frame }
+        : frame;
+    const data = typeof tagged === "string" ? tagged : JSON.stringify(tagged);
     this.onmessage?.({ data } as MessageEvent);
   }
 }
 
 /** Boundary-validated views of frames the fake socket captured. */
 const SentFrameSchema = z.looseObject({ type: z.string() });
-const SceneUpdateFrameSchema = z.looseObject({
-  type: z.literal("scene_update"),
-  updateId: z.string(),
-  epoch: z.string(),
-  baseRev: z.number(),
-  elements: z.array(z.looseObject({ id: z.string() })),
+const DocUpdateFrameSchema = z.looseObject({
+  type: z.literal("doc_update"),
+  update: z.string(),
 });
 
 function sentTypes(socket: FakeSocket): string[] {
   return socket.sent.map((f) => SentFrameSchema.parse(JSON.parse(f)).type);
 }
 
-type SceneUpdateFrame = z.infer<typeof SceneUpdateFrameSchema>;
+/** Every frame of one type the socket carried, parsed — the wire, as the server would read it. */
+function framesOfType(socket: FakeSocket, type: string): Record<string, unknown>[] {
+  return socket.sent
+    .map((raw) => SentFrameSchema.parse(JSON.parse(raw)))
+    .filter((frame) => frame.type === type);
+}
 
-function sceneUpdateFrames(socket: FakeSocket): SceneUpdateFrame[] {
-  const updates: SceneUpdateFrame[] = [];
+type DocUpdateFrame = z.infer<typeof DocUpdateFrameSchema>;
+
+function docUpdateFrames(socket: FakeSocket): DocUpdateFrame[] {
+  const updates: DocUpdateFrame[] = [];
   for (const frame of socket.sent) {
-    const parsed = SceneUpdateFrameSchema.safeParse(JSON.parse(frame));
+    const parsed = DocUpdateFrameSchema.safeParse(JSON.parse(frame));
     if (parsed.success) updates.push(parsed.data);
   }
   return updates;
 }
 
-function element(id: string, version: number, versionNonce = 0): SceneElement {
-  return { id, version, versionNonce, isDeleted: false, index: null };
+/** A canvas element the doc tests can move around; a portal is the plainest reference. */
+function element(id: string): SceneElement {
+  return {
+    id,
+    type: "portal",
+    containerId: `container-${id}`,
+    x: 0,
+    y: 0,
+    width: 720,
+    height: 480,
+    zIndex: 0,
+  };
 }
 
-const INIT: ServerMessage = {
+function encodedDoc(...elements: SceneElement[]): string {
+  const doc = createSceneDoc();
+  for (const sceneElement of elements) writeElement(doc, sceneElement, LOCAL_ORIGIN);
+  return encodeUpdate(Y.encodeStateAsUpdate(doc));
+}
+
+/**
+ * A composition as the server seeds it: the first ref fills the root leaf,
+ * every later one splits it to the right.
+ */
+function encodedCompositionDoc(...refs: TileRef[]): string {
+  const doc = createSceneDoc();
+  initCompositionLayout(doc, SERVER_PLACE_ORIGIN);
+  for (const [index, ref] of refs.entries()) {
+    writeTileLeaf(doc, ref, ROOT_TILE_ID, index === 0 ? "center" : "right", SERVER_PLACE_ORIGIN);
+  }
+  return encodeUpdate(Y.encodeStateAsUpdate(doc));
+}
+
+/** The one frame every harness starts from; naming its member type keeps spreads exact. */
+type InitFrame = Extract<ServerMessageBody, { type: "init" }>;
+
+const INIT: InitFrame = {
   type: "init",
   protocolVersion: PROTOCOL_VERSION,
   epoch: "e1",
   rev: 5,
-  elements: [element("srv", 3)],
+  doc: encodedDoc(element("srv")),
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
   selfCaps: ["*"],
-  roster: [],
-  sessions: [],
+  attendance: [],
+  terminals: [],
 };
+
+/** A client's channel id once it holds one; a missing id is a harness bug, not a case. */
+function channelOf(client: SessionClient): string {
+  const id = client.channelId;
+  if (id === null) throw new Error("client holds no channel");
+  return id;
+}
 
 interface ClientHarnessOptions {
   reconnect?: boolean;
   backoffCapMs?: number;
+  spectator?: boolean;
 }
 
 interface ClientHarness {
@@ -109,17 +182,19 @@ function dialing(options: ClientHarnessOptions = {}): ClientHarness {
   FakeSocket.instances = [];
   const client = new SessionClient({
     url: "ws://test/ws/session",
-    padId: "pad1",
+    containerId: "container1",
     token: "tok",
     reconnect: options.reconnect ?? false,
+    ...(options.spectator === true ? { spectator: true } : {}),
     ...(options.backoffCapMs !== undefined ? { backoffCapMs: options.backoffCapMs } : {}),
-    // Test double implements the full surface SessionClient touches; a runtime check is
+    // Test double implements the full ref SessionClient touches; a runtime check is
     // meaningless here, hence the deliberate unchecked cast.
     webSocketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
   });
   const connection = client.connect();
   const socket = FakeSocket.instances.at(-1);
   if (!socket) throw new Error("no socket dialed");
+  socket.channel = client.channelId ?? "c1";
   return { client, socket, connection };
 }
 
@@ -139,42 +214,365 @@ describe("handshake", () => {
     expect(first.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
+  test("a spectator declares the flag in its join; an occupant omits it entirely", () => {
+    const JoinSchema = z.looseObject({ type: z.string(), spectator: z.boolean().optional() });
+    const watching = JoinSchema.parse(
+      JSON.parse(connected({ spectator: true }).socket.sent[0] ?? "{}"),
+    );
+    expect(watching.spectator).toBe(true);
+
+    // Undefined, never `false`: absence IS the occupant case on the wire.
+    const occupying = JoinSchema.parse(JSON.parse(connected().socket.sent[0] ?? "{}"));
+    expect(occupying.spectator).toBeUndefined();
+  });
+
   test("init adopts epoch, rev, scene, and the assigned connection id", () => {
     const { client } = connected();
     expect(client.epoch).toBe("e1");
     expect(client.rev).toBe(5);
-    expect(client.scene.get("srv")?.version).toBe(3);
+    expect(client.elements.get("srv")).toEqual(element("srv"));
     expect(client.selfConnId).toBe("conn-me");
     expect(client.status).toBe("open");
   });
 });
 
+describe("shared transport", () => {
+  interface MultiplexHarness {
+    readonly first: SessionClient;
+    readonly second: SessionClient;
+    readonly socket: FakeSocket;
+    /** Each room's own connect promise: one may fail while the other lives. */
+    readonly firstConnect: Promise<void>;
+    readonly secondConnect: Promise<void>;
+  }
+
+  /**
+   * Two rooms of one tab: same url, same token, same socket factory — which is exactly
+   * what a canvas plus a portal portal looks like in the browser.
+   */
+  function twoRooms(options: { reconnect?: boolean } = {}): MultiplexHarness {
+    FakeSocket.instances = [];
+    const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
+    const build = (containerId: string): SessionClient =>
+      new SessionClient({
+        url: "ws://test/ws/session",
+        containerId,
+        token: "tok",
+        reconnect: options.reconnect ?? false,
+        webSocketFactory: factory,
+      });
+    const first = build("container1");
+    const second = build("container2");
+    const firstConnect = first.connect();
+    const secondConnect = second.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+    return { first, second, socket, firstConnect, secondConnect };
+  }
+
+  function initFor(client: SessionClient, epoch: string, elementId: string): InitFrame {
+    return {
+      ...INIT,
+      epoch,
+      doc: encodedDoc(element(elementId)),
+      selfConnId: `conn-${channelOf(client)}`,
+    };
+  }
+
+  function receiveOn(socket: FakeSocket, client: SessionClient, body: ServerMessageBody): void {
+    socket.receive({ ch: channelOf(client), ...body });
+  }
+
+  test("two rooms share ONE connection and each joins its own channel", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(first.transportId).toBe(second.transportId);
+    expect(first.channelId).not.toBe(second.channelId);
+
+    socket.open();
+    const JoinSchema = z.looseObject({ type: z.string(), ch: z.string(), containerId: z.string() });
+    const joins = socket.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
+    expect(joins.map((join) => [join.containerId, join.ch])).toEqual([
+      ["container1", channelOf(first)],
+      ["container2", channelOf(second)],
+    ]);
+
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+    first.close();
+    second.close();
+  });
+
+  test("state, doc updates, and resync stay per channel on the shared socket", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    expect(first.epoch).toBe("e-a");
+    expect(second.epoch).toBe("e-b");
+    expect(first.elements.has("in-a")).toBe(true);
+    expect(first.elements.has("in-b")).toBe(false);
+    expect(second.elements.has("in-b")).toBe(true);
+
+    // A remote write on one channel never reaches the other room's projection.
+    socket.receive({
+      ch: channelOf(second),
+      type: "doc_update",
+      update: encodedDoc(element("later-b")),
+      by: "peer",
+    });
+    expect(second.elements.has("later-b")).toBe(true);
+    expect(first.elements.has("later-b")).toBe(false);
+
+    // A resync replaces exactly one room's lineage.
+    receiveOn(socket, second, {
+      ...INIT,
+      type: "resync",
+      epoch: "e-b2",
+      doc: encodedDoc(element("fresh-b")),
+    });
+    expect(second.epoch).toBe("e-b2");
+    expect(second.elements.has("fresh-b")).toBe(true);
+    expect(second.elements.has("later-b")).toBe(false);
+    expect(first.epoch).toBe("e-a");
+    expect(first.elements.has("in-a")).toBe(true);
+
+    // Writes are tagged with the room that made them.
+    const before = socket.sent.length;
+    first.sendCursor(4, 5);
+    const cursor = z
+      .looseObject({ type: z.string(), ch: z.string() })
+      .parse(JSON.parse(socket.sent[before] ?? "{}"));
+    expect(cursor).toMatchObject({ type: "cursor", ch: first.channelId });
+
+    first.close();
+    second.close();
+  });
+
+  test("a reconnect redials once and rejoins every channel", () => {
+    vi.useFakeTimers();
+    const { first, second, socket } = twoRooms({ reconnect: true });
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+
+    socket.close(1006, "abnormal");
+    expect(first.status).toBe("reconnecting");
+    expect(second.status).toBe("reconnecting");
+
+    vi.runAllTimers();
+    // ONE new socket for both rooms — the whole point of v12.
+    expect(FakeSocket.instances).toHaveLength(2);
+    const replacement = FakeSocket.instances.at(-1);
+    if (!replacement || replacement === socket) throw new Error("no replacement socket");
+    replacement.open();
+
+    const JoinSchema = z.looseObject({
+      type: z.string(),
+      ch: z.string(),
+      containerId: z.string(),
+      lastEpoch: z.string().optional(),
+    });
+    const joins = replacement.sent.map((frame) => JoinSchema.parse(JSON.parse(frame)));
+    // Both rooms rejoined, each carrying its OWN resume hints.
+    expect(joins.map((join) => [join.containerId, join.ch, join.lastEpoch])).toEqual([
+      ["container1", channelOf(first), "e-a"],
+      ["container2", channelOf(second), "e-b"],
+    ]);
+
+    first.close();
+    second.close();
+    vi.useRealTimers();
+  });
+
+  test("closing one room leaves it on the wire; the last close ends the socket", () => {
+    const { first, second, socket } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    const firstChannel = channelOf(first);
+
+    first.close();
+
+    expect(sentTypes(socket).at(-1)).toBe("leave");
+    expect(
+      z
+        .looseObject({ type: z.string(), ch: z.string() })
+        .parse(JSON.parse(socket.sent.at(-1) ?? "{}")).ch,
+    ).toBe(firstChannel);
+    expect(socket.closedWith).toBeNull();
+    expect(first.status).toBe("closed");
+    expect(second.status).toBe("open");
+
+    // The last room leaving IS the socket closing, so no second `leave` is spent.
+    const before = socket.sent.length;
+    second.close();
+    expect(socket.sent).toHaveLength(before);
+    expect(socket.closedWith?.code).toBe(1000);
+  });
+
+  test("a session channel refusal kills one room and spares its sibling", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "container deleted",
+    });
+
+    // The dead room reports closed and holds no channel; the socket never went anywhere.
+    expect(first.status).toBe("closed");
+    expect(first.channelId).toBeNull();
+    expect(second.status).toBe("open");
+    expect(socket.closedWith).toBeNull();
+
+    // The surviving room keeps streaming on the same socket.
+    socket.receive({
+      ch: channelOf(second),
+      type: "doc_update",
+      update: encodedDoc(element("still-live")),
+      by: "peer",
+    });
+    expect(second.elements.has("still-live")).toBe(true);
+
+    second.close();
+  });
+
+  test("a room's terminal close withdraws its topic holds from the socket that survives", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+
+    // One node, watched from both rooms: the refcount is the SOCKET's, so the pair costs
+    // one declaration and needs both holders gone before anything is withdrawn.
+    const WATCHED: ManifoldRef = { kind: "container", containerId: "watched" };
+    const offFirst = first.subscribe([WATCHED], () => undefined);
+    const offSecond = second.subscribe([WATCHED], () => undefined);
+    expect(framesOfType(socket, "subscribe")).toEqual([{ type: "subscribe", topics: [WATCHED] }]);
+
+    // The first room's container is deleted. That is terminal for the ROOM and for nothing
+    // else: the connection its hold was counted on keeps carrying the second room.
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "container deleted",
+    });
+    expect(first.status).toBe("closed");
+    expect(second.status).toBe("open");
+    expect(socket.closedWith).toBeNull();
+    // Nothing withdrawn yet — the surviving room still wants the topic.
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+
+    // The dead room's subscriber letting go is a no-op: its hold left with its channel, and
+    // releasing twice must never withdraw somebody else's subscription.
+    offFirst();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+
+    // The promise the refcount makes: the LAST holder's release reaches the wire. It only
+    // can if the terminal close decremented instead of discarding — a dropped hold would
+    // strand this topic at count 1 on a live socket, permanently over-subscribed.
+    offSecond();
+    expect(framesOfType(socket, "unsubscribe")).toEqual([
+      { type: "unsubscribe", topics: [WATCHED] },
+    ]);
+
+    second.close();
+  });
+
+  test("a refusal before init rejects connect with the code and reason", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    socket.receive({
+      ch: channelOf(first),
+      type: "channel_closed",
+      code: 4404,
+      reason: "container not found",
+    });
+
+    // Identical shape to the socket-level rejection this replaced: a room that cannot be
+    // joined reports its close code, and the tab's other rooms never notice.
+    await expect(firstConnect).rejects.toThrow(
+      "terminal rejected with close code 4404: container not found",
+    );
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await secondConnect;
+    expect(second.status).toBe("open");
+
+    second.close();
+  });
+});
+
 describe("connection lifecycle", () => {
-  test("sends a keepalive ping every 45 seconds while open", () => {
+  test("a server ping is answered; the client generates no heartbeat of its own", () => {
     vi.useFakeTimers();
     const { client, socket } = connected();
 
-    vi.advanceTimersByTime(45_000);
-    expect(sentTypes(socket)).toEqual(["join", "ping"]);
+    /*
+      The client ASKS nothing. A background tab's timers are throttled to roughly one firing
+      a minute, so a server reaping on client-generated pings would close live tabs; a reply
+      to an inbound frame rides the message event and is throttled by nothing (issue #55).
+     */
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1);
+    expect(sentTypes(socket)).toEqual(["join"]);
 
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(socket)).toEqual(["join", "ping", "ping", "ping"]);
+    socket.receive({ type: "ping" });
+    expect(sentTypes(socket)).toEqual(["join", "pong"]);
     client.close();
   });
 
-  test("stops keepalive pings after client or socket close", () => {
+  test("silence past the deadline closes the phantom transport and re-dials", () => {
     vi.useFakeTimers();
-    const first = connected();
-    vi.advanceTimersByTime(45_000);
-    first.client.close();
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(first.socket)).toEqual(["join", "ping"]);
+    const { socket } = connected({ reconnect: true, backoffCapMs: 250 });
 
-    const second = connected();
-    vi.advanceTimersByTime(45_000);
-    second.socket.close();
-    vi.advanceTimersByTime(90_000);
-    expect(sentTypes(second.socket)).toEqual(["join", "ping"]);
+    // Dead TCP nobody RST — a slept laptop, a proxy that swallowed the close. Waiting for
+    // the OS to notice can take the rest of the tab's life, so the client closes it itself
+    // and heals through the reconnect path it already owns.
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS + 1);
+    expect(socket.closedWith?.code).toBe(4008);
+
+    vi.advanceTimersByTime(1_000);
+    expect(FakeSocket.instances).toHaveLength(2);
+  });
+
+  test("any inbound frame resets the deadline, room traffic and pings alike", () => {
+    vi.useFakeTimers();
+    const { socket } = connected({ reconnect: true, backoffCapMs: 250 });
+
+    for (let round = 0; round < 3; round += 1) {
+      vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+      socket.receive({ type: "ping" });
+    }
+    // The watchdog watches the TRANSPORT, not the liveness pair: a busy room proves the
+    // socket is real without any help from the ping.
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+    socket.receive({ ...INIT, type: "resync" });
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS - 1_000);
+    expect(socket.closedWith).toBeNull();
+
+    vi.advanceTimersByTime(1_001);
+    expect(socket.closedWith?.code).toBe(4008);
+  });
+
+  test("a closed connection watches nothing: no phantom close after teardown", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected();
+    client.close();
+
+    vi.advanceTimersByTime(DIAL_LIVENESS_TIMEOUT_MS * 2);
+    expect(socket.closedWith?.code).toBe(1000);
+    expect(FakeSocket.instances).toHaveLength(1);
   });
 
   test("4403 is terminal, rejects connect with the reason, and does not redial", async () => {
@@ -234,7 +632,7 @@ describe("connection lifecycle", () => {
 
     expect(first.closedWith?.code).toBe(1000);
     first.onopen?.();
-    first.receive({ ...INIT, epoch: "stale", elements: [element("stale", 1)] });
+    first.receive({ ...INIT, epoch: "stale", doc: encodedDoc(element("stale")) });
     expect(first.sent).toHaveLength(0);
     expect(client.epoch).toBe("");
 
@@ -247,201 +645,267 @@ describe("connection lifecycle", () => {
 });
 
 describe("scene flow", () => {
-  test("updateScene applies optimistically and stamps the epoch fence", () => {
+  test("a transaction updates the local projection and sends one Yjs update", () => {
     const { client, socket } = connected();
-    client.updateScene([element("a", 1)]);
-    expect(client.scene.has("a")).toBe(true);
-    const last = socket.sent.at(-1);
-    if (last === undefined) throw new Error("nothing sent");
-    const sent = SceneUpdateFrameSchema.parse(JSON.parse(last));
-    expect(sent.epoch).toBe("e1");
-    expect(sent.baseRev).toBe(5);
+    client.transact((tx) => tx.create(element("a")));
+
+    expect(client.elements.get("a")).toEqual(element("a"));
+    const updates = docUpdateFrames(socket);
+    expect(updates).toHaveLength(1);
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, decodeUpdate(updates[0]?.update ?? ""));
+    expect(readElements(replica).get("a")).toEqual(element("a"));
   });
 
-  test("first init rebases an optimistic edit into the adopted epoch", () => {
+  test("first init merges offline edits and publishes a full converged state", () => {
     const { client, socket } = dialing();
-    client.updateScene([element("early", 1)]);
+    client.transact((tx) => tx.create(element("early")));
+    expect(client.outboxSize()).toBe(1);
 
     socket.open();
     socket.receive(INIT);
 
-    expect(client.scene.has("early")).toBe(true);
-    const updates = sceneUpdateFrames(socket);
-    expect(updates.some((frame) => frame.epoch === "e1" && frame.elements[0]?.id === "early")).toBe(
-      true,
-    );
+    expect(client.elements.has("early")).toBe(true);
+    expect(client.elements.has("srv")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(2);
+    expect(client.outboxSize()).toBe(0);
   });
 
-  test("updateScene chunks by count and returns every frame's updateId", () => {
+  test("one transaction batches many element creates into one update", () => {
     const { client, socket } = connected();
-    const elements = Array.from({ length: 200 }, (_, index) => element(`bulk-${index}`, 1));
-
-    const updateIds = client.updateScene(elements);
-
-    const updates = sceneUpdateFrames(socket);
-    expect(updates).toHaveLength(2);
-    expect(updates.map((frame) => frame.elements.length)).toEqual([128, 72]);
-    expect(updateIds).toEqual(updates.map((frame) => frame.updateId));
-    expect(client.scene.size).toBe(201);
-    expect(client.scene.has("bulk-199")).toBe(true);
-  });
-
-  test("updateScene splits two 600 KiB elements into sub-1 MiB frames", () => {
-    const { client, socket } = connected();
-    const first: SceneElement = {
-      ...element("fat-a", 1),
-      payload: "a".repeat(600 * 1024),
-    };
-    const second: SceneElement = {
-      ...element("fat-b", 1),
-      payload: "b".repeat(600 * 1024),
-    };
-
-    const updateIds = client.updateScene([first, second]);
-
-    const updates = sceneUpdateFrames(socket);
-    const wireFrames = socket.sent.filter(
-      (frame) => SentFrameSchema.parse(JSON.parse(frame)).type === "scene_update",
-    );
-    expect(updates).toHaveLength(2);
-    expect(updates.map((frame) => frame.elements.length)).toEqual([1, 1]);
-    expect(updateIds).toEqual(updates.map((frame) => frame.updateId));
-    for (const frame of wireFrames) {
-      expect(new TextEncoder().encode(frame).byteLength).toBeLessThan(MAX_SESSION_FRAME_BYTES);
-    }
-    expect(client.scene.has("fat-a")).toBe(true);
-    expect(client.scene.has("fat-b")).toBe(true);
-  });
-
-  test("an over-budget element is reported, never applied, and never rebased", () => {
-    vi.useFakeTimers();
-    const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
+    client.transact((tx) => {
+      for (let index = 0; index < 200; index += 1) {
+        tx.create(element(`bulk-${index}`));
+      }
     });
-    const tooLarge: SceneElement = {
-      ...element("too-fat", 1),
-      payload: "x".repeat(800 * 1024),
-    };
-    const sentBefore = socket.sent.length;
 
-    const updateIds = client.updateScene([tooLarge]);
-
-    expect(updateIds).toBeNull();
-    expect(client.scene.has("too-fat")).toBe(false);
-    expect(socket.sent).toHaveLength(sentBefore);
-    expect(rejections).toHaveLength(1);
-    expect(rejections[0]?.element.id).toBe("too-fat");
-    expect(rejections[0]?.reason).toBe("element_too_large");
-
-    socket.close(1006, "abnormal");
-    vi.runAllTimers();
-    const replacement = FakeSocket.instances.at(-1);
-    if (!replacement || replacement === socket) throw new Error("no replacement socket");
-    replacement.open();
-    replacement.receive({ ...INIT, type: "resync" });
-
-    expect(sceneUpdateFrames(replacement)).toHaveLength(0);
-    expect(client.scene.has("too-fat")).toBe(false);
-    client.close();
+    expect(docUpdateFrames(socket)).toHaveLength(1);
+    expect(client.elements.size).toBe(201);
+    expect(client.elements.has("bulk-199")).toBe(true);
   });
 
-  test("losing update is not sent (local reconcile rejects it)", () => {
+  test("remote document updates refresh the validated projection", () => {
     const { client, socket } = connected();
-    const before = socket.sent.length;
-    const result = client.updateScene([element("srv", 2)]); // older than server's v3
-    expect(result).toBeNull();
-    expect(socket.sent.length).toBe(before);
+    const changed: Array<{ ids: readonly string[]; origin: string }> = [];
+    client.on("elements_changed", (ids, origin) => changed.push({ ids, origin }));
+
+    socket.receive({
+      type: "doc_update",
+      update: encodedDoc(element("peer")),
+      by: "peer",
+    });
+
+    expect(client.elements.get("peer")).toEqual(element("peer"));
+    expect(changed).toContainEqual({ ids: ["peer"], origin: "remote" });
   });
 
-  test("scene_applied reconciles and advances rev", () => {
+  test("new-epoch resync replaces local history", () => {
     const { client, socket } = connected();
-    socket.receive({ type: "scene_applied", rev: 6, elements: [element("peer", 1)], by: "peer" });
-    expect(client.scene.has("peer")).toBe(true);
-    expect(client.rev).toBe(6);
-  });
+    client.transact((tx) => tx.create(element("mine")));
+    const updatesBeforeResync = docUpdateFrames(socket).length;
 
-  test("rev gap triggers resync_request", () => {
-    const { socket } = connected();
-    socket.receive({ type: "scene_applied", rev: 9, elements: [element("x", 1)], by: "peer" });
-    expect(sentTypes(socket)).toContain("resync_request");
-  });
-
-  test("new-epoch resync drops optimistic history instead of resubmitting it", () => {
-    const { client, socket } = connected();
-    client.updateScene([element("mine", 10)]);
-    const updatesBeforeResync = sceneUpdateFrames(socket).length;
-
-    socket.receive({ ...INIT, type: "resync", epoch: "e2", rev: 1, elements: [element("srv", 3)] });
+    socket.receive({
+      ...INIT,
+      type: "resync",
+      epoch: "e2",
+      rev: 1,
+      doc: encodedDoc(element("replacement")),
+    });
 
     expect(client.epoch).toBe("e2");
-    expect(client.scene.has("mine")).toBe(false);
-    expect(sceneUpdateFrames(socket)).toHaveLength(updatesBeforeResync);
+    expect(client.elements.has("mine")).toBe(false);
+    expect(client.elements.has("replacement")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 1);
   });
 
-  test("same-epoch resync rebases an unsent optimistic edit", () => {
+  test("same-epoch resync replays an offline local edit", () => {
     const { client, socket } = connected();
     socket.readyState = 0;
-    client.updateScene([element("mine", 10)]);
-    expect(sceneUpdateFrames(socket)).toHaveLength(0);
+    client.transact((tx) => tx.create(element("mine")));
+    expect(client.outboxSize()).toBe(1);
     socket.readyState = 1;
 
-    socket.receive({ ...INIT, type: "resync", rev: 6, elements: [element("srv", 3)] });
-
-    const resent = sceneUpdateFrames(socket);
-    expect(resent).toHaveLength(2);
-    expect(resent.every((frame) => frame.elements[0]?.id === "mine")).toBe(true);
-    expect(client.scene.has("mine")).toBe(true);
-  });
-  test("server rejection requests resync, reports the rejected update, and filters its exact stamp from rebase", () => {
-    const { client, socket } = connected();
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
-    });
-    const rejected = element("rejected", 1, 41);
-    const retained = element("retained", 1, 42);
-    const rejectedUpdateId = client.updateScene([rejected])?.[0];
-    client.updateScene([retained]);
-    if (rejectedUpdateId === undefined) throw new Error("rejected update was not sent");
-
-    socket.receive({ type: "error", code: "invalid", ref: rejectedUpdateId });
-
-    expect(sentTypes(socket).at(-1)).toBe("resync_request");
-    expect(rejections).toEqual([
-      expect.objectContaining({
-        element: rejected,
-        reason: "server_rejected",
-        serializedBytes: null,
-      }),
-    ]);
-
-    const updatesBeforeResync = sceneUpdateFrames(socket).length;
+    const updatesBeforeResync = docUpdateFrames(socket).length;
     socket.receive({ ...INIT, type: "resync", rev: 6 });
-    const rebased = sceneUpdateFrames(socket).slice(updatesBeforeResync);
 
-    expect(rebased).toHaveLength(1);
-    expect(rebased[0]?.elements.map(({ id }) => id)).toEqual(["retained"]);
-    expect(client.scene.has("rejected")).toBe(false);
-    expect(client.scene.has("retained")).toBe(true);
+    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 2);
+    expect(client.elements.has("mine")).toBe(true);
+    expect(client.outboxSize()).toBe(0);
   });
 
-  test("scene_ack clears inflight tracking so a later error with its ref is ignored", () => {
-    const { client, socket } = connected();
-    const rejections: SceneUpdateRejection[] = [];
-    client.on("scene_rejected", (reported) => {
-      rejections.push(...reported);
+  test("undo and redo track local edits without tracking remote state", () => {
+    const { client } = connected();
+    client.transact((tx) => tx.create(element("mine")));
+    expect(client.elements.has("mine")).toBe(true);
+
+    client.undo();
+    expect(client.elements.has("mine")).toBe(false);
+
+    client.redo();
+    expect(client.elements.get("mine")).toEqual(element("mine"));
+  });
+
+  test("collaborative text is edited through the transaction text handle", () => {
+    const { client } = connected();
+    client.transact((tx) => {
+      /*
+        The AUTHOR declares which payload field the document holds as shared text (ADR 0013
+        §16 clause 6). The floor used to infer it from the `text` TYPE NAME, which meant the
+        scene pillar knew one plugin's kind and one plugin's field; now the party that knows
+        says so, and a record created without the declaration carries a plain string — which is
+        the correct outcome for every other kind.
+      */
+      tx.create(
+        {
+          id: "note",
+          type: "text",
+          text: "hello",
+          x: 0,
+          y: 0,
+          width: 240,
+          height: 48,
+          zIndex: 1,
+          fontSize: 20,
+          color: "#f8f9fa",
+        },
+        ["text"],
+      );
     });
-    const updateId = client.updateScene([element("accepted", 1)])?.[0];
-    if (updateId === undefined) throw new Error("accepted update was not sent");
-    socket.receive({ type: "scene_ack", updateId, rev: 6, acceptedIds: ["accepted"] });
-    const sentBeforeError = socket.sent.length;
+    client.transact((tx) => tx.text("note")?.insert(5, " world"));
 
-    socket.receive({ type: "error", code: "invalid", ref: updateId });
+    expect(client.elementText("note")?.toString()).toBe("hello world");
+    expect(client.elements.get("note")).toMatchObject({ text: "hello world" });
+  });
 
-    expect(socket.sent).toHaveLength(sentBeforeError);
-    expect(rejections).toHaveLength(0);
+  test("gesture payloads are sent without entering durable scene state", () => {
+    const { client, socket } = connected();
+    client.sendGesture({
+      kind: "move",
+      phase: "active",
+      elementId: "srv",
+      x: 20,
+      y: 30,
+    });
+    expect(sentTypes(socket).at(-1)).toBe("gesture");
+    expect(client.elements.get("srv")).toEqual(element("srv"));
+  });
+});
+
+describe("composition layout", () => {
+  test("a canvas container has no layout tree", () => {
+    const { client } = connected();
+    expect(client.layout()).toBeNull();
+  });
+
+  test("init adopts a composition room's tree, which the epoch swap replaces", () => {
+    const { client, socket } = dialing();
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+
+    socket.open();
+    socket.receive({ ...INIT, doc: encodedCompositionDoc({ kind: "terminal", terminalId: "s1" }) });
+
+    expect(origins).toEqual(["remote"]);
+    expect(client.layout()?.[ROOT_TILE_ID]?.ref).toEqual({
+      kind: "terminal",
+      terminalId: "s1",
+    });
+
+    socket.receive({ ...INIT, type: "resync", epoch: "e2", doc: encodedDoc(element("srv")) });
+    expect(client.layout()).toBeNull();
+  });
+
+  test("a remote layout write projects the tree and reports its provenance", () => {
+    const { client, socket } = connected();
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+
+    socket.receive({
+      type: "doc_update",
+      update: encodedCompositionDoc(
+        { kind: "terminal", terminalId: "s1" },
+        { kind: "terminal", terminalId: "s2" },
+      ),
+      by: "peer",
+    });
+
+    expect(origins).toEqual(["remote"]);
+    const layout = client.layout();
+    expect(layout?.[ROOT_TILE_ID]?.dir).toBe("row");
+    expect(layout?.[ROOT_TILE_ID]?.children).toHaveLength(2);
+  });
+
+  test("element traffic never wakes layout subscribers", () => {
+    const { client, socket } = connected();
+    let fired = 0;
+    client.on("layout_changed", () => {
+      fired += 1;
+    });
+
+    socket.receive({ type: "doc_update", update: encodedDoc(element("peer")), by: "peer" });
+    client.transact((tx) => tx.create(element("mine")));
+
+    expect(client.elements.has("peer")).toBe(true);
+    expect(client.elements.has("mine")).toBe(true);
+    expect(fired).toBe(0);
+  });
+
+  test("a ratio drag publishes one local update a replica converges on", () => {
+    const { client, socket } = connected();
+    const base = encodedCompositionDoc(
+      { kind: "terminal", terminalId: "s1" },
+      { kind: "terminal", terminalId: "s2" },
+    );
+    socket.receive({ type: "doc_update", update: base, by: "peer" });
+    const origins: string[] = [];
+    client.on("layout_changed", (origin) => origins.push(origin));
+    const before = docUpdateFrames(socket).length;
+
+    client.setTileRatios(ROOT_TILE_ID, [0.3, 0.7]);
+
+    const updates = docUpdateFrames(socket);
+    expect(updates).toHaveLength(before + 1);
+    expect(origins).toEqual(["local"]);
+    expect(client.layout()?.[ROOT_TILE_ID]?.ratios).toEqual([0.3, 0.7]);
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, decodeUpdate(base));
+    Y.applyUpdate(replica, decodeUpdate(updates.at(-1)?.update ?? ""));
+    expect(readTileLayout(replica)?.[ROOT_TILE_ID]?.ratios).toEqual([0.3, 0.7]);
+  });
+
+  test("a rejected ratio drag touches neither the tree nor the wire", () => {
+    const { client, socket } = connected();
+    socket.receive({
+      type: "doc_update",
+      update: encodedCompositionDoc(
+        { kind: "terminal", terminalId: "s1" },
+        { kind: "terminal", terminalId: "s2" },
+      ),
+      by: "peer",
+    });
+    const before = docUpdateFrames(socket).length;
+    let fired = 0;
+    client.on("layout_changed", () => {
+      fired += 1;
+    });
+
+    // Ratios must stay parallel to the split's children, and leaves never carry them.
+    client.setTileRatios(ROOT_TILE_ID, [1]);
+    client.setTileRatios("missing", [0.5, 0.5]);
+
+    expect(docUpdateFrames(socket)).toHaveLength(before);
+    expect(fired).toBe(0);
+    expect(client.layout()?.[ROOT_TILE_ID]?.ratios).toEqual([0.5, 0.5]);
+  });
+
+  test("a container that tiles itself reads as unusable", () => {
+    const { client, socket } = connected();
+    socket.receive({
+      type: "doc_update",
+      update: encodedCompositionDoc({ kind: "container", containerId: "container1" }),
+      by: "peer",
+    });
+    expect(client.layout()).toBeNull();
   });
 });
 
@@ -461,8 +925,8 @@ describe("frame policy", () => {
 
     // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
     // validates the frame shape and bounded payload rather than rescanning its contents.
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 0, data: "%" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 0, data: "%" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 0, data: "%" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 0, data: "%" });
 
     expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:0:%"]);
     expect(socket.closedWith).toBeNull();
@@ -470,13 +934,13 @@ describe("frame policy", () => {
 
   test("malformed terminal data frame still closes 4002", () => {
     const { socket } = connected();
-    socket.receive({ type: "terminal_output", sessionId: "s1", data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", data: "" });
     expect(socket.closedWith?.code).toBe(4002);
   });
 
   test("malformed KNOWN frame closes 4002", () => {
     const { socket } = connected();
-    socket.receive({ type: "scene_applied", rev: "not a number" });
+    socket.receive({ type: "doc_update", update: "not base64", by: "peer" });
     expect(socket.closedWith?.code).toBe(4002);
   });
 
@@ -489,7 +953,7 @@ describe("frame policy", () => {
   test("the SDK's malformed-frame 4002 close still reconnects", () => {
     vi.useFakeTimers();
     const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
-    socket.receive({ type: "scene_applied", rev: "not a number" });
+    socket.receive({ type: "doc_update", update: "not base64", by: "peer" });
     expect(socket.closedWith?.code).toBe(4002);
     expect(client.status).toBe("reconnecting");
 
@@ -498,37 +962,49 @@ describe("frame policy", () => {
     client.close();
   });
 
-  test("epoch_mismatch error auto-requests resync", () => {
-    const { socket } = connected();
-    socket.receive({ type: "error", code: "epoch_mismatch" });
-    expect(sentTypes(socket)).toContain("resync_request");
+  test("server-stamped gesture frames are emitted", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    client.on("gesture", (message) => seen.push(`${message.principalId}:${message.elementId}`));
+    socket.receive({
+      type: "gesture",
+      principalId: "peer",
+      connId: "peer-conn",
+      kind: "move",
+      phase: "active",
+      elementId: "srv",
+      x: 1,
+      y: 2,
+    });
+    expect(seen).toEqual(["peer:srv"]);
   });
 });
 
-describe("roster and presence", () => {
-  test("roster join/leave and connection-stamped presence merge", () => {
+describe("attendance and presence", () => {
+  test("attendance join/leave and connection-stamped presence merge", () => {
     const { client, socket } = connected();
     const peer = {
       principal: { id: "p2", kind: "agent" as const, name: "pi", color: "#00ff00" },
       connections: 1,
+      connIds: ["peer-connection"],
       payload: {},
     };
     const observedConnIds: string[] = [];
     client.on("presence", (message) => {
       observedConnIds.push(message.connId);
     });
-    socket.receive({ type: "roster", joined: peer });
-    expect(client.roster.get("p2")?.principal.name).toBe("pi");
+    socket.receive({ type: "attendance", joined: peer });
+    expect(client.attendance.get("p2")?.principal.name).toBe("pi");
     socket.receive({
       type: "presence",
       principalId: "p2",
       connId: "peer-connection",
       payload: { status: "working" },
     });
-    expect(client.roster.get("p2")?.payload.status).toBe("working");
+    expect(client.attendance.get("p2")?.payload.status).toBe("working");
     expect(observedConnIds).toEqual(["peer-connection"]);
-    socket.receive({ type: "roster", left: { principalId: "p2" } });
-    expect(client.roster.has("p2")).toBe(false);
+    socket.receive({ type: "attendance", left: { principalId: "p2" } });
+    expect(client.attendance.has("p2")).toBe(false);
   });
 });
 
@@ -538,24 +1014,20 @@ describe("listener isolation", () => {
     // Never-swallow rule: the throw must stay observable even though siblings still run.
     const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      // The projection layer subscribing to scene_changed is exactly the consumer that must
-      // never lose a delta: the SDK advances scene+rev BEFORE emitting, and a duplicate echo
-      // reconciles to zero accepted, so a swallowed emission is unrecoverable without resync.
+      // The projection layer subscribing to elements_changed must never lose a delta.
       const seen: string[] = [];
-      client.on("scene_changed", () => {
+      client.on("elements_changed", () => {
         throw new Error("projection exploded");
       });
-      client.on("scene_changed", (accepted) => {
-        seen.push(...accepted.map((el) => el.id));
+      client.on("elements_changed", (ids) => {
+        seen.push(...ids);
       });
       socket.receive({
-        type: "scene_applied",
-        rev: 6,
+        type: "doc_update",
+        update: encodedDoc(element("delta")),
         by: "other",
-        elements: [element("delta", 1)],
       });
       expect(seen).toEqual(["delta"]);
-      expect(client.rev).toBe(6);
       expect(
         reported.mock.calls.some((call) =>
           call.some((arg) => arg instanceof Error && arg.message === "projection exploded"),
@@ -563,10 +1035,9 @@ describe("listener isolation", () => {
       ).toBe(true);
       // Subsequent events keep flowing after the throw.
       socket.receive({
-        type: "scene_applied",
-        rev: 7,
+        type: "doc_update",
+        update: encodedDoc(element("delta2")),
         by: "other",
-        elements: [element("delta2", 1)],
       });
       expect(seen).toEqual(["delta", "delta2"]);
     } finally {
@@ -576,10 +1047,10 @@ describe("listener isolation", () => {
 });
 
 describe("terminal attach refcounting", () => {
-  const SESSION = {
+  const TERMINAL = {
     id: "s1",
-    padId: "pad",
-    elementId: "el1",
+    containerId: "container",
+    name: null,
     machineId: "m1",
     status: "running" as const,
     exitCode: null,
@@ -588,7 +1059,7 @@ describe("terminal attach refcounting", () => {
     controllerId: "me",
     createdBy: "me",
   };
-  const INIT_WITH_SESSION: ServerMessage = { ...INIT, sessions: [SESSION] };
+  const INIT_WITH_TERMINAL: InitFrame = { ...INIT, terminals: [TERMINAL] };
 
   test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
     const { client, socket } = connected();
@@ -607,15 +1078,15 @@ describe("terminal attach refcounting", () => {
 
   test("a late view attaching mid-stream receives the re-snapshot; no duplicates", () => {
     const { client, socket } = connected();
-    socket.receive(INIT_WITH_SESSION);
+    socket.receive(INIT_WITH_TERMINAL);
     const seenA: string[] = [];
     const seenB: string[] = [];
     client.on("terminal_snapshot", (m) => seenA.push(`snap:${m.seq}`));
     client.on("terminal_output", (m) => seenA.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     // A is live mid-stream before B even exists.
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 3, data: "" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 4, data: "" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 3, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 4, data: "" });
     expect(seenA).toEqual(["snap:3", "out:4"]);
     // B (cloned element) subscribes late and attaches: the wire re-attach makes
     // the server emit a fresh snapshot, which is B's ONLY path to screen state.
@@ -623,15 +1094,15 @@ describe("terminal attach refcounting", () => {
     client.on("terminal_output", (m) => seenB.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
-    socket.receive({ type: "terminal_snapshot", sessionId: "s1", seq: 7, data: "" });
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 8, data: "" });
+    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 7, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 8, data: "" });
     // B renders from the re-snapshot; A sees exactly one reset snapshot and no
     // duplicated output frames.
     expect(seenB).toEqual(["snap:7", "out:8"]);
     expect(seenA).toEqual(["snap:3", "out:4", "snap:7", "out:8"]);
     // Detaching one view keeps the shared wire viewer alive: outputs still flow.
     client.detachTerminal("s1");
-    socket.receive({ type: "terminal_output", sessionId: "s1", seq: 9, data: "" });
+    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 9, data: "" });
     expect(seenA.at(-1)).toBe("out:9");
     expect(seenB.at(-1)).toBe("out:9");
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
@@ -642,25 +1113,25 @@ describe("terminal attach refcounting", () => {
 
   test("same-connection resync preserves the existing wire subscription", () => {
     const { client, socket } = connected();
-    socket.receive(INIT_WITH_SESSION);
+    socket.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     const attachesBeforeResync = sentTypes(socket).filter(
       (type) => type === "terminal_attach",
     ).length;
 
-    socket.receive({ ...INIT_WITH_SESSION, type: "resync" });
+    socket.receive({ ...INIT_WITH_TERMINAL, type: "resync" });
 
     expect(sentTypes(socket).filter((type) => type === "terminal_attach")).toHaveLength(
       attachesBeforeResync,
     );
   });
 
-  test("reconnect re-subscribes running sessions views still hold, without double-counting", () => {
+  test("reconnect re-subscribes running terminals views still hold, without double-counting", () => {
     const { client } = dialing({ reconnect: true });
     const first = FakeSocket.instances.at(-1);
     if (first === undefined) throw new Error("no socket");
     first.open();
-    first.receive(INIT_WITH_SESSION);
+    first.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(1);
 
@@ -671,7 +1142,7 @@ describe("terminal attach refcounting", () => {
       const second = FakeSocket.instances.at(-1);
       if (second === undefined || second === first) throw new Error("no reconnect socket");
       second.open();
-      second.receive({ ...INIT_WITH_SESSION, selfConnId: "conn-reconnected" });
+      second.receive({ ...INIT_WITH_TERMINAL, selfConnId: "conn-reconnected" });
       // server viewer registry is connection-scoped: SDK must re-attach exactly once
       expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
       // a single detach still fully unsubscribes (refcount untouched by reconnect)
@@ -683,6 +1154,46 @@ describe("terminal attach refcounting", () => {
   });
 });
 
+describe("terminal naming", () => {
+  const NAMED_TERMINAL = {
+    id: "s1",
+    containerId: "container",
+    name: null,
+    machineId: "m1",
+    status: "running" as const,
+    exitCode: null,
+    cols: 80,
+    rows: 24,
+    controllerId: "me",
+    createdBy: "me",
+  };
+
+  test("a renamed event relabels the terminal in place and notifies listeners", () => {
+    const { client, socket } = connected();
+    socket.receive({ ...INIT, terminals: [NAMED_TERMINAL] });
+    let changes = 0;
+    client.on("terminals_changed", () => {
+      changes += 1;
+    });
+
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "renamed", name: "build" });
+
+    expect(client.terminals.get("s1")?.name).toBe("build");
+    // Everything else about the terminal is untouched by a rename.
+    expect(client.terminals.get("s1")).toEqual({ ...NAMED_TERMINAL, name: "build" });
+    expect(changes).toBe(1);
+  });
+
+  test("a renamed event with no label clears the name back to the default", () => {
+    const { client, socket } = connected();
+    socket.receive({ ...INIT, terminals: [{ ...NAMED_TERMINAL, name: "build" }] });
+
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "renamed" });
+
+    expect(client.terminals.get("s1")?.name).toBeNull();
+  });
+});
+
 describe("terminal opening", () => {
   test("rejects immediately when the client closes", async () => {
     const { client } = connected();
@@ -690,6 +1201,245 @@ describe("terminal opening", () => {
 
     client.close();
 
-    await expect(opening).rejects.toThrow("session closed before terminal opened");
+    await expect(opening).rejects.toThrow("terminal closed before terminal opened");
+  });
+});
+
+/**
+ * THE CONNECTION-LEVEL ROSTER FRAME (D3).
+ *
+ * Every other server frame is channelized, and the pool drops frames whose channel it does
+ * not recognise — which is exactly what a `ch`-less roster frame would look like to it. This
+ * suite pins the one exception: registration is workspace-global shared state, so it addresses
+ * the SOCKET, reaches every handle riding it, and never masquerades as room traffic.
+ *
+ * The frames below are handed over as raw JSON text, deliberately: the harness stamps a
+ * channel onto object frames, and stamping this one would test the opposite of the contract.
+ */
+describe("the plugin roster frame", () => {
+  /** A one-plugin roster, the smallest thing that proves the frame arrived intact. */
+  const roster = (id: string, enabled: boolean) => [
+    {
+      manifest: {
+        id,
+        version: "0.1.0",
+        title: id,
+        description: "",
+        capabilities: [],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      enabled,
+      source: "builtin",
+      actions: [],
+    },
+  ];
+
+  test("a roster frame carrying no channel is delivered, not dropped", () => {
+    const { client, socket } = connected();
+    const seen: unknown[] = [];
+    client.onPlugins((next) => {
+      seen.push(next);
+    });
+
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(roster("core.draw", true));
+
+    // A disable arrives the same way, which is what makes hot enablement reload-free (D4).
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a late subscriber is replayed the last roster, so a plugin mounting late composes", () => {
+    const { client, socket } = connected();
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+
+    const seen: unknown[] = [];
+    const off = client.onPlugins((next) => {
+      seen.push(next);
+    });
+
+    // The frame lands on socket open, long before a panel deep in the tree subscribes. With
+    // no replay that panel would render placeholders until the next enable/disable.
+    expect(seen).toEqual([roster("core.draw", false)]);
+
+    off();
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+    expect(seen).toHaveLength(1);
+  });
+
+  test("the roster is not room traffic: it never reaches `message`, and moves no revision", () => {
+    const { client, socket } = connected();
+    const messages: string[] = [];
+    client.on("message", (msg) => {
+      messages.push(msg.type);
+    });
+    const revBefore = client.rev;
+
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+
+    // A room's frame stream is its document's history; injecting workspace news into it
+    // would make every consumer that switches on frame type handle a frame about no room.
+    expect(messages).toEqual([]);
+    expect(client.rev).toBe(revBefore);
+    expect(client.status).toBe("open");
+  });
+});
+
+/**
+ * THE EVENT PLANE, from the client's end (ADR 0012).
+ *
+ * The contract this suite pins is small and easy to break in exactly three ways: a
+ * subscription that gets channelized (it addresses the SOCKET), a subscription that does not
+ * survive a reconnect (it is presence-class state the server forgets), and an event that gets
+ * remembered (it is news, and remembering it is a backlog with one entry).
+ *
+ * Frames arrive as raw JSON text on purpose: the harness stamps a channel onto object frames,
+ * and stamping these would test the opposite of the contract.
+ */
+describe("the event plane", () => {
+  const CONTAINER: ManifoldRef = { kind: "container", containerId: "container1" };
+  const MACHINES: ManifoldRef = { kind: "plugin", pluginId: "core.machines" };
+
+  const event = (topic: ManifoldRef, kind: string) =>
+    JSON.stringify({ type: "event", topic, kind, at: 1, actor: "p1", payload: {} });
+
+  test("subscribe declares structured topics on the SOCKET, with no channel", () => {
+    const { client, socket } = connected();
+
+    client.subscribe([CONTAINER, MACHINES], () => undefined);
+
+    const declared = framesOfType(socket, "subscribe");
+    expect(declared).toHaveLength(1);
+    // Refs, not `manifold://` strings: the address is compiler-joined, which is what keeps the
+    // topic namespace out of REGISTRY.md §Runtime-joined namespaces.
+    expect(declared[0]).toEqual({ type: "subscribe", topics: [CONTAINER, MACHINES] });
+    expect(declared[0]?.["ch"]).toBeUndefined();
+  });
+
+  test("an event reaches the handler that named its node, and nobody else", () => {
+    const { client, socket } = connected();
+    const mine: string[] = [];
+    const theirs: string[] = [];
+    client.subscribe([CONTAINER], (frame) => mine.push(frame.kind));
+    client.subscribe([MACHINES], (frame) => theirs.push(frame.kind));
+
+    socket.receive(event(CONTAINER, "container_renamed"));
+    socket.receive(event(MACHINES, "machine_online"));
+
+    expect(mine).toEqual(["container_renamed"]);
+    expect(theirs).toEqual(["machine_online"]);
+  });
+
+  test("a container subscription hears its own leaves, because the grammar nests them", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
+
+    socket.receive(
+      event({ kind: "element", containerId: "container1", elementId: "e1" }, "element_placed"),
+    );
+    socket.receive(event({ kind: "tile", containerId: "container1", tileId: "t1" }, "tile_split"));
+    // A different container is a different node, however similar the id looks.
+    socket.receive(
+      event({ kind: "element", containerId: "container2", elementId: "e1" }, "element_placed"),
+    );
+
+    expect(seen).toEqual(["element_placed", "tile_split"]);
+  });
+
+  test("one delivery per event, however many of a subscription's topics match", () => {
+    const { client, socket } = connected();
+    const seen: string[] = [];
+    const element: ManifoldRef = { kind: "element", containerId: "container1", elementId: "e1" };
+    client.subscribe([CONTAINER, element], (frame) => seen.push(frame.kind));
+
+    socket.receive(event(element, "element_placed"));
+
+    // A handler asked about a SET of nodes, not about a set of matches.
+    expect(seen).toEqual(["element_placed"]);
+  });
+
+  test("nothing is replayed: a handler that subscribes afterwards hears nothing", () => {
+    const { client, socket } = connected();
+    socket.receive(event(CONTAINER, "container_renamed"));
+
+    const seen: string[] = [];
+    client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
+
+    /*
+      The contrast with `onPlugins` is the whole point. A roster is STATE, so the last one is
+      replayed to a late subscriber; an event is NEWS about a change that is already readable
+      through the door a fresh client uses, and replaying it would be catch-up by backlog —
+      the one thing ADR 0012 §5 refuses.
+    */
+    expect(seen).toEqual([]);
+  });
+
+  test("two subscriptions on one socket cost ONE declaration, and neither cancels the other", () => {
+    const { client, socket } = connected();
+    const first = client.subscribe([CONTAINER], () => undefined);
+    client.subscribe([CONTAINER], () => undefined);
+
+    // The server holds a SET: re-declaring a topic it already has is noise on the wire.
+    expect(framesOfType(socket, "subscribe")).toHaveLength(1);
+
+    first();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
+    const stillDelivered: string[] = [];
+    const off = client.subscribe([CONTAINER], (frame) => stillDelivered.push(frame.kind));
+    socket.receive(event(CONTAINER, "container_renamed"));
+    expect(stillDelivered).toEqual(["container_renamed"]);
+    off();
+  });
+
+  test("the last holder's release withdraws the topic", () => {
+    const { client, socket } = connected();
+    const off = client.subscribe([CONTAINER, MACHINES], () => undefined);
+
+    off();
+
+    expect(framesOfType(socket, "unsubscribe")).toEqual([
+      { type: "unsubscribe", topics: [CONTAINER, MACHINES] },
+    ]);
+    // Releasing twice is a no-op, not a second withdrawal of somebody else's subscription.
+    off();
+    expect(framesOfType(socket, "unsubscribe")).toHaveLength(1);
+  });
+
+  test("a reconnect re-declares every live topic, after the rejoin", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected({ reconnect: true, backoffCapMs: 0 });
+    client.subscribe([CONTAINER], () => undefined);
+
+    socket.close(1006, "abnormal");
+    vi.advanceTimersByTime(5_000);
+    const replacement = FakeSocket.instances.at(-1);
+    if (!replacement || replacement === socket) throw new Error("no reconnect socket");
+    replacement.open();
+
+    /*
+      Subscriptions die with the socket, so the client re-declares them rather than the server
+      remembering them — and AFTER the join, because the credential a subscription is
+      authorized against arrives on `join`. A subscribe ahead of it has nothing to check.
+    */
+    expect(sentTypes(replacement)).toEqual(["join", "subscribe"]);
+    client.close();
+  });
+
+  test("an event is not room traffic: it never reaches `message`, and moves no revision", () => {
+    const { client, socket } = connected();
+    const messages: string[] = [];
+    client.on("message", (msg) => {
+      messages.push(msg.type);
+    });
+    const revBefore = client.rev;
+
+    socket.receive(event(CONTAINER, "container_renamed"));
+
+    expect(messages).toEqual([]);
+    expect(client.rev).toBe(revBefore);
+    expect(client.status).toBe("open");
   });
 });

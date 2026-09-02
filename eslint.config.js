@@ -15,8 +15,30 @@ export default tseslint.config(
     },
   },
   {
-    files: ["packages/web/**/*.{ts,tsx}"],
+    files: [
+      "packages/web/**/*.{ts,tsx}",
+      "packages/plugin/**/*.{ts,tsx}",
+      "packages/plugins/**/*.{ts,tsx}",
+    ],
     plugins: { "react-hooks": reactHooks },
     rules: reactHooks.configs.recommended.rules,
+  },
+  {
+    /*
+      The app shell's cache is a SERVICE WORKER: plain JS on purpose (it is shipped verbatim by
+      the build, not compiled), so it gets neither the DOM globals of a browser file nor TypeScript's
+      lib resolution. Its globals are declared here rather than pulled from a `globals` package —
+      six names is not a dependency.
+    */
+    files: ["packages/web/sw.js"],
+    languageOptions: {
+      globals: {
+        Request: "readonly",
+        URL: "readonly",
+        caches: "readonly",
+        fetch: "readonly",
+        self: "readonly",
+      },
+    },
   },
 );

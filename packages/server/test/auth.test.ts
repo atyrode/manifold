@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Pad } from "@manifold/protocol";
+import type { Container } from "@manifold/protocol";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { sha256Hex } from "../src/stores.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -10,7 +10,7 @@ interface TokenDumpRow {
   hash: string;
   principal_id: string;
   caps: string;
-  pad_id: string | null;
+  container_id: string | null;
   created_at: number;
   revoked_at: number | null;
 }
@@ -29,9 +29,14 @@ function authFixture() {
   const ownerKey = "a".repeat(64);
   const auth = new AuthService(store, ownerKey, runtime);
   const root = auth.authenticate(ownerKey);
-  const pad: Pad = { id: runtime.newId(), name: "auth pad", createdAt: runtime.now() };
-  store.createPad(pad);
-  return { runtime, store, auth, root, pad };
+  const container: Container = {
+    id: runtime.newId(),
+    name: "auth container",
+    createdAt: runtime.now(),
+    discipline: "canvas",
+  };
+  store.createContainer(container);
+  return { runtime, store, auth, root, container };
 }
 
 function expectForbidden(action: () => unknown): void {
@@ -50,8 +55,8 @@ describe("AuthService attenuation", () => {
     const delegatedGrant = fixture.auth.mintToken(
       {
         principal: { name: "delegate", kind: "agent" },
-        caps: ["tokens:mint", "scene:write"],
-        padId: fixture.pad.id,
+        caps: ["tokens:mint", "scenes:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
@@ -60,16 +65,16 @@ describe("AuthService attenuation", () => {
     const child = fixture.auth.mintToken(
       {
         principal: { name: "child", kind: "agent" },
-        caps: ["scene:write"],
+        caps: ["scenes:write"],
       },
       delegated,
     );
-    expect(child.caps).toEqual(["scene:write"]);
-    expect(child.padId).toBe(fixture.pad.id);
+    expect(child.caps).toEqual(["scenes:write"]);
+    expect(child.containerId).toBe(fixture.container.id);
 
     expectForbidden(() =>
       fixture.auth.mintToken(
-        { principal: { name: "wider", kind: "agent" }, caps: ["terminal:write"] },
+        { principal: { name: "wider", kind: "agent" }, caps: ["terminals:write"] },
         delegated,
       ),
     );
@@ -84,7 +89,7 @@ describe("AuthService attenuation", () => {
         {
           principal: { name: "scoped-root", kind: "human" },
           caps: ["*"],
-          padId: fixture.pad.id,
+          containerId: fixture.container.id,
         },
         fixture.root,
       ),
@@ -97,7 +102,7 @@ describe("AuthService attenuation", () => {
     const ordinaryGrant = fixture.auth.mintToken(
       {
         principal: { name: "ordinary", kind: "agent" },
-        caps: ["scene:write", "terminal:write"],
+        caps: ["scenes:write", "terminals:write"],
       },
       fixture.root,
     );
@@ -134,7 +139,7 @@ describe("AuthService transaction boundaries", () => {
 
     expect(() =>
       fixture.auth.mintToken(
-        { principalId: fixture.root.principal.id, caps: ["pads:read"] },
+        { principalId: fixture.root.principal.id, caps: ["containers:read"] },
         fixture.root,
       ),
     ).toThrow("injected event conflict");
@@ -193,13 +198,13 @@ describe("Token secret persistence", () => {
     const grant = fixture.auth.mintToken(
       {
         principal: { name: "hash-check", kind: "human" },
-        caps: ["pads:read"],
+        caps: ["containers:read"],
       },
       fixture.root,
     );
     const rows = fixture.store.db
       .query<TokenDumpRow, []>(
-        "SELECT id, hash, principal_id, caps, pad_id, created_at, revoked_at FROM tokens",
+        "SELECT id, hash, principal_id, caps, container_id, created_at, revoked_at FROM tokens",
       )
       .all();
     const row = rows.find((candidate) => candidate.hash === sha256Hex(grant.token));
@@ -215,8 +220,8 @@ describe("AuthService principal ownership", () => {
     const delegatedGrant = fixture.auth.mintToken(
       {
         principal: { name: "scoped minter", kind: "agent" },
-        caps: ["tokens:mint", "scene:write"],
-        padId: fixture.pad.id,
+        caps: ["tokens:mint", "scenes:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
@@ -224,7 +229,7 @@ describe("AuthService principal ownership", () => {
     const unrelated = fixture.auth.mintToken(
       {
         principal: { name: "unrelated", kind: "human" },
-        caps: ["pads:read"],
+        caps: ["containers:read"],
       },
       fixture.root,
     );
@@ -241,8 +246,8 @@ describe("AuthService principal ownership", () => {
     const delegatedGrant = fixture.auth.mintToken(
       {
         principal: { name: "delegate", kind: "agent" },
-        caps: ["tokens:mint", "scene:write"],
-        padId: fixture.pad.id,
+        caps: ["tokens:mint", "scenes:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
@@ -252,7 +257,7 @@ describe("AuthService principal ownership", () => {
       fixture.auth.mintToken(
         {
           principalId: fixture.root.principal.id,
-          caps: ["scene:write"],
+          caps: ["scenes:write"],
         },
         delegated,
       ),
@@ -265,8 +270,8 @@ describe("AuthService principal ownership", () => {
     const delegatedGrant = fixture.auth.mintToken(
       {
         principal: { name: "delegate", kind: "agent" },
-        caps: ["tokens:mint", "scene:write"],
-        padId: fixture.pad.id,
+        caps: ["tokens:mint", "scenes:write"],
+        containerId: fixture.container.id,
       },
       fixture.root,
     );
@@ -274,14 +279,14 @@ describe("AuthService principal ownership", () => {
     const child = fixture.auth.mintToken(
       {
         principal: { name: "child", kind: "agent" },
-        caps: ["scene:write"],
+        caps: ["scenes:write"],
       },
       delegated,
     );
     const unscoped = fixture.auth.mintToken(
       {
         principalId: child.principal.id,
-        caps: ["pads:read"],
+        caps: ["containers:read"],
       },
       fixture.root,
     );

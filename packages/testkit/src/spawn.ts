@@ -1,18 +1,33 @@
 import {
-  CreatePadRequestSchema,
+  ActionOutcomeSchema,
+  ContainersResponseSchema,
+  CreateContainerRequestSchema,
   HealthResponseSchema,
   HttpErrorSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
-  OkResponseSchema,
-  PadPresenceResponseSchema,
-  PadResponseSchema,
-  PadsResponseSchema,
+  AttendanceResponseSchema,
+  ContainerResponseSchema,
+  ContainerTerminalsResponseSchema,
+  DialSchema,
+  DialTicketSchema,
+  RevokeResultSchema,
+  ShareGrantSchema,
+  ShareInventorySchema,
+  TerminalsResponseSchema,
   TokenGrantSchema,
+  type ActionOutcome,
+  type Cap,
+  type Dial,
+  type DialTicket,
   type HttpError,
   type MintTokenRequest,
-  type Pad,
+  type Container,
+  type ContainerTerminalSummary,
+  type ShareGrant,
+  type ShareInventory,
+  type TerminalSummary,
   type TokenGrant,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
@@ -78,11 +93,13 @@ export interface StartAgentOptions {
 
 /** Resume hints let a fresh SDK instance exercise the documented returning-client join path. */
 export interface ConnectOptions {
-  readonly padId: string;
+  readonly containerId: string;
   readonly token: string;
   readonly lastEpoch?: string;
   readonly lastRev?: number;
   readonly reconnect?: boolean;
+  /** Joins as a read-only watcher: no roster entry, no presence, no vote in the bubble rule. */
+  readonly spectator?: boolean;
 }
 
 /** A protocol parser is supplied per endpoint so ownerFetch never returns unchecked JSON. */
@@ -97,24 +114,24 @@ export interface OwnerFetchOptions<T = unknown> extends RequestInit {
 
 const RESPONSE_SCHEMA_BY_REQUEST: Record<string, ResponseSchema<unknown>> = {
   "GET /healthz": HealthResponseSchema,
-  "GET /api/machines": MachinesResponseSchema,
-  "POST /api/machines": MachineEnrollResponseSchema,
-  "GET /api/pads": PadsResponseSchema,
-  "GET /api/pad-presence": PadPresenceResponseSchema,
-  "POST /api/pads": PadResponseSchema,
-  "POST /api/tokens": TokenGrantSchema,
-  "POST /api/tokens/revoke": OkResponseSchema,
+  "GET /api/attendance": AttendanceResponseSchema,
+  /*
+    No terminal route is listed here any more: the INDEX is `core.terminals.listAll` and the
+    per-container listing is `core.terminals.listByContainer`, both reached through `ownerAction`
+    like every other door. The gestures that used to be endpoints (`expand`, `pin`) went the
+    same way earlier, as destinations of the placement door.
+   */
+  /** The containment graph: what each container holds and what it points at. */
+  "GET /api/containers": ContainersResponseSchema,
 };
 
 function defaultResponseSchema(path: string, method: string): ResponseSchema<unknown> | undefined {
   const pathname = new URL(path, "http://manifold.test").pathname;
   const exact = RESPONSE_SCHEMA_BY_REQUEST[`${method} ${pathname}`];
   if (exact !== undefined) return exact;
-  if (/^\/api\/pads\/[^/]+$/.test(pathname)) {
-    if (method === "GET") return PadResponseSchema;
-    if (method === "PATCH") return PadResponseSchema;
-    if (method === "DELETE") return OkResponseSchema;
-  }
+  // The one container route left, and a read: create, rename and delete are `core.views` actions.
+  if (method === "GET" && /^\/api\/containers\/[^/]+$/.test(pathname))
+    return ContainerResponseSchema;
   return undefined;
 }
 
@@ -423,57 +440,147 @@ export async function ownerFetch(
   return schema.parse(body);
 }
 
-/** Mints a grant through the owner boundary and validates both request and response schemas. */
+/**
+ * Invokes an action as any principal and returns the OUTCOME. The action door answers 200
+ * for a denial too, so a refusal is data here exactly as it is on the wire: a case asserting
+ * "this token may not" reads `outcome.denial.rule` instead of catching a status.
+ */
+export async function callAction(
+  server: Pick<TestServer, "httpUrl">,
+  token: string,
+  name: string,
+  args: unknown,
+): Promise<ActionOutcome> {
+  const response = await fetch(
+    new URL(`/api/actions/${encodeURIComponent(name)}`, server.httpUrl),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    },
+  );
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`HTTP ${response.status} returned non-JSON`, { cause: error });
+  }
+  if (!response.ok) throw new HttpResponseError(response.status, HttpErrorSchema.parse(body));
+  return ActionOutcomeSchema.parse(body);
+}
+
+/** Invokes an action as the owner and returns its result, throwing the denial's message. */
+export async function ownerAction(
+  server: Pick<TestServer, "httpUrl" | "ownerKey">,
+  name: string,
+  args: unknown,
+): Promise<unknown> {
+  const outcome = await callAction(server, server.ownerKey, name, args);
+  if (!outcome.ok) throw new Error(`${name} refused: ${outcome.denial.message}`);
+  return outcome.result;
+}
+
+/**
+ * Mints a grant through the owner boundary and validates both request and response schemas.
+ * `core.access.mint` replaced `POST /api/tokens`; the helper's shape is unchanged, so
+ * every fixture that needs an attenuated identity is unaffected by where the door lives.
+ */
 export async function mintToken(
   server: TestServer,
   request: MintTokenRequest,
 ): Promise<TokenGrant> {
   const body = MintTokenRequestSchema.parse(request);
-  return ownerFetch(server, "/api/tokens", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    responseSchema: TokenGrantSchema,
-  });
+  return TokenGrantSchema.parse(await ownerAction(server, "core.access.mint", body));
 }
 
-/** Enrolls an agent machine once, preserving the one-time raw machine token for its process. */
+/**
+ * Enrolls an agent machine once, preserving the one-time raw machine token for its process.
+ * `core.machines.enroll` replaced `POST /api/machines`; the helper's shape is unchanged.
+ */
 export async function enrollMachine(
   server: TestServer,
   name: string,
 ): Promise<{ machineId: string; machineToken: string }> {
   if (name.length === 0 || name.length > 64) throw new Error("machine name must be 1-64 chars");
-  const response = await ownerFetch(server, "/api/machines", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
-    responseSchema: MachineEnrollResponseSchema,
-  });
+  const response = MachineEnrollResponseSchema.parse(
+    await ownerAction(server, "core.machines.enroll", { name }),
+  );
   if (response.machineToken === undefined) {
     throw new Error(`machine ${JSON.stringify(name)} was already enrolled; no token minted`);
   }
   return { machineId: response.machine.id, machineToken: response.machineToken };
 }
 
-/** Creates a pad through the owner boundary and returns only its protocol-validated record. */
-export async function createPad(server: TestServer, name: string): Promise<Pad> {
-  const request = CreatePadRequestSchema.parse({ name });
-  const response = await ownerFetch(server, "/api/pads", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-    responseSchema: PadResponseSchema,
+/**
+ * Creates a container through the owner boundary and returns only its protocol-validated
+ * record. `core.index.createContainer` replaced `POST /api/containers`; the helper's shape is unchanged,
+ * so every fixture that needs a container is unaffected by where the door lives.
+ */
+export async function createContainer(
+  server: TestServer,
+  name: string,
+  discipline?: "canvas" | "composition",
+): Promise<Container> {
+  const request = CreateContainerRequestSchema.parse({
+    name,
+    ...(discipline === undefined ? {} : { discipline }),
   });
-  return response.pad;
+  return ContainerResponseSchema.parse(
+    await ownerAction(server, "core.index.createContainer", request),
+  ).container;
+}
+
+/** Every container the caller can see (`core.index.listContainers`), in index order. */
+export async function listContainers(server: TestServer): Promise<readonly Container[]> {
+  return ContainersResponseSchema.parse(await ownerAction(server, "core.index.listContainers", {}))
+    .containers;
+}
+
+/** Reads one container by id (`core.index.readContainer`). */
+export async function getContainer(server: TestServer, containerId: string): Promise<Container> {
+  return ContainerResponseSchema.parse(
+    await ownerAction(server, "core.index.readContainer", { containerId }),
+  ).container;
+}
+
+/** Retires a container and everything that pointed at it (`core.index.deleteContainer`). */
+export async function deleteContainer(server: TestServer, containerId: string): Promise<void> {
+  await ownerAction(server, "core.index.deleteContainer", { containerId });
+}
+
+/**
+ * THE terminal index (`core.terminals.listAll`): every terminal, with the composition it lives
+ * in and whether anything references that home. Here rather than duplicated per suite,
+ * because three e2e files were asking the same question three ways.
+ */
+export async function listTerminals(server: TestServer): Promise<readonly TerminalSummary[]> {
+  return TerminalsResponseSchema.parse(await ownerAction(server, "core.terminals.listAll", {}))
+    .terminals;
+}
+
+/** Terminals by the container each is homed in (`core.terminals.listByContainer`). */
+export async function listTerminalsByContainer(
+  server: TestServer,
+): Promise<readonly ContainerTerminalSummary[]> {
+  return ContainerTerminalsResponseSchema.parse(
+    await ownerAction(server, "core.terminals.listByContainer", {}),
+  ).terminals;
 }
 
 /** Connects the one shared SDK client and optionally seeds documented resume hints. */
 export async function connect(server: TestServer, options: ConnectOptions): Promise<SessionClient> {
   const client = new SessionClient({
     url: server.wsUrl,
-    padId: options.padId,
+    containerId: options.containerId,
     token: options.token,
     ...(options.reconnect !== undefined ? { reconnect: options.reconnect } : {}),
+    ...(options.spectator === true ? { spectator: true } : {}),
   });
   if (options.lastEpoch !== undefined || options.lastRev !== undefined) {
     if (options.lastEpoch === undefined || options.lastRev === undefined) {
@@ -486,7 +593,7 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
     await Promise.race([
       client.connect(),
       Bun.sleep(CONNECT_TIMEOUT_MS).then(() => {
-        throw new Error(`session connect timed out after ${CONNECT_TIMEOUT_MS}ms`);
+        throw new Error(`terminal connect timed out after ${CONNECT_TIMEOUT_MS}ms`);
       }),
     ]);
     return client;
@@ -514,9 +621,9 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
         if (proc.exitCode !== null) {
           throw new Error(`agent exited before readiness with code ${proc.exitCode}`);
         }
-        const body = await ownerFetch(server, "/api/machines", {
-          responseSchema: MachinesResponseSchema,
-        });
+        const body = MachinesResponseSchema.parse(
+          await ownerAction(server, "core.machines.list", {}),
+        );
         const machine = body.machines.find(
           (candidate) =>
             candidate.online && (options.name === undefined || candidate.name === options.name),
@@ -540,10 +647,145 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
   }
 }
 
+/**
+ * TWO real instances, spawned together, for the one class of claim a single process cannot
+ * make: that a share crosses a genuine trust boundary.
+ *
+ * The owner keys are DIFFERENT on purpose, and it is the fixture's whole point. Every other
+ * multi-process helper here reuses `OWNER_KEY` because the processes are halves of one
+ * instance; two instances sharing an owner key would authenticate at each other's doors
+ * before any share existed, and every assertion downstream would pass for the wrong reason.
+ * A guest that can already open the host's container proves nothing about sharing.
+ */
+export interface InstancePair {
+  readonly host: TestServer;
+  readonly guest: TestServer;
+  stop(signal?: StopSignal): Promise<void>;
+}
+
+/** Per-side overrides; both sides otherwise take the ordinary isolated-server defaults. */
+export interface SpawnInstancePairOptions {
+  readonly host?: StartServerOptions;
+  readonly guest?: StartServerOptions;
+}
+
+const HOST_OWNER_KEY = "11111111111111111111111111111111111111111111111111111111111111a1";
+const GUEST_OWNER_KEY = "22222222222222222222222222222222222222222222222222222222222222b2";
+
+/** Spawns a host and a guest instance concurrently; a failure on either side stops both. */
+export async function spawnInstancePair(
+  options: SpawnInstancePairOptions = {},
+): Promise<InstancePair> {
+  const started = await Promise.allSettled([
+    startServer({ ownerKey: HOST_OWNER_KEY, ...options.host }),
+    startServer({ ownerKey: GUEST_OWNER_KEY, ...options.guest }),
+  ]);
+  const live = started.filter(
+    (result): result is PromiseFulfilledResult<TestServer> => result.status === "fulfilled",
+  );
+  if (live.length < started.length) {
+    await Promise.allSettled(live.map((result) => result.value.stop()));
+    const failure = started.find((result) => result.status === "rejected");
+    throw failure?.status === "rejected"
+      ? new Error(`instance pair failed to start: ${String(failure.reason)}`, {
+          cause: failure.reason,
+        })
+      : new Error("instance pair failed to start");
+  }
+  const [host, guest] = live.map((result) => result.value) as [TestServer, TestServer];
+  return {
+    host,
+    guest,
+    async stop(signal?: StopSignal): Promise<void> {
+      await Promise.allSettled([guest.stop(signal), host.stop(signal)]);
+    },
+  };
+}
+
+/**
+ * The instance origin a server declares and a share is minted for. It is derived from the
+ * ready URL and from nothing else, because `MANIFOLD_PUBLIC_URL` is the ONE door onto "how
+ * this instance is addressed" — a fixture that invented a second spelling would be testing
+ * a configuration the product does not have.
+ */
+export function instanceOrigin(server: Pick<TestServer, "httpUrl">): string {
+  return new URL(server.httpUrl).origin;
+}
+
+/** Mints a share on the HOST for the guest's origin and returns the one-time raw token. */
+export async function mintShare(
+  host: TestServer,
+  guest: Pick<TestServer, "httpUrl">,
+  containerId: string,
+  caps: readonly Cap[],
+): Promise<ShareGrant> {
+  return ShareGrantSchema.parse(
+    await ownerAction(host, "core.access.mintShare", {
+      node: { kind: "container", containerId },
+      caps,
+      origin: instanceOrigin(guest),
+    }),
+  );
+}
+
+/**
+ * Dials the host from the GUEST and waits until the control link reports itself live. The
+ * door answers as soon as the row exists, so the wait is on the socket rather than on the
+ * call — a dial that returned before its `welcome` would make every downstream assertion
+ * race the handshake.
+ */
+export async function dialShare(
+  guest: TestServer,
+  host: Pick<TestServer, "httpUrl">,
+  token: string,
+): Promise<Dial> {
+  const dialed = DialSchema.parse(
+    await ownerAction(guest, "core.access.dialShare", {
+      origin: instanceOrigin(host),
+      token,
+    }),
+  );
+  return await waitFor(
+    async () => {
+      const { dials } = ShareInventorySchema.parse(
+        await ownerAction(guest, "core.access.listShares", {}),
+      );
+      const current = dials.find((candidate) => candidate.id === dialed.id);
+      return current?.status === "live" ? current : false;
+    },
+    READY_TIMEOUT_MS,
+    50,
+  );
+}
+
+/** The guest's own door: turns a dial into a host ticket THIS principal may project with. */
+export async function openDial(
+  server: TestServer,
+  token: string,
+  dialId: string,
+): Promise<DialTicket> {
+  const outcome = await callAction(server, token, "core.access.openDial", { dialId });
+  if (!outcome.ok) throw new Error(`openDial refused: ${outcome.denial.message}`);
+  return DialTicketSchema.parse(outcome.result);
+}
+
+/** Every share this instance hands out and every dial it holds, in one answer. */
+export async function listShares(server: TestServer): Promise<ShareInventory> {
+  return ShareInventorySchema.parse(await ownerAction(server, "core.access.listShares", {}));
+}
+
+/** Revokes a share at the host and answers how many guest identities it severed. */
+export async function revokeShare(host: TestServer, shareId: string): Promise<number> {
+  const { revoked } = RevokeResultSchema.parse(
+    await ownerAction(host, "core.access.revokeShare", { shareId }),
+  );
+  return revoked;
+}
+
 /** Returns true only when the enrolled machine is owner-visible as online after reconnect. */
 export async function isMachineOnline(server: TestServer, machineId: string): Promise<boolean> {
-  const { machines } = await ownerFetch(server, "/api/machines", {
-    responseSchema: MachinesResponseSchema,
-  });
+  const { machines } = MachinesResponseSchema.parse(
+    await ownerAction(server, "core.machines.list", {}),
+  );
   return machines.some((machine) => machine.id === machineId && machine.online);
 }

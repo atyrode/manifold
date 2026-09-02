@@ -1,0 +1,144 @@
+/*
+ * THE DOOR FORM'S SKIN — the generated argument form a pinned card's door opens (#128),
+ * loaded with the module that paints it (`door-forms.tsx` / `door-form.tsx`), so the skin
+ * ships and disappears with the seam it dresses. The `door-form` family's registry row in
+ * REGISTRY.md §Lexicon `cssFamilies` names this file as its owner (S13).
+ *
+ * DELIBERATELY ELEMENT-SCOPED: rjsf's emitted class vocabulary (`form-group`,
+ * `form-control`, …) is an internals detail of the adopted engine
+ * (docs/decisions/2026-09-01-rjsf-door-forms.md), so no rule here anchors on it and no
+ * `cssFamilies` row admits it — swap the engine and this sheet restyles the same elements.
+ * Everything scopes under `.door-form*`, which the wrapper and the popover layer wear.
+ */
+
+/* The popover layer a door opens into: wider than the default chrome, because a form's
+   labels and its refusal line need the room, and internally scrollable past 60vh. */
+.door-form__layer {
+  width: 21rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.door-form__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.door-form__head code {
+  color: #868e96;
+  font-size: 0.65rem;
+}
+
+/* The generated fields: one vertical rhythm, labels above inputs, every control on the
+   card's own dark ground. Element selectors only — see the header comment. */
+.door-form form {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.door-form label {
+  display: block;
+  color: #adb5bd;
+  font-size: 0.68rem;
+}
+
+.door-form input,
+.door-form select,
+.door-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #343a40;
+  border-radius: 0.25rem;
+  background: #1f2226;
+  padding: 0.2rem 0.35rem;
+  color: #dee2e6;
+  font-size: 0.7rem;
+}
+
+.door-form input[type="checkbox"] {
+  width: auto;
+}
+
+.door-form input:focus-visible,
+.door-form select:focus-visible,
+.door-form textarea:focus-visible {
+  border-color: #4c6ef5;
+  outline: none;
+}
+
+.door-form fieldset {
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.door-form legend {
+  padding: 0;
+  color: #adb5bd;
+  font-size: 0.68rem;
+}
+
+/* rjsf's per-field error lists, reached as elements: quiet, red, unbulleted. */
+.door-form ul {
+  margin: 0.1rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: #ffa8a8;
+  font-size: 0.65rem;
+}
+
+.door-form__submit {
+  justify-self: start;
+  margin-top: 0.2rem;
+  border: 1px solid #343a40;
+  border-radius: 0.25rem;
+  background: #1f2226;
+  cursor: pointer;
+  padding: 0.15rem 0.6rem;
+  color: #dee2e6;
+  font-size: 0.68rem;
+}
+
+.door-form__submit:hover:not(:disabled) {
+  border-color: #4c6ef5;
+}
+
+.door-form__submit:disabled {
+  cursor: default;
+  color: #868e96;
+}
+
+/* The outcome, as the data it is: a result dump the reader can scroll, or the named
+   refusal in the card's absent-red. */
+.door-form__result {
+  margin: 0.35rem 0 0;
+  max-height: 8rem;
+  overflow-y: auto;
+  border-top: 1px solid #343a40;
+  padding-top: 0.3rem;
+  color: #8ce99a;
+  font-size: 0.65rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.door-form__refusal {
+  margin: 0.35rem 0 0;
+  border-top: 1px solid #343a40;
+  padding-top: 0.3rem;
+  color: #ffa8a8;
+  font-size: 0.68rem;
+}
+
+.door-form__refusal code {
+  color: #ffc9c9;
+}
+
+.door-form__loading {
+  margin: 0;
+  color: #868e96;
+  font-size: 0.68rem;
+  font-style: italic;
+}

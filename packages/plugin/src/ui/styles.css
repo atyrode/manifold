@@ -1,0 +1,972 @@
+/*
+ * THE NEUTRAL CHROME'S SKIN — the mechanism half of `@manifold/plugin/ui` and
+ * `@manifold/plugin/hooks`, which is to say: the boxes two parties that may not import each
+ * other both see.
+ *
+ * The one node titlebar, the one tile tree in all three of its skins, the drop preview and
+ * its denial note, the carry ghost and the ease-away it rides, the glyph vocabulary, the
+ * overlay slot one plugin's renderer paints another's occupant into, and the F9 zone probe.
+ *
+ * Why the tile tree's THREE skins are here and not in the three renderers that ask for them:
+ * `tile-tree.tsx` declares all nine class names itself (`COMPOSITION_TREE_CLASSES`,
+ * `PORTAL_TREE_CLASSES`, `WORKSPACE_TREE_CLASSES`) and hard-codes each divider's thickness in
+ * px to match the `flex-basis` below, so drop geometry can subtract exactly what the tree
+ * draws. The component asserts these pixels; the component owns them.
+ */
+
+.composition-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.composition-split.is-row {
+  flex-direction: row;
+}
+
+.composition-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.composition-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.composition-divider {
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.composition-divider:hover,
+.composition-divider:active {
+  background: #4c6ef5;
+}
+
+.composition-split.is-row > .composition-divider {
+  cursor: col-resize;
+}
+
+.composition-split.is-column > .composition-divider {
+  cursor: row-resize;
+}
+
+.portal-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The direction comes from a class, not an inline style: a portal's tree and the route's
+   tree are ONE component (`tile-tree.tsx`), and it speaks in is-row / is-column. */
+.portal-split.is-row {
+  flex-direction: row;
+}
+
+.portal-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.portal__slot {
+  display: flex;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.portal__slot > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A portal wears the route's dividers, because it IS the route's tree: an engaged portal
+   resizes its composition through the same drag and the same doc write. Exactly DOUBLE
+   the route's 0.35rem, because a preview is drawn at PORTAL_PREVIEW_SCALE — the transform
+   shrinks paint and hit area together, so twice the layout thickness is what makes the
+   seam the same size ON SCREEN as the one the route offers. */
+.portal-divider {
+  flex: 0 0 0.7rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.portal-divider:hover,
+.portal-divider:active {
+  background: #4c6ef5;
+}
+
+.portal-split.is-row > .portal-divider {
+  cursor: col-resize;
+}
+
+.portal-split.is-column > .portal-divider {
+  cursor: row-resize;
+}
+
+/* A WATCHING portal's dividers are structure, not controls: the composition's shape is
+   information, but the socket painting it is a spectator whose writes the server
+   refuses, so there is no grab affordance to offer. This is the shared tree's
+   `interactive: false` state, hence both skins. */
+.composition-split > .composition-divider.is-inert,
+.portal-split > .portal-divider.is-inert {
+  cursor: default;
+}
+
+.composition-divider.is-inert:hover,
+.composition-divider.is-inert:active,
+.portal-divider.is-inert:hover,
+.portal-divider.is-inert:active {
+  background: #23272e;
+}
+
+/* ── The overlay slot ─────────────────────────────────────────────────────────
+   Where one plugin's chrome is painted over another's ref (the presence island,
+   the spotlight chip), addressed by slot through the projection registry. The wrapper
+   exists to carry `data-overlay-slot` for the gates, never to be a box: `contents`
+   means the registered component lands in the ref's own layout exactly as it did
+   when the renderer imported it directly, so mounting a slot in a flex host adds no
+   child and an empty slot costs nothing. */
+.container-overlay-slot {
+  display: contents;
+}
+
+/* The WORKSPACE's overlay slot: the same wrapper one level up, where the host is the
+   application frame rather than a container renderer (the inspector, the arrange
+   toolbar). `contents` for the identical reason — the slot carries
+   `data-workspace-overlay-slot` for the gates and adds no box to the frame. */
+.workspace-overlay-slot {
+  display: contents;
+}
+
+/* ── The one node titlebar ────────────────────────────────────────────────────
+   Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
+   editable title, a modular middle slot, and a right-justified control cluster.
+   Adopters keep their own class on the same element for drag handles and proof
+   hooks, and override only what is genuinely theirs (the terminal bar floats, the
+   composed renderer's header is page chrome). */
+.node-titlebar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 0.5rem 0.2rem;
+}
+
+.node-titlebar__icon {
+  display: inline-grid;
+  place-items: center;
+  color: #5c6370;
+}
+
+/* Sized to its text, never to its column. The title is the rename zone and the rest of the bar
+   is the bar's own double-click zone, so a title stretched across `minmax(0, 1fr)` would eat
+   the bar: every double-click past the last character would open a rename. It still truncates,
+   because `max-width` keeps the column as its ceiling. */
+.node-titlebar__title {
+  overflow: hidden;
+  max-width: 100%;
+  justify-self: start;
+  color: #adb5bd;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Renaming happens in place, at the title's own size, so the bar never reflows. */
+.node-titlebar__title-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.25rem;
+  color: #f1f3f5;
+  background: #0b0d10;
+  font-size: 0.7rem;
+  font-family: inherit;
+  pointer-events: auto;
+}
+
+.node-titlebar__middle {
+  display: inline-flex;
+  overflow: hidden;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.node-titlebar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  justify-self: end;
+}
+
+/* Reachable without first activating the node — clicking minimize/maximize/close is
+   not a reason to focus a terminal — so the controls opt back into pointer events
+   even where the bar itself lets them through. */
+.node-titlebar__ctl {
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0;
+  color: #868e96;
+  background: transparent;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.node-titlebar__ctl:hover:not(:disabled) {
+  color: #e6e9ef;
+  background: #2a2f37;
+}
+
+.node-titlebar__ctl:disabled {
+  color: #5c6370;
+  cursor: default;
+}
+
+.node-titlebar__ctl--close:hover {
+  color: #fff;
+  background: #e03131;
+}
+
+/* Absolute inside its preview box: `.tile-preview` (the tile area's percentage
+   space) establishes a containing block. */
+.drop-denial-note {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  overflow: hidden;
+  padding: 0.12rem 0.35rem;
+  color: #ffc9c9;
+  background: rgb(20 20 22 / 82%);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- carry (motion) */
+
+/* A collaborator's carry, under their pointer. Deliberately a CHIP and not a copy of
+   the object: the item is not here yet, and drawing a convincing terminal in flight
+   would claim otherwise. Positioned by the renderer — flow pixels on a canvas,
+   percentages inside a composition — so this rule owns paint only. */
+.carry-ghost {
+  display: flex;
+  position: absolute;
+  z-index: 12;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid currentcolor;
+  border-radius: 0.3rem;
+  background: rgb(22 24 28 / 92%);
+  padding: 0.2rem 0.45rem;
+  max-width: 14rem;
+  color: #dee2e6;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  pointer-events: none;
+  /* Held slightly below-right of the pointer, the way a drag image sits. */
+  translate: 0.75rem 0.75rem;
+}
+
+.carry-ghost__glyph {
+  display: inline-grid;
+  place-items: center;
+  color: #868e96;
+}
+
+.carry-ghost__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The icon vocabulary ──────────────────────────────────────────────────────
+   Every glyph in the application is one lucide drawing rendered by `@manifold/plugin/ui`
+   (see docs/decisions/0009-lucide-icons.md), which owns size and stroke weight per
+   call site. This block owns only PLACEMENT — the boxes icons sit in — and the rule
+   that they inherit `currentColor`, which is what keeps every hover, focus, active
+   and disabled state working through the colour their button already sets. */
+.mf-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: inherit;
+}
+
+/* ── Live split preview (tile-preview-overlay) ────────────────────────────────
+   One drop pipeline for both hosts: the tile AREA is the geometry's reference box,
+   the overlay draws the landing slot in its percentage space, and the REAL panes
+   glide into their prospective places with transform only — no reflow, no PTY
+   resize, no doc write. Appended as one block; nothing above is restyled. */
+.tile-area {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+/* The landing slot: percent-positioned in the area, gliding between zones. Its motion —
+   and the panes' below — reads the floor's `--preview-*` tokens rather than repeating a
+   number, for the same reason `--carry-fade-*` is a token: the slot, its fade and the
+   pane glide are one gesture with one owner for its timing. */
+.tile-preview {
+  position: absolute;
+  z-index: 45;
+  border: 1px solid #748ffc;
+  background: rgb(92 124 250 / 22%);
+  pointer-events: none;
+  transition:
+    left var(--preview-slot-transition),
+    top var(--preview-slot-transition),
+    width var(--preview-slot-transition),
+    height var(--preview-slot-transition),
+    opacity var(--preview-cue-transition);
+}
+
+/* Armed with nothing to say (a divider, the carry's own leaf): the slot stays
+   mounted at its last rect, so re-entering a zone animates instead of popping. */
+.tile-preview.is-idle {
+  opacity: 0;
+}
+
+/* Centred in the slot; `pointer-events: none` rides on the slot itself. */
+.tile-preview__glyph {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  inset: 0;
+  gap: 0.2rem;
+  color: #bac8ff;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+}
+
+.tile-preview__caption {
+  overflow: hidden;
+  max-width: 90%;
+  font-size: 0.68rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* CENTER MEANS THIS EXACT SPOT: a legal exchange wears the established swap
+   orange on the slot AND its partner, so "the two trade seats" never looks like
+   "this half becomes yours". */
+.tile-preview.is-swap {
+  border-color: rgb(255 146 43 / 85%);
+  background: rgb(255 146 43 / 18%);
+}
+
+.tile-preview.is-swap .tile-preview__glyph {
+  color: #ffd8a8;
+}
+
+/* A seatless carry taking an occupied leaf: the occupant is re-homed, not lost.
+   Violet — distinct from legal-blue, swap-orange and denied-red — with the park
+   glyph, because park already means "the representation leaves; the object keeps
+   running elsewhere". */
+.tile-preview.is-replace {
+  border-color: rgb(174 62 201 / 85%);
+  background: rgb(174 62 201 / 18%);
+}
+
+.tile-preview.is-replace .tile-preview__glyph {
+  color: #eebefa;
+}
+
+.tile-preview.is-denied {
+  border-color: rgb(255 107 107 / 60%);
+  background: rgb(255 107 107 / 10%);
+}
+
+/* The FLIP: panes glide as transforms the overlay writes imperatively. Longer than the
+   slot's own rect above because a pane travels further and carries live content — both
+   numbers are named together in the floor's `--preview-*` block. */
+.tile-area.is-previewing [data-tile-id] {
+  transition: transform var(--preview-pane-transition);
+}
+
+/* The stable seat a pane's content rides in between structural edits (see
+   tile-tree.tsx): MOVED with appendChild, never re-created, so a committed split
+   cannot tear an xterm down. */
+.tile-content-host {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* While a carry has an armed drop target, the item IN HAND fades almost away so the
+   live preview underneath stays readable. THE EASE-AWAY IS A PROPERTY OF THE CARRY,
+   NOT OF BEING THE DRAGGER: your own canvas drag (React Flow marks the node
+   `.dragging`, the canvas root wears `is-composing` while a target is armed, both
+   written imperatively — arming never touches React state on the drag hot path), a
+   peer's carried node, and a carried tile pane all resolve to the SAME declarations
+   below, so a viewer sees exactly what the dragger sees.
+   The transition sits on the classes that persist across arming, so the fade runs BOTH
+   ways — easing in when a target arms and back out when it disarms — reading as a
+   deliberate "stepping aside", never as the held item vanishing.
+   The canvas half of this pair lives in packages/plugins/canvas/src/styles.css, because
+   `.canvas` is that plugin's family; ONE VALUE FOR EVERYONE survives the split because
+   both halves read the floor's `--carry-fade-*` tokens rather than repeating a number. */
+.tile-area .is-carried-away {
+  transition: var(--carry-fade-transition);
+}
+
+.tile-area .is-carried-away {
+  opacity: var(--carry-fade-opacity);
+}
+
+/* The armed fade SUPERSEDES the in-flight dim rather than multiplying with it: only the
+   person holding a tile sees `is-carried` on its leaf, so without this the holder's fade
+   would land on a different value than every viewer's. One value for everyone. */
+.tile-area .is-carried-away .composition-leaf.is-carried {
+  opacity: 1;
+}
+
+/* A seam's PAINT stays slim; its GRAB does not. Pseudo-elements extend the pointer
+   target without moving any layout, and pseudo hit-testing belongs to the divider
+   element, so drags, seam drop aims and the resize cursor gain the widened band
+   together. Two things make that band actually reach:
+
+   THE REACH IS A VARIABLE, because it is declared in the tree's OWN layout px while a
+   portal draws its tree under `transform: scale()`. A fixed length shrinks with the very
+   transform it exists to compensate for; `.portal__preview` doubles it instead.
+
+   A LIVE SEAM IS LIFTED ABOVE THE PANES. The divider and its neighbours are all
+   positioned with `z-index: auto`, and the TRAILING neighbour comes later in DOM
+   order — so a pane's own content (a terminal frame, xterm's layers, a portal's
+   engagement shield at z-index 8) painted over the trailing half of the band, right
+   through the divider's own box. The seam you saw was not the seam you could grab: the
+   live band sat entirely on the leading side, so a press on the visible seam's centre
+   landed in the terminal and the resize never started. Only an INTERACTIVE seam claims
+   any of this — a watching portal's dividers are structure, so they keep their tooltip
+   and never take a pixel from the tile shields they sit between. */
+.composition-divider,
+.portal-divider {
+  position: relative;
+}
+
+.composition-divider:not(.is-inert),
+.portal-divider:not(.is-inert) {
+  z-index: 10;
+}
+
+.composition-divider:not(.is-inert)::after,
+.portal-divider:not(.is-inert)::after {
+  position: absolute;
+  content: "";
+  inset: calc(-1 * var(--tile-seam-reach, 0.375rem));
+}
+
+/* The F9 drop-zone field (tile-zone-debug): a sampled painting of what the real
+   resolver answers at every point, purely visual. */
+.tile-zone-debug {
+  position: absolute;
+  z-index: 58;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/*
+ * THE WORKSPACE SKIN — the tile tree's third dress (see `WORKSPACE_TREE_CLASSES`). Same shape
+ * as `.composition-*` and `.portal__*`: the split is a flex box, a pane's stored ratio IS its
+ * `flex-grow`, and the divider is the seam. The workspace is a composition, so the sidebar
+ * seam is the same gesture as any tile seam and needed no code of its own.
+ */
+.workspace-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.workspace-split.is-row {
+  flex-direction: row;
+}
+
+.workspace-split.is-column {
+  flex-direction: column;
+}
+
+/* flex-basis 0 makes flex-grow the whole story, so the stored ratios are the layout. */
+.workspace-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+  flex-shrink: 1;
+}
+
+.workspace-divider {
+  z-index: 30;
+  flex: 0 0 0.35rem;
+  background: #23272e;
+  touch-action: none;
+}
+
+.workspace-divider:hover,
+.workspace-divider:active {
+  background: #4c6ef5;
+}
+
+.workspace-split.is-row > .workspace-divider {
+  cursor: col-resize;
+}
+
+.workspace-split.is-column > .workspace-divider {
+  cursor: row-resize;
+}
+
+/* A workspace tree is always the caller's own, so its seams are never inert. */
+.workspace-divider.is-inert {
+  cursor: default;
+}
+
+/*
+ * ── The layout algebra (`layout.tsx`) ────────────────────────────────────────
+ * Six intrinsic boxes: Stack, Cluster, Sidebar, Switcher, Cover, Frame. Each rule
+ * carries the whole discipline so no adopter has to remember it: `min-width: 0` on
+ * every child (a flex child's `min-width: auto` is how one unbroken name blows a
+ * column open), gap-based spacing only, and a clamp()ed default gap that breathes
+ * with the nearest `@container` (the viewport when none is declared).
+ *
+ * The knobs are registered non-inheriting: a Stack that sets its gap must not
+ * silently re-gap the Cluster nested inside it.
+ */
+
+@property --layout-gap {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-align {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-justify {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-side {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-content-min {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-threshold {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-cover-min {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --layout-ratio {
+  syntax: "*";
+  inherits: false;
+}
+
+.layout-stack,
+.layout-cluster,
+.layout-sidebar,
+.layout-switcher,
+.layout-cover,
+.layout-frame {
+  /* One adaptive default gap; 1cqi tracks the nearest inline-size container. */
+  --layout-gap-default: clamp(0.25rem, 0.2rem + 0.4cqi, 0.6rem);
+  min-width: 0;
+}
+
+/* Vertical rhythm: one column, one gap, nothing grows unless a child asks. */
+.layout-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: var(--layout-align, stretch);
+  gap: var(--layout-gap, var(--layout-gap-default));
+}
+
+.layout-stack > * {
+  min-width: 0;
+}
+
+/* A row that WRAPS instead of overflowing. */
+.layout-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: var(--layout-align, center);
+  justify-content: var(--layout-justify, flex-start);
+  gap: var(--layout-gap, var(--layout-gap-default));
+}
+
+.layout-cluster > * {
+  min-width: 0;
+}
+
+/* Content + aside. The aside keeps its basis; the content pane grows 999:1 and
+   refuses to drop under its declared minimum share — past that the pair stacks. */
+.layout-sidebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--layout-gap, var(--layout-gap-default));
+}
+
+.layout-sidebar > * {
+  min-width: 0;
+}
+
+.layout-sidebar > :first-child {
+  flex: 1 1 var(--layout-side, 15rem);
+}
+
+.layout-sidebar > :last-child {
+  flex: 999 1 0;
+  min-width: var(--layout-content-min, 50%);
+}
+
+.layout-sidebar--end > :first-child {
+  flex: 999 1 0;
+  min-width: var(--layout-content-min, 50%);
+}
+
+.layout-sidebar--end > :last-child {
+  flex: 1 1 var(--layout-side, 15rem);
+  min-width: 0;
+}
+
+/* Row → column past the threshold, all-or-nothing: the basis goes hugely negative
+   (stay a row) or hugely positive (every child takes a full line) as 100% of the
+   switcher's own width crosses the declared threshold. */
+.layout-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--layout-gap, var(--layout-gap-default));
+}
+
+.layout-switcher > * {
+  min-width: 0;
+  flex-grow: 1;
+  flex-basis: calc((var(--layout-threshold, 20rem) - 100%) * 999);
+}
+
+/* Full-height box with a vertically centered principal between optional chrome. */
+.layout-cover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--layout-gap, var(--layout-gap-default));
+  min-block-size: var(--layout-cover-min, 100%);
+}
+
+.layout-cover > * {
+  min-width: 0;
+}
+
+.layout-cover > .layout-cover__principal {
+  margin-block: auto;
+}
+
+/* An aspect-boxed window: media fills it, everything else is centered; what does
+   not fit is clipped, and that clipping IS the primitive's declared contract. */
+.layout-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  aspect-ratio: var(--layout-ratio, 16 / 9);
+}
+
+.layout-frame > img,
+.layout-frame > video {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+
+/*
+ * ── The one disclosure (`disclosure.tsx`) ────────────────────────────────────
+ * Behavior comes from the engine underneath (Radix Collapsible — an internals
+ * decision, see docs/decisions/2026-08-31-radix-behavior-primitives.md); these
+ * rules own only the shape: the header is an unstyled full-width button so the
+ * adopter's header classes land on a clean slate, and a closed body keeps its
+ * DOM but paints nothing, exactly as `<details>` behaved.
+ */
+.disclosure {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.disclosure__header {
+  display: block;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosure__body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.disclosure__body[data-state="closed"] {
+  display: none;
+}
+
+/*
+ * ── The one scroll container (`scroll-region.tsx`) ───────────────────────────
+ * Vertical only: horizontal overflow is refused by contract, so children declare
+ * ellipsis or wrap instead of earning a sideways scrollbar. The slim thumb
+ * overlays content and appears only while something actually overflows.
+ */
+.scroll-region {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scroll-region__viewport {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overscroll-behavior: contain;
+}
+
+/* Radix's measuring wrapper is inline-styled `display: table`, which sizes to the
+   widest word and defeats every ellipsis below it. This region never scrolls
+   sideways, so the wrapper is forced back into the shrinkable world — a column that
+   fills the viewport, so a child asking to grow (`flex: 1 1 auto`) reaches the
+   region's bottom edge even when the content is short. */
+.scroll-region__viewport > div {
+  display: flex !important;
+  min-width: 0 !important;
+  width: 100%;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+.scroll-region__bar {
+  display: flex;
+  width: 0.5rem;
+  padding: 0.1rem;
+  touch-action: none;
+  user-select: none;
+}
+
+.scroll-region__thumb {
+  position: relative;
+  flex: 1;
+  border-radius: 999px;
+  background: #3b4048;
+}
+
+.scroll-region__thumb:hover {
+  background: #495057;
+}
+
+/*
+ * A VACANT SUBTREE HOLDS NO ROOM (issue #104). A stack the palette dropped arrives with two
+ * empty seats, and an empty seat that pushed the real content around would make the drop a
+ * cost rather than a preparation — so a pane with no occupant anywhere under it collapses to
+ * nothing, along with the seam that would otherwise separate it from its neighbour.
+ *
+ * It takes room back exactly while it is TARGETABLE: while the reader is ARRANGING (the
+ * wireframe is drawing it, and a grip has to be able to reach it) and while anything is in the
+ * air (so the next drag can land in it). Both are transient, so nothing about the resting
+ * layout changes, and both are classes the workspace frame publishes on itself.
+ *
+ * Here rather than in the shell's own sheet because these three families are `TileTree`'s
+ * (`COMPOSITION_TREE_CLASSES`, `PORTAL_TREE_CLASSES`, `WORKSPACE_TREE_CLASSES`, declared in
+ * `tile-tree.tsx` alongside the divider pixels this file's own note explains) — the component
+ * asserts these boxes, so the component's package dresses them, and §Lexicon's `cssFamilies`
+ * register is what says so.
+ */
+.workspace-pane.is-vacant,
+.composition-pane.is-vacant,
+.portal__slot.is-vacant,
+.workspace-divider.is-vacant,
+.composition-divider.is-vacant,
+.portal-divider.is-vacant {
+  /*
+    `display: none`, not `flex: 0`. A zero flex basis zeroes the split's MAIN axis only, so a
+    vacant pane in a row split is nought wide and still the full height of the workspace —
+    which is not "holds no room", it is a full-height invisible column between two panes.
+    There is no flex value that answers both axes for both split directions, and the honest
+    claim is the strong one: at rest an empty seat is not in the layout at all.
+  */
+  display: none;
+}
+
+.is-arranging .workspace-pane.is-vacant,
+.is-arranging .composition-pane.is-vacant,
+.is-arranging .portal__slot.is-vacant,
+.is-carrying .workspace-pane.is-vacant,
+.is-carrying .composition-pane.is-vacant,
+.is-carrying .portal__slot.is-vacant {
+  display: block;
+  flex: 1 1 0;
+  min-width: 3rem;
+  min-height: 3rem;
+}
+
+.is-arranging .workspace-divider.is-vacant,
+.is-arranging .composition-divider.is-vacant,
+.is-arranging .portal-divider.is-vacant,
+.is-carrying .workspace-divider.is-vacant,
+.is-carrying .composition-divider.is-vacant,
+.is-carrying .portal-divider.is-vacant {
+  display: block;
+  flex: none;
+}
+
+/*
+  THE keycap (`keycap.tsx`). It was `.keys-cap`, and that sheet claimed it was "the one keycap
+  in the product" — a claim that only held while one seat printed the key table. The table is
+  the engine's read, so the shape moved here with the component rather than being copied into
+  the second printer's stylesheet.
+*/
+.keycap {
+  flex: 0 0 auto;
+  border: 1px solid #3b4149;
+  border-bottom-width: 2px;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  color: #dee2e6;
+  background: #22262c;
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.keycap[data-keycap-overridden="true"] {
+  border-color: #4c6ef5;
+  color: #dbe4ff;
+}
+
+/*
+ * ── The row vocabulary (`chip.tsx`, `kv.tsx`) ────────────────────────────────
+ * THE chip and THE key-value list. One box for both chip forms is the entire point:
+ * the inspector's hand-rolled hops shipped button tokens at the browser's default
+ * `1px 6px` beside inert spans at zero, so prose hops rendered with their glyphs
+ * against the border. Here padding is declared once, on the class both forms wear,
+ * and only the AFFORDANCE differs by element: a chip that is a button gets the
+ * pointer cursor and the hover cue; a chip that is prose gets neither.
+ * Colour is deliberately absent: an adopter tints chips from its own family's sheet
+ * (`.inspector-hop`, `.inspector-door`), and an untinted chip reads as quiet chrome.
+ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid #343a40;
+  border-radius: 0.25rem;
+  background: #1f2226;
+  padding: 0.1rem 0.4rem;
+  color: #dee2e6;
+  font-size: 0.65rem;
+  line-height: 1.4;
+  /* A token never wraps internally; the row it sits in wraps between tokens. */
+  white-space: nowrap;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover,
+button.chip:focus-visible {
+  border-color: #4c6ef5;
+}
+
+/* The label column's one knob, registered non-inheriting for the layout algebra's
+   reason: a card that widens its own labels must not re-shape a list nested in it. */
+@property --kv-label {
+  syntax: "*";
+  inherits: false;
+}
+
+.kv {
+  display: grid;
+  margin: 0;
+  gap: 0.15rem;
+}
+
+.kv__row {
+  display: grid;
+  grid-template-columns: var(--kv-label, 4.6rem) 1fr;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.kv__label {
+  color: #868e96;
+  text-align: right;
+}
+
+.kv__value {
+  margin: 0;
+  min-width: 0;
+  /* Every value wraps rather than earning a scrollbar: an address is long by nature. */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * ── The one popover (`popover.tsx`) ──────────────────────────────────────────
+ * Behavior comes from the engine underneath (Radix Popover — an internals decision,
+ * docs/decisions/2026-09-01-radix-popover.md); these rules own only the shape of the
+ * floating layer. Portaled to the body, so it sits ABOVE every overlay that opts out
+ * of pointer events — including the F10 inspector's fixed layer at z-index 60 — and
+ * never under an ancestor's overflow clip.
+ */
+.popover__content {
+  z-index: 70;
+  max-width: 24rem;
+  border: 1px solid #343a40;
+  border-radius: 0.4rem;
+  background: #14161a;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 55%);
+  padding: 0.5rem;
+  color: #dee2e6;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}

@@ -1,0 +1,90 @@
+/*
+  DISPOSABLE SPIKE — issue #126. Spike-local chrome only.
+
+  The CONTROL's skin is not here: `run.ts` serves the real
+  `packages/plugin/src/ui/styles.css`, so `.composition-split/-pane/-divider` are exactly
+  the rules the application paints (`.composition-divider` is `flex: 0 0 0.35rem` = 5.6px,
+  which is the `dividerPx` the drop kernel subtracts). Duplicating them here would make the
+  control a replica instead of the real renderer.
+*/
+
+body {
+  margin: 0;
+  background: #14171c;
+  color: #d8dee9;
+  font:
+    13px/1.4 ui-monospace,
+    monospace;
+}
+
+.harness {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  align-items: flex-start;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  width: 900px;
+  flex: 0 0 auto;
+}
+
+.pane h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #8b95a5;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.pane .tile-area,
+.pane .dv-host {
+  position: relative;
+  height: 520px;
+  border: 1px solid #2b313a;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.pane .dv-host {
+  background: #191d23;
+}
+
+.live-leaf {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  background: #1e242c;
+  border: 1px solid #2f3742;
+  color: #a9b6c8;
+}
+
+.live-leaf__title {
+  font-size: 12px;
+}
+
+.live-leaf__state {
+  width: 80%;
+  max-width: 220px;
+  background: #12161b;
+  border: 1px solid #2f3742;
+  color: #6f7d90;
+  font:
+    10px/1.2 ui-monospace,
+    monospace;
+  padding: 2px 4px;
+}
+
+/* Dockview's own leaf container, so its px positioning is visible in a screenshot. */
+.dv-leaf {
+  height: 100%;
+  overflow: hidden;
+}

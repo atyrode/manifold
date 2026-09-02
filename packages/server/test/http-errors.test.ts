@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RuntimeDeps } from "@manifold/protocol";
+import { ActionOutcomeSchema, type RuntimeDeps } from "@manifold/protocol";
 import { loadConfig } from "../src/config.ts";
 import type { Logger } from "../src/log.ts";
 import { startServer, type RunningServer } from "../src/main.ts";
@@ -43,8 +43,12 @@ function startFixture(runtime: RuntimeDeps, logger: Logger): RunningServer {
   return running;
 }
 
-function createPadRequest(running: RunningServer, body: unknown): Request {
-  return new Request(`${running.publicUrl}/api/pads`, {
+/**
+ * The index's creation door, which mints an id: the one request whose handler reaches the
+ * runtime, and therefore the one that can be made to fail there.
+ */
+function createContainerRequest(running: RunningServer, body: unknown): Request {
+  return new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${OWNER_KEY}`,
@@ -75,13 +79,26 @@ describe("HTTP error mapping", () => {
     const running = startFixture(runtime, logger);
     runtime.failNewId = true;
 
-    const response = await fetch(createPadRequest(running, { name: "pad" }));
+    const response = await fetch(createContainerRequest(running, { name: "container" }));
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
       error: { code: "internal", message: "internal server error" },
     });
+    // A handler that throws is logged TWICE by design and both lines matter: the dispatcher
+    // names the action that broke, and the request layer records the failed request. Neither
+    // carries the exception into the response.
     expect(errors).toEqual([
+      {
+        evt: "action",
+        fields: {
+          name: "core.index.createContainer",
+          // The owner principal, minted at boot by this runtime's first id.
+          principal: "id-1",
+          outcome: "failed",
+          error: "sensitive internal failure",
+        },
+      },
       {
         evt: "http_request_failed",
         fields: { method: "POST", error: "sensitive internal failure" },
@@ -89,15 +106,38 @@ describe("HTTP error mapping", () => {
     ]);
   });
 
-  test("an invalid request body returns a 400 invalid response", async () => {
+  test("a body that fails an action's schema is a denial, not an HTTP error", async () => {
     const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
     const running = startFixture(new FaultRuntime(), logger);
 
-    const response = await fetch(createPadRequest(running, { name: "" }));
+    const response = await fetch(createContainerRequest(running, { name: "" }));
+
+    // The action door answers 200 for every ANSWER it has, and "your arguments do not match
+    // the published schema" is an answer a client renders — not a transport failure.
+    expect(response.status).toBe(200);
+    const payload = ActionOutcomeSchema.parse(await response.json());
+    expect(payload.ok).toBe(false);
+    if (payload.ok) throw new Error("expected a denial");
+    expect(payload.denial.rule).toBe("invalid_args");
+  });
+
+  test("a malformed JSON body returns a 400 invalid response", async () => {
+    const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
+    const running = startFixture(new FaultRuntime(), logger);
+
+    // Not a schema question: a body that is not JSON never reaches a door, so this is the
+    // one remaining shape of `invalid` the request layer itself still answers.
+    const response = await fetch(
+      new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" },
+        body: "{not json",
+      }),
+    );
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: { code: "invalid", message: "request did not match the protocol schema" },
+      error: { code: "invalid", message: "request body must be valid JSON" },
     });
   });
 });
