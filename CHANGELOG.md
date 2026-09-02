@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Every release now ships a macOS (Apple silicon) agent binary, `manifold-agent-darwin-arm64`, beside the Linux one, so a Mac can be enrolled as a spoke without building from source. (#176, #181)
+
 ### Changed
 
 - The verification gate runs once per commit, on CI, for every pull request and every push to `main`; a release refuses a commit CI has not proven green instead of re-running the gate itself, so a release takes minutes rather than twenty. (#174, #179)
