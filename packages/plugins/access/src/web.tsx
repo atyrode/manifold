@@ -1,6 +1,6 @@
 import "./styles.css";
 import type { SectionProps } from "@manifold/plugin";
-import { ControlIcon, Stack } from "@manifold/plugin/ui";
+import { ControlIcon, Disclosure, Stack } from "@manifold/plugin/ui";
 import {
   CredentialsResponseSchema,
   RevokeResultSchema,
@@ -8,6 +8,7 @@ import {
 } from "@manifold/protocol";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { ACCESS_LIST_CREDENTIALS_ACTION, ACCESS_REVOKE_ACTION } from "./index.ts";
+import { partitionCredentials } from "./rows.ts";
 
 /**
  * THE CREDENTIAL LIST (ADR 0019 §3) — "which browsers hold my key", made answerable and
@@ -90,6 +91,12 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
    */
   const [armedId, setArmedId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  /**
+   * Whether the inactive fold is open. Collapsed on every mount, deliberately (#145): the
+   * fold holds history, and a section that remembered it open would greet every boot with
+   * the noise the fold exists to end.
+   */
+  const [inactiveOpen, setInactiveOpen] = useState(false);
 
   const read = useCallback(async (): Promise<void> => {
     const outcome = await host.client.action(ACCESS_LIST_CREDENTIALS_ACTION, {});
@@ -158,6 +165,71 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
 
   const now = readAt;
   const live = rows?.reduce((total, row) => total + row.sessions.length, 0) ?? 0;
+  const parts = partitionCredentials(rows ?? []);
+
+  const renderRow = (row: PrincipalCredentials): ReactElement => {
+    const self = row.principal.id === host.principal.id;
+    const armed = armedId === row.principal.id;
+    return (
+      <div
+        className={`credential-row${self ? " is-self" : ""}`}
+        key={row.principal.id}
+        data-principal={row.principal.id}
+      >
+        {/* THE COLOUR IS THE MARK. A principal is not an item, so there is no
+            `ItemIcon` kind to ask for and borrowing one would tell a reader this row
+            is a thing on a canvas. The pip is the presence colour the protocol
+            assigns every identity — the same dot a cursor and an attendance row wear
+            — so this list agrees with every other place the person appears. */}
+        <span
+          className="credential-pip"
+          style={{ background: row.principal.color }}
+          aria-hidden="true"
+        />
+        <span className="credential-name">
+          <strong>{row.principal.name}</strong>
+          <span className="credential-meta">{metaLine(row, now)}</span>
+        </span>
+        {/* A row with nothing live has nothing to withdraw; the control is absent
+            rather than disabled, because "press this to do nothing" is not an
+            affordance. */}
+        {mayRevoke && row.sessions.length > 0 ? (
+          <button
+            className="credential-revoke"
+            type="button"
+            data-action={ACCESS_REVOKE_ACTION}
+            data-testid="credential-revoke"
+            data-confirming={armed}
+            aria-label={
+              armed
+                ? `Confirm withdrawing every credential of ${row.principal.name}`
+                : `Withdraw every credential of ${row.principal.name}`
+            }
+            title={
+              armed
+                ? `Press again to withdraw ${String(row.sessions.length)} credential(s)${
+                    self ? " — including this browser's" : ""
+                  }`
+                : `Withdraw every credential of ${row.principal.name}`
+            }
+            disabled={pendingId !== null}
+            onBlur={() => {
+              if (armed) setArmedId(null);
+            }}
+            onClick={() => {
+              if (!armed) {
+                setArmedId(row.principal.id);
+                return;
+              }
+              void revoke(row.principal.id);
+            }}
+          >
+            <ControlIcon kind="revoke" {...ROW_ICON} />
+          </button>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <Stack className="sidebar-section-content" gap="0.35rem">
@@ -171,69 +243,33 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
         ) : rows.length === 0 ? (
           <span className="sidebar-section-empty">No credentials to show</span>
         ) : (
-          rows.map((row) => {
-            const self = row.principal.id === host.principal.id;
-            const armed = armedId === row.principal.id;
-            return (
-              <div
-                className={`credential-row${self ? " is-self" : ""}`}
-                key={row.principal.id}
-                data-principal={row.principal.id}
+          <>
+            {/* The living first and alone (#145): a row without a live credential is
+                history, and on a workspace that has hosted gate runs, history outnumbers
+                the living by an order of magnitude. */}
+            {parts.live.length === 0 ? (
+              <span className="sidebar-section-empty">No live credentials</span>
+            ) : (
+              parts.live.map(renderRow)
+            )}
+            {parts.inactive.length === 0 ? null : (
+              <Disclosure
+                className="credential-inactive"
+                open={inactiveOpen}
+                onOpenChange={setInactiveOpen}
+                data-testid="credentials-inactive"
+                header={
+                  <span className="credential-inactive-header">
+                    {parts.inactive.length === 1
+                      ? "1 inactive identity"
+                      : `${String(parts.inactive.length)} inactive identities`}
+                  </span>
+                }
               >
-                {/* THE COLOUR IS THE MARK. A principal is not an item, so there is no
-                    `ItemIcon` kind to ask for and borrowing one would tell a reader this row
-                    is a thing on a canvas. The pip is the presence colour the protocol
-                    assigns every identity — the same dot a cursor and an attendance row wear
-                    — so this list agrees with every other place the person appears. */}
-                <span
-                  className="credential-pip"
-                  style={{ background: row.principal.color }}
-                  aria-hidden="true"
-                />
-                <span className="credential-name">
-                  <strong>{row.principal.name}</strong>
-                  <span className="credential-meta">{metaLine(row, now)}</span>
-                </span>
-                {/* A row with nothing live has nothing to withdraw; the control is absent
-                    rather than disabled, because "press this to do nothing" is not an
-                    affordance. */}
-                {mayRevoke && row.sessions.length > 0 ? (
-                  <button
-                    className="credential-revoke"
-                    type="button"
-                    data-action={ACCESS_REVOKE_ACTION}
-                    data-testid="credential-revoke"
-                    data-confirming={armed}
-                    aria-label={
-                      armed
-                        ? `Confirm withdrawing every credential of ${row.principal.name}`
-                        : `Withdraw every credential of ${row.principal.name}`
-                    }
-                    title={
-                      armed
-                        ? `Press again to withdraw ${String(row.sessions.length)} credential(s)${
-                            self ? " — including this browser's" : ""
-                          }`
-                        : `Withdraw every credential of ${row.principal.name}`
-                    }
-                    disabled={pendingId !== null}
-                    onBlur={() => {
-                      if (armed) setArmedId(null);
-                    }}
-                    onClick={() => {
-                      if (!armed) {
-                        setArmedId(row.principal.id);
-                        return;
-                      }
-                      void revoke(row.principal.id);
-                    }}
-                  >
-                    <ControlIcon kind="revoke" {...ROW_ICON} />
-                  </button>
-                ) : null}
-              </div>
-            );
-          })
+                <Stack gap="0.2rem">{parts.inactive.map(renderRow)}</Stack>
+              </Disclosure>
+            )}
+          </>
         )}
       </Stack>
     </Stack>
