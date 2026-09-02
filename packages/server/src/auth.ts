@@ -31,6 +31,7 @@ import type {
   ServerStore,
   ShareRecord,
   TokenRecord,
+  TokenRevocation,
 } from "./stores.ts";
 import { sha256Hex } from "./stores.ts";
 
@@ -595,6 +596,16 @@ export class AuthService {
     return fresh;
   }
 
+  /**
+   * Every token revocation settles here. Retiring a token's grant row is a grant write, and
+   * the epoch rule admits no exception for the writes revocation makes; the fence and the
+   * door keep keying on the TOKEN count, which is the number this hands back.
+   */
+  private settleRevocation(revocation: TokenRevocation): number {
+    if (revocation.grants > 0) this.grantsEpoch += 1;
+    return revocation.tokens;
+  }
+
   /** Creates a stable principal with deterministic default color. */
   createPrincipal(input: BootstrapPrincipalRequest): Principal {
     const parsed = BootstrapPrincipalRequestSchema.parse(input);
@@ -847,7 +858,7 @@ export class AuthService {
     const result = this.store.transaction(() => {
       const at = this.runtime.now();
       const revoked = this.store.revokeToken(machine.tokenId, at);
-      if (revoked) {
+      if (revoked.tokens > 0) {
         this.store.addEvent(null, at, actor, "token_revoked", {
           subjectPrincipalId: machine.id,
           count: 1,
@@ -864,7 +875,7 @@ export class AuthService {
         revoked,
       };
     });
-    if (result.revoked) {
+    if (this.settleRevocation(result.revoked) > 0) {
       for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
     return result.enrollment;
@@ -900,7 +911,7 @@ export class AuthService {
     const revoked = this.store.transaction(() => {
       const at = this.runtime.now();
       const gone = this.store.revokeToken(machine.tokenId, at);
-      if (gone) {
+      if (gone.tokens > 0) {
         this.store.addEvent(null, at, actor.principal.id, "token_revoked", {
           subjectPrincipalId: machine.id,
           count: 1,
@@ -913,10 +924,11 @@ export class AuthService {
       because `MachineGateway` registered on it with the machine id in the principal slot
       (`machine-ws.ts`). Two revocation paths would have meant two fences to keep in step.
     */
-    if (revoked) {
+    const count = this.settleRevocation(revoked);
+    if (count > 0) {
       for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
-    return revoked ? 1 : 0;
+    return count;
   }
 
   /**
@@ -980,7 +992,7 @@ export class AuthService {
   /** Revokes a server-issued short-lived identity after a failed terminal create. */
   revokeIssuedPrincipal(principalId: string, actorId: string): number {
     const at = this.runtime.now();
-    const count = this.store.revokeTokensByPrincipal(principalId, at);
+    const count = this.settleRevocation(this.store.revokeTokensByPrincipal(principalId, at));
     this.store.addEvent(null, at, actorId, "token_revoked", {
       subjectPrincipalId: principalId,
       count,
@@ -1007,10 +1019,11 @@ export class AuthService {
 
     const containerId = actor.containerScope;
     const at = this.runtime.now();
-    const count =
+    const count = this.settleRevocation(
       containerId === null
         ? this.store.revokeTokensByPrincipal(principalId, at)
-        : this.store.revokeTokensByPrincipal(principalId, at, containerId);
+        : this.store.revokeTokensByPrincipal(principalId, at, containerId),
+    );
     this.store.addEvent(containerId, at, actor.principal.id, "token_revoked", {
       subjectPrincipalId: principalId,
       count,
@@ -1177,12 +1190,28 @@ export class AuthService {
    * fence, which is what closes the guest's live session sockets. The count answers how
    * many identities were severed; zero is a success, exactly as it is for `revokePrincipal`.
    *
-   * The share's GRANT ROW is deleted in the same breath, and it is the one thing here that is
-   * removed rather than marked. That asymmetry is the difference between a credential and a
-   * bookkeeping row: the share row must survive to keep refusing a secret already handed to
-   * another instance, while the grant presents nothing to anybody, so its absence IS its
-   * revocation. Leaving it would keep the shared node's authority standing for every principal
-   * from that origin after the owner had decided to cut the pipe.
+   * The share's GRANT ROW is deleted in the same breath, and it is removed rather than marked.
+   * That asymmetry is the difference between a credential and a bookkeeping row: the share row
+   * must survive to keep refusing a secret already handed to another instance, while the grant
+   * presents nothing to anybody, so its absence IS its revocation. Leaving it would keep the
+   * shared node's authority standing for every principal from that origin after the owner had
+   * decided to cut the pipe.
+   *
+   * A TOKEN'S ROW FOLLOWS THE SAME RULE (issue #140). Until it did, revoking a principal left
+   * its token-materialized rows behind: unexercisable, because `tokenBound` reaches only the
+   * credential that holds them and that credential is refused at authentication, but immortal,
+   * so `listGrants` and the inspector's authority reading printed every principal a gate run
+   * had ever minted and revoked. The choice was RETIRE on revoke — the store deletes the row in
+   * the same transaction that marks the token (`revokeTokensWhere`) — over teaching the
+   * readers to filter rows whose token is dead. Filtering would have left the rows in the table
+   * for every reader to remember to skip, including the evaluator's own hot query, which is the
+   * second state `deleteGrant`'s comment refuses for a tombstone; deletion loses no fact,
+   * because what was issued is the `tokens` row's account (`caps`, `container_id`,
+   * `revoked_at`), and the memo hears about it through `settleRevocation`. A row whose token
+   * EXPIRED without being revoked stays until the principal is revoked — the same call marks an
+   * expired-but-unrevoked token and retires its row — because expiry is a clock predicate with
+   * no write to hang a deletion on, and a second retirement rule in the reader is exactly what
+   * this ruling declined.
    */
   revokeShare(shareId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
@@ -1202,7 +1231,7 @@ export class AuthService {
     if (share.grantId !== null) this.grantsEpoch += 1;
     let severed = 0;
     for (const principalId of principals) {
-      const count = this.store.revokeTokensByPrincipal(principalId, at);
+      const count = this.settleRevocation(this.store.revokeTokensByPrincipal(principalId, at));
       if (count === 0) continue;
       severed += 1;
       for (const listener of [...this.revokedListeners]) listener(principalId, null);

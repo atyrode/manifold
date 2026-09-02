@@ -16,7 +16,10 @@
 import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
+  CredentialsResponseSchema,
+  RevokeResultSchema,
   TerminalsResponseSchema,
+  type PrincipalCredentials,
   type TerminalSummary,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
@@ -40,19 +43,81 @@ const marker = `PUBLIC_${Date.now().toString(36).toUpperCase()}`;
 const results: { name: string; ok: boolean; detail: string }[] = [];
 
 /**
+ * The name the browser step enters at the identity gate. It walks the HUMAN gate on purpose —
+ * that flow is one of the things this gate proves — so the principal it mints is `kind: human`
+ * with a 14-day credential, and the deal for keeping it human is that this run revokes it
+ * before exiting (issue #140; the rule is in docs/CONTRACTS.md §Identity).
+ */
+const VERIFY_NAME = "verify";
+const TEARDOWN_STEP = "verify principal revoked on teardown";
+
+/** One dispatch through the action door as the owner: the result, or the denial as an error. */
+async function act(name: string, args: unknown): Promise<unknown> {
+  const res = await fetch(`${origin}/api/actions/${name}`, {
+    method: "POST",
+    headers: httpHeaders,
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error(`${name} failed: ${res.status}`);
+  const outcome = ActionOutcomeSchema.parse(await res.json());
+  if (!outcome.ok) throw new Error(`${name} refused: ${outcome.denial.message}`);
+  return outcome.result;
+}
+
+/**
  * THE terminal index, through its door (`core.terminals.listAll`). The public gate reads it to
  * find the composition a terminal lives in, because a canvas portal only ever names the home.
  */
 async function listTerminals(): Promise<readonly TerminalSummary[]> {
-  const res = await fetch(`${origin}/api/actions/core.terminals.listAll`, {
-    method: "POST",
-    headers: httpHeaders,
-    body: "{}",
-  });
-  if (!res.ok) throw new Error(`terminal listing failed: ${res.status}`);
-  const outcome = ActionOutcomeSchema.parse(await res.json());
-  if (!outcome.ok) throw new Error(`terminal index refused: ${outcome.denial.message}`);
-  return TerminalsResponseSchema.parse(outcome.result).terminals;
+  return TerminalsResponseSchema.parse(await act("core.terminals.listAll", {})).terminals;
+}
+
+/** Every principal and its live credentials, through `core.access.listCredentials`. */
+async function listCredentials(): Promise<readonly PrincipalCredentials[]> {
+  return CredentialsResponseSchema.parse(await act("core.access.listCredentials", {})).principals;
+}
+
+/**
+ * The identity the browser step minted by walking the human gate, once it has — read off the
+ * grant the browser stored, which is exact. `gateSubmitted` is the weaker fact that survives a
+ * browser dying between the click and that read: a principal may exist that this run never
+ * learned the id of, and the census taken before the click is what lets teardown name it.
+ */
+let verifyPrincipalId = "";
+let gateSubmitted = false;
+let verifyPrincipalsBefore: ReadonlySet<string> = new Set();
+
+/**
+ * Revokes the principal this run minted on the PRODUCTION origin, and proves it: after the door
+ * answers, the credential list must show no live session for it. Runs as a recorded step so a
+ * run that could not clean up after itself is a red run, not a green one with sediment.
+ */
+async function revokeVerifyPrincipal(): Promise<string> {
+  if (!gateSubmitted) return "gate not walked, no principal minted";
+  const ids =
+    verifyPrincipalId !== ""
+      ? [verifyPrincipalId]
+      : (await listCredentials())
+          .filter(
+            (row) =>
+              row.principal.name === VERIFY_NAME && !verifyPrincipalsBefore.has(row.principal.id),
+          )
+          .map((row) => row.principal.id);
+  if (ids.length === 0)
+    return "gate submitted, no new 'verify' principal found — nothing to revoke";
+  let revoked = 0;
+  for (const principalId of ids) {
+    revoked += RevokeResultSchema.parse(await act("core.access.revoke", { principalId })).revoked;
+  }
+  const live = (await listCredentials()).filter(
+    (row) => ids.includes(row.principal.id) && row.sessions.length > 0,
+  );
+  if (live.length > 0) {
+    throw new Error(
+      `${String(live.length)} '${VERIFY_NAME}' principal(s) still hold live credentials`,
+    );
+  }
+  return `${String(revoked)} credential(s) revoked for principal ${ids.join(", ")}`;
 }
 
 /** Every run creates a container on the PRODUCTION origin; never leave it behind. */
@@ -120,15 +185,10 @@ try {
   });
 
   await step("owner creates a container through public origin", async () => {
-    const res = await fetch(`${origin}/api/actions/core.index.createContainer`, {
-      method: "POST",
-      headers: httpHeaders,
-      body: JSON.stringify({ name: `public-verify ${new Date().toISOString()}` }),
+    const created = await act("core.index.createContainer", {
+      name: `public-verify ${new Date().toISOString()}`,
     });
-    if (!res.ok) throw new Error(`status ${res.status}`);
-    const outcome = ActionOutcomeSchema.parse(await res.json());
-    if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
-    containerId = ContainerResponseSchema.parse(outcome.result).container.id;
+    containerId = ContainerResponseSchema.parse(created).container.id;
     return `container ${containerId}`;
   });
 
@@ -141,8 +201,25 @@ try {
     // canvas holds — canonical-only assertions cannot see a canvas-side revert.
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
     if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
-      await browser.typeInto("input", "verify");
+      // The census BEFORE the click is what lets teardown name this run's principal even if
+      // the browser dies before the stored grant can be read.
+      verifyPrincipalsBefore = new Set(
+        (await listCredentials())
+          .filter((row) => row.principal.name === VERIFY_NAME)
+          .map((row) => row.principal.id),
+      );
+      await browser.typeInto("input", VERIFY_NAME);
+      gateSubmitted = true;
       await browser.clickTestId("identity-enter");
+      await until(
+        () => browser.evaluate<boolean>("localStorage.getItem('manifold.identity') !== null"),
+        10_000,
+        "identity grant stored",
+      );
+      // Only the id: the stored grant carries this device's TOKEN and must never leave the page.
+      verifyPrincipalId = await browser.evaluate<string>(
+        "JSON.parse(localStorage.getItem('manifold.identity')).principal.id",
+      );
     }
     await browser.goto(`${origin}/p/${containerId}`);
     await until(
@@ -180,12 +257,22 @@ try {
       30_000,
       "online machine terminal action",
     );
+    // The census BEFORE the click names the terminal this run spawns, by difference. A real
+    // workspace's first running row is routinely a stale one — a machine whose agent never
+    // dialed back, so the hub cannot know its PTYs died — and aiming the viewer steps at it
+    // times them out on data the browser step just passed on.
+    const before = new Set((await listTerminals()).map((terminal) => terminal.id));
     await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
     await until(
       () => browser.evaluate<boolean>("document.querySelector('.xterm') !== null"),
       30_000,
       "xterm mount",
     );
+    const spawned = (await listTerminals())
+      .filter((terminal) => terminal.status === "running" && !before.has(terminal.id))
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (spawned === undefined) throw new Error("the terminal the browser opened is not listed");
+    terminalId = spawned.id;
     // Focus = engage: a real user's click both focuses xterm and escalates the mono
     // portal to an occupant channel on the terminal's home composition. Synthetic
     // pointer events alone never produce a click, so dispatch one explicitly.
@@ -202,17 +289,16 @@ try {
       25_000,
       "terminal output rendered in xterm",
     );
-    return "terminal rendered command output in a real browser";
+    return `terminal ${terminalId} rendered command output in a real browser`;
   });
 
   await step("two simultaneous public WebSocket viewers share one terminal", async () => {
     // Terminals live in their HOME composition, never in a canvas: find the home over
     // HTTP, then both viewers hold a channel on it — the same thing the portal does.
-    const listed = await listTerminals();
-    const running = listed.find((terminal) => terminal.status === "running");
-    if (running === undefined)
-      throw new Error("no running terminal visible over the public origin");
-    terminalId = running.id;
+    const running = (await listTerminals()).find((terminal) => terminal.id === terminalId);
+    if (running === undefined || running.status !== "running") {
+      throw new Error("the terminal the browser opened is not running over the public origin");
+    }
     const viewerA = newViewer(running.homeId);
     const viewerB = newViewer(running.homeId);
     await viewerA.connect();
@@ -300,15 +386,20 @@ try {
     });
   }
 } finally {
-  // Structural guarantee: once the container exists, no exit path may leave it behind
-  // on the production origin — cleanup runs on success, failure, and throw alike.
+  // Structural guarantee: once the container exists, no exit path may leave it behind on
+  // the production origin, and neither may the principal the gate minted — both run on
+  // success, failure, and throw alike. The browser goes first so the grant it holds is
+  // never in use when its token dies.
   await browser.close().catch(() => console.log("WARN  evt=verify_browser_close_failed"));
   await cleanupContainer();
+  await step(TEARDOWN_STEP, revokeVerifyPrincipal);
 }
 
 const failed = results.filter((r) => !r.ok);
+const teardown = results.find((r) => r.name === TEARDOWN_STEP);
 console.log(
-  `\n${results.length - failed.length}/${results.length} checks passed against ${origin}`,
+  `\n${results.length - failed.length}/${results.length} checks passed against ${origin}` +
+    `\nprincipal teardown: ${teardown === undefined ? "did not run" : `${teardown.ok ? "ok" : "FAILED"} — ${teardown.detail}`}`,
 );
 if (failed.length > 0) {
   console.log(`FAILED: ${failed.map((f) => f.name).join(", ")}`);

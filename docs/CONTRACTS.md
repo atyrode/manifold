@@ -52,7 +52,13 @@ operators read the key from `<data>/owner.key` instead.
 Auto-spawned local agent: server mints a machine token (raw copy kept at
 `<data>/agent.token`, mode 600, for respawns — DB stores only the hash), spawns
 `bun packages/agent/src/main.ts` **detached** (survives server exit), and writes
-`<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one.
+`<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one. Surviving the
+server is the production contract, which makes the pid file the OWNER'S handle: whoever
+booted a throwaway server with `MANIFOLD_SPAWN_AGENT=1` owns the agent too, and the gates'
+one teardown (`scripts/gate-lib.ts`, `teardownServer`) reaps the pid the file names — checked
+against `/proc/<pid>/cmdline` first, never by process name — before it removes the data dir.
+An agent left behind redials a dead origin forever; 453 of them held ~21 GiB on the
+development box before this was written down (2026-09-02).
 
 **Cross-instance sharing adds NO variable, and that is a ruling rather than an omission.** An
 instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
@@ -120,6 +126,13 @@ and produces negative geometry that the commit path then rejects.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
+- **A principal minted by a script is an agent, and a script that walks the human gate cleans
+  up after itself** (issue #140): every script or testkit helper that mints a principal through
+  the API path (`core.access.createPrincipal`, `core.access.mint`) against a REAL origin declares
+  `kind: "agent"`, and the one that deliberately submits the first-visit dialog to prove the
+  human flow (`scripts/verify-public.ts`, name `verify`) keeps `human` and revokes that principal
+  on teardown, success and failure alike — a throwaway server's data dir dies with it, so its
+  tests are exempt.
 - **Expiry** (ADR 0019 §2, schema 15, v20). A token row carries `expires_at`; NULL means
   never, which is what every row written before schema 15 means and what nothing backfills.
   An interactively minted credential gets `INTERACTIVE_TOKEN_TTL_MS` = **14 days**
@@ -976,7 +989,14 @@ reason — a grant that should not exist is the administrative analogue of a lea
 administrative toggle must never be what keeps it alive; `0` is a success, meaning the row was
 already gone. It refuses a TOKEN-REFERENCED row (`a token's grant is revoked by revoking the
 token`): a credential's own row is that credential, and deleting it out from under a live token
-would leave a bearer whose authority came from nowhere. `listGrants` is `core.access`'s first
+would leave a bearer whose authority came from nowhere. **And revoking the token retires the
+row** (issue #140, schema 16): `core.access.revoke`, machine revocation and a share's ticket
+fence all delete the grant row of every token they mark, in the same transaction, so a dead
+credential's authority is absent rather than merely unreachable — `listGrants` and the
+inspector's authority reading show live credentials and administered rows only. Nothing is lost:
+what a dead token WAS issued stays on its `tokens` row. A token that expired without being
+revoked keeps its row until its principal is revoked, which marks the expired token too.
+`listGrants` is `core.access`'s first
 read door and converts nothing: a grant row had no other door onto it, so this is the only way
 to see what decides every other answer. The floor records `grant_created` and `grant_revoked` in
 the `events` table, `token_minted`'s precedent — audit rows, not manifest-declared event kinds.
@@ -1668,15 +1688,18 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 14 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 16 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
-`grants` substrate; 14 is the trace ledger — five nullable columns on `events`). Migrations 12
-and 14 are plain SQL for the same reason: neither touches a stored document and existing rows
-need no backfill, since absence already means the right thing — a NULL origin means "this
-instance", and a NULL `door` means "this row is an event, not a trace". Neither takes a
-pre-migration snapshot, and that is the house rule rather than an exception to it: the snapshot
-belongs to a one-way DATA move (9, 11, 13), and adding nullable columns is reversible by a later
-migration that drops them. A migration is SQL, or CODE
+`grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
+expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
+`revokeTokensWhere` now applies at revocation, applied to history). Migrations 12, 14 and 15 are
+plain SQL for the same reason: none touches a stored document and existing rows need no
+backfill, since absence already means the right thing — a NULL origin means "this instance", a
+NULL `door` means "this row is an event, not a trace", and a NULL `expires_at` means "never".
+None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
+the snapshot belongs to a one-way DATA move (9, 11, 13, and 16 — SQL, but a DELETE nothing can
+run backwards), and adding nullable columns is reversible by a later migration that drops
+them. A migration is SQL, or CODE
 when the move is not
 expressible as SQL:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
