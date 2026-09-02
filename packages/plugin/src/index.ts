@@ -114,6 +114,7 @@ export {
   panelSections,
   projectSectionArrangement,
   releasedSectionArrangement,
+  removedSectionStructure,
   sectionArrangementOf,
   withPanelSections,
   type SectionCluster,

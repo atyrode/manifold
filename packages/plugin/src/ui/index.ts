@@ -154,3 +154,11 @@ export {
   requestRebind,
   useRebindRequest,
 } from "./rebind.ts";
+/** The rebind slot's sibling: a picked-up structure, handed to the palette (`./held.ts`, #148). */
+export {
+  heldStructure,
+  holdStructure,
+  releaseStructure,
+  useHeldStructure,
+  type HeldStructure,
+} from "./held.ts";

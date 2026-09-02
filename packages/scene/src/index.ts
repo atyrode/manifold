@@ -44,6 +44,7 @@ export {
   withVacantLeaf,
   withTilesSwapped,
   withoutTileLeaf,
+  withoutTileStructure,
   writeTileLeaf,
   writeTileStructure,
   writeTileLeafRef,

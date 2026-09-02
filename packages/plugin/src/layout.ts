@@ -8,6 +8,7 @@ import {
   type Tile,
   type TileLayout,
 } from "@manifold/protocol";
+import { withoutTileStructure } from "@manifold/scene";
 import type { TileAim } from "./tile-geometry.ts";
 import { releasedTileLayout } from "./tile-release.ts";
 
@@ -254,6 +255,22 @@ export function releasedSectionArrangement(
         })();
   if (tileRelease === null) return null;
   const next = releasedTileLayout(projection.layout, tileRelease, aim);
+  if (next === null) return null;
+  const arrangement = sectionArrangementOf(next);
+  return validSectionArrangement(arrangement) ? arrangement : null;
+}
+
+/**
+ * THE ARRANGEMENT ONE REMOVAL MEANS, or null when the path names nothing removable: the split
+ * at `path` dissolves into its parent with its members kept in order (`withoutTileStructure`,
+ * the same surgery the workspace tree's own structures go through — issue #148), read back the
+ * way a release is. A vacant seat is the split's own emptiness and reads back as nothing.
+ */
+export function removedSectionStructure(
+  projection: SectionProjection,
+  path: string,
+): readonly SectionNode[] | null {
+  const next = withoutTileStructure(projection.layout, path);
   if (next === null) return null;
   const arrangement = sectionArrangementOf(next);
   return validSectionArrangement(arrangement) ? arrangement : null;

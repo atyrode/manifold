@@ -3190,6 +3190,175 @@ try {
     );
 
     /*
+      THE PALETTE TAKES BACK WHAT IT GAVE (issue #148). One rule, both directions: the palette
+      is where structure comes from and where it goes back to. Three claims, each about a
+      gesture only a real browser can make:
+
+        the ROUND TRIP: a Stack row dragged out and dropped back on the palette leaves the
+          tree byte-identical and writes nothing — and the palette SAID "cancel" while the item
+          was over it, which is the affordance the operator reported missing;
+        the RETURN: the spacer seated above, picked up by its own grip and released on the
+          palette, is gone on ONE core.space.setLayout — with the palette saying "remove" on
+          the way, and the pointer loop that carried it being the panel grips' own;
+        the KEY: a fresh spacer, tapped and Deleted, goes the same way through the same
+          function, and the Remove tool's precondition is PAINTED — disabled with a panel
+          selected, enabled with a structure selected — so "Remove never means Shelf" is a fact
+          a reader can see rather than a refusal somebody has to trigger.
+
+      The palette's state is read off `data-carry` BY THE PAGE, during the gesture, into a
+      recorder the rung installs first: a drag is one atomic sequence to the driver, so a
+      claim about what was painted MID-carry has to be made by the page as the carry crosses.
+    */
+    const paletteCarryRecorder = (): Promise<null> =>
+      browser!.evaluate<null>(
+        `(() => {
+           const palette = document.querySelector('[data-testid="arrange-palette"]');
+           window.__paletteCarries = [];
+           const note = () => { const carry = palette?.dataset.carry ?? null;
+             if (carry !== null && !window.__paletteCarries.includes(carry)) window.__paletteCarries.push(carry); };
+           window.addEventListener('dragover', note, true);
+           window.addEventListener('pointermove', note, true);
+           return null;
+         })()`,
+      );
+    const paletteCarriesSeen = (): Promise<readonly string[]> =>
+      browser!.evaluate<readonly string[]>(`window.__paletteCarries ?? []`);
+    const paletteCentre = await paletteAt('[data-testid="arrange-palette"]');
+    const roundTripBefore = await treeNow();
+    const roundTripCommits = commitCount();
+    await paletteCarryRecorder();
+    const roundTripSource = await paletteAt('[data-testid="palette-stack-row"]');
+    if (roundTripSource !== null && paletteCentre !== null) {
+      await browser.dragAndDrop(roundTripSource, paletteCentre);
+    }
+    await sleep(1_500);
+    const roundTripAfter = await treeNow();
+    const roundTripSaid = await paletteCarriesSeen();
+    const roundTripped =
+      roundTripSource !== null &&
+      paletteCentre !== null &&
+      roundTripAfter === roundTripBefore &&
+      commitCount() === roundTripCommits &&
+      roundTripSaid.includes("cancel");
+    check(
+      "R4 the palette takes a fresh item back and says so",
+      roundTripped,
+      roundTripSource === null || paletteCentre === null
+        ? "no palette to drag out of or drop back on: the round trip was never attempted"
+        : roundTripped
+          ? `a Stack row dragged out and dropped back on the palette left the tree byte-identical on ${String(commitCount() - roundTripCommits)} write(s); the palette painted data-carry=${roundTripSaid.join("/")} on the way`
+          : `dropped back on the palette: tree ${roundTripAfter === roundTripBefore ? "identical" : "CHANGED"}, ${String(commitCount() - roundTripCommits)} write(s), palette painted [${roundTripSaid.join(", ")}] where "cancel" was owed`,
+    );
+
+    /* The spacer the rung above seated, by its own grip: `data-tile-id` is the tree's own id. */
+    const spacerLeafId = (): Promise<string | null> =>
+      browser!.evaluate<string | null>(
+        `(() => { const grip = Array.from(document.querySelectorAll('.arrange-grip'))
+             .find((g) => g.getAttribute('aria-label') === 'Pick up the Spacer');
+           return grip?.dataset.tileId ?? null; })()`,
+      );
+    const gripCentre = (tileId: string): Promise<{ x: number; y: number } | null> =>
+      browser!.evaluate<{ x: number; y: number } | null>(
+        `(() => { const grip = document.querySelector('[data-tile-id=' + ${JSON.stringify(
+          JSON.stringify(tileId),
+        )} + '].arrange-grip, [data-tile-id=' + ${JSON.stringify(JSON.stringify(tileId))} + '].arrange-grip-handle');
+           if (grip === null) return null;
+           const box = grip.getBoundingClientRect();
+           return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`,
+      );
+    const carriedSpacer = await spacerLeafId();
+    const spacerGrip = carriedSpacer === null ? null : await gripCentre(carriedSpacer);
+    const returnCommits = commitCount();
+    await paletteCarryRecorder();
+    if (spacerGrip !== null && paletteCentre !== null) {
+      await browser.drag(
+        Array.from({ length: 13 }, (_unused, step) => ({
+          x: spacerGrip.x + ((paletteCentre.x - spacerGrip.x) * step) / 12,
+          y: spacerGrip.y + ((paletteCentre.y - spacerGrip.y) * step) / 12,
+        })),
+        30,
+      );
+    }
+    const spacerReturned = await settles(async () => {
+      const now = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
+      return spacersIn(now) === spacersIn(beforeSpacer);
+    }, 8_000);
+    await sleep(1_500);
+    const returnWrites = commitCount() - returnCommits;
+    const returnSaid = await paletteCarriesSeen();
+    const returned = spacerReturned && returnWrites === 1 && returnSaid.includes("remove");
+    check(
+      "R4 a placed structure dropped on the palette is removed on one write",
+      returned,
+      spacerGrip === null
+        ? "the seated spacer painted no grip of its own, so it could not be picked up"
+        : returned
+          ? `the spacer's grip released on the palette took the spacer out on one core.space.setLayout, and the palette painted data-carry=${returnSaid.join("/")} while it was in hand`
+          : `the spacer ${spacerReturned ? "went" : "STAYED"} after ${String(returnWrites)} write(s); the palette painted [${returnSaid.join(", ")}] where "remove" was owed`,
+    );
+
+    /* The key and the tool: a fresh spacer, a panel tapped first so the precondition is read
+       in both states, then Delete on the structure. */
+    const keySource = await paletteAt('[data-testid="palette-spacer"]');
+    const keyTarget = await treeEdge();
+    if (keySource !== null && keyTarget !== null) await browser.dragAndDrop(keySource, keyTarget);
+    const keySeated = await settles(async () => (await spacerLeafId()) !== null, 8_000);
+    await sleep(1_500);
+    const removeDisabled = (): Promise<boolean | null> =>
+      browser!.evaluate<boolean | null>(
+        `document.querySelector('[data-testid="toolbar-remove"]')?.disabled ?? null`,
+      );
+    const tapAt = async (at: { x: number; y: number } | null): Promise<boolean> => {
+      if (at === null) return false;
+      await browser!.drag([at], 0);
+      await sleep(300);
+      return true;
+    };
+    const panelTapped = await tapAt(
+      await gripCentre(
+        (await browser.evaluate<string | null>(
+          `document.querySelector('.arrange-grip[data-panel-id]')?.dataset.tileId ?? null`,
+        )) ?? "",
+      ),
+    );
+    const withPanel = await removeDisabled();
+    const keySpacer = await spacerLeafId();
+    const spacerTapped = await tapAt(keySpacer === null ? null : await gripCentre(keySpacer));
+    const withStructure = await removeDisabled();
+    const deleteCommits = commitCount();
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await browser.send("Input.dispatchKeyEvent", {
+        type,
+        key: "Delete",
+        code: "Delete",
+        windowsVirtualKeyCode: 46,
+        nativeVirtualKeyCode: 46,
+      });
+    }
+    const deleted = await settles(async () => (await spacerLeafId()) === null, 8_000);
+    await sleep(1_500);
+    const deleteWrites = commitCount() - deleteCommits;
+    const keyed =
+      keySeated &&
+      panelTapped &&
+      spacerTapped &&
+      withPanel === true &&
+      withStructure === false &&
+      deleted &&
+      deleteWrites === 1;
+    check(
+      "R4 Delete removes the selected structure, and Remove lights up only for one",
+      keyed,
+      !keySeated
+        ? "no spacer could be seated for the key to act on"
+        : !panelTapped || !spacerTapped
+          ? "a grip could not be tapped, so no selection was ever made"
+          : keyed
+            ? `Remove read disabled=${String(withPanel)} with a panel selected and disabled=${String(withStructure)} with the spacer selected; Delete took the spacer out on one core.space.setLayout`
+            : `Remove read disabled=${String(withPanel)}/${String(withStructure)} (panel/structure) where true/false was owed; Delete ${deleted ? "removed" : "did NOT remove"} the spacer on ${String(deleteWrites)} write(s)`,
+    );
+
+    /*
       TAP VERSUS DRAG, under a real pointer. Selection is Shelf's precondition and a tap is how
       it is expressed, so a press-and-release that travelled zero pixels must select and must
       NOT be read as a one-pixel move — a threshold that failed open would rearrange the
@@ -3616,7 +3785,8 @@ try {
         `(() => {
            const describe = (node) => {
              if (node.classList.contains('sidebar-split')) {
-               const kids = Array.from(node.children).filter((k) => !k.classList.contains('sidebar-split-seat'));
+               // The seat and the split's own grip are chrome, not rows: the description is the arrangement.
+               const kids = Array.from(node.children).filter((k) => !k.classList.contains('sidebar-split-seat') && !k.classList.contains('sidebar-split-grip'));
                return '[' + node.dataset.dir + (node.dataset.vacant === 'true' ? ' vacant' : '')
                  + ' ' + kids.map(describe).join(' ') + ']';
              }
@@ -3990,6 +4160,60 @@ try {
           : heldRoom
             ? `${String(squeezed.length)} stack(s) at occupancy ${occupancies.join("/")} held their room in a 460 px window: ${squeezed.map((stack) => `${stack.dir}×${String(stack.members)} ${String(Math.round(stack.height))}px`).join(", ")}`
             : `${String(crushed.length)} stack(s) squeezed below what they paint: ${crushed.map((stack) => `${stack.dir}×${String(stack.members)} is ${String(Math.round(stack.height))}px tall, paints ${String(Math.round(stack.spill))}px past its own bottom, and "${stack.nextId}" is drawn ${String(Math.round(stack.overlap))}px over it`).join("; ")}`,
+    );
+
+    /*
+      AND A RAIL STACK GOES BACK TO THE PALETTE TOO (issue #148): the trio the rungs above
+      filled, picked up by the band on its own top edge and released on the palette, DISSOLVES
+      — its three rows stay exactly where they were, flat in the rail, in their order, on one
+      write. Read off the painted rail before and after rather than off the tree, because "in
+      place" is a claim about where a reader sees the rows. The grip is `core.shell`'s and the
+      palette is `core.arrange`'s, so this is also the one rung that proves the two plugins hand
+      a carry across their boundary at all.
+    */
+    const trioBefore = await railPaint();
+    const trioGrip = await browser.evaluate<{ x: number; y: number; members: string } | null>(
+      `(() => {
+         const split = Array.from(document.querySelectorAll('.sidebar-sections > .sidebar-split'))
+           .find((node) => node.querySelectorAll('[data-section-id]').length === 3);
+         const grip = split?.querySelector(':scope > .sidebar-split-grip');
+         if (!grip) return null;
+         const box = grip.getBoundingClientRect();
+         return { x: box.left + box.width / 2, y: box.top + box.height / 2,
+           members: Array.from(split.querySelectorAll('[data-section-id]'), (row) => row.dataset.sectionId).join(' ') };
+       })()`,
+    );
+    const trioPalette = await paletteAt('[data-testid="arrange-palette"]');
+    const trioCommits = commitCount();
+    if (trioGrip !== null && trioPalette !== null) {
+      await browser.drag(
+        Array.from({ length: 17 }, (_unused, step) => ({
+          x: trioGrip.x + ((trioPalette.x - trioGrip.x) * step) / 16,
+          y: trioGrip.y + ((trioPalette.y - trioGrip.y) * step) / 16,
+        })),
+        25,
+      );
+    }
+    const trioDissolved = await settles(
+      async () => trioGrip !== null && !(await railPaint()).includes(`[row ${trioGrip.members}]`),
+      8_000,
+    );
+    await sleep(1_500);
+    const trioAfter = await railPaint();
+    const trioWrites = commitCount() - trioCommits;
+    const trioFlat =
+      trioGrip !== null &&
+      trioDissolved &&
+      trioAfter === trioBefore.replace(`[row ${trioGrip.members}]`, trioGrip.members) &&
+      trioWrites === 1;
+    check(
+      "R4 a rail stack dropped on the palette dissolves into its rows in place",
+      trioFlat,
+      trioGrip === null || trioPalette === null
+        ? "no three-row stack with a grip of its own in the rail, or no palette to drop it on"
+        : trioFlat
+          ? `"[row ${trioGrip.members}]" became "${trioGrip.members}" where it stood, on one core.space.setLayout: "${trioAfter}"`
+          : `the rail went from "${trioBefore}" to "${trioAfter}" on ${String(trioWrites)} write(s) — the three rows were owed flat, in order, in the stack's own place`,
     );
 
     /*
