@@ -79,6 +79,19 @@ if ((await gitText(["rev-parse", "HEAD"])) !== (await gitText(["rev-parse", "ori
   throw new Error("main must exactly match origin/main before release");
 }
 
+// The gate ran ONCE, on CI, for this exact commit (ci.yml on push to main). A release from a
+// commit with no green run is refused here rather than re-verified locally.
+const head = await gitText(["rev-parse", "HEAD"]);
+const green =
+  await $`gh run list --workflow ci.yml --commit ${head} --status success --limit 1 --json databaseId`
+    .quiet()
+    .text();
+if ((JSON.parse(green) as readonly unknown[]).length === 0) {
+  throw new Error(
+    `main@${head.slice(0, 7)} has no green ci.yml run; push and wait for CI before releasing`,
+  );
+}
+
 const packagePath = "packages/web/package.json";
 const packageMetadata = (await Bun.file(packagePath).json()) as PackageMetadata;
 const version = resolveReleaseVersion(packageMetadata.version, requested);
@@ -89,7 +102,10 @@ await Bun.write(`${packagePath}`, `${JSON.stringify({ ...packageMetadata, versio
 await Bun.write("CHANGELOG.md", changelog);
 await $`bun scripts/generate-web-changelog.ts`;
 await $`bun install`;
-await $`bun run gate`;
+// The release commit changes only the version, the changelog freeze and the generated
+// changelog: these two cover exactly that in seconds.
+await $`bun run check`;
+await $`bun run changelog:check`;
 
 await $`git add CHANGELOG.md bun.lock packages/web/package.json packages/web/src/generated-changelog.ts`;
 await $`git commit -m ${`release: v${version}`}`;

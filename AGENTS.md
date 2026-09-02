@@ -64,10 +64,14 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
   are cheap and frequent precisely because `bun run release -- patch|minor` is one command.
 - Releases stay deliberate operator/agent moments, and the one release path is how. From a clean,
   up-to-date `main`, `bun run release -- <major|minor|patch|x.y.z>` is the only release path: it
-  bumps the web package, freezes the changelog, regenerates the in-app history, runs the full
-  gate, creates the `release:` commit and tag, pushes atomically, and waits for the GitHub
-  Release workflow. Frequent does not mean incidental: publishing is a fleet action
-  (invariant 10), so know what the release ships before running it.
+  refuses a `main` commit with no green CI run (the gate runs ONCE per commit, on
+  `.github/workflows/ci.yml`, for every pull request into `main` and every push to `main`),
+  bumps the web package, freezes the changelog, regenerates the in-app history, typechecks and
+  changelog-checks the release commit, creates the `release:` commit and tag, pushes atomically,
+  waits for the GitHub Release workflow (fleet binaries, the hub image), and then for whatever
+  workflows subscribe to a release (the operator's own deployment lives there; ADR 0022).
+  Frequent does not mean incidental: publishing is a fleet action (invariant 10), so know what
+  the release ships before running it.
 - Never edit a released version, create a release tag, or publish a GitHub Release by hand.
 
 ## Map
