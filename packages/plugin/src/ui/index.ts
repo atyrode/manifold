@@ -154,11 +154,7 @@ export {
   requestRebind,
   useRebindRequest,
 } from "./rebind.ts";
-/**
- * THE handoff between a grip that PICKED UP placed structure and the palette it goes back
- * to. Same lifetime class as the rebind slot: one pointer gesture, device-local, never on
- * the wire (`./held.ts`, issue #148).
- */
+/** The rebind slot's sibling: a picked-up structure, handed to the palette (`./held.ts`, #148). */
 export {
   heldStructure,
   holdStructure,
