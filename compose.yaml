@@ -2,6 +2,9 @@
 # record makes it the master node AND a terminal-serving machine (docs/SELF-HOST.md).
 services:
   manifold:
+    # A published image (`MANIFOLD_IMAGE=ghcr.io/<owner>/manifold:<tag> docker compose
+    # pull`) or, absent one, the local build tagged `manifold:local`.
+    image: ${MANIFOLD_IMAGE:-manifold:local}
     build:
       context: .
       args:
@@ -15,6 +18,14 @@ services:
       # Passthrough only when set in .env: pins the owner key instead of
       # generating one at /data/owner.key on first boot.
       - MANIFOLD_OWNER_KEY
+      # Passthrough only when set in .env: "0" retires the in-container agent.
+      - MANIFOLD_SPAWN_AGENT
+      # Passthrough only when set in .env: optional replication of manifold.db to
+      # any S3-compatible store (docs/SELF-HOST.md §Replicate the database).
+      - MANIFOLD_REPLICA_BUCKET
+      - MANIFOLD_REPLICA_ENDPOINT
+      - LITESTREAM_ACCESS_KEY_ID
+      - LITESTREAM_SECRET_ACCESS_KEY
     volumes:
       - manifold-data:/data
     # No published ports: only Caddy reaches manifold:7777 on the compose network.

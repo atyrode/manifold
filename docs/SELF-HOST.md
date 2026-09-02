@@ -17,12 +17,29 @@ store — and a regular terminal-serving machine at the same time.
 git clone https://github.com/atyrode/manifold && cd manifold
 cp .env.example .env        # set MANIFOLD_DOMAIN=<your domain>
 docker compose up -d --build
+```
+
+Or run a published image — no bun, no build — by naming a release tag in `.env`
+(`MANIFOLD_IMAGE=ghcr.io/atyrode/manifold:<tag>`, tags at
+<https://github.com/atyrode/manifold/releases>; the published image is x86_64, and an
+arm64 host builds the same image with the first form):
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+There is no `latest` tag on purpose: a deploy names a version, so "what is running"
+is always a tag you can read in `/healthz` (`build`) and find in the changelog.
+
+Either way, print the bootstrap URL and open it in a browser:
+
+```sh
 docker compose exec manifold sh -c 'echo "$MANIFOLD_PUBLIC_URL/#key=$(cat /data/owner.key)"'
 ```
 
-Open the printed URL in a browser. The `#key=` fragment is the owner bootstrap: it
-never leaves the browser (fragments are not sent in requests) and the app moves it
-to localStorage and scrubs the URL immediately.
+The `#key=` fragment is the owner bootstrap: it never leaves the browser (fragments
+are not sent in requests) and the app moves it to localStorage and scrubs the URL
+immediately.
 
 The boot log line `manifold ready url=…` deliberately omits the key: `docker logs`
 output is a persisted stream, and the owner key must never enter logs (the command
@@ -112,6 +129,42 @@ docker compose exec manifold tar cz -C / data > manifold-backup-$(date +%F).tgz
 ```
 
 The archive contains the owner key — store it like a secret.
+
+## Replicate the database (optional)
+
+The image ships [Litestream](https://litestream.io) and runs it only when you ask.
+Four variables in `.env`, all required together, and any S3-compatible store works —
+a bucket at a cloud object store, MinIO on another box, anything speaking the S3 API:
+
+```sh
+MANIFOLD_REPLICA_BUCKET=<bucket>
+MANIFOLD_REPLICA_ENDPOINT=https://<s3 endpoint host>
+LITESTREAM_ACCESS_KEY_ID=<key id>
+LITESTREAM_SECRET_ACCESS_KEY=<secret>
+```
+
+With them set, the container's entrypoint (`infra/entrypoint.sh`) does two things and
+nothing else: if `/data/manifold.db` is absent, it restores the newest replica before the
+server starts; then it runs the server under `litestream replicate`, shipping every WAL
+segment as it lands, with a fresh snapshot every hour and 72 hours of retention
+(`infra/litestream.yml`). Without them the entrypoint is exactly
+`bun packages/server/src/main.ts`.
+
+One writer per replica. Never run two instances against one bucket path — the second
+one restores over the first one's history — which also means "zero-downtime" deploys
+that overlap old and new instances are off the table for a replicated hub.
+
+Take a consistent copy at any time (this is the same command that would rebuild the
+store on a new host):
+
+```sh
+docker compose exec manifold litestream restore -config /app/infra/litestream.yml -o /tmp/copy.db /data/manifold.db
+```
+
+With replication on AND `MANIFOLD_OWNER_KEY` pinned in `.env`, the container needs no
+volume at all: a host with an ephemeral disk rebuilds `/data` from the replica on every
+boot. Note what the replica is not: it holds `manifold.db` only, never `owner.key`, so a
+pinned key is the one copy of that secret — keep it where you keep secrets.
 
 ## Rotating the owner key
 
@@ -205,6 +258,12 @@ for exactly this reason; a bearer token remains the only authority on them.
 git pull && docker compose up -d --build
 ```
 
+Or, running a published image, name the new tag in `.env` and pull it:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
 SQLite schema migrations run automatically on boot (`packages/server/src/db.ts`
 MIGRATIONS); the volume carries the data across image rebuilds.
 
@@ -214,7 +273,9 @@ The container auto-spawns a terminal agent named `${MANIFOLD_MACHINE_NAME}`
 (default `hub`). Its shells run **inside the container** — the toolset is whatever
 the image ships. For real shells on the host (or any other box), enroll that box
 natively as a spoke per `docs/ENROLL.md`; do not mount the docker socket or host
-paths into the hub container for this.
+paths into the hub container for this. `MANIFOLD_SPAWN_AGENT=0` in `.env` turns the
+in-container agent off — sensible where the container's disk is ephemeral, since its
+shells would die at every redeploy.
 
 ## Verify a deployment
 

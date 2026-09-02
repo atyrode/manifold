@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -47,3 +48,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" manifold-agent-linux-x64 --verify-tag --title "manifold ${GITHUB_REF_NAME}" --notes-file release-notes.md
+
+      - name: Publish the hub image
+        # The self-hosting artifact: one image per tag under THIS repository's namespace (a
+        # fork publishes its own), never a mutable `latest` (docs/SELF-HOST.md §Install).
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build --build-arg MANIFOLD_BUILD="${GITHUB_REF_NAME}" -t "$image" .
+          docker push "$image"

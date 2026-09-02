@@ -9,7 +9,7 @@
  * those registries and holds the tree to them — in BOTH directions, so an unrecorded crossing
  * fails here rather than in review.
  *
- * The static half (S1-S16) runs against the source tree with the TypeScript parser, never a
+ * The static half (S1-S17) runs against the source tree with the TypeScript parser, never a
  * regex over source (D14): imports, storage keys, action markers and route literals are AST
  * facts, and a regex that "mostly works" on them is a gate that mostly holds.
  *
@@ -22,6 +22,7 @@
  *   S7 route allowlist: no bespoke feature route grew beside the action door
  *   S8 every scene element type is a floor kind or a composed contribution
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
+ *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
  *
  * The browser half (R1-R8) runs a real server and a real Chromium against the built bundle,
  * because the axioms are claims about a LIVE workspace: parity between the two doors, hot
@@ -2172,6 +2173,46 @@ const PLUGIN_SRC_MAX_LINES = 12_500;
     total <= PLUGIN_SRC_MAX_LINES
       ? `packages/plugin/src is ${String(total)} lines across ${String(files.length)} source files (warn ${String(PLUGIN_SRC_WARN_LINES)}, red ${String(PLUGIN_SRC_MAX_LINES)}); largest ${largest.path} (${String(largest.lines)})`
       : `packages/plugin/src is ${String(total)} lines, over the ${String(PLUGIN_SRC_MAX_LINES)}-line ceiling: the engine has grown past what a stranger's agent can read before starting (A3). Extract plugin territory or defend a new ceiling in scripts/verify-axioms.ts`,
+  );
+}
+
+// ────────────────────────────────────────── S17: hosting neutrality
+
+/**
+ * MANIFOLD IS SELF-HOSTED SOFTWARE and the operator's instance is one deployment of it
+ * (ADR 0022). Everything a self-hoster ships or runs stays provider-neutral: env names are
+ * MANIFOLD_*, replication speaks S3, the image is the one any checkout builds. Exactly ONE
+ * file may name a provider — the operator's own deployment workflow — so that "Clever is
+ * how the operator hosts it" never becomes "manifold runs on Clever".
+ *
+ * A text scan, not the parser, on purpose: the subjects are a Dockerfile, YAML, shell and
+ * workflow files with no AST here, and a provider NAME is a token with no structure to read.
+ * The pattern is the provider's names and its env prefix, not the English adjective. This
+ * file is a subject too, so every alternative is spelled with an optional separator: the
+ * pattern's own source then names nothing the pattern matches.
+ */
+const HOSTING_PROVIDER_NOUNS = /clever[- ]?cloud|clever[- ]?apps|clever[- ]?tools|\bCC_[A-Z]/i;
+const OPERATOR_DEPLOYMENT_FILE = ".github/workflows/deploy-hub.yml";
+
+{
+  const subjects = ["Dockerfile", "compose.yaml", "flake.nix"];
+  for (const glob of ["infra/**", "packages/**", "scripts/**", ".github/workflows/**"]) {
+    for (const hit of new Bun.Glob(glob).scanSync({ cwd: repoRoot, onlyFiles: true })) {
+      const path = hit.split("\\").join("/");
+      if (path.includes("/node_modules/") || path.includes("/dist/")) continue;
+      if (path === OPERATOR_DEPLOYMENT_FILE) continue;
+      subjects.push(path);
+    }
+  }
+  const tainted = subjects.filter((path) =>
+    HOSTING_PROVIDER_NOUNS.test(readFileSync(join(repoRoot, path), "utf8")),
+  );
+  check(
+    "S17 hosting neutrality",
+    tainted.length === 0,
+    tainted.length === 0
+      ? `${String(subjects.length)} shipped files name no hosting provider; only ${OPERATOR_DEPLOYMENT_FILE} may`
+      : `a hosting provider is named outside the operator's deployment workflow (ADR 0022): ${list(tainted)}`,
   );
 }
 
