@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-02
+
 ### Added
 
 - Every release now publishes the hub image, `ghcr.io/atyrode/manifold:<tag>`, so a self-hosted instance can run a release with `docker compose pull` and no build — there is no `latest` tag on purpose, a deploy names a version. (#173, #177)
