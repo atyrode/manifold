@@ -376,7 +376,7 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(15);
+      expect(SCHEMA_VERSION).toBe(16);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.
@@ -389,6 +389,13 @@ describe("migration 9: solo compositions", () => {
       expect(columns("containers")).not.toContain("origin_pad_id");
       expect(columns("terminals")).not.toContain("sort_order");
       expect(columns("terminals")).toContain("container_id");
+      // Migration 16: a machine row that predates the declared fleet was minted through the
+      // door, and the column says so without a backfill, or the reconciler would treat it
+      // as a third origin.
+      expect(
+        db.query<{ origin: string }, []>("SELECT origin FROM machines WHERE id = 'm1'").get()
+          ?.origin,
+      ).toBe("enrolled");
 
       // A one-way data move is the one migration whose mistake cannot be undone by running
       // something else afterwards, so the pre-migration image sits beside the database.

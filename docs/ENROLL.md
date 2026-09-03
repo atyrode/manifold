@@ -65,6 +65,34 @@ explicitly:
 Rotation revokes the old token immediately (a live agent using it is fenced
 with close code 4403) and returns the replacement exactly once.
 
+### Declaring machines instead (`MANIFOLD_DECLARED_MACHINES`)
+
+A fleet repository can skip the POST entirely. Mint each machine's token where the
+machine is — a per-machine secrets generator is the natural place — keep the raw
+there as the agent's 0600 file, and publish only its sha256 as a public value.
+The hub host builds one JSON file from those values and points the server at it:
+
+```json
+{ "tyrode-hub-01": "<64 lowercase hex>", "alex-laptop": "<64 lowercase hex>" }
+```
+
+```sh
+MANIFOLD_DECLARED_MACHINES=/run/manifold/declared-machines.json manifold-server
+```
+
+At every boot the hub reconciles its `machines` table against the file: a new name
+is created, a name whose hash changed is rotated in place (old token revoked, live
+socket fenced, same machine id), a declared name that disappeared is revoked the
+way the Machines section's Withdraw revokes, and machines enrolled through the
+POST are left alone. Nothing secret reaches the hub — it stores exactly the hash
+it would have stored had it minted the token itself — so rotating a declared
+machine is regenerating its secret and redeploying both ends, never a
+`rotateToken` call: the enrolment door refuses a declared name (`machine is
+declared by configuration; rotate it there`). A malformed entry is a startup
+error naming it, and the boot log carries one `machine_declared` line per row the
+file changed. The hub's own auto-spawned agent (`MANIFOLD_MACHINE_NAME`) cannot be
+a declared name, because the hub would have no raw to hand it.
+
 ## 2. Run the agent
 
 Three envs; the token comes from the 0600 file so it never appears in a unit

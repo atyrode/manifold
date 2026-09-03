@@ -41,6 +41,11 @@ export const LOG_EVENTS = [
   "local_agent_spawn_locked",
   "local_agent_spawned",
 
+  // Server: the declared fleet, reconciled at boot (`MANIFOLD_DECLARED_MACHINES`). One line
+  // per row the file changed — created, rotated, revoked — and one for a declaration the hub
+  // cannot honour, never one per machine that already matched.
+  "machine_declared",
+
   // Server: machine transport — enrolment, version negotiation, supersession, liveness.
   "machine_hello_timeout",
   "machine_liveness_timeout",

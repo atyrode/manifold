@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
+const DECLARED_HASH = /^[0-9a-f]{64}$/;
 
 /** Fully resolved server configuration. Mutable `publicUrl` is finalized after port 0 binds. */
 export interface ServerConfig {
@@ -18,6 +19,13 @@ export interface ServerConfig {
   announceKey: boolean;
   /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) exposed by `/healthz`; undefined on ad-hoc runs. */
   build: string | undefined;
+  /**
+   * The declared fleet (`MANIFOLD_DECLARED_MACHINES`): machine name to the sha256 hex of the
+   * raw bearer that machine holds, read once at boot and reconciled into the `machines` table
+   * (`AuthService.reconcileDeclaredMachines`). Empty when the env is unset, which is every
+   * hub whose machines enrol through the door.
+   */
+  declaredMachines: ReadonlyMap<string, string>;
 }
 
 function randomHex(bytes: number): string {
@@ -78,6 +86,50 @@ function normalizePublicUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+/**
+ * The declared-fleet file, validated to the letter because it is the one input that writes
+ * credentials without a mint: an entry that is not a lowercase 64-hex sha256 is a startup
+ * error naming the entry, never a row that no raw will ever hash to. Lowercase is exact
+ * rather than folded, because `sha256Hex` writes lowercase and `authenticateMachine` compares
+ * the string — a folded hash here would match at boot and refuse at the handshake.
+ */
+export function parseDeclaredMachines(text: string, path: string): ReadonlyMap<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "invalid JSON";
+    throw new Error(`MANIFOLD_DECLARED_MACHINES (${path}): ${reason}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `MANIFOLD_DECLARED_MACHINES (${path}): expected an object of name to sha256 hex`,
+    );
+  }
+  const declared = new Map<string, string>();
+  for (const [name, hash] of Object.entries(parsed)) {
+    if (name.trim().length === 0) {
+      throw new Error(`MANIFOLD_DECLARED_MACHINES (${path}): machine name must not be empty`);
+    }
+    if (typeof hash !== "string" || !DECLARED_HASH.test(hash)) {
+      throw new Error(
+        `MANIFOLD_DECLARED_MACHINES (${path}): entry "${name}" must be exactly 64 lowercase hex characters`,
+      );
+    }
+    declared.set(name, hash);
+  }
+  return declared;
+}
+
+function loadDeclaredMachines(
+  cwd: string,
+  configured: string | undefined,
+): ReadonlyMap<string, string> {
+  if (configured === undefined) return new Map();
+  const path = resolve(cwd, configured);
+  return parseDeclaredMachines(readFileSync(path, "utf8"), path);
+}
+
 /** Loads runtime env, creates the data directory, and materializes the 0600 owner key. */
 export function loadConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -106,6 +158,7 @@ export function loadConfig(
     localMachineName,
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     build: build !== undefined && build.length > 0 ? build : undefined,
+    declaredMachines: loadDeclaredMachines(cwd, env.MANIFOLD_DECLARED_MACHINES),
   };
 }
 

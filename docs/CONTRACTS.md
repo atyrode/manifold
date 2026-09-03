@@ -38,11 +38,11 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
 
 ## Runtime contracts
 
-| Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only) |
-| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                        |
-| web dev | `bun run --cwd packages/web dev`  | vite :5173, proxies `/api` + `/ws` → :7777                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only), `MANIFOLD_DECLARED_MACHINES` (unset; path to a JSON file `{ "<machine name>": "<sha256 hex of the raw token>" }` reconciled into the `machines` table at every boot — see §Identity, "Declared machines") |
+| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| web dev | `bun run --cwd packages/web dev`  | vite :5173, proxies `/api` + `/ws` → :7777                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
@@ -136,6 +136,29 @@ and produces negative geometry that the commit path then rejects.
   `authenticateMachine` has no expiry rung at all, so a machine credential cannot expire by
   two independent constructions. An agent cannot re-authenticate through a browser, so
   shortening its credential is a fleet outage wearing a security hat.
+- **Declared machines** (`MANIFOLD_DECLARED_MACHINES`, schema 16). A JSON file
+  `{ "<machine name>": "<sha256 hex of the raw bearer>" }` is the second way a machine comes
+  to exist, beside `core.machines.enroll`. The hub reads it once at boot, before any door or
+  socket, and reconciles the `machines` table through the SAME writers the door uses
+  (`AuthService.reconcileDeclaredMachines`): an absent name is created with origin
+  `declared`; a present name whose live token's hash differs is rotated in place — old token
+  revoked and fenced, new row carrying the declared hash, same machine id, and an `enrolled`
+  row the file names is adopted (`origin` becomes `declared`) by that rotation; a present name
+  whose hash matches is left alone and logged nothing; a `declared` row the file no longer
+  names is revoked exactly as `core.machines.revoke` revokes — credential withdrawn, socket
+  fenced with 4403, row kept in the inventory. Rows the door minted and the file does not name
+  are never touched. Nothing secret reaches the hub: the raw is minted where the machine is
+  and only its hash is published, which is the storage rule the `tokens` table already keeps
+  ("HASH only, never raw"). Rotation is therefore re-keying the spoke and redeploying, not a
+  `rotateToken` call, and the enrolment door REFUSES a declared name on every path (`conflict`,
+  message `machine is declared by configuration; rotate it there`) — including the local
+  agent's boot recovery, which is a startup error if `MANIFOLD_MACHINE_NAME` is declared. A
+  declared hash naming a token this database already revoked is reported `unhonoured`
+  (`machine_declared`, level warn) and never resurrected: revocation is durable and a file
+  cannot undo it; publish a fresh hash. The file is validated to the letter — non-empty
+  names, exactly 64 lowercase hex — and a bad entry is a startup error naming it. The boot
+  log carries one `machine_declared` line per change (`created` | `rotated` | `revoked` |
+  `unhonoured`) with the hash cut to eight characters, never a raw.
 - **The owner key does not expire and is not revocable by a grant.** It is break-glass, and
   break-glass that can lock you out is not break-glass (ADR 0019 §1, §Alternatives rejected).
 - **The bootstrap audit** (ADR 0019 §4) leaves EVENT rows, not trace rows:
@@ -1636,7 +1659,10 @@ principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER, ori
                             -- the guest origin its share was minted for
 tokens(id TEXT PK, hash TEXT UNIQUE, principal_id TEXT, caps TEXT, container_id TEXT,
        created_at INTEGER, revoked_at INTEGER, minted_by TEXT)  -- HASH only, never raw
-machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
+machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER,
+         origin TEXT NOT NULL DEFAULT 'enrolled')  -- enrolled (the door) | declared
+                            -- (MANIFOLD_DECLARED_MACHINES); a declared row's credential is
+                            -- the fleet repository's to rotate, and the door refuses it
 terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, status TEXT,
          exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT)
                             -- container_id IS the home composition; no element_id, no pool
@@ -1668,14 +1694,17 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 14 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 16 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
-`grants` substrate; 14 is the trace ledger — five nullable columns on `events`). Migrations 12
-and 14 are plain SQL for the same reason: neither touches a stored document and existing rows
-need no backfill, since absence already means the right thing — a NULL origin means "this
-instance", and a NULL `door` means "this row is an event, not a trace". Neither takes a
-pre-migration snapshot, and that is the house rule rather than an exception to it: the snapshot
-belongs to a one-way DATA move (9, 11, 13), and adding nullable columns is reversible by a later
+`grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is
+`tokens.expires_at`; 16 is `machines.origin`). Migrations 12, 14, 15 and 16 are plain SQL for
+the same reason: none touches a stored document and existing rows need no backfill, since the
+column's absence or default already means the right thing — a NULL origin means "this
+instance", a NULL `door` means "this row is an event, not a trace", a NULL `expires_at` means
+never, and a machine row written before 16 defaults to `enrolled` because the door is the only
+thing that could have written it. None takes a pre-migration snapshot, and that is the house
+rule rather than an exception to it: the snapshot belongs to a one-way DATA move (9, 11, 13),
+and adding columns is reversible by a later
 migration that drops them. A migration is SQL, or CODE
 when the move is not
 expressible as SQL:

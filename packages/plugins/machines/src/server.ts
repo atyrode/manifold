@@ -12,6 +12,12 @@ import { machinesManifest } from "./index.ts";
 interface MachineRow {
   readonly id: string;
   readonly name: string;
+  /**
+   * `enrolled` through this door, or `declared` by the hub's configuration. Read here for
+   * one decision only — whether an existing name is answered from the row or sent to the
+   * mechanism — because the refusal itself is the mechanism's sentence, not this plugin's.
+   */
+  readonly origin: "enrolled" | "declared";
 }
 
 interface Enrollment {
@@ -134,7 +140,14 @@ export const machinesHandlers = {
     args: { name: string; rotateToken?: boolean },
   ): Promise<Refusable<{ machine: MachineDot; machineToken?: string }>> {
     const existing = ctx.store.getMachineByName(args.name);
-    if (existing !== null && args.rotateToken !== true) return { machine: dot(existing) };
+    /*
+      Idempotence answers from the row ONLY for a row this door minted. A declared row is
+      sent through the mechanism whatever the flags say, and the mechanism refuses it by
+      name: a POST for a machine the fleet repository owns must not look like a success.
+    */
+    if (existing !== null && existing.origin === "enrolled" && args.rotateToken !== true) {
+      return { machine: dot(existing) };
+    }
     const outcome =
       existing === null
         ? ctx.identity.enrollMachine(args.name)

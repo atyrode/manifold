@@ -178,6 +178,7 @@ interface MachineRow {
   name: string;
   token_id: string;
   last_seen: number;
+  origin: string;
 }
 
 interface MachineAuthRow extends MachineRow {
@@ -281,12 +282,20 @@ export interface InvalidDoc {
   rev: number;
 }
 
+/**
+ * Who put a machine row here. `enrolled` is the door (`core.machines.enroll`, or the local
+ * agent's boot); `declared` is `MANIFOLD_DECLARED_MACHINES`, whose rows the door may not touch
+ * because the fleet repository, not this database, is where their credential is decided.
+ */
+export type MachineOrigin = "enrolled" | "declared";
+
 /** Persisted machine identity and its last contact time. */
 export interface MachineRecord {
   id: string;
   name: string;
   tokenId: string;
   lastSeen: number;
+  origin: MachineOrigin;
 }
 
 /** Machine identity resulting from a hashed-token lookup. */
@@ -567,8 +576,23 @@ const SHARE_SELECT = `SELECT s.id, s.hash, s.container_id, s.caps, s.origin, s.m
 const DIAL_SELECT = `SELECT id, origin, secret, ref, caps, title, dialed_at, revoked_at
    FROM dials`;
 
+/**
+ * The column is free text to SQLite; the reader is where it becomes a closed word, and a
+ * value nobody wrote is a corrupt row rather than a third origin to reason about.
+ */
+function machineOrigin(value: string): MachineOrigin {
+  if (value === "enrolled" || value === "declared") return value;
+  throw new Error(`unknown machine origin: ${value}`);
+}
+
 function toMachine(row: MachineRow): MachineRecord {
-  return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
+  return {
+    id: row.id,
+    name: row.name,
+    tokenId: row.token_id,
+    lastSeen: row.last_seen,
+    origin: machineOrigin(row.origin),
+  };
 }
 
 /**
@@ -1902,24 +1926,35 @@ export class ServerStore {
 
   createMachine(machine: MachineRecord): void {
     this.db
-      .query<void, [string, string, string, number]>(
-        "INSERT INTO machines(id, name, token_id, last_seen) VALUES (?, ?, ?, ?)",
+      .query<void, [string, string, string, number, string]>(
+        "INSERT INTO machines(id, name, token_id, last_seen, origin) VALUES (?, ?, ?, ?, ?)",
       )
-      .run(machine.id, machine.name, machine.tokenId, machine.lastSeen);
+      .run(machine.id, machine.name, machine.tokenId, machine.lastSeen, machine.origin);
   }
 
-  updateMachineToken(machineId: string, tokenId: string, at: number): void {
+  updateMachineToken(machineId: string, tokenId: string, at: number, origin: MachineOrigin): void {
     this.db
-      .query<void, [string, number, string]>(
-        "UPDATE machines SET token_id = ?, last_seen = ? WHERE id = ?",
+      .query<void, [string, number, string, string]>(
+        "UPDATE machines SET token_id = ?, last_seen = ?, origin = ? WHERE id = ?",
       )
-      .run(tokenId, at, machineId);
+      .run(tokenId, at, origin, machineId);
+  }
+
+  /**
+   * Re-labels who owns a row without touching its credential: the one case where a row
+   * changes hands with nothing to mint, an enrolled machine whose live hash the fleet file
+   * already names.
+   */
+  claimMachine(machineId: string, origin: MachineOrigin): void {
+    this.db
+      .query<void, [string, string]>("UPDATE machines SET origin = ? WHERE id = ?")
+      .run(origin, machineId);
   }
 
   getMachine(id: string): MachineRecord | null {
     const row = this.db
       .query<MachineRow, [string]>(
-        "SELECT id, name, token_id, last_seen FROM machines WHERE id = ?",
+        "SELECT id, name, token_id, last_seen, origin FROM machines WHERE id = ?",
       )
       .get(id);
     return row === null ? null : toMachine(row);
@@ -1928,7 +1963,7 @@ export class ServerStore {
   getMachineByName(name: string): MachineRecord | null {
     const row = this.db
       .query<MachineRow, [string]>(
-        "SELECT id, name, token_id, last_seen FROM machines WHERE name = ?",
+        "SELECT id, name, token_id, last_seen, origin FROM machines WHERE name = ?",
       )
       .get(name);
     return row === null ? null : toMachine(row);
@@ -1936,7 +1971,9 @@ export class ServerStore {
 
   listMachines(): MachineRecord[] {
     return this.db
-      .query<MachineRow, []>("SELECT id, name, token_id, last_seen FROM machines ORDER BY name, id")
+      .query<MachineRow, []>(
+        "SELECT id, name, token_id, last_seen, origin FROM machines ORDER BY name, id",
+      )
       .all()
       .map(toMachine);
   }
@@ -1969,7 +2006,7 @@ export class ServerStore {
   authenticateMachine(hash: string): MachineAuthRecord | null {
     const row = this.db
       .query<MachineAuthRow, [string]>(
-        `SELECT m.id, m.name, m.token_id, m.last_seen,
+        `SELECT m.id, m.name, m.token_id, m.last_seen, m.origin,
                 t.hash, t.principal_id, t.revoked_at
          FROM machines m JOIN tokens t ON t.id = m.token_id
          WHERE t.hash = ?`,
@@ -1977,10 +2014,7 @@ export class ServerStore {
       .get(hash);
     if (row === null) return null;
     return {
-      id: row.id,
-      name: row.name,
-      tokenId: row.token_id,
-      lastSeen: row.last_seen,
+      ...toMachine(row),
       tokenPrincipalId: row.principal_id,
       revokedAt: row.revoked_at,
     };

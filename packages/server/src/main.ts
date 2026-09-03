@@ -77,6 +77,24 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
   const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
   const auth = new AuthService(store, config.ownerKey, runtime);
   /*
+    THE DECLARED FLEET, before any door or socket exists: the pass revokes and re-keys rows,
+    and doing it here means every fence it would fire has nobody registered yet and every
+    machine that dials in a moment later meets the table the file describes. One log line
+    per change; a matched row is silent. The hash is cut to eight characters because a log
+    stream is a place a credential's full digest has no business being, even though a sha256
+    is not the secret — the fleet repository publishes it, this process does not repeat it.
+  */
+  for (const change of auth.reconcileDeclaredMachines(config.declaredMachines)) {
+    const fields = {
+      name: change.name,
+      machineId: change.machineId,
+      change: change.change,
+      hash: config.declaredMachines.get(change.name)?.slice(0, 8),
+    };
+    if (change.change === "unhonoured") logger.warn("machine_declared", fields);
+    else logger.info("machine_declared", fields);
+  }
+  /*
     THE ASSEMBLY'S PLACEMENT VOCABULARY, before anything that reads it. Element traits, the
     discipline roster and the tile-tree question all come off the same declarations (ADR 0013
     §12, #110, #125), so one cached derivation serves the rooms, the broker and the executor.

@@ -27,6 +27,7 @@ import {
 import type {
   GrantRecord,
   MachineAuthRecord,
+  MachineOrigin,
   MachineRecord,
   ServerStore,
   ShareRecord,
@@ -149,6 +150,30 @@ export interface MachineEnrollment {
   machine: MachineRecord;
   machineToken: string;
 }
+
+/**
+ * What `MANIFOLD_DECLARED_MACHINES` says the fleet is: machine name to the sha256 hex of the
+ * raw bearer that machine holds. The hub never learns the raw; this is the hashed half of
+ * the storage rule (`TokenRecord`: "the raw bearer secret deliberately has no field here")
+ * arriving from configuration instead of from a mint.
+ */
+export type DeclaredMachines = ReadonlyMap<string, string>;
+
+/**
+ * One line of the boot reconciliation, for the log: what the declared fleet made the hub
+ * do to one row. `matched` is not a member — a row the file already describes is not a
+ * change and does not get a line (a fleet of forty would print forty at every boot).
+ * `unhonoured` is a declaration the hub cannot carry out: the hash names a credential this
+ * database already revoked, and a revocation is never undone by a config file.
+ */
+export interface DeclaredMachineChange {
+  readonly name: string;
+  readonly machineId: string;
+  readonly change: "created" | "rotated" | "revoked" | "unhonoured";
+}
+
+/** The one sentence the enrolment door answers for a row the fleet repository owns. */
+export const DECLARED_MACHINE_REFUSAL = "machine is declared by configuration; rotate it there";
 
 function randomSecret(): string {
   const bytes = new Uint8Array(32);
@@ -618,6 +643,11 @@ export class AuthService {
    * `manifold://` for an unscoped token, and at `manifold://container/<id>` for a scoped one. A
    * token with NO caps — an enrolled machine's, whose authority is to be a machine rather than to
    * act as a principal — references no row, because a grant granting nothing answers no question.
+   *
+   * The raw is minted HERE and the row is written by `persistTokenHash`, and the seam between
+   * them is the declared fleet: a machine whose hash arrives from configuration gets the same
+   * row, the same grant ruling and the same journal line through the same code, with nothing
+   * to mint. Two writers of `tokens` would be two places for the storage rule to drift.
    */
   private persistToken(
     principalId: string,
@@ -627,6 +657,25 @@ export class AuthService {
     expiry: TokenExpiry,
   ): { raw: string; record: TokenRecord } {
     const raw = randomSecret();
+    const record = this.persistTokenHash(
+      sha256Hex(raw),
+      principalId,
+      caps,
+      containerId,
+      actorId,
+      expiry,
+    );
+    return { raw, record };
+  }
+
+  private persistTokenHash(
+    hash: string,
+    principalId: string,
+    caps: readonly Cap[],
+    containerId: string | null,
+    actorId: string | null,
+    expiry: TokenExpiry,
+  ): TokenRecord {
     const createdAt = this.runtime.now();
     const tokenId = this.runtime.newId();
     /*
@@ -653,7 +702,7 @@ export class AuthService {
           };
     const record: TokenRecord = {
       id: tokenId,
-      hash: sha256Hex(raw),
+      hash,
       principalId,
       mintedBy: actorId,
       caps: [...caps],
@@ -672,7 +721,7 @@ export class AuthService {
         caps: [...caps],
         containerId,
       });
-      return { raw, record };
+      return record;
     });
   }
 
@@ -802,7 +851,20 @@ export class AuthService {
     return { token: minted.raw, principal, caps, containerId };
   }
 
-  private persistMachine(name: string, actorId: string): MachineEnrollment {
+  /**
+   * THE ONE WRITER of a machine row. The hash arrives from the caller rather than being
+   * minted here, because there are two callers and only one of them holds a raw: the
+   * enrolment door mints a secret and hands back the raw once, while the declared fleet
+   * (`MANIFOLD_DECLARED_MACHINES`) hands over a hash the repository published and never had
+   * the raw to give. Both write the same row through the same code, which is what keeps
+   * "how a machine comes to exist" one path with two entrances rather than two paths.
+   */
+  private persistMachine(
+    name: string,
+    actorId: string,
+    origin: MachineOrigin,
+    hash: string,
+  ): MachineRecord {
     return this.store.transaction(() => {
       const machineId = this.runtime.newId();
       /*
@@ -812,16 +874,38 @@ export class AuthService {
         looked up by `authenticateMachine`, which has no expiry rung — so the exemption is
         made twice and cannot be undone by one of them changing.
       */
-      const minted = this.persistToken(machineId, [], null, actorId, "never");
+      const token = this.persistTokenHash(hash, machineId, [], null, actorId, "never");
       const machine: MachineRecord = {
         id: machineId,
         name,
-        tokenId: minted.record.id,
+        tokenId: token.id,
         lastSeen: this.runtime.now(),
+        origin,
       };
       this.store.createMachine(machine);
-      return { machine, machineToken: minted.raw };
+      return machine;
     });
+  }
+
+  private mintMachine(name: string, actorId: string): MachineEnrollment {
+    const raw = randomSecret();
+    return {
+      machine: this.persistMachine(name, actorId, "enrolled", sha256Hex(raw)),
+      machineToken: raw,
+    };
+  }
+
+  /**
+   * A declared row's credential is decided in the fleet repository, so the door has nothing
+   * it may do to one: minting a replacement here would hand out a secret the next boot
+   * revokes, and the answer that does not lie is a refusal that says where to go instead.
+   * `conflict` rather than `forbidden`, because the caller's authority is not in question —
+   * the row is simply not this database's to rotate.
+   */
+  private refuseDeclared(machine: MachineRecord | null): void {
+    if (machine?.origin === "declared") {
+      throw new ServiceError("conflict", DECLARED_MACHINE_REFUSAL);
+    }
   }
 
   /** Enrolls a machine only for an unscoped principal holding `machines:mint`. */
@@ -829,45 +913,94 @@ export class AuthService {
     if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
       throw new ServiceError("forbidden", "machines:mint capability required");
     }
-    return this.persistMachine(name, actor.principal.id);
+    this.refuseDeclared(this.store.getMachineByName(name));
+    return this.mintMachine(name, actor.principal.id);
   }
 
   /** Enrolls the trusted local daemon as the owner during boot. */
   enrollLocalMachine(name: string): MachineEnrollment {
-    return this.persistMachine(name, this.ownerPrincipal.id);
+    return this.mintMachine(name, this.ownerPrincipal.id);
+  }
+
+  /**
+   * The revocation half of a rotation or a withdrawal, INSIDE the caller's transaction and
+   * without the fence: the row and its journal line commit with whatever else the caller
+   * writes, and the live socket is cut only once that commit is real.
+   */
+  private revokeMachineTokenRow(machine: MachineRecord, actorId: string, at: number): boolean {
+    const revoked = this.store.revokeToken(machine.tokenId, at);
+    if (revoked) {
+      this.store.addEvent(null, at, actorId, "token_revoked", {
+        subjectPrincipalId: machine.id,
+        count: 1,
+      });
+    }
+    return revoked;
+  }
+
+  /**
+   * Replaces a machine's credential with the one `hash` names: revoke the old token, write
+   * the new one, point the row at it, all in one transaction, then fence the socket the old
+   * one held open. `origin` is written with it because adoption is a rotation — an enrolled
+   * row the fleet file names becomes declared the moment its credential is the file's.
+   */
+  private replaceMachineToken(
+    machine: MachineRecord,
+    actorId: string,
+    origin: MachineOrigin,
+    hash: string,
+  ): MachineRecord {
+    const result = this.store.transaction(() => {
+      const revoked = this.revokeMachineTokenRow(machine, actorId, this.runtime.now());
+      const token = this.persistTokenHash(hash, machine.id, [], null, actorId, "never");
+      const lastSeen = this.runtime.now();
+      this.store.updateMachineToken(machine.id, token.id, lastSeen, origin);
+      return { machine: { ...machine, tokenId: token.id, lastSeen, origin }, revoked };
+    });
+    if (result.revoked) {
+      for (const listener of [...this.revokedListeners]) listener(machine.id, null);
+    }
+    return result.machine;
   }
 
   /**
    * Rotates an existing machine's raw secret: revokes the old token and mints a fresh one.
    * `actorId` attributes the rotation; local-agent boot recovery omits it because that path
-   * acts with owner authority by definition.
+   * acts with owner authority by definition. A declared row is refused on every entrance,
+   * boot recovery included: a hub whose own machine name is declared cannot learn that
+   * machine's raw, and a startup error naming the conflict beats a token the next boot kills.
    */
   rotateMachineToken(machine: MachineRecord, actorId?: string): MachineEnrollment {
-    const actor = actorId ?? this.ownerPrincipal.id;
-    const result = this.store.transaction(() => {
-      const at = this.runtime.now();
-      const revoked = this.store.revokeToken(machine.tokenId, at);
-      if (revoked) {
-        this.store.addEvent(null, at, actor, "token_revoked", {
-          subjectPrincipalId: machine.id,
-          count: 1,
-        });
-      }
-      const minted = this.persistToken(machine.id, [], null, actor, "never");
-      const lastSeen = this.runtime.now();
-      this.store.updateMachineToken(machine.id, minted.record.id, lastSeen);
-      return {
-        enrollment: {
-          machine: { ...machine, tokenId: minted.record.id, lastSeen },
-          machineToken: minted.raw,
-        },
-        revoked,
-      };
-    });
-    if (result.revoked) {
+    this.refuseDeclared(machine);
+    const raw = randomSecret();
+    return {
+      machine: this.replaceMachineToken(
+        machine,
+        actorId ?? this.ownerPrincipal.id,
+        machine.origin,
+        sha256Hex(raw),
+      ),
+      machineToken: raw,
+    };
+  }
+
+  /**
+   * Withdraws one machine's credential and fences its socket. Answers whether anything died,
+   * which is the door's count and the reconciler's "was that a change".
+   */
+  private withdrawMachineToken(machine: MachineRecord, actorId: string): boolean {
+    const revoked = this.store.transaction(() =>
+      this.revokeMachineTokenRow(machine, actorId, this.runtime.now()),
+    );
+    /*
+      THE SAME FENCE a principal's revocation rides, and it reaches the machine socket
+      because `MachineGateway` registered on it with the machine id in the principal slot
+      (`machine-ws.ts`). Two revocation paths would have meant two fences to keep in step.
+    */
+    if (revoked) {
       for (const listener of [...this.revokedListeners]) listener(machine.id, null);
     }
-    return result.enrollment;
+    return revoked;
   }
 
   /**
@@ -890,6 +1023,12 @@ export class AuthService {
    * machine credential are the same authority, so `machines:mint` answers both and a
    * container-scoped caller reaches neither. Inventing a `machines:revoke` would be a second
    * answer to "who administers the fleet".
+   *
+   * A DECLARED row is not exempt. Withdrawal takes authority away and hands nothing out, so
+   * it cannot mint a credential the file disagrees with; what the file cannot do afterwards
+   * is undo it — the next boot reports the declaration `unhonoured` until the repository
+   * publishes a new hash, which is how a compromised declared box is cut off today and
+   * re-keyed at leisure.
    */
   revokeMachine(machineId: string, actor: AuthContext): number {
     if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
@@ -897,26 +1036,73 @@ export class AuthService {
     }
     const machine = this.store.getMachine(machineId);
     if (machine === null) throw new ServiceError("not_found", "machine not found");
-    const revoked = this.store.transaction(() => {
-      const at = this.runtime.now();
-      const gone = this.store.revokeToken(machine.tokenId, at);
-      if (gone) {
-        this.store.addEvent(null, at, actor.principal.id, "token_revoked", {
-          subjectPrincipalId: machine.id,
-          count: 1,
-        });
+    return this.withdrawMachineToken(machine, actor.principal.id) ? 1 : 0;
+  }
+
+  /**
+   * THE DECLARED FLEET, made true at boot. The file is the whole statement of which machines
+   * the repository owns and what each one's credential hashes to, and this pass makes the
+   * `machines` table agree with it, row by row, through the same writers the door uses:
+   *
+   *   absent            → `persistMachine` with the declared hash, origin `declared`;
+   *   present, differs  → `replaceMachineToken`: old token revoked and fenced, new row
+   *                       carrying the declared hash, same machine id — the terminals,
+   *                       journal lines and grants that name the id all survive. An
+   *                       `enrolled` row the file names is ADOPTED by this step, because a
+   *                       row whose credential the repository decides is the repository's;
+   *   present, matches  → nothing, and no log line;
+   *   declared, unnamed → `withdrawMachineToken`, exactly what `core.machines.revoke` does.
+   *                       The row stays, as it does there: the file stopped vouching for
+   *                       the box, and the inventory still shows what was cut off.
+   *
+   * Rows the door minted and the file does not name are not touched. The file declares what
+   * the repository owns; it does not claim to be the whole fleet, and a hub that revoked
+   * every hand-enrolled machine on the first boot with a file present would be turning a
+   * declaration into a purge nobody asked for.
+   *
+   * `unhonoured` is the one outcome the pass cannot make true: the declared hash names a
+   * token this database has already revoked — through the door, or by an earlier boot whose
+   * file dropped the name. A revocation is durable by construction (`tokens.hash` is UNIQUE,
+   * so the same secret cannot be re-issued), and a config file re-stating a dead secret does
+   * not resurrect it; the fleet re-keys and the next boot rotates. Reported so the operator
+   * reads WHY the box is off the canvas rather than inferring it from a 4403.
+   *
+   * Acts as the owner, as local-agent boot recovery does: nothing else is running yet, and
+   * the file is configuration the operator placed, which is owner authority by definition.
+   */
+  reconcileDeclaredMachines(declared: DeclaredMachines): DeclaredMachineChange[] {
+    const actor = this.ownerPrincipal.id;
+    const changes: DeclaredMachineChange[] = [];
+    for (const [name, hash] of declared) {
+      const existing = this.store.getMachineByName(name);
+      if (existing === null) {
+        const machine = this.persistMachine(name, actor, "declared", hash);
+        changes.push({ name, machineId: machine.id, change: "created" });
+        continue;
       }
-      return gone;
-    });
-    /*
-      THE SAME FENCE a principal's revocation rides, and it reaches the machine socket
-      because `MachineGateway` registered on it with the machine id in the principal slot
-      (`machine-ws.ts`). Two revocation paths would have meant two fences to keep in step.
-    */
-    if (revoked) {
-      for (const listener of [...this.revokedListeners]) listener(machine.id, null);
+      const current = this.store.getToken(existing.tokenId);
+      if (current?.hash === hash) {
+        if (current.revokedAt !== null) {
+          changes.push({ name, machineId: existing.id, change: "unhonoured" });
+        } else if (existing.origin !== "declared") {
+          this.store.claimMachine(existing.id, "declared");
+        }
+        continue;
+      }
+      if (this.store.getTokenByHash(hash) !== null) {
+        changes.push({ name, machineId: existing.id, change: "unhonoured" });
+        continue;
+      }
+      this.replaceMachineToken(existing, actor, "declared", hash);
+      changes.push({ name, machineId: existing.id, change: "rotated" });
     }
-    return revoked ? 1 : 0;
+    for (const machine of this.store.listMachines()) {
+      if (machine.origin !== "declared" || declared.has(machine.name)) continue;
+      if (this.withdrawMachineToken(machine, actor)) {
+        changes.push({ name: machine.name, machineId: machine.id, change: "revoked" });
+      }
+    }
+    return changes;
   }
 
   /**

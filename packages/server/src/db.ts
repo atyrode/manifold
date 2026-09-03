@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -405,6 +405,22 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '14');
   15: `
 ALTER TABLE tokens ADD COLUMN expires_at INTEGER;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '15');
+`,
+  /**
+   * Where a machine row came from (`MANIFOLD_DECLARED_MACHINES`). ONE column on `machines`,
+   * and unlike `principals.origin` it is NOT NULL with a default, because here absence would
+   * not mean the right thing on its own: every row written before this schema was minted
+   * through the enrolment door, and `'enrolled'` says so in the same word the reconciler
+   * reads, so the boot-time pass never has to treat NULL as a third origin. `'declared'`
+   * marks a row the fleet repository owns — its hash arrives from configuration, and the
+   * enrolment door refuses to touch it.
+   *
+   * Plain SQL and NO pre-migration snapshot, the house rule: nothing is rewritten, no
+   * existing query's answer moves, and a later migration that drops one column reverses it.
+   */
+  16: `
+ALTER TABLE machines ADD COLUMN origin TEXT NOT NULL DEFAULT 'enrolled';
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '16');
 `,
 };
 
