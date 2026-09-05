@@ -68,10 +68,11 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
   `.github/workflows/ci.yml`, for every pull request into `main` and every push to `main`),
   bumps the web package, freezes the changelog, regenerates the in-app history, typechecks and
   changelog-checks the release commit, creates the `release:` commit and tag, pushes atomically,
-  waits for the GitHub Release workflow (fleet binaries, the hub image), and then for whatever
-  workflows subscribe to a release (the operator's own deployment lives there; ADR 0022).
-  Frequent does not mean incidental: publishing is a fleet action (invariant 10), so know what
-  the release ships before running it.
+  and waits for the GitHub Release workflow (fleet binaries and the hub image).
+  Publication, development deployment and production promotion are separate operations.
+  A request to release or deploy development does NOT authorize production changes.
+  Production is promoted only by an explicit `deploy-hub.yml` workflow dispatch naming a
+  published release tag (ADR 0022, amended by #244). Never invoke it without operator direction.
 - Never edit a released version, create a release tag, or publish a GitHub Release by hand.
 
 ## Map
@@ -135,17 +136,15 @@ dated technology verdicts with evidence.
     that set and requires a coordinated fleet restart (server + spokes together). A
     version bump hidden in a `web:` commit silently locked every spoke out on
     2026-08-25.
-    Publishing a RELEASE is itself a fleet action, in the direction the compat set does NOT
-    guard. `MACHINE_PROTOCOL_COMPAT_VERSIONS` only makes a hub tolerant of agents OLDER than
-    itself; an agent binary NEWER than the deployed hub is unguarded upstream, because a hub can
-    never accept a version that did not exist when it was built — every dial closes 4409, forever
-    (CONTRACTS.md §machine channel). `bun run release` publishes the agent binary, and the
-    downstream pin cron ships it fleet-wide within hours, so a release that changes the agent wire
-    ships the hub and the fleet pins TOGETHER: the hub is deployed at or ahead of any release whose
-    `PROTOCOL_VERSION` exceeds the deployed one. `v0.5.0` (2026-08-30) was cut from work that was
-    not meant to ship, put a newer-protocol agent in front of an older hub, and took a fleet spoke
-    off the canvas while systemd still reported it healthy. The mechanical hold lives downstream
-    (atyrode/dotfiles#454); the coupling is this repo's to know.
+    Publishing and installing a release are different operations. `MACHINE_PROTOCOL_COMPAT_VERSIONS`
+    only makes a hub tolerant of agents OLDER than itself; an agent binary NEWER than its hub
+    is refused with 4409 (CONTRACTS.md §machine channel). Upgrade the target hub before installing
+    newer-protocol agents. Publishing a release does not authorize that hub upgrade.
+    Production's explicit promotion workflow verifies the selected build before dispatching
+    fleet pins; the downstream pin cron independently fails closed when the candidate protocol
+    exceeds the deployed hub's (atyrode/dotfiles#454). Preserve that hold when publishing a
+    dev-only release. `v0.5.0` (2026-08-30) put newer-protocol agents in front of an older hub
+    and took a spoke off the canvas while systemd still reported it healthy.
 11. **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30):
     every shared behavior — previews, motion, fades, cues — is ONE producer-agnostic
     pipeline. Local input normalizes into the WIRE form first and is consumed as if
