@@ -163,10 +163,12 @@ export {
   WorkspaceOverlayOutlet,
   ContainerRenderer,
   ProjectionProvider,
+  RoomPipeRegistrationProvider,
   TerminalRenderer,
   SectionOutlet,
   ViewportRegistrationProvider,
   useProjection,
+  useRoomPipeRegistration,
   useTerminalFacet,
   useViewportRegistration,
   type ElementOutletProps,
@@ -187,8 +189,9 @@ export {
   type RegisteredElement,
   type RegisteredRenderer,
   type RegisteredTool,
+  type RoomPipe,
+  type RoomPipeRegistration,
   type TerminalFacet,
-  type TerminalRendererProps,
 } from "./projection.ts";
 /**
  * WHICH INSTANCE the lens looks at, and the doors derived from it. Browser-only (it reads
