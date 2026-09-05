@@ -141,16 +141,7 @@ async function planeFixture(): Promise<PlaneFixture> {
   host = await testPluginHost(store, auth, rooms, broker, runtime, { events, logger });
   broker.setEvents(events);
   rooms.setEvents(events);
-  const gateway = new SessionGateway(
-    auth,
-    rooms,
-    broker,
-    host,
-    clock,
-    logger,
-    runtime,
-    events,
-  );
+  const gateway = new SessionGateway(auth, rooms, broker, host, clock, logger, runtime, events);
   return {
     runtime,
     clock,
