@@ -5175,7 +5175,7 @@ try {
    * at mount. Every one of the vocabulary's kinds is looked for by its `mf-vocab-<kind>` anchor
    * across the two states the fixture paints (a spinner before the first bump, a badge after),
    * so a kind the renderer silently dropped fails here rather than in a stranger's bug report.
-   * The click is counted at the server's own action log: one press, one `acme.counter.bump`
+   * The click is counted at the server's own action log: one press, one `example.counter.bump`
    * graded by the ladder, answered from the child, painted by the worker — the same door the
    * HTTP dispatch before it went through (A2, parity).
    *
@@ -5184,7 +5184,7 @@ try {
    * reader looks. Its path is printed as an INFO line.
    */
   {
-    const PLUGIN_ID = "acme.counter";
+    const PLUGIN_ID = "example.counter";
     const BUMP_ACTION = `${PLUGIN_ID}.bump`;
     const COUNTER_PANEL = panelRefId(PLUGIN_ID, "counter");
     const COUNTER_LEAF = "r11-counter";
