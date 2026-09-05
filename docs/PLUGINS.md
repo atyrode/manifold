@@ -86,6 +86,63 @@ when your rhythm is not 16px. A drawing you import yourself is a mark that stops
 set is re-drawn, and every wrapper prop you retype (`className="mf-icon"`, `strokeWidth`,
 `absoluteStrokeWidth`, `aria-hidden`) is a chance to retype one of them wrongly.
 
+### A part lives inside its parent's package
+
+A plugin may be a PART of another — `core.canvas.draw` is part of `core.canvas`,
+`atyrode.code.generator` is part of `atyrode.code` — and the id is what says so (ADR 0023,
+ratified 2026-09-05; the rule binds every new plugin now). Decide part or peer with one litmus,
+both halves required: **nouns** — everything you contribute is about the parent's nouns (its
+element kinds, its tools, its tiles, its catalog) and you introduce no top-level noun of your own —
+and **existence** — with the parent disabled you have NOTHING to do, not less to do. Fail either
+and you are a peer with a `dependencies` edge. A contribution about a third plugin's noun is an edge
+too, never a disqualification: nest where your existence lives, edge where you borrow a noun.
+Two shapes pass. An EXTENSION adds to what the parent draws (a stroke on a canvas). A PRODUCT PART
+is one face of a baseline that owns the shared state and doors, free to own panels of its own
+(`atyrode.code` / `.generator` / `.usage` / `.accounts`). Split where the capability ceiling or
+independent use genuinely differs, and never deeper than three segments (§2).
+
+A part's manifest carries `dependencies: { "<parent>": { type: "required" } }` — the id is the
+claim, the edge is the proof, and assembly refuses one without the other (§7, `orphan_child`).
+Nothing else about you changes: your own manifest, your own roster row, your own capability
+ceiling, your own `ctx.storage` namespace, your own purge, your own toggle. The parent hands
+down no capability and no data, and no toggle cascades either way: the parent cannot be turned
+off while you are on (`missing_dependency`, naming you), and while it is off your row reads
+`dependency_disabled`, exactly as any dependent of an off plugin does (§2, `dependencies`; §4).
+
+A part is a DIRECTORY inside its parent's package, never a package of its own:
+
+```jsonc
+// packages/plugins/canvas/package.json — the parent grows subpath exports, one level
+{
+  "name": "@manifold-plugin/canvas",
+  "exports": {
+    ".": "./src/index.ts",
+    "./web": "./src/web.tsx",
+    "./contract": "./src/contract.ts", // what a part may import: element kinds, tool and registration types, vocabulary
+    "./draw": "./draw/src/index.ts", // the part's manifest + actions
+    "./draw/web": "./draw/src/web.tsx", // omit halves the part does not have, as for any plugin
+  },
+}
+```
+
+npm allows one slash in a package name, so `@manifold-plugin/canvas/draw` can only ever be a
+subpath; the workspace glob does not change and no hyphenated package appears. The parent's
+`tsconfig.json#include` widens to the part's directories, and the part's third-party dependencies
+— which a plugin may not have beyond the four floor packages anyway — would live in the parent's
+`package.json`, which is a signal you may be a peer. Registration is unchanged: a part is its own
+plugin def in both `assembly.ts` files, reached through the parent's subpath.
+
+Imports follow the tree, and nothing else. A part imports, of its parent, ONLY the `contract`
+subpath — never `./web`, never `./server`, never a path into its `src/` — so it can share the
+parent's vocabulary without reaching its runtime state or components. The parent NEVER imports a
+part: that is what makes "canvas without draw" literally true. Parts never import each other and
+peers never import each other — doors only, as today. The `contract` module itself imports only the
+four floor packages and names no React or DOM type, so it cannot smuggle runtime either way. The
+gate check for this is S18 (`REGISTRY.md` §Gates) — ratified, not yet enforced: it lands with
+[#261](https://github.com/atyrode/manifold/issues/261), and until then S2's budget (above) is the
+check that runs. Out-of-tree plugins (§9) are untouched at runtime — their bundles import no in-tree
+code — and the same directory convention applies in their own repositories.
+
 ### Your skin ships with you
 
 A plugin that paints anything carries `src/styles.css` and imports it from its web half:
@@ -181,7 +238,13 @@ Rules worth knowing before you write one:
   authorship — assembly refuses any plugin claiming either (the second unless the shipped
   distribution registered it). Pick your own leading segment (`example.notes`); it needs no
   registration anywhere and buys you exactly what `core.` buys manifold, which is nothing but a
-  name (§7, "Three orthogonal facts about a plugin").
+  name (§7, "Three orthogonal facts about a plugin"). **Two segments claim nothing; a THIRD
+  segment claims a home** — `example.notes.tags` says it is a part of `example.notes`, and the
+  manifest must prove it with `dependencies: { "example.notes": { type: "required" } }` or assembly
+  refuses it (§1, "A part lives inside its parent's package"; §7). **Depth stops at three**:
+  `publisher.product.part`, no fourth segment — `PLUGIN_ID_PATTERN` is
+  `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$` (ratified; the schema still admits any depth until
+  [#261](https://github.com/atyrode/manifold/issues/261) lands, so treat the cap as binding now).
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
   where the name is a verb phrase, as in `setEnabled`), with two exceptions that are WIRE kinds
   and therefore globally unique on their own: element `type`, and event `id`, which is
@@ -209,8 +272,11 @@ Rules worth knowing before you write one:
 - **`dependencies` are declared per plugin id** with a `type` of `required`, `optional` or
   `incompatible`, plus an optional `reason` that is shown to whoever hits the refusal. A missing or
   disabled `required` dependency, or a present `incompatible` one, refuses assembly naming both
-  sides. There is **no enable cascade**: enabling you never silently enables anything else, and
-  disabling a plugin that others require is refused, naming them.
+  sides. There is **no enable cascade** at the door: enabling you never silently enables anything
+  else, and disabling a plugin that others require is refused, naming them. A family (a parent and
+  its parts, §1) is no exception — the manager turns one off by pressing each part's toggle and
+  then the parent's, N+1 dispatches through the same door, every one traced, and stops at the first
+  refusal.
 - **`after` is ordering, not requirement.** It contributes to the deterministic order the engine
   composes and fires lifecycle hooks in (topological over `dependencies` ∪ `after`, ties broken by
   lexicographic id). A cycle is an `AssemblyError`.
@@ -1215,6 +1281,12 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   by id — is the order lifecycle hooks fire in. Missing `required` dependencies, `incompatible`
   peers, cycles, data-version mismatches and element-type squatting are all named refusals, never
   warnings.
+- **A three-segment id without its proof is refused.** `example.notes.tags` claims a home under
+  `example.notes`; a manifest that says so without `dependencies: { "example.notes": { type: "required" } }`
+  fails assembly as `orphan_child`, naming the plugin and the parent (§1). It sits with the
+  duplicates, squats and cycles — a structural fact no toggle can change, so it is NOT one of the
+  door's refusal classes. Ratified, not yet enforced: the check lands with
+  [#261](https://github.com/atyrode/manifold/issues/261); write the edge now.
 
 ### Three orthogonal facts about a plugin
 
@@ -1515,6 +1587,11 @@ are the checks that will fail _your_ plugin:
 - **Import boundary** (walked with the TypeScript parser, not regex): floor files must not
   import `@manifold-plugin/*` — the two `assembly.ts` files are the only exceptions — and
   plugin packages may import only `@manifold/{protocol,scene,sdk,plugin}`.
+- **Import direction follows the plugin tree** (S18, ratified 2026-09-05 and not yet enforced —
+  it lands with [#261](https://github.com/atyrode/manifold/issues/261)): a parent never imports a
+  part, a part imports only its parent's `contract` subpath, and the `contract` module imports only
+  the four floor packages (§1, "A part lives inside its parent's package"). Until then S2 above is
+  the check that runs, and it cannot see a part's files.
 - **Every `data-action` literal names an assembled action.**
 - **Every `localStorage` key in `packages/{web,plugins}` is listed in the `REGISTRY.md`
   device-local register.**

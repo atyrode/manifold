@@ -683,10 +683,44 @@ lets the ladder tell `plugin_disabled` from `unknown_action`, and lets a placeho
 it is standing in for. Manifest, capability-subset and uniqueness validation runs across every
 registered plugin whether enabled or not, so disabling can never mask a collision. Assembly
 refuses only STRUCTURAL truths — a missing or disabled `required` dependency, a cycle, a
-self-dependency, an `engine.*` squat, an unshipped `core.*` squat, an element-type squat, and (for
-ENABLED plugins only) a stored-data downgrade or a missing major migration — so one dormant
-plugin's stale rows can never stop the server booting; its data is re-judged at the enablement
-door instead.
+self-dependency, an `engine.*` squat, an unshipped `core.*` squat, an element-type squat, a
+three-segment id with no `required` edge on its parent (`orphan_child`, below), and (for ENABLED
+plugins only) a stored-data downgrade or a missing major migration — so one dormant plugin's stale
+rows can never stop the server booting; its data is re-judged at the enablement door instead.
+
+**Plugin ids are a tree of depth three, and a nested id is a claim the edge proves** (ADR 0023,
+ratified 2026-09-05). Two segments — `<publisher>.<plugin>` — claim nothing: the first is an
+authority, not a plugin (`core.` and `engine.` being the two reserved ones above). A THIRD segment
+claims a home: `core.canvas.draw` says it is a PART of `core.canvas`, and the manifest proves it
+with `dependencies: { "core.canvas": { type: "required" } }`. Assembly refuses the claim without
+the proof — `plugin "core.canvas.draw" claims a home under "core.canvas" without a required
+dependency on it (orphan_child)` — beside the duplicates, squats and cycles: a fatal structural
+problem thrown at assembly, NOT a member of `PLUGIN_REFUSAL_REASONS`, because those are answered
+at a door where an actor can act and nobody can act on this. A parent absent from the build is the
+existing `requires plugin X, which is not composed`, so `orphan_child` only ever means the missing
+edge. Depth stops at three: `PLUGIN_ID_PATTERN` is `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$`,
+`BINDING_ID_PATTERN`'s prefix follows it, and `SettingRefSchema` and the published manifest JSON
+Schema tighten with them — protocol vocabulary, no `PROTOCOL_VERSION` bump. _(Ratified, not yet
+enforced: `orphan_child` and the depth cap land with
+[#261](https://github.com/atyrode/manifold/issues/261); every shipped id is two segments today.)_
+
+The engine knows nothing else about the tree. The edge is the ONLY mechanism it acts on — order,
+build refusal, door refusal — and nesting is data on the roster that a principal, an agent and the
+manager read. So nesting does NOT: hand a capability down (the ceiling is per manifest and every
+action is checked against its OWN); share storage (`plugin_kv` is per plugin id); widen a purge
+(`engine.plugins.purge` takes one id); or cascade a toggle in either direction. **There is no
+cascade at the door, and a family is one anyway** — both sentences are true at once, in different
+places. At the door: disabling a parent whose parts are on is `missing_dependency` naming them, a
+part whose parent is off reads `dependency_disabled`, and enabling a part never silently enables
+its parent — the two classes above already say what a family does under a toggle, and no new class
+was added. In the manager: the one family control is the parent's toggle, and pressing it turns the
+family off by dispatching each part's `engine.plugins.setEnabled` and then the parent's, and on in
+the reverse order — N+1 traced dispatches through the one enablement door, stopping at the first
+refusal with its message shown, no new door and no cascade the ledger cannot see (shipped in #243;
+the manager also groups parts under their parent's row). The code layout that goes with a nested
+id — a directory inside the parent's package, subpath exports, the `contract` import direction —
+is an authoring rule and lives in `docs/PLUGINS.md` §1; its gate check is S18 (`REGISTRY.md`
+§Gates), reserved until #261.
 
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and

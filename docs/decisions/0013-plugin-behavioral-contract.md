@@ -2,7 +2,7 @@
 
 Date: 2026-08-31
 Status: accepted
-Ratified: contract v2 ratified 2026-08-31; implemented in the wave-1 completion
+Ratified: contract v2 ratified 2026-08-31; implemented in the wave-1 completion; the structural problem set is extended by orphan_child (ADR 0023, ratified 2026-09-05).
 
 Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The plugin-roster join is **assembly**: `composeRoster` is
