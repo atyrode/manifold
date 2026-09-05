@@ -453,21 +453,21 @@ export const serverDef = {
   handlers: {/* … */},
   lifecycle: {
     // You were just turned ON (a transition, never boot). Put your own state in order.
-    onEnable: (ctx) => {
-      ctx.storage.set("lastEnabledAt", String(ctx.now()));
+    onEnable: async (ctx) => {
+      await ctx.storage.set("lastEnabledAt", String(ctx.now()));
     },
     // You are being turned OFF. Flush and park — never delete user data here.
-    onDisable: (ctx) => {
-      ctx.storage.set("parked", "1");
+    onDisable: async (ctx) => {
+      await ctx.storage.set("parked", "1");
     },
     // SOMEONE ELSE changed. Repair your own references to what left or arrived.
-    onAssemblyChanged: (ctx, delta) => {
-      if (delta.disabled.includes("core.canvas")) ctx.storage.set("parked", "1");
+    onAssemblyChanged: async (ctx, delta) => {
+      if (delta.disabled.includes("core.canvas")) await ctx.storage.set("parked", "1");
     },
     // You are being destroyed. The engine clears your namespace and releases your element
     // types either way; this hook is for anything only YOU know about.
-    onPurge: (ctx) => {
-      ctx.storage.delete("parked");
+    onPurge: async (ctx) => {
+      await ctx.storage.delete("parked");
     },
   },
 };
@@ -512,28 +512,29 @@ a plugin whose purge is a guess.
 ```ts
 interface PluginStorage {
   readonly pluginId: string;
-  get(key: string): string | null;
-  set(key: string, value: string): void;
-  delete(key: string): void;
-  keys(prefix?: string): readonly string[]; // sorted; the engine's own `$` rows are never listed
-  dataVersion(): PluginDataVersion | null; // null until something has been stamped
-  appliedMigrations(): readonly string[]; // bare names, in application order
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  keys(prefix?: string): Promise<readonly string[]>; // sorted; the engine's own `$` rows are never listed
+  dataVersion(): Promise<PluginDataVersion | null>; // null until something has been stamped
+  appliedMigrations(): Promise<readonly string[]>; // bare names, in application order
 }
 ```
 
-It is **synchronous** (the substrate is Bun's SQLite — an async facade would buy a promise per read
-and no concurrency) and **string-valued**: serialize your own structures. Keys match
+It is **promise-returning** and **string-valued**: serialize your own structures. Keys match
 `^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$` and values are ≤64 KiB; a `$` prefix is engine-reserved and
-`set`/`delete` throw on it, which is what makes the version stamp and the migration ledger something
+`set`/`delete` reject on it, which is what makes the version stamp and the migration ledger something
 you can read but not forge. If you have more than 64 KiB of a thing, it is a document, and documents
 have a plane (§5).
 
-**Synchronous today, promise-returning next.** ADR 0016 §4 (ratified, R3) migrates `PluginStorage`
-to a promise-returning interface for every plugin, first-party included, and that migration ships
-with stage 1 of the isolation runner (#151): every method on the interface returns a promise from
-then on, with no dual-contract period and no shim. Write your call sites so the change is a type
-change rather than a rewrite — one storage call per statement, never a chain of synchronous reads
-inside a single expression (`storage.get(storage.get("ptr") ?? "")` is the shape that breaks).
+**One contract, every plugin.** ADR 0016 §4 (ratified, R3) made `PluginStorage` promise-returning
+for every plugin, first-party included, because an isolated plugin's storage calls cross a process
+boundary and two storage contracts would be two doors onto one concept (invariant 14). In-realm the
+handle is synchronous inside — the SQLite call runs before the promise comes back, so `await` costs
+a microtask and nothing else — and every refusal (a reserved or malformed key, an oversize value) is
+a **rejection** with `PluginStorageError`, never a throw, so a `try`/`catch` around an `await` is the
+one failure path whichever way your plugin runs. Write one storage call per statement and `await`
+each; `storage.get(storage.get("ptr") ?? "")` no longer type-checks, which is the point.
 
 When your stored shape changes incompatibly, bump `dataVersion.major` and ship a **named**
 migration:
@@ -545,10 +546,10 @@ export const serverDef = {
     {
       name: "2026-09-01-split-stroke-points", // the ledger records NAMES, stable under rebase
       to: { major: 2, minor: 0 }, // the version this migration produces
-      migrate: (storage) => {
-        for (const key of storage.keys("stroke:")) {
-          const raw = storage.get(key);
-          if (raw !== null) storage.set(key, rewrite(raw));
+      migrate: async (storage) => {
+        for (const key of await storage.keys("stroke:")) {
+          const raw = await storage.get(key);
+          if (raw !== null) await storage.set(key, rewrite(raw));
         }
       },
     },
@@ -557,12 +558,15 @@ export const serverDef = {
 };
 ```
 
-Migrations are **synchronous** for the same reason a migration must be all-or-nothing: no `await` in
-the middle of a rewrite, no dispatch interleaving with half a conversion. They run at boot for
-enabled plugins and at the enablement door for a plugin being switched on — never for a disabled
-one, whose data is retained untouched and re-judged when someone turns it back on. Applied names are
-recorded in the ledger, so none ever runs twice. The rules the engine applies, adopted from Home
-Assistant's asymmetry:
+A migration is **all-or-nothing on one condition: it awaits nothing but its storage handle.** Every
+storage call settles before it returns, so a chain of awaited storage calls runs to completion in one
+turn of the event loop and no dispatch — which arrives as I/O — can interleave with half a
+conversion. A migration that awaits a timer, a file or the network opens exactly that window, and
+must not. They run at boot for enabled plugins (awaited before the server binds its socket) and at
+the enablement door for a plugin being switched on — never for a disabled one, whose data is
+retained untouched and re-judged when someone turns it back on. Applied names are recorded in the
+ledger, so none ever runs twice. The rules the engine applies, adopted from Home Assistant's
+asymmetry:
 
 | Stored vs. manifest `dataVersion` | Outcome                                            |
 | --------------------------------- | -------------------------------------------------- |

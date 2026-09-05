@@ -9,6 +9,7 @@
 ### Changed
 
 - The plugin storage docs now give advance notice that `ctx.storage` becomes promise-returning for every plugin with ADR 0016 stage 1, and state the authoring idiom that makes that migration a type change. (#187, #194)
+- `ctx.storage` is promise-returning for every plugin, first-party included, as ADR 0016 §4 ratified: every read and write is awaited, a refused key or value rejects instead of throwing, migrations may be `async`, and the server binds its socket only after the plugin host has booted and run every pending migration. (#187)
 
 ### Fixed
 
