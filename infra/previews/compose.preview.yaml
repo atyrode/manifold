@@ -1,0 +1,16 @@
+services:
+  manifold:
+    image: manifold-pr-${PREVIEW_MACHINE}:local
+    ports:
+      - "127.0.0.1:${PREVIEW_PORT}:7777"
+    environment:
+      MANIFOLD_MACHINE_NAME: ${PREVIEW_MACHINE}
+      MANIFOLD_PLUGIN_DEV_PATHS: "1"
+      MANIFOLD_ANNOUNCE_KEY: "0"
+      MANIFOLD_OWNER_KEY: null
+      MANIFOLD_REPLICA_BUCKET: ""
+      MANIFOLD_REPLICA_ENDPOINT: ""
+      LITESTREAM_ACCESS_KEY_ID: ""
+      LITESTREAM_SECRET_ACCESS_KEY: ""
+  caddy:
+    profiles: [bundled-proxy]
