@@ -4,7 +4,13 @@
 # for in-container shells. The bun tag is ADR 0001's exact pin.
 FROM oven/bun:1.3.13 AS build
 WORKDIR /app
-ARG MANIFOLD_BUILD=dev
+# What this image IS (scripts/build-identity.ts; docs/SELF-HOST.md §Environments): the caller
+# stamps a release as its tag or a development build as `<version>+<distance>.g<sha>`. Left
+# empty, the build context has no `.git` to ask, so both the bundle and the server fall back
+# to the packaged version as a `development` build — an unstamped image says so.
+ARG MANIFOLD_VERSION=""
+ARG MANIFOLD_BUILD=""
+ARG MANIFOLD_CHANNEL=""
 
 # Full-source install: every runtime workspace dependency (@manifold/protocol,
 # @manifold/scene, @manifold/sdk) is consumed from source through `workspace:*`,
@@ -15,7 +21,7 @@ RUN bun install --frozen-lockfile
 # Shell identity is a build input, independent of the deployment provider or hostname.
 ARG VITE_MANIFOLD_SITE_TITLE=manifold
 ARG VITE_MANIFOLD_ICON_BACKGROUND=""
-RUN VITE_MANIFOLD_WEB_BUILD="${MANIFOLD_BUILD}" bun run build:web
+RUN bun run build:web
 
 # Runtime ships the workspace source (agent-spawn runs `bun packages/agent/src/main.ts`
 # from source), the installed node_modules, and the built web bundle — no build caches.
@@ -38,10 +44,14 @@ RUN set -eu; case "$(uname -m)" in \
 
 # Provenance: /healthz reports this so a running deployment is attributable to a
 # tree (an unattributable image cost a multi-hour diagnosis, 2026-08-25).
-ARG MANIFOLD_BUILD=dev
+ARG MANIFOLD_VERSION=""
+ARG MANIFOLD_BUILD=""
+ARG MANIFOLD_CHANNEL=""
 ENV MANIFOLD_BIND=0.0.0.0 \
     MANIFOLD_DATA_DIR=/data \
-    MANIFOLD_BUILD=${MANIFOLD_BUILD}
+    MANIFOLD_VERSION=${MANIFOLD_VERSION} \
+    MANIFOLD_BUILD=${MANIFOLD_BUILD} \
+    MANIFOLD_CHANNEL=${MANIFOLD_CHANNEL}
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

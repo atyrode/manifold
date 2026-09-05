@@ -1,3 +1,4 @@
+import { BuildChannelSchema, type BuildChannel } from "@manifold/protocol";
 import type { WebChangelogRelease } from "@manifold/plugin/hooks";
 import { GENERATED_WEB_CHANGELOG } from "./generated-changelog.ts";
 
@@ -14,7 +15,18 @@ import { GENERATED_WEB_CHANGELOG } from "./generated-changelog.ts";
 
 export const WEB_VERSION =
   import.meta.env.VITE_MANIFOLD_WEB_VERSION ?? GENERATED_WEB_CHANGELOG[0]?.version ?? "0.0.0-dev";
-export const WEB_BUILD = import.meta.env.VITE_MANIFOLD_WEB_BUILD ?? "local";
-export const WEB_VERSION_LABEL = `v${WEB_VERSION} · ${WEB_BUILD}`;
+/** `version` at a release, `<version>+<distance>.g<sha7>` past one — the same string `/healthz` answers. */
+export const WEB_BUILD: string = import.meta.env.VITE_MANIFOLD_WEB_BUILD ?? WEB_VERSION;
+export const WEB_CHANNEL: BuildChannel = BuildChannelSchema.catch("development").parse(
+  import.meta.env.VITE_MANIFOLD_WEB_CHANNEL,
+);
+/*
+ * A development build SAYS so wherever its build is printed, because the build string alone
+ * ("0.6.2+21.gb7a07fe") asks the reader to know the grammar; the word does not. The word LEADS:
+ * the rail's rev line truncates from the right, and the sha is what a narrow rail may lose,
+ * never the fact that this is not a release.
+ */
+export const WEB_VERSION_LABEL =
+  WEB_CHANNEL === "development" ? `development · v${WEB_BUILD}` : `v${WEB_BUILD}`;
 
 export const WEB_CHANGELOG: readonly WebChangelogRelease[] = GENERATED_WEB_CHANGELOG;

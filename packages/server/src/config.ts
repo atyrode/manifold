@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolveBuildIdentity, type BuildIdentity } from "../../../scripts/build-identity.ts";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -21,8 +22,12 @@ export interface ServerConfig {
    * anywhere on this host, not only under `<data>/plugin-uploads/`. Development only.
    */
   pluginDevPaths: boolean;
-  /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) exposed by `/healthz`; undefined on ad-hoc runs. */
-  build: string | undefined;
+  /**
+   * What this process is, as `/healthz` reports it: `MANIFOLD_VERSION`, `MANIFOLD_BUILD` and
+   * `MANIFOLD_CHANNEL` when the deployment says, derived from the checkout's git tags otherwise
+   * (`scripts/build-identity.ts`).
+   */
+  identity: BuildIdentity;
 }
 
 function randomHex(bytes: number): string {
@@ -98,7 +103,6 @@ export function loadConfig(
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
   const localMachineName = (env.MANIFOLD_MACHINE_NAME ?? "local").trim();
   if (localMachineName.length === 0) throw new Error("MANIFOLD_MACHINE_NAME must not be empty");
-  const build = env.MANIFOLD_BUILD?.trim();
   return {
     port,
     hostname,
@@ -111,7 +115,7 @@ export function loadConfig(
     localMachineName,
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
-    build: build !== undefined && build.length > 0 ? build : undefined,
+    identity: resolveBuildIdentity(env),
   };
 }
 

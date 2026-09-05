@@ -29,9 +29,6 @@ import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
-/** Build identifier exposed by `/healthz`; protocol compatibility has its own version. */
-export const SERVER_VERSION = "0.1.0";
-
 /** HTTP JSON ceiling, mirrored by Bun.serve so chunked bodies cannot reach its 128 MiB default. */
 export const MAX_HTTP_BODY_BYTES = 1_048_576;
 
@@ -166,12 +163,16 @@ export class HttpApp {
   private async route(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method === "GET" && url.pathname === "/healthz") {
+        // What runs, by the one derivation the web bundle also carries (`scripts/build-identity.ts`);
+        // protocol compatibility is a separate number and is the one the lens negotiates on.
+        const { version, build, channel } = this.config.identity;
         return jsonResponse(
           HealthResponseSchema.parse({
             ok: true,
-            version: SERVER_VERSION,
+            version,
+            build,
+            channel,
             protocolVersion: PROTOCOL_VERSION,
-            ...(this.config.build !== undefined ? { build: this.config.build } : {}),
           }),
         );
       }

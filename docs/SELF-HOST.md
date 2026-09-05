@@ -29,7 +29,8 @@ docker compose pull && docker compose up -d
 ```
 
 There is no `latest` tag on purpose: a deploy names a version, so "what is running"
-is always a tag you can read in `/healthz` (`build`) and find in the changelog.
+is always a version you can read in `/healthz` (`version`, `build`, `channel`; §Environments)
+and find in the changelog.
 
 Either way, print the bootstrap URL and open it in a browser:
 
@@ -262,6 +263,9 @@ the Compose project's `.env` before rebuilding. They are build inputs, not insta
 or runtime server settings: changing a running container's environment or pulling an already
 built published image does not rebrand its browser bundle. Defaults apply only when no shell,
 Compose, or Vite dotenv configuration supplies the corresponding input.
+A `development` build (§Environments) already marks itself: the sidebar's rev line begins with
+`development ·`, and the tab title gains ` · development` when the title is left at its default —
+a title you chose is left exactly as you chose it.
 
 Generated manifest and icon URLs are content-addressed, and emitted filenames **and bytes**
 participate in the service-worker cache generation. A branding-only rebuild therefore gets
@@ -286,8 +290,11 @@ for exactly this reason; a bearer token remains the only authority on them.
 ## Upgrade
 
 ```sh
-git pull && docker compose up -d --build
+git pull && eval "$(bun scripts/build-identity.ts --env)" && docker compose up -d --build
 ```
+
+(The `eval` stamps the image with this checkout's identity so `/healthz` names the commit you
+built; without it the image still runs and says `development` at the packaged version.)
 
 Or, running a published image, name the new tag in `.env` and pull it:
 
@@ -308,17 +315,54 @@ paths into the hub container for this. `MANIFOLD_SPAWN_AGENT=0` in `.env` turns 
 in-container agent off — sensible where the container's disk is ephemeral, since its
 shells would die at every redeploy.
 
-## Release publication and promotion
+## Environments
 
-`bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from green `main`;
-it does not deploy an instance. Development and production can intentionally run different
-released versions. Deploy the selected version to development using its own checkout and
-compose project, retaining its build-time identity settings.
+Three verbs, three separate decisions, one identity that tells you which one produced what you
+are looking at.
 
-Production promotion is a separate operator decision: manually dispatch `deploy-hub.yml`
-with an explicit published `tag`. The workflow validates the release, deploys that tag and
-verifies the reported build before dispatching fleet pins. Do not invoke it as a side effect
-of a release or a request to update development.
+**Build.** Every build — the server, the web bundle, a container — carries the same three-word
+identity, derived once by `scripts/build-identity.ts` from `git describe --tags --match 'v*'`:
+
+| field     | meaning                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------- |
+| `version` | the last release tag reachable from the built commit, without its `v` (`0.6.2`)                                     |
+| `build`   | `version` when the commit IS that tag; `<version>+<distance>.g<sha7>` past it (`0.6.2+21.gb7a07fe`); `.dirty` appended for uncommitted changes |
+| `channel` | `release` when `build` equals `version`, `development` otherwise                                                    |
+
+A container ships no `.git`, so it is told: the Dockerfile ARGs `MANIFOLD_VERSION`,
+`MANIFOLD_BUILD` and `MANIFOLD_CHANNEL` become the runtime environment the server reads and the
+bundle's compiled-in identity. `compose.yaml` forwards them, and
+`eval "$(bun scripts/build-identity.ts --env)"` exports them from your checkout; left unset, the
+image falls back to `packages/web/package.json`'s version as a `development` build, which is
+the honest answer for an unstamped image. A development build also says so in the browser: the
+sidebar's rev line reads `development · v<build>`, and the tab title gains ` · development`
+unless you chose a `VITE_MANIFOLD_SITE_TITLE` of your own (§Choose the browser identity).
+
+**Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from a
+green `main` — the GitHub Release, the fleet binaries, the `ghcr.io/atyrode/manifold:<tag>` image
+stamped `version = build = <x.y.z>`, `channel = release` — and deploys nothing.
+
+**Promote.** `bun run promote vX.Y.Z` puts one PUBLISHED release on the operator's production
+instance: it refuses a tag that is not a published GitHub Release, dispatches
+`.github/workflows/deploy-hub.yml` with that tag, watches the run to completion and ends with
+the fleet-pin reminder. Production is the GitHub Environment `production`; its deployment
+history is the ledger of what production ran, and protection rules attach there. Promotion is
+never a side effect of a release or of a green `main`.
+
+**Development** is the operator's second instance, and it runs every green `main`:
+`.github/workflows/deploy-dev.yml` follows the CI workflow, hands the commit sha to the host over a
+forced-command SSH key, derives the expected `build` from the same checkout with the same script,
+and fails unless `/healthz` on the development URL answers exactly that. It is the GitHub
+Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
+`DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret `DEV_DEPLOY_SSH_KEY` exist, and it names no
+host or provider: the receiver on the host is the operator's own (atyrode/dotfiles).
+
+**A self-hoster replaces both `deploy-*.yml` files.** They are the operator's two deployments,
+gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
+releases: `docker compose pull` a tag, or build a commit and stamp it as above. Whatever you run,
+`/healthz` tells you what it is — `curl -fsS https://<your-domain>/healthz` answers
+`{ ok, version, build, channel, protocolVersion }`, and the sidebar's rev line prints the same
+`build`, so the client you are looking at and the instance it looks at can be compared by eye.
 
 Before installing a newer agent binary, its target hub must support that protocol version.
 The operator's automated fleet pins hold newer-protocol candidates until production is ready;
@@ -326,7 +370,16 @@ publishing an artifact does not waive that ordering constraint.
 
 ## Verify a deployment
 
-From any checkout of this repo:
+First ask what runs:
+
+```sh
+curl -fsS https://<your-domain>/healthz
+# {"ok":true,"version":"0.6.2","build":"0.6.2","channel":"release","protocolVersion":22}
+```
+
+`build` is the tag you deployed (a release) or the commit past it (a development build:
+`0.6.2+21.gb7a07fe`); `channel` says which; `protocolVersion` is what a client must speak.
+Then, from any checkout of this repo:
 
 ```sh
 bun scripts/verify-public.ts https://<your-domain>

@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
   packages: write
+  # Provenance attestations for the published binaries and image (actions/attest-build-provenance).
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -48,11 +51,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" manifold-agent-linux-x64 manifold-agent-darwin-arm64 --verify-tag --title "manifold ${GITHUB_REF_NAME}" --notes-file release-notes.md
 
+      - name: Attest the fleet binaries
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            manifold-agent-linux-x64
+            manifold-agent-darwin-arm64
+
       - name: Publish the hub image
         # The self-hosting artifact: one image per tag under THIS repository's namespace (a
         # fork publishes its own), never a mutable `latest` (docs/SELF-HOST.md §Install).
+        # The image carries its identity as ARGs (scripts/build-identity.ts): a release IS its
+        # tag, so version and build are the tag without `v` and the channel is `release`.
+        id: image
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker build --build-arg MANIFOLD_BUILD="${GITHUB_REF_NAME}" -t "$image" .
-          docker push "$image"
+          docker build \
+            --build-arg MANIFOLD_VERSION="$version" \
+            --build-arg MANIFOLD_BUILD="$version" \
+            --build-arg MANIFOLD_CHANNEL=release \
+            -t "$image:${GITHUB_REF_NAME}" .
+          docker push "$image:${GITHUB_REF_NAME}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image:${GITHUB_REF_NAME}")"
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the hub image
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true

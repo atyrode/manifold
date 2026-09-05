@@ -3,7 +3,7 @@ export { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "./assembly.ts";
 export { AuthService, ServiceError, type AuthContext } from "./auth.ts";
 export { loadConfig, finalizePublicUrl, type ServerConfig } from "./config.ts";
 export { openDatabase, SCHEMA_VERSION } from "./db.ts";
-export { HttpApp, MAX_HTTP_BODY_BYTES, SERVER_VERSION } from "./http.ts";
+export { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 export { startServer, type RunningServer, type StartServerOptions } from "./main.ts";
 export { PLUGIN_UPLOADS_DIR, PLUGINS_DIR, installLayout } from "./plugin-installs.ts";
 export {

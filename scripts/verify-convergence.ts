@@ -248,12 +248,16 @@ try {
     5_000,
     "convA: changelog dialog open",
   );
+  // The rev line prints the build `/healthz` answers — one derivation, two surfaces — so the
+  // assertion reads the instance rather than pinning the label's grammar.
+  const health = (await (await fetch(`${origin}/healthz`)).json()) as { build?: unknown };
+  if (typeof health.build !== "string") throw new Error("convA: /healthz names no build");
   const changelogValid = await browserA.evaluate<boolean>(
     `(() => {
       const dialog = document.querySelector('.web-changelog-dialog');
       const label = document.querySelector('.sidebar-version')?.textContent ?? '';
       return dialog?.getAttribute('aria-labelledby') === 'web-changelog-title'
-        && label.startsWith('v') && label.includes(' · ')
+        && label.includes(${JSON.stringify(`v${health.build}`)})
         && dialog.querySelectorAll('.web-changelog-releases li').length > 0;
     })()`,
   );

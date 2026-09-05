@@ -76,7 +76,7 @@ export interface WorkspaceShell {
    * point) — the sidebar previews locally and calls this once.
    */
   commitSectionArrangement(arrangement: readonly SectionNode[]): void;
-  /** The running build's label, already joined: version and build in one string. */
+  /** The running build's label, already joined: `v<build>`, led by `development · ` off a release. */
   readonly webVersionLabel: string;
   readonly webChangelog: readonly WebChangelogRelease[];
 }
