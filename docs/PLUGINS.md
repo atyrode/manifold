@@ -3,16 +3,16 @@
 **Read this if you are an agent.** This file plus two live endpoints are the complete
 onboarding surface; you should not need to read manifold's source to author a plugin.
 
-**What that promise covers today.** The current authoring channel is a package inside this
+**Two authoring targets, and the manifest decides.** The first is a package inside this
 repository — `packages/plugins/<name>`, registered in the two assembly files (§1) by a
-maintainer and rebuilt with the tree. A stranger's package cannot be installed into a running
-workspace yet; the isolation runner (#151) and the install door (#152) are what make that
-possible, and `AXIOMS.md` §Roadmap says the same in its own words: the authoring half of the
-agent's plugin story is unproven, because writing a plugin today means editing a workspace
-package, adding a row to two `assembly.ts` files and rebuilding. Two places below point at the
-engine's own source for a shape — the registration shape in §6 and the web registration channels
-in §7 — and they are the named exceptions to the promise above, flagged as maintainer-only where
-they occur.
+maintainer and rebuilt with the tree; it is what §1–§8 describe, and it is handed the engine's
+real objects. The second is an ISOLATED plugin (§9, ADR 0016): authored anywhere against
+`@manifold/plugin-kit`, packed into one artifact, installed at `engine.plugins.install` and run as
+a stranger's code in its own process and its own `Worker`, against a narrower, documented
+interface. A manifest with `entry` is the second kind. Two places below point at the engine's
+own source for a shape — the registration shape in §6 and the web registration channels in §7 —
+and they are the named exceptions to the promise above, flagged as maintainer-only where they
+occur; neither applies to an isolated plugin.
 
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
@@ -1407,6 +1407,202 @@ are the checks that will fail _your_ plugin:
   collection must be refused in silence. `REGISTRY.md` §Budgets is the standing half of the same
   claim: every network row is ZERO at idle, so a plugin that opens a timer onto a door shows up as
   a rate with its own name on it.
+
+## 9. Writing an isolated (out-of-tree) plugin
+
+Everything above describes the IN-REALM target: a package in this repository, compiled into the
+build, handed the engine's real objects. This section is the second target (ADR 0016, stage 1+2):
+an ISOLATED plugin, authored anywhere, packed into one artifact, installed at a door, and run as a
+stranger's code — its server half in its own Bun process, its web half in its own dedicated
+`Worker`. The manifest decides which target you are writing for: an in-tree manifest has no
+`entry`; an installed one must, and `entry` names the halves the bundle runs (`{ "server": true,
+"web": "web.js" }`). Nothing else about the manifest changes — same id grammar, same capability
+ceiling, same `contributes`, same assembly refusals, same denial ladder at the door.
+
+The kit is `@manifold/plugin-kit` (`packages/plugin-kit`; the reference plugin it ships is
+`packages/plugin-kit/test/fixtures/sample/`, quoted below). It depends on `@manifold/protocol` and
+zod and on nothing else, which is exactly what your plugin may depend on: an isolated plugin never
+imports `@manifold/plugin`, `@manifold/sdk` or `@manifold/scene`.
+
+### The server half: `server.ts`
+
+```ts
+import { defineServerAction, defineServerPlugin, type GuestCtx } from "@manifold/plugin-kit/server";
+import { PluginManifestSchema } from "@manifold/protocol";
+import { z } from "zod";
+import manifestJson from "./manifest.json";
+
+const bump = defineServerAction({
+  name: "bump",
+  title: "Bump the counter",
+  caps: ["containers:read"],
+  input: z.strictObject({ by: z.number().int().min(1).max(100).default(1) }),
+  result: z.strictObject({ count: z.number().int() }),
+});
+
+defineServerPlugin({
+  manifest: PluginManifestSchema.parse(manifestJson),
+  actions: [bump],
+  handlers: {
+    async bump(ctx: GuestCtx, args: { by: number }) {
+      const count = Number((await ctx.storage.get("count")) ?? "0") + args.by;
+      if (count > 1_000) return { refused: "the counter stops at one thousand" };
+      await ctx.storage.set("count", String(count));
+      ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "counter_bumped", { count });
+      return { count };
+    },
+  },
+  lifecycle: {
+    async onEnable(ctx) {
+      if ((await ctx.storage.get("count")) === null) await ctx.storage.set("count", "0");
+    },
+  },
+});
+```
+
+`defineServerPlugin` is inert when the module is merely imported and wires the ipc channel when
+the module is the entry of a spawned isolate, so the same file is the plugin AND its own test
+subject. A handler is written against `GuestCtx`, which is the engine's `ActionCtx` as it can be
+served across a process boundary (`docs/CONTRACTS.md` §Isolated plugins, `ISOLATE_CTX_METHODS`):
+
+- **Data the dispatch carries** — `ctx.principal`, `ctx.auth.{caps, isRoot, containerScope}`,
+  `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
+- **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
+  `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
+  `ctx.machines.isOnline(id)`, `ctx.placement.place(request)`, `ctx.host.{roster, enabled}`.
+  Every one is a `call` frame correlated to the dispatch it belongs to, graded as that dispatch's
+  caller; a call the host refuses rejects with `HostCallError` carrying the host's own sentence.
+- **`ctx.emit`** stages exactly as in-realm: the emissions ride back with the outcome and the host
+  flushes them only when the dispatch is `ok`.
+
+Two rungs of the ladder are graded IN YOUR PROCESS (`ISOLATE_GUEST_DENIAL_RULES`): the runtime
+parses arguments against your action's own zod `input` (`invalid_args`, the engine's wording) and
+your handler's `{ refused }` is `refused`. Every other rung — unknown action, disabled plugin,
+scope, capabilities including the installer's grant — is the host's, and a dispatch never reaches
+you until it has passed them. Your `result` schema is enforced on the way out too, and the roster
+publishes both as JSON Schema from the `loaded` frame, generated from the zod you wrote.
+
+A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
+`emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
+of publishing into the void.
+
+### The web half: `web.ts`
+
+```ts
+import { ui } from "@manifold/plugin-kit";
+import { definePanel, defineWebPlugin } from "@manifold/plugin-kit/web";
+import { z } from "zod";
+
+const BumpResult = z.object({ count: z.number().int() });
+
+const counter = definePanel<{ count: number | null; denial: string | null }>({
+  init: () => ({ count: null, denial: null }),
+  view: (state) =>
+    ui.box({ direction: "column", gap: 2 }, [
+      ui.heading("Counter", 2),
+      state.count === null ? ui.spinner("Waiting") : ui.badge(`count ${String(state.count)}`),
+      ui.button("Bump", "bump", { tone: "accent", action: "acme.counter.bump" }),
+      state.denial === null
+        ? ui.empty("No refusal yet.")
+        : ui.text(state.denial, { tone: "danger" }),
+    ]),
+  update: async (state, event, host) => {
+    if (event.event !== "bump") return state;
+    const outcome = await host.action("acme.counter.bump", { by: 1 });
+    if (!outcome.ok) return { ...state, denial: outcome.denial.message };
+    return { ...state, count: BumpResult.parse(outcome.result).count, denial: null };
+  },
+  subscribe: (_host, emit) => {
+    const timer = setInterval(() => emit({ event: "tick" }), 60_000);
+    return () => clearInterval(timer);
+  },
+});
+
+defineWebPlugin({ id: "acme.counter", panels: { counter } });
+```
+
+A panel is a PROGRAM over its own state, not a component: `init` makes the state, `view` projects
+it into a tree of the closed vocabulary, `update` folds a named callback (`{ event, payload }`)
+into the next state, and `subscribe` is the only place a timer or a poll lives — its return value
+stops it at unmount. Events fold in order, one at a time, even while an `update` is still
+awaiting the host. The runtime re-renders after every `init` and `update`; there is no manual
+re-render and no partial one — the whole tree is posted and the engine diffs it.
+
+`GuestHost` is the viewer's identity as data (`principal`, `caps`, `containerId`) plus the nine
+`WEB_HOST_METHODS` as promises — `action`, `place`, `selfCaps`, `machines`, `resolve`, `navigate`,
+`openTerminal`, `sendTerminalInput`, `terminalsByContainer` — each with the semantics of the
+`SessionHandle` method of the same name (§Host services). They are served by the page from the
+panel's REAL host services, which is how a worker acts with the viewer's authority without ever
+holding the viewer's token.
+
+### The vocabulary
+
+Thirteen kinds, five tones, no escape hatch (`UiNodeSchema`; `GET /api/protocol` publishes it
+under `isolateContract`). `ui` has one builder per kind, typed against the protocol's union:
+
+| Builder                                                           | Renders as                                                                                                        |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ui.box({ direction, gap, grow, wrap }, children)`                | a flex box; `direction` defaults to `column`, `gap` (0–3) to 1                                                    |
+| `ui.heading(text, level?)`                                        | a heading; `level` defaults to 2                                                                                  |
+| `ui.text(text, { tone, mono, wrap }?)`                            | prose; ONE line truncated with an ellipsis unless `wrap: true`; `mono` is the shell's monospace family            |
+| `ui.code(text)`                                                   | a preformatted block (up to 64 KiB)                                                                               |
+| `ui.badge(text, tone?)`                                           | a small status chip                                                                                               |
+| `ui.divider()`                                                    | a rule                                                                                                            |
+| `ui.spinner(label?)`                                              | an in-progress marker                                                                                             |
+| `ui.button(label, event, { payload, tone, disabled, action }?)`   | a button posting `event` with `payload`; `action` is painted as `data-action` (set it, §Marking your affordances) |
+| `ui.select(event, value, options, { label, disabled }?)`          | a select posting `event` with the chosen value; `value: null` shows an empty placeholder option                   |
+| `ui.input(event, value, { label, placeholder, mono, disabled }?)` | a text field posting `event` with the string on every change                                                      |
+| `ui.toggle(event, value, label, { disabled }?)`                   | a switch posting `event` with the new boolean                                                                     |
+| `ui.list(items)`                                                  | rows of `{ key, primary, secondary?, tone?, event?, payload? }`; a row with `event` is a button                   |
+| `ui.empty(text)`                                                  | the engine's own empty-state row                                                                                  |
+
+Tones are meanings — `neutral`, `accent`, `muted`, `danger`, `success` — never colours. A tree is
+refused past 32 levels or 2000 nodes, and a node with a key the kind does not have (`style`,
+`className`, `onClick`) is refused rather than ignored; the runtime parses every tree before it
+posts one, so a bad tree becomes a `fault` naming the panel and the engine paints the panel as
+`empty` with tone `danger`. There is no plugin CSS. Ink has one owner (S13).
+
+### Packing
+
+```sh
+bun run --cwd packages/plugin-kit pack <plugin-dir> --out acme.counter.manifold-plugin.json
+# {"file":"acme.counter.manifold-plugin.json","sha256":"e984…","bytes":1586951}
+```
+
+`pack` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`) and `web.ts`
+(target `browser`) with the kit, the protocol and zod INLINED — the artifact is self-contained and
+the engine's loader never resolves a package — and writes one JSON document (`PluginBundleSchema`:
+`format: 1`, the manifest with its `entry`, the members as base64). The printed `sha256` is over
+the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
+source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
+is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Isolated plugins.
+
+### What an isolated plugin does NOT get (ADR 0016 §3)
+
+Say it out loud rather than discover it:
+
+- **No React, and no `@manifold/plugin`.** No `usePolledResource`, no `@manifold/plugin/ui`
+  primitives, no tile geometry, no projection registry, no `HostServices` object. The web half
+  is a program over the vocabulary, full stop.
+- **No token.** `HostServices.token` is a real bearer handed to trusted in-realm code; a worker
+  never holds it. It calls the door through the host, which attaches the viewer's authority.
+- **No Yjs.** `ElementTx.text()` hands back a live `Y.Text`, which cannot cross a boundary, so
+  **an isolated plugin cannot contribute a collaborative-text element renderer** — nor any element
+  renderer, section, tool, route or overlay in stage 1: `panels` are the one web contribution kind
+  a worker serves. This is ADR 0016's T3 stated plainly: element renderers are a two-class
+  contribution, and after this wave WHICH interfaces a stranger's agent can author against depends
+  on how the plugin is distributed. `core.notes` is the worked example of what stays first-party.
+- **No engine object.** `ctx.store`, `ctx.rooms`, `ctx.broker`, `ctx.identity`, `ctx.dials` and
+  the storage ledger verbs (`dataVersion`, `appliedMigrations`) are not served in stage 1. They are
+  absent from `GuestCtx`'s type, and reaching one at runtime anyway raises
+  `IsolateSliceUnavailable` — which the runtime answers as `refused`, a named rung at the door.
+- **No other plugin's anything.** Storage, event kinds, roster rows: unreachable by construction
+  rather than by contract.
+
+What you DO get is the same door: an installed plugin's actions sit on the roster beside
+first-party ones, are traced at every dispatch, and answer the same ladder — plus the runner's own
+states, which are roster data (`lifecycle: "isolate_starting" | "isolate_crashed"`) and a named
+refusal (`unavailable`) when the isolate is gone or did not answer in `ISOLATE_DISPATCH_DEADLINE_MS`.
 
 ## Further reading
 
