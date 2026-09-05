@@ -264,7 +264,10 @@ export class IsolateSupervisor implements IsolateRunner {
       await this.ensureRunning(isolate);
     } catch (error) {
       if (error instanceof IsolateDenial) throw error;
-      throw new IsolateDenial("unavailable", error instanceof Error ? error.message : String(error));
+      throw new IsolateDenial(
+        "unavailable",
+        error instanceof Error ? error.message : String(error),
+      );
     }
     const child = isolate.child;
     if (child === null || this.isolates.get(pluginId) !== isolate) {
@@ -351,7 +354,8 @@ export class IsolateSupervisor implements IsolateRunner {
         isolate.child = null;
         this.retired.add(child);
         child.kill();
-        if (respawn) this.recordCrash(isolate, error instanceof Error ? error.message : "load failed");
+        if (respawn)
+          this.recordCrash(isolate, error instanceof Error ? error.message : "load failed");
         else this.transition(isolate, "stopped");
       }
       throw error;

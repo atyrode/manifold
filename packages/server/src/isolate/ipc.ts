@@ -57,7 +57,10 @@ function isolateInterpreter(): string | null {
  * 6): a stranger's process is told exactly what it needs to run and nothing it could leak.
  */
 function childEnvironment(pluginId: string): Record<string, string> {
-  const env: Record<string, string> = { PATH: process.env.PATH ?? "", MANIFOLD_PLUGIN_ID: pluginId };
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    MANIFOLD_PLUGIN_ID: pluginId,
+  };
   if (process.env.HOME !== undefined) env.HOME = process.env.HOME;
   return env;
 }

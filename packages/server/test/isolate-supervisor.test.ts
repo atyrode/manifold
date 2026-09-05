@@ -93,7 +93,13 @@ function actionCtx(
     "principal" | "auth" | "containerScope" | "outsideScope" | "storage" | "now" | "newId" | "emit"
   > = {
     principal,
-    auth: { principal, caps: ["scenes:write"], containerScope: null, isRoot: false, allows: () => true },
+    auth: {
+      principal,
+      caps: ["scenes:write"],
+      containerScope: null,
+      isRoot: false,
+      allows: () => true,
+    },
     containerScope: null,
     outsideScope: () => null,
     storage,
@@ -106,7 +112,12 @@ function actionCtx(
   return { ctx: slice as ActionCtx, emitted };
 }
 
-function invoke(def: ServerPluginDef, action: string, ctx: ActionCtx, args: unknown): Promise<unknown> {
+function invoke(
+  def: ServerPluginDef,
+  action: string,
+  ctx: ActionCtx,
+  args: unknown,
+): Promise<unknown> {
   const handler = def.handlers[action];
   if (handler === undefined) throw new Error(`no handler ${action}`);
   return handler(ctx, args as never);
@@ -142,13 +153,24 @@ afterEach(async () => {
 describe("IsolateSupervisor", () => {
   test("load turns the child's report into a def with local names and only the declared hooks", async () => {
     const { supervisor, logger, states } = fixture();
-    const { def, lifecycle } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { def, lifecycle } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest,
+      dir: GUEST_DIR,
+    });
 
     expect(def.manifest).toBe(manifest);
-    expect(def.actions.map((action) => action.name).sort()).toEqual(
-      ["boom", "echo", "garble", "hang", "refuse", "slice"],
+    expect(def.actions.map((action) => action.name).sort()).toEqual([
+      "boom",
+      "echo",
+      "garble",
+      "hang",
+      "refuse",
+      "slice",
+    ]);
+    expect(Object.keys(def.handlers).sort()).toEqual(
+      def.actions.map((action) => action.name).sort(),
     );
-    expect(Object.keys(def.handlers).sort()).toEqual(def.actions.map((action) => action.name).sort());
     expect(typeof lifecycle.onEnable).toBe("function");
     expect(lifecycle.onDisable).toBeUndefined();
     expect(def.lifecycle).toBe(lifecycle);
@@ -196,7 +218,9 @@ describe("IsolateSupervisor", () => {
     };
     await expect(lifecycle.onEnable?.(lifecycleCtx)).resolves.toBeUndefined();
     await storage.set("enabled", "no");
-    await expect(lifecycle.onEnable?.(lifecycleCtx)).rejects.toThrow("onEnable failed in the isolate");
+    await expect(lifecycle.onEnable?.(lifecycleCtx)).rejects.toThrow(
+      "onEnable failed in the isolate",
+    );
   });
 
   test("a crash fails the dispatch, respawns on the next one, and the budget ends respawning", async () => {
@@ -210,11 +234,16 @@ describe("IsolateSupervisor", () => {
       expect((failure as IsolateDenial).rule).toBe("unavailable");
       expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
       // Lazy respawn: the next dispatch brings the child back, storage intact.
-      expect(await invoke(def, "echo", ctx, { text: "back" })).toEqual({ text: "back", count: crash });
+      expect(await invoke(def, "echo", ctx, { text: "back" })).toEqual({
+        text: "back",
+        count: crash,
+      });
       expect(supervisor.state(PLUGIN_ID)).toBe("running");
     }
     expect(logger.count("isolate_spawned")).toBe(3);
-    expect(logger.lines.filter((line) => line.evt === "isolate_exited" && line.fields?.asked === false)).toHaveLength(2);
+    expect(
+      logger.lines.filter((line) => line.evt === "isolate_exited" && line.fields?.asked === false),
+    ).toHaveLength(2);
 
     await invoke(def, "boom", ctx, {}).catch(() => undefined);
     expect(supervisor.state(PLUGIN_ID)).toBe("crashed");
@@ -241,7 +270,9 @@ describe("IsolateSupervisor", () => {
     expect((failure as Error).message).toBe("isolate did not answer load within 200ms");
     expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
     await until(() => logger.count("isolate_exited") === 1);
-    expect(logger.lines.find((line) => line.evt === "isolate_exited")?.fields?.signal).toBe("SIGKILL");
+    expect(logger.lines.find((line) => line.evt === "isolate_exited")?.fields?.signal).toBe(
+      "SIGKILL",
+    );
     expect(logger.count("isolate_crashed")).toBe(0);
   });
 
@@ -270,7 +301,9 @@ describe("IsolateSupervisor", () => {
     expect((failure as IsolateDenial).rule).toBe("unavailable");
     expect((failure as IsolateDenial).message).toBe("isolate deadline expired");
     await until(() => supervisor.state(PLUGIN_ID) === "stopped");
-    expect(logger.lines.find((line) => line.evt === "isolate_call_failed")?.fields?.reason).toBe("deadline");
+    expect(logger.lines.find((line) => line.evt === "isolate_call_failed")?.fields?.reason).toBe(
+      "deadline",
+    );
     expect(await invoke(def, "echo", ctx, { text: "after" })).toEqual({ text: "after", count: 1 });
   });
 
@@ -281,9 +314,14 @@ describe("IsolateSupervisor", () => {
 
     await until(() => supervisor.state(PLUGIN_ID) === "stopped");
     expect(logger.count("isolate_evicted")).toBe(1);
-    await until(() => logger.lines.some((line) => line.evt === "isolate_exited" && line.fields?.asked === true));
+    await until(() =>
+      logger.lines.some((line) => line.evt === "isolate_exited" && line.fields?.asked === true),
+    );
     expect(logger.count("isolate_crashed")).toBe(0);
-    expect(await invoke(def, "echo", ctx, { text: "morning" })).toEqual({ text: "morning", count: 1 });
+    expect(await invoke(def, "echo", ctx, { text: "morning" })).toEqual({
+      text: "morning",
+      count: 1,
+    });
     expect(logger.count("isolate_spawned")).toBe(2);
   });
 

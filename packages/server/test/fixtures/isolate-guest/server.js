@@ -37,7 +37,9 @@ const handlers = {
     const seen = await call(id, "storage.get", ["count"]);
     const count = seen === null ? 1 : Number(seen) + 1;
     await call(id, "storage.set", ["count", String(count)]);
-    const emits = [{ ref: { kind: "plugin", pluginId: "test.guest" }, kind: "echoed", payload: { count } }];
+    const emits = [
+      { ref: { kind: "plugin", pluginId: "test.guest" }, kind: "echoed", payload: { count } },
+    ];
     return { ok: true, result: { text: args.text, count }, emits };
   },
   boom() {

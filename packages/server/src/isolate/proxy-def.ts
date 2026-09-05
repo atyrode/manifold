@@ -74,7 +74,8 @@ export function buildIsolateDef(
     handlers[name] = async (ctx: ActionCtx, args: unknown): Promise<unknown> => {
       const outcome = await transport.dispatch(name, args, ctx);
       if (!outcome.ok) {
-        if (outcome.rule === "invalid_args") throw new IsolateDenial("invalid_args", outcome.message);
+        if (outcome.rule === "invalid_args")
+          throw new IsolateDenial("invalid_args", outcome.message);
         // The handler's own domain refusal: data, exactly as an in-realm handler returns it.
         return { refused: outcome.message };
       }
@@ -138,7 +139,9 @@ export async function serveCtxCall(
     case "storage.delete":
       return served.ctx.storage.delete(stringArg(args, 0, method));
     case "storage.keys":
-      return served.ctx.storage.keys(args[0] === undefined ? undefined : stringArg(args, 0, method));
+      return served.ctx.storage.keys(
+        args[0] === undefined ? undefined : stringArg(args, 0, method),
+      );
     case "auth.allows":
     case "outsideScope":
     case "newId":

@@ -29,7 +29,11 @@ const manifest: PluginManifest = {
 
 type Loaded = Extract<IsolateChildFrame, { t: "loaded" }>;
 
-const inputSchema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] };
+const inputSchema = {
+  type: "object",
+  properties: { text: { type: "string" } },
+  required: ["text"],
+};
 
 function loaded(names: readonly string[], hooks: Partial<Loaded["hooks"]> = {}): Loaded {
   return {
@@ -67,7 +71,10 @@ function scripted(outcome: IsolateDispatchOutcome): IsolateTransport & {
   };
 }
 
-function ctxWith(storage: PluginStorage, runtime: FakeRuntime): {
+function ctxWith(
+  storage: PluginStorage,
+  runtime: FakeRuntime,
+): {
   readonly ctx: ActionCtx;
   readonly emitted: unknown[];
   readonly allowed: unknown[];
@@ -76,7 +83,15 @@ function ctxWith(storage: PluginStorage, runtime: FakeRuntime): {
   const allowed: unknown[] = [];
   const slice: Pick<
     ActionCtx,
-    "principal" | "auth" | "containerScope" | "outsideScope" | "storage" | "now" | "newId" | "emit" | "machines"
+    | "principal"
+    | "auth"
+    | "containerScope"
+    | "outsideScope"
+    | "storage"
+    | "now"
+    | "newId"
+    | "emit"
+    | "machines"
   > = {
     principal,
     auth: {
@@ -130,7 +145,11 @@ describe("buildIsolateDef", () => {
   test("a handler returns the child's result after re-staging its emits through the host's ctx", async () => {
     const runtime = new FakeRuntime();
     const { ctx, emitted } = ctxWith(testStore().pluginStorage(manifest.id), runtime);
-    const emit = { ref: { kind: "plugin" as const, pluginId: manifest.id }, kind: "changed", payload: { n: 1 } };
+    const emit = {
+      ref: { kind: "plugin" as const, pluginId: manifest.id },
+      kind: "changed",
+      payload: { n: 1 },
+    };
     const transport = scripted({ ok: true, result: { done: true }, emits: [emit] });
     const { def } = buildIsolateDef(manifest, loaded(["test.proxy.echo"]), transport);
 
@@ -147,7 +166,9 @@ describe("buildIsolateDef", () => {
       loaded(["test.proxy.echo"]),
       scripted({ ok: false, rule: "invalid_args", message: "text required" }),
     );
-    const failure = await invalid.def.handlers.echo?.(ctx, {} as never).catch((error: unknown) => error);
+    const failure = await invalid.def.handlers
+      .echo?.(ctx, {} as never)
+      .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(IsolateDenial);
     expect((failure as IsolateDenial).rule).toBe("invalid_args");
     expect((failure as IsolateDenial).message).toBe("text required");
