@@ -344,8 +344,8 @@ function InstallForm({
       </label>
       <div className="plugin-manager-install-field">
         <span>
-          Grant — the default withholds these three from whatever the bundle declares; press one
-          to grant it anyway
+          Grant — the default withholds these three from whatever the bundle declares; press one to
+          grant it anyway
         </span>
         <div className="plugin-manager-install-grant" role="group" aria-label="Grant review">
           {WITHHELD_BY_DEFAULT.map((cap) => (
@@ -393,7 +393,11 @@ function InstallForm({
         </button>
       </div>
       {failure === null ? null : (
-        <p className="plugin-manager-error" data-testid="plugin-manager-install-failure" role="alert">
+        <p
+          className="plugin-manager-error"
+          data-testid="plugin-manager-install-failure"
+          role="alert"
+        >
           {failure}
         </p>
       )}
@@ -757,7 +761,11 @@ function PluginDetail({
                 const childStatus = pluginStatus(roster, child);
                 return (
                   <li key={child.manifest.id} className="plugin-manager-family-child">
-                    <PluginLink id={child.manifest.id} pluginTitle={pluginTitle} onSelect={onSelect} />
+                    <PluginLink
+                      id={child.manifest.id}
+                      pluginTitle={pluginTitle}
+                      onSelect={onSelect}
+                    />
                     <Chip tone={childStatus.tone} title={childStatus.why ?? undefined}>
                       {childStatus.word}
                     </Chip>
@@ -781,7 +789,9 @@ function PluginDetail({
         </SheetCard>
       )}
 
-      {requires.length === 0 && requiredBy.length === 0 && relations.incompatible.length === 0 ? null : (
+      {requires.length === 0 &&
+      requiredBy.length === 0 &&
+      relations.incompatible.length === 0 ? null : (
         <SheetCard title="Relations" testid="plugin-manager-detail-relations">
           {requires.length === 0 ? null : (
             <p className="plugin-manager-relation">
@@ -1035,7 +1045,10 @@ function PluginRow({
         <small>
           {manifest.id} · {manifest.version}
           {family.length === 0 ? null : (
-            <span className="plugin-manager-family-summary" data-testid="plugin-manager-family-summary">
+            <span
+              className="plugin-manager-family-summary"
+              data-testid="plugin-manager-family-summary"
+            >
               {" · "}
               {familySummary(family)}
             </span>
@@ -1195,7 +1208,9 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
         });
         const parentId = parentOf(roster, entry);
         if (parentId !== null) {
-          setExpanded((current) => (current.has(parentId) ? current : new Set(current).add(parentId)));
+          setExpanded((current) =>
+            current.has(parentId) ? current : new Set(current).add(parentId),
+          );
         }
       }
       setJumpId(id);
@@ -1416,9 +1431,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const plugins = roster.filter((entry) => entry.source !== "builtin");
   const on = plugins.filter((entry) => entry.enabled).length;
   const selected =
-    selectedId === null
-      ? null
-      : (roster.find((entry) => entry.manifest.id === selectedId) ?? null);
+    selectedId === null ? null : (roster.find((entry) => entry.manifest.id === selectedId) ?? null);
   const pluginTitle = (id: string): string => assembly.pluginTitle(id) ?? id;
   const narrowed = query.trim() !== "" || filters.size > 0;
 
@@ -1575,9 +1588,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
             </h3>
             {folded ? null : (
               <>
-                {def.toggleable ? null : (
-                  <p className="plugin-manager-category-note">{def.note}</p>
-                )}
+                {def.toggleable ? null : <p className="plugin-manager-category-note">{def.note}</p>}
                 {def.installs && installOpen && canInstall ? (
                   <InstallForm
                     busy={pendingIds.has(ENGINE_INSTALL_ACTION)}
@@ -1615,14 +1626,19 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                     return (
                       <div className="plugin-manager-family-group" key={row.entry.manifest.id}>
                         {!divider ? null : (
-                          <p className="plugin-manager-publisher" title={`Published by ${publisher}`}>
+                          <p
+                            className="plugin-manager-publisher"
+                            title={`Published by ${publisher}`}
+                          >
                             {publisher}
                           </p>
                         )}
                         {renderRow(row.entry, false, row.family, isOpen)}
                         {!isOpen
                           ? null
-                          : row.children.map((childEntry) => renderRow(childEntry, true, [], false))}
+                          : row.children.map((childEntry) =>
+                              renderRow(childEntry, true, [], false),
+                            )}
                       </div>
                     );
                   })
@@ -1687,7 +1703,10 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                 <div className="plugin-manager-panes">
                   <ScrollRegion className="plugin-manager-body">{list}</ScrollRegion>
                   {selected === null ? null : (
-                    <ScrollRegion className="plugin-manager-sheet" data-testid="plugin-manager-sheet">
+                    <ScrollRegion
+                      className="plugin-manager-sheet"
+                      data-testid="plugin-manager-sheet"
+                    >
                       <PluginDetail
                         entry={selected}
                         roster={roster}

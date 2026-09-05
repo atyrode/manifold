@@ -89,11 +89,15 @@ describe("pluginStatus", () => {
   });
 
   test("the isolate states are Crashed and Starting; the hook failures are Not ready and Off", () => {
-    expect(pluginStatus([], row("acme.x", { install: {}, lifecycle: "isolate_crashed" }))).toMatchObject({
+    expect(
+      pluginStatus([], row("acme.x", { install: {}, lifecycle: "isolate_crashed" })),
+    ).toMatchObject({
       word: "Crashed",
       tone: "attention",
     });
-    expect(pluginStatus([], row("acme.x", { install: {}, lifecycle: "isolate_starting" }))).toMatchObject({
+    expect(
+      pluginStatus([], row("acme.x", { install: {}, lifecycle: "isolate_starting" })),
+    ).toMatchObject({
       word: "Starting",
       tone: "busy",
     });
@@ -127,7 +131,9 @@ describe("pluginStatus", () => {
       dependencies: { "core.canvas": { type: "required" }, "core.space": { type: "required" } },
     });
     const space = row("core.space", { enabled: false });
-    expect(pluginStatus([canvas, space, both], both).why).toBe("needs core.canvas and core.space on");
+    expect(pluginStatus([canvas, space, both], both).why).toBe(
+      "needs core.canvas and core.space on",
+    );
   });
 
   test("an enabled row sharing the workspace with an incompatible peer needs attention and names it", () => {
@@ -146,9 +152,9 @@ describe("pluginStatus", () => {
       tone: "on",
       why: "essential: the workspace cannot be drawn without it",
     });
-    expect(pluginStatus([], row("engine.plugins", { source: "builtin", refusal: "builtin" })).why).toBe(
-      "an engine door: the thing that would switch it off is itself",
-    );
+    expect(
+      pluginStatus([], row("engine.plugins", { source: "builtin", refusal: "builtin" })).why,
+    ).toBe("an engine door: the thing that would switch it off is itself");
   });
 
   test("no status ever prints a class name", () => {
@@ -203,7 +209,9 @@ describe("permissions", () => {
       capabilities: ["tokens:mint"],
       install: { grantedCaps: [] },
     });
-    expect(permissionSummary(nothing)).toBe("Granted 0 of 1 declared: nothing; withheld tokens:mint");
+    expect(permissionSummary(nothing)).toBe(
+      "Granted 0 of 1 declared: nothing; withheld tokens:mint",
+    );
   });
 
   test("every permission carries a meaning in words, never the bare cap", () => {

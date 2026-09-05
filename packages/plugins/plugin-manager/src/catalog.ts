@@ -163,7 +163,8 @@ export function familySummary(children: readonly PluginRosterEntry[]): string {
   const on = children.filter((child) => child.enabled).length;
   if (children.length === 1) {
     const only = children[0];
-    const part = only === undefined ? "" : only.manifest.id.slice(only.manifest.id.lastIndexOf(".") + 1);
+    const part =
+      only === undefined ? "" : only.manifest.id.slice(only.manifest.id.lastIndexOf(".") + 1);
     return `${part} ${on === 1 ? "on" : "off"}`;
   }
   return `${String(on)} of ${String(children.length)} parts on`;
@@ -383,9 +384,8 @@ export function pluginCatalog(
     def,
     rows: rows.sort((left, right) =>
       def.byPublisher
-        ? publisherOf(left.entry.manifest.id).localeCompare(
-            publisherOf(right.entry.manifest.id),
-          ) || compare(left.entry, right.entry)
+        ? publisherOf(left.entry.manifest.id).localeCompare(publisherOf(right.entry.manifest.id)) ||
+          compare(left.entry, right.entry)
         : compare(left.entry, right.entry),
     ),
     size,
@@ -427,10 +427,7 @@ export interface PluginRelations {
  * unresolvable ids would hide the one case a reader most needs to see. Sorted, so the card is
  * stable across renders and across servers.
  */
-export function pluginRelations(
-  roster: readonly PluginRosterEntry[],
-  id: string,
-): PluginRelations {
+export function pluginRelations(roster: readonly PluginRosterEntry[], id: string): PluginRelations {
   const requires: string[] = [];
   const requiredBy: string[] = [];
   const incompatible = new Set<string>();

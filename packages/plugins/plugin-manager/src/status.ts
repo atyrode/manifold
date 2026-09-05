@@ -116,8 +116,7 @@ const LIFECYCLE_WORDS: Readonly<Record<Exclude<PluginLifecycleState, "ok">, stri
   enable_failed: "its startup hook failed: it is on, but may not be ready",
   disable_failed: "its shutdown hook failed: it is off regardless",
   isolate_starting: "its process is starting; its doors answer once it reports in",
-  isolate_crashed:
-    "its process crashed past the restart budget; switch it off and on to try again",
+  isolate_crashed: "its process crashed past the restart budget; switch it off and on to try again",
 };
 
 /** Ids joined the way a sentence lists them: "a", "a and b", "a, b and c". */

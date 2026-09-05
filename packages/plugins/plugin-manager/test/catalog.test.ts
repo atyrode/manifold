@@ -181,7 +181,9 @@ describe("pluginCatalog", () => {
   test("three sections, always present, in Installed / Built-in / Engine order", () => {
     const sections = pluginCatalog(roster, ask());
     expect(sections.map((section) => section.def.kind)).toEqual(["installed", "core", "engine"]);
-    expect(pluginCatalog([], ask()).map((section) => [section.def.kind, section.rows.length])).toEqual([
+    expect(
+      pluginCatalog([], ask()).map((section) => [section.def.kind, section.rows.length]),
+    ).toEqual([
       ["installed", 0],
       ["core", 0],
       ["engine", 0],
@@ -192,9 +194,7 @@ describe("pluginCatalog", () => {
     const [installed] = pluginCatalog(roster, ask());
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
     const family = installed!.rows.find((candidate) => candidate.entry === code);
-    expect(family?.children.map((child) => child.manifest.id)).toEqual([
-      "atyrode.code.generator",
-    ]);
+    expect(family?.children.map((child) => child.manifest.id)).toEqual(["atyrode.code.generator"]);
     expect(family?.viaChild).toBe(false);
     // The count on the band still counts the child: it is a row here, only nested.
     expect(installed!.size).toBe(3);

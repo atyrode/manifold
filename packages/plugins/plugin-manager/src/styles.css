@@ -553,7 +553,9 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   padding: 0;
   background: #22262c;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 
 .plugin-manager-toggle-knob {
@@ -564,7 +566,9 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   height: 0.76rem;
   border-radius: 999px;
   background: #868e96;
-  transition: transform 120ms ease, background 120ms ease;
+  transition:
+    transform 120ms ease,
+    background 120ms ease;
 }
 
 .plugin-manager-toggle[aria-checked="true"] {
