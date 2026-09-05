@@ -102,6 +102,20 @@
         "@types/react": "^19.2.0",
       },
     },
+    "packages/plugins/code-launcher-spike": {
+      "name": "@manifold-plugin/code-launcher-spike",
+      "dependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "@manifold/scene": "workspace:*",
+        "@manifold/sdk": "workspace:*",
+        "react": "19.2.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.2",
+        "@types/react": "^19.2.0",
+      },
+    },
     "packages/plugins/commands": {
       "name": "@manifold-plugin/commands",
       "dependencies": {
@@ -328,6 +342,7 @@
         "@manifold-plugin/arrange": "workspace:*",
         "@manifold-plugin/brand": "workspace:*",
         "@manifold-plugin/canvas": "workspace:*",
+        "@manifold-plugin/code-launcher-spike": "workspace:*",
         "@manifold-plugin/commands": "workspace:*",
         "@manifold-plugin/compositions": "workspace:*",
         "@manifold-plugin/debug": "workspace:*",
@@ -366,12 +381,13 @@
     },
     "packages/web": {
       "name": "@manifold/web",
-      "version": "0.5.0",
+      "version": "0.6.2",
       "dependencies": {
         "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/arrange": "workspace:*",
         "@manifold-plugin/brand": "workspace:*",
         "@manifold-plugin/canvas": "workspace:*",
+        "@manifold-plugin/code-launcher-spike": "workspace:*",
         "@manifold-plugin/commands": "workspace:*",
         "@manifold-plugin/compositions": "workspace:*",
         "@manifold-plugin/debug": "workspace:*",
@@ -494,6 +510,8 @@
     "@manifold-plugin/brand": ["@manifold-plugin/brand@workspace:packages/plugins/brand"],
 
     "@manifold-plugin/canvas": ["@manifold-plugin/canvas@workspace:packages/plugins/canvas"],
+
+    "@manifold-plugin/code-launcher-spike": ["@manifold-plugin/code-launcher-spike@workspace:packages/plugins/code-launcher-spike"],
 
     "@manifold-plugin/commands": ["@manifold-plugin/commands@workspace:packages/plugins/commands"],
 

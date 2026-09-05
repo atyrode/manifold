@@ -5,6 +5,8 @@ import { brandManifest } from "@manifold-plugin/brand";
 import { canvasManifest } from "@manifold-plugin/canvas";
 import { commandsManifest } from "@manifold-plugin/commands";
 import { compositionsManifest } from "@manifold-plugin/compositions";
+// THROWAWAY SPIKE ROW — never merge (docs/spikes/code-launcher.md).
+import { codeLauncherSpikeManifest } from "@manifold-plugin/code-launcher-spike";
 import { drawElements, drawManifest } from "@manifold-plugin/draw";
 import { eventsActions, eventsManifest } from "@manifold-plugin/events";
 import { eventsHandlers } from "@manifold-plugin/events/server";
@@ -153,6 +155,8 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   // projection, and every write they make is somebody else's declared door.
   { manifest: canvasManifest, actions: [], handlers: {} },
   { manifest: compositionsManifest, actions: [], handlers: {} },
+  // THROWAWAY SPIKE ROW — never merge (docs/spikes/code-launcher.md). Browser-only, door-less.
+  { manifest: codeLauncherSpikeManifest, actions: [], handlers: {} },
 ];
 
 /**

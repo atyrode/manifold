@@ -4,6 +4,8 @@ import { BrandRow } from "@manifold-plugin/brand/web";
 import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
 import { CommandsOverlay, COMMANDS_BINDINGS } from "@manifold-plugin/commands/web";
 import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
+// THROWAWAY SPIKE ROW — never merge (docs/spikes/code-launcher.md).
+import { codeLauncherSpikeWebPlugin } from "@manifold-plugin/code-launcher-spike/web";
 import { debugWebPlugin } from "@manifold-plugin/debug/web";
 import { drawWebPlugin } from "@manifold-plugin/draw/web";
 import { KeysRow } from "@manifold-plugin/keys/web";
@@ -238,4 +240,6 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   terminalsWebPlugin,
   uriWebPlugin,
   debugWebPlugin,
+  // THROWAWAY SPIKE ROW — never merge (docs/spikes/code-launcher.md).
+  codeLauncherSpikeWebPlugin,
 ];
