@@ -24,7 +24,7 @@
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
  *
- * The browser half (R1-R8) runs a real server and a real Chromium against the built bundle,
+ * The browser half (R1-R11) runs a real server and a real Chromium against the built bundle,
  * because the axioms are claims about a LIVE workspace: parity between the two doors, hot
  * enable/disable with no reload, the shell as a composition, observable view presence, and
  * the denial ladder end to end.
