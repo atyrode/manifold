@@ -361,6 +361,7 @@ describe("an installed row", () => {
       "not_installed",
       "namespace_reserved",
       "still_enabled",
+      "storage_retained",
       "no_entry",
     ]);
     // A bundle that stopped hashing to its pin is fail-closed (R8): `hash_mismatch` on the
