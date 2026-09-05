@@ -72,6 +72,7 @@ import { Cover, Stack } from "@manifold/plugin/ui";
 import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
+import { isolatedPanel } from "./isolate/index.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
@@ -340,12 +341,22 @@ export function buildBrowserAssembly(
     titles.set(manifest.id, manifest.title);
     if (enabled) enabledIds.add(manifest.id);
 
+    /*
+      THE SECOND SOURCE OF PANEL COMPONENTS (ADR 0016 §1): an INSTALLED row — `install` on the
+      roster, `entry.web` in its manifest — declares its panels exactly as an in-tree plugin does,
+      and every one of them resolves to the engine's isolated panel, which mounts the id on the
+      plugin's worker. Nothing here names a plugin: the row's data selects the runner. An in-tree
+      def for the same id would be an assembly duplicate the server refuses before this runs, so
+      the `??` is precedence in name only.
+    */
+    const isolated = entry.install !== undefined && manifest.entry?.web !== undefined;
     for (const panel of manifest.contributes.panels) {
       panels.set(`${manifest.id}.${panel.id}`, {
         plugin: manifest.id,
         title: panel.title,
         arranges: panel.arranges,
-        Component: def?.panels?.[panel.id] ?? null,
+        Component:
+          def?.panels?.[panel.id] ?? (isolated ? isolatedPanel(manifest.id, panel.id) : null),
         enabled,
       });
     }

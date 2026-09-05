@@ -151,7 +151,8 @@ must never be taught one.
         "packages/web/src/shell.css",
         "packages/web/src/container-memory.ts",
         "packages/web/src/web-version.ts",
-        "packages/web/src/generated-changelog.ts"
+        "packages/web/src/generated-changelog.ts",
+        "packages/web/src/isolate/**"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — and as of 2026-09-01 that is literally true of the shell's own two panels as well: they moved into @manifold-plugin/shell once `host.assembly` gave every plugin the composition read the sidebar chrome needed, so this pillar claims no component it also renders. What is left is the frame — the tile layout and its one committed write per gesture, the workspace index, the two contexts the host publishes above the tree for its panels to read, and the shell's skin, which stays here because the `sidebar` row vocabulary is filled by core.index, core.machines and core.plugins and a plugin may not own three other plugins' appearance.",
@@ -394,6 +395,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/generated-changelog.ts",
       "why": "generated from CHANGELOG.md's released sections by the release path; never hand-edited, which is why §Lexicon allows its frozen vocabulary"
+    },
+    {
+      "glob": "packages/web/src/isolate/**",
+      "why": "the isolation runner's browser half (ADR 0016 §1 stage 1, R7 = joins web-plugin-host): the per-plugin Worker supervisor that serves a stranger's `call` frames from the panel's real host ref and never hands it the bearer, the registry that leases one worker per (plugin, container), the isolated panel the composition resolves for any roster row carrying `install` with a web half, and the renderer of the closed component vocabulary plus its one stylesheet. Floor by the same litmus as the host it extends: it mounts a panel without knowing which plugin wrote it, and it arbitrates what an installed plugin may reach"
     }
   ]
 }
@@ -1605,6 +1610,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "family": "mf-icon",
       "owner": "packages/plugin/src/ui/styles.css",
       "why": "the glyph vocabulary, `icons.tsx`"
+    },
+    {
+      "family": "mf-vocab",
+      "owner": "packages/web/src/isolate/vocabulary.css",
+      "why": "the closed component vocabulary an isolated plugin renders with (ADR 0016 §3, `UiNodeSchema`): one anchor per node kind (`mf-vocab-<type>`), tones as attributes, states as `is-*` — the ONLY ink a stranger's web half can have, which is why no plugin stylesheet may reach it"
     },
     {
       "family": "composition-split",
