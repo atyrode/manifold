@@ -1734,7 +1734,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "plugin-manager",
       "owner": "packages/plugins/plugin-manager/src/styles.css",
-      "why": "one row per assembled plugin, its toggle, and the lock an essential plugin wears"
+      "why": "the ledger's dialog: its header summary, the search and sort band, the filter chips, three collapsible section bands, one row per assembled plugin with its status and permissions chips and its toggle, a family's chevron and its indented parts, the inline install form and the detail sheet that opens beside the list (issue #239)"
     },
     {
       "family": "draw",
@@ -1833,6 +1833,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold:arrange-toolbar-position",
       "why": "where THIS device parked core.arrange's floating toolbar (an {dx,dy} offset from its bottom-centre default). A toolbar's parking spot is about this screen's size and this hand's reach — it names nothing in the workspace, and publishing it would move a collaborator's toolbar out from under them. Optional by construction: a write that throws leaves the toolbar at its default, which is why the drag never surfaces a storage failure"
+    },
+    {
+      "key": "manifold:plugin-manager-collapsed",
+      "why": "which of the plugin manager's section bands (Installed, Built-in, Engine) THIS device has folded (issue #239). Presentation of a ledger whose content is durable server state, exactly as `manifold:expanded-index-folders` is for the index tree: which rows exist and whether they are on is the roster; whether a reader has tucked the engine's rows away is a fact about this screen. Absent ≡ the engine folded, everything else open"
     }
   ]
 }
@@ -1939,7 +1943,7 @@ string" is the question a broken gate actually asks.
     {
       "testid": "plugin-manager-toggle",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
-      "why": "R3 presses the REAL enablement affordance instead of dispatching the door twice; row identity comes from the sibling data-plugin attribute, never from button copy"
+      "why": "R3 presses the REAL enablement affordance instead of dispatching the door twice; row identity comes from the sibling data-plugin attribute, never from button copy, and the state is read off `aria-checked` — which is why the redesign (issue #239) could turn the button into a drawn switch with no words on it without touching the gate. Since #239 the same id is also worn by a family parent's switch, which is the family's toggle: R3's targets (`core.draw`, `core.machines`) are peers, so a press still dispatches exactly once"
     },
     {
       "testid": "plugin-manager-open",
