@@ -50,7 +50,9 @@ import {
   type SceneElement,
   type ServerEvent,
   type ServerMessageBody,
+  type TerminalEnv,
   type TerminalInfo,
+  type TerminalProgram,
   type TerminalSummary,
   type TileLayout,
   type TokenGrant,
@@ -1132,6 +1134,11 @@ export class SessionClient {
    * one: that container IS the home, so the server writes the tile leaf itself and the
    * caller authors nothing. Read the leaf from `layout()` (`tileIdForRef`) once this
    * resolves; the doc update precedes the confirmation on the same socket.
+   *
+   * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
+   * under the fixed `MANIFOLD_*` keys (issue #192). A machine whose agent predates programs
+   * rejects with `unsupported`; a program the machine cannot exec is a `conflict` from the
+   * agent's `create_error`.
    */
   openTerminal(opts: {
     elementId: string;
@@ -1140,6 +1147,8 @@ export class SessionClient {
     cwd?: string;
     machineId?: string;
     placement?: "tile";
+    program?: TerminalProgram;
+    env?: TerminalEnv;
     timeoutMs?: number;
   }): Promise<TerminalInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<TerminalInfo>();
@@ -1179,6 +1188,8 @@ export class SessionClient {
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       ...(opts.machineId !== undefined ? { machineId: opts.machineId } : {}),
       ...(opts.placement !== undefined ? { placement: opts.placement } : {}),
+      ...(opts.program !== undefined ? { program: opts.program } : {}),
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
     });
     return promise;
   }
