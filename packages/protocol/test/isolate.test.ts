@@ -98,7 +98,10 @@ describe("the closed component vocabulary", () => {
     expect(
       UiNodeSchema.safeParse({
         type: "box",
-        children: [{ type: "text", text: "a" }, { type: "raw", html: "<b>" }],
+        children: [
+          { type: "text", text: "a" },
+          { type: "raw", html: "<b>" },
+        ],
       }).success,
     ).toBe(false);
   });
@@ -107,9 +110,7 @@ describe("the closed component vocabulary", () => {
     // `style`, `className`, `onClick` are exactly the keys a plugin would reach for if the
     // vocabulary were a DOM in disguise. Strictness is what makes it not one.
     expect(UiNodeSchema.safeParse({ type: "divider", style: "color:red" }).success).toBe(false);
-    expect(UiNodeSchema.safeParse({ type: "text", text: "a", className: "x" }).success).toBe(
-      false,
-    );
+    expect(UiNodeSchema.safeParse({ type: "text", text: "a", className: "x" }).success).toBe(false);
     expect(
       UiNodeSchema.safeParse({ type: "button", label: "Go", event: "go", onClick: "alert(1)" })
         .success,
@@ -143,9 +144,9 @@ describe("the closed component vocabulary", () => {
       action: "core.terminals.kill",
     });
     expect(parsed).toMatchObject({ type: "button", action: "core.terminals.kill" });
-    expect(UiNodeSchema.safeParse({ type: "button", label: "Go", event: "go", tone: "red" }).success).toBe(
-      false,
-    );
+    expect(
+      UiNodeSchema.safeParse({ type: "button", label: "Go", event: "go", tone: "red" }).success,
+    ).toBe(false);
   });
 
   test("a callback travels back as data naming an event, never as a DOM event", () => {
@@ -211,7 +212,9 @@ describe("the isolate frames", () => {
     // nothing else. A frame that carries both is a guest that cannot be believed either way.
     for (const schema of [IsolateHostFrameSchema, WebIsolateHostFrameSchema]) {
       expect(schema.safeParse({ t: "reply", id: "1", ok: true, result: null }).success).toBe(true);
-      expect(schema.safeParse({ t: "reply", id: "1", ok: false, error: "gone" }).success).toBe(true);
+      expect(schema.safeParse({ t: "reply", id: "1", ok: false, error: "gone" }).success).toBe(
+        true,
+      );
       expect(schema.safeParse({ t: "reply", id: "1", ok: true, error: "gone" }).success).toBe(
         false,
       );
@@ -257,7 +260,11 @@ describe("the install artifact", () => {
   test("members are base64 of the file's bytes, under a flat name that cannot climb", () => {
     // The files are extracted beside the artifact (invariant 6): a name with a slash or a
     // leading dot is a path, not a member, and is refused before any extractor sees it.
-    expect(PluginBundleSchema.safeParse(bundle({ files: { "server.js": "not base64!", "web.js": "aGk=" } })).success).toBe(false);
+    expect(
+      PluginBundleSchema.safeParse(
+        bundle({ files: { "server.js": "not base64!", "web.js": "aGk=" } }),
+      ).success,
+    ).toBe(false);
     for (const name of ["../server.js", "lib/server.js", ".env", "server.js/"]) {
       const files = { "server.js": "aGk=", "web.js": "aGk=", [name]: "aGk=" };
       expect(PluginBundleSchema.safeParse(bundle({ files })).success).toBe(false);
@@ -284,17 +291,25 @@ describe("the install artifact", () => {
 
     // The manifest schema leaves `entry` optional; the bundle does not.
     const { entry: _entry, ...withoutEntry } = manifest;
-    expect(PluginBundleSchema.safeParse(bundle({ manifest: withoutEntry as never })).success).toBe(false);
+    expect(PluginBundleSchema.safeParse(bundle({ manifest: withoutEntry as never })).success).toBe(
+      false,
+    );
 
     // Either half alone is a plugin.
     expect(
       PluginBundleSchema.safeParse(
-        bundle({ manifest: { ...manifest, entry: { web: "web.js" } }, files: { "web.js": "aGk=" } }),
+        bundle({
+          manifest: { ...manifest, entry: { web: "web.js" } },
+          files: { "web.js": "aGk=" },
+        }),
       ).success,
     ).toBe(true);
     expect(
       PluginBundleSchema.safeParse(
-        bundle({ manifest: { ...manifest, entry: { server: true } }, files: { "server.js": "aGk=" } }),
+        bundle({
+          manifest: { ...manifest, entry: { server: true } },
+          files: { "server.js": "aGk=" },
+        }),
       ).success,
     ).toBe(true);
   });
@@ -320,11 +335,19 @@ describe("an installed row", () => {
     // sees; §1: presence of the block is what selects the runner, so `source` stays two-valued.
     expect(PluginRosterEntrySchema.parse(entry).install).toBeUndefined();
     expect(PluginRosterEntrySchema.parse({ ...entry, install }).install).toEqual(install);
-    expect(PluginRosterEntrySchema.safeParse({ ...entry, source: "installed" }).success).toBe(false);
+    expect(PluginRosterEntrySchema.safeParse({ ...entry, source: "installed" }).success).toBe(
+      false,
+    );
     // The hash is a hex digest or it is nothing; a grant is drawn from the cap vocabulary.
-    expect(PluginRosterEntrySchema.safeParse({ ...entry, install: { ...install, sha256: "abc" } }).success).toBe(false);
     expect(
-      PluginRosterEntrySchema.safeParse({ ...entry, install: { ...install, grantedCaps: ["files:write"] } }).success,
+      PluginRosterEntrySchema.safeParse({ ...entry, install: { ...install, sha256: "abc" } })
+        .success,
+    ).toBe(false);
+    expect(
+      PluginRosterEntrySchema.safeParse({
+        ...entry,
+        install: { ...install, grantedCaps: ["files:write"] },
+      }).success,
     ).toBe(false);
   });
 

@@ -597,7 +597,7 @@ stops at the first rule that fires:
 | 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                   |
 | 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                              |
 | 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                             |
-| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Isolated plugins below). Only a row carrying `install` can answer it; an in-realm door never does                       |
+| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Isolated plugins below). Only a row carrying `install` can answer it; an in-realm door never does                        |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
@@ -1160,18 +1160,18 @@ different verb.
 **Server isolate — supervisor ↔ child (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`).**
 JSON frames over `Bun.spawn` ipc, discriminated on `t`:
 
-| Direction   | `t`           | Carries                                                                                                                                                                                    |
-| ----------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| host→child  | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                                        |
-| host→child  | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                                    |
-| host→child  | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                                            |
-| host→child  | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                                             |
-| host→child  | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                                |
-| child→host  | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans                                              |
-| child→host  | `load_failed` | `error`                                                                                                                                                                                    |
-| child→host  | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade                     |
-| child→host  | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                                       |
-| child→host  | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                                        |
+| Direction  | `t`           | Carries                                                                                                                                                                    |
+| ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                      |
+| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
+| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
+| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
+| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans                            |
+| child→host | `load_failed` | `error`                                                                                                                                                                    |
+| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
+| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
+| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
 `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
@@ -1200,16 +1200,16 @@ the child is sent `shutdown` and the next dispatch respawns it (`isolate_evicted
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
 `postMessage` frames, discriminated on `t`:
 
-| Direction   | `t`       | Carries                                                                                                                       |
-| ----------- | --------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| page→worker | `init`    | `pluginId`, `principal`, `caps`, `containerId` — the viewer as data; never the token                                          |
-| page→worker | `mount`   | `instance`, `panel` (local panel id) — one tile of one panel                                                                   |
-| page→worker | `unmount` | `instance`                                                                                                                    |
-| page→worker | `event`   | `instance`, `event`, `payload?` — a named callback firing (`UiEventSchema`)                                                    |
-| page→worker | `reply`   | `id`, `ok: true, result` or `ok: false, error`                                                                                 |
-| worker→page | `ready`   | `panels: string[]` — the local panel ids the guest serves                                                                     |
-| worker→page | `render`  | `instance`, `tree: UiNode` — the whole tree, replaced wholesale; the host diffs                                                |
-| worker→page | `call`    | `id`, `method: WebHostMethod`, `args: unknown[]`                                                                                 |
+| Direction   | `t`       | Carries                                                                                                                             |
+| ----------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| page→worker | `init`    | `pluginId`, `principal`, `caps`, `containerId` — the viewer as data; never the token                                                |
+| page→worker | `mount`   | `instance`, `panel` (local panel id) — one tile of one panel                                                                        |
+| page→worker | `unmount` | `instance`                                                                                                                          |
+| page→worker | `event`   | `instance`, `event`, `payload?` — a named callback firing (`UiEventSchema`)                                                         |
+| page→worker | `reply`   | `id`, `ok: true, result` or `ok: false, error`                                                                                      |
+| worker→page | `ready`   | `panels: string[]` — the local panel ids the guest serves                                                                           |
+| worker→page | `render`  | `instance`, `tree: UiNode` — the whole tree, replaced wholesale; the host diffs                                                     |
+| worker→page | `call`    | `id`, `method: WebHostMethod`, `args: unknown[]`                                                                                    |
 | worker→page | `fault`   | `instance?`, `error` — the panel shows `empty` with tone `danger`; per-session, the roster is untouched, logged `web_isolate_fault` |
 
 `WEB_HOST_METHODS` — `action`, `place`, `selfCaps`, `machines`, `resolve`, `navigate`,
