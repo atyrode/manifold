@@ -99,8 +99,11 @@ async function bumpedTo(server: TestServer, by?: number): Promise<number> {
   return Number(result.count);
 }
 
-function uninstall(server: TestServer): Promise<ActionOutcome> {
-  return callAction(server, server.ownerKey, "engine.plugins.uninstall", { id: PLUGIN_ID });
+function uninstall(server: TestServer, purge = false): Promise<ActionOutcome> {
+  return callAction(server, server.ownerKey, "engine.plugins.uninstall", {
+    id: PLUGIN_ID,
+    ...(purge ? { purge: true } : {}),
+  });
 }
 
 async function webModule(server: TestServer): Promise<Response> {
@@ -215,7 +218,16 @@ test("an installed plugin composes, answers its door from its own process, and u
     expect(disabledDoor.ok).toBe(false);
     if (!disabledDoor.ok) expect(disabledDoor.denial.rule).toBe("plugin_disabled");
     expect(existsSync(installHome(server))).toBe(true);
-    expect(await uninstall(server)).toEqual({ ok: true, result: {} });
+    // The row is off but its storage is not empty: uninstall refuses by name (#233, option c)
+    // and leaves everything in place; `purge: true` consents, purges first, then uninstalls.
+    const retained = await uninstall(server);
+    expect(retained.ok).toBe(false);
+    if (!retained.ok) {
+      expect(retained.denial.rule).toBe("refused");
+      expect(retained.denial.message).toStartWith("storage_retained:");
+    }
+    expect(existsSync(installHome(server))).toBe(true);
+    expect(await uninstall(server, true)).toEqual({ ok: true, result: {} });
     expect(await rosterRow(server)).toBeUndefined();
     expect(existsSync(installHome(server))).toBe(false);
     expect((await webModule(server)).status).toBe(404);
@@ -223,24 +235,11 @@ test("an installed plugin composes, answers its door from its own process, and u
     expect(gone.ok).toBe(false);
     if (!gone.ok) expect(gone.denial.rule).toBe("unknown_action");
 
-    /*
-      Uninstall forgets the code and keeps the data. It also keeps the ENABLEMENT: the disabled
-      set is keyed by id and an uninstall does not clear it, so a reinstall of an id that was
-      switched off to be uninstalled comes back OFF (its child is spawned for the roster's
-      sake, but the door answers `plugin_disabled`). Asserted as the code behaves; once it is
-      switched on, the count is waiting where the last bump left it.
-    */
+    // Uninstall forgets the code AND the switch: a reinstall of the same id is a fresh row, on
+    // by default like a first install, and - because this uninstall purged - counting from zero.
     expect((await install(server, bundlePath, sha256)).ok).toBe(true);
-    expect((await rosterRow(server))?.enabled).toBe(false);
-    const offAgain = await bump(server, {});
-    expect(offAgain.ok).toBe(false);
-    if (!offAgain.ok) expect(offAgain.denial.rule).toBe("plugin_disabled");
-    const switchedOn = await callAction(server, server.ownerKey, "engine.plugins.setEnabled", {
-      id: PLUGIN_ID,
-      enabled: true,
-    });
-    expect(switchedOn.ok).toBe(true);
-    expect(await bumpedTo(server, 1)).toBe(count + 2);
+    expect((await rosterRow(server))?.enabled).toBe(true);
+    expect(await bumpedTo(server, 1)).toBe(1);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {
@@ -322,12 +321,10 @@ test("a stored bundle tampered with between boots is refused by name and never l
     });
     servers.push(restarted);
     /*
-      R8, fail-closed: the row stays on the roster so the failure is SEEN, but nothing from the
-      file is trusted — not its title, not its doors. What the ladder then answers for the
-      plugin's door is `unknown_action`: an unverified row composes DOORLESS, so the name is
-      simply not registered — neither `plugin_disabled` (the row is not off) nor `unavailable`
-      (no isolate was ever asked). Asserted as the code behaves; whether a refused install's
-      doors should instead be kept and answer by name is a question for the door's owner.
+      R8, fail-closed: the row stays on the roster so the failure is SEEN, and nothing from the
+      file is trusted - not its title, not its code. Its DOORS are still published, from the
+      summaries the install row remembered, so a dispatch answers by name at a traced rung
+      (`unavailable`, naming the refusal) instead of the untraced `unknown_action`.
     */
     const row = await rosterRow(restarted);
     expect(row?.lifecycle).toBe("enable_failed");
@@ -335,10 +332,13 @@ test("a stored bundle tampered with between boots is refused by name and never l
     expect(row?.install?.sha256).toBe(sha256);
     expect(row?.enabled).toBe(true);
     expect(row?.manifest.version).toBe("unverified");
-    expect(row?.actions).toEqual([]);
+    expect(row?.actions.map((action) => action.name)).toEqual([`${PLUGIN_ID}.bump`]);
     const denied = ActionOutcomeSchema.parse(await bump(restarted, {}));
     expect(denied.ok).toBe(false);
-    if (!denied.ok) expect(denied.denial.rule).toBe("unknown_action");
+    if (!denied.ok) {
+      expect(denied.denial.rule).toBe("unavailable");
+      expect(denied.denial.message).toContain("hash_mismatch");
+    }
     expect((await webModule(restarted)).status).toBe(404);
     // The refused file stays where it was: the row is the installer's consent, and only an
     // uninstall — which needs the row off — may remove it.
