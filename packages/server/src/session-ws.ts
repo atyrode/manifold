@@ -738,11 +738,19 @@ export class SessionGateway {
       case "terminal_open":
         /*
           POLICY THROUGH THE LADDER. Whether a terminal may be born here, now, by this
-          principal is `core.terminals`' question, and it is asked exactly the way every
-          other caller asks it — one dispatch, one denial vocabulary, one log line. The
-          transport keeps moving bytes and stops knowing why: the PTY itself is born
-          afterwards, on this channel, because a create is a round trip whose reply is
-          socket traffic (ADR 0013 — terminal policy is a plugin, terminal bytes are floor).
+          principal — and running WHAT — is `core.terminals`' question, and it is asked
+          exactly the way every other caller asks it: one dispatch, one denial vocabulary,
+          one log line. The transport keeps moving bytes and stops knowing why: the PTY
+          itself is born afterwards, on this channel, because a create is a round trip whose
+          reply is socket traffic (ADR 0013 — terminal policy is a plugin, terminal bytes are
+          floor).
+
+          The program and env go to the door FROM THIS FRAME, and the broker receives the
+          same frame only once the door allowed: one value, read at one place, judged before
+          anything is minted or sent (issue #192). A door that never saw the program would be
+          authorizing "a shell" while the machine was asked for something else, which is the
+          gap the door's input closes. `cwd` stays the transport's: it is where the shell
+          starts, never what runs.
 
           Creation dies with the plugin and cleanup does not, and now that is a property of
           the ROSTER rather than of this file: `open` is an ordinary action, so a disabled
@@ -756,6 +764,8 @@ export class SessionGateway {
           rows: message.rows,
           ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
           ...(message.placement === undefined ? {} : { placement: message.placement }),
+          ...(message.program === undefined ? {} : { program: message.program }),
+          ...(message.env === undefined ? {} : { env: message.env }),
         }).then((allowed) => {
           if (allowed) this.broker.open(peer, message);
         });

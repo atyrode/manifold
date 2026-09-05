@@ -451,8 +451,9 @@ export class TerminalBroker implements TerminalPlacementPort {
    * Starts a PTY create request. Spawn AUTHORITY is not asked here any more: the session
    * gateway dispatches `core.terminals.open` before it calls this, and that door carries
    * `terminals:spawn` at the container's scope (ADR 0013 — terminal policy is a plugin,
-   * terminal bytes are floor). What remains is mechanism: placement discipline, machine
-   * selection, and the create round trip.
+   * terminal bytes are floor). The door saw THIS frame's `program` and `env`, so what rides
+   * to the agent below is what the ledger recorded as authorized (issue #192). What remains
+   * is mechanism: placement discipline, machine selection, and the create round trip.
    */
   open(channel: SessionChannel, message: TerminalOpen): void {
     /*
