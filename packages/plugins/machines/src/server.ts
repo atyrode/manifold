@@ -57,6 +57,7 @@ interface MachinesCtx {
     rotateMachineToken(machine: MachineRow): IdentityResult<Enrollment>;
     /** Withdraws a machine's credential and answers how many died; 0 is a success. */
     revokeMachine(machineId: string): IdentityResult<number>;
+    forgetMachine(machineId: string): IdentityResult<void>;
   };
   /**
    * The fleet's news, staged on the engine and published only if this dispatch commits. Only
@@ -198,6 +199,14 @@ export const machinesHandlers = {
     ctx.target({ kind: "machine", machineId: args.machineId });
     const outcome = ctx.identity.revokeMachine(args.machineId);
     return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
+  },
+
+  async forget(
+    ctx: MachinesCtx,
+    args: { machineId: string },
+  ): Promise<Refusable<Record<string, never>>> {
+    const outcome = ctx.identity.forgetMachine(args.machineId);
+    return outcome.ok ? {} : { refused: outcome.message };
   },
 
   /**

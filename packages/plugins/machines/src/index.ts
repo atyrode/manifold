@@ -2,6 +2,8 @@ import { defineAction } from "@manifold/plugin";
 import {
   DrainMachineRequestSchema,
   EnrollMachineRequestSchema,
+  ForgetMachineRequestSchema,
+  ForgetMachineResultSchema,
   MachineDrainStatusSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
@@ -69,6 +71,7 @@ export const machinesManifest: PluginManifest = {
  * cannot drift from the declaration below. `core.keys` set this precedent.
  */
 export const MACHINES_REVOKE_ACTION = `${machinesManifest.id}.revoke`;
+export const MACHINES_FORGET_ACTION = `${machinesManifest.id}.forget`;
 
 /**
  * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
@@ -142,6 +145,13 @@ export const machinesActions = [
       second shape for one answer.
     */
     result: RevokeResultSchema,
+  }),
+  defineAction({
+    name: "forget",
+    title: "Forget a revoked machine",
+    caps: ["machines:mint"],
+    input: ForgetMachineRequestSchema,
+    result: ForgetMachineResultSchema,
   }),
   defineAction({
     /*

@@ -305,15 +305,66 @@ describe("core.machines.list", () => {
     fix.store.close();
   });
 
-  test("an unknown fleet verb is unknown_action, never a hint that one exists", async () => {
+});
+
+describe("core.machines.forget", () => {
+  test("requires withdrawal, removes all credentials and the roster row, and preserves traces", async () => {
     const fix = await fixture();
+    const first = fix.auth.enrollMachine("retired", fix.owner);
+    const rotated = fix.auth.rotateMachineToken(first.machine);
+    const machineId = first.machine.id;
+    const forget = () => fix.host.dispatch(fix.owner, "core.machines.forget", { machineId });
+    expect(denial(await forget())).toEqual({ rule: "refused", message: "not_revoked" });
+    expect(fix.auth.authenticateMachine(rotated.machineToken).id).toBe(machineId);
+    await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId });
+    const history = fix.store.listEvents({ limit: 100 });
+    expect((await forget()).ok).toBe(true);
+    expect(fix.store.getMachine(machineId)).toBeNull();
+    expect(fix.store.listTokensByPrincipal(machineId)).toEqual([]);
+    const listed = await fix.host.dispatch(fix.owner, "core.machines.list", {});
+    if (!listed.ok) throw new Error(listed.denial.message);
+    expect(MachinesResponseSchema.parse(listed.result).machines).toEqual([]);
+    expect(fix.store.listEvents({ limit: 100 })).toEqual(expect.arrayContaining(history));
+    expect(denial(await forget())).toEqual({ rule: "refused", message: "machine not found" });
+    fix.store.close();
+  });
 
-    const outcome = await fix.host.dispatch(fix.owner, "core.machines.forget", { id: "m1" });
-
-    expect(denial(outcome)).toEqual({
-      rule: "unknown_action",
-      message: 'unknown action "core.machines.forget"',
+  test("retained terminals and a pending drain refuse without destroying inventory", async () => {
+    const fix = await fixture();
+    const { machine } = fix.auth.enrollMachine("retained", fix.owner);
+    fix.auth.revokeMachine(machine.id, fix.owner);
+    const forget = () => fix.host.dispatch(fix.owner, "core.machines.forget", { machineId: machine.id });
+    fix.store.setMachineDraining(machine.id, true);
+    expect(denial(await forget()).message).toBe("drain_pending");
+    fix.store.setMachineDraining(machine.id, false);
+    fix.store.createTerminal({
+      id: "retained-terminal", machineId: machine.id, containerId: container(fix),
+      createdBy: fix.owner.principal.id, agentPrincipalId: fix.owner.principal.id,
+      createdAt: fix.runtime.now(),
     });
+    expect(denial(await forget()).message).toBe("terminals_retained");
+    expect(fix.store.getTerminal("retained-terminal")?.status).toBe("running");
+    expect(fix.store.getMachine(machine.id)).not.toBeNull();
+    fix.store.markTerminalExited("retained-terminal", 0);
+    expect(denial(await forget()).message).toBe("terminals_retained");
+    fix.store.deleteTerminal("retained-terminal");
+    expect((await forget()).ok).toBe(true);
+    fix.store.close();
+  });
+
+  test("fleet administration requires an unscoped machines:mint credential", async () => {
+    const fix = await fixture();
+    const { machine } = fix.auth.enrollMachine("retired", fix.owner);
+    fix.auth.revokeMachine(machine.id, fix.owner);
+    for (const actor of [
+      context(fix, ["containers:read"]),
+      context(fix, ["machines:mint"], container(fix)),
+    ]) {
+      expect(denial(await fix.host.dispatch(actor, "core.machines.forget", {
+        machineId: machine.id,
+      })).rule).toBe("forbidden");
+    }
+    expect(fix.store.getMachine(machine.id)).not.toBeNull();
     fix.store.close();
   });
 });

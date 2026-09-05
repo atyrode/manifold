@@ -4,7 +4,7 @@ import type { SectionProps } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
 import { ControlIcon, ItemIcon, Stack } from "@manifold/plugin/ui";
 import { useCallback, useState, type ReactElement } from "react";
-import { MACHINES_REVOKE_ACTION } from "./index.ts";
+import { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./index.ts";
 
 /**
  * The Machines section's browser half. Self-contained by construction: it asks the workspace
@@ -19,13 +19,8 @@ import { MACHINES_REVOKE_ACTION } from "./index.ts";
  * carries no `data-action` because it dispatches no action: authoring is document/room
  * traffic this wave, and a `data-action` naming nothing would be a lie the gate would catch.
  *
- * WITHDRAWAL is the one affordance here that spends authority (ADR 0019 §3), and it is the
- * fleet's half of the credential question `core.access`' Sessions section answers for people.
- * It lives here rather than there because the concept is this plugin's: a machine is what it
- * enrolls, so a machine's credential is what it withdraws. Two-press, because it cuts a box
- * off the canvas; and it does NOT remove the row, because withdrawing a credential and
- * forgetting a machine are different verbs — a withdrawn machine stays listed as `Revoked`
- * and comes back through an `enroll { rotateToken: true }` re-provision.
+ * Withdrawal and forgetting are separate, two-press acts: a live credential can only be
+ * revoked; a revoked row can be forgotten, subject to the server's terminal and drain checks.
  */
 
 /** 14px to match the sidebar's row rhythm; the stroke weight is the vocabulary's own. */
@@ -56,15 +51,19 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
   const authoring = host.authoring;
   const online = machines?.filter((machine) => machine.online).length ?? 0;
 
-  const revoke = async (machineId: string): Promise<void> => {
+  const administer = async (machine: MachineSummary): Promise<void> => {
+    const machineId = machine.id;
     setPendingId(machineId);
     setFailure(null);
     try {
-      const outcome = await host.client.action(MACHINES_REVOKE_ACTION, { machineId });
+      const outcome = await host.client.action(
+        machine.revoked === true ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION,
+        { machineId },
+      );
       if (!outcome.ok) setFailure(outcome.denial.message);
       else refresh();
     } catch (reason: unknown) {
-      setFailure(reason instanceof Error ? reason.message : "Could not withdraw the credential");
+      setFailure(reason instanceof Error ? reason.message : "Could not administer the machine");
     } finally {
       setPendingId(null);
       setArmedId(null);
@@ -116,24 +115,26 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                   <ControlIcon kind="add" size={ROW_ICON_SIZE} />
                 </button>
               ) : null}
-              {/* Absent once withdrawn rather than disabled: "press this to do nothing" is
-                  not an affordance, and the row already says `Revoked`. */}
-              {mayRevoke && machine.revoked !== true ? (
+              {mayRevoke ? (
                 <button
                   className="machine-revoke"
                   type="button"
-                  data-action={MACHINES_REVOKE_ACTION}
-                  data-testid="machine-revoke"
+                  data-action={machine.revoked === true ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION}
+                  data-testid={machine.revoked === true ? "machine-forget" : "machine-revoke"}
                   data-confirming={armedId === machine.id}
                   aria-label={
-                    armedId === machine.id
-                      ? `Confirm withdrawing ${machine.name}'s credential`
-                      : `Withdraw ${machine.name}'s credential`
+                    machine.revoked === true
+                      ? `${armedId === machine.id ? "Confirm forgetting" : "Forget"} ${machine.name}`
+                      : armedId === machine.id
+                        ? `Confirm withdrawing ${machine.name}'s credential`
+                        : `Withdraw ${machine.name}'s credential`
                   }
                   title={
-                    armedId === machine.id
-                      ? `Press again to cut ${machine.name} off; the row stays and re-enrolling brings it back`
-                      : `Withdraw ${machine.name}'s credential`
+                    machine.revoked === true
+                      ? `Forget ${machine.name}; retained terminals or a pending drain must be cleared first`
+                      : armedId === machine.id
+                        ? `Press again to cut ${machine.name} off; the row stays and re-enrolling brings it back`
+                        : `Withdraw ${machine.name}'s credential`
                   }
                   disabled={pendingId !== null}
                   onBlur={() => {
@@ -144,10 +145,10 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                       setArmedId(machine.id);
                       return;
                     }
-                    void revoke(machine.id);
+                    void administer(machine);
                   }}
                 >
-                  <ControlIcon kind="revoke" size={ROW_ICON_SIZE} />
+                  {machine.revoked === true ? "Forget" : <ControlIcon kind="revoke" size={ROW_ICON_SIZE} />}
                 </button>
               ) : null}
             </div>

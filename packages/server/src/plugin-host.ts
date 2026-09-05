@@ -143,6 +143,7 @@ export interface IdentityDoor {
    * withdrawn, which is a success and not a refusal.
    */
   revokeMachine(machineId: string): IdentityResult<number>;
+  forgetMachine(machineId: string): IdentityResult<void>;
   /**
    * Every principal this caller may administer, when it was created, and its live
    * credentials (ADR 0019 §3). `tokens:mint`, narrowed to what this caller could revoke —
@@ -1775,6 +1776,11 @@ export class PluginHost {
         listGrants: (filter) => identityCall(() => this.authService.listGrants(filter, auth)),
         revokeMachine: (machineId) =>
           identityCall(() => this.authService.revokeMachine(machineId, auth)),
+        forgetMachine: (machineId) =>
+          identityCall(() => {
+            this.authService.forgetMachine(machineId, auth);
+            this.logger.info("machine_forgotten", { machineId, principal: auth.principal.id });
+          }),
         listCredentials: () => identityCall(() => this.authService.listCredentials(auth)),
       },
       /*

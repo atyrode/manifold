@@ -1022,6 +1022,23 @@ A machine summary carries an optional **`revoked`** (absent ≡ live, so a pre-v
 unchanged), derived from the token the row references by one store join
 (`ServerStore.revokedMachineIds`).
 
+`core.machines.forget { machineId }` carries `machines:mint` at workspace scope and
+answers `{}`. Forget is distinct from revoke: it removes only an already-revoked roster row
+and all of that machine's token rows, including old rotated credentials. The ordinary
+dispatch ladder traces both grants and refusals; success emits the `machine_forgotten` log
+event. No `MachineSummary` field or agent-channel shape changes, so no protocol bump is owed.
+The handler relays named refusals as `rule: "refused"` with message `not_revoked` while the
+current credential is live, `drain_pending` while the admission latch is set, or
+`terminals_retained` while **any terminal row**, running or exited, references the machine.
+Clear the drain explicitly and delete retained terminals through their ordinary doors before
+revoking and forgetting; forget never kills workloads or cancels maintenance implicitly.
+An absent machine reuses revoke's `machine not found` refusal, including a second forget.
+Trace rows and terminal lifecycle history in the journal are retained unchanged: their old
+machine ids become unresolved, not rewritten to another machine or a synthetic roster row.
+Re-enrolling a forgotten name creates a new identity. The Machines section offers a two-press
+Forget control only on revoked rows, styled like withdrawal and carrying
+`data-action="core.machines.forget"`.
+
 A machine summary now carries an optional **`color`**, derived server-side by `identityColorFor`
 over the shared `IDENTITY_COLORS` palette — both exported from `@manifold/protocol`
 (`packages/protocol/src/principal.ts`), with the web layer re-exporting the palette rather than

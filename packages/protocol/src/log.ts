@@ -58,6 +58,7 @@ export const LOG_EVENTS = [
   "machine_admission_refused",
   "machine_drain_status",
   "machine_drain_timeout",
+  "machine_forgotten",
   "machine_hello_timeout",
   "machine_liveness_timeout",
   "machine_malformed_frame",
