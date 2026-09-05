@@ -1,0 +1,2114 @@
+{
+  "experiment": "live-divider-glyph-distortion",
+  "condition": "Intermediate beta: fit/PTY scheduling fixes present; tile ratio animation not yet corrected",
+  "bundle": "index-D8o7sIO9.js",
+  "method": "Real 20-step mouse drag; rAF captures computed transform and first glyph bounds; one screenshot taken mid-drag, so this is visual correctness evidence, not a cadence benchmark.",
+  "frames": [
+    {
+      "timeMs": 777089.5999999046,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777099.2999999523,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777130.0999999046,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777153.5999999046,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777158.6999999285,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777164,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777190.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777210.1999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.98417,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 7.873382568359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01635,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8.13079833984375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777271.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.98417,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 7.873382568359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01635,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8.13079833984375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777326.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.991604,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 560.8295288085938,
+          "glyph": {
+            "width": 7.932830810546875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00867,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 552.4204711914062,
+          "glyph": {
+            "width": 8.0693359375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777330.5999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.995342,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 562.9437255859375,
+          "glyph": {
+            "width": 7.962738037109375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00481,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 550.3062744140625,
+          "glyph": {
+            "width": 8.0384521484375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777347.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.964797,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 562.9437255859375,
+          "glyph": {
+            "width": 7.7183837890625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.03877,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 550.3062744140625,
+          "glyph": {
+            "width": 8.31024169921875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777387.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.964797,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 562.9437255859375,
+          "glyph": {
+            "width": 7.7183837890625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.03877,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 550.3062744140625,
+          "glyph": {
+            "width": 8.31024169921875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777436.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.970531,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 566.2898559570312,
+          "glyph": {
+            "width": 7.764251708984375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.03246,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 546.9601440429688,
+          "glyph": {
+            "width": 8.2596435546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777456.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.989657,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 577.4491577148438,
+          "glyph": {
+            "width": 7.917266845703125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01139,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 535.8008422851562,
+          "glyph": {
+            "width": 8.09112548828125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777475.5999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.994796,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 580.447998046875,
+          "glyph": {
+            "width": 7.9583740234375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00573,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 532.802001953125,
+          "glyph": {
+            "width": 8.0458984375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777485.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.997829,
+          "scaleY": 1,
+          "layoutWidth": 583,
+          "paintedWidth": 582.2178344726562,
+          "glyph": {
+            "width": 7.982635498046875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00239,
+          "scaleY": 1,
+          "layoutWidth": 530,
+          "paintedWidth": 531.0321655273438,
+          "glyph": {
+            "width": 8.01910400390625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777498.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.953893,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 582.2178344726562,
+          "glyph": {
+            "width": 7.631134033203125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.05596,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 531.0321655273438,
+          "glyph": {
+            "width": 8.4476318359375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777521.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.953893,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 582.2178344726562,
+          "glyph": {
+            "width": 7.631134033203125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.05596,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 531.0321655273438,
+          "glyph": {
+            "width": 8.4476318359375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777532.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.961433,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 586.8196411132812,
+          "glyph": {
+            "width": 7.69146728515625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.04681,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 526.4303588867188,
+          "glyph": {
+            "width": 8.37445068359375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777549.8999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.975527,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 595.421875,
+          "glyph": {
+            "width": 7.804229736328125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.0297,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 517.828125,
+          "glyph": {
+            "width": 8.2376708984375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777580.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.986421,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 602.0713500976562,
+          "glyph": {
+            "width": 7.891357421875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01648,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 511.17864990234375,
+          "glyph": {
+            "width": 8.13189697265625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777590.1999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.993165,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 606.1876220703125,
+          "glyph": {
+            "width": 7.9453125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.0083,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 507.06231689453125,
+          "glyph": {
+            "width": 8.06634521484375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777605.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.964859,
+          "scaleY": 1,
+          "layoutWidth": 628,
+          "paintedWidth": 606.1876220703125,
+          "glyph": {
+            "width": 7.7188720703125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.04552,
+          "scaleY": 1,
+          "layoutWidth": 485,
+          "paintedWidth": 507.06231689453125,
+          "glyph": {
+            "width": 8.36419677734375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777636.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.964859,
+          "scaleY": 1,
+          "layoutWidth": 628,
+          "paintedWidth": 606.1876220703125,
+          "glyph": {
+            "width": 7.7188720703125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.04552,
+          "scaleY": 1,
+          "layoutWidth": 485,
+          "paintedWidth": 507.06231689453125,
+          "glyph": {
+            "width": 8.36419677734375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777656.1999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.97057,
+          "scaleY": 1,
+          "layoutWidth": 628,
+          "paintedWidth": 609.7755737304688,
+          "glyph": {
+            "width": 7.764556884765625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.03813,
+          "scaleY": 1,
+          "layoutWidth": 485,
+          "paintedWidth": 503.474365234375,
+          "glyph": {
+            "width": 8.30499267578125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777666.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.981309,
+          "scaleY": 1,
+          "layoutWidth": 628,
+          "paintedWidth": 616.5228881835938,
+          "glyph": {
+            "width": 7.8504638671875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.02421,
+          "scaleY": 1,
+          "layoutWidth": 485,
+          "paintedWidth": 496.72711181640625,
+          "glyph": {
+            "width": 8.1937255859375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777692.1999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.967522,
+          "scaleY": 1,
+          "layoutWidth": 637,
+          "paintedWidth": 616.5228881835938,
+          "glyph": {
+            "width": 7.74017333984375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.04348,
+          "scaleY": 1,
+          "layoutWidth": 476,
+          "paintedWidth": 496.72711181640625,
+          "glyph": {
+            "width": 8.34783935546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777726.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.967522,
+          "scaleY": 1,
+          "layoutWidth": 637,
+          "paintedWidth": 616.5228881835938,
+          "glyph": {
+            "width": 7.74017333984375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.04348,
+          "scaleY": 1,
+          "layoutWidth": 476,
+          "paintedWidth": 496.72711181640625,
+          "glyph": {
+            "width": 8.34783935546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777774.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.954116,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 616.5228881835938,
+          "glyph": {
+            "width": 7.632904052734375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.06348,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 496.72711181640625,
+          "glyph": {
+            "width": 8.5078125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777867.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.954116,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 616.5228881835938,
+          "glyph": {
+            "width": 7.632904052734375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.06348,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 496.72711181640625,
+          "glyph": {
+            "width": 8.5078125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777911.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.999239,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 645.68017578125,
+          "glyph": {
+            "width": 7.993896484375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00105,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.56982421875,
+          "glyph": {
+            "width": 8.0084228515625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777927.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.999981,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.1594848632812,
+          "glyph": {
+            "width": 7.999847412109375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00003,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.09051513671875,
+          "glyph": {
+            "width": 8.000244140625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777951.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 777979.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778004.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778048.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778066.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778098.1999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778101.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778114.5999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778128.8999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778161.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778193.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.986334,
+          "scaleY": 1,
+          "layoutWidth": 655,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 7.890655517578125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01954,
+          "scaleY": 1,
+          "layoutWidth": 458,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8.1563720703125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778248,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.986334,
+          "scaleY": 1,
+          "layoutWidth": 655,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 7.890655517578125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01954,
+          "scaleY": 1,
+          "layoutWidth": 458,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8.1563720703125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778296.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.973036,
+          "scaleY": 1,
+          "layoutWidth": 664,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 7.784271240234375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.03987,
+          "scaleY": 1,
+          "layoutWidth": 449,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8.31890869140625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778333.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.96007,
+          "scaleY": 1,
+          "layoutWidth": 673,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 7.6805419921875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.06105,
+          "scaleY": 1,
+          "layoutWidth": 440,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8.4884033203125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778354.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.96007,
+          "scaleY": 1,
+          "layoutWidth": 673,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 7.6805419921875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.06105,
+          "scaleY": 1,
+          "layoutWidth": 440,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8.4884033203125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778386.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.966534,
+          "scaleY": 1,
+          "layoutWidth": 673,
+          "paintedWidth": 650.5227661132812,
+          "glyph": {
+            "width": 7.732269287109375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.05117,
+          "scaleY": 1,
+          "layoutWidth": 440,
+          "paintedWidth": 462.72723388671875,
+          "glyph": {
+            "width": 8.40936279296875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778395.7999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.988285,
+          "scaleY": 1,
+          "layoutWidth": 673,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.906280517578125,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.01791,
+          "scaleY": 1,
+          "layoutWidth": 440,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.14324951171875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778429.8999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.962673,
+          "scaleY": 1,
+          "layoutWidth": 691,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.701385498046875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.06107,
+          "scaleY": 1,
+          "layoutWidth": 422,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.48858642578125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778470.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.950359,
+          "scaleY": 1,
+          "layoutWidth": 700,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.602874755859375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.08406,
+          "scaleY": 1,
+          "layoutWidth": 413,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.67242431640625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778508.7999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.950359,
+          "scaleY": 1,
+          "layoutWidth": 700,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.602874755859375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.08406,
+          "scaleY": 1,
+          "layoutWidth": 413,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.67242431640625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778536.7999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.938355,
+          "scaleY": 1,
+          "layoutWidth": 709,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.5068359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.10806,
+          "scaleY": 1,
+          "layoutWidth": 404,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.864501953125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778571.6999999285,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.938355,
+          "scaleY": 1,
+          "layoutWidth": 709,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.5068359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.10806,
+          "scaleY": 1,
+          "layoutWidth": 404,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 8.864501953125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778600.3999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.926651,
+          "scaleY": 1,
+          "layoutWidth": 718,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.413238525390625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.13315,
+          "scaleY": 1,
+          "layoutWidth": 395,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.065185546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778649.8999999762,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.926651,
+          "scaleY": 1,
+          "layoutWidth": 718,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.413238525390625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.13315,
+          "scaleY": 1,
+          "layoutWidth": 395,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.065185546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778679.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.915236,
+          "scaleY": 1,
+          "layoutWidth": 727,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.3218994140625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.1594,
+          "scaleY": 1,
+          "layoutWidth": 386,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.27520751953125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778725.0999999046,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.915236,
+          "scaleY": 1,
+          "layoutWidth": 727,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.3218994140625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.1594,
+          "scaleY": 1,
+          "layoutWidth": 386,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.27520751953125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778752.2999999523,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.904098,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.232757568359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.18689,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.4951171875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778813,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 0.904098,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 665.1619262695312,
+          "glyph": {
+            "width": 7.232757568359375,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.18689,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 448.08807373046875,
+          "glyph": {
+            "width": 9.4951171875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778859.0999999046,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 0.919705,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 676.6443481445312,
+          "glyph": {
+            "width": 7.357635498046875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.15648,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 436.60565185546875,
+          "glyph": {
+            "width": 9.2518310546875,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778878.0999999046,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 0.971704,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 714.90087890625,
+          "glyph": {
+            "width": 7.773651123046875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.05514,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 398.34912109375,
+          "glyph": {
+            "width": 8.441162109375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778903.3999999762,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 0.994047,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 731.338623046875,
+          "glyph": {
+            "width": 7.952362060546875,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.0116,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 381.911376953125,
+          "glyph": {
+            "width": 8.0927734375,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778912.6999999285,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 0.998422,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 734.557861328125,
+          "glyph": {
+            "width": 7.98736572265625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00308,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 378.6922607421875,
+          "glyph": {
+            "width": 8.024658203125,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778930.5999999046,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 0.999959,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.688720703125,
+          "glyph": {
+            "width": 7.999664306640625,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1.00008,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.561279296875,
+          "glyph": {
+            "width": 8.0006103515625,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778946.5,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778962.2999999523,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778982.5,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 778996.5,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779013.1999999285,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779029.5,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779047,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779064.0999999046,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779085.3999999762,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779095.6999999285,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779113.6999999285,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779131.5,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779147.0999999046,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779162.6999999285,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 779183.3999999762,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    }
+  ]
+}

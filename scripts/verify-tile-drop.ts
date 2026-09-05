@@ -26,6 +26,8 @@
  *      the commit (the Step-10 decision: a changed stamp means the commit remounts).
  *   8. SEAM DRAG ON A WIDGET — an engaged portal resizes its composition from a press on
  *      the seam's VISIBLE centre at canvas zoom, without neighbouring content stealing it.
+ *   9. LIVE RESIZE DOES NOT SCALE CONTENT — ratio updates change the rendered layout
+ *      without stretching or trailing live contents; structural transitions still animate.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -290,6 +292,9 @@ async function dragSequence(
         await wait(80);
         const areaEl = document.querySelector(${JSON.stringify(area)});
         const slot = areaEl === null ? null : areaEl.querySelector('.tile-preview');
+        // A wall-clock hold can elapse before Chromium paints a transition under load.
+        // Sample the slot's actual settled geometry, not an intermediate CSS frame.
+        if (slot !== null) await Promise.all(slot.getAnimations().map(animation => animation.finished));
         const rect = slot === null ? null : (() => {
           const b = slot.getBoundingClientRect();
           return { left: b.left, top: b.top, width: b.width, height: b.height };
@@ -479,6 +484,49 @@ try {
     20_000,
     "both terminals rendered",
   );
+  // A remote producer's proportions must be laid out immediately, not replayed as
+  // placement FLIP animations. Sample in the browser every frame, not after settlement.
+  await sleep(600);
+  await browser.evaluate(`(() => {
+    const result = { frames: 0, movedFrames: 0, minWidth: Infinity, maxWidth: 0 };
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      const area = document.querySelector('.tile-area');
+      const samples = Object.values((${tileMotionJs})(area));
+      result.frames++;
+      if (samples.some(sample => sample.moved)) result.movedFrames++;
+      const host = area?.querySelector('.tile-content-host');
+      if (host) {
+        result.minWidth = Math.min(result.minWidth, host.offsetWidth);
+        result.maxWidth = Math.max(result.maxWidth, host.offsetWidth);
+      }
+      requestAnimationFrame(tick);
+    };
+    window.__finishRatioMotion = () => { running = false; return result; };
+    requestAnimationFrame(tick);
+  })()`);
+  const originalRatios = [...(layoutNow()[ROOT_TILE_ID]?.ratios ?? [])];
+  for (let step = 1; step <= 8; step++) {
+    viewClient.setTileRatios(ROOT_TILE_ID, [1 + step * 0.04, 1 - step * 0.04]);
+    await sleep(60);
+  }
+  await sleep(100);
+  const ratioMotion = await browser.evaluate<{
+    frames: number;
+    movedFrames: number;
+    minWidth: number;
+    maxWidth: number;
+  }>("window.__finishRatioMotion()");
+  check(
+    "ratio updates resize live contents without scale animation",
+    ratioMotion.frames >= 2 &&
+      ratioMotion.maxWidth - ratioMotion.minWidth > 20 &&
+      ratioMotion.movedFrames === 0,
+    JSON.stringify(ratioMotion),
+  );
+  viewClient.setTileRatios(ROOT_TILE_ID, originalRatios);
+  await sleep(600);
 
   /* ── Rounds 1 + 3 + 5 + 7 ride one gesture: C dropped on the lower half of B ── */
 
