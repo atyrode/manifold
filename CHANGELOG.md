@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin authoring guide and the action's own doc comment now say plainly that `core.terminals.open` only authorizes a terminal — the terminal itself is born by `terminal_open` on the session socket, and no action creates one. (#186, #193)
+
 ## [0.6.2] - 2026-09-02
 
 ### Added
