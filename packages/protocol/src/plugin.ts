@@ -507,6 +507,19 @@ export const PluginPurgeResultSchema = z.strictObject({
 });
 export type PluginPurgeResult = z.infer<typeof PluginPurgeResultSchema>;
 
+/**
+ * WHERE AN ISOLATED PLUGIN'S CODE IS, inside its bundle. `server: true` means the bundle's
+ * `server.js` member is the server guest (the file name is fixed — `PLUGIN_BUNDLE_SERVER_FILE`
+ * — because the kit inlines its runtime and the loader is one `Bun.spawn`); `web` names the
+ * member the browser fetches at `GET /api/plugins/:id/web.js` and runs in a dedicated Worker.
+ * Either half alone is a plugin; a bundle naming neither is refused `no_entry`.
+ */
+export const PluginEntrySchema = z.strictObject({
+  web: z.string().min(1).max(128).optional(),
+  server: z.boolean().optional(),
+});
+export type PluginEntry = z.infer<typeof PluginEntrySchema>;
+
 export const PluginManifestSchema = z.strictObject({
   id: PluginIdSchema,
   version: z.string().min(1).max(32),
@@ -551,8 +564,12 @@ export const PluginManifestSchema = z.strictObject({
    * DESCRIPTION, never a trigger: nothing here is bound to the disable verb.
    */
   purges: PluginPurgeTargetSchema.array().max(PLUGIN_PURGE_TARGETS.length).optional(),
-  /** reserved, dynamic wave */
-  entry: z.strictObject({ web: z.string().optional(), server: z.boolean().optional() }).optional(),
+  /**
+   * Which halves an INSTALLED bundle runs, and where (ADR 0016 §8 stage 2). Absent for every
+   * in-tree manifest: a package compiled into the build is found by the two `assembly.ts`
+   * files, not by this field. `PluginBundleSchema` requires it.
+   */
+  entry: PluginEntrySchema.optional(),
 });
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
@@ -624,8 +641,19 @@ export type PluginSource = (typeof PLUGIN_SOURCES)[number];
  * is a representable state rather than an assertion: the disable ALWAYS completes (a
  * shared workspace is never wedged on one plugin's cleanup) and the roster says so, to
  * every connected principal at once. Absent ≡ `ok`.
+ *
+ * The two `isolate_` states are what a RUNNER can be in (ADR 0016 §6): an installed row's
+ * child is being spawned (`isolate_starting`), or it crashed past `ISOLATE_CRASH_BUDGET` and
+ * the supervisor stopped respawning it (`isolate_crashed`) — a degraded row every principal
+ * sees, rather than a log line somebody greps. Only rows carrying `install` ever hold them.
  */
-export const PLUGIN_LIFECYCLE_STATES = ["ok", "enable_failed", "disable_failed"] as const;
+export const PLUGIN_LIFECYCLE_STATES = [
+  "ok",
+  "enable_failed",
+  "disable_failed",
+  "isolate_starting",
+  "isolate_crashed",
+] as const;
 export const PluginLifecycleStateSchema = z.enum(PLUGIN_LIFECYCLE_STATES);
 export type PluginLifecycleState = (typeof PLUGIN_LIFECYCLE_STATES)[number];
 
@@ -669,6 +697,58 @@ export const PluginRefusalReasonSchema = z.enum(PLUGIN_REFUSAL_REASONS);
 export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
 
 /**
+ * Why an INSTALL or UNINSTALL was refused (ADR 0016 §8 stage 2), the same discipline as the
+ * toggle refusals above: a class a client switches on, with the detail after a colon.
+ *
+ *   `artifact_unreadable`  the source could not be fetched or read at all.
+ *   `artifact_invalid`     the bytes are not a bundle this engine reads — wrong format, a
+ *                          manifest that fails the schema, or an assembly refusal (a duplicate
+ *                          id, a `core.` squat) caught at install time rather than at boot.
+ *   `hash_mismatch`        the bytes hash to something other than the `sha256` the installer
+ *                          pinned — refused fail-closed, at install and again at every boot (R8).
+ *   `already_installed`    that id is installed at a different hash and `replace` was not asked.
+ *   `not_installed`        an uninstall or replace of an id nobody installed.
+ *   `namespace_reserved`   the manifest claims `engine.` or `core.`, which only the build may.
+ *   `still_enabled`        an uninstall or replace of a plugin that is still on: disable first.
+ *   `no_entry`             the manifest names no half to run — nothing to install.
+ */
+export const PLUGIN_INSTALL_REFUSALS = [
+  "artifact_unreadable",
+  "artifact_invalid",
+  "hash_mismatch",
+  "already_installed",
+  "not_installed",
+  "namespace_reserved",
+  "still_enabled",
+  "no_entry",
+] as const;
+export const PluginInstallRefusalSchema = z.enum(PLUGIN_INSTALL_REFUSALS);
+export type PluginInstallRefusal = (typeof PLUGIN_INSTALL_REFUSALS)[number];
+
+/**
+ * What an installer CONSENTED TO, on the row (ADR 0016 §5): the artifact pinned by hash, where
+ * it came from as the installer spelled it, and the capability set granted — the roster is
+ * where every principal reads a grant, so it lives here and nowhere else. `grantedCaps` is
+ * intersected with the manifest's declared caps at rung 4, BEFORE the caller's own caps, so a
+ * refusal names the plugin's grant rather than the caller. Attribution mirrors `changedBy` /
+ * `changedAt` on the row: an install changes what everyone is looking at.
+ *
+ * `refusal` is why this install cannot SERVE right now, as distinct from the row's own
+ * `refusal` (why it cannot be toggled): a bundle that no longer hashes to `sha256` at boot is
+ * `hash_mismatch` here and `enable_failed` on the row, never loaded (R8, fail-closed).
+ */
+export const PluginInstallSchema = z.strictObject({
+  sha256: z.string().length(64),
+  /** The url or path as given, so an operator can tell where a stranger's code came from. */
+  source: z.string().max(2048),
+  grantedCaps: CapSchema.array(),
+  installedBy: z.string().min(1).max(128),
+  installedAt: z.number().int().min(0),
+  refusal: PluginInstallRefusalSchema.optional(),
+});
+export type PluginInstall = z.infer<typeof PluginInstallSchema>;
+
+/**
  * A plugin as the roster describes it: everything a client needs to render the plugin, its
  * doors, its state and WHO put it in that state, from one document.
  *
@@ -689,6 +769,13 @@ export const PluginRosterEntrySchema = z.strictObject({
   refusal: PluginRefusalReasonSchema.optional(),
   changedBy: z.string().min(1).max(128).nullish(),
   changedAt: z.number().int().min(0).nullish(),
+  /**
+   * Present iff the plugin was INSTALLED (ADR 0016 §8 stage 2): the row is a stranger's code
+   * running isolated, and this block is what an installer consented to. Absent for every
+   * in-realm row, first-party `plugin` and `builtin` alike — presence is what selects the
+   * runner (§1), so there is no third `source` value to invent.
+   */
+  install: PluginInstallSchema.optional(),
 });
 export type PluginRosterEntry = z.infer<typeof PluginRosterEntrySchema>;
 
@@ -738,6 +825,12 @@ export function rosterDisciplines(
  * plugin must be enabled, the caller must be allowed to reach the door at all, the caller
  * must hold every declared cap, the arguments must parse, and only then may the handler
  * itself refuse on state it alone can see (`refused`).
+ *
+ * `unavailable` is the LAST rung and the isolation runner's alone (ADR 0016 §6): the door
+ * exists, its plugin is on, the caller is allowed and the arguments would have been graded —
+ * but the child process that holds the handler is not running (crashed past its budget) or
+ * did not answer inside `ISOLATE_DISPATCH_DEADLINE_MS`. A hung isolate is a refusal, never a
+ * stuck promise, and it is traced like every other rung. An in-realm door never answers it.
  */
 export const ACTION_DENIAL_RULES = [
   "unknown_action",
@@ -745,6 +838,7 @@ export const ACTION_DENIAL_RULES = [
   "forbidden",
   "invalid_args",
   "refused",
+  "unavailable",
 ] as const;
 export const ActionDenialSchema = z.strictObject({
   rule: z.enum(ACTION_DENIAL_RULES),
@@ -879,6 +973,13 @@ export function pluginVocabulary(): Record<string, unknown> {
     purgeTargets: PLUGIN_PURGE_TARGETS,
     lifecycleStates: PLUGIN_LIFECYCLE_STATES,
     refusalReasons: PLUGIN_REFUSAL_REASONS,
+    /*
+      The install door's own refusal classes and the block an installed row carries (ADR 0016
+      §5, §8 stage 2): a stranger's agent installing a plugin learns what it may be told and
+      what the roster will then say about the grant, from the same read as everything else.
+    */
+    installRefusals: PLUGIN_INSTALL_REFUSALS,
+    install: z.toJSONSchema(PluginInstallSchema),
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,

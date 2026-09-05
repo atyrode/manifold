@@ -49,15 +49,16 @@ const JOIN_DEADLINE_MS = 10_000;
 const PING_FRAME = JSON.stringify({ type: "ping" });
 
 /**
- * How a denial reads on a socket. The action door's five rungs are the workspace's refusal
+ * How a denial reads on a socket. The action door's six rungs are the workspace's refusal
  * vocabulary and the session channel's error codes are the socket's; this is the one place
  * they meet, keyed by the rung union so a new rung cannot compile without an answer here.
  *
- * `unknown_action` and `plugin_disabled` both land on `forbidden` because from a client's
- * seat they are the same fact — this workspace will not do that right now — and that is the
- * code the gateway has always sent for a refused creation. An `invalid_args` is a malformed
- * request, and a handler's `refused` is a policy conflict, which is exactly what the broker's
- * own `conflict` has always meant.
+ * `unknown_action`, `plugin_disabled` and `unavailable` all land on `forbidden` because from
+ * a client's seat they are the same fact — this workspace will not do that right now, whether
+ * the door is missing, its plugin is off, or the isolate holding it did not answer (ADR 0016
+ * §6) — and that is the code the gateway has always sent for a refused creation. An
+ * `invalid_args` is a malformed request, and a handler's `refused` is a policy conflict,
+ * which is exactly what the broker's own `conflict` has always meant.
  */
 const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   unknown_action: "forbidden",
@@ -65,6 +66,7 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   forbidden: "forbidden",
   invalid_args: "invalid",
   refused: "conflict",
+  unavailable: "forbidden",
 };
 
 /**

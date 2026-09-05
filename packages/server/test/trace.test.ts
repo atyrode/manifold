@@ -437,10 +437,15 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(disabledRefusal.ok).toBeFalse();
     expect(newestTrace(base).outcome).toBe("plugin_disabled");
 
-    // Every rung the ledger promises it can say, said.
+    /*
+      Every rung the ledger promises it can say, said — by an in-realm door. `refused` is the
+      handler's own rung, asserted below; `unavailable` is the isolation runner's alone (ADR
+      0016 §6): no door in this fixture runs out of process, so the isolate suite is where a
+      child that never answers is shown to settle it.
+    */
     const outcomes = new Set(traces(base).map((row) => row.outcome));
     for (const rule of TRACED_DENIAL_RULES) {
-      if (rule === "refused") continue; // the handler's own rung; asserted below
+      if (rule === "refused" || rule === "unavailable") continue;
       expect(outcomes.has(rule)).toBeTrue();
     }
     base.store.close();

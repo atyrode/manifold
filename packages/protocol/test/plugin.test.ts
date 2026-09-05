@@ -80,10 +80,12 @@ describe("plugin manifest", () => {
     expect(parsed.entry).toBeUndefined();
   });
 
-  test("the reserved fields parse today so the waves that use them need no new shape", () => {
-    // `entry` is the dynamic-distribution seam and `contributes.events` the event plane's
-    // (ADR 0012). Both are declared NOW and consumed later: a manifest written this wave
-    // must still validate when those waves land, or every plugin author pays a migration.
+  test("`entry` and `contributes.events` parse on an ordinary manifest", () => {
+    // `entry` is the isolation seam (ADR 0016 §8 stage 2: which halves an installed bundle
+    // runs) and `contributes.events` the event plane's (ADR 0012). Both were declared before
+    // they were consumed, so a manifest written then validates unchanged now; `entry` is
+    // optional here and REQUIRED by the bundle schema, which is where its halves are checked
+    // against the files that carry them.
     const reserved = PluginManifestSchema.parse(
       manifest({
         id: "core.presence",
@@ -95,12 +97,12 @@ describe("plugin manifest", () => {
           tools: [],
           events: [{ id: "spotlighted", title: "Spotlight moved" }],
         },
-        entry: { web: "./web.tsx", server: true },
+        entry: { web: "web.js", server: true },
       }),
     );
 
     expect(reserved.contributes.events).toEqual([{ id: "spotlighted", title: "Spotlight moved" }]);
-    expect(reserved.entry).toEqual({ web: "./web.tsx", server: true });
+    expect(reserved.entry).toEqual({ web: "web.js", server: true });
   });
 
   test("a plugin id must be dotted and lowercase, because the id is half of every name", () => {
@@ -274,12 +276,15 @@ describe("action outcome", () => {
   test("the denial vocabulary is the whole ladder, published in the order it is walked", () => {
     // Agents read this list from `/api/protocol` to know what a door can answer. A new rung
     // is a deliberate protocol change, not an incidental addition, so the list is pinned.
+    // `unavailable` is last: the isolate holding the handler did not answer (ADR 0016 §6),
+    // which is only knowable after every other rung has passed.
     expect([...ACTION_DENIAL_RULES]).toEqual([
       "unknown_action",
       "plugin_disabled",
       "forbidden",
       "invalid_args",
       "refused",
+      "unavailable",
     ]);
   });
 });
@@ -339,7 +344,15 @@ describe("the plugin roster", () => {
     // Hot-toggling trusted in-process code means teardown can throw or hang, and this is a
     // SHARED workspace: the disable always completes and the roster says what happened, to
     // everyone at once. Absence is the ordinary case, so a row says "ok" by saying nothing.
-    expect([...PLUGIN_LIFECYCLE_STATES]).toEqual(["ok", "enable_failed", "disable_failed"]);
+    // The two `isolate_` states are the runner's (ADR 0016 §6): a crashed isolate is a
+    // degraded row every principal sees, not a log line somebody greps.
+    expect([...PLUGIN_LIFECYCLE_STATES]).toEqual([
+      "ok",
+      "enable_failed",
+      "disable_failed",
+      "isolate_starting",
+      "isolate_crashed",
+    ]);
     expect(PluginRosterEntrySchema.parse(entry).lifecycle).toBeUndefined();
     for (const lifecycle of PLUGIN_LIFECYCLE_STATES) {
       expect(PluginRosterEntrySchema.safeParse({ ...entry, lifecycle }).success).toBe(true);

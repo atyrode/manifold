@@ -37,6 +37,7 @@ export const TRACE_OUTCOMES = [
   "forbidden",
   "invalid_args",
   "refused",
+  "unavailable",
 ] as const satisfies readonly (Exclude<ActionDenialRule, "unknown_action"> | "ok" | "failed")[];
 
 export const TraceOutcomeSchema = z.enum(TRACE_OUTCOMES);
